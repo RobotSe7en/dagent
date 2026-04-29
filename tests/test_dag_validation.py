@@ -1,7 +1,7 @@
 import pytest
 
-from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.harness_runtime import MockPlanner
+from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.schemas import DAG, DAGEdge, DAGNode
 
 

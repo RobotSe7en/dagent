@@ -17,7 +17,7 @@ from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult
 from dagent.harness_runtime.control_plane import TaskRecord
 from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.planner import Planner
+from dagent.harness_runtime.dag_creator import Planner
 from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall

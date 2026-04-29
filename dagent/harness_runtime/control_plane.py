@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from dagent.harness_runtime.dag_executor import DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.planner import Planner
+from dagent.harness_runtime.dag_creator import Planner
 from dagent.schemas import DAG
 
 

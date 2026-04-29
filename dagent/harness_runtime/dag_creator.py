@@ -1,4 +1,4 @@
-"""Planner interfaces, mock planner, and LLM-backed planner."""
+"""DAG creator interfaces, mock creator, and LLM-backed creator."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from dagent.tools.registry import Tool
 
 
 class Planner(ABC):
-    """Base planner interface.
+    """Base DAG creator interface.
 
-    Planners propose DAGs. They do not grant final permissions.
+    DAG creators propose DAGs. They do not grant final permissions.
     """
 
     @abstractmethod
@@ -29,7 +29,7 @@ class Planner(ABC):
 
 
 class MockPlanner(Planner):
-    """Deterministic planner for tests and early development."""
+    """Deterministic DAG creator for tests and early development."""
 
     def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
@@ -70,7 +70,7 @@ class MockPlanner(Planner):
 
 
 class LLMPlanner(Planner):
-    """Planner that asks an OpenAI-compatible model to produce a DAG JSON object."""
+    """DAG creator that asks an OpenAI-compatible model to produce DAG JSON."""
 
     def __init__(
         self,
