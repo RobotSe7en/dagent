@@ -15,6 +15,13 @@ Implemented milestones:
 - **Milestone 3**: OpenAI-compatible provider, mock provider, bounded agent loop
 - **Milestone 4**: DAG executor, topo scheduling, risk override, trace recording
 
+Also implemented:
+
+- LLM-backed planner (`LLMPlanner`) using the configured OpenAI-compatible model
+- Harness control plane (`ControlPlane`) for plan -> validate -> review status -> approve -> execute
+- Default factory (`create_control_plane`) that wires MiniMax/OpenAI-compatible provider,
+  tool executor, agent loop, planner, DAG executor, and trace recorder
+
 Not implemented yet:
 
 - FastAPI control plane
@@ -115,3 +122,34 @@ asyncio.run(main())
 '@ | uv run python -
 ```
 
+## Real Harness Flow
+
+This runs the real planner and executor stack. Medium/high risk DAGs require
+approval before execution.
+
+```powershell
+$env:PYTHONIOENCODING="utf-8"
+@'
+import asyncio
+from dagent.factory import create_control_plane
+
+async def main():
+    control_plane = create_control_plane(workspace_root=".")
+    record = await control_plane.create_task(
+        "Read README and summarize the implemented milestones.",
+        task_id="demo_task",
+    )
+
+    print("DAG status:", record.dag.status)
+    if record.dag.status == "review_required":
+        control_plane.approve_dag(record.task_id)
+
+    result = await control_plane.execute_task(record.task_id)
+    print("completed:", result.completed)
+    print("trace:", [event.event_type for event in result.traces])
+    for node_id, node_result in result.node_results.items():
+        print(node_id, node_result.final_response)
+
+asyncio.run(main())
+'@ | uv run python -
+```
