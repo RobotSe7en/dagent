@@ -65,7 +65,7 @@ def test_harness_runtime_dag_creator_creates_reviewable_dag() -> None:
                     )
                 ]
             ),
-            ChatResponse(content=_planner_json(tools=["write_file"])),
+            ChatResponse(content=_dag_creator_json(tools=["write_file"])),
         ]
     )
     runtime = _runtime(provider)
@@ -82,10 +82,10 @@ def test_harness_runtime_dag_creator_creates_reviewable_dag() -> None:
 def _runtime(provider: MockProvider) -> HarnessRuntime:
     tool_executor = ToolExecutor(ToolRegistry())
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_creator = LLMDagCreator(provider, profile=_planner_profile())
+    dag_creator = LLMDagCreator(provider, profile=_dag_creator_profile())
     return HarnessRuntime(
         agent_loop=agent_loop,
-        planner=dag_creator,
+        dag_creator=dag_creator,
         dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
@@ -101,16 +101,16 @@ def _conversation_profile() -> AgentProfile:
     )
 
 
-def _planner_profile() -> AgentProfile:
+def _dag_creator_profile() -> AgentProfile:
     return AgentProfile(
         name="dag_creator",
         role="dag_creator",
         layers=["soul"],
-        layer_contents={"soul": "You are a DAG planner."},
+        layer_contents={"soul": "You are a DAG creator."},
     )
 
 
-def _planner_json(*, tools: list[str] | None = None) -> str:
+def _dag_creator_json(*, tools: list[str] | None = None) -> str:
     return json.dumps(
         {
             "dag_id": "dag_runtime",

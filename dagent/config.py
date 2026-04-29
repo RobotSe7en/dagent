@@ -16,7 +16,7 @@ class ProviderConfig(BaseModel):
     api_key: str | None = None
     api_key_env: str | None = None
     timeout_seconds: float = 60
-    strip_thinking: bool = True
+    strip_thinking: bool = False
 
     @model_validator(mode="after")
     def resolve_api_key(self) -> "ProviderConfig":

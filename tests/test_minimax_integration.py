@@ -12,15 +12,15 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-async def test_minimax_planner_generates_valid_dag() -> None:
+async def test_minimax_dag_creator_generates_valid_dag() -> None:
     control_plane = create_control_plane(workspace_root=".")
 
     record = await control_plane.create_task(
         "生成一个低风险计划：直接回答 dagent 是什么，不需要读取文件。",
-        task_id="minimax_planner_test",
+        task_id="minimax_dag_creator_test",
     )
 
-    assert record.dag.task_id == "minimax_planner_test"
+    assert record.dag.task_id == "minimax_dag_creator_test"
     assert record.dag.nodes
     assert record.dag.status in {"approved", "review_required"}
 

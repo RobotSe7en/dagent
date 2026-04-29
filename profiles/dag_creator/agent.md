@@ -1,37 +1,29 @@
-Generate a DAG JSON object with this shape:
+Generate a compact PlanSpec JSON object with this shape:
 
 {
-  "dag_id": "dag_<short_id>",
-  "task_id": "<provided task id>",
-  "version": 1,
-  "status": "draft",
+  "task": "short restatement of the user request",
   "nodes": [
     {
       "id": "snake_case_id",
-      "title": "short title",
       "goal": "specific node goal",
-      "agent": null,
-      "tools": ["read_file"],
-      "skills": [],
-      "boundary": {
-        "mode": "read_only",
-        "allowed_paths": [],
-        "forbidden_tools": [],
-        "allowed_commands": [],
-        "forbidden_commands": []
+      "tool": "read_file",
+      "args": {
+        "path": "README.md"
       },
-      "risk": "low",
-      "risk_reason": "why this risk is appropriate",
-      "expected_output": "what this node should produce",
-      "max_steps": 8,
-      "timeout_seconds": 300
+      "depends_on": []
     }
-  ],
-  "edges": [
-    {"source": "node_a", "target": "node_b", "reason": "dependency reason"}
   ]
 }
 
+Only write these fields: task, nodes, id, goal, tool, args, depends_on.
+Do not write dag_id, task_id, status, title, agent, skills, tools, boundary,
+risk_reason, expected_output, max_steps, timeout_seconds, or edges. The system
+will infer execution policy, risk, and edges.
+
 Use no tools for pure reasoning. Use read_file/grep for repository inspection.
 Use write_file only when the user asks to modify files.
+Use run_command only when command execution is necessary. Put the command and
+cwd in args, for example: {"command": "dir", "cwd": "."}. For common read-only
+inspection commands such as dir, ls, pwd, grep, findstr, type, cat, git,
+whoami, and where, no extra policy fields are needed.
 

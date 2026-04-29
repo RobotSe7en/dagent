@@ -58,10 +58,10 @@ provider:
   model: "MiniMax-M2.1"
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
-  strip_thinking: true
+  strip_thinking: false
 profiles:
   directory: "profiles"
-  planner: "dag_creator"
+  dag_creator: "dag_creator"
   dag_reviewer: "dag_reviewer"
   feedback_learner: "feedback_learner"
 ```
@@ -114,8 +114,8 @@ profiles/
 `profile.yaml` contains structured metadata and the ordered prompt layers:
 
 ```yaml
-name: planner
-role: planner
+name: dag_creator
+role: dag_creator
 description: Generates reviewable DAGs from user requests.
 layers:
   - soul.md
@@ -180,7 +180,7 @@ Runtime modes:
 
 - `auto`: top AgentLoop may call `dag_creator` only when useful.
 - `direct`: top AgentLoop cannot call `dag_creator`.
-- `planner`: bypasses conversation and invokes the DAG creator directly.
+- `dag_creator`: bypasses conversation and invokes the DAG creator directly.
 
 ## Development
 

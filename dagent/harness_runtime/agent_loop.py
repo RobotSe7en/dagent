@@ -31,6 +31,7 @@ class AgentLoopResult:
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
+TokenHandler = Callable[[str], None]
 
 
 class AgentLoop:
@@ -56,6 +57,7 @@ class AgentLoop:
         extra_tools: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
         control_tool_handler: ControlToolHandler | None = None,
+        on_token: TokenHandler | None = None,
     ) -> AgentLoopResult:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -70,9 +72,10 @@ class AgentLoop:
                 *self._tool_definitions_for_boundary(boundary, allowed_tools),
                 *(extra_tools or []),
             ]
-            response = await self.provider.chat(
+            response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
+                on_token=on_token,
             )
 
             assistant_message = self._assistant_message(response)
@@ -165,6 +168,24 @@ class AgentLoop:
                 }
             )
         return definitions
+
+    async def _chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        on_token: TokenHandler | None,
+    ) -> ChatResponse:
+        if on_token is None or not hasattr(self.provider, "stream_chat"):
+            return await self.provider.chat(messages, tools=tools)
+
+        response: ChatResponse | None = None
+        async for event in self.provider.stream_chat(messages, tools=tools):
+            if event.type == "token" and event.content:
+                on_token(event.content)
+            elif event.type == "done":
+                response = event.response
+        return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
         message: dict[str, Any] = {

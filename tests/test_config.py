@@ -24,6 +24,7 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.model == "qwen3"
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
+    assert config.provider.strip_thinking is False
 
 
 def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -> None:

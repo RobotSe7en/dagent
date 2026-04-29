@@ -37,6 +37,24 @@ def test_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     assert result.messages[-1] == {"role": "assistant", "content": "Done."}
 
 
+def test_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>\nDone.")])
+    loop = make_loop(tmp_path, provider)
+    tokens: list[str] = []
+
+    result = run(
+        loop.run(
+            "Say done",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            on_token=tokens.append,
+        )
+    )
+
+    assert result.completed is True
+    assert tokens == ["<think>checking</think>\nDone."]
+    assert result.final_response == "<think>checking</think>\nDone."
+
+
 def test_agent_loop_executes_tool_call_and_writes_result_to_messages(
     tmp_path: Path,
 ) -> None:

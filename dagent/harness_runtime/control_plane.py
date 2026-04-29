@@ -1,4 +1,4 @@
-"""Harness control plane for planning, review, approval, and execution."""
+"""Harness control plane for DAG creation, review, approval, and execution."""
 
 from __future__ import annotations
 
@@ -24,17 +24,17 @@ class ControlPlane:
     def __init__(
         self,
         *,
-        planner: DagCreator,
+        dag_creator: DagCreator,
         executor: DAGExecutor,
         auto_approve_low_risk: bool = True,
     ) -> None:
-        self.planner = planner
+        self.dag_creator = dag_creator
         self.executor = executor
         self.auto_approve_low_risk = auto_approve_low_risk
         self.tasks: dict[str, TaskRecord] = {}
 
     async def create_task(self, user_request: str, *, task_id: str | None = None) -> TaskRecord:
-        dag = await self.planner.aplan(user_request, task_id=task_id)
+        dag = await self.dag_creator.aplan(user_request, task_id=task_id)
         dag = self.prepare_dag_for_review(dag)
         record = TaskRecord(task_id=dag.task_id, user_request=user_request, dag=dag)
         self.tasks[dag.task_id] = record

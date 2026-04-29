@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict
 from typing import Any
@@ -104,12 +105,31 @@ async def create_task_stream(request: CreateTaskRequest) -> StreamingResponse:
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
         yield _sse({"type": "status", "message": "agent_loop_started"})
-        try:
-            result = await state.get_harness_runtime().handle_message(
+        token_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def on_token(content: str) -> None:
+            token_queue.put_nowait(content)
+
+        task = asyncio.create_task(
+            state.get_harness_runtime().handle_message(
                 request.message,
                 mode=request.mode,
+                on_token=on_token,
             )
+        )
+        try:
+            while not task.done():
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse({"type": "token", "content": token})
+            while not token_queue.empty():
+                yield _sse({"type": "token", "content": token_queue.get_nowait()})
+            result = await task
         except Exception as exc:
+            if not task.done():
+                task.cancel()
             yield _sse({"type": "error", "message": str(exc)})
             return
 
@@ -120,8 +140,9 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
         message = _runtime_message_markdown(result)
-        for chunk in _chunks(message, size=36):
-            yield _sse({"type": "token", "content": chunk})
+        if request.mode == "dag_creator" or result.dag is not None:
+            for chunk in _chunks(message, size=36):
+                yield _sse({"type": "token", "content": chunk})
         yield _sse(
             {
                 "type": "done",
@@ -182,7 +203,6 @@ async def execute_dag(task_id: str) -> dict[str, Any]:
     if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
         runtime = state.harness_runtime
         record = runtime.tasks[task_id]
-        record.dag.status = "running"
         try:
             result = await runtime.execute_dag(task_id)
         except DAGExecutionError as exc:
@@ -201,7 +221,6 @@ async def execute_dag(task_id: str) -> dict[str, Any]:
         }
 
     record = _get_task(task_id)
-    record.dag.status = "running"
     try:
         result = await state.get_control_plane().execute_task(task_id)
     except DAGExecutionError as exc:

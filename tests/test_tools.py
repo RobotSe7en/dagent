@@ -136,3 +136,124 @@ def test_grep_searches_allowed_files(tmp_path: Path) -> None:
 
     assert "a.txt:1:alpha" in result
     assert "b.txt:2:alphabet" in result
+
+
+def test_run_command_executes_allowed_command_in_allowed_cwd(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    result = executor.execute(
+        "run_command",
+        {"command": "echo hello", "cwd": "."},
+        boundary=Boundary(
+            mode="write_limited",
+            allowed_paths=["."],
+            allowed_commands=["echo"],
+        ),
+    )
+
+    assert "exit_code=0" in result
+    assert "hello" in result
+
+
+def test_read_only_node_can_run_explicitly_allowed_command(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    result = executor.execute(
+        "run_command",
+        {"command": "echo hello", "cwd": "."},
+        boundary=Boundary(
+            mode="read_only",
+            allowed_paths=["."],
+            allowed_commands=["echo"],
+        ),
+    )
+
+    assert "exit_code=0" in result
+    assert "hello" in result
+
+
+def test_run_command_requires_allowed_commands(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    with pytest.raises(BoundaryViolation, match="allowed_commands"):
+        executor.execute(
+            "run_command",
+            {"command": "echo hello", "cwd": "."},
+            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+        )
+
+
+def test_read_only_run_command_uses_default_allowed_inspection_commands(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = executor.execute(
+        "run_command",
+        {"command": "dir"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert "exit_code=0" in result
+    assert "notes.txt" in result
+
+
+def test_read_only_run_command_blocks_non_default_command_without_allowlist(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    with pytest.raises(BoundaryViolation, match="outside allowed commands"):
+        executor.execute(
+            "run_command",
+            {"command": "python --version"},
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        )
+
+
+def test_run_command_defaults_cwd_to_workspace_root(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    result = executor.execute(
+        "run_command",
+        {"command": "echo hello"},
+        boundary=Boundary(
+            mode="read_only",
+            allowed_paths=["."],
+            allowed_commands=["echo"],
+        ),
+    )
+
+    assert "exit_code=0" in result
+    assert "hello" in result
+
+
+def test_run_command_rejects_shell_control_operators(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    with pytest.raises(BoundaryViolation, match="control operators"):
+        executor.execute(
+            "run_command",
+            {"command": "echo hello && echo nope", "cwd": "."},
+            boundary=Boundary(
+                mode="write_limited",
+                allowed_paths=["."],
+                allowed_commands=["echo"],
+            ),
+        )
+
+
+def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    executor = make_executor(tmp_path)
+
+    with pytest.raises(BoundaryViolation, match="outside allowed paths"):
+        executor.execute(
+            "run_command",
+            {"command": "echo hello", "cwd": "blocked"},
+            boundary=Boundary(
+                mode="write_limited",
+                allowed_paths=["allowed"],
+                allowed_commands=["echo"],
+            ),
+        )

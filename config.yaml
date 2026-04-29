@@ -3,7 +3,7 @@ provider:
   model: "MiniMax-M2.1"
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
-  strip_thinking: true
+  strip_thinking: false
 profiles:
   directory: "profiles"
   conversation: "conversation"

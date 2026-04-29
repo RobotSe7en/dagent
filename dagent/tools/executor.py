@@ -8,6 +8,7 @@ from typing import Any
 from dagent.schemas import Boundary
 from dagent.tools.boundary import (
     enforce_action_allowed,
+    enforce_command_allowed,
     enforce_path_allowed,
     enforce_tool_allowed,
 )
@@ -39,7 +40,7 @@ class ToolExecutor:
         enforce_tool_allowed(tool_name, boundary)
         enforce_action_allowed(tool.action, boundary)
 
-        checked_args = dict(args)
+        checked_args = {**(tool.default_args or {}), **args}
         for arg_name in tool.path_args:
             if arg_name not in checked_args:
                 raise ToolExecutionError(
@@ -50,6 +51,13 @@ class ToolExecutor:
                 boundary,
                 self.workspace_root,
             )
+
+        for arg_name in tool.command_args:
+            if arg_name not in checked_args:
+                raise ToolExecutionError(
+                    f"Tool '{tool_name}' requires command argument '{arg_name}'."
+                )
+            enforce_command_allowed(str(checked_args[arg_name]), boundary)
 
         return tool.handler(**checked_args)
 

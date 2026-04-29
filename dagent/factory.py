@@ -44,7 +44,7 @@ def create_control_plane(
             if (tool := tool_executor.registry.get(name)) is not None
         ],
     )
-    return ControlPlane(planner=dag_creator, executor=dag_executor)
+    return ControlPlane(dag_creator=dag_creator, executor=dag_executor)
 
 
 def create_harness_runtime(
@@ -74,7 +74,7 @@ def create_harness_runtime(
     )
     return HarnessRuntime(
         agent_loop=agent_loop,
-        planner=dag_creator,
+        dag_creator=dag_creator,
         dag_executor=dag_executor,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,

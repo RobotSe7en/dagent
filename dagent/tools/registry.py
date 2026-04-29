@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 
 ToolHandler = Callable[..., str]
@@ -16,6 +17,8 @@ class Tool:
     handler: ToolHandler
     action: ToolAction
     path_args: tuple[str, ...] = ()
+    command_args: tuple[str, ...] = ()
+    default_args: dict[str, Any] | None = None
     description: str = ""
     parameters: dict | None = None
 
@@ -33,6 +36,8 @@ class ToolRegistry:
         handler: ToolHandler,
         action: ToolAction,
         path_args: tuple[str, ...] = (),
+        command_args: tuple[str, ...] = (),
+        default_args: dict[str, Any] | None = None,
         description: str = "",
         parameters: dict | None = None,
     ) -> None:
@@ -43,6 +48,8 @@ class ToolRegistry:
             handler=handler,
             action=action,
             path_args=path_args,
+            command_args=command_args,
+            default_args=default_args,
             description=description,
             parameters=parameters,
         )
