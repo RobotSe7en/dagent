@@ -51,7 +51,7 @@ interface ChatMessage {
   content: string;
 }
 
-type RuntimeMode = 'auto' | 'direct' | 'planner';
+type RuntimeMode = 'auto' | 'direct' | 'dag_creator';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
@@ -249,14 +249,14 @@ export function App() {
         </div>
         <div className="top-actions">
           <div className="mode-switch" aria-label="Runtime mode">
-            {(['auto', 'direct', 'planner'] as RuntimeMode[]).map((item) => (
+            {(['auto', 'direct', 'dag_creator'] as RuntimeMode[]).map((item) => (
               <button
                 key={item}
                 className={mode === item ? 'active' : ''}
                 onClick={() => setMode(item)}
                 type="button"
               >
-                {item === 'planner' ? 'DAG' : item}
+                {item === 'dag_creator' ? 'DAG' : item}
               </button>
             ))}
           </div>

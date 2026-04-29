@@ -10,7 +10,7 @@ export const initialDag: Dag = {
       id: 'plan_request',
       title: 'Plan request',
       goal: 'Turn the user request into a reviewable DAG with risk annotations.',
-      agent: 'planner',
+      agent: 'dag_creator',
       tools: [],
       skills: [],
       boundary: {
@@ -21,7 +21,7 @@ export const initialDag: Dag = {
         forbidden_commands: [],
       },
       risk: 'low',
-      risk_reason: 'Planner only proposes structure.',
+      risk_reason: 'DagCreator only proposes structure.',
       expected_output: 'Weak DAG proposal.',
       max_steps: 4,
       timeout_seconds: 120,

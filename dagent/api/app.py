@@ -82,7 +82,7 @@ async def create_task(request: CreateTaskRequest) -> dict[str, Any]:
 @app.post("/tasks/stream")
 async def create_task_stream(request: CreateTaskRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "status", "message": "planner_started"})
+        yield _sse({"type": "status", "message": "dag_creator_started"})
         try:
             record = await state.get_control_plane().create_task(
                 request.message,

@@ -7,6 +7,6 @@ provider:
 profiles:
   directory: "profiles"
   conversation: "conversation"
-  planner: "planner"
+  dag_creator: "dag_creator"
   dag_reviewer: "dag_reviewer"
   feedback_learner: "feedback_learner"

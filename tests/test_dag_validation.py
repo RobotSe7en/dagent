@@ -1,6 +1,6 @@
 import pytest
 
-from dagent.harness_runtime import MockPlanner
+from dagent.harness_runtime import MockDagCreator
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.schemas import DAG, DAGEdge, DAGNode
 
@@ -79,7 +79,7 @@ def test_dag_must_be_acyclic() -> None:
 
 
 def test_mock_planner_returns_valid_dag() -> None:
-    dag = MockPlanner().plan("Summarize the repo", task_id="task_1")
+    dag = MockDagCreator().plan("Summarize the repo", task_id="task_1")
 
     validate_dag(dag)
     assert dag.task_id == "task_1"

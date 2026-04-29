@@ -47,7 +47,7 @@ Important files:
   - `dag_creator` tool schema
 - `dagent/harness_runtime/dag_creator.py`
   - formerly `planner.py`
-  - still exports `Planner`, `MockPlanner`, `LLMPlanner`
+  - still exports `DagCreator`, `MockDagCreator`, `LLMDagCreator`
 - `dagent/harness_runtime/dag_executor.py`
   - executes approved DAGs using node AgentLoops without `dag_creator`
 - `dagent/api/app.py`
@@ -117,9 +117,9 @@ Currently important:
   - top-level conversation agent
   - tells the model to answer directly for simple conversations/simple tools/short serial tasks
   - only use `dag_creator` for complex orchestration
-- `profiles/planner/`
+- `profiles/dag_creator/`
   - still named `planner` in config/profile for now
-  - used by `LLMPlanner` in `dag_creator.py`
+  - used by `LLMDagCreator` in `dag_creator.py`
   - may later be renamed to `dag_creator` if desired
 - `profiles/dag_reviewer/`
 - `profiles/feedback_learner/`
@@ -226,4 +226,4 @@ High-value next steps:
 - Use `apply_patch` for code edits.
 - Prefer `uv run --extra dev pytest` and `npm run build` before committing.
 - Do not reintroduce `dagent/harness/` or `dagent/runtime/`; the core package is `dagent/harness_runtime/`.
-- The class names `LLMPlanner`, `MockPlanner`, and `Planner` are currently retained for compatibility even though the file is now `dag_creator.py`.
+- The class names `LLMDagCreator`, `MockDagCreator`, and `DagCreator` are currently retained for compatibility even though the file is now `dag_creator.py`.

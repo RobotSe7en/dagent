@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from dagent.harness_runtime.dag_executor import DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.dag_creator import Planner
+from dagent.harness_runtime.dag_creator import DagCreator
 from dagent.schemas import DAG
 
 
@@ -19,12 +19,12 @@ class TaskRecord:
 
 
 class ControlPlane:
-    """Coordinates Planner -> review status -> DAGExecutor."""
+    """Coordinates DagCreator -> review status -> DAGExecutor."""
 
     def __init__(
         self,
         *,
-        planner: Planner,
+        planner: DagCreator,
         executor: DAGExecutor,
         auto_approve_low_risk: bool = True,
     ) -> None:

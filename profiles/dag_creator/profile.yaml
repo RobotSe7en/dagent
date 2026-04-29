@@ -1,5 +1,5 @@
-name: planner
-role: planner
+name: dag_creator
+role: dag_creator
 description: Generates reviewable DAGs from user requests.
 layers:
   - soul.md
