@@ -3,3 +3,6 @@
 __pycache__/
 *.py[cod]
 .env
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo

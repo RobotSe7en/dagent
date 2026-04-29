@@ -1,0 +1,102 @@
+import type { Dag, TraceEvent } from './types';
+
+export const initialDag: Dag = {
+  dag_id: 'dag_review_001',
+  task_id: 'task_ui_demo',
+  version: 1,
+  status: 'review_required',
+  nodes: [
+    {
+      id: 'plan_request',
+      title: 'Plan request',
+      goal: 'Turn the user request into a reviewable DAG with risk annotations.',
+      agent: 'planner',
+      tools: [],
+      skills: [],
+      boundary: {
+        mode: 'read_only',
+        allowed_paths: [],
+        forbidden_tools: [],
+        allowed_commands: [],
+        forbidden_commands: [],
+      },
+      risk: 'low',
+      risk_reason: 'Planner only proposes structure.',
+      expected_output: 'Weak DAG proposal.',
+      max_steps: 4,
+      timeout_seconds: 120,
+    },
+    {
+      id: 'inspect_project',
+      title: 'Inspect project',
+      goal: 'Read project files needed to answer the request.',
+      agent: 'node_agent',
+      tools: ['read_file', 'grep'],
+      skills: [],
+      boundary: {
+        mode: 'read_only',
+        allowed_paths: ['./'],
+        forbidden_tools: ['write_file'],
+        allowed_commands: [],
+        forbidden_commands: [],
+      },
+      risk: 'medium',
+      risk_reason: 'Executor override: broad allowed_paths require review.',
+      expected_output: 'Relevant project facts.',
+      max_steps: 6,
+      timeout_seconds: 240,
+    },
+    {
+      id: 'summarize_result',
+      title: 'Summarize result',
+      goal: 'Synthesize project facts into a concise answer.',
+      agent: 'node_agent',
+      tools: [],
+      skills: [],
+      boundary: {
+        mode: 'read_only',
+        allowed_paths: [],
+        forbidden_tools: [],
+        allowed_commands: [],
+        forbidden_commands: [],
+      },
+      risk: 'low',
+      risk_reason: 'Pure synthesis node.',
+      expected_output: 'Final user-facing summary.',
+      max_steps: 2,
+      timeout_seconds: 90,
+    },
+  ],
+  edges: [
+    { source: 'plan_request', target: 'inspect_project', reason: 'Need plan before inspection.' },
+    { source: 'inspect_project', target: 'summarize_result', reason: 'Need facts before summary.' },
+  ],
+};
+
+export const initialTrace: TraceEvent[] = [
+  {
+    id: 't1',
+    type: 'dag',
+    label: 'dag_started',
+    detail: 'Created review_required DAG.',
+    status: 'completed',
+    timestamp: '10:32:14',
+  },
+  {
+    id: 't2',
+    type: 'node',
+    label: 'risk_override',
+    detail: 'inspect_project promoted to medium because allowed_paths=["./"].',
+    status: 'completed',
+    timestamp: '10:32:16',
+  },
+  {
+    id: 't3',
+    type: 'tool',
+    label: 'read_file',
+    detail: 'README.md returned 5.8 KB.',
+    status: 'completed',
+    timestamp: '10:33:02',
+  },
+];
+

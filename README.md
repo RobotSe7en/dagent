@@ -152,6 +152,22 @@ Expected result:
 38 passed
 ```
 
+Run the frontend workspace:
+
+```powershell
+cd web
+npm install
+npm run dev
+```
+
+The frontend includes:
+
+- chat composer with simulated streaming output
+- tool/model/DAG trace timeline
+- React Flow DAG graph
+- node detail editor for goal, risk, boundary, tools, paths, and expected output
+- approve and execute controls for the review flow
+
 ## Safety Model
 
 The runtime is intentionally layered:
