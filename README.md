@@ -149,7 +149,15 @@ uv run --extra dev pytest
 Expected result:
 
 ```text
-38 passed
+40 passed, 2 skipped
+```
+
+The default suite uses `MockProvider` for deterministic unit tests. Real
+MiniMax/OpenAI-compatible integration tests are opt-in:
+
+```powershell
+$env:DAGENT_RUN_MINIMAX_TESTS="1"
+uv run --extra dev pytest tests/test_minimax_integration.py
 ```
 
 Run the frontend workspace:
