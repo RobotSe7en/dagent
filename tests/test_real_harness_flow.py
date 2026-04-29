@@ -78,6 +78,8 @@ def test_llm_planner_parses_model_json_into_dag() -> None:
     assert dag.task_id == "task_real"
     assert dag.nodes[0].id == "inspect"
     assert provider.requests[0]["messages"][0]["role"] == "system"
+    assert "DAG planner" in provider.requests[0]["messages"][0]["content"]
+    assert "task_real" in provider.requests[0]["messages"][1]["content"]
 
 
 def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
@@ -115,4 +117,3 @@ def test_control_plane_requires_review_after_risk_override() -> None:
     control_plane.approve_dag(record.task_id)
     result = run(control_plane.execute_task(record.task_id))
     assert result.completed is True
-

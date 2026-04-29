@@ -33,6 +33,14 @@ class ProviderConfig(BaseModel):
 
 class DagentConfig(BaseModel):
     provider: ProviderConfig
+    profiles: "ProfilesConfig" = Field(default_factory=lambda: ProfilesConfig())
+
+
+class ProfilesConfig(BaseModel):
+    directory: str = "profiles"
+    planner: str = "planner"
+    dag_reviewer: str = "dag_reviewer"
+    feedback_learner: str = "feedback_learner"
 
 
 def load_config(path: str | Path | None = None) -> DagentConfig:

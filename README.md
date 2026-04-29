@@ -38,6 +38,7 @@ dagent/
   runtime/      node-level agent loop
   schemas/      DAG, node, edge, trace, feedback models
   tools/        tool registry, executor, file tools, boundary checks
+profiles/       editable YAML profiles for planner/reviewer/feedback agents
 tests/          pytest suite
 ```
 
@@ -52,6 +53,11 @@ provider:
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
   strip_thinking: true
+profiles:
+  directory: "profiles"
+  planner: "planner"
+  dag_reviewer: "dag_reviewer"
+  feedback_learner: "feedback_learner"
 ```
 
 Secrets should live in `.env`, which is ignored by git:
@@ -65,6 +71,36 @@ You can point to another config file with:
 ```powershell
 $env:DAGENT_CONFIG="C:\path\to\config.yaml"
 ```
+
+## Agent Profiles
+
+Planner, DAG reviewer, and feedback learner prompts live in editable YAML files
+under `profiles/`.
+
+```text
+profiles/
+  planner.yaml
+  dag_reviewer.yaml
+  feedback_learner.yaml
+```
+
+Each profile has:
+
+- `name`
+- `role`
+- `description`
+- `system_prompt`
+- `user_prompt`
+
+The current `LLMPlanner` loads `profiles/planner.yaml`. The profile store is
+filesystem-backed by design so a future WebUI can list, edit, validate, and save
+profiles without touching Python code.
+
+Implemented profile-backed roles:
+
+- `LLMPlanner`
+- `DAGReviewerAgent`
+- `FeedbackLearnerAgent`
 
 ## Development
 
