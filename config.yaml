@@ -1,0 +1,6 @@
+provider:
+  base_url: "https://api.minimaxi.com/v1"
+  model: "MiniMax-M2.1"
+  api_key_env: "MINIMAX_API_KEY"
+  timeout_seconds: 60
+  strip_thinking: true

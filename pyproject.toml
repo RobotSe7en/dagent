@@ -1,0 +1,21 @@
+[project]
+name = "dagent"
+version = "0.1.0"
+description = "Human-reviewed Agent DAG framework"
+readme = { text = "Human-reviewed Agent DAG framework.", content-type = "text/markdown" }
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest-asyncio>=0.23",
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
