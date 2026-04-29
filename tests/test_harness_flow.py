@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from dagent.harness_runtime import ControlPlane, DAGExecutionError, DAGExecutor, LLMPlanner
+from dagent.harness_runtime import ControlPlane, DAGExecutionError, DAGExecutor, LLMDagCreator
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
 from dagent.schemas import Boundary
@@ -56,7 +56,7 @@ def planner_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
                         "forbidden_commands": [],
                     },
                     "risk": risk,
-                    "risk_reason": "Planner estimate.",
+                    "risk_reason": "DagCreator estimate.",
                     "expected_output": "Inspection result.",
                     "max_steps": 2,
                     "timeout_seconds": 300,
@@ -69,7 +69,7 @@ def planner_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
 
 def test_llm_planner_parses_model_json_into_dag() -> None:
     provider = MockProvider([ChatResponse(content=planner_json())])
-    planner = LLMPlanner(
+    dag_creator = LLMDagCreator(
         provider,
         tools=[
             Tool(
@@ -94,7 +94,7 @@ def test_llm_planner_parses_model_json_into_dag() -> None:
 
 def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
     provider = MockProvider([ChatResponse(content=planner_json())])
-    planner = LLMPlanner(provider)
+    dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop())
     control_plane = ControlPlane(planner=planner, executor=executor)
 
@@ -113,7 +113,7 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
 
 def test_control_plane_requires_review_after_risk_override() -> None:
     provider = MockProvider([ChatResponse(content=planner_json(tools=["write_file"]))])
-    planner = LLMPlanner(provider)
+    dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop())
     control_plane = ControlPlane(planner=planner, executor=executor)
 

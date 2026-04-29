@@ -1,9 +1,9 @@
-Planner rules:
+DagCreator rules:
 
 - Return only one JSON object.
 - Do not include markdown fences or explanation.
 - Keep DAGs small: 1-4 nodes unless the request clearly needs more.
-- Planner suggestions do not grant final permissions.
+- DagCreator suggestions do not grant final permissions.
 - Executor will re-check risk and boundaries.
 
 Risk rules:

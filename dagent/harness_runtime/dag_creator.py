@@ -14,7 +14,7 @@ from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
 
-class Planner(ABC):
+class DagCreator(ABC):
     """Base DAG creator interface.
 
     DAG creators propose DAGs. They do not grant final permissions.
@@ -28,7 +28,7 @@ class Planner(ABC):
         return self.plan(user_request, task_id=task_id)
 
 
-class MockPlanner(Planner):
+class MockDagCreator(DagCreator):
     """Deterministic DAG creator for tests and early development."""
 
     def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
@@ -69,7 +69,7 @@ class MockPlanner(Planner):
         )
 
 
-class LLMPlanner(Planner):
+class LLMDagCreator(DagCreator):
     """DAG creator that asks an OpenAI-compatible model to produce DAG JSON."""
 
     def __init__(
@@ -78,7 +78,7 @@ class LLMPlanner(Planner):
         *,
         profile: AgentProfile | None = None,
         profile_store: ProfileStore | None = None,
-        profile_name: str = "planner",
+        profile_name: str = "dag_creator",
         prompt_builder: PromptBuilder | None = None,
         tools: list[Tool] | None = None,
     ) -> None:

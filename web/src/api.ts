@@ -52,7 +52,7 @@ export async function executeDag(taskId: string): Promise<ExecuteResponse> {
 
 export async function streamTask(
   message: string,
-  mode: 'auto' | 'direct' | 'planner',
+  mode: 'auto' | 'direct' | 'dag_creator',
   handlers: {
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;

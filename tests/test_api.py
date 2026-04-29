@@ -9,7 +9,7 @@ from dagent.harness_runtime import (
     ControlPlane,
     DAGExecutor,
     HarnessRuntime,
-    LLMPlanner,
+    LLMDagCreator,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
@@ -40,7 +40,7 @@ class CompletingLoop:
 def test_api_creates_approves_and_executes_dag() -> None:
     provider = MockProvider([ChatResponse(content=_planner_json())])
     state.control_plane = ControlPlane(
-        planner=LLMPlanner(provider),
+        planner=LLMDagCreator(provider),
         executor=DAGExecutor(agent_loop=CompletingLoop()),
     )
     state.harness_runtime = None
@@ -79,7 +79,7 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
             provider=provider,
             tool_executor=ToolExecutor(ToolRegistry()),
         ),
-        planner=LLMPlanner(provider, profile=_profile("planner")),
+        planner=LLMDagCreator(provider, profile=_profile("dag_creator")),
         dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
         conversation_profile=_profile("conversation"),
     )

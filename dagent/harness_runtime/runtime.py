@@ -17,7 +17,7 @@ from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult
 from dagent.harness_runtime.control_plane import TaskRecord
 from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.dag_creator import Planner
+from dagent.harness_runtime.dag_creator import DagCreator
 from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
@@ -26,7 +26,7 @@ from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
 
-RuntimeMode = Literal["auto", "direct", "planner"]
+RuntimeMode = Literal["auto", "direct", "dag_creator"]
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,7 @@ class HarnessRuntime:
         self,
         *,
         agent_loop: AgentLoop,
-        planner: Planner,
+        planner: DagCreator,
         dag_executor: DAGExecutor,
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
@@ -71,7 +71,7 @@ class HarnessRuntime:
         *,
         mode: RuntimeMode = "auto",
     ) -> HarnessMessageResult:
-        if mode == "planner":
+        if mode == "dag_creator":
             record = await self.create_dag(message)
             return HarnessMessageResult(
                 status="awaiting_approval" if record.dag.status == "review_required" else "completed",

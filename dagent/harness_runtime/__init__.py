@@ -9,7 +9,7 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
     topo_batches,
 )
-from dagent.harness_runtime.dag_creator import LLMPlanner, MockPlanner, Planner
+from dagent.harness_runtime.dag_creator import LLMDagCreator, MockDagCreator, DagCreator
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.runtime import (
@@ -31,10 +31,10 @@ __all__ = [
     "FeedbackLearning",
     "HarnessMessageResult",
     "HarnessRuntime",
-    "LLMPlanner",
-    "MockPlanner",
+    "LLMDagCreator",
+    "MockDagCreator",
     "NodeExecutionResult",
-    "Planner",
+    "DagCreator",
     "RunResult",
     "RuntimeMode",
     "TaskRecord",

@@ -6,7 +6,7 @@ from dagent.harness_runtime import (
     AgentLoopResult,
     DAGExecutor,
     HarnessRuntime,
-    LLMPlanner,
+    LLMDagCreator,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -82,10 +82,10 @@ def test_harness_runtime_dag_creator_creates_reviewable_dag() -> None:
 def _runtime(provider: MockProvider) -> HarnessRuntime:
     tool_executor = ToolExecutor(ToolRegistry())
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    planner = LLMPlanner(provider, profile=_planner_profile())
+    dag_creator = LLMDagCreator(provider, profile=_planner_profile())
     return HarnessRuntime(
         agent_loop=agent_loop,
-        planner=planner,
+        planner=dag_creator,
         dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
@@ -103,8 +103,8 @@ def _conversation_profile() -> AgentProfile:
 
 def _planner_profile() -> AgentProfile:
     return AgentProfile(
-        name="planner",
-        role="planner",
+        name="dag_creator",
+        role="dag_creator",
         layers=["soul"],
         layer_contents={"soul": "You are a DAG planner."},
     )
@@ -133,7 +133,7 @@ def _planner_json(*, tools: list[str] | None = None) -> str:
                         "forbidden_commands": [],
                     },
                     "risk": "low",
-                    "risk_reason": "Planner estimate.",
+                    "risk_reason": "DagCreator estimate.",
                     "expected_output": "Result.",
                     "max_steps": 1,
                     "timeout_seconds": 30,
