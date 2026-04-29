@@ -40,6 +40,12 @@ export interface Dag {
 }
 
 export interface TraceEvent {
+  event_id?: string;
+  event_type?: string;
+  dag_id?: string;
+  node_id?: string | null;
+  payload?: Record<string, unknown>;
+  created_at?: string;
   id: string;
   type: 'dag' | 'node' | 'tool' | 'model';
   label: string;
@@ -48,3 +54,18 @@ export interface TraceEvent {
   timestamp: string;
 }
 
+export interface RunResult {
+  dag_id: string;
+  completed: boolean;
+  node_results: Record<
+    string,
+    {
+      node_id: string;
+      final_response: string;
+      completed: boolean;
+      stop_reason: string;
+      steps: number;
+    }
+  >;
+  traces: TraceEvent[];
+}

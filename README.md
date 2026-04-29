@@ -21,11 +21,11 @@ Also implemented:
 - Harness control plane (`ControlPlane`) for plan -> validate -> review status -> approve -> execute
 - Default factory (`create_control_plane`) that wires MiniMax/OpenAI-compatible provider,
   tool executor, agent loop, planner, DAG executor, and trace recorder
+- FastAPI control plane for task creation, DAG editing, approval, execution, and trace retrieval
+- React WebUI connected to the real API with markdown chat, DAG review/editing, and trace display
 
 Not implemented yet:
 
-- FastAPI control plane
-- DAG review UI
 - persistent storage
 - feedback learner
 
@@ -33,6 +33,7 @@ Not implemented yet:
 
 ```text
 dagent/
+  api/          FastAPI app exposing task, DAG, run, and trace endpoints
   harness/      DAG planning, validation, execution, trace recording
   providers/    OpenAI-compatible and mock chat providers
   runtime/      node-level agent loop
@@ -149,7 +150,7 @@ uv run --extra dev pytest
 Expected result:
 
 ```text
-40 passed, 2 skipped
+39 passed, 2 skipped
 ```
 
 The default suite uses `MockProvider` for deterministic unit tests. Real
@@ -158,6 +159,12 @@ MiniMax/OpenAI-compatible integration tests are opt-in:
 ```powershell
 $env:DAGENT_RUN_MINIMAX_TESTS="1"
 uv run --extra dev pytest tests/test_minimax_integration.py
+```
+
+Run the API:
+
+```powershell
+uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8000
 ```
 
 Run the frontend workspace:
@@ -170,11 +177,18 @@ npm run dev
 
 The frontend includes:
 
-- chat composer with simulated streaming output
-- tool/model/DAG trace timeline
+- chat composer with API-backed planning and streamed markdown output
+- tool/model/DAG trace timeline from backend run events
 - React Flow DAG graph
 - node detail editor for goal, risk, boundary, tools, paths, and expected output
 - approve and execute controls for the review flow
+
+If the API is not on port `8000`, set `VITE_API_BASE` before starting Vite:
+
+```powershell
+$env:VITE_API_BASE="http://127.0.0.1:8001"
+npm run dev
+```
 
 ## Safety Model
 

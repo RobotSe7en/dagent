@@ -1,4 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import type React from 'react';
+import ReactMarkdown from 'react-markdown';
 import {
   Background,
   Controls,
@@ -24,7 +26,7 @@ import {
   Sparkles,
   Wrench,
 } from 'lucide-react';
-import { initialDag, initialTrace } from './mock';
+import { approveDag as approveDagApi, executeDag as executeDagApi, mapTrace, saveDag, streamTask } from './api';
 import type { BoundaryMode, Dag, DagNode, RiskLevel, TraceEvent } from './types';
 
 const riskTone: Record<RiskLevel, string> = {
@@ -35,76 +37,100 @@ const riskTone: Record<RiskLevel, string> = {
 
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
+const emptyDag: Dag = {
+  dag_id: 'dag_empty',
+  task_id: '',
+  version: 1,
+  status: 'draft',
+  nodes: [],
+  edges: [],
+};
+
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
-  const nodes = dag.nodes.map((item, index) => ({
-    id: item.id,
-    position: { x: 80 + (index % 2) * 330, y: 80 + index * 125 },
-    data: {
-      label: (
-        <div className="dag-node">
-          <div className="dag-node-top">
-            <span>{item.title}</span>
-            <span className={`risk-pill ${riskTone[item.risk]}`}>{item.risk}</span>
+  const depths = nodeDepths(dag);
+  const laneCounts = new Map<number, number>();
+  const nodes = dag.nodes.map((item) => {
+    const depth = depths.get(item.id) ?? 0;
+    const lane = laneCounts.get(depth) ?? 0;
+    laneCounts.set(depth, lane + 1);
+    return {
+      id: item.id,
+      position: { x: 80 + depth * 300, y: 70 + lane * 170 },
+      data: {
+        label: (
+          <div className="dag-node">
+            <div className="dag-node-top">
+              <span title={item.title}>{item.title}</span>
+              <span className={`risk-pill ${riskTone[item.risk]}`}>{item.risk}</span>
+            </div>
+            <p title={item.goal}>{item.goal}</p>
+            <div className="dag-node-tools" title={item.tools.join(', ')}>
+              {item.tools.length ? item.tools.join(' · ') : 'no tools'}
+            </div>
           </div>
-          <p>{item.goal}</p>
-          <div className="dag-node-tools">
-            {item.tools.length ? item.tools.join(' · ') : 'no tools'}
-          </div>
-        </div>
-      ),
-    },
-    type: 'default',
-  }));
+        ),
+      },
+      type: 'default',
+    };
+  });
   const edges = dag.edges.map((edge) => ({
     id: `${edge.source}-${edge.target}`,
     source: edge.source,
     target: edge.target,
     label: edge.reason,
     animated: dag.status === 'running',
-    style: { stroke: '#5e7f67', strokeWidth: 2 },
+    style: { stroke: '#44736f', strokeWidth: 2 },
   }));
   return { nodes, edges };
 }
 
 export function App() {
-  const [dag, setDag] = useState<Dag>(initialDag);
-  const [selectedId, setSelectedId] = useState(initialDag.nodes[1].id);
-  const [messages, setMessages] = useState([
-    { role: 'user', content: 'Summarize what dagent can do today.' },
-    { role: 'assistant', content: 'I generated a reviewable DAG and found one medium-risk inspection node.' },
+  const [dag, setDag] = useState<Dag>(emptyDag);
+  const [selectedId, setSelectedId] = useState<string>('');
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      role: 'assistant',
+      content: '输入一个任务，我会调用后端真实 planner 生成可审查 DAG。批准后可以执行，并在右侧看到真实 trace。',
+    },
   ]);
   const [draft, setDraft] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [trace, setTrace] = useState<TraceEvent[]>(initialTrace);
-  const streamTimer = useRef<number | null>(null);
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
 
-  const syncGraph = useCallback((nextDag: Dag) => {
+  const syncDag = useCallback((nextDag: Dag) => {
+    setDag(nextDag);
     const nextGraph = graphFromDag(nextDag);
     setNodes(nextGraph.nodes);
     setEdges(nextGraph.edges);
-  }, []);
+    if (!nextDag.nodes.some((node) => node.id === selectedId)) {
+      setSelectedId(nextDag.nodes[0]?.id ?? '');
+    }
+  }, [selectedId]);
 
   const updateDag = useCallback(
     (updater: (current: Dag) => Dag) => {
-      setDag((current) => {
-        const next = updater(current);
-        syncGraph(next);
-        return next;
-      });
+      const next = updater(dag);
+      syncDag(next);
     },
-    [syncGraph],
+    [dag, syncDag],
   );
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
 
   const patchSelected = (patch: Partial<DagNode>) => {
+    if (!selectedNode) return;
     updateDag((current) => ({
       ...current,
       nodes: current.nodes.map((node) => (node.id === selectedNode.id ? { ...node, ...patch } : node)),
@@ -116,50 +142,91 @@ export function App() {
     setTrace((items) => [...items, { ...event, id: crypto.randomUUID(), timestamp }]);
   };
 
-  const runStream = () => {
+  const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
     setDraft('');
-    setMessages((items) => [...items, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
+    setError(null);
+    setTrace([]);
     setStreaming(true);
-    appendTrace({ type: 'model', label: 'planner_stream', detail: 'MiniMax-M2.1 started streaming a DAG draft.', status: 'running' });
-    const text = 'Planner produced a DAG, Executor promoted broad file access to medium risk, and the plan is waiting for review.';
-    let index = 0;
-    streamTimer.current = window.setInterval(() => {
-      index += 3;
-      setMessages((items) => {
-        const copy = [...items];
-        copy[copy.length - 1] = { role: 'assistant', content: text.slice(0, index) };
-        return copy;
+    setMessages((items) => [...items, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
+    appendTrace({ type: 'model', label: 'planner_started', detail: 'Calling configured OpenAI-compatible model.', status: 'running' });
+
+    try {
+      await streamTask(prompt, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Planner request accepted.', status: 'running' }),
+        onDag: (nextDag) => syncDag(nextDag),
+        onToken: (content) => {
+          setMessages((items) => {
+            const copy = [...items];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, content: `${last.content}${content}` };
+            return copy;
+          });
+        },
+        onDone: (payload) => {
+          syncDag(payload.dag);
+          appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
+        },
+        onError: (message) => {
+          setError(message);
+          appendTrace({ type: 'model', label: 'planner_failed', detail: message, status: 'failed' });
+        },
       });
-      if (index >= text.length && streamTimer.current) {
-        window.clearInterval(streamTimer.current);
-        streamTimer.current = null;
-        setStreaming(false);
-        appendTrace({ type: 'model', label: 'planner_stream', detail: 'Assistant stream completed.', status: 'completed' });
-      }
-    }, 35);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setError(message);
+      appendTrace({ type: 'model', label: 'planner_failed', detail: message, status: 'failed' });
+    } finally {
+      setStreaming(false);
+    }
   };
 
   const stopStream = () => {
-    if (streamTimer.current) window.clearInterval(streamTimer.current);
-    streamTimer.current = null;
     setStreaming(false);
-    appendTrace({ type: 'model', label: 'interrupted', detail: 'Streaming response interrupted by reviewer.', status: 'failed' });
+    appendTrace({ type: 'model', label: 'interrupted', detail: 'The current UI stream was interrupted.', status: 'failed' });
   };
 
-  const approveDag = () => {
-    updateDag((current) => ({ ...current, status: 'approved' }));
-    appendTrace({ type: 'dag', label: 'dag_approved', detail: 'Reviewer approved the current DAG.', status: 'completed' });
+  const approveDag = async () => {
+    if (!dag.task_id) return;
+    setError(null);
+    try {
+      const nextDag = await approveDagApi(dag.task_id);
+      syncDag(nextDag);
+      appendTrace({ type: 'dag', label: 'dag_approved', detail: 'Reviewer approved the current DAG.', status: 'completed' });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
   };
 
-  const executeDag = () => {
-    updateDag((current) => ({ ...current, status: 'running' }));
+  const saveCurrentDag = async () => {
+    if (!dag.task_id) return;
+    setError(null);
+    try {
+      const nextDag = await saveDag(dag.task_id, dag);
+      syncDag(nextDag);
+      appendTrace({ type: 'dag', label: 'dag_saved', detail: 'Saved edited DAG and reran validation/risk checks.', status: 'completed' });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const executeDag = async () => {
+    if (!dag.task_id) return;
+    setError(null);
+    syncDag({ ...dag, status: 'running' });
     appendTrace({ type: 'dag', label: 'dag_started', detail: 'Executor started approved DAG.', status: 'running' });
-    window.setTimeout(() => {
-      updateDag((current) => ({ ...current, status: 'completed' }));
-      appendTrace({ type: 'dag', label: 'dag_completed', detail: 'All nodes completed.', status: 'completed' });
-    }, 900);
+    try {
+      const response = await executeDagApi(dag.task_id);
+      syncDag(response.dag);
+      setTrace(response.result.traces.map(mapTrace));
+      setMessages((items) => [...items, { role: 'assistant', content: response.message_markdown }]);
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setError(message);
+      appendTrace({ type: 'dag', label: 'dag_failed', detail: message, status: 'failed' });
+      syncDag({ ...dag, status: dag.status === 'running' ? 'review_required' : dag.status });
+    }
   };
 
   return (
@@ -174,7 +241,7 @@ export function App() {
         </div>
         <div className="top-actions">
           <StatusBadge status={dag.status} />
-          <button className="icon-button" onClick={approveDag} title="Approve DAG">
+          <button className="icon-button" onClick={approveDag} disabled={!dag.task_id} title="Approve DAG">
             <Check size={18} />
           </button>
           <button className="primary-button" onClick={executeDag} disabled={dag.status !== 'approved'}>
@@ -187,11 +254,14 @@ export function App() {
       <main className="workspace">
         <section className="chat-pane">
           <PaneTitle icon={<Bot size={18} />} title="Conversation" />
+          {error ? <div className="error-banner">{error}</div> : null}
           <div className="message-list">
             {messages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
                 <span>{message.role}</span>
-                <p>{message.content || (streaming ? '...' : '')}</p>
+                <div className="markdown-body">
+                  <ReactMarkdown>{message.content || (streaming ? '...' : '')}</ReactMarkdown>
+                </div>
               </div>
             ))}
           </div>
@@ -219,24 +289,33 @@ export function App() {
         <section className="dag-pane">
           <PaneTitle icon={<GitBranch size={18} />} title="DAG Review" />
           <div className="flow-wrap">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodeClick={(_, node) => setSelectedId(node.id)}
-              fitView
-            >
-              <Background color="#d9ded7" gap={18} />
-              <MiniMap pannable zoomable nodeColor="#5e7f67" maskColor="rgba(247,248,245,.65)" />
-              <Controls />
-            </ReactFlow>
+            {dag.nodes.length ? (
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onNodeClick={(_, node) => setSelectedId(node.id)}
+                fitView
+                fitViewOptions={{ padding: 0.2 }}
+              >
+                <Background color="#d4dad5" gap={18} />
+                <MiniMap pannable zoomable nodeColor="#44736f" maskColor="rgba(247,248,245,.68)" />
+                <Controls />
+              </ReactFlow>
+            ) : (
+              <div className="empty-state">No DAG yet</div>
+            )}
           </div>
         </section>
 
         <aside className="side-pane">
           <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
-          <NodeEditor node={selectedNode} onPatch={patchSelected} />
+          {selectedNode ? (
+            <NodeEditor node={selectedNode} onPatch={patchSelected} onSave={saveCurrentDag} />
+          ) : (
+            <div className="empty-state compact">Generate a DAG to inspect node details.</div>
+          )}
           <TraceList trace={trace} />
         </aside>
       </main>
@@ -257,7 +336,15 @@ function StatusBadge({ status }: { status: Dag['status'] }) {
   return <span className="status-badge">{status}</span>;
 }
 
-function NodeEditor({ node, onPatch }: { node: DagNode; onPatch: (patch: Partial<DagNode>) => void }) {
+function NodeEditor({
+  node,
+  onPatch,
+  onSave,
+}: {
+  node: DagNode;
+  onPatch: (patch: Partial<DagNode>) => void;
+  onSave: () => void;
+}) {
   return (
     <div className="node-editor">
       <label>
@@ -315,7 +402,7 @@ function NodeEditor({ node, onPatch }: { node: DagNode; onPatch: (patch: Partial
         Expected Output
         <textarea value={node.expected_output} onChange={(event) => onPatch({ expected_output: event.target.value })} />
       </label>
-      <button className="secondary-button">
+      <button className="secondary-button" onClick={onSave}>
         <Save size={16} />
         Save Draft
       </button>
@@ -328,18 +415,22 @@ function TraceList({ trace }: { trace: TraceEvent[] }) {
     <div className="trace-panel">
       <PaneTitle icon={<Wrench size={18} />} title="Trace" />
       <div className="trace-list">
-        {trace.map((event) => (
-          <div key={event.id} className={`trace-row ${event.status}`}>
-            <div className="trace-icon">{event.type === 'tool' ? <Wrench size={15} /> : event.type === 'dag' ? <GitBranch size={15} /> : event.type === 'node' ? <ShieldAlert size={15} /> : <Sparkles size={15} />}</div>
-            <div>
-              <div className="trace-meta">
-                <span>{event.label}</span>
-                <time>{event.timestamp}</time>
+        {trace.length ? (
+          trace.map((event) => (
+            <div key={event.id} className={`trace-row ${event.status}`}>
+              <div className="trace-icon">{event.type === 'tool' ? <Wrench size={15} /> : event.type === 'dag' ? <GitBranch size={15} /> : event.type === 'node' ? <ShieldAlert size={15} /> : <Sparkles size={15} />}</div>
+              <div>
+                <div className="trace-meta">
+                  <span>{event.label}</span>
+                  <time>{event.timestamp}</time>
+                </div>
+                <p>{event.detail}</p>
               </div>
-              <p>{event.detail}</p>
             </div>
-          </div>
-        ))}
+          ))
+        ) : (
+          <div className="empty-state compact">Trace events will appear after planning or execution.</div>
+        )}
       </div>
     </div>
   );
@@ -352,3 +443,12 @@ function splitCsv(value: string) {
     .filter(Boolean);
 }
 
+function nodeDepths(dag: Dag): Map<string, number> {
+  const depths = new Map(dag.nodes.map((node) => [node.id, 0]));
+  for (let index = 0; index < dag.nodes.length; index += 1) {
+    for (const edge of dag.edges) {
+      depths.set(edge.target, Math.max(depths.get(edge.target) ?? 0, (depths.get(edge.source) ?? 0) + 1));
+    }
+  }
+  return depths;
+}

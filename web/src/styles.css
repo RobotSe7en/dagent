@@ -134,6 +134,45 @@ select {
   font-size: 14px;
 }
 
+.markdown-body {
+  overflow-wrap: anywhere;
+  line-height: 1.46;
+  font-size: 14px;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 0 0 8px;
+}
+
+.markdown-body p:last-child,
+.markdown-body ul:last-child,
+.markdown-body ol:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body code {
+  border: 1px solid #d9ded7;
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: #f3f6f2;
+  font-size: 12px;
+}
+
+.error-banner {
+  margin: 10px 14px 0;
+  border: 1px solid #efb5bd;
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: #fff2f4;
+  color: #8c2434;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .composer {
   border-top: 1px solid #d9ded7;
   padding: 12px;
@@ -166,8 +205,12 @@ select {
 }
 
 .dag-node {
-  width: 235px;
+  width: 220px;
+  max-width: 220px;
+  min-height: 118px;
   padding: 10px;
+  overflow: hidden;
+  text-align: left;
 }
 
 .dag-node-top {
@@ -178,17 +221,31 @@ select {
   font-weight: 750;
 }
 
+.dag-node-top span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dag-node p {
   margin: 8px 0;
   font-size: 12px;
   line-height: 1.35;
   color: #4f5c65;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .dag-node-tools {
   color: #327a8d;
   font-size: 11px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .risk-pill,
@@ -334,6 +391,13 @@ button:disabled {
   font-weight: 800;
 }
 
+.trace-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .trace-meta time {
   color: #737e87;
   font-weight: 650;
@@ -344,18 +408,42 @@ button:disabled {
   color: #4f5c65;
   font-size: 12px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .react-flow__node-default {
   border: 1px solid #bfc9bf;
   border-radius: 8px;
   padding: 0;
+  width: 220px;
   background: #ffffff;
   box-shadow: 0 10px 24px rgba(23, 32, 41, 0.08);
 }
 
 .react-flow__node.selected {
   box-shadow: 0 0 0 2px #327a8d;
+}
+
+.react-flow__edge-text {
+  font-size: 10px;
+  fill: #4f5c65;
+}
+
+.empty-state {
+  height: 100%;
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  color: #6d7880;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.empty-state.compact {
+  height: auto;
+  min-height: 72px;
+  padding: 14px;
+  place-items: start;
 }
 
 @media (max-width: 1100px) {
@@ -389,4 +477,3 @@ button:disabled {
     max-width: 100%;
   }
 }
-

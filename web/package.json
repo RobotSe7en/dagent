@@ -16,7 +16,8 @@
     "@xyflow/react": "^12.10.2",
     "lucide-react": "^1.13.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.4",

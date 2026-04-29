@@ -60,6 +60,7 @@ class DAGExecutor:
         self.trace_recorder = trace_recorder or TraceRecorder()
 
     async def execute(self, dag: DAG) -> RunResult:
+        self.trace_recorder = TraceRecorder()
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self.apply_risk_overrides(normalized)
@@ -137,6 +138,7 @@ class DAGExecutor:
             stop_reason=loop_result.stop_reason,
             steps=loop_result.steps,
         )
+        self._record_tool_trace(dag.dag_id, node.id, loop_result.messages)
         self.trace_recorder.record(
             "node_completed" if result.completed else "node_failed",
             dag_id=dag.dag_id,
@@ -148,6 +150,38 @@ class DAGExecutor:
             },
         )
         return result
+
+    def _record_tool_trace(
+        self,
+        dag_id: str,
+        node_id: str,
+        messages: list[dict],
+    ) -> None:
+        for message in messages:
+            if message.get("role") == "assistant":
+                for tool_call in message.get("tool_calls", []):
+                    function = tool_call.get("function", {})
+                    self.trace_recorder.record(
+                        "tool_called",
+                        dag_id=dag_id,
+                        node_id=node_id,
+                        payload={
+                            "tool_call_id": tool_call.get("id"),
+                            "name": function.get("name"),
+                            "arguments": function.get("arguments"),
+                        },
+                    )
+            if message.get("role") == "tool":
+                self.trace_recorder.record(
+                    "tool_completed",
+                    dag_id=dag_id,
+                    node_id=node_id,
+                    payload={
+                        "tool_call_id": message.get("tool_call_id"),
+                        "name": message.get("name"),
+                        "content": message.get("content"),
+                    },
+                )
 
     def _required_risk_for_node(self, node: DAGNode) -> str:
         risk = "low"
@@ -216,4 +250,3 @@ def _risk_rank(risk: str) -> int:
 
 def _max_risk(left: str, right: str) -> str:
     return left if _risk_rank(left) >= _risk_rank(right) else right
-
