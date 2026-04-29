@@ -2,7 +2,7 @@
 name = "dagent"
 version = "0.1.0"
 description = "Human-reviewed Agent DAG framework"
-readme = { text = "Human-reviewed Agent DAG framework.", content-type = "text/markdown" }
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.0",
