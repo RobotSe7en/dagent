@@ -3,8 +3,7 @@ import time
 
 import pytest
 
-from dagent.harness.dag_executor import DAGExecutionError, DAGExecutor, topo_batches
-from dagent.runtime import AgentLoopResult
+from dagent.harness_runtime import AgentLoopResult, DAGExecutionError, DAGExecutor, topo_batches
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 
 

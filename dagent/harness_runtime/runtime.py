@@ -13,14 +13,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-from dagent.harness.control_plane import TaskRecord
-from dagent.harness.dag_executor import DAGExecutionError, DAGExecutor, RunResult
-from dagent.harness.dag_validation import validate_dag
-from dagent.harness.planner import Planner
+from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult
+from dagent.harness_runtime.control_plane import TaskRecord
+from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
+from dagent.harness_runtime.dag_validation import validate_dag
+from dagent.harness_runtime.planner import Planner
 from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
-from dagent.runtime import AgentLoop, ControlToolResult
 from dagent.schemas import Boundary, DAG
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool

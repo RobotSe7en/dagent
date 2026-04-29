@@ -3,11 +3,9 @@ import json
 
 import pytest
 
-from dagent.harness.control_plane import ControlPlane
-from dagent.harness.dag_executor import DAGExecutionError, DAGExecutor
-from dagent.harness.planner import LLMPlanner
+from dagent.harness_runtime import ControlPlane, DAGExecutionError, DAGExecutor, LLMPlanner
 from dagent.providers import ChatResponse, MockProvider
-from dagent.runtime import AgentLoopResult
+from dagent.harness_runtime import AgentLoopResult
 from dagent.schemas import Boundary
 from dagent.tools.registry import Tool
 

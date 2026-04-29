@@ -1,8 +1,7 @@
 import asyncio
 import json
 
-from dagent.harness.dag_review import DAGReviewerAgent
-from dagent.harness.feedback_learner import FeedbackLearnerAgent
+from dagent.harness_runtime import DAGReviewerAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGNode, TraceEvent

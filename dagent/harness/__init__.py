@@ -1,16 +1,21 @@
-"""Harness orchestration modules."""
+"""Compatibility exports for the unified harness_runtime package."""
 
-from dagent.harness.dag_executor import (
+from dagent.harness_runtime import (
+    ControlPlane,
     DAGExecutionError,
     DAGExecutor,
+    DAGReviewerAgent,
+    DAGReviewResult,
+    FeedbackLearnerAgent,
+    FeedbackLearning,
+    LLMPlanner,
+    MockPlanner,
     NodeExecutionResult,
+    Planner,
     RunResult,
+    TaskRecord,
     topo_batches,
 )
-from dagent.harness.control_plane import ControlPlane, TaskRecord
-from dagent.harness.dag_review import DAGReviewerAgent, DAGReviewResult
-from dagent.harness.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
-from dagent.harness.planner import LLMPlanner, MockPlanner, Planner
 
 __all__ = [
     "DAGExecutionError",

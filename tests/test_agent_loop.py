@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.runtime import AgentLoop
+from dagent.harness_runtime import AgentLoop
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor

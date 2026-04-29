@@ -37,11 +37,10 @@ Not implemented yet:
 ```text
 dagent/
   api/          FastAPI app exposing task, DAG, run, and trace endpoints
-  harness/      DAG planning, validation, execution, trace recording
   harness_runtime/
-                conversation-first runtime and dag_creator control tool
+                conversation-first runtime, AgentLoop, DAG planning/execution,
+                review agents, trace recording, and dag_creator control tool
   providers/    OpenAI-compatible and mock chat providers
-  runtime/      single-agent loop primitive
   schemas/      DAG, node, edge, trace, feedback models
   tools/        tool registry, executor, file tools, boundary checks
   state/        prompt assembly and future context/memory/session state
@@ -208,7 +207,7 @@ uv run --extra dev pytest tests/test_minimax_integration.py
 Run the API:
 
 ```powershell
-uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8000
+uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
 ```
 
 Run the frontend workspace:
@@ -227,10 +226,11 @@ The frontend includes:
 - node detail editor for goal, risk, boundary, tools, paths, and expected output
 - approve and execute controls for the review flow
 
-If the API is not on port `8000`, set `VITE_API_BASE` before starting Vite:
+The Vite dev server proxies `/api` to `http://127.0.0.1:8001` by default.
+If the API runs on another port, set `VITE_API_TARGET` before starting Vite:
 
 ```powershell
-$env:VITE_API_BASE="http://127.0.0.1:8001"
+$env:VITE_API_TARGET="http://127.0.0.1:8000"
 npm run dev
 ```
 

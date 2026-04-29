@@ -13,9 +13,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dagent.factory import create_control_plane, create_harness_runtime
-from dagent.harness.control_plane import ControlPlane, TaskRecord
-from dagent.harness.dag_executor import DAGExecutionError, RunResult
-from dagent.harness_runtime import HarnessRuntime, RuntimeMode
+from dagent.harness_runtime import (
+    ControlPlane,
+    DAGExecutionError,
+    HarnessRuntime,
+    RunResult,
+    RuntimeMode,
+    TaskRecord,
+)
 from dagent.schemas import DAG, TraceEvent
 
 
