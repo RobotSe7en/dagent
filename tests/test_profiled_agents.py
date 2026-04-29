@@ -16,8 +16,12 @@ def profile(role: str) -> AgentProfile:
     return AgentProfile(
         name=role,
         role=role,
-        system_prompt=f"{role} system",
-        user_prompt="Request: {{ user_request }} DAG: {{ dag_json }} Feedback: {{ feedback }} Trace: {{ trace_json }}",
+        layers=["soul.md", "agent.md"],
+        layer_contents={
+            "soul.md": f"{role} soul",
+            "agent.md": f"{role} agent",
+        },
+        memory="profile memory",
     )
 
 
@@ -61,4 +65,3 @@ def test_feedback_learner_agent_returns_notes() -> None:
 
     assert result.notes == "Prefer narrow allowed_paths."
     assert "Too broad" in provider.requests[0]["messages"][1]["content"]
-

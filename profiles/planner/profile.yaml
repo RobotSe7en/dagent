@@ -1,0 +1,10 @@
+name: planner
+role: planner
+description: Generates reviewable DAGs from user requests.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: json
+

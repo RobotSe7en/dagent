@@ -1,0 +1,10 @@
+name: dag_reviewer
+role: dag_reviewer
+description: Reviews proposed DAGs for risk, boundary, and approval concerns.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: json
+

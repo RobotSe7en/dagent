@@ -30,6 +30,11 @@ class DAGReviewerAgent:
 
     async def review(self, *, user_request: str, dag: DAG) -> DAGReviewResult:
         payload = await self.agent.run_json(
+            task_content=(
+                "User request:\n{{ user_request }}\n\n"
+                "Proposed DAG JSON:\n{{ dag_json }}\n\n"
+                "Review the DAG now."
+            ),
             user_request=user_request,
             dag_json=dag.model_dump_json(indent=2),
         )
@@ -50,4 +55,3 @@ class DAGReviewerAgent:
                 if isinstance(change, dict)
             ],
         )
-

@@ -35,6 +35,11 @@ def create_control_plane(
         provider,
         profile_store=profile_store,
         profile_name=resolved_config.profiles.planner,
+        tools=[
+            tool
+            for name in sorted(tool_executor.registry.names())
+            if (tool := tool_executor.registry.get(name)) is not None
+        ],
     )
     return ControlPlane(planner=planner, executor=dag_executor)
 

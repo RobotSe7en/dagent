@@ -1,0 +1,10 @@
+name: feedback_learner
+role: feedback_learner
+description: Turns run traces and user feedback into reusable learning notes.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: text
+

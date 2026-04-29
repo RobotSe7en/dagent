@@ -10,6 +10,8 @@ from dagent.harness.profiled_agent import extract_json_object
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
+from dagent.state import PromptBuilder, PromptRequest
+from dagent.tools.registry import Tool
 
 
 class Planner(ABC):
@@ -77,9 +79,13 @@ class LLMPlanner(Planner):
         profile: AgentProfile | None = None,
         profile_store: ProfileStore | None = None,
         profile_name: str = "planner",
+        prompt_builder: PromptBuilder | None = None,
+        tools: list[Tool] | None = None,
     ) -> None:
         self.provider = provider
         self.profile = profile or (profile_store or ProfileStore()).load(profile_name)
+        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.tools = tools or []
 
     def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
         return asyncio.run(self.aplan(user_request, task_id=task_id))
@@ -87,16 +93,22 @@ class LLMPlanner(Planner):
     async def aplan(self, user_request: str, *, task_id: str | None = None) -> DAG:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         response = await self.provider.chat(
-            [
-                {"role": "system", "content": self.profile.system_prompt},
-                {
-                    "role": "user",
-                    "content": self.profile.render_user_prompt(
-                        user_request=user_request,
-                        task_id=resolved_task_id,
+            self.prompt_builder.build(
+                PromptRequest(
+                    profile=self.profile,
+                    task_content=(
+                        "Task id: {{ task_id }}\n"
+                        "User request:\n{{ user_request }}\n\n"
+                        "Generate the reviewable DAG JSON now."
                     ),
-                },
-            ]
+                    tools=self.tools,
+                    memory=self.profile.memory,
+                    variables={
+                        "user_request": user_request,
+                        "task_id": resolved_task_id,
+                    },
+                )
+            )
         )
         payload = extract_json_object(response.content)
         payload.setdefault("dag_id", f"dag_{uuid4().hex}")

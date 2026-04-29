@@ -9,6 +9,7 @@ from dagent.harness.planner import LLMPlanner
 from dagent.providers import ChatResponse, MockProvider
 from dagent.runtime import AgentLoopResult
 from dagent.schemas import Boundary
+from dagent.tools.registry import Tool
 
 
 class CompletingLoop:
@@ -70,7 +71,17 @@ def planner_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
 
 def test_llm_planner_parses_model_json_into_dag() -> None:
     provider = MockProvider([ChatResponse(content=planner_json())])
-    planner = LLMPlanner(provider)
+    planner = LLMPlanner(
+        provider,
+        tools=[
+            Tool(
+                name="read_file",
+                handler=lambda: "",
+                action="read",
+                description="Read files.",
+            )
+        ],
+    )
 
     dag = run(planner.aplan("Plan something", task_id="task_real"))
 
@@ -79,6 +90,7 @@ def test_llm_planner_parses_model_json_into_dag() -> None:
     assert dag.nodes[0].id == "inspect"
     assert provider.requests[0]["messages"][0]["role"] == "system"
     assert "DAG planner" in provider.requests[0]["messages"][0]["content"]
+    assert "read_file: Read files." in provider.requests[0]["messages"][0]["content"]
     assert "task_real" in provider.requests[0]["messages"][1]["content"]
 
 

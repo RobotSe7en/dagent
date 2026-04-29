@@ -28,8 +28,12 @@ class FeedbackLearnerAgent:
         trace_events: list[TraceEvent],
     ) -> FeedbackLearning:
         text = await self.agent.run_text(
+            task_content=(
+                "Feedback:\n{{ feedback }}\n\n"
+                "Run trace:\n{{ trace_json }}\n\n"
+                "Produce learning notes."
+            ),
             feedback=feedback,
             trace_json="[" + ",".join(event.model_dump_json() for event in trace_events) + "]",
         )
         return FeedbackLearning(notes=text)
-
