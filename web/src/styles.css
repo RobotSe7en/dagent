@@ -61,6 +61,36 @@ select {
   gap: 8px;
 }
 
+.mode-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(58px, 1fr));
+  border: 1px solid #cdd4cb;
+  border-radius: 7px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.mode-switch button {
+  height: 34px;
+  border: 0;
+  border-right: 1px solid #d9ded7;
+  background: transparent;
+  color: #4f5c65;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.mode-switch button:last-child {
+  border-right: 0;
+}
+
+.mode-switch button.active {
+  background: #24313b;
+  color: #fff;
+}
+
 .workspace {
   min-height: 0;
   display: grid;

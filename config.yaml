@@ -6,6 +6,7 @@ provider:
   strip_thinking: true
 profiles:
   directory: "profiles"
+  conversation: "conversation"
   planner: "planner"
   dag_reviewer: "dag_reviewer"
   feedback_learner: "feedback_learner"

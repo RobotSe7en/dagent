@@ -52,18 +52,20 @@ export async function executeDag(taskId: string): Promise<ExecuteResponse> {
 
 export async function streamTask(
   message: string,
+  mode: 'auto' | 'direct' | 'planner',
   handlers: {
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
+    onTrace?: (event: TraceEvent) => void;
     onToken?: (content: string) => void;
-    onDone?: (payload: { task_id: string; dag: Dag; message_markdown: string }) => void;
+    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
     onError?: (message: string) => void;
   },
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/tasks/stream`, {
+  const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, mode }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
@@ -85,6 +87,7 @@ export async function streamTask(
       const event = JSON.parse(line.slice(6));
       if (event.type === 'status') handlers.onStatus?.(event.message);
       if (event.type === 'dag') handlers.onDag?.(event.dag);
+      if (event.type === 'trace') handlers.onTrace?.(mapTrace(event.event));
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);

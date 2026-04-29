@@ -51,6 +51,8 @@ interface ChatMessage {
   content: string;
 }
 
+type RuntimeMode = 'auto' | 'direct' | 'planner';
+
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
   const laneCounts = new Map<number, number>();
@@ -95,10 +97,11 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入一个任务，我会调用后端真实 planner 生成可审查 DAG。批准后可以执行，并在右侧看到真实 trace。',
+      content: '输入一个任务，我会先进入 HarnessRuntime 的顶层 AgentLoop；只有 Auto 模式下模型调用 dag_creator，或 DAG 模式强制规划时，才会生成 DAG。',
     },
   ]);
   const [draft, setDraft] = useState('');
+  const [mode, setMode] = useState<RuntimeMode>('auto');
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -150,12 +153,13 @@ export function App() {
     setTrace([]);
     setStreaming(true);
     setMessages((items) => [...items, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
-    appendTrace({ type: 'model', label: 'planner_started', detail: 'Calling configured OpenAI-compatible model.', status: 'running' });
+    appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
 
     try {
-      await streamTask(prompt, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Planner request accepted.', status: 'running' }),
+      await streamTask(prompt, mode, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop request accepted.', status: 'running' }),
         onDag: (nextDag) => syncDag(nextDag),
+        onTrace: (event) => setTrace((items) => [...items, event]),
         onToken: (content) => {
           setMessages((items) => {
             const copy = [...items];
@@ -165,8 +169,12 @@ export function App() {
           });
         },
         onDone: (payload) => {
-          syncDag(payload.dag);
-          appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
+          if (payload.dag) {
+            syncDag(payload.dag);
+            appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
+          } else {
+            appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
+          }
         },
         onError: (message) => {
           setError(message);
@@ -240,6 +248,18 @@ export function App() {
           <p>Human-reviewed Agent DAG Harness</p>
         </div>
         <div className="top-actions">
+          <div className="mode-switch" aria-label="Runtime mode">
+            {(['auto', 'direct', 'planner'] as RuntimeMode[]).map((item) => (
+              <button
+                key={item}
+                className={mode === item ? 'active' : ''}
+                onClick={() => setMode(item)}
+                type="button"
+              >
+                {item === 'planner' ? 'DAG' : item}
+              </button>
+            ))}
+          </div>
           <StatusBadge status={dag.status} />
           <button className="icon-button" onClick={approveDag} disabled={!dag.task_id} title="Approve DAG">
             <Check size={18} />

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary
 from dagent.tools.executor import ToolExecutor
+
+
+@dataclass(frozen=True)
+class ControlToolResult:
+    """Result returned by a harness-level control tool."""
+
+    content: str
+    stop_reason: str | None = None
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -18,6 +27,10 @@ class AgentLoopResult:
     steps: int
     completed: bool
     stop_reason: str
+    control_events: list[dict[str, Any]] = field(default_factory=list)
+
+
+ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
 
 
 class AgentLoop:
@@ -40,17 +53,26 @@ class AgentLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        extra_tools: list[dict[str, Any]] | None = None,
+        control_tool_names: set[str] | None = None,
+        control_tool_handler: ControlToolHandler | None = None,
     ) -> AgentLoopResult:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
         loop_messages = list(messages or [])
-        loop_messages.append({"role": "user", "content": user_message})
+        if user_message:
+            loop_messages.append({"role": "user", "content": user_message})
+        control_events: list[dict[str, Any]] = []
 
         for step in range(1, max_steps + 1):
+            tool_definitions = [
+                *self._tool_definitions_for_boundary(boundary, allowed_tools),
+                *(extra_tools or []),
+            ]
             response = await self.provider.chat(
                 loop_messages,
-                tools=self._tool_definitions_for_boundary(boundary, allowed_tools),
+                tools=tool_definitions,
             )
 
             assistant_message = self._assistant_message(response)
@@ -63,9 +85,34 @@ class AgentLoop:
                     steps=step,
                     completed=True,
                     stop_reason="completed",
+                    control_events=control_events,
                 )
 
             for tool_call in response.tool_calls:
+                if control_tool_names and tool_call.name in control_tool_names:
+                    if control_tool_handler is None:
+                        raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
+                    control_result = await control_tool_handler(tool_call)
+                    control_events.extend(control_result.events)
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": control_result.content,
+                        }
+                    )
+                    if control_result.stop_reason:
+                        return AgentLoopResult(
+                            final_response=control_result.content,
+                            messages=loop_messages,
+                            steps=step,
+                            completed=False,
+                            stop_reason=control_result.stop_reason,
+                            control_events=control_events,
+                        )
+                    continue
+
                 if allowed_tools is not None and tool_call.name not in allowed_tools:
                     raise ValueError(f"Tool '{tool_call.name}' is not allowed for this node.")
                 tool_result = self.tool_executor.execute(
@@ -88,6 +135,7 @@ class AgentLoop:
             steps=max_steps,
             completed=False,
             stop_reason="max_steps",
+            control_events=control_events,
         )
 
     def _tool_definitions_for_boundary(

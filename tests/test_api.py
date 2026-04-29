@@ -6,9 +6,13 @@ from dagent.api.app import app, state
 from dagent.harness.control_plane import ControlPlane
 from dagent.harness.dag_executor import DAGExecutor
 from dagent.harness.planner import LLMPlanner
+from dagent.harness_runtime import HarnessRuntime
+from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.runtime import AgentLoopResult
+from dagent.runtime import AgentLoop, AgentLoopResult
 from dagent.schemas import Boundary
+from dagent.tools.executor import ToolExecutor
+from dagent.tools.registry import ToolRegistry
 
 
 class CompletingLoop:
@@ -36,6 +40,7 @@ def test_api_creates_approves_and_executes_dag() -> None:
         planner=LLMPlanner(provider),
         executor=DAGExecutor(agent_loop=CompletingLoop()),
     )
+    state.harness_runtime = None
     state.runs.clear()
     client = TestClient(app)
 
@@ -62,6 +67,29 @@ def test_api_creates_approves_and_executes_dag() -> None:
         "node_completed",
         "dag_completed",
     ]
+
+
+def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
+    provider = MockProvider([ChatResponse(content="hello there")])
+    state.harness_runtime = HarnessRuntime(
+        agent_loop=AgentLoop(
+            provider=provider,
+            tool_executor=ToolExecutor(ToolRegistry()),
+        ),
+        planner=LLMPlanner(provider, profile=_profile("planner")),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        conversation_profile=_profile("conversation"),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "hello", "mode": "auto"},
+    )
+
+    assert response.status_code == 200
+    assert "hello there" in response.text
+    assert '"dag": null' in response.text
 
 
 def _planner_json() -> str:
@@ -95,4 +123,13 @@ def _planner_json() -> str:
             ],
             "edges": [],
         }
+    )
+
+
+def _profile(name: str) -> AgentProfile:
+    return AgentProfile(
+        name=name,
+        role=name,
+        layers=["soul"],
+        layer_contents={"soul": f"You are {name}."},
     )

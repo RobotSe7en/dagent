@@ -21,6 +21,9 @@ Also implemented:
 - Harness control plane (`ControlPlane`) for plan -> validate -> review status -> approve -> execute
 - Default factory (`create_control_plane`) that wires MiniMax/OpenAI-compatible provider,
   tool executor, agent loop, planner, DAG executor, and trace recorder
+- Harness runtime (`HarnessRuntime`) as the new conversation-first entrypoint:
+  top-level AgentLoop can answer directly, use runtime tools, or call `dag_creator`
+  when complex DAG orchestration is warranted
 - FastAPI control plane for task creation, DAG editing, approval, execution, and trace retrieval
 - React WebUI connected to the real API with markdown chat, DAG review/editing, and trace display
 
@@ -35,8 +38,10 @@ Not implemented yet:
 dagent/
   api/          FastAPI app exposing task, DAG, run, and trace endpoints
   harness/      DAG planning, validation, execution, trace recording
+  harness_runtime/
+                conversation-first runtime and dag_creator control tool
   providers/    OpenAI-compatible and mock chat providers
-  runtime/      node-level agent loop
+  runtime/      single-agent loop primitive
   schemas/      DAG, node, edge, trace, feedback models
   tools/        tool registry, executor, file tools, boundary checks
   state/        prompt assembly and future context/memory/session state
@@ -99,6 +104,12 @@ profiles/
     guideline.md
     agent.md
     memory.md
+  conversation/
+    profile.yaml
+    soul.md
+    guideline.md
+    agent.md
+    memory.md
 ```
 
 `profile.yaml` contains structured metadata and the ordered prompt layers:
@@ -135,9 +146,42 @@ and save profile layers without touching Python code.
 
 Implemented profile-backed roles:
 
+- `HarnessRuntime` top-level conversation agent
 - `LLMPlanner`
 - `DAGReviewerAgent`
 - `FeedbackLearnerAgent`
+
+## Harness Runtime Flow
+
+The default WebUI/API path is now conversation-first. DAG is a control tool,
+not the default response shape.
+
+```mermaid
+flowchart TD
+  U["User"] --> R["HarnessRuntime"]
+  R --> A["Top AgentLoop"]
+
+  A -->|"direct answer"| O["Return to user"]
+  A -->|"runtime tool"| T["ToolExecutor"]
+  A -->|"dag_creator"| D["Create DAG"]
+
+  D -->|"review required"| UI["Return DAG for human review"]
+  D -->|"approved/auto safe"| E["DAGExecutor"]
+
+  UI -->|"approve"| E
+
+  E --> N["Node AgentLoop without dag_creator"]
+  N --> T
+
+  E --> DR["DAG result as tool output"]
+  DR --> A
+```
+
+Runtime modes:
+
+- `auto`: top AgentLoop may call `dag_creator` only when useful.
+- `direct`: top AgentLoop cannot call `dag_creator`.
+- `planner`: bypasses conversation and creates a DAG directly.
 
 ## Development
 
@@ -150,7 +194,7 @@ uv run --extra dev pytest
 Expected result:
 
 ```text
-39 passed, 2 skipped
+42 passed, 2 skipped
 ```
 
 The default suite uses `MockProvider` for deterministic unit tests. Real
@@ -177,7 +221,7 @@ npm run dev
 
 The frontend includes:
 
-- chat composer with API-backed planning and streamed markdown output
+- chat composer with `Auto | Direct | DAG` runtime modes and streamed markdown output
 - tool/model/DAG trace timeline from backend run events
 - React Flow DAG graph
 - node detail editor for goal, risk, boundary, tools, paths, and expected output

@@ -12,15 +12,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from dagent.factory import create_control_plane
+from dagent.factory import create_control_plane, create_harness_runtime
 from dagent.harness.control_plane import ControlPlane, TaskRecord
 from dagent.harness.dag_executor import DAGExecutionError, RunResult
+from dagent.harness_runtime import HarnessRuntime, RuntimeMode
 from dagent.schemas import DAG, TraceEvent
 
 
 class CreateTaskRequest(BaseModel):
     message: str = Field(min_length=1)
     task_id: str | None = None
+
+
+class MessageRequest(BaseModel):
+    message: str = Field(min_length=1)
+    mode: RuntimeMode = "auto"
 
 
 class UpdateDagRequest(BaseModel):
@@ -30,12 +36,18 @@ class UpdateDagRequest(BaseModel):
 class ApiState:
     def __init__(self) -> None:
         self.control_plane: ControlPlane | None = None
+        self.harness_runtime: HarnessRuntime | None = None
         self.runs: dict[str, RunResult] = {}
 
     def get_control_plane(self) -> ControlPlane:
         if self.control_plane is None:
             self.control_plane = create_control_plane(workspace_root=".")
         return self.control_plane
+
+    def get_harness_runtime(self) -> HarnessRuntime:
+        if self.harness_runtime is None:
+            self.harness_runtime = create_harness_runtime(workspace_root=".")
+        return self.harness_runtime
 
 
 state = ApiState()
@@ -83,14 +95,62 @@ async def create_task_stream(request: CreateTaskRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.post("/messages/stream")
+async def message_stream(request: MessageRequest) -> StreamingResponse:
+    async def events():
+        yield _sse({"type": "status", "message": "agent_loop_started"})
+        try:
+            result = await state.get_harness_runtime().handle_message(
+                request.message,
+                mode=request.mode,
+            )
+        except Exception as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        if result.dag is not None:
+            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
+        if result.run_result is not None:
+            for trace in result.run_result.traces:
+                yield _sse({"type": "trace", "event": _trace_payload(trace)})
+
+        message = _runtime_message_markdown(result)
+        for chunk in _chunks(message, size=36):
+            yield _sse({"type": "token", "content": chunk})
+        yield _sse(
+            {
+                "type": "done",
+                "status": result.status,
+                "task_id": result.task_id,
+                "dag": result.dag.model_dump(mode="json") if result.dag else None,
+                "message_markdown": message,
+            }
+        )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @app.get("/dags/{task_id}")
 async def get_dag(task_id: str) -> dict[str, Any]:
+    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+        return {"dag": state.harness_runtime.tasks[task_id].dag.model_dump(mode="json")}
     record = _get_task(task_id)
     return {"dag": record.dag.model_dump(mode="json")}
 
 
 @app.put("/dags/{task_id}")
 async def update_dag(task_id: str, request: UpdateDagRequest) -> dict[str, Any]:
+    runtime_record = (
+        state.harness_runtime.tasks.get(task_id)
+        if state.harness_runtime is not None
+        else None
+    )
+    if runtime_record is not None:
+        if request.dag.task_id != task_id:
+            raise HTTPException(status_code=400, detail="DAG task_id does not match URL task_id.")
+        runtime_record.dag = state.harness_runtime.prepare_dag_for_review(request.dag)
+        return {"dag": runtime_record.dag.model_dump(mode="json")}
+
     control_plane = state.get_control_plane()
     record = _get_task(task_id)
     if request.dag.task_id != task_id:
@@ -101,6 +161,10 @@ async def update_dag(task_id: str, request: UpdateDagRequest) -> dict[str, Any]:
 
 @app.post("/dags/{task_id}/approve")
 async def approve_dag(task_id: str) -> dict[str, Any]:
+    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+        dag = state.harness_runtime.approve_dag(task_id)
+        return {"dag": dag.model_dump(mode="json")}
+
     try:
         dag = state.get_control_plane().approve_dag(task_id)
     except KeyError as exc:
@@ -110,6 +174,27 @@ async def approve_dag(task_id: str) -> dict[str, Any]:
 
 @app.post("/dags/{task_id}/execute")
 async def execute_dag(task_id: str) -> dict[str, Any]:
+    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+        runtime = state.harness_runtime
+        record = runtime.tasks[task_id]
+        record.dag.status = "running"
+        try:
+            result = await runtime.execute_dag(task_id)
+        except DAGExecutionError as exc:
+            record.dag.status = "review_required"
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            record.dag.status = "failed"
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        run_id = f"run_{uuid4().hex}"
+        state.runs[run_id] = result
+        return {
+            "run_id": run_id,
+            "dag": record.dag.model_dump(mode="json"),
+            "result": _run_payload(result),
+            "message_markdown": _run_markdown(result),
+        }
+
     record = _get_task(task_id)
     record.dag.status = "running"
     try:
@@ -145,6 +230,29 @@ def _get_task(task_id: str) -> TaskRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     return record
+
+
+def _runtime_message_markdown(result) -> str:
+    if result.status == "awaiting_approval" and result.dag is not None:
+        medium_or_high = [
+            node for node in result.dag.nodes
+            if node.risk in {"medium", "high"}
+        ]
+        review_line = (
+            f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
+            if medium_or_high
+            else "- **Review required:** DAG is waiting for review."
+        )
+        return "\n".join(
+            [
+                "### DAG created",
+                f"- **Task:** `{result.task_id}`",
+                f"- **Status:** `{result.dag.status}`",
+                f"- **Nodes:** {len(result.dag.nodes)}",
+                review_line,
+            ]
+        )
+    return result.message_markdown
 
 
 def _task_payload(record: TaskRecord) -> dict[str, Any]:

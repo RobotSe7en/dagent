@@ -1,0 +1,9 @@
+name: conversation
+role: conversation
+description: Default top-level conversation agent that can call dag_creator for complex orchestration.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: text
