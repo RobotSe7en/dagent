@@ -146,11 +146,10 @@ export function App() {
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
       const copy = [...items];
-      for (let index = copy.length - 1; index >= 0; index -= 1) {
-        if (copy[index].role === 'assistant' && (copy[index].kind ?? 'text') === 'text') {
-          copy[index] = updater(copy[index]);
-          return copy;
-        }
+      const last = copy[copy.length - 1];
+      if (last?.role === 'assistant' && (last.kind ?? 'text') === 'text') {
+        copy[copy.length - 1] = updater(last);
+        return copy;
       }
       copy.push(updater({ role: 'assistant', kind: 'text', content: '' }));
       return copy;
@@ -563,14 +562,14 @@ function ToolEventCard({ event }: { event: ToolStreamEvent }) {
   const isError = event.type === 'tool_error';
   const detail = isCall ? formatToolArguments(event.arguments) : event.content || '';
   return (
-    <div className={`tool-event-card ${event.type}`}>
-      <div className="tool-event-head">
+    <details className={`tool-event-card ${event.type}`}>
+      <summary className="tool-event-head">
         <Wrench size={14} />
         <strong>{event.name}</strong>
         <span>{isCall ? 'calling' : isError ? 'failed' : 'result'}</span>
-      </div>
+      </summary>
       {detail ? <pre>{clipText(detail, 1200)}</pre> : null}
-    </div>
+    </details>
   );
 }
 

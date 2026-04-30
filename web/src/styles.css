@@ -297,6 +297,14 @@ select {
   overflow: hidden;
 }
 
+.tool-event-card summary {
+  list-style: none;
+}
+
+.tool-event-card summary::-webkit-details-marker {
+  display: none;
+}
+
 .tool-event-card.tool_error {
   border-color: #efb5bd;
   background: #fff7f8;
@@ -308,9 +316,13 @@ select {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  border-bottom: 1px solid #e4e9dd;
   color: #394750;
+  cursor: pointer;
   font-size: 12px;
+}
+
+.tool-event-card[open] .tool-event-head {
+  border-bottom: 1px solid #e4e9dd;
 }
 
 .tool-event-head strong {
