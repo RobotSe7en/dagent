@@ -1,6 +1,6 @@
 """Public schema exports."""
 
-from dagent.schemas.dag import DAG
+from dagent.schemas.dag import DAG, PlanNodeSpec, PlanSpec
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import Boundary, DAGNode
@@ -12,6 +12,8 @@ __all__ = [
     "DAGEdge",
     "DAGNode",
     "Feedback",
+    "PlanNodeSpec",
+    "PlanSpec",
     "TraceEvent",
     "TraceSpan",
 ]

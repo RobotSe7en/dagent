@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from dagent.tools.command_tools import register_command_tools
 from dagent.tools.registry import ToolRegistry
 
 
@@ -87,4 +88,5 @@ def register_file_tools(registry: ToolRegistry) -> None:
 def create_file_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_file_tools(registry)
+    register_command_tools(registry)
     return registry

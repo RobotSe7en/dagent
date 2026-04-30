@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult
+from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult, TokenHandler
 from dagent.harness_runtime.control_plane import TaskRecord
 from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
@@ -46,7 +46,7 @@ class HarnessRuntime:
         self,
         *,
         agent_loop: AgentLoop,
-        planner: DagCreator,
+        dag_creator: DagCreator,
         dag_executor: DAGExecutor,
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
@@ -55,7 +55,7 @@ class HarnessRuntime:
         max_top_steps: int = 8,
     ) -> None:
         self.agent_loop = agent_loop
-        self.planner = planner
+        self.dag_creator = dag_creator
         self.dag_executor = dag_executor
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
@@ -70,6 +70,7 @@ class HarnessRuntime:
         message: str,
         *,
         mode: RuntimeMode = "auto",
+        on_token: TokenHandler | None = None,
     ) -> HarnessMessageResult:
         if mode == "dag_creator":
             record = await self.create_dag(message)
@@ -99,6 +100,7 @@ class HarnessRuntime:
             extra_tools=[dag_creator_tool_definition()] if include_dag_creator else None,
             control_tool_names={DAG_CREATOR_NAME} if include_dag_creator else None,
             control_tool_handler=self._handle_control_tool if include_dag_creator else None,
+            on_token=on_token,
         )
 
         dag_event = _latest_dag_event(result.control_events)
@@ -112,7 +114,7 @@ class HarnessRuntime:
         )
 
     async def create_dag(self, request: str, *, task_id: str | None = None) -> TaskRecord:
-        dag = await self.planner.aplan(request, task_id=task_id)
+        dag = await self.dag_creator.aplan(request, task_id=task_id)
         dag = self.prepare_dag_for_review(dag)
         record = TaskRecord(task_id=dag.task_id, user_request=request, dag=dag)
         self.tasks[record.task_id] = record

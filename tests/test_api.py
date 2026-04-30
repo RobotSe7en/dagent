@@ -38,9 +38,9 @@ class CompletingLoop:
 
 
 def test_api_creates_approves_and_executes_dag() -> None:
-    provider = MockProvider([ChatResponse(content=_planner_json())])
+    provider = MockProvider([ChatResponse(content=_dag_creator_json())])
     state.control_plane = ControlPlane(
-        planner=LLMDagCreator(provider),
+        dag_creator=LLMDagCreator(provider),
         executor=DAGExecutor(agent_loop=CompletingLoop()),
     )
     state.harness_runtime = None
@@ -72,6 +72,47 @@ def test_api_creates_approves_and_executes_dag() -> None:
     ]
 
 
+def test_api_approved_medium_risk_runtime_dag_executes() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=_dag_creator_json(
+                    tools=["write_file"],
+                    boundary_mode="write_limited",
+                )
+            )
+        ]
+    )
+    state.harness_runtime = HarnessRuntime(
+        agent_loop=AgentLoop(
+            provider=MockProvider([ChatResponse(content="unused")]),
+            tool_executor=ToolExecutor(ToolRegistry()),
+        ),
+        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        conversation_profile=_profile("conversation"),
+    )
+    state.control_plane = None
+    state.runs.clear()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/messages/stream",
+        json={"message": "create risky dag", "mode": "dag_creator"},
+    )
+    assert create_response.status_code == 200
+    assert '"status": "review_required"' in create_response.text
+
+    task_id = next(iter(state.harness_runtime.tasks))
+    approve_response = client.post(f"/dags/{task_id}/approve")
+    assert approve_response.status_code == 200
+    assert approve_response.json()["dag"]["status"] == "approved"
+
+    execute_response = client.post(f"/dags/{task_id}/execute")
+    assert execute_response.status_code == 200
+    assert execute_response.json()["dag"]["status"] == "completed"
+
+
 def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
     provider = MockProvider([ChatResponse(content="hello there")])
     state.harness_runtime = HarnessRuntime(
@@ -79,7 +120,7 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
             provider=provider,
             tool_executor=ToolExecutor(ToolRegistry()),
         ),
-        planner=LLMDagCreator(provider, profile=_profile("dag_creator")),
+        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
         dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
         conversation_profile=_profile("conversation"),
     )
@@ -95,7 +136,11 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
     assert '"dag": null' in response.text
 
 
-def _planner_json() -> str:
+def _dag_creator_json(
+    *,
+    tools: list[str] | None = None,
+    boundary_mode: str = "read_only",
+) -> str:
     return json.dumps(
         {
             "dag_id": "dag_api",
@@ -108,10 +153,10 @@ def _planner_json() -> str:
                     "title": "Answer",
                     "goal": "Answer the user.",
                     "agent": None,
-                    "tools": [],
+                    "tools": tools or [],
                     "skills": [],
                     "boundary": {
-                        "mode": "read_only",
+                        "mode": boundary_mode,
                         "allowed_paths": [],
                         "forbidden_tools": [],
                         "allowed_commands": [],

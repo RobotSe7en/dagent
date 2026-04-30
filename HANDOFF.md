@@ -46,14 +46,14 @@ Important files:
 - `dagent/harness_runtime/control_tools.py`
   - `dag_creator` tool schema
 - `dagent/harness_runtime/dag_creator.py`
-  - formerly `planner.py`
+  - DAG creator implementation
   - still exports `DagCreator`, `MockDagCreator`, `LLMDagCreator`
 - `dagent/harness_runtime/dag_executor.py`
   - executes approved DAGs using node AgentLoops without `dag_creator`
 - `dagent/api/app.py`
   - FastAPI app
   - `/messages/stream` is the default conversation-first API
-  - `/tasks/stream` remains as a force-DAG/planner compatibility path
+  - `/tasks/stream` remains as a force-DAG compatibility path
 - `web/src/App.tsx`
   - WebUI with `Auto | Direct | DAG` modes
 - `web/src/api.ts`
@@ -88,7 +88,7 @@ Modes:
 
 - `auto`: top AgentLoop may call `dag_creator` when the task needs complex DAG orchestration.
 - `direct`: top AgentLoop cannot call `dag_creator`; no DAG should be created.
-- `planner`: bypasses conversation and invokes DAG creation directly.
+- `dag_creator`: bypasses conversation and invokes DAG creation directly.
 
 ## Model Configuration
 
@@ -118,9 +118,7 @@ Currently important:
   - tells the model to answer directly for simple conversations/simple tools/short serial tasks
   - only use `dag_creator` for complex orchestration
 - `profiles/dag_creator/`
-  - still named `planner` in config/profile for now
   - used by `LLMDagCreator` in `dag_creator.py`
-  - may later be renamed to `dag_creator` if desired
 - `profiles/dag_reviewer/`
 - `profiles/feedback_learner/`
 
@@ -214,12 +212,11 @@ git status --branch --short
 
 High-value next steps:
 
-- Rename config/profile concept from `planner` to `dag_creator` if you want naming consistency all the way through.
 - Improve `dag_creator` return/resume behavior after user approves a review-required DAG, so DAG result can be injected back into top AgentLoop and summarized automatically.
 - Add persistent session/run storage instead of current in-memory API state.
 - Add trace events for top AgentLoop tool calls, not only DAG executor traces.
 - Improve WebUI display for direct conversation traces and `dag_creator` control events.
-- Add API tests for `planner` mode and runtime-created DAG approve/execute flow.
+- Add API tests for `dag_creator` mode and runtime-created DAG approve/execute flow.
 
 ## Notes For Future Codex
 

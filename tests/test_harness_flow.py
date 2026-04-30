@@ -33,7 +33,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def planner_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
+def dag_creator_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
     return json.dumps(
         {
             "dag_id": "dag_real",
@@ -67,8 +67,40 @@ def planner_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
     )
 
 
-def test_llm_planner_parses_model_json_into_dag() -> None:
-    provider = MockProvider([ChatResponse(content=planner_json())])
+def dag_creator_json_with_boundary_modes(modes: list[str]) -> str:
+    payload = json.loads(dag_creator_json())
+    payload["nodes"] = [
+        {
+            **payload["nodes"][0],
+            "id": f"node_{index}",
+            "boundary": {
+                **payload["nodes"][0]["boundary"],
+                "mode": mode,
+            },
+        }
+        for index, mode in enumerate(modes)
+    ]
+    return json.dumps(payload)
+
+
+def plan_spec_json() -> str:
+    return json.dumps(
+        {
+            "task": "List files in the current directory",
+            "nodes": [
+                {
+                    "id": "list_files",
+                    "goal": "List files in the current directory.",
+                    "tool": "run_command",
+                    "args": {"command": "dir", "cwd": "."},
+                }
+            ],
+        }
+    )
+
+
+def test_llm_dag_creator_parses_model_json_into_dag() -> None:
+    provider = MockProvider([ChatResponse(content=dag_creator_json())])
     dag_creator = LLMDagCreator(
         provider,
         tools=[
@@ -81,22 +113,59 @@ def test_llm_planner_parses_model_json_into_dag() -> None:
         ],
     )
 
-    dag = run(planner.aplan("Plan something", task_id="task_real"))
+    dag = run(dag_creator.aplan("Plan something", task_id="task_real"))
 
     assert dag.dag_id == "dag_real"
     assert dag.task_id == "task_real"
     assert dag.nodes[0].id == "inspect"
     assert provider.requests[0]["messages"][0]["role"] == "system"
-    assert "DAG planner" in provider.requests[0]["messages"][0]["content"]
+    assert "dag_creator" in provider.requests[0]["messages"][0]["content"]
     assert "read_file: Read files." in provider.requests[0]["messages"][0]["content"]
     assert "task_real" in provider.requests[0]["messages"][1]["content"]
 
 
+def test_llm_dag_creator_compiles_compact_plan_spec_into_dag() -> None:
+    provider = MockProvider([ChatResponse(content=plan_spec_json())])
+    dag_creator = LLMDagCreator(provider)
+
+    dag = run(dag_creator.aplan("What files are here?", task_id="task_real"))
+
+    assert dag.task_id == "task_real"
+    assert dag.nodes[0].id == "list_files"
+    assert dag.nodes[0].title == "List Files"
+    assert dag.nodes[0].tools == ["run_command"]
+    assert dag.nodes[0].boundary.mode == "read_only"
+    assert dag.nodes[0].boundary.allowed_paths == ["."]
+    assert dag.nodes[0].boundary.allowed_commands == []
+    assert "Use tool `run_command`" in dag.nodes[0].goal
+
+
+def test_llm_dag_creator_normalizes_common_boundary_mode_aliases() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=dag_creator_json_with_boundary_modes(
+                    ["write_only", "read_write", "read-write"]
+                )
+            )
+        ]
+    )
+    dag_creator = LLMDagCreator(provider)
+
+    dag = run(dag_creator.aplan("Plan edits", task_id="task_real"))
+
+    assert [node.boundary.mode for node in dag.nodes] == [
+        "write_limited",
+        "write_limited",
+        "write_limited",
+    ]
+
+
 def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
-    provider = MockProvider([ChatResponse(content=planner_json())])
+    provider = MockProvider([ChatResponse(content=dag_creator_json())])
     dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop())
-    control_plane = ControlPlane(planner=planner, executor=executor)
+    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
 
     record = run(control_plane.create_task("Do a safe task", task_id="task_1"))
     result = run(control_plane.execute_task(record.task_id))
@@ -112,10 +181,10 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
 
 
 def test_control_plane_requires_review_after_risk_override() -> None:
-    provider = MockProvider([ChatResponse(content=planner_json(tools=["write_file"]))])
+    provider = MockProvider([ChatResponse(content=dag_creator_json(tools=["write_file"]))])
     dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop())
-    control_plane = ControlPlane(planner=planner, executor=executor)
+    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
 
     record = run(control_plane.create_task("Modify a file", task_id="task_1"))
 

@@ -12,6 +12,25 @@ class FakeCompletions:
 
     async def create(self, **kwargs):
         self.kwargs = kwargs
+        if kwargs.get("stream"):
+            return FakeStream(
+                [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(content="<think>visible</think>\n", tool_calls=[])
+                            )
+                        ]
+                    ),
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(content="done", tool_calls=[])
+                            )
+                        ]
+                    ),
+                ]
+            )
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -38,6 +57,21 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class FakeStream:
+    def __init__(self, chunks) -> None:
+        self._chunks = chunks
+
+    def __aiter__(self):
+        self._iterator = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iterator)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
 @pytest.mark.asyncio
 async def test_openai_compatible_provider_uses_config_and_converts_tool_calls() -> None:
     client = FakeClient()
@@ -47,6 +81,7 @@ async def test_openai_compatible_provider_uses_config_and_converts_tool_calls() 
             model="qwen3",
             api_key="local-key",
             timeout_seconds=12,
+            strip_thinking=True,
         ),
         client=client,
     )
@@ -67,3 +102,31 @@ async def test_openai_compatible_provider_uses_config_and_converts_tool_calls() 
     assert response.tool_calls[0].id == "call_1"
     assert response.tool_calls[0].name == "read_file"
     assert response.tool_calls[0].arguments == {"path": "notes.txt"}
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_streams_tokens_without_stripping_think() -> None:
+    client = FakeClient()
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="qwen3",
+            api_key="local-key",
+        ),
+        client=client,
+    )
+
+    events = [
+        event
+        async for event in provider.stream_chat(
+            [{"role": "user", "content": "hello"}],
+        )
+    ]
+
+    assert client.completions.kwargs["stream"] is True
+    assert [event.content for event in events if event.type == "token"] == [
+        "<think>visible</think>\n",
+        "done",
+    ]
+    assert events[-1].response is not None
+    assert events[-1].response.content == "<think>visible</think>\ndone"

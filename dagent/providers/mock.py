@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any
+from typing import Any, AsyncIterator
 
-from dagent.providers.base import ChatResponse
+from dagent.providers.base import ChatResponse, ChatStreamEvent
 
 
 class MockProvider:
@@ -24,4 +24,14 @@ class MockProvider:
         if not self._responses:
             return ChatResponse(content="")
         return self._responses.popleft()
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        response = await self.chat(messages, tools=tools)
+        if response.content:
+            yield ChatStreamEvent(type="token", content=response.content)
+        yield ChatStreamEvent(type="done", response=response)
 

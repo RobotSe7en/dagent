@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -21,10 +21,9 @@ import {
   Play,
   Save,
   Send,
-  ShieldAlert,
   SlidersHorizontal,
-  Sparkles,
   Wrench,
+  X,
 } from 'lucide-react';
 import { approveDag as approveDagApi, executeDag as executeDagApi, mapTrace, saveDag, streamTask } from './api';
 import type { BoundaryMode, Dag, DagNode, RiskLevel, TraceEvent } from './types';
@@ -49,6 +48,8 @@ const emptyDag: Dag = {
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  dagSnapshot?: Dag;
+  traceSnapshot?: TraceEvent[];
 }
 
 type RuntimeMode = 'auto' | 'direct' | 'dag_creator';
@@ -72,7 +73,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <p title={item.goal}>{item.goal}</p>
             <div className="dag-node-tools" title={item.tools.join(', ')}>
-              {item.tools.length ? item.tools.join(' · ') : 'no tools'}
+              {item.tools.length ? item.tools.join(', ') : 'no tools'}
             </div>
           </div>
         ),
@@ -97,7 +98,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入一个任务，我会先进入 HarnessRuntime 的顶层 AgentLoop；只有 Auto 模式下模型调用 dag_creator，或 DAG 模式强制规划时，才会生成 DAG。',
+      content: '输入任务后我会先尝试直接回答。需要复杂编排时，Auto 模式会生成可审阅 DAG；DAG 模式会直接进入规划。',
     },
   ]);
   const [draft, setDraft] = useState('');
@@ -105,11 +106,22 @@ export function App() {
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+  const tokenQueueRef = useRef<string[]>([]);
+  const tokenTimerRef = useRef<number | null>(null);
+  const tokenDrainResolversRef = useRef<Array<() => void>>([]);
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
+
+  useEffect(() => {
+    const element = messageListRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }, [messages, streaming]);
 
   const syncDag = useCallback((nextDag: Dag) => {
     setDag(nextDag);
@@ -129,6 +141,98 @@ export function App() {
     [dag, syncDag],
   );
 
+  const updateLastAssistant = (updater: (message: ChatMessage) => ChatMessage) => {
+    setMessages((items) => {
+      const copy = [...items];
+      for (let index = copy.length - 1; index >= 0; index -= 1) {
+        if (copy[index].role === 'assistant') {
+          copy[index] = updater(copy[index]);
+          break;
+        }
+      }
+      return copy;
+    });
+  };
+
+  const appendAssistantContent = (content: string) => {
+    updateLastAssistant((message) => ({
+      ...message,
+      content: `${message.content}${content}`,
+    }));
+  };
+
+  const stopTokenTimer = () => {
+    if (tokenTimerRef.current !== null) {
+      window.clearInterval(tokenTimerRef.current);
+      tokenTimerRef.current = null;
+    }
+  };
+
+  const resolveTokenDrain = () => {
+    const resolvers = tokenDrainResolversRef.current;
+    tokenDrainResolversRef.current = [];
+    resolvers.forEach((resolve) => resolve());
+  };
+
+  const flushTokenQueue = () => {
+    const next = tokenQueueRef.current.shift();
+    if (!next) {
+      stopTokenTimer();
+      resolveTokenDrain();
+      return;
+    }
+
+    const chunk = next.slice(0, 14);
+    const rest = next.slice(14);
+    if (rest) {
+      tokenQueueRef.current.unshift(rest);
+    }
+    appendAssistantContent(chunk);
+  };
+
+  const ensureTokenTimer = () => {
+    if (tokenTimerRef.current !== null) return;
+    tokenTimerRef.current = window.setInterval(flushTokenQueue, 24);
+  };
+
+  const enqueueAssistantToken = (content: string) => {
+    if (!content) return;
+    tokenQueueRef.current.push(content);
+    ensureTokenTimer();
+  };
+
+  const waitForTokenQueue = () => {
+    if (tokenQueueRef.current.length === 0 && tokenTimerRef.current === null) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      tokenDrainResolversRef.current.push(resolve);
+    });
+  };
+
+  const attachDagToLastAssistant = (nextDag: Dag) => {
+    updateLastAssistant((message) => ({
+      ...message,
+      dagSnapshot: nextDag,
+      traceSnapshot: message.traceSnapshot ?? trace,
+    }));
+  };
+
+  const attachTraceToLastAssistant = (event: TraceEvent) => {
+    updateLastAssistant((message) => ({
+      ...message,
+      traceSnapshot: [...(message.traceSnapshot ?? []), event],
+    }));
+  };
+
+  const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
+    setTrace((items) => [...items, nextEvent]);
+    attachTraceToLastAssistant(nextEvent);
+    return nextEvent;
+  };
+
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
 
@@ -140,17 +244,14 @@ export function App() {
     }));
   };
 
-  const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>) => {
-    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setTrace((items) => [...items, { ...event, id: crypto.randomUUID(), timestamp }]);
-  };
-
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
     setDraft('');
     setError(null);
     setTrace([]);
+    tokenQueueRef.current = [];
+    stopTokenTimer();
     setStreaming(true);
     setMessages((items) => [...items, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
     appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
@@ -158,19 +259,21 @@ export function App() {
     try {
       await streamTask(prompt, mode, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop request accepted.', status: 'running' }),
-        onDag: (nextDag) => syncDag(nextDag),
-        onTrace: (event) => setTrace((items) => [...items, event]),
-        onToken: (content) => {
-          setMessages((items) => {
-            const copy = [...items];
-            const last = copy[copy.length - 1];
-            copy[copy.length - 1] = { ...last, content: `${last.content}${content}` };
-            return copy;
-          });
+        onDag: (nextDag) => {
+          syncDag(nextDag);
+          attachDagToLastAssistant(nextDag);
+          setReviewOpen(true);
         },
+        onTrace: (event) => {
+          setTrace((items) => [...items, event]);
+          attachTraceToLastAssistant(event);
+        },
+        onToken: enqueueAssistantToken,
         onDone: (payload) => {
           if (payload.dag) {
             syncDag(payload.dag);
+            attachDagToLastAssistant(payload.dag);
+            setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           } else {
             appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
@@ -178,19 +281,23 @@ export function App() {
         },
         onError: (message) => {
           setError(message);
-          appendTrace({ type: 'model', label: 'planner_failed', detail: message, status: 'failed' });
+          appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
         },
       });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'model', label: 'planner_failed', detail: message, status: 'failed' });
+      appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
     } finally {
+      await waitForTokenQueue();
       setStreaming(false);
     }
   };
 
   const stopStream = () => {
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+    resolveTokenDrain();
     setStreaming(false);
     appendTrace({ type: 'model', label: 'interrupted', detail: 'The current UI stream was interrupted.', status: 'failed' });
   };
@@ -201,6 +308,7 @@ export function App() {
     try {
       const nextDag = await approveDagApi(dag.task_id);
       syncDag(nextDag);
+      attachDagToLastAssistant(nextDag);
       appendTrace({ type: 'dag', label: 'dag_approved', detail: 'Reviewer approved the current DAG.', status: 'completed' });
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -213,6 +321,7 @@ export function App() {
     try {
       const nextDag = await saveDag(dag.task_id, dag);
       syncDag(nextDag);
+      attachDagToLastAssistant(nextDag);
       appendTrace({ type: 'dag', label: 'dag_saved', detail: 'Saved edited DAG and reran validation/risk checks.', status: 'completed' });
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -222,13 +331,24 @@ export function App() {
   const executeDag = async () => {
     if (!dag.task_id) return;
     setError(null);
-    syncDag({ ...dag, status: 'running' });
+    const runningDag: Dag = { ...dag, status: 'running' };
+    syncDag(runningDag);
+    attachDagToLastAssistant(runningDag);
     appendTrace({ type: 'dag', label: 'dag_started', detail: 'Executor started approved DAG.', status: 'running' });
     try {
       const response = await executeDagApi(dag.task_id);
       syncDag(response.dag);
-      setTrace(response.result.traces.map(mapTrace));
-      setMessages((items) => [...items, { role: 'assistant', content: response.message_markdown }]);
+      const mappedTrace = response.result.traces.map(mapTrace);
+      setTrace(mappedTrace);
+      setMessages((items) => [
+        ...items,
+        {
+          role: 'assistant',
+          content: response.message_markdown,
+          dagSnapshot: response.dag,
+          traceSnapshot: mappedTrace,
+        },
+      ]);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -260,14 +380,15 @@ export function App() {
               </button>
             ))}
           </div>
-          <StatusBadge status={dag.status} />
-          <button className="icon-button" onClick={approveDag} disabled={!dag.task_id} title="Approve DAG">
-            <Check size={18} />
-          </button>
-          <button className="primary-button" onClick={executeDag} disabled={dag.status !== 'approved'}>
-            <Play size={17} />
-            Execute
-          </button>
+          {dag.nodes.length ? (
+            <>
+              <StatusBadge status={dag.status} />
+              <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
+                <GitBranch size={16} />
+                Review DAG
+              </button>
+            </>
+          ) : null}
         </div>
       </header>
 
@@ -275,13 +396,21 @@ export function App() {
         <section className="chat-pane">
           <PaneTitle icon={<Bot size={18} />} title="Conversation" />
           {error ? <div className="error-banner">{error}</div> : null}
-          <div className="message-list">
+          <div className="message-list" ref={messageListRef}>
             {messages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
                 <span>{message.role}</span>
-                <div className="markdown-body">
-                  <ReactMarkdown>{message.content || (streaming ? '...' : '')}</ReactMarkdown>
-                </div>
+                <MessageContent content={message.content || (streaming ? '...' : '')} />
+                {message.dagSnapshot?.nodes.length ? (
+                  <DagSummaryCard
+                    dag={message.dagSnapshot}
+                    onOpen={() => {
+                      syncDag(message.dagSnapshot!);
+                      setReviewOpen(true);
+                    }}
+                  />
+                ) : null}
+                {message.traceSnapshot?.length ? <TraceQueue trace={message.traceSnapshot} /> : null}
               </div>
             ))}
           </div>
@@ -295,50 +424,34 @@ export function App() {
               placeholder="Ask for a plan, review, or execution result"
             />
             <div className="composer-actions">
-              <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream">
+              <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
                 <CircleStop size={18} />
               </button>
-              <button className="primary-button" onClick={runStream} disabled={streaming}>
+              <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
                 <Send size={17} />
                 Send
               </button>
             </div>
           </div>
         </section>
-
-        <section className="dag-pane">
-          <PaneTitle icon={<GitBranch size={18} />} title="DAG Review" />
-          <div className="flow-wrap">
-            {dag.nodes.length ? (
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onNodeClick={(_, node) => setSelectedId(node.id)}
-                fitView
-                fitViewOptions={{ padding: 0.2 }}
-              >
-                <Background color="#d4dad5" gap={18} />
-                <MiniMap pannable zoomable nodeColor="#44736f" maskColor="rgba(247,248,245,.68)" />
-                <Controls />
-              </ReactFlow>
-            ) : (
-              <div className="empty-state">No DAG yet</div>
-            )}
-          </div>
-        </section>
-
-        <aside className="side-pane">
-          <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
-          {selectedNode ? (
-            <NodeEditor node={selectedNode} onPatch={patchSelected} onSave={saveCurrentDag} />
-          ) : (
-            <div className="empty-state compact">Generate a DAG to inspect node details.</div>
-          )}
-          <TraceList trace={trace} />
-        </aside>
       </main>
+
+      {reviewOpen && dag.nodes.length ? (
+        <DagReviewDialog
+          dag={dag}
+          nodes={nodes}
+          edges={edges}
+          selectedNode={selectedNode}
+          onClose={() => setReviewOpen(false)}
+          onApprove={approveDag}
+          onExecute={executeDag}
+          onSave={saveCurrentDag}
+          onPatchNode={patchSelected}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onSelectNode={setSelectedId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -352,8 +465,177 @@ function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   );
 }
 
+function MessageContent({ content }: { content: string }) {
+  const parts = useMemo(() => splitThinking(content), [content]);
+  return (
+    <div className="markdown-body">
+      {parts.map((part, index) =>
+        part.type === 'think' ? (
+          <details key={`${part.type}-${index}`} className="think-block" open={!part.closed}>
+            <summary>Thinking</summary>
+            <ReactMarkdown>{part.content || '...'}</ReactMarkdown>
+          </details>
+        ) : (
+          <ReactMarkdown key={`${part.type}-${index}`}>{part.content}</ReactMarkdown>
+        ),
+      )}
+    </div>
+  );
+}
+
+function splitThinking(content: string): Array<{ type: 'answer' | 'think'; content: string; closed?: boolean }> {
+  const parts: Array<{ type: 'answer' | 'think'; content: string; closed?: boolean }> = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const openIndex = content.indexOf('<think>', cursor);
+    if (openIndex === -1) {
+      const answer = content.slice(cursor);
+      if (answer) parts.push({ type: 'answer', content: answer });
+      break;
+    }
+    const answer = content.slice(cursor, openIndex);
+    if (answer) parts.push({ type: 'answer', content: answer });
+    const thinkStart = openIndex + '<think>'.length;
+    const closeIndex = content.indexOf('</think>', thinkStart);
+    if (closeIndex === -1) {
+      parts.push({ type: 'think', content: content.slice(thinkStart), closed: false });
+      break;
+    }
+    parts.push({ type: 'think', content: content.slice(thinkStart, closeIndex), closed: true });
+    cursor = closeIndex + '</think>'.length;
+  }
+  return parts.length ? parts : [{ type: 'answer', content }];
+}
+
 function StatusBadge({ status }: { status: Dag['status'] }) {
   return <span className="status-badge">{status}</span>;
+}
+
+function DagSummaryCard({
+  dag,
+  onOpen,
+}: {
+  dag: Dag;
+  onOpen: () => void;
+}) {
+  const riskyNodes = dag.nodes.filter((node) => node.risk !== 'low').length;
+  return (
+    <button className="dag-summary-card" onClick={onOpen} type="button">
+      <div className="dag-summary-head">
+        <GitBranch size={17} />
+        <strong>{dag.task_id || dag.dag_id}</strong>
+        <StatusBadge status={dag.status} />
+      </div>
+      <div className="dag-summary-stats">
+        <span>{dag.nodes.length} nodes</span>
+        <span>{dag.edges.length} edges</span>
+        <span>{riskyNodes} review</span>
+        <span>open flow</span>
+      </div>
+    </button>
+  );
+}
+
+function TraceQueue({ trace }: { trace: TraceEvent[] }) {
+  return (
+    <div className="message-trace">
+      <div className="message-trace-title">
+        <Wrench size={14} />
+        <span>Trace</span>
+      </div>
+      <div className="message-trace-list">
+        {trace.map((event) => (
+          <div key={event.id} className={`message-trace-row ${event.status}`}>
+            <span>{event.label}</span>
+            <em>{event.status}</em>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DagReviewDialog({
+  dag,
+  nodes,
+  edges,
+  selectedNode,
+  onClose,
+  onApprove,
+  onExecute,
+  onSave,
+  onPatchNode,
+  onNodesChange,
+  onEdgesChange,
+  onSelectNode,
+}: {
+  dag: Dag;
+  nodes: Node[];
+  edges: Edge[];
+  selectedNode?: DagNode;
+  onClose: () => void;
+  onApprove: () => void;
+  onExecute: () => void;
+  onSave: () => void;
+  onPatchNode: (patch: Partial<DagNode>) => void;
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  onSelectNode: (id: string) => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="DAG review">
+      <div className="dag-modal">
+        <header className="modal-header">
+          <div>
+            <div className="modal-title">
+              <GitBranch size={20} />
+              <span>DAG Review</span>
+              <StatusBadge status={dag.status} />
+            </div>
+            <p>{dag.task_id || dag.dag_id}</p>
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button compact-button" onClick={onApprove} disabled={!dag.task_id} type="button">
+              <Check size={16} />
+              Approve
+            </button>
+            <button className="primary-button" onClick={onExecute} disabled={dag.status !== 'approved'} type="button">
+              <Play size={17} />
+              Execute
+            </button>
+            <button className="icon-button" onClick={onClose} title="Close" type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </header>
+        <div className="modal-body">
+          <section className="modal-flow">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeClick={(_, node) => onSelectNode(node.id)}
+              fitView
+              fitViewOptions={{ padding: 0.2 }}
+            >
+              <Background color="#d4dad5" gap={18} />
+              <MiniMap pannable zoomable nodeColor="#44736f" maskColor="rgba(247,248,245,.68)" />
+              <Controls />
+            </ReactFlow>
+          </section>
+          <aside className="modal-side">
+            <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
+            {selectedNode ? (
+              <NodeEditor node={selectedNode} onPatch={onPatchNode} onSave={onSave} />
+            ) : (
+              <div className="empty-state compact">Select a DAG node to inspect details.</div>
+            )}
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function NodeEditor({
@@ -422,36 +704,10 @@ function NodeEditor({
         Expected Output
         <textarea value={node.expected_output} onChange={(event) => onPatch({ expected_output: event.target.value })} />
       </label>
-      <button className="secondary-button" onClick={onSave}>
+      <button className="secondary-button" onClick={onSave} type="button">
         <Save size={16} />
         Save Draft
       </button>
-    </div>
-  );
-}
-
-function TraceList({ trace }: { trace: TraceEvent[] }) {
-  return (
-    <div className="trace-panel">
-      <PaneTitle icon={<Wrench size={18} />} title="Trace" />
-      <div className="trace-list">
-        {trace.length ? (
-          trace.map((event) => (
-            <div key={event.id} className={`trace-row ${event.status}`}>
-              <div className="trace-icon">{event.type === 'tool' ? <Wrench size={15} /> : event.type === 'dag' ? <GitBranch size={15} /> : event.type === 'node' ? <ShieldAlert size={15} /> : <Sparkles size={15} />}</div>
-              <div>
-                <div className="trace-meta">
-                  <span>{event.label}</span>
-                  <time>{event.timestamp}</time>
-                </div>
-                <p>{event.detail}</p>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="empty-state compact">Trace events will appear after planning or execution.</div>
-        )}
-      </div>
     </div>
   );
 }

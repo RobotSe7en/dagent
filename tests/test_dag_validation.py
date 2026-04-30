@@ -78,7 +78,7 @@ def test_dag_must_be_acyclic() -> None:
         validate_dag(dag)
 
 
-def test_mock_planner_returns_valid_dag() -> None:
+def test_mock_dag_creator_returns_valid_dag() -> None:
     dag = MockDagCreator().plan("Summarize the repo", task_id="task_1")
 
     validate_dag(dag)
