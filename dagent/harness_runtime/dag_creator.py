@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import ast
+import json
 from abc import ABC, abstractmethod
 from uuid import uuid4
 
@@ -124,7 +126,7 @@ def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
         dag_id=f"dag_{uuid4().hex}",
         task_id=task_id,
         status="draft",
-        nodes=[_compile_plan_node(node) for node in plan.nodes],
+        nodes=[_compile_plan_node(node, task=plan.task) for node in plan.nodes],
         edges=[
             DAGEdge(
                 source=dependency,
@@ -137,24 +139,25 @@ def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
     )
 
 
-def _compile_plan_node(node) -> DAGNode:
-    tool = node.tool
-    args = dict(node.args)
+def _compile_plan_node(node, *, task: str = "") -> DAGNode:
+    tool = node.tool or _infer_missing_tool(node.goal, task)
+    args = dict(node.args or _infer_args(tool, node.goal, task))
     boundary = _infer_boundary(tool, args)
     goal = node.goal
-    if tool:
-        goal = f"{goal}\nUse tool `{tool}` with arguments: {args}."
 
     return DAGNode(
         id=node.id,
         title=_title_from_id(node.id),
         goal=goal,
+        kind="tool" if tool else "agent",
+        tool=tool,
+        args=args,
         tools=[tool] if tool else [],
         boundary=boundary,
         risk=node.risk or _infer_risk(tool, boundary),
         risk_reason=node.review_reason or _risk_reason(tool, boundary),
         expected_output=node.goal,
-        max_steps=4 if tool else 2,
+        max_steps=1 if tool else 2,
         timeout_seconds=120,
     )
 
@@ -224,6 +227,7 @@ def _full_dag_from_payload(payload: dict, task_id: str) -> DAG:
     payload.setdefault("nodes", [])
     payload.setdefault("edges", [])
     _normalize_boundary_modes(payload)
+    _normalize_tool_nodes(payload)
     return DAG.model_validate(payload)
 
 
@@ -257,3 +261,87 @@ def _normalize_boundary_modes(payload: dict) -> None:
         normalized = aliases.get(mode.strip().lower())
         if normalized:
             boundary["mode"] = normalized
+
+
+def _normalize_tool_nodes(payload: dict) -> None:
+    nodes = payload.get("nodes", [])
+    if not isinstance(nodes, list):
+        return
+    task = str(payload.get("task") or "")
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        goal = str(node.get("goal") or "")
+        explicit_tool = node.get("tool")
+        tool = explicit_tool
+        inferred_from_tools = False
+        if not isinstance(tool, str) or not tool.strip():
+            tools = node.get("tools")
+            if isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str):
+                tool = tools[0]
+                inferred_from_tools = True
+            else:
+                tool = _infer_missing_tool(goal, task)
+        if not tool:
+            node.setdefault("kind", "agent")
+            continue
+
+        args = node.get("args")
+        if not isinstance(args, dict) or not args:
+            extracted_args = _extract_args_from_goal(goal)
+            inferred_args = _infer_args(tool, goal, task)
+            args = extracted_args or inferred_args
+            if inferred_from_tools and not args:
+                node.setdefault("kind", "agent")
+                continue
+        node["kind"] = "tool"
+        node["tool"] = tool
+        node["args"] = args
+        tools = node.get("tools")
+        if not isinstance(tools, list) or tool not in tools:
+            node["tools"] = [tool]
+        node["max_steps"] = 1
+
+
+def _infer_missing_tool(goal: str, task: str) -> str | None:
+    text = f"{task}\n{goal}".lower()
+    list_file_markers = [
+        "current directory",
+        "working directory",
+        "list files",
+        "what files",
+        "which files",
+        "目录",
+        "文件",
+        "有哪些文件",
+        "当前目录",
+    ]
+    if any(marker in text for marker in list_file_markers) and not any(
+        marker in text for marker in ["modify", "write", "edit", "修改", "写入"]
+    ):
+        return "run_command"
+    return None
+
+
+def _infer_args(tool: str | None, goal: str, task: str) -> dict:
+    if tool == "run_command":
+        text = f"{task}\n{goal}".lower()
+        if any(marker in text for marker in ["current directory", "working directory", "当前目录", "有哪些文件", "list files"]):
+            return {"command": "dir", "cwd": "."}
+    return {}
+
+
+def _extract_args_from_goal(goal: str) -> dict:
+    marker = "arguments:"
+    index = goal.lower().find(marker)
+    if index == -1:
+        return {}
+    candidate = goal[index + len(marker):].strip().rstrip(".")
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            value = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return {}
+    return value if isinstance(value, dict) else {}

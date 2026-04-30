@@ -33,7 +33,7 @@ def create_control_plane(
         workspace_root=workspace_root,
     )
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(agent_loop=agent_loop)
+    dag_executor = DAGExecutor(agent_loop=agent_loop, tool_executor=tool_executor)
     dag_creator = LLMDagCreator(
         provider,
         profile_store=profile_store,
@@ -65,7 +65,7 @@ def create_harness_runtime(
         if (tool := tool_executor.registry.get(name)) is not None
     ]
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(agent_loop=agent_loop)
+    dag_executor = DAGExecutor(agent_loop=agent_loop, tool_executor=tool_executor)
     dag_creator = LLMDagCreator(
         provider,
         profile_store=profile_store,

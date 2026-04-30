@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Background,
   Controls,
@@ -17,6 +18,7 @@ import {
   Bot,
   Check,
   CircleStop,
+  Ban,
   GitBranch,
   Play,
   Save,
@@ -25,8 +27,16 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { approveDag as approveDagApi, executeDag as executeDagApi, mapTrace, saveDag, streamTask } from './api';
-import type { BoundaryMode, Dag, DagNode, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
+import {
+  approveDag as approveDagApi,
+  approvePermission as approvePermissionApi,
+  denyPermission as denyPermissionApi,
+  executeDag as executeDagApi,
+  mapTrace,
+  saveDag,
+  streamTask,
+} from './api';
+import type { BoundaryMode, Dag, DagNode, PermissionRequest, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskTone: Record<RiskLevel, string> = {
   low: 'bg-emerald-100 text-emerald-800 border-emerald-300',
@@ -45,21 +55,38 @@ const emptyDag: Dag = {
   edges: [],
 };
 
+function normalizeNode(node: DagNode): DagNode {
+  return {
+    ...node,
+    kind: node.kind ?? (node.tool ? 'tool' : 'agent'),
+    tool: node.tool ?? null,
+    args: node.args ?? {},
+  };
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   kind?: 'text' | 'tool';
   toolEvent?: ToolStreamEvent;
+  toolEvents?: ToolStreamEvent[];
+  timeline?: MessageTimelineItem[];
   dagSnapshot?: Dag;
   traceSnapshot?: TraceEvent[];
 }
+
+type MessageTimelineItem =
+  | { type: 'text'; content: string }
+  | { type: 'dag'; dag: Dag }
+  | { type: 'tool'; event: ToolStreamEvent };
 
 type RuntimeMode = 'auto' | 'direct' | 'dag_creator';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
   const laneCounts = new Map<number, number>();
-  const nodes = dag.nodes.map((item) => {
+  const nodes = dag.nodes.map((rawItem) => {
+    const item = normalizeNode(rawItem);
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     laneCounts.set(depth, lane + 1);
@@ -75,7 +102,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <p title={item.goal}>{item.goal}</p>
             <div className="dag-node-tools" title={item.tools.join(', ')}>
-              {item.tools.length ? item.tools.join(', ') : 'no tools'}
+              {item.kind === 'tool' && item.tool
+                ? `${item.tool} ${JSON.stringify(item.args)}`
+                : item.tools.length
+                  ? item.tools.join(', ')
+                  : 'agent'}
             </div>
           </div>
         ),
@@ -109,6 +140,8 @@ export function App() {
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
+  const [permissionBusy, setPermissionBusy] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -160,6 +193,7 @@ export function App() {
     updateLastAssistantText((message) => ({
       ...message,
       content: `${message.content}${content}`,
+      timeline: appendTextTimeline(message.timeline, content),
     }));
   };
 
@@ -224,6 +258,7 @@ export function App() {
     updateLastAssistantText((message) => ({
       ...message,
       dagSnapshot: nextDag,
+      timeline: upsertDagTimeline(message.timeline, nextDag),
       traceSnapshot: message.traceSnapshot,
     }));
   };
@@ -237,15 +272,11 @@ export function App() {
 
   const appendToolMessage = (event: ToolStreamEvent) => {
     flushQueuedTokensNow();
-    setMessages((items) => [
-      ...items,
-      {
-        role: 'assistant',
-        kind: 'tool',
-        content: '',
-        toolEvent: event,
-      },
-    ]);
+    updateLastAssistantText((message) => ({
+      ...message,
+      toolEvents: [...(message.toolEvents ?? []), event],
+      timeline: [...(message.timeline ?? []), { type: 'tool', event }],
+    }));
   };
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
@@ -264,11 +295,16 @@ export function App() {
     const prompt = draft.trim();
     setDraft('');
     setError(null);
+    setPermissionRequest(null);
     setTrace([]);
     tokenQueueRef.current = [];
     stopTokenTimer();
     setStreaming(true);
-    setMessages((items) => [...items, { role: 'user', kind: 'text', content: prompt }]);
+    setMessages((items) => [
+      ...items,
+      { role: 'user', kind: 'text', content: prompt },
+      { role: 'assistant', kind: 'text', content: '' },
+    ]);
     appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
 
     try {
@@ -293,6 +329,13 @@ export function App() {
             setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           } else {
+            updateLastAssistantText((message) => ({
+              ...message,
+              content: message.content || payload.message_markdown,
+              timeline: message.timeline?.length
+                ? message.timeline
+                : [{ type: 'text', content: payload.message_markdown }],
+            }));
             appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
           }
         },
@@ -354,23 +397,78 @@ export function App() {
     appendTrace({ type: 'dag', label: 'dag_started', detail: 'Executor started approved DAG.', status: 'running' });
     try {
       const response = await executeDagApi(dag.task_id);
-      syncDag(response.dag);
-      const mappedTrace = response.result.traces.map(mapTrace);
-      setTrace(mappedTrace);
-      setMessages((items) => [
-        ...items,
-        {
-          role: 'assistant',
-          content: response.message_markdown,
-          dagSnapshot: response.dag,
-          traceSnapshot: mappedTrace,
-        },
-      ]);
+      handleExecutionResponse(response);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'dag', label: 'dag_failed', detail: message, status: 'failed' });
       syncDag({ ...dag, status: dag.status === 'running' ? 'review_required' : dag.status });
+    }
+  };
+
+  const handleExecutionResponse = (response: Awaited<ReturnType<typeof executeDagApi>>) => {
+    syncDag(response.dag);
+    const mappedTrace = response.result.traces.map(mapTrace);
+    const pending = response.result.pending_permission_request ?? null;
+    setTrace(mappedTrace);
+    setPermissionRequest(pending);
+    if (pending) setReviewOpen(true);
+    setMessages((items) => [
+      ...items,
+      {
+        role: 'assistant',
+        content: response.message_markdown,
+        dagSnapshot: response.dag,
+        traceSnapshot: mappedTrace,
+        timeline: [
+          { type: 'text', content: response.message_markdown },
+          { type: 'dag', dag: response.dag },
+        ],
+      },
+    ]);
+  };
+
+  const approvePermission = async () => {
+    if (!dag.task_id || !permissionRequest || permissionBusy) return;
+    setPermissionBusy(true);
+    setError(null);
+    try {
+      const approval = await approvePermissionApi(dag.task_id, permissionRequest.requested_boundary);
+      syncDag(approval.dag);
+      setPermissionRequest(null);
+      appendTrace({
+        type: 'dag',
+        label: 'permission_approved',
+        detail: `Approved boundary for node ${permissionRequest.node_id}.`,
+        status: 'completed',
+      });
+      const response = await executeDagApi(dag.task_id);
+      handleExecutionResponse(response);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setPermissionBusy(false);
+    }
+  };
+
+  const denyPermission = async () => {
+    if (!dag.task_id || !permissionRequest || permissionBusy) return;
+    setPermissionBusy(true);
+    setError(null);
+    try {
+      const response = await denyPermissionApi(dag.task_id);
+      syncDag(response.dag);
+      setPermissionRequest(null);
+      appendTrace({
+        type: 'dag',
+        label: 'permission_denied',
+        detail: `Denied boundary request for node ${permissionRequest.node_id}.`,
+        status: 'failed',
+      });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setPermissionBusy(false);
     }
   };
 
@@ -420,17 +518,15 @@ export function App() {
                 {message.kind === 'tool' && message.toolEvent ? (
                   <ToolEventCard event={message.toolEvent} />
                 ) : (
-                  <MessageContent content={message.content || (streaming ? '...' : '')} />
-                )}
-                {message.dagSnapshot?.nodes.length ? (
-                  <DagSummaryCard
-                    dag={message.dagSnapshot}
-                    onOpen={() => {
-                      syncDag(message.dagSnapshot!);
+                  <MessageTimeline
+                    message={message}
+                    loading={streaming}
+                    onOpenDag={(snapshot) => {
+                      syncDag(snapshot);
                       setReviewOpen(true);
                     }}
                   />
-                ) : null}
+                )}
                 {message.traceSnapshot?.length ? <TraceQueue trace={message.traceSnapshot} /> : null}
               </div>
             ))}
@@ -467,6 +563,10 @@ export function App() {
           onApprove={approveDag}
           onExecute={executeDag}
           onSave={saveCurrentDag}
+          permissionRequest={permissionRequest}
+          permissionBusy={permissionBusy}
+          onApprovePermission={approvePermission}
+          onDenyPermission={denyPermission}
           onPatchNode={patchSelected}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
@@ -486,6 +586,39 @@ function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   );
 }
 
+function MessageTimeline({
+  message,
+  loading,
+  onOpenDag,
+}: {
+  message: ChatMessage;
+  loading: boolean;
+  onOpenDag: (dag: Dag) => void;
+}) {
+  if (!message.timeline?.length) {
+    return <MessageContent content={message.content || (loading ? '...' : '')} />;
+  }
+
+  return (
+    <div className="message-timeline">
+      {message.timeline.map((item, index) =>
+        item.type === 'tool' ? (
+          <ToolEventCard key={`${item.event.tool_call_id}-${item.event.type}-${index}`} event={item.event} />
+        ) : item.type === 'dag' ? (
+          <DagSummaryCard
+            key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
+            dag={item.dag}
+            onOpen={() => onOpenDag(item.dag)}
+          />
+        ) : item.content ? (
+          <MessageContent key={`text-${index}`} content={item.content} />
+        ) : null,
+      )}
+      {!message.content && loading ? <MessageContent content="..." /> : null}
+    </div>
+  );
+}
+
 function MessageContent({ content }: { content: string }) {
   const parts = useMemo(() => splitThinking(content), [content]);
   return (
@@ -494,14 +627,51 @@ function MessageContent({ content }: { content: string }) {
         part.type === 'think' ? (
           <details key={`${part.type}-${index}`} className="think-block" open={!part.closed}>
             <summary>Thinking</summary>
-            <ReactMarkdown>{part.content || '...'}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.content || '...'}</ReactMarkdown>
           </details>
         ) : (
-          <ReactMarkdown key={`${part.type}-${index}`}>{part.content}</ReactMarkdown>
+          <ReactMarkdown key={`${part.type}-${index}`} remarkPlugins={[remarkGfm]}>{part.content}</ReactMarkdown>
         ),
       )}
     </div>
   );
+}
+
+function appendTextTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  content: string,
+): MessageTimelineItem[] {
+  if (!content) return timeline ?? [];
+  const items = [...(timeline ?? [])];
+  const last = items[items.length - 1];
+  if (last?.type === 'text') {
+    items[items.length - 1] = { ...last, content: `${last.content}${content}` };
+  } else {
+    items.push({ type: 'text', content });
+  }
+  return items;
+}
+
+function upsertDagTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  dag: Dag,
+): MessageTimelineItem[] {
+  const items = [...(timeline ?? [])];
+  const dagKey = dag.task_id || dag.dag_id;
+  const existingIndex = items.findIndex(
+    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey,
+  );
+  if (existingIndex !== -1) {
+    items[existingIndex] = { type: 'dag', dag };
+    return items;
+  }
+  const last = items[items.length - 1];
+  if (last?.type === 'dag') {
+    items[items.length - 1] = { type: 'dag', dag };
+  } else {
+    items.push({ type: 'dag', dag });
+  }
+  return items;
 }
 
 function splitThinking(content: string): Array<{ type: 'answer' | 'think'; content: string; closed?: boolean }> {
@@ -606,8 +776,12 @@ function DagReviewDialog({
   nodes,
   edges,
   selectedNode,
+  permissionRequest,
+  permissionBusy,
   onClose,
   onApprove,
+  onApprovePermission,
+  onDenyPermission,
   onExecute,
   onSave,
   onPatchNode,
@@ -619,8 +793,12 @@ function DagReviewDialog({
   nodes: Node[];
   edges: Edge[];
   selectedNode?: DagNode;
+  permissionRequest: PermissionRequest | null;
+  permissionBusy: boolean;
   onClose: () => void;
   onApprove: () => void;
+  onApprovePermission: () => void;
+  onDenyPermission: () => void;
   onExecute: () => void;
   onSave: () => void;
   onPatchNode: (patch: Partial<DagNode>) => void;
@@ -641,14 +819,39 @@ function DagReviewDialog({
             <p>{dag.task_id || dag.dag_id}</p>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button compact-button" onClick={onApprove} disabled={!dag.task_id} type="button">
-              <Check size={16} />
-              Approve
-            </button>
-            <button className="primary-button" onClick={onExecute} disabled={dag.status !== 'approved'} type="button">
-              <Play size={17} />
-              Execute
-            </button>
+            {permissionRequest ? (
+              <>
+                <button
+                  className="secondary-button compact-button danger-button"
+                  onClick={onDenyPermission}
+                  disabled={permissionBusy}
+                  type="button"
+                >
+                  <Ban size={16} />
+                  Deny
+                </button>
+                <button
+                  className="primary-button"
+                  onClick={onApprovePermission}
+                  disabled={permissionBusy}
+                  type="button"
+                >
+                  <Check size={16} />
+                  Approve Boundary
+                </button>
+              </>
+            ) : (
+              <button className="secondary-button compact-button" onClick={onApprove} disabled={!dag.task_id} type="button">
+                <Check size={16} />
+                Approve
+              </button>
+            )}
+            {!permissionRequest ? (
+              <button className="primary-button" onClick={onExecute} disabled={dag.status !== 'approved'} type="button">
+                <Play size={17} />
+                Execute
+              </button>
+            ) : null}
             <button className="icon-button" onClick={onClose} title="Close" type="button">
               <X size={18} />
             </button>
@@ -672,8 +875,9 @@ function DagReviewDialog({
           </section>
           <aside className="modal-side">
             <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
+            {permissionRequest ? <PermissionPanel request={permissionRequest} /> : null}
             {selectedNode ? (
-              <NodeEditor node={selectedNode} onPatch={onPatchNode} onSave={onSave} />
+              <NodeEditor node={normalizeNode(selectedNode)} onPatch={onPatchNode} onSave={onSave} />
             ) : (
               <div className="empty-state compact">Select a DAG node to inspect details.</div>
             )}
@@ -681,6 +885,33 @@ function DagReviewDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+function PermissionPanel({ request }: { request: PermissionRequest }) {
+  return (
+    <section className="permission-panel">
+      <div className="permission-panel-head">
+        <Wrench size={16} />
+        <strong>Permission Required</strong>
+        <span>{request.node_id}</span>
+      </div>
+      <p>{request.violation}</p>
+      <dl>
+        <div>
+          <dt>Mode</dt>
+          <dd>{request.requested_boundary.mode}</dd>
+        </div>
+        <div>
+          <dt>Allowed paths</dt>
+          <dd>{request.requested_boundary.allowed_paths.join(', ') || 'none'}</dd>
+        </div>
+        <div>
+          <dt>Allowed commands</dt>
+          <dd>{request.requested_boundary.allowed_commands.join(', ') || 'none'}</dd>
+        </div>
+      </dl>
+    </section>
   );
 }
 
@@ -705,6 +936,13 @@ function NodeEditor({
       </label>
       <div className="two-col">
         <label>
+          Kind
+          <select value={node.kind} onChange={(event) => onPatch({ kind: event.target.value as DagNode['kind'] })}>
+            <option value="tool">tool</option>
+            <option value="agent">agent</option>
+          </select>
+        </label>
+        <label>
           Risk
           <select value={node.risk} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
             {riskLevels.map((risk) => (
@@ -714,6 +952,34 @@ function NodeEditor({
             ))}
           </select>
         </label>
+      </div>
+      {node.kind === 'tool' ? (
+        <>
+          <label>
+            Tool
+            <input
+              value={node.tool ?? ''}
+              onChange={(event) =>
+                onPatch({
+                  tool: event.target.value || null,
+                  tools: event.target.value ? [event.target.value] : [],
+                })
+              }
+            />
+          </label>
+          <label>
+            Args JSON
+            <textarea
+              value={JSON.stringify(node.args ?? {}, null, 2)}
+              onChange={(event) => {
+                const parsed = parseJsonObject(event.target.value);
+                if (parsed) onPatch({ args: parsed });
+              }}
+            />
+          </label>
+        </>
+      ) : null}
+      <div className="two-col">
         <label>
           Boundary
           <select
@@ -763,6 +1029,17 @@ function splitCsv(value: string) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function nodeDepths(dag: Dag): Map<string, number> {

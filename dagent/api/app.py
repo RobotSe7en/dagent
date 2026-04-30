@@ -22,7 +22,7 @@ from dagent.harness_runtime import (
     RuntimeMode,
     TaskRecord,
 )
-from dagent.schemas import DAG, TraceEvent
+from dagent.schemas import Boundary, DAG, TraceEvent
 
 
 class CreateTaskRequest(BaseModel):
@@ -37,6 +37,10 @@ class MessageRequest(BaseModel):
 
 class UpdateDagRequest(BaseModel):
     dag: DAG
+
+
+class PermissionDecisionRequest(BaseModel):
+    boundary: Any | None = None
 
 
 class ApiState:
@@ -234,7 +238,10 @@ async def execute_dag(task_id: str) -> dict[str, Any]:
         record.dag.status = "failed"
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    record.dag.status = "completed" if result.completed else "failed"
+    if result.pending_permission_request is not None:
+        record.dag.status = "paused_for_permission"
+    else:
+        record.dag.status = "completed" if result.completed else "failed"
     run_id = f"run_{uuid4().hex}"
     state.runs[run_id] = result
     return {
@@ -242,6 +249,46 @@ async def execute_dag(task_id: str) -> dict[str, Any]:
         "dag": record.dag.model_dump(mode="json"),
         "result": _run_payload(result),
         "message_markdown": _run_markdown(result),
+    }
+
+
+@app.post("/dags/{task_id}/permissions/approve")
+async def approve_permission(
+    task_id: str,
+    request: PermissionDecisionRequest,
+) -> dict[str, Any]:
+    boundary = None
+    if request.boundary is not None:
+        boundary = Boundary.model_validate(request.boundary)
+    try:
+        if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+            permission = state.harness_runtime.approve_permission(task_id, boundary=boundary)
+            dag = state.harness_runtime.tasks[task_id].dag
+        else:
+            permission = state.get_control_plane().approve_permission(task_id, boundary=boundary)
+            dag = state.get_control_plane().tasks[task_id].dag
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "permission_request": permission.model_dump(mode="json"),
+        "dag": dag.model_dump(mode="json"),
+    }
+
+
+@app.post("/dags/{task_id}/permissions/deny")
+async def deny_permission(task_id: str) -> dict[str, Any]:
+    try:
+        if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+            permission = state.harness_runtime.deny_permission(task_id)
+            dag = state.harness_runtime.tasks[task_id].dag
+        else:
+            permission = state.get_control_plane().deny_permission(task_id)
+            dag = state.get_control_plane().tasks[task_id].dag
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "permission_request": permission.model_dump(mode="json"),
+        "dag": dag.model_dump(mode="json"),
     }
 
 
@@ -296,6 +343,11 @@ def _run_payload(result: RunResult) -> dict[str, Any]:
     return {
         "dag_id": result.dag_id,
         "completed": result.completed,
+        "pending_permission_request": (
+            result.pending_permission_request.model_dump(mode="json")
+            if result.pending_permission_request
+            else None
+        ),
         "node_results": {
             node_id: asdict(node_result)
             for node_id, node_result in result.node_results.items()
@@ -330,6 +382,16 @@ def _planning_markdown(record: TaskRecord) -> str:
 
 
 def _run_markdown(result: RunResult) -> str:
+    if result.pending_permission_request is not None:
+        request = result.pending_permission_request
+        return "\n".join(
+            [
+                "### DAG paused for permission",
+                f"- **Node:** `{request.node_id}`",
+                f"- **Reason:** {request.violation}",
+                "- **Next action:** approve or deny the requested boundary change.",
+            ]
+        )
     lines = [
         "### DAG execution result",
         f"- **Status:** {'completed' if result.completed else 'failed'}",

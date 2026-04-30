@@ -12,11 +12,16 @@ TraceEventType = Literal[
     "dag_started",
     "dag_completed",
     "dag_failed",
+    "dag_paused",
     "node_started",
     "node_completed",
     "node_failed",
+    "node_blocked_permission",
     "tool_called",
     "tool_completed",
+    "permission_requested",
+    "permission_approved",
+    "permission_denied",
 ]
 
 

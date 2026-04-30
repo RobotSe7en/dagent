@@ -1,4 +1,4 @@
-import type { Dag, ToolStreamEvent, TraceEvent } from './types';
+import type { Boundary, Dag, PermissionRequest, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -27,6 +27,7 @@ export interface ExecuteResponse {
         steps: number;
       }
     >;
+    pending_permission_request?: PermissionRequest | null;
     traces: BackendTrace[];
   };
   message_markdown: string;
@@ -48,6 +49,23 @@ export async function saveDag(taskId: string, dag: Dag): Promise<Dag> {
 
 export async function executeDag(taskId: string): Promise<ExecuteResponse> {
   return apiFetch<ExecuteResponse>(`/dags/${taskId}/execute`, { method: 'POST' });
+}
+
+export async function approvePermission(
+  taskId: string,
+  boundary?: Boundary,
+): Promise<{ dag: Dag; permission_request: PermissionRequest }> {
+  return apiFetch<{ dag: Dag; permission_request: PermissionRequest }>(`/dags/${taskId}/permissions/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ boundary: boundary ?? null }),
+  });
+}
+
+export async function denyPermission(taskId: string): Promise<{ dag: Dag; permission_request: PermissionRequest }> {
+  return apiFetch<{ dag: Dag; permission_request: PermissionRequest }>(`/dags/${taskId}/permissions/deny`, {
+    method: 'POST',
+  });
 }
 
 export async function streamTask(

@@ -37,8 +37,14 @@ class ToolExecutor:
         if tool is None:
             raise ToolExecutionError(f"Tool '{tool_name}' is not registered.")
 
-        enforce_tool_allowed(tool_name, boundary)
-        enforce_action_allowed(tool.action, boundary)
+        try:
+            enforce_tool_allowed(tool_name, boundary)
+            enforce_action_allowed(tool.action, boundary)
+        except Exception as exc:
+            if hasattr(exc, "tool_name"):
+                exc.tool_name = getattr(exc, "tool_name") or tool_name
+                exc.action = getattr(exc, "action") or tool.action
+            raise
 
         checked_args = {**(tool.default_args or {}), **args}
         for arg_name in tool.path_args:
@@ -46,18 +52,30 @@ class ToolExecutor:
                 raise ToolExecutionError(
                     f"Tool '{tool_name}' requires path argument '{arg_name}'."
                 )
-            checked_args[arg_name] = enforce_path_allowed(
-                checked_args[arg_name],
-                boundary,
-                self.workspace_root,
-            )
+            try:
+                checked_args[arg_name] = enforce_path_allowed(
+                    checked_args[arg_name],
+                    boundary,
+                    self.workspace_root,
+                )
+            except Exception as exc:
+                if hasattr(exc, "tool_name"):
+                    exc.tool_name = getattr(exc, "tool_name") or tool_name
+                    exc.action = getattr(exc, "action") or tool.action
+                raise
 
         for arg_name in tool.command_args:
             if arg_name not in checked_args:
                 raise ToolExecutionError(
                     f"Tool '{tool_name}' requires command argument '{arg_name}'."
                 )
-            enforce_command_allowed(str(checked_args[arg_name]), boundary)
+            try:
+                enforce_command_allowed(str(checked_args[arg_name]), boundary)
+            except Exception as exc:
+                if hasattr(exc, "tool_name"):
+                    exc.tool_name = getattr(exc, "tool_name") or tool_name
+                    exc.action = getattr(exc, "action") or tool.action
+                raise
 
         return tool.handler(**checked_args)
 

@@ -14,6 +14,7 @@ from dagent.harness_runtime import (
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
+from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -30,6 +31,34 @@ class CompletingLoop:
     ) -> AgentLoopResult:
         return AgentLoopResult(
             final_response="done",
+            messages=[],
+            steps=1,
+            completed=True,
+            stop_reason="completed",
+        )
+
+
+class PermissionThenCompletingLoop:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(
+        self,
+        user_message: str,
+        *,
+        boundary: Boundary,
+        max_steps: int = 8,
+        allowed_tools: list[str] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AgentLoopResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise BoundaryViolation(
+                "Command 'python --version' is not allowed.",
+                command="python --version",
+            )
+        return AgentLoopResult(
+            final_response="done after permission",
             messages=[],
             steps=1,
             completed=True,
@@ -70,6 +99,46 @@ def test_api_creates_approves_and_executes_dag() -> None:
         "node_completed",
         "dag_completed",
     ]
+
+
+def test_api_can_approve_pending_permission_and_resume_dag() -> None:
+    provider = MockProvider([ChatResponse(content=_dag_creator_json())])
+    loop = PermissionThenCompletingLoop()
+    state.control_plane = ControlPlane(
+        dag_creator=LLMDagCreator(provider),
+        executor=DAGExecutor(agent_loop=loop),
+    )
+    state.harness_runtime = None
+    state.runs.clear()
+    client = TestClient(app)
+
+    task_response = client.post(
+        "/tasks",
+        json={"message": "make a small DAG", "task_id": "task_api_permission"},
+    )
+    assert task_response.status_code == 200
+
+    first_execute = client.post("/dags/task_api_permission/execute")
+    assert first_execute.status_code == 200
+    first_payload = first_execute.json()
+    assert first_payload["dag"]["status"] == "paused_for_permission"
+    request = first_payload["result"]["pending_permission_request"]
+    assert request["node_id"] == "answer"
+    assert request["requested_boundary"]["allowed_commands"] == ["python"]
+
+    approve_response = client.post(
+        "/dags/task_api_permission/permissions/approve",
+        json={"boundary": request["requested_boundary"]},
+    )
+    assert approve_response.status_code == 200
+    assert approve_response.json()["permission_request"]["status"] == "approved"
+
+    second_execute = client.post("/dags/task_api_permission/execute")
+    assert second_execute.status_code == 200
+    second_payload = second_execute.json()
+    assert second_payload["dag"]["status"] == "completed"
+    assert second_payload["result"]["completed"] is True
+    assert loop.calls == 2
 
 
 def test_api_approved_medium_risk_runtime_dag_executes() -> None:

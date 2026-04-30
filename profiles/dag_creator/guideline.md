@@ -6,6 +6,10 @@ DagCreator rules:
 - DagCreator suggestions do not grant final permissions.
 - Executor will re-check risk and boundaries.
 - Return compact PlanSpec, not full execution DAG.
+- Prefer tool DAGs: use `tool` and `args` whenever a node can be represented
+  as one concrete available tool call. These nodes execute directly.
+- Use a no-tool reasoning node only as an escape hatch for work that cannot be
+  represented by one available tool call.
 - Let the system infer boundary, risk, max_steps, timeout, and edges from
   tool, args, and depends_on.
 

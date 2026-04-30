@@ -216,6 +216,27 @@ select {
   font-size: 12px;
 }
 
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 10px;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #d9ded7;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  background: #f3f6f2;
+  color: #394750;
+  font-weight: 800;
+}
+
 .think-block {
   margin: 0 0 9px;
   border-left: 3px solid #d5ddd5;
@@ -238,6 +259,11 @@ select {
 
 .think-block p {
   color: #87918b;
+}
+
+.message-timeline {
+  display: grid;
+  gap: 9px;
 }
 
 .dag-summary-card {
@@ -561,6 +587,12 @@ select {
   font-weight: 700;
 }
 
+.danger-button {
+  border-color: #efb5bd;
+  background: #fff2f4;
+  color: #8c2434;
+}
+
 .compact-button {
   width: auto;
 }
@@ -641,6 +673,73 @@ button:disabled {
   display: grid;
   gap: 11px;
   border-bottom: 1px solid #d9ded7;
+}
+
+.permission-panel {
+  margin: 14px;
+  border: 1px solid #efcf8a;
+  border-radius: 8px;
+  background: #fff9e8;
+  padding: 12px;
+  color: #3b3322;
+}
+
+.permission-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #76541f;
+}
+
+.permission-panel-head strong {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+}
+
+.permission-panel-head span {
+  border: 1px solid #e4c678;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.permission-panel p {
+  margin: 9px 0;
+  color: #61481d;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.permission-panel dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.permission-panel dl div {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.permission-panel dt,
+.permission-panel dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.permission-panel dt {
+  color: #76541f;
+  font-weight: 800;
+}
+
+.permission-panel dd {
+  color: #394750;
+  overflow-wrap: anywhere;
 }
 
 .node-editor label {

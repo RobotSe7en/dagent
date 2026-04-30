@@ -26,7 +26,7 @@ from dagent.harness_runtime.dag_creator import DagCreator
 from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
-from dagent.schemas import Boundary, DAG
+from dagent.schemas import Boundary, DAG, PermissionRequest
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
@@ -141,11 +141,49 @@ class HarnessRuntime:
 
     async def execute_dag(self, task_id: str) -> RunResult:
         record = self.tasks[task_id]
-        result = await self.dag_executor.execute(record.dag)
+        result = await self.dag_executor.execute(
+            record.dag,
+            initial_results=_completed_results(record.runs[-1].node_results)
+            if record.runs
+            else None,
+        )
         record.runs.append(result)
-        record.dag.status = "completed" if result.completed else "failed"
+        if result.pending_permission_request is not None:
+            record.dag.status = "paused_for_permission"
+            _node_by_id(record.dag, result.pending_permission_request.node_id).status = "blocked_permission"
+        else:
+            record.dag.status = "completed" if result.completed else "failed"
+            for node_id, node_result in result.node_results.items():
+                _node_by_id(record.dag, node_id).status = "completed" if node_result.completed else "failed"
         self.runs[f"run_{uuid4().hex}"] = result
         return result
+
+    def approve_permission(
+        self,
+        task_id: str,
+        *,
+        boundary: Boundary | None = None,
+    ) -> PermissionRequest:
+        record = self.tasks[task_id]
+        if not record.runs or record.runs[-1].pending_permission_request is None:
+            raise KeyError("No pending permission request.")
+        request = record.runs[-1].pending_permission_request
+        node = _node_by_id(record.dag, request.node_id)
+        node.boundary = boundary or request.requested_boundary
+        node.status = "ready"
+        request.status = "approved"
+        record.dag.status = "approved"
+        return request
+
+    def deny_permission(self, task_id: str) -> PermissionRequest:
+        record = self.tasks[task_id]
+        if not record.runs or record.runs[-1].pending_permission_request is None:
+            raise KeyError("No pending permission request.")
+        request = record.runs[-1].pending_permission_request
+        request.status = "denied"
+        _node_by_id(record.dag, request.node_id).status = "failed"
+        record.dag.status = "aborted"
+        return request
 
     async def _handle_control_tool(self, tool_call: ToolCall) -> ControlToolResult:
         if tool_call.name != DAG_CREATOR_NAME:
@@ -255,3 +293,18 @@ def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _completed_results(node_results: dict) -> dict:
+    return {
+        node_id: result
+        for node_id, result in node_results.items()
+        if getattr(result, "completed", False)
+    }
+
+
+def _node_by_id(dag: DAG, node_id: str):
+    for node in dag.nodes:
+        if node.id == node_id:
+            return node
+    raise KeyError(node_id)

@@ -7,6 +7,7 @@ from dagent.harness_runtime import ControlPlane, DAGExecutionError, DAGExecutor,
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
 from dagent.schemas import Boundary
+from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.registry import Tool
 
 
@@ -22,6 +23,34 @@ class CompletingLoop:
     ) -> AgentLoopResult:
         return AgentLoopResult(
             final_response="node complete",
+            messages=[],
+            steps=1,
+            completed=True,
+            stop_reason="completed",
+        )
+
+
+class PermissionThenCompletingLoop:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(
+        self,
+        user_message: str,
+        *,
+        boundary: Boundary,
+        max_steps: int = 8,
+        allowed_tools: list[str] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AgentLoopResult:
+        self.calls += 1
+        if self.calls == 1:
+            raise BoundaryViolation(
+                "Command 'python --version' is not allowed.",
+                command="python --version",
+            )
+        return AgentLoopResult(
+            final_response="node complete after permission",
             messages=[],
             steps=1,
             completed=True,
@@ -99,6 +128,30 @@ def plan_spec_json() -> str:
     )
 
 
+def plan_spec_json_without_tool() -> str:
+    return json.dumps(
+        {
+            "task": "当前目录有哪些文件？",
+            "nodes": [
+                {
+                    "id": "list_files",
+                    "goal": "列出当前目录有哪些文件。",
+                    "depends_on": [],
+                }
+            ],
+        }
+    )
+
+
+def full_dag_json_with_legacy_single_tool_node() -> str:
+    payload = json.loads(dag_creator_json(tools=["run_command"]))
+    payload["nodes"][0]["id"] = "list_files"
+    payload["nodes"][0]["title"] = "List Files"
+    payload["nodes"][0]["goal"] = "List files in the current directory."
+    payload["nodes"][0]["expected_output"] = "Directory listing."
+    return json.dumps(payload)
+
+
 def test_llm_dag_creator_parses_model_json_into_dag() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json())])
     dag_creator = LLMDagCreator(
@@ -133,11 +186,38 @@ def test_llm_dag_creator_compiles_compact_plan_spec_into_dag() -> None:
     assert dag.task_id == "task_real"
     assert dag.nodes[0].id == "list_files"
     assert dag.nodes[0].title == "List Files"
+    assert dag.nodes[0].kind == "tool"
+    assert dag.nodes[0].tool == "run_command"
+    assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
     assert dag.nodes[0].tools == ["run_command"]
     assert dag.nodes[0].boundary.mode == "read_only"
     assert dag.nodes[0].boundary.allowed_paths == ["."]
     assert dag.nodes[0].boundary.allowed_commands == []
-    assert "Use tool `run_command`" in dag.nodes[0].goal
+    assert dag.nodes[0].max_steps == 1
+
+
+def test_llm_dag_creator_infers_obvious_tool_node_when_model_omits_tool() -> None:
+    provider = MockProvider([ChatResponse(content=plan_spec_json_without_tool())])
+    dag_creator = LLMDagCreator(provider)
+
+    dag = run(dag_creator.aplan("当前目录有哪些文件？", task_id="task_real"))
+
+    assert dag.nodes[0].kind == "tool"
+    assert dag.nodes[0].tool == "run_command"
+    assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
+    assert dag.nodes[0].tools == ["run_command"]
+
+
+def test_llm_dag_creator_normalizes_legacy_full_dag_single_tool_node() -> None:
+    provider = MockProvider([ChatResponse(content=full_dag_json_with_legacy_single_tool_node())])
+    dag_creator = LLMDagCreator(provider)
+
+    dag = run(dag_creator.aplan("当前目录有哪些文件？", task_id="task_real"))
+
+    assert dag.nodes[0].kind == "tool"
+    assert dag.nodes[0].tool == "run_command"
+    assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
+    assert dag.nodes[0].max_steps == 1
 
 
 def test_llm_dag_creator_normalizes_common_boundary_mode_aliases() -> None:
@@ -170,7 +250,7 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
     record = run(control_plane.create_task("Do a safe task", task_id="task_1"))
     result = run(control_plane.execute_task(record.task_id))
 
-    assert record.dag.status == "approved"
+    assert record.dag.status == "completed"
     assert result.completed is True
     assert [event.event_type for event in result.traces] == [
         "dag_started",
@@ -196,3 +276,31 @@ def test_control_plane_requires_review_after_risk_override() -> None:
     control_plane.approve_dag(record.task_id)
     result = run(control_plane.execute_task(record.task_id))
     assert result.completed is True
+
+
+def test_control_plane_pauses_for_permission_and_resumes_after_approval() -> None:
+    provider = MockProvider([ChatResponse(content=dag_creator_json())])
+    dag_creator = LLMDagCreator(provider)
+    loop = PermissionThenCompletingLoop()
+    executor = DAGExecutor(agent_loop=loop)
+    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
+
+    record = run(control_plane.create_task("Run a command", task_id="task_1"))
+    first_result = run(control_plane.execute_task(record.task_id))
+
+    assert first_result.completed is False
+    assert record.dag.status == "paused_for_permission"
+    assert record.pending_permission_request is not None
+    assert record.pending_permission_request.node_id == "inspect"
+    assert record.pending_permission_request.requested_boundary.allowed_commands == ["python"]
+    assert record.dag.nodes[0].status == "blocked_permission"
+
+    permission = control_plane.approve_permission(record.task_id)
+    assert permission.status == "approved"
+    assert record.dag.status == "approved"
+    assert record.dag.nodes[0].boundary.allowed_commands == ["python"]
+
+    second_result = run(control_plane.execute_task(record.task_id))
+    assert second_result.completed is True
+    assert record.dag.status == "completed"
+    assert loop.calls == 2

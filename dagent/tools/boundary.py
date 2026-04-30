@@ -11,6 +11,21 @@ from dagent.schemas import Boundary
 class BoundaryViolation(PermissionError):
     """Raised when a tool call exceeds the node boundary."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool_name: str | None = None,
+        action: str | None = None,
+        path: str | None = None,
+        command: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.action = action
+        self.path = path
+        self.command = command
+
 
 WRITE_ACTIONS = {"write"}
 COMMAND_ACTIONS = {"command"}
@@ -33,33 +48,49 @@ DEFAULT_READ_ONLY_COMMANDS = {
 
 def enforce_tool_allowed(tool_name: str, boundary: Boundary) -> None:
     if tool_name in boundary.forbidden_tools:
-        raise BoundaryViolation(f"Tool '{tool_name}' is forbidden by boundary.")
+        raise BoundaryViolation(
+            f"Tool '{tool_name}' is forbidden by boundary.",
+            tool_name=tool_name,
+        )
 
 
 def enforce_action_allowed(action: str, boundary: Boundary) -> None:
     if action in WRITE_ACTIONS and boundary.mode == "read_only":
-        raise BoundaryViolation("read_only boundary cannot perform write operations.")
+        raise BoundaryViolation(
+            "read_only boundary cannot perform write operations.",
+            action=action,
+        )
 
 
 def enforce_command_allowed(command: str, boundary: Boundary) -> None:
     if COMMAND_CONTROL_PATTERN.search(command):
-        raise BoundaryViolation("Command contains unsupported shell control operators.")
+        raise BoundaryViolation(
+            "Command contains unsupported shell control operators.",
+            command=command,
+        )
 
     executable = _command_executable(command)
     if not executable:
-        raise BoundaryViolation("Command cannot be empty.")
+        raise BoundaryViolation("Command cannot be empty.", command=command)
 
     if executable in boundary.forbidden_commands or command in boundary.forbidden_commands:
-        raise BoundaryViolation(f"Command '{executable}' is forbidden by boundary.")
+        raise BoundaryViolation(
+            f"Command '{executable}' is forbidden by boundary.",
+            command=command,
+        )
 
     allowed = boundary.allowed_commands or _default_allowed_commands(boundary)
     if not allowed:
-        raise BoundaryViolation("Command execution requires boundary.allowed_commands.")
+        raise BoundaryViolation(
+            "Command execution requires boundary.allowed_commands.",
+            command=command,
+        )
 
     if not any(command == item or executable == item for item in allowed):
         allowed_display = ", ".join(allowed)
         raise BoundaryViolation(
-            f"Command '{executable}' is outside allowed commands: {allowed_display}."
+            f"Command '{executable}' is outside allowed commands: {allowed_display}.",
+            command=command,
         )
 
 
@@ -74,7 +105,8 @@ def enforce_path_allowed(path: str | Path, boundary: Boundary, workspace_root: P
     if not any(_is_relative_to(resolved_path, root) for root in resolved_roots):
         allowed_display = ", ".join(str(root) for root in resolved_roots)
         raise BoundaryViolation(
-            f"Path '{resolved_path}' is outside allowed paths: {allowed_display}."
+            f"Path '{resolved_path}' is outside allowed paths: {allowed_display}.",
+            path=str(path),
         )
 
     return resolved_path

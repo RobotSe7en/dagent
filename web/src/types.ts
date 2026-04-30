@@ -13,6 +13,9 @@ export interface DagNode {
   id: string;
   title: string;
   goal: string;
+  kind: 'agent' | 'tool';
+  tool: string | null;
+  args: Record<string, unknown>;
   agent: string | null;
   tools: string[];
   skills: string[];
@@ -22,6 +25,7 @@ export interface DagNode {
   expected_output: string;
   max_steps: number;
   timeout_seconds: number;
+  status?: 'planned' | 'ready' | 'running' | 'blocked_permission' | 'completed' | 'failed' | 'skipped';
 }
 
 export interface DagEdge {
@@ -34,9 +38,28 @@ export interface Dag {
   dag_id: string;
   task_id: string;
   version: number;
-  status: 'draft' | 'review_required' | 'approved' | 'running' | 'completed' | 'failed';
+  status:
+    | 'draft'
+    | 'review_required'
+    | 'approved'
+    | 'running'
+    | 'paused_for_permission'
+    | 'paused_for_replan'
+    | 'completed'
+    | 'failed'
+    | 'aborted';
   nodes: DagNode[];
   edges: DagEdge[];
+}
+
+export interface PermissionRequest {
+  request_id: string;
+  dag_id: string;
+  node_id: string;
+  reason: string;
+  violation: string;
+  requested_boundary: Boundary;
+  status: 'pending' | 'approved' | 'denied';
 }
 
 export interface TraceEvent {
@@ -65,6 +88,7 @@ export interface ToolStreamEvent {
 export interface RunResult {
   dag_id: string;
   completed: boolean;
+  pending_permission_request?: PermissionRequest | null;
   node_results: Record<
     string,
     {
