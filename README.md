@@ -1,10 +1,136 @@
 # dagent
 
-A private-deployable, human-reviewed Agent DAG framework.
+> **Plan statically. Execute dynamically. Stay in control.**
 
-`dagent` turns user requests into reviewable DAGs, lets a human approve risky
-plans, then executes each DAG node through tool calls with dynamic re-planning,
-trace events, and OpenAI-compatible model access.
+**dagent** is a *Dynamic DAG Agent* framework — the first agent orchestration architecture
+to unify conversation-first routing, human-in-the-loop DAG review, incremental re-planning,
+and minimal-context execution into a single coherent runtime.
+
+Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with no
+structure, or a rigid static pipeline with no adaptability. dagent rejects both. It gives
+every task a reviewable plan up front, then lets that plan evolve incrementally as execution
+reveals new information — without ever restarting from scratch or flooding the LLM with
+stale context.
+
+> **Design origin:** This architecture — conversation-first HarnessRuntime, tool-node DAG
+> with three-level incremental re-planning, frozen Trace DB as the context boundary, and
+> DAG-vs-AgentLoop routing discipline — was conceived and first implemented by the author
+> of this repository. First committed: **2026-05-01**.
+
+---
+
+## Core Ideas
+
+**1. Conversation first, DAG when warranted.**
+The top-level agent answers directly or uses tools for simple tasks. A DAG is only created
+when the task genuinely benefits from parallel execution or an auditable execution plan.
+DAG is a power tool, not the default.
+
+**2. Tool nodes, not agent nodes.**
+Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
+nodes, not inside them. This makes each node testable, auditable, and cheap to run.
+
+**3. Three-level re-planning with minimal context.**
+After each node completes, the executor chooses the lightest re-planning strategy that
+suffices — from zero-LLM placeholder injection up to full DAG re-generation. Each level
+receives only the context it needs and nothing more.
+
+**4. Frozen trace as the context boundary.**
+Completed nodes are immediately written to an immutable Trace DB and removed from the
+active LLM context. The re-planner never sees raw historical outputs — only goal-aligned
+summaries when a full re-plan is needed.
+
+**5. Human review as a first-class checkpoint.**
+Medium/high-risk DAGs require explicit approval before execution. Re-planned DAGs can
+trigger a second review. The human is never bypassed.
+
+---
+
+## Architecture
+
+### Harness Runtime Flow
+
+The default WebUI/API path is conversation-first. DAG is a control tool,
+not the default response shape.
+
+```mermaid
+flowchart TD
+  U["User"] --> R["HarnessRuntime"]
+  R --> A["Top AgentLoop"]
+
+  A -->|"direct answer"| O["Return to user"]
+  A -->|"runtime tool"| T["ToolExecutor"]
+  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
+
+  D -->|"review required"| UI["Human Review"]
+  D -->|"approved / auto safe"| E["DAGExecutor"]
+  UI -->|"approve"| E
+  UI -->|"reject / modify"| D
+
+  E --> N["Execute Node"]
+  N --> T
+  N --> OBS["Observe Output"]
+  N -->|"node complete"| TR[("Trace DB\nfrozen node + I/O")]
+
+  OBS -->|"Level 1\ndata contract known"| INJ["Placeholder Injection\nno LLM"]
+  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current node output"]
+  OBS -->|"Level 3\nstructure must change"| RG["DAG Re-generator\ncontext = goal + summaries"]
+
+  INJ --> NXT["Update pending_nodes"]
+  RP --> NXT
+  RG --> NXT
+
+  NXT -->|"has next node"| E
+  NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
+  UI2 -->|"approve"| E
+
+  NXT -->|"DAG complete"| DR["DAG Result Summary"]
+  DR --> A
+```
+
+Runtime modes:
+
+- `auto`: top AgentLoop may call `dag_creator` only when useful.
+- `direct`: top AgentLoop cannot call `dag_creator`.
+- `dag_creator`: bypasses conversation and invokes the DAG creator directly.
+
+### Dynamic DAG Execution
+
+DAG nodes are **tool nodes** — deterministic tool calls, not nested agent loops.
+Intelligence lives in the re-planner, not inside each node. After every node
+completes, the DAGExecutor selects the lightest re-planning strategy that suffices:
+
+| Level | Trigger | Context passed to LLM | LLM call |
+|-------|---------|----------------------|----------|
+| **1 — Placeholder Injection** | Data contract fully defined at DAG creation; only runtime values unknown | Direct predecessor output only | None — pure substitution |
+| **2 — Light Re-planner** | Tool type or parameters require runtime reasoning | Current node output + next node definition | Lightweight |
+| **3 — DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
+
+Key design principles:
+
+- **Context is minimal by design.** Each level receives only the information needed.
+  Completed nodes live in Trace DB and are never re-injected into LLM context.
+- **Frozen nodes are immutable.** Once a node completes it cannot be modified by
+  any re-planner. Audit integrity is preserved.
+- **Re-planning is incremental.** Level 3 re-generates only the pending subgraph.
+  Completed nodes are preserved as-is.
+- **Structure vs. values.** When downstream node count or topology depends on a
+  runtime result, the task belongs in the Top AgentLoop as sequential tool calls,
+  not forced into a static DAG.
+
+### When to Use DAG vs. Agent Loop
+
+| Task shape | Recommended path |
+|------------|-----------------|
+| Independent subtasks that can run in parallel | DAG |
+| Sequential steps with known structure, runtime values only | DAG + placeholder injection |
+| Exploratory — next action depends on what was observed | Top AgentLoop |
+| Dynamic fan-out — node count unknown until runtime | Top AgentLoop |
+
+The `dag_creator` is responsible for this judgment. Forcing exploratory tasks into
+a DAG produces worse results than leaving them as sequential AgentLoop tool calls.
+
+---
 
 ## Current Status
 
@@ -149,107 +275,6 @@ Implemented profile-backed roles:
 - `LLMDagCreator` DAG creator
 - `DAGReviewerAgent`
 - `FeedbackLearnerAgent`
-
-## Harness Runtime Flow
-
-The default WebUI/API path is conversation-first. DAG is a control tool,
-not the default response shape.
-
-```mermaid
-flowchart TD
-  U["User"] --> R["HarnessRuntime"]
-  R --> A["Top AgentLoop"]
-
-  A -->|"direct answer"| O["Return to user"]
-  A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
-
-  D -->|"review required"| UI["Human Review"]
-  D -->|"approved / auto safe"| E["DAGExecutor"]
-  UI -->|"approve"| E
-  UI -->|"reject / modify"| D
-
-  E --> N["Execute Node"]
-  N --> T
-  N --> OBS["Observe Output"]
-  N -->|"node 完成"| TR[("Trace DB\nfrozen node + I/O")]
-
-  OBS -->|"Level 1\n数据契约已知，直接填入"| INJ["Placeholder Injection\n无需 LLM"]
-  OBS -->|"Level 2\n工具/参数需推理"| RP["Light Re-planner\n上下文 = 当前节点输出"]
-  OBS -->|"Level 3\n后续结构需重构"| RG["DAG Re-generator\n上下文 = 原始目标 + 结果摘要"]
-
-  INJ --> NXT["Update pending_nodes"]
-  RP --> NXT
-  RG --> NXT
-
-  NXT -->|"has next node"| E
-  NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
-  UI2 -->|"approve"| E
-
-  NXT -->|"DAG complete"| DR["DAG Result Summary"]
-  DR --> A
-```
-
-Runtime modes:
-
-- `auto`: top AgentLoop may call `dag_creator` only when useful.
-- `direct`: top AgentLoop cannot call `dag_creator`.
-- `dag_creator`: bypasses conversation and invokes the DAG creator directly.
-
-## Dynamic DAG Execution
-
-DAG nodes are **tool nodes** — deterministic tool calls, not nested agent loops.
-Intelligence lives in the re-planner, not inside each node. After every node
-completes, the DAGExecutor decides how to proceed via a three-level strategy:
-
-### Re-planning Levels
-
-| Level | Trigger | Context passed to LLM | LLM call |
-|-------|---------|----------------------|----------|
-| **1 — Placeholder Injection** | Data contract known at DAG creation time; only values are unknown | Direct predecessor node output only | None — pure string substitution |
-| **2 — Light Re-planner** | Tool type or parameters require runtime reasoning | Current node output + next node definition | Lightweight |
-| **3 — DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
-
-Key design principles:
-
-- **Context is minimal by design.** Each level receives only the information
-  needed to make its decision. Completed nodes are stored in Trace DB and never
-  re-injected into the LLM context.
-- **Frozen nodes are immutable.** Once a node completes and is written to Trace
-  DB, it cannot be modified by any re-planner. This preserves audit integrity.
-- **Re-planning is incremental.** Level 3 re-generates only the pending subgraph,
-  not the entire DAG. Completed nodes are preserved as-is.
-- **DAG structure vs. parameter values.** When downstream node count or topology
-  depends on a runtime result, the task should remain in the Top AgentLoop as
-  sequential tool calls rather than being forced into a static DAG.
-
-### When to Use DAG vs. Agent Loop
-
-| Task shape | Recommended path |
-|------------|-----------------|
-| Independent subtasks that can run in parallel | DAG |
-| Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory steps where next action depends on what was observed | Top AgentLoop |
-| Dynamic fan-out (node count unknown until runtime) | Top AgentLoop |
-
-The `dag_creator` profile is responsible for making this judgment. Forcing
-exploratory tasks into a DAG produces worse results than leaving them as
-sequential AgentLoop tool calls.
-
-## Trace DB
-
-Every completed node is written to Trace DB immediately upon completion:
-
-```
-{ node_id, tool, params, output, summary, timestamp, status }
-```
-
-Trace DB serves three purposes:
-
-1. **Audit log** — immutable record of what ran, with what inputs, and what it returned.
-2. **Re-planning source** — Level 3 re-planner reads node summaries (not raw outputs) to
-   reconstruct context without blowing up the LLM context window.
-3. **Human review** — the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ## Safety Model
 
