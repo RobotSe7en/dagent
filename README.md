@@ -3,8 +3,8 @@
 A private-deployable, human-reviewed Agent DAG framework.
 
 `dagent` turns user requests into reviewable DAGs, lets a human approve risky
-plans, then executes each DAG node through a bounded agent loop with tool
-boundary checks, trace events, and OpenAI-compatible model access.
+plans, then executes each DAG node through tool calls with dynamic re-planning,
+trace events, and OpenAI-compatible model access.
 
 ## Current Status
 
@@ -152,7 +152,7 @@ Implemented profile-backed roles:
 
 ## Harness Runtime Flow
 
-The default WebUI/API path is now conversation-first. DAG is a control tool,
+The default WebUI/API path is conversation-first. DAG is a control tool,
 not the default response shape.
 
 ```mermaid
@@ -162,17 +162,31 @@ flowchart TD
 
   A -->|"direct answer"| O["Return to user"]
   A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_creator"| D["Create DAG"]
+  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
 
-  D -->|"review required"| UI["Return DAG for human review"]
-  D -->|"approved/auto safe"| E["DAGExecutor"]
-
+  D -->|"review required"| UI["Human Review"]
+  D -->|"approved / auto safe"| E["DAGExecutor"]
   UI -->|"approve"| E
+  UI -->|"reject / modify"| D
 
-  E --> N["Node AgentLoop without dag_creator"]
+  E --> N["Execute Node"]
   N --> T
+  N --> OBS["Observe Output"]
+  N -->|"node 完成"| TR[("Trace DB\nfrozen node + I/O")]
 
-  E --> DR["DAG result as tool output"]
+  OBS -->|"Level 1\n数据契约已知，直接填入"| INJ["Placeholder Injection\n无需 LLM"]
+  OBS -->|"Level 2\n工具/参数需推理"| RP["Light Re-planner\n上下文 = 当前节点输出"]
+  OBS -->|"Level 3\n后续结构需重构"| RG["DAG Re-generator\n上下文 = 原始目标 + 结果摘要"]
+
+  INJ --> NXT["Update pending_nodes"]
+  RP --> NXT
+  RG --> NXT
+
+  NXT -->|"has next node"| E
+  NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
+  UI2 -->|"approve"| E
+
+  NXT -->|"DAG complete"| DR["DAG Result Summary"]
   DR --> A
 ```
 
@@ -181,6 +195,80 @@ Runtime modes:
 - `auto`: top AgentLoop may call `dag_creator` only when useful.
 - `direct`: top AgentLoop cannot call `dag_creator`.
 - `dag_creator`: bypasses conversation and invokes the DAG creator directly.
+
+## Dynamic DAG Execution
+
+DAG nodes are **tool nodes** — deterministic tool calls, not nested agent loops.
+Intelligence lives in the re-planner, not inside each node. After every node
+completes, the DAGExecutor decides how to proceed via a three-level strategy:
+
+### Re-planning Levels
+
+| Level | Trigger | Context passed to LLM | LLM call |
+|-------|---------|----------------------|----------|
+| **1 — Placeholder Injection** | Data contract known at DAG creation time; only values are unknown | Direct predecessor node output only | None — pure string substitution |
+| **2 — Light Re-planner** | Tool type or parameters require runtime reasoning | Current node output + next node definition | Lightweight |
+| **3 — DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
+
+Key design principles:
+
+- **Context is minimal by design.** Each level receives only the information
+  needed to make its decision. Completed nodes are stored in Trace DB and never
+  re-injected into the LLM context.
+- **Frozen nodes are immutable.** Once a node completes and is written to Trace
+  DB, it cannot be modified by any re-planner. This preserves audit integrity.
+- **Re-planning is incremental.** Level 3 re-generates only the pending subgraph,
+  not the entire DAG. Completed nodes are preserved as-is.
+- **DAG structure vs. parameter values.** When downstream node count or topology
+  depends on a runtime result, the task should remain in the Top AgentLoop as
+  sequential tool calls rather than being forced into a static DAG.
+
+### When to Use DAG vs. Agent Loop
+
+| Task shape | Recommended path |
+|------------|-----------------|
+| Independent subtasks that can run in parallel | DAG |
+| Sequential steps with known structure, runtime values only | DAG + placeholder injection |
+| Exploratory steps where next action depends on what was observed | Top AgentLoop |
+| Dynamic fan-out (node count unknown until runtime) | Top AgentLoop |
+
+The `dag_creator` profile is responsible for making this judgment. Forcing
+exploratory tasks into a DAG produces worse results than leaving them as
+sequential AgentLoop tool calls.
+
+## Trace DB
+
+Every completed node is written to Trace DB immediately upon completion:
+
+```
+{ node_id, tool, params, output, summary, timestamp, status }
+```
+
+Trace DB serves three purposes:
+
+1. **Audit log** — immutable record of what ran, with what inputs, and what it returned.
+2. **Re-planning source** — Level 3 re-planner reads node summaries (not raw outputs) to
+   reconstruct context without blowing up the LLM context window.
+3. **Human review** — the WebUI surfaces the trace timeline alongside the DAG graph.
+
+## Safety Model
+
+The runtime is intentionally layered:
+
+- DAG creator proposes a DAG but does not grant permissions.
+- `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks
+  medium/high risk DAGs until they are approved.
+- Each node is a bounded tool call; there is no nested agent loop inside a node.
+- `ToolExecutor` enforces boundaries before every tool call.
+- `Skills` are intended to be prompt instructions, not permissions.
+- Human review can be triggered at initial DAG creation and after any Level 3 re-plan.
+
+Boundary checks currently cover:
+
+- `read_only` nodes cannot write files
+- `allowed_paths` prevents path traversal and absolute path escape
+- `forbidden_tools` blocks specific tools
+- unregistered tools fail closed
 
 ## Development
 
@@ -233,24 +321,6 @@ If the API runs on another port, set `VITE_API_TARGET` before starting Vite:
 $env:VITE_API_TARGET="http://127.0.0.1:8000"
 npm run dev
 ```
-
-## Safety Model
-
-The runtime is intentionally layered:
-
-- DAG creator proposes a DAG but does not grant permissions.
-- `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks
-  medium/high risk DAGs until they are approved.
-- `AgentLoop` only runs a single bounded node.
-- `ToolExecutor` enforces boundaries before every tool call.
-- `Skills` are intended to be prompt instructions, not permissions.
-
-Boundary checks currently cover:
-
-- `read_only` nodes cannot write files
-- `allowed_paths` prevents path traversal and absolute path escape
-- `forbidden_tools` blocks specific tools
-- unregistered tools fail closed
 
 ## Quick Smoke Test
 
