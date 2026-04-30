@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import { approveDag as approveDagApi, executeDag as executeDagApi, mapTrace, saveDag, streamTask } from './api';
-import type { BoundaryMode, Dag, DagNode, RiskLevel, TraceEvent } from './types';
+import type { BoundaryMode, Dag, DagNode, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskTone: Record<RiskLevel, string> = {
   low: 'bg-emerald-100 text-emerald-800 border-emerald-300',
@@ -48,6 +48,8 @@ const emptyDag: Dag = {
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  kind?: 'text' | 'tool';
+  toolEvent?: ToolStreamEvent;
   dagSnapshot?: Dag;
   traceSnapshot?: TraceEvent[];
 }
@@ -141,21 +143,22 @@ export function App() {
     [dag, syncDag],
   );
 
-  const updateLastAssistant = (updater: (message: ChatMessage) => ChatMessage) => {
+  const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
       const copy = [...items];
       for (let index = copy.length - 1; index >= 0; index -= 1) {
-        if (copy[index].role === 'assistant') {
+        if (copy[index].role === 'assistant' && (copy[index].kind ?? 'text') === 'text') {
           copy[index] = updater(copy[index]);
-          break;
+          return copy;
         }
       }
+      copy.push(updater({ role: 'assistant', kind: 'text', content: '' }));
       return copy;
     });
   };
 
   const appendAssistantContent = (content: string) => {
-    updateLastAssistant((message) => ({
+    updateLastAssistantText((message) => ({
       ...message,
       content: `${message.content}${content}`,
     }));
@@ -190,6 +193,14 @@ export function App() {
     appendAssistantContent(chunk);
   };
 
+  const flushQueuedTokensNow = () => {
+    const pending = tokenQueueRef.current.join('');
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+    resolveTokenDrain();
+    if (pending) appendAssistantContent(pending);
+  };
+
   const ensureTokenTimer = () => {
     if (tokenTimerRef.current !== null) return;
     tokenTimerRef.current = window.setInterval(flushTokenQueue, 24);
@@ -211,17 +222,10 @@ export function App() {
   };
 
   const attachDagToLastAssistant = (nextDag: Dag) => {
-    updateLastAssistant((message) => ({
+    updateLastAssistantText((message) => ({
       ...message,
       dagSnapshot: nextDag,
-      traceSnapshot: message.traceSnapshot ?? trace,
-    }));
-  };
-
-  const attachTraceToLastAssistant = (event: TraceEvent) => {
-    updateLastAssistant((message) => ({
-      ...message,
-      traceSnapshot: [...(message.traceSnapshot ?? []), event],
+      traceSnapshot: message.traceSnapshot,
     }));
   };
 
@@ -229,8 +233,20 @@ export function App() {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
     setTrace((items) => [...items, nextEvent]);
-    attachTraceToLastAssistant(nextEvent);
     return nextEvent;
+  };
+
+  const appendToolMessage = (event: ToolStreamEvent) => {
+    flushQueuedTokensNow();
+    setMessages((items) => [
+      ...items,
+      {
+        role: 'assistant',
+        kind: 'tool',
+        content: '',
+        toolEvent: event,
+      },
+    ]);
   };
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
@@ -253,23 +269,25 @@ export function App() {
     tokenQueueRef.current = [];
     stopTokenTimer();
     setStreaming(true);
-    setMessages((items) => [...items, { role: 'user', content: prompt }, { role: 'assistant', content: '' }]);
+    setMessages((items) => [...items, { role: 'user', kind: 'text', content: prompt }]);
     appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
 
     try {
       await streamTask(prompt, mode, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop request accepted.', status: 'running' }),
         onDag: (nextDag) => {
+          flushQueuedTokensNow();
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
           setReviewOpen(true);
         },
         onTrace: (event) => {
           setTrace((items) => [...items, event]);
-          attachTraceToLastAssistant(event);
         },
+        onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
+          flushQueuedTokensNow();
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
@@ -398,9 +416,13 @@ export function App() {
           {error ? <div className="error-banner">{error}</div> : null}
           <div className="message-list" ref={messageListRef}>
             {messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`message ${message.role}`}>
-                <span>{message.role}</span>
-                <MessageContent content={message.content || (streaming ? '...' : '')} />
+              <div key={`${message.role}-${index}`} className={`message ${message.role} ${message.kind ?? 'text'}`}>
+                <span>{message.kind === 'tool' ? 'tool' : message.role}</span>
+                {message.kind === 'tool' && message.toolEvent ? (
+                  <ToolEventCard event={message.toolEvent} />
+                ) : (
+                  <MessageContent content={message.content || (streaming ? '...' : '')} />
+                )}
                 {message.dagSnapshot?.nodes.length ? (
                   <DagSummaryCard
                     dag={message.dagSnapshot}
@@ -536,6 +558,22 @@ function DagSummaryCard({
   );
 }
 
+function ToolEventCard({ event }: { event: ToolStreamEvent }) {
+  const isCall = event.type === 'tool_call';
+  const isError = event.type === 'tool_error';
+  const detail = isCall ? formatToolArguments(event.arguments) : event.content || '';
+  return (
+    <div className={`tool-event-card ${event.type}`}>
+      <div className="tool-event-head">
+        <Wrench size={14} />
+        <strong>{event.name}</strong>
+        <span>{isCall ? 'calling' : isError ? 'failed' : 'result'}</span>
+      </div>
+      {detail ? <pre>{clipText(detail, 1200)}</pre> : null}
+    </div>
+  );
+}
+
 function TraceQueue({ trace }: { trace: TraceEvent[] }) {
   return (
     <div className="message-trace">
@@ -553,6 +591,15 @@ function TraceQueue({ trace }: { trace: TraceEvent[] }) {
       </div>
     </div>
   );
+}
+
+function formatToolArguments(value: Record<string, unknown>) {
+  if (!Object.keys(value).length) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function clipText(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
 function DagReviewDialog({

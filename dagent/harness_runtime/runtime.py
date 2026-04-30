@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-from dagent.harness_runtime.agent_loop import AgentLoop, ControlToolResult, TokenHandler
+from dagent.harness_runtime.agent_loop import (
+    AgentLoop,
+    ControlToolResult,
+    LoopEventHandler,
+    TokenHandler,
+)
 from dagent.harness_runtime.control_plane import TaskRecord
 from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
@@ -71,6 +76,7 @@ class HarnessRuntime:
         *,
         mode: RuntimeMode = "auto",
         on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult:
         if mode == "dag_creator":
             record = await self.create_dag(message)
@@ -101,6 +107,7 @@ class HarnessRuntime:
             control_tool_names={DAG_CREATOR_NAME} if include_dag_creator else None,
             control_tool_handler=self._handle_control_tool if include_dag_creator else None,
             on_token=on_token,
+            on_event=on_event,
         )
 
         dag_event = _latest_dag_event(result.control_events)

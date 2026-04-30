@@ -54,6 +54,14 @@ export interface TraceEvent {
   timestamp: string;
 }
 
+export interface ToolStreamEvent {
+  type: 'tool_call' | 'tool_result' | 'tool_error';
+  tool_call_id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  content?: string;
+}
+
 export interface RunResult {
   dag_id: string;
   completed: boolean;

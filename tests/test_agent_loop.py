@@ -99,6 +99,50 @@ def test_agent_loop_executes_tool_call_and_writes_result_to_messages(
     assert provider.requests[1]["messages"][-1]["role"] == "tool"
 
 
+def test_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hello from file", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "notes.txt"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I read it."),
+        ]
+    )
+    loop = make_loop(tmp_path, provider)
+    events: list[dict] = []
+
+    result = run(
+        loop.run(
+            "Read notes",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            on_event=events.append,
+        )
+    )
+
+    assert result.completed is True
+    assert [event["type"] for event in events] == ["tool_call", "tool_result"]
+    assert events[0] == {
+        "type": "tool_call",
+        "tool_call_id": "call_1",
+        "name": "read_file",
+        "arguments": {"path": "notes.txt"},
+    }
+    assert events[1] == {
+        "type": "tool_result",
+        "tool_call_id": "call_1",
+        "name": "read_file",
+        "arguments": {"path": "notes.txt"},
+        "content": "hello from file",
+    }
+
+
 def test_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
     provider = MockProvider(

@@ -1,4 +1,4 @@
-import type { Dag, TraceEvent } from './types';
+import type { Dag, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -57,6 +57,7 @@ export async function streamTask(
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
+    onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
     onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
     onError?: (message: string) => void;
@@ -88,6 +89,9 @@ export async function streamTask(
       if (event.type === 'status') handlers.onStatus?.(event.message);
       if (event.type === 'dag') handlers.onDag?.(event.dag);
       if (event.type === 'trace') handlers.onTrace?.(mapTrace(event.event));
+      if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
+        handlers.onTool?.(event);
+      }
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);

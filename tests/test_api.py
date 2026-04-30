@@ -12,7 +12,7 @@ from dagent.harness_runtime import (
     LLMDagCreator,
 )
 from dagent.profiles import AgentProfile
-from dagent.providers import ChatResponse, MockProvider
+from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
@@ -134,6 +134,57 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
     assert response.status_code == 200
     assert "hello there" in response.text
     assert '"dag": null' in response.text
+
+
+def test_api_message_stream_interleaves_tool_events() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="echo",
+                        arguments={"text": "hi"},
+                    )
+                ]
+            ),
+            ChatResponse(content="done"),
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    state.harness_runtime = HarnessRuntime(
+        agent_loop=AgentLoop(
+            provider=provider,
+            tool_executor=ToolExecutor(registry),
+        ),
+        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        conversation_profile=_profile("conversation"),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "echo hi", "mode": "direct"},
+    )
+
+    assert response.status_code == 200
+    lines = [line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")]
+    event_types = [json.loads(line)["type"] for line in lines]
+    assert "tool_call" in event_types
+    assert "tool_result" in event_types
+    assert event_types.index("tool_call") < event_types.index("tool_result") < event_types.index("done")
+    assert '"content": "echo:hi"' in response.text
 
 
 def _dag_creator_json(

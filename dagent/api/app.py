@@ -105,27 +105,31 @@ async def create_task_stream(request: CreateTaskRequest) -> StreamingResponse:
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
         yield _sse({"type": "status", "message": "agent_loop_started"})
-        token_queue: asyncio.Queue[str] = asyncio.Queue()
+        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         def on_token(content: str) -> None:
-            token_queue.put_nowait(content)
+            event_queue.put_nowait({"type": "token", "content": content})
+
+        def on_event(event: dict[str, Any]) -> None:
+            event_queue.put_nowait(event)
 
         task = asyncio.create_task(
             state.get_harness_runtime().handle_message(
                 request.message,
                 mode=request.mode,
                 on_token=on_token,
+                on_event=on_event,
             )
         )
         try:
             while not task.done():
                 try:
-                    token = await asyncio.wait_for(token_queue.get(), timeout=0.05)
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
                 except asyncio.TimeoutError:
                     continue
-                yield _sse({"type": "token", "content": token})
-            while not token_queue.empty():
-                yield _sse({"type": "token", "content": token_queue.get_nowait()})
+                yield _sse(event)
+            while not event_queue.empty():
+                yield _sse(event_queue.get_nowait())
             result = await task
         except Exception as exc:
             if not task.done():

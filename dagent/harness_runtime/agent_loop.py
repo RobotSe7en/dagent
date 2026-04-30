@@ -32,6 +32,7 @@ class AgentLoopResult:
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
 TokenHandler = Callable[[str], None]
+LoopEventHandler = Callable[[dict[str, Any]], None]
 
 
 class AgentLoop:
@@ -58,6 +59,7 @@ class AgentLoop:
         control_tool_names: set[str] | None = None,
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
     ) -> AgentLoopResult:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -92,10 +94,15 @@ class AgentLoop:
                 )
 
             for tool_call in response.tool_calls:
+                self._emit_tool_event(on_event, tool_call, "tool_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
                         raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
-                    control_result = await control_tool_handler(tool_call)
+                    try:
+                        control_result = await control_tool_handler(tool_call)
+                    except Exception as exc:
+                        self._emit_tool_event(on_event, tool_call, "tool_error", content=str(exc))
+                        raise
                     control_events.extend(control_result.events)
                     loop_messages.append(
                         {
@@ -104,6 +111,12 @@ class AgentLoop:
                             "name": tool_call.name,
                             "content": control_result.content,
                         }
+                    )
+                    self._emit_tool_event(
+                        on_event,
+                        tool_call,
+                        "tool_result",
+                        content=control_result.content,
                     )
                     if control_result.stop_reason:
                         return AgentLoopResult(
@@ -118,11 +131,15 @@ class AgentLoop:
 
                 if allowed_tools is not None and tool_call.name not in allowed_tools:
                     raise ValueError(f"Tool '{tool_call.name}' is not allowed for this node.")
-                tool_result = self.tool_executor.execute(
-                    tool_call.name,
-                    tool_call.arguments,
-                    boundary=boundary,
-                )
+                try:
+                    tool_result = self.tool_executor.execute(
+                        tool_call.name,
+                        tool_call.arguments,
+                        boundary=boundary,
+                    )
+                except Exception as exc:
+                    self._emit_tool_event(on_event, tool_call, "tool_error", content=str(exc))
+                    raise
                 loop_messages.append(
                     {
                         "role": "tool",
@@ -131,6 +148,7 @@ class AgentLoop:
                         "content": tool_result,
                     }
                 )
+                self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
 
         return AgentLoopResult(
             final_response="",
@@ -207,3 +225,23 @@ class AgentLoop:
                 "arguments": json.dumps(tool_call.arguments),
             },
         }
+
+    def _emit_tool_event(
+        self,
+        on_event: LoopEventHandler | None,
+        tool_call: ToolCall,
+        event_type: str,
+        *,
+        content: str | None = None,
+    ) -> None:
+        if on_event is None:
+            return
+        payload: dict[str, Any] = {
+            "type": event_type,
+            "tool_call_id": tool_call.id,
+            "name": tool_call.name,
+            "arguments": tool_call.arguments,
+        }
+        if content is not None:
+            payload["content"] = content
+        on_event(payload)

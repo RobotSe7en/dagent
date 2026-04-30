@@ -162,6 +162,12 @@ select {
   border-left: 3px solid #327a8d;
 }
 
+.message.tool {
+  width: min(720px, 92%);
+  background: #fbfcfa;
+  border-left-color: #6d7f4f;
+}
+
 .message.user {
   align-self: flex-end;
   border-left: 3px solid #8b4f6f;
@@ -282,6 +288,66 @@ select {
   color: #4f5c65;
   font-size: 12px;
   font-weight: 750;
+}
+
+.tool-event-card {
+  border: 1px solid #d7decf;
+  border-radius: 8px;
+  background: #f7faf3;
+  overflow: hidden;
+}
+
+.tool-event-card.tool_error {
+  border-color: #efb5bd;
+  background: #fff7f8;
+}
+
+.tool-event-head {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid #e4e9dd;
+  color: #394750;
+  font-size: 12px;
+}
+
+.tool-event-head strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-event-head span {
+  border: 1px solid #cdd8c5;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  color: #52615c;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.tool-event-card.tool_error .tool-event-head span {
+  border-color: #efb5bd;
+  color: #a33345;
+}
+
+.tool-event-card pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  color: #3a464f;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .message-trace {
