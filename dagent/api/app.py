@@ -257,16 +257,17 @@ def _get_task(task_id: str) -> TaskRecord:
 
 
 def _runtime_message_markdown(result) -> str:
-    if result.status == "awaiting_approval" and result.dag is not None:
+    if result.dag is not None:
         medium_or_high = [
             node for node in result.dag.nodes
             if node.risk in {"medium", "high"}
         ]
-        review_line = (
-            f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
-            if medium_or_high
-            else "- **Review required:** DAG is waiting for review."
-        )
+        if result.dag.status == "approved":
+            review_line = "- **Next action:** DAG is approved and ready to execute."
+        elif medium_or_high:
+            review_line = f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
+        else:
+            review_line = "- **Next action:** Review or execute the DAG."
         return "\n".join(
             [
                 "### DAG created",

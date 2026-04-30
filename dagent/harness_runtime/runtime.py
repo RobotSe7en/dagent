@@ -51,7 +51,7 @@ class HarnessRuntime:
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
-        auto_execute_approved_dags: bool = True,
+        auto_execute_approved_dags: bool = False,
         max_top_steps: int = 8,
     ) -> None:
         self.agent_loop = agent_loop

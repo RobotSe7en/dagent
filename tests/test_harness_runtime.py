@@ -16,6 +16,9 @@ from dagent.tools.registry import ToolRegistry
 
 
 class CompletingLoop:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def run(
         self,
         user_message: str,
@@ -25,6 +28,7 @@ class CompletingLoop:
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
     ) -> AgentLoopResult:
+        self.calls += 1
         return AgentLoopResult(
             final_response="node complete",
             messages=[],
@@ -79,14 +83,43 @@ def test_harness_runtime_dag_creator_creates_reviewable_dag() -> None:
     assert result.task_id in runtime.tasks
 
 
-def _runtime(provider: MockProvider) -> HarnessRuntime:
+def test_harness_runtime_dag_creator_does_not_auto_execute_approved_dag() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="dag_creator",
+                        arguments={
+                            "request": "Create a safe DAG.",
+                            "reason": "Needs reviewable orchestration.",
+                        },
+                    )
+                ]
+            ),
+            ChatResponse(content=_dag_creator_json()),
+        ]
+    )
+    node_loop = CompletingLoop()
+    runtime = _runtime(provider, node_loop=node_loop)
+
+    result = run(runtime.handle_message("Create a safe DAG", mode="auto"))
+
+    assert result.status == "awaiting_approval"
+    assert result.dag is not None
+    assert result.dag.status == "approved"
+    assert node_loop.calls == 0
+
+
+def _runtime(provider: MockProvider, *, node_loop: CompletingLoop | None = None) -> HarnessRuntime:
     tool_executor = ToolExecutor(ToolRegistry())
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
     dag_creator = LLMDagCreator(provider, profile=_dag_creator_profile())
     return HarnessRuntime(
         agent_loop=agent_loop,
         dag_creator=dag_creator,
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        dag_executor=DAGExecutor(agent_loop=node_loop or CompletingLoop()),
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
     )
