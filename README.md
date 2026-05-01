@@ -1,44 +1,45 @@
 # dagent
 
-> **Plan statically. Execute dynamically. Stay in control.**
+> **Plan. Observe. Re-plan. Execute.**
 
-**dagent** is a *Dynamic DAG Agent* framework — the first agent orchestration architecture
-to unify conversation-first routing, human-in-the-loop DAG review, incremental re-planning,
-and minimal-context execution into a single coherent runtime.
+**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable
+DAG, runs it node by node, and incrementally re-plans the remaining graph as each node's
+output reveals new information — without restarting, without bloating context.
 
-Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with no
-structure, or a rigid static pipeline with no adaptability. dagent rejects both. It gives
-every task a reviewable plan up front, then lets that plan evolve incrementally as execution
-reveals new information — without ever restarting from scratch or flooding the LLM with
-stale context.
+Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
+no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
+task gets a reviewable, auditable plan up front. That plan evolves as execution proceeds —
+only the parts that need changing are changed, and everything already executed is frozen
+and immutable.
 
-> **Design origin:** This architecture — conversation-first HarnessRuntime, tool-node DAG
-> with three-level incremental re-planning, frozen Trace DB as the context boundary, and
-> DAG-vs-AgentLoop routing discipline — was conceived and first implemented by the author
-> of this repository. First committed: **2026-05-01**.
+> **Design origin:** The self-planning dynamic DAG agent loop — tool-node DAG with
+> three-level incremental re-planning, frozen Trace DB as the context boundary, and
+> automatic DAG-vs-AgentLoop task routing — was conceived and first implemented by the
+> author of this repository. First committed: **2026-05-01**.
 
 ---
 
 ## Core Ideas
 
-**1. Conversation first, DAG when warranted.**
-The top-level agent answers directly or uses tools for simple tasks. A DAG is only created
-when the task genuinely benefits from parallel execution or an auditable execution plan.
-DAG is a power tool, not the default.
+**1. Self-planning DAG, not a static pipeline.**
+The agent generates the initial DAG from the goal. After each node executes, it observes
+the output and decides whether to inject values, re-reason locally, or re-generate the
+downstream subgraph. The plan is always the latest best understanding of how to reach
+the goal.
 
 **2. Tool nodes, not agent nodes.**
 Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
-nodes, not inside them. This makes each node testable, auditable, and cheap to run.
+nodes, not inside them. Nodes are cheap, testable, and auditable.
 
 **3. Three-level re-planning with minimal context.**
-After each node completes, the executor chooses the lightest re-planning strategy that
-suffices — from zero-LLM placeholder injection up to full DAG re-generation. Each level
-receives only the context it needs and nothing more.
+After each node completes, the executor picks the lightest strategy that suffices —
+from zero-LLM placeholder substitution up to full downstream re-generation. Each level
+receives only the context it actually needs.
 
 **4. Frozen trace as the context boundary.**
-Completed nodes are immediately written to an immutable Trace DB and removed from the
-active LLM context. The re-planner never sees raw historical outputs — only goal-aligned
-summaries when a full re-plan is needed.
+Completed nodes are immediately written to an immutable Trace DB and dropped from the
+active LLM context. The re-planner reads goal-aligned summaries, never raw history.
+Context stays bounded regardless of task length.
 
 **5. Human review as a first-class checkpoint.**
 Medium/high-risk DAGs require explicit approval before execution. Re-planned DAGs can
@@ -48,19 +49,14 @@ trigger a second review. The human is never bypassed.
 
 ## Architecture
 
-### Harness Runtime Flow
-
-The default WebUI/API path is conversation-first. DAG is a control tool,
-not the default response shape.
+### Dynamic DAG Agent Loop
 
 ```mermaid
 flowchart TD
-  U["User"] --> R["HarnessRuntime"]
-  R --> A["Top AgentLoop"]
+  U["User Goal"] --> A["AgentLoop"]
 
-  A -->|"direct answer"| O["Return to user"]
-  A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
+  A -->|"simple task\ndirect tool call"| T["ToolExecutor"]
+  A -->|"complex task\nneeds planning"| D["DAG Creator\ngenerate tool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -69,114 +65,107 @@ flowchart TD
 
   E --> N["Execute Node"]
   N --> T
-  N --> OBS["Observe Output"]
   N -->|"node complete"| TR[("Trace DB\nfrozen node + I/O")]
+  N --> OBS["Observe Output"]
 
   OBS -->|"Level 1\ndata contract known"| INJ["Placeholder Injection\nno LLM"]
-  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current node output"]
+  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current output"]
   OBS -->|"Level 3\nstructure must change"| RG["DAG Re-generator\ncontext = goal + summaries"]
 
   INJ --> NXT["Update pending_nodes"]
   RP --> NXT
   RG --> NXT
 
-  NXT -->|"has next node"| E
   NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
   UI2 -->|"approve"| E
-
-  NXT -->|"DAG complete"| DR["DAG Result Summary"]
+  NXT -->|"has next node"| E
+  NXT -->|"DAG complete"| DR["Result Summary"]
   DR --> A
 ```
 
-Runtime modes:
+### Three-Level Re-planning
 
-- `auto`: top AgentLoop may call `dag_creator` only when useful.
-- `direct`: top AgentLoop cannot call `dag_creator`.
-- `dag_creator`: bypasses conversation and invokes the DAG creator directly.
+After every node completes, the DAGExecutor selects the minimum re-planning strategy:
 
-### Dynamic DAG Execution
-
-DAG nodes are **tool nodes** — deterministic tool calls, not nested agent loops.
-Intelligence lives in the re-planner, not inside each node. After every node
-completes, the DAGExecutor selects the lightest re-planning strategy that suffices:
-
-| Level | Trigger | Context passed to LLM | LLM call |
-|-------|---------|----------------------|----------|
-| **1 — Placeholder Injection** | Data contract fully defined at DAG creation; only runtime values unknown | Direct predecessor output only | None — pure substitution |
-| **2 — Light Re-planner** | Tool type or parameters require runtime reasoning | Current node output + next node definition | Lightweight |
+| Level | Trigger | Context passed to LLM | Cost |
+|-------|---------|----------------------|------|
+| **1 — Placeholder Injection** | Data contract defined at creation; only values unknown | Predecessor output → direct substitution | No LLM call |
+| **2 — Light Re-planner** | Next node's tool or params require runtime reasoning | Current node output + next node definition | Lightweight |
 | **3 — DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
 
-Key design principles:
+Design principles:
 
-- **Context is minimal by design.** Each level receives only the information needed.
-  Completed nodes live in Trace DB and are never re-injected into LLM context.
-- **Frozen nodes are immutable.** Once a node completes it cannot be modified by
-  any re-planner. Audit integrity is preserved.
-- **Re-planning is incremental.** Level 3 re-generates only the pending subgraph.
+- **Minimal context by design.** Each level receives only what it needs. Completed nodes
+  live in Trace DB and are never re-injected into LLM context.
+- **Incremental re-planning.** Level 3 re-generates only the pending subgraph.
   Completed nodes are preserved as-is.
-- **Structure vs. values.** When downstream node count or topology depends on a
-  runtime result, the task belongs in the Top AgentLoop as sequential tool calls,
-  not forced into a static DAG.
+- **Frozen nodes are immutable.** Once written to Trace DB, a node's record cannot be
+  modified. Audit integrity is guaranteed.
 
-### When to Use DAG vs. Agent Loop
+### When to Use DAG vs. Direct Tool Calls
 
-| Task shape | Recommended path |
-|------------|-----------------|
-| Independent subtasks that can run in parallel | DAG |
+| Task shape | Path |
+|------------|------|
+| Subtasks that can run in parallel | DAG |
 | Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory — next action depends on what was observed | Top AgentLoop |
-| Dynamic fan-out — node count unknown until runtime | Top AgentLoop |
+| Exploratory — next action depends on observation | Direct AgentLoop tool calls |
+| Dynamic fan-out — node count unknown until runtime | Direct AgentLoop tool calls |
 
-The `dag_creator` is responsible for this judgment. Forcing exploratory tasks into
-a DAG produces worse results than leaving them as sequential AgentLoop tool calls.
+Forcing exploratory tasks into a DAG produces worse results than leaving them as
+sequential tool calls. The DAG Creator is responsible for this routing judgment.
+
+### Trace DB
+
+Every completed node is written immediately on completion:
+
+```
+{ node_id, tool, params, output, summary, timestamp, status }
+```
+
+Trace DB serves three purposes:
+
+1. **Audit log** — immutable record of what ran, with what inputs, and what it returned.
+2. **Re-planning source** — Level 3 re-planner reads summaries, not raw outputs, keeping
+   context bounded regardless of how many nodes have executed.
+3. **Human review** — the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ---
 
-## Current Status
+## Safety Model
 
-Implemented milestones:
+The runtime is intentionally layered:
 
-- **Milestone 1**: Pydantic schemas, mock DAG creator, DAG validation
-- **Milestone 2**: tool registry, file tools, boundary enforcement
-- **Milestone 3**: OpenAI-compatible provider, mock provider, bounded agent loop
-- **Milestone 4**: DAG executor, topo scheduling, risk override, trace recording
+- DAG Creator proposes a DAG but does not grant permissions.
+- `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
+  risk DAGs until explicitly approved.
+- Each node is a bounded tool call — no nested agent loop inside a node.
+- `ToolExecutor` enforces boundaries before every tool call.
+- Human review can be triggered at initial DAG creation and after any Level 3 re-plan.
 
-Also implemented:
+Boundary checks:
 
-- LLM-backed DAG creator (`LLMDagCreator`) using the configured OpenAI-compatible model
-- Harness control plane (`ControlPlane`) for plan -> validate -> review status -> approve -> execute
-- Default factory (`create_control_plane`) that wires MiniMax/OpenAI-compatible provider,
-  tool executor, agent loop, DAG creator, DAG executor, and trace recorder
-- Harness runtime (`HarnessRuntime`) as the new conversation-first entrypoint:
-  top-level AgentLoop can answer directly, use runtime tools, or call `dag_creator`
-  when complex DAG orchestration is warranted
-- FastAPI control plane for task creation, DAG editing, approval, execution, and trace retrieval
-- React WebUI connected to the real API with markdown chat, DAG review/editing, and trace display
+- `read_only` nodes cannot write files
+- `allowed_paths` prevents path traversal and absolute path escape
+- `forbidden_tools` blocks specific tools
+- unregistered tools fail closed
 
-Not implemented yet:
-
-- persistent storage
-- feedback learner
+---
 
 ## Project Layout
 
 ```text
 dagent/
-  api/          FastAPI app exposing task, DAG, run, and trace endpoints
-  harness_runtime/
-                conversation-first runtime, AgentLoop, DAG planning/execution,
-                review agents, trace recording, and dag_creator control tool
-  providers/    OpenAI-compatible and mock chat providers
-  schemas/      DAG, node, edge, trace, feedback models
-  tools/        tool registry, executor, file tools, boundary checks
-  state/        prompt assembly and future context/memory/session state
-profiles/       editable agent profiles for DAG creator/reviewer/feedback agents
-tests/          pytest suite
+  api/              FastAPI app — task, DAG, run, and trace endpoints
+  harness_runtime/  AgentLoop, DAGExecutor, re-planner, trace recorder, dag_creator tool
+  providers/        OpenAI-compatible and mock chat providers
+  schemas/          DAG, node, edge, trace, feedback models
+  tools/            tool registry, executor, file tools, boundary checks
+  state/            prompt assembly and context management
+profiles/           editable agent profiles (dag_creator, dag_reviewer, feedback_learner)
+tests/              pytest suite
 ```
 
 ## Configuration
-
-Model settings live in `config.yaml`.
 
 ```yaml
 provider:
@@ -184,7 +173,6 @@ provider:
   model: "MiniMax-M2.1"
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
-  strip_thinking: false
 profiles:
   directory: "profiles"
   dag_creator: "dag_creator"
@@ -192,13 +180,13 @@ profiles:
   feedback_learner: "feedback_learner"
 ```
 
-Secrets should live in `.env`, which is ignored by git:
+Secrets in `.env` (git-ignored):
 
 ```env
 MINIMAX_API_KEY=your-api-key
 ```
 
-You can point to another config file with:
+Override config path:
 
 ```powershell
 $env:DAGENT_CONFIG="C:\path\to\config.yaml"
@@ -206,155 +194,46 @@ $env:DAGENT_CONFIG="C:\path\to\config.yaml"
 
 ## Agent Profiles
 
-DAG creator, DAG reviewer, and feedback learner prompts live in editable profile
-directories under `profiles/`.
+Each role (DAG creator, reviewer, feedback learner) has an editable profile directory:
 
 ```text
 profiles/
-  dag_creator/
-    profile.yaml
-    soul.md
-    guideline.md
-    agent.md
-    memory.md
-  dag_reviewer/
-    profile.yaml
-    soul.md
-    guideline.md
-    agent.md
-    memory.md
-  feedback_learner/
-    profile.yaml
-    soul.md
-    guideline.md
-    agent.md
-    memory.md
-  conversation/
-    profile.yaml
-    soul.md
-    guideline.md
-    agent.md
-    memory.md
+  dag_creator/      soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  dag_reviewer/     soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  feedback_learner/ soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```
 
-`profile.yaml` contains structured metadata and the ordered prompt layers:
+`profile.yaml` defines ordered prompt layers. Dynamic content (tools, task context,
+trace data) is injected at runtime and never stored in profile files.
 
-```yaml
-name: dag_creator
-role: dag_creator
-description: Generates reviewable DAGs from user requests.
-layers:
-  - soul.md
-  - guideline.md
-  - agent.md
-memory_file: memory.md
-output_format: json
-```
-
-Stable profile behavior lives in Markdown:
-
-- `soul.md`: identity and role
-- `guideline.md`: durable behavior rules
-- `agent.md`: role-specific task contract, including output format
-- `memory.md`: profile-specific learning notes
-
-Dynamic sections are not stored in profile files:
-
-- tools are generated from `tools.registry`
-- skills should come from the future `skills/` loader
-- user/task prompts are generated by `state.prompt_builder`
-- DAG, trace, feedback, and node context are injected at runtime
-
-The current `LLMDagCreator` DAG creator loads `profiles/dag_creator/`. The profile store is
-filesystem-backed by design so a future WebUI can list, edit, validate, reorder,
-and save profile layers without touching Python code.
-
-Implemented profile-backed roles:
-
-- `HarnessRuntime` top-level conversation agent
-- `LLMDagCreator` DAG creator
-- `DAGReviewerAgent`
-- `FeedbackLearnerAgent`
-
-## Safety Model
-
-The runtime is intentionally layered:
-
-- DAG creator proposes a DAG but does not grant permissions.
-- `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks
-  medium/high risk DAGs until they are approved.
-- Each node is a bounded tool call; there is no nested agent loop inside a node.
-- `ToolExecutor` enforces boundaries before every tool call.
-- `Skills` are intended to be prompt instructions, not permissions.
-- Human review can be triggered at initial DAG creation and after any Level 3 re-plan.
-
-Boundary checks currently cover:
-
-- `read_only` nodes cannot write files
-- `allowed_paths` prevents path traversal and absolute path escape
-- `forbidden_tools` blocks specific tools
-- unregistered tools fail closed
+---
 
 ## Development
 
-Install and test with `uv`:
-
 ```powershell
-uv run --extra dev pytest
+uv run --extra dev pytest          # 42 passed, 2 skipped (MockProvider)
 ```
 
-Expected result:
-
-```text
-42 passed, 2 skipped
-```
-
-The default suite uses `MockProvider` for deterministic unit tests. Real
-MiniMax/OpenAI-compatible integration tests are opt-in:
+Real provider integration tests:
 
 ```powershell
 $env:DAGENT_RUN_MINIMAX_TESTS="1"
 uv run --extra dev pytest tests/test_minimax_integration.py
 ```
 
-Run the API:
+Run API + frontend:
 
 ```powershell
 uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
+
+cd web && npm install && npm run dev
 ```
 
-Run the frontend workspace:
+## Quick Start
 
-```powershell
-cd web
-npm install
-npm run dev
-```
+Verify provider connection:
 
-The frontend includes:
-
-- chat composer with `Auto | Direct | DAG` runtime modes and streamed markdown output
-- tool/model/DAG trace timeline from backend run events
-- React Flow DAG graph
-- node detail editor for goal, risk, boundary, tools, paths, and expected output
-- approve and execute controls for the review flow
-
-The Vite dev server proxies `/api` to `http://127.0.0.1:8001` by default.
-If the API runs on another port, set `VITE_API_TARGET` before starting Vite:
-
-```powershell
-$env:VITE_API_TARGET="http://127.0.0.1:8000"
-npm run dev
-```
-
-## Quick Smoke Test
-
-With a valid `.env` and `config.yaml`, this verifies the OpenAI-compatible
-provider:
-
-```powershell
-$env:PYTHONIOENCODING="utf-8"
-@'
+```python
 import asyncio
 from dagent.config import load_config
 from dagent.providers import OpenAICompatibleProvider
@@ -362,43 +241,31 @@ from dagent.providers import OpenAICompatibleProvider
 async def main():
     config = load_config()
     provider = OpenAICompatibleProvider(config.provider)
-    response = await provider.chat([
-        {"role": "user", "content": "Reply with exactly: OK"}
-    ])
+    response = await provider.chat([{"role": "user", "content": "Reply with exactly: OK"}])
     print(response.content)
 
 asyncio.run(main())
-'@ | uv run python -
 ```
 
-## Real Harness Flow
+Run the full dynamic DAG agent loop:
 
-This runs the real DAG creator and executor stack. Medium/high risk DAGs require
-approval before execution.
-
-```powershell
-$env:PYTHONIOENCODING="utf-8"
-@'
+```python
 import asyncio
 from dagent.factory import create_control_plane
 
 async def main():
-    control_plane = create_control_plane(workspace_root=".")
-    record = await control_plane.create_task(
+    cp = create_control_plane(workspace_root=".")
+    record = await cp.create_task(
         "Read README and summarize the implemented milestones.",
         task_id="demo_task",
     )
-
-    print("DAG status:", record.dag.status)
     if record.dag.status == "review_required":
-        control_plane.approve_dag(record.task_id)
+        cp.approve_dag(record.task_id)
 
-    result = await control_plane.execute_task(record.task_id)
+    result = await cp.execute_task(record.task_id)
     print("completed:", result.completed)
-    print("trace:", [event.event_type for event in result.traces])
     for node_id, node_result in result.node_results.items():
         print(node_id, node_result.final_response)
 
 asyncio.run(main())
-'@ | uv run python -
 ```
