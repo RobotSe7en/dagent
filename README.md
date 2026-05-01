@@ -51,10 +51,12 @@ trigger a second review. The human is never bypassed.
 
 ```mermaid
 flowchart TD
-  U["User Goal"] --> A["AgentLoop"]
+  U["User"] --> R["HarnessRuntime"]
+  R --> A["Top AgentLoop"]
 
-  A -->|"simple task\ndirect tool call"| T["ToolExecutor"]
-  A -->|"complex task\nneeds planning"| D["DAG Creator\ngenerate tool nodes + placeholders"]
+  A -->|"direct answer"| O["Return to user"]
+  A -->|"runtime tool"| T["ToolExecutor"]
+  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -63,21 +65,22 @@ flowchart TD
 
   E --> N["Execute Node"]
   N --> T
-  N -->|"node complete"| TR[("Trace DB\nfrozen node + I/O")]
   N --> OBS["Observe Output"]
+  N -->|"node complete"| TR[("Trace DB\nfrozen node + I/O")]
 
   OBS -->|"Level 1\ndata contract known"| INJ["Placeholder Injection\nno LLM"]
-  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current output"]
+  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current node output"]
   OBS -->|"Level 3\nstructure must change"| RG["DAG Re-generator\ncontext = goal + summaries"]
 
   INJ --> NXT["Update pending_nodes"]
   RP --> NXT
   RG --> NXT
 
+  NXT -->|"has next node"| E
   NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
   UI2 -->|"approve"| E
-  NXT -->|"has next node"| E
-  NXT -->|"DAG complete"| DR["Result Summary"]
+
+  NXT -->|"DAG complete"| DR["DAG Result Summary"]
   DR --> A
 ```
 
