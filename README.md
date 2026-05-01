@@ -1,6 +1,6 @@
 # dagent
 
-> **Plan. Observe. Re-plan. Execute.**
+> **Plan globally. Re-plan locally.**
 
 **dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable
 DAG, runs it node by node, and incrementally re-plans the remaining graph as each node's
