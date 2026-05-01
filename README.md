@@ -2,9 +2,7 @@
 
 > **Plan globally. Re-plan locally.**
 
-**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable
-DAG, runs it node by node, and incrementally re-plans the remaining graph as each node's
-output reveals new information — without restarting, without bloating context.
+**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable DAG and runs it layer by layer. After each layer completes, it applies the lightest re-planning strategy that suffices — from zero-LLM placeholder substitution, to local parameter reasoning, to full downstream re-generation — updating only what needs to change, freezing everything already done.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
