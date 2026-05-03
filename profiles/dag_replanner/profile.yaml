@@ -1,0 +1,9 @@
+name: dag_replanner
+role: dag_replanner
+description: Locally replans unfinished DAG nodes from execution observations.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: json

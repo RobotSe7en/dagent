@@ -66,11 +66,56 @@ class PermissionThenCompletingLoop:
         )
 
 
+def make_tool_executor() -> ToolExecutor:
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    registry.register(
+        name="write_file",
+        handler=lambda path, content="": f"wrote:{path}:{content}",
+        action="write",
+        path_args=("path",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
+    registry.register(
+        name="run_command",
+        handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
+        action="command",
+        path_args=("cwd",),
+        command_args=("command",),
+        default_args={"cwd": ".", "timeout_seconds": 30},
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "cwd": {"type": "string"},
+            },
+            "required": ["command"],
+        },
+    )
+    return ToolExecutor(registry)
+
+
 def test_api_creates_approves_and_executes_dag() -> None:
     provider = MockProvider([ChatResponse(content=_dag_creator_json())])
     state.control_plane = ControlPlane(
         dag_creator=LLMDagCreator(provider),
-        executor=DAGExecutor(agent_loop=CompletingLoop()),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
     )
     state.harness_runtime = None
     state.runs.clear()
@@ -96,17 +141,18 @@ def test_api_creates_approves_and_executes_dag() -> None:
     assert [event["event_type"] for event in execute_payload["result"]["traces"]] == [
         "dag_started",
         "node_started",
+        "tool_called",
+        "tool_completed",
         "node_completed",
         "dag_completed",
     ]
 
 
 def test_api_can_approve_pending_permission_and_resume_dag() -> None:
-    provider = MockProvider([ChatResponse(content=_dag_creator_json())])
-    loop = PermissionThenCompletingLoop()
+    provider = MockProvider([ChatResponse(content=_dag_creator_json(tools=["run_command"]))])
     state.control_plane = ControlPlane(
         dag_creator=LLMDagCreator(provider),
-        executor=DAGExecutor(agent_loop=loop),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
     )
     state.harness_runtime = None
     state.runs.clear()
@@ -117,6 +163,7 @@ def test_api_can_approve_pending_permission_and_resume_dag() -> None:
         json={"message": "make a small DAG", "task_id": "task_api_permission"},
     )
     assert task_response.status_code == 200
+    state.control_plane.approve_dag("task_api_permission")
 
     first_execute = client.post("/dags/task_api_permission/execute")
     assert first_execute.status_code == 200
@@ -138,7 +185,72 @@ def test_api_can_approve_pending_permission_and_resume_dag() -> None:
     second_payload = second_execute.json()
     assert second_payload["dag"]["status"] == "completed"
     assert second_payload["result"]["completed"] is True
-    assert loop.calls == 2
+
+
+def test_api_returns_raw_node_trace_records_for_tool_dag() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=json.dumps(
+                    {
+                        "task": "echo text",
+                        "nodes": [
+                            {
+                                "id": "echo_text",
+                                "goal": "Echo text.",
+                                "tool": "echo",
+                                "args": {"text": "hi"},
+                                "depends_on": [],
+                            }
+                        ],
+                    }
+                )
+            )
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    tool_executor = ToolExecutor(registry)
+    state.control_plane = ControlPlane(
+        dag_creator=LLMDagCreator(provider),
+        executor=DAGExecutor(
+            agent_loop=CompletingLoop(),
+            tool_executor=tool_executor,
+        ),
+    )
+    state.harness_runtime = None
+    state.runs.clear()
+    client = TestClient(app)
+
+    task_response = client.post(
+        "/tasks",
+        json={"message": "echo hi", "task_id": "task_api_trace"},
+    )
+    assert task_response.status_code == 200
+
+    execute_response = client.post("/dags/task_api_trace/execute")
+    assert execute_response.status_code == 200
+    execute_payload = execute_response.json()
+    trace_records = execute_payload["result"]["trace_records"]
+    assert len(trace_records) == 1
+    assert trace_records[0]["node_id"] == "echo_text"
+    assert trace_records[0]["tool"] == "echo"
+    assert trace_records[0]["args"] == {"text": "hi"}
+    assert trace_records[0]["output"] == "echo:hi"
+    assert trace_records[0]["status"] == "completed"
+
+    trace_response = client.get("/tasks/task_api_trace/trace")
+    assert trace_response.status_code == 200
+    assert trace_response.json()["records"] == trace_records
 
 
 def test_api_approved_medium_risk_runtime_dag_executes() -> None:
@@ -158,7 +270,7 @@ def test_api_approved_medium_risk_runtime_dag_executes() -> None:
             tool_executor=ToolExecutor(ToolRegistry()),
         ),
         dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
         conversation_profile=_profile("conversation"),
     )
     state.control_plane = None
@@ -190,7 +302,7 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
             tool_executor=ToolExecutor(ToolRegistry()),
         ),
         dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
         conversation_profile=_profile("conversation"),
     )
     client = TestClient(app)
@@ -237,7 +349,7 @@ def test_api_message_stream_interleaves_tool_events() -> None:
             tool_executor=ToolExecutor(registry),
         ),
         dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop()),
+        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
         conversation_profile=_profile("conversation"),
     )
     client = TestClient(app)
@@ -261,6 +373,9 @@ def _dag_creator_json(
     tools: list[str] | None = None,
     boundary_mode: str = "read_only",
 ) -> str:
+    tool = (tools or ["echo"])[0]
+    args = _default_args_for_tool(tool)
+    boundary = _default_boundary_for_tool(tool, boundary_mode)
     return json.dumps(
         {
             "dag_id": "dag_api",
@@ -272,16 +387,13 @@ def _dag_creator_json(
                     "id": "answer",
                     "title": "Answer",
                     "goal": "Answer the user.",
+                    "kind": "tool",
+                    "tool": tool,
+                    "args": args,
                     "agent": None,
-                    "tools": tools or [],
+                    "tools": [tool],
                     "skills": [],
-                    "boundary": {
-                        "mode": boundary_mode,
-                        "allowed_paths": [],
-                        "forbidden_tools": [],
-                        "allowed_commands": [],
-                        "forbidden_commands": [],
-                    },
+                    "boundary": boundary,
                     "risk": "low",
                     "risk_reason": "No tool access.",
                     "expected_output": "Answer.",
@@ -292,6 +404,40 @@ def _dag_creator_json(
             "edges": [],
         }
     )
+
+
+def _default_args_for_tool(tool: str) -> dict:
+    if tool == "write_file":
+        return {"path": "notes.md", "content": "hi"}
+    if tool == "run_command":
+        return {"command": "python --version", "cwd": "."}
+    return {"text": "ok"}
+
+
+def _default_boundary_for_tool(tool: str, mode: str) -> dict:
+    if tool == "write_file":
+        return {
+            "mode": mode,
+            "allowed_paths": ["notes.md"] if mode != "read_only" else [],
+            "forbidden_tools": [],
+            "allowed_commands": [],
+            "forbidden_commands": [],
+        }
+    if tool == "run_command":
+        return {
+            "mode": mode,
+            "allowed_paths": ["."],
+            "forbidden_tools": [],
+            "allowed_commands": [],
+            "forbidden_commands": [],
+        }
+    return {
+        "mode": mode,
+        "allowed_paths": [],
+        "forbidden_tools": [],
+        "allowed_commands": [],
+        "forbidden_commands": [],
+    }
 
 
 def _profile(name: str) -> AgentProfile:

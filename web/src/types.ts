@@ -77,6 +77,25 @@ export interface TraceEvent {
   timestamp: string;
 }
 
+export interface NodeExecutionRecord {
+  record_id: string;
+  task_id: string;
+  dag_id: string;
+  dag_version: number;
+  node_id: string;
+  node_title: string;
+  node_goal: string;
+  node_kind: string;
+  tool: string | null;
+  args: Record<string, unknown>;
+  output: string;
+  error: string | null;
+  status: 'completed' | 'failed' | 'blocked_permission';
+  stop_reason: string;
+  steps: number;
+  created_at: string;
+}
+
 export interface ToolStreamEvent {
   type: 'tool_call' | 'tool_result' | 'tool_error';
   tool_call_id: string;
@@ -89,6 +108,7 @@ export interface RunResult {
   dag_id: string;
   completed: boolean;
   pending_permission_request?: PermissionRequest | null;
+  trace_records?: NodeExecutionRecord[];
   node_results: Record<
     string,
     {

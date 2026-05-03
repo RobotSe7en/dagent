@@ -79,12 +79,17 @@ def node(
     tools: list[str] | None = None,
     risk: str = "low",
     boundary: Boundary | None = None,
+    args: dict | None = None,
 ) -> DAGNode:
+    tool = (tools or ["echo"])[0]
     return DAGNode(
         id=node_id,
         title=node_id,
         goal=f"goal {node_id}",
-        tools=tools or [],
+        kind="tool",
+        tool=tool,
+        args=args or {"text": node_id},
+        tools=[tool],
         risk=risk,
         boundary=boundary or Boundary(),
     )
@@ -108,7 +113,7 @@ def test_topo_batches_groups_parallel_nodes() -> None:
 
 def test_executor_runs_ordered_dag_and_records_trace() -> None:
     loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -120,12 +125,18 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
 
     assert result.completed is True
     assert list(result.node_results) == ["a", "b"]
-    assert "done:goal a" in loop.calls[1]["user_message"]
+    assert result.node_results["a"].final_response == "echo:a"
+    assert result.node_results["b"].final_response == "echo:b"
+    assert loop.calls == []
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
+        "tool_called",
+        "tool_completed",
         "node_completed",
         "node_started",
+        "tool_called",
+        "tool_completed",
         "node_completed",
         "dag_completed",
     ]
@@ -133,7 +144,7 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
 
 def test_executor_runs_independent_nodes_concurrently() -> None:
     loop = FakeAgentLoop(delay_seconds=0.1)
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -151,24 +162,33 @@ def test_executor_runs_independent_nodes_concurrently() -> None:
 
 def test_risk_override_promotes_write_file_to_medium() -> None:
     loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
         status="approved",
-        nodes=[node("write", tools=["write_file"], risk="low")],
+        nodes=[
+            node(
+                "write",
+                tools=["write_file"],
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="write_limited", allowed_paths=["notes.md"]),
+                risk="low",
+            )
+        ],
     )
 
     result = run(executor.execute(dag))
 
     assert result.completed is True
-    assert loop.calls[0]["allowed_tools"] == ["write_file"]
+    assert result.node_results["write"].final_response.endswith("notes.md:hi")
+    assert loop.calls == []
     assert dag.nodes[0].risk == "low"
 
 
 def test_medium_risk_dag_requires_approval() -> None:
     loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -183,7 +203,7 @@ def test_medium_risk_dag_requires_approval() -> None:
 
 def test_high_risk_dag_requires_approval() -> None:
     loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -197,7 +217,7 @@ def test_high_risk_dag_requires_approval() -> None:
 
 
 def test_broad_allowed_paths_promotes_to_medium_and_requires_approval() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop())
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -213,16 +233,6 @@ def test_broad_allowed_paths_promotes_to_medium_and_requires_approval() -> None:
 
     with pytest.raises(DAGExecutionError, match="not approved"):
         run(executor.execute(dag))
-
-
-def test_executor_pauses_when_node_requests_permission() -> None:
-    executor = DAGExecutor(agent_loop=BoundaryBlockingLoop())
-    dag = DAG(
-        dag_id="dag_1",
-        task_id="task_1",
-        status="approved",
-        nodes=[node("write", tools=["write_file"], risk="medium")],
-    )
 
 
 def tool_node(
@@ -271,7 +281,39 @@ def tool_executor() -> ToolExecutor:
             "required": ["path", "content"],
         },
     )
+    registry.register(
+        name="write_file",
+        handler=lambda path, content="": f"wrote:{path}:{content}",
+        action="write",
+        path_args=("path",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
     return ToolExecutor(registry)
+
+
+def test_executor_pauses_when_node_requests_permission() -> None:
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            node(
+                "write",
+                tools=["write_file"],
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="read_only"),
+                risk="medium",
+            )
+        ],
+    )
 
     result = run(executor.execute(dag))
 
@@ -284,6 +326,7 @@ def tool_executor() -> ToolExecutor:
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
+        "tool_called",
         "permission_requested",
         "node_blocked_permission",
         "dag_paused",
@@ -309,6 +352,13 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
 
     assert result.completed is True
     assert result.node_results["echo"].final_response == "echo:hi"
+    records = executor.trace_store.records_for_task("task_1")
+    assert len(records) == 1
+    assert records[0].node_id == "echo"
+    assert records[0].tool == "echo"
+    assert records[0].args == {"text": "hi"}
+    assert records[0].output == "echo:hi"
+    assert records[0].status == "completed"
     assert loop.calls == []
     assert [event.event_type for event in result.traces] == [
         "dag_started",
@@ -318,6 +368,101 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
         "node_completed",
         "dag_completed",
     ]
+
+
+def test_executor_can_run_one_ready_layer_at_a_time() -> None:
+    loop = FakeAgentLoop()
+    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            tool_node("a", tool="echo", args={"text": "a"}),
+            tool_node("b", tool="echo", args={"text": "b"}),
+        ],
+        edges=[DAGEdge(source="a", target="b")],
+    )
+
+    first = run(executor.execute_next_ready_layer(dag))
+
+    assert first.completed is False
+    assert list(first.node_results) == ["a"]
+    assert [event.event_type for event in first.traces] == [
+        "dag_started",
+        "node_started",
+        "tool_called",
+        "tool_completed",
+        "node_completed",
+    ]
+
+    second = run(
+        executor.execute_next_ready_layer(
+            dag,
+            initial_results=first.node_results,
+        )
+    )
+
+    assert second.completed is True
+    assert list(second.node_results) == ["a", "b"]
+    assert [record.node_id for record in executor.trace_store.records_for_task("task_1")] == ["a", "b"]
+    assert loop.calls == []
+
+
+def test_executor_injects_completed_node_output_into_downstream_args() -> None:
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            tool_node("source", tool="echo", args={"text": "value"}),
+            tool_node("sink", tool="echo", args={"text": "{{source.output}}"}),
+        ],
+        edges=[DAGEdge(source="source", target="sink")],
+    )
+
+    result = run(executor.execute(dag))
+
+    assert result.completed is True
+    assert result.node_results["source"].final_response == "echo:value"
+    assert result.node_results["sink"].final_response == "echo:echo:value"
+    records = executor.trace_store.records_for_task("task_1")
+    assert records[1].node_id == "sink"
+    assert records[1].args == {"text": "echo:value"}
+
+
+def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            tool_node("source", tool="echo", args={"text": "value"}),
+            tool_node("sink", tool="echo", args={"text": "{{source.output}}"}),
+        ],
+        edges=[DAGEdge(source="source", target="sink")],
+    )
+
+    first = run(executor.execute_next_ready_layer(dag))
+    second = run(executor.execute_next_ready_layer(dag, initial_results=first.node_results))
+
+    assert second.completed is True
+    assert second.node_results["sink"].final_response == "echo:echo:value"
+
+
+def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            tool_node("sink", tool="echo", args={"text": "{{missing.output}}"}),
+        ],
+    )
+
+    with pytest.raises(DAGExecutionError, match="missing"):
+        run(executor.execute(dag))
+
+    assert executor.trace_store.records_for_task("task_1") == []
 
 
 def test_tool_node_boundary_violation_pauses_for_permission() -> None:
@@ -345,4 +490,11 @@ def test_tool_node_boundary_violation_pauses_for_permission() -> None:
     assert result.pending_permission_request.node_id == "write_note"
     assert result.pending_permission_request.requested_boundary.mode == "write_limited"
     assert result.pending_permission_request.requested_boundary.allowed_paths == ["notes.md"]
+    records = executor.trace_store.records_for_task("task_1")
+    assert len(records) == 1
+    assert records[0].node_id == "write_note"
+    assert records[0].tool == "write_note"
+    assert records[0].args == {"path": "notes.md", "content": "hi"}
+    assert records[0].status == "blocked_permission"
+    assert records[0].error
     assert loop.calls == []

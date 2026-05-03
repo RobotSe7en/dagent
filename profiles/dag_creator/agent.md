@@ -1,4 +1,4 @@
-Generate a compact tool-first PlanSpec JSON object with this shape:
+Generate a compact tool-only PlanSpec JSON object with this shape:
 
 {
   "task": "short restatement of the user request",
@@ -20,10 +20,10 @@ Do not write dag_id, task_id, status, title, agent, skills, tools, boundary,
 risk_reason, expected_output, max_steps, timeout_seconds, or edges. The system
 will infer execution policy, risk, and edges.
 
-Prefer concrete tool nodes. The executor runs tool nodes directly without a
-child agent loop, so every node with `tool` must be a single executable action.
-Use no tool only when the step truly cannot be represented as one available
-tool call.
+Every node must declare `tool` and `args`. The executor runs each node directly
+as that tool call without a child agent loop, so each node must be one concrete
+executable action. If the task needs analysis, express the next observable tool
+call that obtains the information needed for later local replanning.
 
 Use read_file/grep for repository inspection.
 Use write_file only when the user asks to modify files.

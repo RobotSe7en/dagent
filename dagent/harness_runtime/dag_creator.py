@@ -17,6 +17,10 @@ from dagent.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
 from dagent.tools.registry import Tool
 
 
+class DAGCreationError(ValueError):
+    """Raised when a proposed DAG cannot become an executable tool DAG."""
+
+
 class DagCreator(ABC):
     """Base DAG creator interface.
 
@@ -42,33 +46,21 @@ class MockDagCreator(DagCreator):
             status="draft",
             nodes=[
                 DAGNode(
-                    id="understand_request",
-                    title="Understand request",
-                    goal=f"Analyze the user request: {user_request}",
-                    tools=[],
-                    boundary=Boundary(mode="read_only"),
+                    id="list_workspace",
+                    title="List Workspace",
+                    goal=f"Inspect the workspace for request: {user_request}",
+                    kind="tool",
+                    tool="run_command",
+                    args={"command": "dir", "cwd": "."},
+                    tools=["run_command"],
+                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
                     risk="low",
-                    risk_reason="Read-only planning step.",
-                    expected_output="A concise interpretation of the request.",
-                ),
-                DAGNode(
-                    id="produce_answer",
-                    title="Produce answer",
-                    goal="Produce a response based on the interpreted request.",
-                    tools=[],
-                    boundary=Boundary(mode="read_only"),
-                    risk="low",
-                    risk_reason="No tool or filesystem access requested.",
-                    expected_output="Final answer for the user.",
+                    risk_reason="Read-only workspace inspection.",
+                    expected_output="Workspace listing.",
+                    max_steps=1,
                 ),
             ],
-            edges=[
-                DAGEdge(
-                    source="understand_request",
-                    target="produce_answer",
-                    reason="The answer depends on understanding the request.",
-                )
-            ],
+            edges=[],
         )
 
 
@@ -114,11 +106,15 @@ class LLMDagCreator(DagCreator):
             )
         )
         payload = extract_json_object(response.content)
-        if _is_full_dag_payload(payload):
-            return _full_dag_from_payload(payload, resolved_task_id)
+        return dag_from_json_payload(payload, task_id=resolved_task_id)
 
-        plan = PlanSpec.model_validate(payload)
-        return compile_plan_spec(plan, task_id=resolved_task_id)
+
+def dag_from_json_payload(payload: dict, *, task_id: str) -> DAG:
+    if _is_full_dag_payload(payload):
+        return _full_dag_from_payload(payload, task_id)
+
+    plan = PlanSpec.model_validate(payload)
+    return compile_plan_spec(plan, task_id=task_id)
 
 
 def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
@@ -141,6 +137,10 @@ def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
 
 def _compile_plan_node(node, *, task: str = "") -> DAGNode:
     tool = node.tool or _infer_missing_tool(node.goal, task)
+    if not tool:
+        raise DAGCreationError(
+            f"PlanSpec node '{node.id}' must declare one concrete tool."
+        )
     args = dict(node.args or _infer_args(tool, node.goal, task))
     boundary = _infer_boundary(tool, args)
     goal = node.goal
@@ -149,15 +149,15 @@ def _compile_plan_node(node, *, task: str = "") -> DAGNode:
         id=node.id,
         title=_title_from_id(node.id),
         goal=goal,
-        kind="tool" if tool else "agent",
+        kind="tool",
         tool=tool,
         args=args,
-        tools=[tool] if tool else [],
+        tools=[tool],
         boundary=boundary,
         risk=node.risk or _infer_risk(tool, boundary),
         risk_reason=node.review_reason or _risk_reason(tool, boundary),
         expected_output=node.goal,
-        max_steps=1 if tool else 2,
+        max_steps=1,
         timeout_seconds=120,
     )
 
@@ -195,9 +195,7 @@ def _infer_risk(tool: str | None, boundary: Boundary) -> str:
 
 
 def _risk_reason(tool: str | None, boundary: Boundary) -> str:
-    if tool:
-        return f"PlanSpec inferred from tool={tool}, boundary={boundary.mode}."
-    return "Pure reasoning node."
+    return f"PlanSpec inferred from tool={tool}, boundary={boundary.mode}."
 
 
 def _title_from_id(node_id: str) -> str:
@@ -274,26 +272,23 @@ def _normalize_tool_nodes(payload: dict) -> None:
         goal = str(node.get("goal") or "")
         explicit_tool = node.get("tool")
         tool = explicit_tool
-        inferred_from_tools = False
         if not isinstance(tool, str) or not tool.strip():
             tools = node.get("tools")
             if isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str):
                 tool = tools[0]
-                inferred_from_tools = True
             else:
                 tool = _infer_missing_tool(goal, task)
         if not tool:
-            node.setdefault("kind", "agent")
-            continue
+            node_id = str(node.get("id") or "<unknown>")
+            raise DAGCreationError(
+                f"Full DAG node '{node_id}' must declare one concrete tool."
+            )
 
         args = node.get("args")
         if not isinstance(args, dict) or not args:
             extracted_args = _extract_args_from_goal(goal)
             inferred_args = _infer_args(tool, goal, task)
             args = extracted_args or inferred_args
-            if inferred_from_tools and not args:
-                node.setdefault("kind", "agent")
-                continue
         node["kind"] = "tool"
         node["tool"] = tool
         node["args"] = args
