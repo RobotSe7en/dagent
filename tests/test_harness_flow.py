@@ -3,12 +3,20 @@ import json
 
 import pytest
 
-from dagent.harness_runtime import ControlPlane, DAGExecutionError, DAGExecutor, LLMDagCreator
+from dagent.harness_runtime import (
+    ControlPlane,
+    DAGCreationError,
+    DAGExecutionError,
+    DAGExecutor,
+    LLMDagCreator,
+)
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
+from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
+from dagent.tools.registry import ToolRegistry
 
 
 class CompletingLoop:
@@ -63,6 +71,9 @@ def run(coro):
 
 
 def dag_creator_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
+    tool = (tools or ["echo"])[0]
+    args = _default_args_for_tool(tool)
+    boundary = _default_boundary_for_tool(tool)
     return json.dumps(
         {
             "dag_id": "dag_real",
@@ -74,16 +85,13 @@ def dag_creator_json(*, tools: list[str] | None = None, risk: str = "low") -> st
                     "id": "inspect",
                     "title": "Inspect",
                     "goal": "Inspect the request",
+                    "kind": "tool",
+                    "tool": tool,
+                    "args": args,
                     "agent": None,
-                    "tools": tools or [],
+                    "tools": [tool],
                     "skills": [],
-                    "boundary": {
-                        "mode": "read_only",
-                        "allowed_paths": [],
-                        "forbidden_tools": [],
-                        "allowed_commands": [],
-                        "forbidden_commands": [],
-                    },
+                    "boundary": boundary,
                     "risk": risk,
                     "risk_reason": "DagCreator estimate.",
                     "expected_output": "Inspection result.",
@@ -128,6 +136,85 @@ def plan_spec_json() -> str:
     )
 
 
+def _default_args_for_tool(tool: str) -> dict:
+    if tool == "write_file":
+        return {"path": "notes.md", "content": "hi"}
+    if tool == "run_command":
+        return {"command": "python --version", "cwd": "."}
+    return {"text": "ok"}
+
+
+def _default_boundary_for_tool(tool: str) -> dict:
+    if tool == "write_file":
+        return {
+            "mode": "write_limited",
+            "allowed_paths": ["notes.md"],
+            "forbidden_tools": [],
+            "allowed_commands": [],
+            "forbidden_commands": [],
+        }
+    if tool == "run_command":
+        return {
+            "mode": "read_only",
+            "allowed_paths": ["."],
+            "forbidden_tools": [],
+            "allowed_commands": [],
+            "forbidden_commands": [],
+        }
+    return {
+        "mode": "read_only",
+        "allowed_paths": [],
+        "forbidden_tools": [],
+        "allowed_commands": [],
+        "forbidden_commands": [],
+    }
+
+
+def make_tool_executor() -> ToolExecutor:
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    registry.register(
+        name="write_file",
+        handler=lambda path, content="": f"wrote:{path}:{content}",
+        action="write",
+        path_args=("path",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
+    registry.register(
+        name="run_command",
+        handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
+        action="command",
+        path_args=("cwd",),
+        command_args=("command",),
+        default_args={"cwd": ".", "timeout_seconds": 30},
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "cwd": {"type": "string"},
+            },
+            "required": ["command"],
+        },
+    )
+    return ToolExecutor(registry)
+
+
 def plan_spec_json_without_tool() -> str:
     return json.dumps(
         {
@@ -143,12 +230,39 @@ def plan_spec_json_without_tool() -> str:
     )
 
 
+def plan_spec_json_with_unresolved_reasoning_node() -> str:
+    return json.dumps(
+        {
+            "task": "Decide the best implementation strategy",
+            "nodes": [
+                {
+                    "id": "choose_strategy",
+                    "goal": "Compare two implementation strategies and choose one.",
+                    "depends_on": [],
+                }
+            ],
+        }
+    )
+
+
 def full_dag_json_with_legacy_single_tool_node() -> str:
     payload = json.loads(dag_creator_json(tools=["run_command"]))
     payload["nodes"][0]["id"] = "list_files"
     payload["nodes"][0]["title"] = "List Files"
     payload["nodes"][0]["goal"] = "List files in the current directory."
+    payload["nodes"][0].pop("tool", None)
+    payload["nodes"][0].pop("args", None)
     payload["nodes"][0]["expected_output"] = "Directory listing."
+    return json.dumps(payload)
+
+
+def full_dag_json_without_tool_node() -> str:
+    payload = json.loads(dag_creator_json())
+    payload["nodes"][0].pop("tool", None)
+    payload["nodes"][0].pop("args", None)
+    payload["nodes"][0]["tools"] = []
+    payload["nodes"][0]["kind"] = "agent"
+    payload["nodes"][0]["goal"] = "Compare two implementation strategies."
     return json.dumps(payload)
 
 
@@ -208,6 +322,14 @@ def test_llm_dag_creator_infers_obvious_tool_node_when_model_omits_tool() -> Non
     assert dag.nodes[0].tools == ["run_command"]
 
 
+def test_llm_dag_creator_rejects_plan_spec_node_without_concrete_tool() -> None:
+    provider = MockProvider([ChatResponse(content=plan_spec_json_with_unresolved_reasoning_node())])
+    dag_creator = LLMDagCreator(provider)
+
+    with pytest.raises(DAGCreationError, match="must declare one concrete tool"):
+        run(dag_creator.aplan("Choose a strategy", task_id="task_real"))
+
+
 def test_llm_dag_creator_normalizes_legacy_full_dag_single_tool_node() -> None:
     provider = MockProvider([ChatResponse(content=full_dag_json_with_legacy_single_tool_node())])
     dag_creator = LLMDagCreator(provider)
@@ -218,6 +340,14 @@ def test_llm_dag_creator_normalizes_legacy_full_dag_single_tool_node() -> None:
     assert dag.nodes[0].tool == "run_command"
     assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
     assert dag.nodes[0].max_steps == 1
+
+
+def test_llm_dag_creator_rejects_full_dag_node_without_concrete_tool() -> None:
+    provider = MockProvider([ChatResponse(content=full_dag_json_without_tool_node())])
+    dag_creator = LLMDagCreator(provider)
+
+    with pytest.raises(DAGCreationError, match="must declare one concrete tool"):
+        run(dag_creator.aplan("Choose a strategy", task_id="task_real"))
 
 
 def test_llm_dag_creator_normalizes_common_boundary_mode_aliases() -> None:
@@ -244,7 +374,7 @@ def test_llm_dag_creator_normalizes_common_boundary_mode_aliases() -> None:
 def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json())])
     dag_creator = LLMDagCreator(provider)
-    executor = DAGExecutor(agent_loop=CompletingLoop())
+    executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
     control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
 
     record = run(control_plane.create_task("Do a safe task", task_id="task_1"))
@@ -255,6 +385,8 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
+        "tool_called",
+        "tool_completed",
         "node_completed",
         "dag_completed",
     ]
@@ -263,7 +395,7 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
 def test_control_plane_requires_review_after_risk_override() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json(tools=["write_file"]))])
     dag_creator = LLMDagCreator(provider)
-    executor = DAGExecutor(agent_loop=CompletingLoop())
+    executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
     control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
 
     record = run(control_plane.create_task("Modify a file", task_id="task_1"))
@@ -279,13 +411,14 @@ def test_control_plane_requires_review_after_risk_override() -> None:
 
 
 def test_control_plane_pauses_for_permission_and_resumes_after_approval() -> None:
-    provider = MockProvider([ChatResponse(content=dag_creator_json())])
+    provider = MockProvider([ChatResponse(content=dag_creator_json(tools=["run_command"]))])
     dag_creator = LLMDagCreator(provider)
-    loop = PermissionThenCompletingLoop()
-    executor = DAGExecutor(agent_loop=loop)
+    executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
     control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
 
     record = run(control_plane.create_task("Run a command", task_id="task_1"))
+    if record.dag.status == "review_required":
+        control_plane.approve_dag(record.task_id)
     first_result = run(control_plane.execute_task(record.task_id))
 
     assert first_result.completed is False
@@ -303,4 +436,3 @@ def test_control_plane_pauses_for_permission_and_resumes_after_approval() -> Non
     second_result = run(control_plane.execute_task(record.task_id))
     assert second_result.completed is True
     assert record.dag.status == "completed"
-    assert loop.calls == 2

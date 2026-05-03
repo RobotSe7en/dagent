@@ -9,7 +9,12 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
     topo_batches,
 )
-from dagent.harness_runtime.dag_creator import LLMDagCreator, MockDagCreator, DagCreator
+from dagent.harness_runtime.dag_creator import (
+    DAGCreationError,
+    LLMDagCreator,
+    MockDagCreator,
+    DagCreator,
+)
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.trace_store import TraceStore
@@ -24,6 +29,7 @@ __all__ = [
     "AgentLoopResult",
     "ControlPlane",
     "ControlToolResult",
+    "DAGCreationError",
     "DAGExecutionError",
     "DAGExecutor",
     "DAGReviewerAgent",

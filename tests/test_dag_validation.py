@@ -6,7 +6,15 @@ from dagent.schemas import DAG, DAGEdge, DAGNode
 
 
 def make_node(node_id: str) -> DAGNode:
-    return DAGNode(id=node_id, title=node_id, goal=f"Complete {node_id}")
+    return DAGNode(
+        id=node_id,
+        title=node_id,
+        goal=f"Complete {node_id}",
+        kind="tool",
+        tool="echo",
+        args={"text": node_id},
+        tools=["echo"],
+    )
 
 
 def test_valid_dag_passes_validation() -> None:
@@ -35,6 +43,23 @@ def test_node_ids_must_be_unique() -> None:
     )
 
     with pytest.raises(DAGValidationError, match="Duplicate node IDs: a"):
+        validate_dag(dag)
+
+
+def test_agent_nodes_are_rejected_for_executable_dags() -> None:
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            DAGNode(
+                id="reason",
+                title="Reason",
+                goal="Reason about the task.",
+            )
+        ],
+    )
+
+    with pytest.raises(DAGValidationError, match="must be a tool node"):
         validate_dag(dag)
 
 
@@ -84,4 +109,5 @@ def test_mock_dag_creator_returns_valid_dag() -> None:
     validate_dag(dag)
     assert dag.task_id == "task_1"
     assert dag.status == "draft"
-    assert [node.risk for node in dag.nodes] == ["low", "low"]
+    assert [node.kind for node in dag.nodes] == ["tool"]
+    assert [node.risk for node in dag.nodes] == ["low"]

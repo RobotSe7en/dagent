@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from dagent.harness_runtime.agent_loop import AgentLoopResult
@@ -15,6 +16,9 @@ from dagent.harness_runtime.trace_store import TraceStore
 from dagent.schemas import DAG, Boundary, DAGNode, PermissionRequest, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
+
+
+PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response|status|stop_reason|steps)\s*}}")
 
 
 class DAGExecutionError(RuntimeError):
@@ -97,43 +101,13 @@ class DAGExecutor:
         self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
         node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
 
-        for batch in topo_batches(normalized):
-            pending_nodes = [node for node in batch if node.id not in node_results]
-            if not pending_nodes:
-                continue
-            batch_results = await asyncio.gather(
-                *[
-                    self.execute_node(node, normalized, node_results)
-                    for node in pending_nodes
-                ],
-                return_exceptions=True,
+        while not _all_nodes_completed(normalized, node_results):
+            permission_result = await self._execute_next_ready_layer(
+                normalized,
+                node_results,
             )
-            for node, result in zip(pending_nodes, batch_results):
-                if isinstance(result, PermissionBlocked):
-                    node_results[result.node_result.node_id] = result.node_result
-                    normalized.status = "paused_for_permission"
-                    blocked_node = _node_by_id(normalized, result.node_result.node_id)
-                    blocked_node.status = "blocked_permission"
-                    self.trace_recorder.record(
-                        "dag_paused",
-                        dag_id=normalized.dag_id,
-                        payload={
-                            "reason": "permission_required",
-                            "node_id": result.node_result.node_id,
-                        },
-                    )
-                    return RunResult(
-                        dag_id=normalized.dag_id,
-                        completed=False,
-                        node_results=node_results,
-                        traces=list(self.trace_recorder.events),
-                        pending_permission_request=result.request,
-                    )
-                if isinstance(result, Exception):
-                    normalized.status = "failed"
-                    self.trace_recorder.record("dag_failed", dag_id=normalized.dag_id)
-                    raise result
-                node_results[result.node_id] = result
+            if permission_result is not None:
+                return permission_result
 
         completed = all(result.completed for result in node_results.values())
         normalized.status = "completed" if completed else "failed"
@@ -148,6 +122,95 @@ class DAGExecutor:
             node_results=node_results,
             traces=list(self.trace_recorder.events),
         )
+
+    async def execute_next_ready_layer(
+        self,
+        dag: DAG,
+        *,
+        initial_results: dict[str, NodeExecutionResult] | None = None,
+    ) -> RunResult:
+        """Execute only the next currently-ready DAG layer.
+
+        This is the step-wise execution entrypoint for the dynamic DAG loop.
+        It deliberately does not replan yet; later phases can observe the
+        returned node records and patch the pending DAG before the next call.
+        """
+        self.trace_recorder = TraceRecorder()
+        normalized = self.normalize(dag)
+        validate_dag(normalized)
+        self.apply_risk_overrides(normalized)
+        self._enforce_review_gate(normalized)
+        normalized.status = "running"
+        self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
+        node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
+
+        permission_result = await self._execute_next_ready_layer(
+            normalized,
+            node_results,
+        )
+        if permission_result is not None:
+            return permission_result
+
+        completed = _all_nodes_completed(normalized, node_results)
+        if completed:
+            normalized.status = "completed"
+            self.trace_recorder.record(
+                "dag_completed",
+                dag_id=normalized.dag_id,
+                payload={"completed": True},
+            )
+        return RunResult(
+            dag_id=normalized.dag_id,
+            completed=completed,
+            node_results=node_results,
+            traces=list(self.trace_recorder.events),
+        )
+
+    async def _execute_next_ready_layer(
+        self,
+        dag: DAG,
+        node_results: dict[str, NodeExecutionResult],
+    ) -> RunResult | None:
+        pending_nodes = _next_ready_nodes(dag, node_results)
+        if not pending_nodes:
+            return None
+        for node in pending_nodes:
+            node.args = _inject_placeholders(node.args, node_results)
+            _ensure_no_unresolved_placeholders(node)
+        batch_results = await asyncio.gather(
+            *[
+                self.execute_node(node, dag, node_results)
+                for node in pending_nodes
+            ],
+            return_exceptions=True,
+        )
+        for node, result in zip(pending_nodes, batch_results):
+            if isinstance(result, PermissionBlocked):
+                node_results[result.node_result.node_id] = result.node_result
+                dag.status = "paused_for_permission"
+                blocked_node = _node_by_id(dag, result.node_result.node_id)
+                blocked_node.status = "blocked_permission"
+                self.trace_recorder.record(
+                    "dag_paused",
+                    dag_id=dag.dag_id,
+                    payload={
+                        "reason": "permission_required",
+                        "node_id": result.node_result.node_id,
+                    },
+                )
+                return RunResult(
+                    dag_id=dag.dag_id,
+                    completed=False,
+                    node_results=node_results,
+                    traces=list(self.trace_recorder.events),
+                    pending_permission_request=result.request,
+                )
+            if isinstance(result, Exception):
+                dag.status = "failed"
+                self.trace_recorder.record("dag_failed", dag_id=dag.dag_id)
+                raise result
+            node_results[result.node_id] = result
+        return None
 
     def normalize(self, dag: DAG) -> DAG:
         return dag.model_copy(deep=True)
@@ -438,6 +501,109 @@ def topo_batches(dag: DAG) -> list[list[DAGNode]]:
                     ready.append(target)
 
     return batches
+
+
+def _next_ready_nodes(
+    dag: DAG,
+    node_results: dict[str, NodeExecutionResult],
+) -> list[DAGNode]:
+    completed_ids = {
+        node_id
+        for node_id, result in node_results.items()
+        if result.completed
+    }
+    for batch in topo_batches(dag):
+        pending_nodes = [node for node in batch if node.id not in node_results]
+        if not pending_nodes:
+            continue
+        ready = [
+            node for node in pending_nodes
+            if all(
+                edge.source in completed_ids
+                for edge in dag.edges
+                if edge.target == node.id
+            )
+        ]
+        if ready:
+            return ready
+    return []
+
+
+def _all_nodes_completed(
+    dag: DAG,
+    node_results: dict[str, NodeExecutionResult],
+) -> bool:
+    return all(
+        node.id in node_results and node_results[node.id].completed
+        for node in dag.nodes
+    )
+
+
+def _inject_placeholders(
+    value: Any,
+    node_results: dict[str, NodeExecutionResult],
+) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _inject_placeholders(item, node_results)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_inject_placeholders(item, node_results) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    exact = PLACEHOLDER_PATTERN.fullmatch(value)
+    if exact:
+        return _placeholder_value(exact, node_results)
+
+    def replace(match: re.Match[str]) -> str:
+        return str(_placeholder_value(match, node_results))
+
+    return PLACEHOLDER_PATTERN.sub(replace, value)
+
+
+def _placeholder_value(
+    match: re.Match[str],
+    node_results: dict[str, NodeExecutionResult],
+) -> Any:
+    node_id = match.group(1)
+    field = match.group(2)
+    result = node_results.get(node_id)
+    if result is None or not result.completed:
+        raise DAGExecutionError(
+            f"Cannot resolve placeholder for node '{node_id}' before it completes."
+        )
+    if field in {"output", "final_response"}:
+        return result.final_response
+    if field == "status":
+        return "completed" if result.completed else "failed"
+    return getattr(result, field)
+
+
+def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
+    unresolved = _find_unresolved_placeholders(node.args)
+    if unresolved:
+        joined = ", ".join(sorted(unresolved))
+        raise DAGExecutionError(
+            f"Node '{node.id}' has unresolved placeholder(s): {joined}."
+        )
+
+
+def _find_unresolved_placeholders(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        found: set[str] = set()
+        for item in value.values():
+            found.update(_find_unresolved_placeholders(item))
+        return found
+    if isinstance(value, list):
+        found: set[str] = set()
+        for item in value:
+            found.update(_find_unresolved_placeholders(item))
+        return found
+    if isinstance(value, str):
+        return set(re.findall(r"{{[^{}]+}}", value))
+    return set()
 
 
 def _node_prompt(

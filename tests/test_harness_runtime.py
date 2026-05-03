@@ -113,16 +113,48 @@ def test_harness_runtime_dag_creator_does_not_auto_execute_approved_dag() -> Non
 
 
 def _runtime(provider: MockProvider, *, node_loop: CompletingLoop | None = None) -> HarnessRuntime:
-    tool_executor = ToolExecutor(ToolRegistry())
+    tool_executor = make_tool_executor()
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
     dag_creator = LLMDagCreator(provider, profile=_dag_creator_profile())
     return HarnessRuntime(
         agent_loop=agent_loop,
         dag_creator=dag_creator,
-        dag_executor=DAGExecutor(agent_loop=node_loop or CompletingLoop()),
+        dag_executor=DAGExecutor(
+            agent_loop=node_loop or CompletingLoop(),
+            tool_executor=tool_executor,
+        ),
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
     )
+
+
+def make_tool_executor() -> ToolExecutor:
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    registry.register(
+        name="write_file",
+        handler=lambda path, content="": f"wrote:{path}:{content}",
+        action="write",
+        path_args=("path",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path"],
+        },
+    )
+    return ToolExecutor(registry)
 
 
 def _conversation_profile() -> AgentProfile:
@@ -144,6 +176,15 @@ def _dag_creator_profile() -> AgentProfile:
 
 
 def _dag_creator_json(*, tools: list[str] | None = None) -> str:
+    tool = (tools or ["echo"])[0]
+    args = {"path": "notes.md", "content": "hi"} if tool == "write_file" else {"text": "ok"}
+    boundary = {
+        "mode": "write_limited" if tool == "write_file" else "read_only",
+        "allowed_paths": ["notes.md"] if tool == "write_file" else [],
+        "forbidden_tools": [],
+        "allowed_commands": [],
+        "forbidden_commands": [],
+    }
     return json.dumps(
         {
             "dag_id": "dag_runtime",
@@ -155,16 +196,13 @@ def _dag_creator_json(*, tools: list[str] | None = None) -> str:
                     "id": "node_1",
                     "title": "Node 1",
                     "goal": "Do work.",
+                    "kind": "tool",
+                    "tool": tool,
+                    "args": args,
                     "agent": None,
-                    "tools": tools or [],
+                    "tools": [tool],
                     "skills": [],
-                    "boundary": {
-                        "mode": "read_only",
-                        "allowed_paths": [],
-                        "forbidden_tools": [],
-                        "allowed_commands": [],
-                        "forbidden_commands": [],
-                    },
+                    "boundary": boundary,
                     "risk": "low",
                     "risk_reason": "DagCreator estimate.",
                     "expected_output": "Result.",

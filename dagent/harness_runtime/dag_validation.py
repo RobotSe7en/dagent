@@ -17,6 +17,7 @@ def validate_dag(dag: DAG) -> None:
     Checks:
     - at least one node
     - node IDs are unique
+    - every executable node is a concrete tool call
     - edges reference existing nodes
     - graph is acyclic
     """
@@ -33,6 +34,18 @@ def validate_dag(dag: DAG) -> None:
     if duplicates:
         duplicate_list = ", ".join(sorted(duplicates))
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
+
+    for node in dag.nodes:
+        if node.kind != "tool":
+            raise DAGValidationError(
+                f"Node '{node.id}' must be a tool node; got kind='{node.kind}'."
+            )
+        if not node.tool:
+            raise DAGValidationError(f"Tool node '{node.id}' must declare tool.")
+        if node.tool not in node.tools:
+            raise DAGValidationError(
+                f"Tool node '{node.id}' must include tool '{node.tool}' in tools."
+            )
 
     node_id_set = set(node_ids)
     for edge in dag.edges:
