@@ -128,6 +128,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         initial_results: dict[str, NodeExecutionResult] | None = None,
+        record_dag_start: bool = True,
     ) -> RunResult:
         """Execute only the next currently-ready DAG layer.
 
@@ -141,7 +142,8 @@ class DAGExecutor:
         self.apply_risk_overrides(normalized)
         self._enforce_review_gate(normalized)
         normalized.status = "running"
-        self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
+        if record_dag_start:
+            self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
         node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
 
         permission_result = await self._execute_next_ready_layer(

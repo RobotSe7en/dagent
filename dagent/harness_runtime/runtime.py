@@ -21,12 +21,19 @@ from dagent.harness_runtime.agent_loop import (
 )
 from dagent.harness_runtime.control_plane import TaskRecord
 from dagent.harness_runtime.dag_executor import DAGExecutionError, DAGExecutor, RunResult
+from dagent.harness_runtime.dag_replanner import (
+    DAGReplanner,
+    NoOpDAGReplanner,
+    ReplanContext,
+    apply_replan_decision,
+    replan_trace_event,
+)
 from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.dag_creator import DagCreator
 from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
-from dagent.schemas import Boundary, DAG, PermissionRequest
+from dagent.schemas import Boundary, DAG, NodeExecutionRecord, PermissionRequest
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
@@ -54,19 +61,23 @@ class HarnessRuntime:
         dag_creator: DagCreator,
         dag_executor: DAGExecutor,
         conversation_profile: AgentProfile,
+        replanner: DAGReplanner | None = None,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
         auto_execute_approved_dags: bool = False,
         max_top_steps: int = 8,
+        max_replans: int = 3,
     ) -> None:
         self.agent_loop = agent_loop
         self.dag_creator = dag_creator
         self.dag_executor = dag_executor
+        self.replanner = replanner or NoOpDAGReplanner()
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.auto_execute_approved_dags = auto_execute_approved_dags
         self.max_top_steps = max_top_steps
+        self.max_replans = max_replans
         self.tasks: dict[str, TaskRecord] = {}
         self.runs: dict[str, RunResult] = {}
 
@@ -141,19 +152,116 @@ class HarnessRuntime:
 
     async def execute_dag(self, task_id: str) -> RunResult:
         record = self.tasks[task_id]
+        traces = []
+        replan_count = 0
         try:
-            result = await self.dag_executor.execute(
-                record.dag,
-                initial_results=_completed_results(record.runs[-1].node_results)
-                if record.runs
-                else None,
+            while True:
+                try:
+                    result = await self.dag_executor.execute_next_ready_layer(
+                        record.dag,
+                        initial_results=_completed_results(record.node_results),
+                        record_dag_start=not traces,
+                    )
+                except Exception as exc:
+                    traces.extend(self.dag_executor.trace_recorder.events)
+                    record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+                    decision = await self.replanner.replan(
+                        ReplanContext(
+                            task_id=record.task_id,
+                            user_request=record.user_request,
+                            dag=record.dag,
+                            node_results=_completed_results(record.node_results),
+                            trace_records=record.trace_records,
+                            last_error=str(exc),
+                            failed_node_id=_latest_failed_node_id(record.trace_records),
+                        )
+                    )
+                    if decision.action != "replace" or decision.dag is None or replan_count >= self.max_replans:
+                        raise
+                    record.dag = self.prepare_dag_for_review(
+                        apply_replan_decision(
+                            current=record.dag,
+                            decision=decision,
+                            node_results=_completed_results(record.node_results),
+                        )
+                    )
+                    traces.append(
+                        replan_trace_event(
+                            dag_id=record.dag.dag_id,
+                            decision=decision,
+                            applied=True,
+                        )
+                    )
+                    replan_count += 1
+                    if record.dag.status == "review_required":
+                        result = RunResult(
+                            dag_id=record.dag.dag_id,
+                            completed=False,
+                            node_results=dict(record.node_results),
+                            traces=traces,
+                        )
+                        break
+                    continue
+
+                traces.extend(result.traces)
+                record.node_results.update(result.node_results)
+                record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+                if result.pending_permission_request is not None or result.completed:
+                    break
+
+                decision = await self.replanner.replan(
+                    ReplanContext(
+                        task_id=record.task_id,
+                        user_request=record.user_request,
+                        dag=record.dag,
+                        node_results=_completed_results(record.node_results),
+                        trace_records=record.trace_records,
+                    )
+                )
+                if decision.action != "replace" or decision.dag is None:
+                    continue
+                record.dag = self.prepare_dag_for_review(
+                    apply_replan_decision(
+                        current=record.dag,
+                        decision=decision,
+                        node_results=_completed_results(record.node_results),
+                    )
+                )
+                traces.append(
+                    replan_trace_event(
+                        dag_id=record.dag.dag_id,
+                        decision=decision,
+                        applied=True,
+                    )
+                )
+                replan_count += 1
+                if replan_count > self.max_replans:
+                    raise RuntimeError("Maximum DAG replans exceeded.")
+                if record.dag.status == "review_required":
+                    result = RunResult(
+                        dag_id=record.dag.dag_id,
+                        completed=False,
+                        node_results=dict(record.node_results),
+                        traces=traces,
+                    )
+                    break
+
+            result = RunResult(
+                dag_id=record.dag.dag_id,
+                completed=result.completed,
+                node_results=result.node_results,
+                traces=traces,
+                pending_permission_request=result.pending_permission_request,
             )
         finally:
             record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+        record.node_results.update(result.node_results)
         record.runs.append(result)
         if result.pending_permission_request is not None:
             record.dag.status = "paused_for_permission"
             _node_by_id(record.dag, result.pending_permission_request.node_id).status = "blocked_permission"
+        elif record.dag.status == "review_required":
+            pass
         else:
             record.dag.status = "completed" if result.completed else "failed"
             for node_id, node_result in result.node_results.items():
@@ -311,3 +419,10 @@ def _node_by_id(dag: DAG, node_id: str):
         if node.id == node_id:
             return node
     raise KeyError(node_id)
+
+
+def _latest_failed_node_id(records: list[NodeExecutionRecord]) -> str | None:
+    for record in reversed(records):
+        if record.status == "failed":
+            return record.node_id
+    return None

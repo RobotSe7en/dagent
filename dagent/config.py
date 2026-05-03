@@ -40,6 +40,7 @@ class ProfilesConfig(BaseModel):
     directory: str = "profiles"
     conversation: str = "conversation"
     dag_creator: str = "dag_creator"
+    dag_replanner: str = "dag_replanner"
     dag_reviewer: str = "dag_reviewer"
     feedback_learner: str = "feedback_learner"
 

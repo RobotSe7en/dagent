@@ -8,5 +8,6 @@ profiles:
   directory: "profiles"
   conversation: "conversation"
   dag_creator: "dag_creator"
+  dag_replanner: "dag_replanner"
   dag_reviewer: "dag_reviewer"
   feedback_learner: "feedback_learner"

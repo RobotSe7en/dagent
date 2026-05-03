@@ -106,11 +106,15 @@ class LLMDagCreator(DagCreator):
             )
         )
         payload = extract_json_object(response.content)
-        if _is_full_dag_payload(payload):
-            return _full_dag_from_payload(payload, resolved_task_id)
+        return dag_from_json_payload(payload, task_id=resolved_task_id)
 
-        plan = PlanSpec.model_validate(payload)
-        return compile_plan_spec(plan, task_id=resolved_task_id)
+
+def dag_from_json_payload(payload: dict, *, task_id: str) -> DAG:
+    if _is_full_dag_payload(payload):
+        return _full_dag_from_payload(payload, task_id)
+
+    plan = PlanSpec.model_validate(payload)
+    return compile_plan_spec(plan, task_id=task_id)
 
 
 def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:

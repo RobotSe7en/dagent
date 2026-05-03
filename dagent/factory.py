@@ -13,6 +13,7 @@ from dagent.harness_runtime import (
     FeedbackLearnerAgent,
     HarnessRuntime,
     LLMDagCreator,
+    LLMLocalDAGReplanner,
 )
 from dagent.profiles import ProfileStore
 from dagent.providers import OpenAICompatibleProvider
@@ -44,7 +45,21 @@ def create_control_plane(
             if (tool := tool_executor.registry.get(name)) is not None
         ],
     )
-    return ControlPlane(dag_creator=dag_creator, executor=dag_executor)
+    replanner = LLMLocalDAGReplanner(
+        provider,
+        profile_store=profile_store,
+        profile_name=resolved_config.profiles.dag_replanner,
+        tools=[
+            tool
+            for name in sorted(tool_executor.registry.names())
+            if (tool := tool_executor.registry.get(name)) is not None
+        ],
+    )
+    return ControlPlane(
+        dag_creator=dag_creator,
+        executor=dag_executor,
+        replanner=replanner,
+    )
 
 
 def create_harness_runtime(
@@ -72,10 +87,17 @@ def create_harness_runtime(
         profile_name=resolved_config.profiles.dag_creator,
         tools=runtime_tools,
     )
+    replanner = LLMLocalDAGReplanner(
+        provider,
+        profile_store=profile_store,
+        profile_name=resolved_config.profiles.dag_replanner,
+        tools=runtime_tools,
+    )
     return HarnessRuntime(
         agent_loop=agent_loop,
         dag_creator=dag_creator,
         dag_executor=dag_executor,
+        replanner=replanner,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,
     )

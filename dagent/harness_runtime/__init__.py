@@ -15,6 +15,14 @@ from dagent.harness_runtime.dag_creator import (
     MockDagCreator,
     DagCreator,
 )
+from dagent.harness_runtime.dag_replanner import (
+    DAGReplanner,
+    LLMLocalDAGReplanner,
+    NoOpDAGReplanner,
+    ReplanContext,
+    ReplanDecision,
+    apply_replan_decision,
+)
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.trace_store import TraceStore
@@ -32,6 +40,7 @@ __all__ = [
     "DAGCreationError",
     "DAGExecutionError",
     "DAGExecutor",
+    "DAGReplanner",
     "DAGReviewerAgent",
     "DAGReviewResult",
     "FeedbackLearnerAgent",
@@ -39,12 +48,17 @@ __all__ = [
     "HarnessMessageResult",
     "HarnessRuntime",
     "LLMDagCreator",
+    "LLMLocalDAGReplanner",
     "MockDagCreator",
+    "NoOpDAGReplanner",
     "NodeExecutionResult",
+    "ReplanContext",
+    "ReplanDecision",
     "DagCreator",
     "RunResult",
     "RuntimeMode",
     "TaskRecord",
     "TraceStore",
+    "apply_replan_decision",
     "topo_batches",
 ]

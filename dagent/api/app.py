@@ -264,7 +264,7 @@ async def execute_dag(task_id: str) -> dict[str, Any]:
 
     if result.pending_permission_request is not None:
         record.dag.status = "paused_for_permission"
-    else:
+    elif record.dag.status not in {"review_required", "paused_for_permission"}:
         record.dag.status = "completed" if result.completed else "failed"
     run_id = f"run_{uuid4().hex}"
     state.runs[run_id] = result

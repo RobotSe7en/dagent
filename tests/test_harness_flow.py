@@ -9,10 +9,13 @@ from dagent.harness_runtime import (
     DAGExecutionError,
     DAGExecutor,
     LLMDagCreator,
+    ReplanContext,
+    ReplanDecision,
+    TaskRecord,
 )
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
-from dagent.schemas import Boundary
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
@@ -64,6 +67,18 @@ class PermissionThenCompletingLoop:
             completed=True,
             stop_reason="completed",
         )
+
+
+class StaticReplanner:
+    def __init__(self, decisions: list[ReplanDecision]) -> None:
+        self.decisions = list(decisions)
+        self.contexts: list[ReplanContext] = []
+
+    async def replan(self, context: ReplanContext) -> ReplanDecision:
+        self.contexts.append(context)
+        if self.decisions:
+            return self.decisions.pop(0)
+        return ReplanDecision(action="keep", reason="done")
 
 
 def run(coro):
@@ -212,7 +227,31 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["command"],
         },
     )
+    registry.register(
+        name="fail_tool",
+        handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
     return ToolExecutor(registry)
+
+
+def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
+    return DAGNode(
+        id=node_id,
+        title=node_id.replace("_", " ").title(),
+        goal=f"Run {tool}.",
+        kind="tool",
+        tool=tool,
+        args=args,
+        tools=[tool],
+        boundary=Boundary(mode="read_only"),
+        max_steps=1,
+    )
 
 
 def plan_spec_json_without_tool() -> str:
@@ -390,6 +429,117 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
         "node_completed",
         "dag_completed",
     ]
+
+
+def test_control_plane_replans_unfinished_nodes_between_layers() -> None:
+    initial = DAG(
+        dag_id="dag_replan",
+        task_id="task_replan",
+        status="approved",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "observed"}),
+            _tool_node("answer", "echo", {"text": "old"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
+    )
+    replacement = DAG(
+        dag_id="replacement",
+        task_id="task_replan",
+        nodes=[
+            _tool_node("answer", "echo", {"text": "{{inspect.output}}"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="replace",
+                reason="Inject observed output into downstream node.",
+                dag=replacement,
+            )
+        ]
+    )
+    control_plane = ControlPlane(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = control_plane.prepare_dag_for_review(initial)
+    control_plane.tasks["task_replan"] = TaskRecord(
+        task_id="task_replan",
+        user_request="Use observation downstream",
+        dag=prepared,
+    )
+
+    result = run(control_plane.execute_task("task_replan"))
+
+    assert result.completed is True
+    assert result.node_results["inspect"].final_response == "echo:observed"
+    assert result.node_results["answer"].final_response == "echo:echo:observed"
+    stored = control_plane.tasks["task_replan"].dag
+    assert stored.version == 2
+    assert [event.event_type for event in result.traces] == [
+        "dag_started",
+        "node_started",
+        "tool_called",
+        "tool_completed",
+        "node_completed",
+        "dag_replanned",
+        "node_started",
+        "tool_called",
+        "tool_completed",
+        "node_completed",
+        "dag_completed",
+    ]
+    assert replanner.contexts[0].node_results["inspect"].final_response == "echo:observed"
+
+
+def test_control_plane_replans_after_tool_failure() -> None:
+    initial = DAG(
+        dag_id="dag_failure_replan",
+        task_id="task_failure_replan",
+        status="approved",
+        nodes=[
+            _tool_node("try_bad_tool", "fail_tool", {"text": "boom"}),
+        ],
+        edges=[],
+    )
+    replacement = DAG(
+        dag_id="replacement",
+        task_id="task_failure_replan",
+        nodes=[
+            _tool_node("fallback", "echo", {"text": "recovered"}),
+        ],
+        edges=[],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="replace",
+                reason="Use fallback after failed tool.",
+                dag=replacement,
+            )
+        ]
+    )
+    control_plane = ControlPlane(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = control_plane.prepare_dag_for_review(initial)
+    control_plane.tasks["task_failure_replan"] = TaskRecord(
+        task_id="task_failure_replan",
+        user_request="Recover from failure",
+        dag=prepared,
+    )
+
+    result = run(control_plane.execute_task("task_failure_replan"))
+
+    assert result.completed is True
+    assert result.node_results["fallback"].final_response == "echo:recovered"
+    assert replanner.contexts[0].failed_node_id == "try_bad_tool"
+    assert "failed:boom" in replanner.contexts[0].last_error
+    assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
 def test_control_plane_requires_review_after_risk_override() -> None:
