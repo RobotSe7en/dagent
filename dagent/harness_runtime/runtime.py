@@ -141,12 +141,15 @@ class HarnessRuntime:
 
     async def execute_dag(self, task_id: str) -> RunResult:
         record = self.tasks[task_id]
-        result = await self.dag_executor.execute(
-            record.dag,
-            initial_results=_completed_results(record.runs[-1].node_results)
-            if record.runs
-            else None,
-        )
+        try:
+            result = await self.dag_executor.execute(
+                record.dag,
+                initial_results=_completed_results(record.runs[-1].node_results)
+                if record.runs
+                else None,
+            )
+        finally:
+            record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
         record.runs.append(result)
         if result.pending_permission_request is not None:
             record.dag.status = "paused_for_permission"

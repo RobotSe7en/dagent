@@ -42,3 +42,29 @@ class TraceSpan(BaseModel):
     ended_at: datetime | None = None
     events: list[TraceEvent] = Field(default_factory=list)
 
+
+NodeExecutionStatus = Literal[
+    "completed",
+    "failed",
+    "blocked_permission",
+]
+
+
+class NodeExecutionRecord(BaseModel):
+    record_id: str
+    task_id: str
+    dag_id: str
+    dag_version: int
+    node_id: str
+    node_title: str = ""
+    node_goal: str = ""
+    node_kind: str = "tool"
+    tool: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    output: str = ""
+    error: str | None = None
+    status: NodeExecutionStatus
+    stop_reason: str = ""
+    steps: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+

@@ -172,6 +172,30 @@ async def get_dag(task_id: str) -> dict[str, Any]:
     return {"dag": record.dag.model_dump(mode="json")}
 
 
+@app.get("/tasks/{task_id}/trace")
+async def get_task_trace(task_id: str) -> dict[str, Any]:
+    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
+        runtime = state.harness_runtime
+        return {
+            "task_id": task_id,
+            "records": [
+                record.model_dump(mode="json")
+                for record in runtime.dag_executor.trace_store.records_for_task(task_id)
+            ],
+        }
+
+    control_plane = state.get_control_plane()
+    if task_id not in control_plane.tasks:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return {
+        "task_id": task_id,
+        "records": [
+            record.model_dump(mode="json")
+            for record in control_plane.executor.trace_store.records_for_task(task_id)
+        ],
+    }
+
+
 @app.put("/dags/{task_id}")
 async def update_dag(task_id: str, request: UpdateDagRequest) -> dict[str, Any]:
     runtime_record = (
@@ -335,6 +359,10 @@ def _task_payload(record: TaskRecord) -> dict[str, Any]:
     return {
         "task_id": record.task_id,
         "dag": record.dag.model_dump(mode="json"),
+        "trace_records": [
+            trace_record.model_dump(mode="json")
+            for trace_record in record.trace_records
+        ],
         "message_markdown": _planning_markdown(record),
     }
 
@@ -348,12 +376,25 @@ def _run_payload(result: RunResult) -> dict[str, Any]:
             if result.pending_permission_request
             else None
         ),
+        "trace_records": [
+            record.model_dump(mode="json")
+            for record in _trace_records_for_dag(result.dag_id)
+        ],
         "node_results": {
             node_id: asdict(node_result)
             for node_id, node_result in result.node_results.items()
         },
         "traces": [_trace_payload(trace) for trace in result.traces],
     }
+
+
+def _trace_records_for_dag(dag_id: str):
+    records = []
+    if state.harness_runtime is not None:
+        records.extend(state.harness_runtime.dag_executor.trace_store.records_for_dag(dag_id))
+    if state.control_plane is not None:
+        records.extend(state.control_plane.executor.trace_store.records_for_dag(dag_id))
+    return records
 
 
 def _trace_payload(trace: TraceEvent) -> dict[str, Any]:

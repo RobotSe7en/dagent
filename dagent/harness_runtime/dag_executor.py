@@ -11,6 +11,7 @@ from uuid import uuid4
 from dagent.harness_runtime.agent_loop import AgentLoopResult
 from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.trace_recorder import TraceRecorder
+from dagent.harness_runtime.trace_store import TraceStore
 from dagent.schemas import DAG, Boundary, DAGNode, PermissionRequest, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
@@ -73,10 +74,12 @@ class DAGExecutor:
         agent_loop: NodeAgentLoop,
         tool_executor: ToolExecutor | None = None,
         trace_recorder: TraceRecorder | None = None,
+        trace_store: TraceStore | None = None,
     ) -> None:
         self.agent_loop = agent_loop
         self.tool_executor = tool_executor or getattr(agent_loop, "tool_executor", None)
         self.trace_recorder = trace_recorder or TraceRecorder()
+        self.trace_store = trace_store or TraceStore()
 
     async def execute(
         self,
@@ -261,6 +264,14 @@ class DAGExecutor:
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
             request = _permission_request_for_violation(dag, node, exc)
+            self.trace_store.add_node_record(
+                dag=dag,
+                node=node,
+                error=str(exc),
+                status="blocked_permission",
+                stop_reason="blocked_permission",
+                steps=0,
+            )
             self.trace_recorder.record(
                 "permission_requested",
                 dag_id=dag.dag_id,
@@ -284,6 +295,14 @@ class DAGExecutor:
                 request,
             ) from exc
         except Exception as exc:
+            self.trace_store.add_node_record(
+                dag=dag,
+                node=node,
+                error=str(exc),
+                status="failed",
+                stop_reason="tool_error",
+                steps=1,
+            )
             self.trace_recorder.record(
                 "tool_failed",
                 dag_id=dag.dag_id,
@@ -311,6 +330,14 @@ class DAGExecutor:
                 "name": node.tool,
                 "content": content,
             },
+        )
+        self.trace_store.add_node_record(
+            dag=dag,
+            node=node,
+            output=content,
+            status="completed",
+            stop_reason="completed",
+            steps=1,
         )
         result = NodeExecutionResult(
             node_id=node.id,

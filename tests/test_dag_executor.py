@@ -215,16 +215,6 @@ def test_broad_allowed_paths_promotes_to_medium_and_requires_approval() -> None:
         run(executor.execute(dag))
 
 
-def test_executor_pauses_when_node_requests_permission() -> None:
-    executor = DAGExecutor(agent_loop=BoundaryBlockingLoop())
-    dag = DAG(
-        dag_id="dag_1",
-        task_id="task_1",
-        status="approved",
-        nodes=[node("write", tools=["write_file"], risk="medium")],
-    )
-
-
 def tool_node(
     node_id: str,
     *,
@@ -273,6 +263,16 @@ def tool_executor() -> ToolExecutor:
     )
     return ToolExecutor(registry)
 
+
+def test_executor_pauses_when_node_requests_permission() -> None:
+    executor = DAGExecutor(agent_loop=BoundaryBlockingLoop())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[node("write", tools=["write_file"], risk="medium")],
+    )
+
     result = run(executor.execute(dag))
 
     assert result.completed is False
@@ -309,6 +309,13 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
 
     assert result.completed is True
     assert result.node_results["echo"].final_response == "echo:hi"
+    records = executor.trace_store.records_for_task("task_1")
+    assert len(records) == 1
+    assert records[0].node_id == "echo"
+    assert records[0].tool == "echo"
+    assert records[0].args == {"text": "hi"}
+    assert records[0].output == "echo:hi"
+    assert records[0].status == "completed"
     assert loop.calls == []
     assert [event.event_type for event in result.traces] == [
         "dag_started",
@@ -345,4 +352,11 @@ def test_tool_node_boundary_violation_pauses_for_permission() -> None:
     assert result.pending_permission_request.node_id == "write_note"
     assert result.pending_permission_request.requested_boundary.mode == "write_limited"
     assert result.pending_permission_request.requested_boundary.allowed_paths == ["notes.md"]
+    records = executor.trace_store.records_for_task("task_1")
+    assert len(records) == 1
+    assert records[0].node_id == "write_note"
+    assert records[0].tool == "write_note"
+    assert records[0].args == {"path": "notes.md", "content": "hi"}
+    assert records[0].status == "blocked_permission"
+    assert records[0].error
     assert loop.calls == []

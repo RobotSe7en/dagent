@@ -141,6 +141,72 @@ def test_api_can_approve_pending_permission_and_resume_dag() -> None:
     assert loop.calls == 2
 
 
+def test_api_returns_raw_node_trace_records_for_tool_dag() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=json.dumps(
+                    {
+                        "task": "echo text",
+                        "nodes": [
+                            {
+                                "id": "echo_text",
+                                "goal": "Echo text.",
+                                "tool": "echo",
+                                "args": {"text": "hi"},
+                                "depends_on": [],
+                            }
+                        ],
+                    }
+                )
+            )
+        ]
+    )
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    tool_executor = ToolExecutor(registry)
+    state.control_plane = ControlPlane(
+        dag_creator=LLMDagCreator(provider),
+        executor=DAGExecutor(
+            agent_loop=CompletingLoop(),
+            tool_executor=tool_executor,
+        ),
+    )
+    state.harness_runtime = None
+    state.runs.clear()
+    client = TestClient(app)
+
+    task_response = client.post(
+        "/tasks",
+        json={"message": "echo hi", "task_id": "task_api_trace"},
+    )
+    assert task_response.status_code == 200
+
+    execute_response = client.post("/dags/task_api_trace/execute")
+    assert execute_response.status_code == 200
+    execute_payload = execute_response.json()
+    trace_records = execute_payload["result"]["trace_records"]
+    assert len(trace_records) == 1
+    assert trace_records[0]["node_id"] == "echo_text"
+    assert trace_records[0]["tool"] == "echo"
+    assert trace_records[0]["args"] == {"text": "hi"}
+    assert trace_records[0]["output"] == "echo:hi"
+    assert trace_records[0]["status"] == "completed"
+
+    trace_response = client.get("/tasks/task_api_trace/trace")
+    assert trace_response.status_code == 200
+    assert trace_response.json()["records"] == trace_records
+
+
 def test_api_approved_medium_risk_runtime_dag_executes() -> None:
     provider = MockProvider(
         [

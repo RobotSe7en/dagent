@@ -1,4 +1,4 @@
-import type { Boundary, Dag, PermissionRequest, ToolStreamEvent, TraceEvent } from './types';
+import type { Boundary, Dag, NodeExecutionRecord, PermissionRequest, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -28,6 +28,7 @@ export interface ExecuteResponse {
       }
     >;
     pending_permission_request?: PermissionRequest | null;
+    trace_records?: NodeExecutionRecord[];
     traces: BackendTrace[];
   };
   message_markdown: string;

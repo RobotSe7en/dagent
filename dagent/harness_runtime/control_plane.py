@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from dagent.harness_runtime.dag_executor import DAGExecutor, RunResult
 from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.dag_creator import DagCreator
-from dagent.schemas import Boundary, DAG, PermissionRequest
+from dagent.schemas import Boundary, DAG, NodeExecutionRecord, PermissionRequest
 
 
 @dataclass
@@ -18,6 +18,11 @@ class TaskRecord:
     runs: list[RunResult] = field(default_factory=list)
     pending_permission_request: PermissionRequest | None = None
     node_results: dict = field(default_factory=dict)
+    trace_records: list[NodeExecutionRecord] = field(default_factory=list)
+
+    @property
+    def node_execution_records(self) -> list[NodeExecutionRecord]:
+        return self.trace_records
 
 
 class ControlPlane:
@@ -56,10 +61,13 @@ class ControlPlane:
 
     async def execute_task(self, task_id: str) -> RunResult:
         record = self.tasks[task_id]
-        result = await self.executor.execute(
-            record.dag,
-            initial_results=_completed_results(record.node_results),
-        )
+        try:
+            result = await self.executor.execute(
+                record.dag,
+                initial_results=_completed_results(record.node_results),
+            )
+        finally:
+            record.trace_records = self.executor.trace_store.records_for_task(record.task_id)
         record.node_results.update(result.node_results)
         record.pending_permission_request = result.pending_permission_request
         if result.pending_permission_request is not None:

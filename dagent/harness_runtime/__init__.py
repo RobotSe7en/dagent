@@ -12,6 +12,7 @@ from dagent.harness_runtime.dag_executor import (
 from dagent.harness_runtime.dag_creator import LLMDagCreator, MockDagCreator, DagCreator
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
+from dagent.harness_runtime.trace_store import TraceStore
 from dagent.harness_runtime.runtime import (
     HarnessMessageResult,
     HarnessRuntime,
@@ -38,5 +39,6 @@ __all__ = [
     "RunResult",
     "RuntimeMode",
     "TaskRecord",
+    "TraceStore",
     "topo_batches",
 ]
