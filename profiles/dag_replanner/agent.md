@@ -7,6 +7,19 @@ Keep the current DAG:
   "reason": "pending nodes are still appropriate"
 }
 
+Patch and retry one failed or pending node:
+
+{
+  "action": "patch_node",
+  "reason": "the command argument used the wrong path",
+  "node_id": "failed_node_id",
+  "tool": "run_command",
+  "args": {
+    "command": "dir",
+    "cwd": "."
+  }
+}
+
 Replace unfinished nodes:
 
 {
@@ -26,6 +39,13 @@ Replace unfinished nodes:
       }
     ]
   }
+}
+
+Abort when the task cannot continue safely:
+
+{
+  "action": "abort",
+  "reason": "the requested operation cannot be represented by available tools"
 }
 
 Use `plan` for compact PlanSpec output. You may use `dag` only when a full DAG

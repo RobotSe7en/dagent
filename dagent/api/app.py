@@ -4,55 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict
 from typing import Any
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from dagent.factory import create_control_plane, create_harness_runtime
+from dagent.factory import create_harness_runtime
 from dagent.harness_runtime import (
-    ControlPlane,
-    DAGExecutionError,
     HarnessRuntime,
-    RunResult,
     RuntimeMode,
-    TaskRecord,
 )
-from dagent.schemas import Boundary, DAG, TraceEvent
-
-
-class CreateTaskRequest(BaseModel):
-    message: str = Field(min_length=1)
-    task_id: str | None = None
+from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.schemas import DAG, TraceEvent
 
 
 class MessageRequest(BaseModel):
     message: str = Field(min_length=1)
     mode: RuntimeMode = "auto"
+    review_level: ReviewLevel = "balanced"
 
 
-class UpdateDagRequest(BaseModel):
+class ResumeDagRequest(BaseModel):
+    task_id: str = Field(min_length=1)
     dag: DAG
-
-
-class PermissionDecisionRequest(BaseModel):
-    boundary: Any | None = None
+    review_level: ReviewLevel | None = None
 
 
 class ApiState:
     def __init__(self) -> None:
-        self.control_plane: ControlPlane | None = None
         self.harness_runtime: HarnessRuntime | None = None
-        self.runs: dict[str, RunResult] = {}
-
-    def get_control_plane(self) -> ControlPlane:
-        if self.control_plane is None:
-            self.control_plane = create_control_plane(workspace_root=".")
-        return self.control_plane
 
     def get_harness_runtime(self) -> HarnessRuntime:
         if self.harness_runtime is None:
@@ -75,36 +57,6 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/tasks")
-async def create_task(request: CreateTaskRequest) -> dict[str, Any]:
-    record = await state.get_control_plane().create_task(
-        request.message,
-        task_id=request.task_id,
-    )
-    return _task_payload(record)
-
-
-@app.post("/tasks/stream")
-async def create_task_stream(request: CreateTaskRequest) -> StreamingResponse:
-    async def events():
-        yield _sse({"type": "status", "message": "dag_creator_started"})
-        try:
-            record = await state.get_control_plane().create_task(
-                request.message,
-                task_id=request.task_id,
-            )
-        except Exception as exc:
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        yield _sse({"type": "dag", "dag": record.dag.model_dump(mode="json")})
-        for chunk in _chunks(_planning_markdown(record), size=36):
-            yield _sse({"type": "token", "content": chunk})
-        yield _sse({"type": "done", **_task_payload(record)})
-
-    return StreamingResponse(events(), media_type="text/event-stream")
-
-
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
@@ -121,6 +73,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             state.get_harness_runtime().handle_message(
                 request.message,
                 mode=request.mode,
+                review_level=request.review_level,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -143,12 +96,14 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 
         if result.dag is not None:
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
+        if result.pending_review is not None:
+            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
         if result.run_result is not None:
             for trace in result.run_result.traces:
                 yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
         message = _runtime_message_markdown(result)
-        if request.mode == "dag_creator" or result.dag is not None:
+        if result.dag is not None:
             for chunk in _chunks(message, size=36):
                 yield _sse({"type": "token", "content": chunk})
         yield _sse(
@@ -157,6 +112,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 "status": result.status,
                 "task_id": result.task_id,
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
+                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "message_markdown": message,
             }
         )
@@ -164,12 +120,64 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-@app.get("/dags/{task_id}")
-async def get_dag(task_id: str) -> dict[str, Any]:
-    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-        return {"dag": state.harness_runtime.tasks[task_id].dag.model_dump(mode="json")}
-    record = _get_task(task_id)
-    return {"dag": record.dag.model_dump(mode="json")}
+@app.post("/messages/resume")
+async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
+    async def events():
+        yield _sse({"type": "status", "message": "agent_loop_resumed"})
+        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def on_token(content: str) -> None:
+            event_queue.put_nowait({"type": "token", "content": content})
+
+        def on_event(event: dict[str, Any]) -> None:
+            event_queue.put_nowait(event)
+
+        task = asyncio.create_task(
+            state.get_harness_runtime().resume_dag(
+                request.task_id,
+                request.dag,
+                review_level=request.review_level,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        )
+        try:
+            while not task.done():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse(event)
+            while not event_queue.empty():
+                yield _sse(event_queue.get_nowait())
+            result = await task
+        except Exception as exc:
+            if not task.done():
+                task.cancel()
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        if result.dag is not None:
+            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
+        if result.pending_review is not None:
+            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
+        if result.run_result is not None:
+            for trace in result.run_result.traces:
+                yield _sse({"type": "trace", "event": _trace_payload(trace)})
+
+        message = _runtime_message_markdown(result)
+        yield _sse(
+            {
+                "type": "done",
+                "status": result.status,
+                "task_id": result.task_id,
+                "dag": result.dag.model_dump(mode="json") if result.dag else None,
+                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
+                "message_markdown": message,
+            }
+        )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.get("/tasks/{task_id}/trace")
@@ -184,165 +192,23 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
             ],
         }
 
-    control_plane = state.get_control_plane()
-    if task_id not in control_plane.tasks:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    return {
-        "task_id": task_id,
-        "records": [
-            record.model_dump(mode="json")
-            for record in control_plane.executor.trace_store.records_for_task(task_id)
-        ],
-    }
-
-
-@app.put("/dags/{task_id}")
-async def update_dag(task_id: str, request: UpdateDagRequest) -> dict[str, Any]:
-    runtime_record = (
-        state.harness_runtime.tasks.get(task_id)
-        if state.harness_runtime is not None
-        else None
-    )
-    if runtime_record is not None:
-        if request.dag.task_id != task_id:
-            raise HTTPException(status_code=400, detail="DAG task_id does not match URL task_id.")
-        runtime_record.dag = state.harness_runtime.prepare_dag_for_review(request.dag)
-        return {"dag": runtime_record.dag.model_dump(mode="json")}
-
-    control_plane = state.get_control_plane()
-    record = _get_task(task_id)
-    if request.dag.task_id != task_id:
-        raise HTTPException(status_code=400, detail="DAG task_id does not match URL task_id.")
-    record.dag = control_plane.prepare_dag_for_review(request.dag)
-    return {"dag": record.dag.model_dump(mode="json")}
-
-
-@app.post("/dags/{task_id}/approve")
-async def approve_dag(task_id: str) -> dict[str, Any]:
-    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-        dag = state.harness_runtime.approve_dag(task_id)
-        return {"dag": dag.model_dump(mode="json")}
-
-    try:
-        dag = state.get_control_plane().approve_dag(task_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Task not found.") from exc
-    return {"dag": dag.model_dump(mode="json")}
-
-
-@app.post("/dags/{task_id}/execute")
-async def execute_dag(task_id: str) -> dict[str, Any]:
-    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-        runtime = state.harness_runtime
-        record = runtime.tasks[task_id]
-        try:
-            result = await runtime.execute_dag(task_id)
-        except DAGExecutionError as exc:
-            record.dag.status = "review_required"
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception as exc:
-            record.dag.status = "failed"
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        run_id = f"run_{uuid4().hex}"
-        state.runs[run_id] = result
-        return {
-            "run_id": run_id,
-            "dag": record.dag.model_dump(mode="json"),
-            "result": _run_payload(result),
-            "message_markdown": _run_markdown(result),
-        }
-
-    record = _get_task(task_id)
-    try:
-        result = await state.get_control_plane().execute_task(task_id)
-    except DAGExecutionError as exc:
-        record.dag.status = "review_required"
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:
-        record.dag.status = "failed"
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    if result.pending_permission_request is not None:
-        record.dag.status = "paused_for_permission"
-    elif record.dag.status not in {"review_required", "paused_for_permission"}:
-        record.dag.status = "completed" if result.completed else "failed"
-    run_id = f"run_{uuid4().hex}"
-    state.runs[run_id] = result
-    return {
-        "run_id": run_id,
-        "dag": record.dag.model_dump(mode="json"),
-        "result": _run_payload(result),
-        "message_markdown": _run_markdown(result),
-    }
-
-
-@app.post("/dags/{task_id}/permissions/approve")
-async def approve_permission(
-    task_id: str,
-    request: PermissionDecisionRequest,
-) -> dict[str, Any]:
-    boundary = None
-    if request.boundary is not None:
-        boundary = Boundary.model_validate(request.boundary)
-    try:
-        if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-            permission = state.harness_runtime.approve_permission(task_id, boundary=boundary)
-            dag = state.harness_runtime.tasks[task_id].dag
-        else:
-            permission = state.get_control_plane().approve_permission(task_id, boundary=boundary)
-            dag = state.get_control_plane().tasks[task_id].dag
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "permission_request": permission.model_dump(mode="json"),
-        "dag": dag.model_dump(mode="json"),
-    }
-
-
-@app.post("/dags/{task_id}/permissions/deny")
-async def deny_permission(task_id: str) -> dict[str, Any]:
-    try:
-        if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-            permission = state.harness_runtime.deny_permission(task_id)
-            dag = state.harness_runtime.tasks[task_id].dag
-        else:
-            permission = state.get_control_plane().deny_permission(task_id)
-            dag = state.get_control_plane().tasks[task_id].dag
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {
-        "permission_request": permission.model_dump(mode="json"),
-        "dag": dag.model_dump(mode="json"),
-    }
-
-
-@app.get("/runs/{run_id}")
-async def get_run(run_id: str) -> dict[str, Any]:
-    result = state.runs.get(run_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
-    return {"run_id": run_id, "result": _run_payload(result)}
-
-
-def _get_task(task_id: str) -> TaskRecord:
-    record = state.get_control_plane().tasks.get(task_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    return record
+    raise HTTPException(status_code=404, detail="Task not found.")
 
 
 def _runtime_message_markdown(result) -> str:
+    if result.run_result is not None and result.message_markdown.strip():
+        return result.message_markdown
     if result.dag is not None:
         medium_or_high = [
             node for node in result.dag.nodes
             if node.risk in {"medium", "high"}
         ]
         if result.dag.status == "approved":
-            review_line = "- **Next action:** DAG is approved and ready to execute."
+            review_line = "- **Next action:** The top AgentLoop will continue execution when it is safe to do so."
         elif medium_or_high:
             review_line = f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
         else:
-            review_line = "- **Next action:** Review or execute the DAG."
+            review_line = "- **Next action:** Inspect the generated DAG trace."
         return "\n".join(
             [
                 "### DAG created",
@@ -355,99 +221,18 @@ def _runtime_message_markdown(result) -> str:
     return result.message_markdown
 
 
-def _task_payload(record: TaskRecord) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "dag": record.dag.model_dump(mode="json"),
-        "trace_records": [
-            trace_record.model_dump(mode="json")
-            for trace_record in record.trace_records
-        ],
-        "message_markdown": _planning_markdown(record),
-    }
-
-
-def _run_payload(result: RunResult) -> dict[str, Any]:
-    return {
-        "dag_id": result.dag_id,
-        "completed": result.completed,
-        "pending_permission_request": (
-            result.pending_permission_request.model_dump(mode="json")
-            if result.pending_permission_request
-            else None
-        ),
-        "trace_records": [
-            record.model_dump(mode="json")
-            for record in _trace_records_for_dag(result.dag_id)
-        ],
-        "node_results": {
-            node_id: asdict(node_result)
-            for node_id, node_result in result.node_results.items()
-        },
-        "traces": [_trace_payload(trace) for trace in result.traces],
-    }
-
-
-def _trace_records_for_dag(dag_id: str):
-    records = []
-    if state.harness_runtime is not None:
-        records.extend(state.harness_runtime.dag_executor.trace_store.records_for_dag(dag_id))
-    if state.control_plane is not None:
-        records.extend(state.control_plane.executor.trace_store.records_for_dag(dag_id))
-    return records
-
-
 def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
     return trace.model_dump(mode="json")
 
 
-def _planning_markdown(record: TaskRecord) -> str:
-    medium_or_high = [
-        node for node in record.dag.nodes
-        if node.risk in {"medium", "high"}
-    ]
-    review_line = (
-        f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
-        if medium_or_high
-        else "- **Review required:** none, DAG is ready to execute."
-    )
-    return "\n".join(
-        [
-            "### DAG generated",
-            f"- **Task:** `{record.task_id}`",
-            f"- **Status:** `{record.dag.status}`",
-            f"- **Nodes:** {len(record.dag.nodes)}",
-            review_line,
-        ]
-    )
-
-
-def _run_markdown(result: RunResult) -> str:
-    if result.pending_permission_request is not None:
-        request = result.pending_permission_request
-        return "\n".join(
-            [
-                "### DAG paused for permission",
-                f"- **Node:** `{request.node_id}`",
-                f"- **Reason:** {request.violation}",
-                "- **Next action:** approve or deny the requested boundary change.",
-            ]
-        )
-    lines = [
-        "### DAG execution result",
-        f"- **Status:** {'completed' if result.completed else 'failed'}",
-        f"- **Nodes executed:** {len(result.node_results)}",
-        "",
-    ]
-    for node_id, node_result in result.node_results.items():
-        lines.extend(
-            [
-                f"#### `{node_id}`",
-                node_result.final_response or "_No response produced._",
-                "",
-            ]
-        )
-    return "\n".join(lines).strip()
+def _review_payload(review) -> dict[str, Any]:
+    return {
+        "review_id": review.review_id,
+        "kind": review.kind,
+        "message": review.message,
+        "dag": review.proposed_dag.model_dump(mode="json"),
+        "payload": review.payload,
+    }
 
 
 def _chunks(text: str, *, size: int) -> list[str]:

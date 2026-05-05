@@ -1,5 +1,6 @@
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type BoundaryMode = 'read_only' | 'write_limited' | 'full';
+export type ReviewLevel = 'fast' | 'balanced' | 'careful' | 'manual';
 
 export interface Boundary {
   mode: BoundaryMode;
@@ -40,6 +41,7 @@ export interface Dag {
   version: number;
   status:
     | 'draft'
+    | 'awaiting_dag_review'
     | 'review_required'
     | 'approved'
     | 'running'

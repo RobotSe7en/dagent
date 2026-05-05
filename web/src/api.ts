@@ -1,4 +1,4 @@
-import type { Boundary, Dag, NodeExecutionRecord, PermissionRequest, ToolStreamEvent, TraceEvent } from './types';
+import type { Dag, ReviewLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -11,67 +11,10 @@ interface BackendTrace {
   created_at: string;
 }
 
-export interface ExecuteResponse {
-  run_id: string;
-  dag: Dag;
-  result: {
-    dag_id: string;
-    completed: boolean;
-    node_results: Record<
-      string,
-      {
-        node_id: string;
-        final_response: string;
-        completed: boolean;
-        stop_reason: string;
-        steps: number;
-      }
-    >;
-    pending_permission_request?: PermissionRequest | null;
-    trace_records?: NodeExecutionRecord[];
-    traces: BackendTrace[];
-  };
-  message_markdown: string;
-}
-
-export async function approveDag(taskId: string): Promise<Dag> {
-  const payload = await apiFetch<{ dag: Dag }>(`/dags/${taskId}/approve`, { method: 'POST' });
-  return payload.dag;
-}
-
-export async function saveDag(taskId: string, dag: Dag): Promise<Dag> {
-  const payload = await apiFetch<{ dag: Dag }>(`/dags/${taskId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dag }),
-  });
-  return payload.dag;
-}
-
-export async function executeDag(taskId: string): Promise<ExecuteResponse> {
-  return apiFetch<ExecuteResponse>(`/dags/${taskId}/execute`, { method: 'POST' });
-}
-
-export async function approvePermission(
-  taskId: string,
-  boundary?: Boundary,
-): Promise<{ dag: Dag; permission_request: PermissionRequest }> {
-  return apiFetch<{ dag: Dag; permission_request: PermissionRequest }>(`/dags/${taskId}/permissions/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ boundary: boundary ?? null }),
-  });
-}
-
-export async function denyPermission(taskId: string): Promise<{ dag: Dag; permission_request: PermissionRequest }> {
-  return apiFetch<{ dag: Dag; permission_request: PermissionRequest }>(`/dags/${taskId}/permissions/deny`, {
-    method: 'POST',
-  });
-}
-
 export async function streamTask(
   message: string,
-  mode: 'auto' | 'direct' | 'dag_creator',
+  mode: 'auto' | 'direct' | 'dag',
+  reviewLevel: ReviewLevel,
   handlers: {
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
@@ -85,13 +28,78 @@ export async function streamTask(
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, mode }),
+    body: JSON.stringify({ message, mode, review_level: reviewLevel }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
   }
 
   const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((item) => item.startsWith('data: '));
+      if (!line) continue;
+      const event = JSON.parse(line.slice(6));
+      if (event.type === 'status') handlers.onStatus?.(event.message);
+      if (event.type === 'dag') handlers.onDag?.(event.dag);
+      if (event.type === 'trace') handlers.onTrace?.(mapTrace(event.event));
+      if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
+        handlers.onTool?.(event);
+      }
+      if (event.type === 'token') handlers.onToken?.(event.content);
+      if (event.type === 'done') handlers.onDone?.(event);
+      if (event.type === 'error') handlers.onError?.(event.message);
+    }
+  }
+}
+
+export async function resumeDag(
+  taskId: string,
+  dag: Dag,
+  reviewLevel: ReviewLevel,
+  handlers: {
+    onStatus?: (status: string) => void;
+    onDag?: (dag: Dag) => void;
+    onTrace?: (event: TraceEvent) => void;
+    onTool?: (event: ToolStreamEvent) => void;
+    onToken?: (content: string) => void;
+    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
+    onError?: (message: string) => void;
+  },
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/messages/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task_id: taskId, dag, review_level: reviewLevel }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage(response));
+  }
+  await readStream(response, handlers);
+}
+
+async function readStream(
+  response: Response,
+  handlers: {
+    onStatus?: (status: string) => void;
+    onDag?: (dag: Dag) => void;
+    onTrace?: (event: TraceEvent) => void;
+    onTool?: (event: ToolStreamEvent) => void;
+    onToken?: (content: string) => void;
+    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
+    onError?: (message: string) => void;
+  },
+) {
+  const reader = response.body?.getReader();
+  if (!reader) return;
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -144,14 +152,6 @@ export function mapTrace(event: BackendTrace): TraceEvent {
       second: '2-digit',
     }),
   };
-}
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
-  if (!response.ok) {
-    throw new Error(await errorMessage(response));
-  }
-  return response.json() as Promise<T>;
 }
 
 async function errorMessage(response: Response): Promise<string> {

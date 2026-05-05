@@ -3,308 +3,15 @@ import json
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import (
-    AgentLoop,
-    AgentLoopResult,
-    ControlPlane,
-    DAGExecutor,
-    HarnessRuntime,
-    LLMDagCreator,
-)
+from dagent.harness_runtime import AgentLoop, DAGExecutor, HarnessRuntime, LLMDagCreator
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import Boundary
-from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
-class CompletingLoop:
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        return AgentLoopResult(
-            final_response="done",
-            messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
-        )
-
-
-class PermissionThenCompletingLoop:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        self.calls += 1
-        if self.calls == 1:
-            raise BoundaryViolation(
-                "Command 'python --version' is not allowed.",
-                command="python --version",
-            )
-        return AgentLoopResult(
-            final_response="done after permission",
-            messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
-        )
-
-
-def make_tool_executor() -> ToolExecutor:
-    registry = ToolRegistry()
-    registry.register(
-        name="echo",
-        handler=lambda text: f"echo:{text}",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {"text": {"type": "string"}},
-            "required": ["text"],
-        },
-    )
-    registry.register(
-        name="write_file",
-        handler=lambda path, content="": f"wrote:{path}:{content}",
-        action="write",
-        path_args=("path",),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["path"],
-        },
-    )
-    registry.register(
-        name="run_command",
-        handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
-        action="command",
-        path_args=("cwd",),
-        command_args=("command",),
-        default_args={"cwd": ".", "timeout_seconds": 30},
-        parameters={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "cwd": {"type": "string"},
-            },
-            "required": ["command"],
-        },
-    )
-    return ToolExecutor(registry)
-
-
-def test_api_creates_approves_and_executes_dag() -> None:
-    provider = MockProvider([ChatResponse(content=_dag_creator_json())])
-    state.control_plane = ControlPlane(
-        dag_creator=LLMDagCreator(provider),
-        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
-    )
-    state.harness_runtime = None
-    state.runs.clear()
-    client = TestClient(app)
-
-    task_response = client.post(
-        "/tasks",
-        json={"message": "make a small DAG", "task_id": "task_api"},
-    )
-    assert task_response.status_code == 200
-    task_payload = task_response.json()
-    assert task_payload["dag"]["task_id"] == "task_api"
-
-    approve_response = client.post("/dags/task_api/approve")
-    assert approve_response.status_code == 200
-    assert approve_response.json()["dag"]["status"] == "approved"
-
-    execute_response = client.post("/dags/task_api/execute")
-    assert execute_response.status_code == 200
-    execute_payload = execute_response.json()
-    assert execute_payload["dag"]["status"] == "completed"
-    assert execute_payload["result"]["completed"] is True
-    assert [event["event_type"] for event in execute_payload["result"]["traces"]] == [
-        "dag_started",
-        "node_started",
-        "tool_called",
-        "tool_completed",
-        "node_completed",
-        "dag_completed",
-    ]
-
-
-def test_api_can_approve_pending_permission_and_resume_dag() -> None:
-    provider = MockProvider([ChatResponse(content=_dag_creator_json(tools=["run_command"]))])
-    state.control_plane = ControlPlane(
-        dag_creator=LLMDagCreator(provider),
-        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
-    )
-    state.harness_runtime = None
-    state.runs.clear()
-    client = TestClient(app)
-
-    task_response = client.post(
-        "/tasks",
-        json={"message": "make a small DAG", "task_id": "task_api_permission"},
-    )
-    assert task_response.status_code == 200
-    state.control_plane.approve_dag("task_api_permission")
-
-    first_execute = client.post("/dags/task_api_permission/execute")
-    assert first_execute.status_code == 200
-    first_payload = first_execute.json()
-    assert first_payload["dag"]["status"] == "paused_for_permission"
-    request = first_payload["result"]["pending_permission_request"]
-    assert request["node_id"] == "answer"
-    assert request["requested_boundary"]["allowed_commands"] == ["python"]
-
-    approve_response = client.post(
-        "/dags/task_api_permission/permissions/approve",
-        json={"boundary": request["requested_boundary"]},
-    )
-    assert approve_response.status_code == 200
-    assert approve_response.json()["permission_request"]["status"] == "approved"
-
-    second_execute = client.post("/dags/task_api_permission/execute")
-    assert second_execute.status_code == 200
-    second_payload = second_execute.json()
-    assert second_payload["dag"]["status"] == "completed"
-    assert second_payload["result"]["completed"] is True
-
-
-def test_api_returns_raw_node_trace_records_for_tool_dag() -> None:
-    provider = MockProvider(
-        [
-            ChatResponse(
-                content=json.dumps(
-                    {
-                        "task": "echo text",
-                        "nodes": [
-                            {
-                                "id": "echo_text",
-                                "goal": "Echo text.",
-                                "tool": "echo",
-                                "args": {"text": "hi"},
-                                "depends_on": [],
-                            }
-                        ],
-                    }
-                )
-            )
-        ]
-    )
-    registry = ToolRegistry()
-    registry.register(
-        name="echo",
-        handler=lambda text: f"echo:{text}",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {"text": {"type": "string"}},
-            "required": ["text"],
-        },
-    )
-    tool_executor = ToolExecutor(registry)
-    state.control_plane = ControlPlane(
-        dag_creator=LLMDagCreator(provider),
-        executor=DAGExecutor(
-            agent_loop=CompletingLoop(),
-            tool_executor=tool_executor,
-        ),
-    )
-    state.harness_runtime = None
-    state.runs.clear()
-    client = TestClient(app)
-
-    task_response = client.post(
-        "/tasks",
-        json={"message": "echo hi", "task_id": "task_api_trace"},
-    )
-    assert task_response.status_code == 200
-
-    execute_response = client.post("/dags/task_api_trace/execute")
-    assert execute_response.status_code == 200
-    execute_payload = execute_response.json()
-    trace_records = execute_payload["result"]["trace_records"]
-    assert len(trace_records) == 1
-    assert trace_records[0]["node_id"] == "echo_text"
-    assert trace_records[0]["tool"] == "echo"
-    assert trace_records[0]["args"] == {"text": "hi"}
-    assert trace_records[0]["output"] == "echo:hi"
-    assert trace_records[0]["status"] == "completed"
-
-    trace_response = client.get("/tasks/task_api_trace/trace")
-    assert trace_response.status_code == 200
-    assert trace_response.json()["records"] == trace_records
-
-
-def test_api_approved_medium_risk_runtime_dag_executes() -> None:
-    provider = MockProvider(
-        [
-            ChatResponse(
-                content=_dag_creator_json(
-                    tools=["write_file"],
-                    boundary_mode="write_limited",
-                )
-            )
-        ]
-    )
-    state.harness_runtime = HarnessRuntime(
-        agent_loop=AgentLoop(
-            provider=MockProvider([ChatResponse(content="unused")]),
-            tool_executor=ToolExecutor(ToolRegistry()),
-        ),
-        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
-        conversation_profile=_profile("conversation"),
-    )
-    state.control_plane = None
-    state.runs.clear()
-    client = TestClient(app)
-
-    create_response = client.post(
-        "/messages/stream",
-        json={"message": "create risky dag", "mode": "dag_creator"},
-    )
-    assert create_response.status_code == 200
-    assert '"status": "review_required"' in create_response.text
-
-    task_id = next(iter(state.harness_runtime.tasks))
-    approve_response = client.post(f"/dags/{task_id}/approve")
-    assert approve_response.status_code == 200
-    assert approve_response.json()["dag"]["status"] == "approved"
-
-    execute_response = client.post(f"/dags/{task_id}/execute")
-    assert execute_response.status_code == 200
-    assert execute_response.json()["dag"]["status"] == "completed"
-
-
 def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
-    provider = MockProvider([ChatResponse(content="hello there")])
-    state.harness_runtime = HarnessRuntime(
-        agent_loop=AgentLoop(
-            provider=provider,
-            tool_executor=ToolExecutor(ToolRegistry()),
-        ),
-        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
-        conversation_profile=_profile("conversation"),
-    )
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="hello there")]))
     client = TestClient(app)
 
     response = client.post(
@@ -313,25 +20,126 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
     )
 
     assert response.status_code == 200
-    assert "hello there" in response.text
-    assert '"dag": null' in response.text
+    events = _sse_events(response.text)
+    assert [event["type"] for event in events] == ["status", "token", "done"]
+    assert events[-1]["dag"] is None
+    assert events[-1]["message_markdown"] == "hello there"
 
 
-def test_api_message_stream_interleaves_tool_events() -> None:
-    provider = MockProvider(
-        [
-            ChatResponse(
-                tool_calls=[
-                    ToolCall(
-                        id="call_1",
-                        name="echo",
-                        arguments={"text": "hi"},
-                    )
-                ]
-            ),
-            ChatResponse(content="done"),
-        ]
+def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider(
+            [
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="dag_creator",
+                            arguments={
+                                "request": "Create a safe DAG.",
+                                "reason": "Needs execution.",
+                            },
+                        )
+                    ]
+                ),
+                ChatResponse(content=_dag_creator_json()),
+            ]
+        )
     )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "echo ok through a DAG", "mode": "auto"},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    event_types = [event["type"] for event in events]
+    assert "dag" in event_types
+    assert event_types[-1] == "done"
+    assert events[-1]["status"] == "awaiting_dag_review"
+    assert events[-1]["dag"]["status"] == "approved"
+    assert "DAG" in events[-1]["message_markdown"]
+
+
+def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider(
+            [
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="dag_creator",
+                            arguments={"request": "Create a safe DAG.", "reason": "Needs execution."},
+                        )
+                    ]
+                ),
+                ChatResponse(content=_dag_creator_json()),
+                ChatResponse(content="Final answer: echo:ok"),
+            ]
+        )
+    )
+    client = TestClient(app)
+
+    stream_response = client.post(
+        "/messages/stream",
+        json={"message": "echo ok through a DAG", "mode": "auto"},
+    )
+    task_id = _sse_events(stream_response.text)[-1]["task_id"]
+
+    dag = _sse_events(stream_response.text)[-1]["dag"]
+    dag["nodes"][0]["args"] = {"text": "reviewed"}
+
+    resume_response = client.post(
+        "/messages/resume",
+        json={"task_id": task_id, "dag": dag},
+    )
+
+    assert resume_response.status_code == 200
+    resume_events = _sse_events(resume_response.text)
+    assert resume_events[-1]["status"] == "completed"
+    assert resume_events[-1]["dag"]["status"] == "completed"
+    assert resume_events[-1]["message_markdown"] == "Final answer: echo:ok"
+    assert any(event.get("event", {}).get("event_type") == "tool_completed" for event in resume_events)
+
+    trace_response = client.get(f"/tasks/{task_id}/trace")
+    assert trace_response.status_code == 200
+    records = trace_response.json()["records"]
+    assert len(records) == 1
+    assert records[0]["node_id"] == "answer"
+    assert records[0]["tool"] == "echo"
+    assert records[0]["args"] == {"text": "reviewed"}
+    assert records[0]["output"] == "echo:reviewed"
+    assert records[0]["status"] == "completed"
+
+
+def test_api_old_dag_lifecycle_routes_are_removed() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    assert client.post("/tasks", json={"message": "old path"}).status_code == 404
+    assert client.post("/dags/task_api/approve").status_code == 404
+    assert client.post("/dags/task_api/execute").status_code == 404
+    assert client.put("/dags/task_api", json={"dag": {}}).status_code == 404
+
+
+def _runtime(provider: MockProvider) -> HarnessRuntime:
+    tool_executor = _tool_executor()
+    return HarnessRuntime(
+        agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
+        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
+        dag_executor=DAGExecutor(
+            agent_loop=AgentLoop(provider=MockProvider([]), tool_executor=tool_executor),
+            tool_executor=tool_executor,
+        ),
+        conversation_profile=_profile("conversation"),
+        auto_execute_approved_dags=True,
+    )
+
+
+def _tool_executor() -> ToolExecutor:
     registry = ToolRegistry()
     registry.register(
         name="echo",
@@ -343,39 +151,10 @@ def test_api_message_stream_interleaves_tool_events() -> None:
             "required": ["text"],
         },
     )
-    state.harness_runtime = HarnessRuntime(
-        agent_loop=AgentLoop(
-            provider=provider,
-            tool_executor=ToolExecutor(registry),
-        ),
-        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
-        dag_executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
-        conversation_profile=_profile("conversation"),
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/messages/stream",
-        json={"message": "echo hi", "mode": "direct"},
-    )
-
-    assert response.status_code == 200
-    lines = [line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")]
-    event_types = [json.loads(line)["type"] for line in lines]
-    assert "tool_call" in event_types
-    assert "tool_result" in event_types
-    assert event_types.index("tool_call") < event_types.index("tool_result") < event_types.index("done")
-    assert '"content": "echo:hi"' in response.text
+    return ToolExecutor(registry)
 
 
-def _dag_creator_json(
-    *,
-    tools: list[str] | None = None,
-    boundary_mode: str = "read_only",
-) -> str:
-    tool = (tools or ["echo"])[0]
-    args = _default_args_for_tool(tool)
-    boundary = _default_boundary_for_tool(tool, boundary_mode)
+def _dag_creator_json() -> str:
     return json.dumps(
         {
             "dag_id": "dag_api",
@@ -388,14 +167,20 @@ def _dag_creator_json(
                     "title": "Answer",
                     "goal": "Answer the user.",
                     "kind": "tool",
-                    "tool": tool,
-                    "args": args,
+                    "tool": "echo",
+                    "args": {"text": "ok"},
                     "agent": None,
-                    "tools": [tool],
+                    "tools": ["echo"],
                     "skills": [],
-                    "boundary": boundary,
+                    "boundary": {
+                        "mode": "read_only",
+                        "allowed_paths": [],
+                        "forbidden_tools": [],
+                        "allowed_commands": [],
+                        "forbidden_commands": [],
+                    },
                     "risk": "low",
-                    "risk_reason": "No tool access.",
+                    "risk_reason": "No risky access.",
                     "expected_output": "Answer.",
                     "max_steps": 1,
                     "timeout_seconds": 30,
@@ -406,40 +191,6 @@ def _dag_creator_json(
     )
 
 
-def _default_args_for_tool(tool: str) -> dict:
-    if tool == "write_file":
-        return {"path": "notes.md", "content": "hi"}
-    if tool == "run_command":
-        return {"command": "python --version", "cwd": "."}
-    return {"text": "ok"}
-
-
-def _default_boundary_for_tool(tool: str, mode: str) -> dict:
-    if tool == "write_file":
-        return {
-            "mode": mode,
-            "allowed_paths": ["notes.md"] if mode != "read_only" else [],
-            "forbidden_tools": [],
-            "allowed_commands": [],
-            "forbidden_commands": [],
-        }
-    if tool == "run_command":
-        return {
-            "mode": mode,
-            "allowed_paths": ["."],
-            "forbidden_tools": [],
-            "allowed_commands": [],
-            "forbidden_commands": [],
-        }
-    return {
-        "mode": mode,
-        "allowed_paths": [],
-        "forbidden_tools": [],
-        "allowed_commands": [],
-        "forbidden_commands": [],
-    }
-
-
 def _profile(name: str) -> AgentProfile:
     return AgentProfile(
         name=name,
@@ -447,3 +198,11 @@ def _profile(name: str) -> AgentProfile:
         layers=["soul"],
         layer_contents={"soul": f"You are {name}."},
     )
+
+
+def _sse_events(text: str) -> list[dict]:
+    return [
+        json.loads(line.removeprefix("data: "))
+        for line in text.splitlines()
+        if line.startswith("data: ")
+    ]

@@ -13,12 +13,12 @@ from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.profiled_agent import extract_json_object
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import ChatProvider
-from dagent.schemas import DAG, DAGEdge, NodeExecutionRecord, TraceEvent
+from dagent.schemas import Boundary, DAG, DAGEdge, NodeExecutionRecord, TraceEvent
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
 
-ReplanAction = Literal["keep", "replace"]
+ReplanAction = Literal["keep", "patch_node", "replace", "abort"]
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,10 @@ class ReplanDecision:
     action: ReplanAction
     reason: str = ""
     dag: DAG | None = None
+    node_id: str | None = None
+    tool: str | None = None
+    args: dict[str, Any] | None = None
+    boundary: Boundary | None = None
 
 
 class DAGReplanner(Protocol):
@@ -108,6 +112,23 @@ class LLMLocalDAGReplanner:
         payload = extract_json_object(response.content)
         action = str(payload.get("action") or "keep").strip().lower()
         reason = str(payload.get("reason") or "")
+        if action == "abort":
+            return ReplanDecision(action="abort", reason=reason)
+
+        if action == "patch_node":
+            return ReplanDecision(
+                action="patch_node",
+                reason=reason,
+                node_id=str(payload.get("node_id") or context.failed_node_id or ""),
+                tool=_optional_str(payload.get("tool")),
+                args=payload.get("args") if isinstance(payload.get("args"), dict) else None,
+                boundary=(
+                    Boundary.model_validate(payload["boundary"])
+                    if isinstance(payload.get("boundary"), dict)
+                    else None
+                ),
+            )
+
         if action != "replace":
             return ReplanDecision(action="keep", reason=reason)
 
@@ -178,6 +199,52 @@ def apply_replan_decision(
     return merged
 
 
+def apply_node_patch_decision(
+    *,
+    current: DAG,
+    decision: ReplanDecision,
+    completed_node_results: dict[str, NodeExecutionResult],
+) -> DAG:
+    if decision.action != "patch_node":
+        return current
+    if not decision.node_id:
+        raise ValueError("patch_node decision requires node_id.")
+
+    patched = current.model_copy(deep=True)
+    node = _node_by_id(patched, decision.node_id)
+    if decision.tool:
+        node.tool = decision.tool
+        if decision.tool not in node.tools:
+            node.tools = [decision.tool, *node.tools]
+    if decision.args is not None:
+        node.args = dict(decision.args)
+    if decision.boundary is not None:
+        node.boundary = decision.boundary
+    node.kind = "tool"
+    if node.tool and node.tool not in node.tools:
+        node.tools = [node.tool, *node.tools]
+    node.max_steps = 1
+    node.status = "ready"
+    patched.version = current.version + 1
+    patched.status = "draft"
+    validate_dag(patched)
+    return patched
+
+
+def affected_node_ids_for_patch(dag: DAG, node_id: str) -> set[str]:
+    """Return the patched node plus all downstream nodes that must be rerun."""
+    _node_by_id(dag, node_id)
+    affected = {node_id}
+    changed = True
+    while changed:
+        changed = False
+        for edge in dag.edges:
+            if edge.source in affected and edge.target not in affected:
+                affected.add(edge.target)
+                changed = True
+    return affected
+
+
 def replan_trace_event(
     *,
     dag_id: str,
@@ -185,9 +252,11 @@ def replan_trace_event(
     applied: bool,
 ) -> TraceEvent:
     if applied:
-        event_type = "dag_replanned"
+        event_type = "node_patched" if decision.action == "patch_node" else "dag_replanned"
     elif decision.action == "keep":
         event_type = "dag_replan_kept"
+    elif decision.action == "abort":
+        event_type = "dag_aborted"
     else:
         event_type = "dag_replan_failed"
     return TraceEvent(
@@ -197,6 +266,9 @@ def replan_trace_event(
         payload={
             "action": decision.action,
             "reason": decision.reason,
+            "node_id": decision.node_id,
+            "tool": decision.tool,
+            "args": decision.args,
         },
     )
 
@@ -213,3 +285,17 @@ def _completed_result_ids(
         for node_id, result in node_results.items()
         if result.completed
     }
+
+
+def _node_by_id(dag: DAG, node_id: str):
+    for node in dag.nodes:
+        if node.id == node_id:
+            return node
+    raise ValueError(f"Node '{node_id}' not found.")
+
+
+def _optional_str(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None

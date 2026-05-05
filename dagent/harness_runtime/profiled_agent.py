@@ -53,12 +53,23 @@ def extract_json_object(content: str) -> dict[str, Any]:
     try:
         parsed = json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise ValueError("Agent response did not contain a JSON object.")
-        parsed = json.loads(stripped[start : end + 1])
+        parsed = _decode_first_json_object(stripped)
 
     if not isinstance(parsed, dict):
         raise ValueError("Agent response JSON must be an object.")
     return parsed
+
+
+def _decode_first_json_object(content: str) -> Any:
+    decoder = json.JSONDecoder()
+    cursor = 0
+    while True:
+        start = content.find("{", cursor)
+        if start == -1:
+            raise ValueError("Agent response did not contain a JSON object.")
+        try:
+            parsed, _ = decoder.raw_decode(content[start:])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        return parsed

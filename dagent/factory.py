@@ -7,7 +7,6 @@ from pathlib import Path
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
     AgentLoop,
-    ControlPlane,
     DAGExecutor,
     DAGReviewerAgent,
     FeedbackLearnerAgent,
@@ -19,47 +18,6 @@ from dagent.profiles import ProfileStore
 from dagent.providers import OpenAICompatibleProvider
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.file_tools import create_file_tool_registry
-
-
-def create_control_plane(
-    *,
-    config: DagentConfig | None = None,
-    workspace_root: str | Path = ".",
-) -> ControlPlane:
-    resolved_config = config or load_config()
-    profile_store = ProfileStore(resolved_config.profiles.directory)
-    provider = OpenAICompatibleProvider(resolved_config.provider)
-    tool_executor = ToolExecutor(
-        create_file_tool_registry(),
-        workspace_root=workspace_root,
-    )
-    agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(agent_loop=agent_loop, tool_executor=tool_executor)
-    dag_creator = LLMDagCreator(
-        provider,
-        profile_store=profile_store,
-        profile_name=resolved_config.profiles.dag_creator,
-        tools=[
-            tool
-            for name in sorted(tool_executor.registry.names())
-            if (tool := tool_executor.registry.get(name)) is not None
-        ],
-    )
-    replanner = LLMLocalDAGReplanner(
-        provider,
-        profile_store=profile_store,
-        profile_name=resolved_config.profiles.dag_replanner,
-        tools=[
-            tool
-            for name in sorted(tool_executor.registry.names())
-            if (tool := tool_executor.registry.get(name)) is not None
-        ],
-    )
-    return ControlPlane(
-        dag_creator=dag_creator,
-        executor=dag_executor,
-        replanner=replanner,
-    )
 
 
 def create_harness_runtime(

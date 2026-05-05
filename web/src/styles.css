@@ -101,6 +101,16 @@ select {
   color: #fff;
 }
 
+.review-select {
+  min-height: 34px;
+  border: 1px solid #cdd4cb;
+  border-radius: 7px;
+  background: #fff;
+  padding: 0 9px;
+  color: #26323a;
+  font-weight: 700;
+}
+
 .workspace {
   min-height: 0;
   overflow: hidden;
@@ -760,6 +770,25 @@ button:disabled {
   min-height: 70px;
   padding: 9px;
   resize: vertical;
+}
+
+.readonly-field {
+  min-height: 35px;
+  padding: 9px;
+  border: 1px solid #cdd4cb;
+  border-radius: 6px;
+  background: #fff;
+  color: #26323a;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+pre.readonly-field {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .two-col {

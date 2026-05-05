@@ -295,6 +295,16 @@ def tool_executor() -> ToolExecutor:
             "required": ["path"],
         },
     )
+    registry.register(
+        name="fail_tool",
+        handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
     return ToolExecutor(registry)
 
 
@@ -463,6 +473,26 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
         run(executor.execute(dag))
 
     assert executor.trace_store.records_for_task("task_1") == []
+
+
+def test_tool_node_failure_marks_node_failed() -> None:
+    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    failing_node = tool_node(
+        "fragile",
+        tool="fail_tool",
+        args={"text": "boom"},
+    )
+
+    with pytest.raises(RuntimeError, match="failed:boom"):
+        executor.execute_tool_node(
+            failing_node,
+            DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
+        )
+
+    assert failing_node.status == "failed"
+    records = executor.trace_store.records_for_task("task_1")
+    assert records[-1].node_id == "fragile"
+    assert records[-1].status == "failed"
 
 
 def test_tool_node_boundary_violation_pauses_for_permission() -> None:
