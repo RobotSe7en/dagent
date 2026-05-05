@@ -18,25 +18,16 @@ import {
   Bot,
   Check,
   CircleStop,
-  Ban,
   GitBranch,
-  Play,
-  Save,
+  Plus,
   Send,
   SlidersHorizontal,
+  Trash2,
   Wrench,
   X,
 } from 'lucide-react';
-import {
-  approveDag as approveDagApi,
-  approvePermission as approvePermissionApi,
-  denyPermission as denyPermissionApi,
-  executeDag as executeDagApi,
-  mapTrace,
-  saveDag,
-  streamTask,
-} from './api';
-import type { BoundaryMode, Dag, DagNode, PermissionRequest, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
+import { resumeDag, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskTone: Record<RiskLevel, string> = {
   low: 'bg-emerald-100 text-emerald-800 border-emerald-300',
@@ -44,8 +35,9 @@ const riskTone: Record<RiskLevel, string> = {
   high: 'bg-rose-100 text-rose-800 border-rose-300',
 };
 
-const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
+const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
+const reviewLevels: ReviewLevel[] = ['balanced', 'fast', 'careful', 'manual'];
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -80,7 +72,7 @@ type MessageTimelineItem =
   | { type: 'dag'; dag: Dag }
   | { type: 'tool'; event: ToolStreamEvent };
 
-type RuntimeMode = 'auto' | 'direct' | 'dag_creator';
+type RuntimeMode = 'auto' | 'direct' | 'dag';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
@@ -131,17 +123,16 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后我会先尝试直接回答。需要复杂编排时，Auto 模式会生成可审阅 DAG；DAG 模式会直接进入规划。',
+      content: '输入任务后我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
     },
   ]);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<RuntimeMode>('auto');
+  const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('balanced');
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
-  const [permissionBusy, setPermissionBusy] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -167,14 +158,6 @@ export function App() {
       setSelectedId(nextDag.nodes[0]?.id ?? '');
     }
   }, [selectedId]);
-
-  const updateDag = useCallback(
-    (updater: (current: Dag) => Dag) => {
-      const next = updater(dag);
-      syncDag(next);
-    },
-    [dag, syncDag],
-  );
 
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
@@ -282,11 +265,65 @@ export function App() {
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
 
-  const patchSelected = (patch: Partial<DagNode>) => {
+  const updateDag = (updater: (current: Dag) => Dag) => {
+    syncDag(updater(dag));
+  };
+
+  const patchSelected = (patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
     if (!selectedNode) return;
     updateDag((current) => ({
       ...current,
-      nodes: current.nodes.map((node) => (node.id === selectedNode.id ? { ...node, ...patch } : node)),
+      status: 'draft',
+      nodes: current.nodes.map((node) =>
+        node.id === selectedNode.id ? normalizeNode({ ...node, ...patch }) : node,
+      ),
+      edges: nextEdges ?? current.edges,
+    }));
+  };
+
+  const addNode = () => {
+    const id = uniqueNodeId(dag);
+    updateDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: [
+        ...current.nodes,
+        normalizeNode({
+          id,
+          title: 'New Node',
+          goal: 'Describe the next action.',
+          kind: 'tool',
+          tool: current.nodes[0]?.tool ?? null,
+          args: {},
+          agent: null,
+          tools: current.nodes[0]?.tool ? [current.nodes[0].tool] : [],
+          skills: [],
+          boundary: {
+            mode: 'read_only',
+            allowed_paths: [],
+            forbidden_tools: [],
+            allowed_commands: [],
+            forbidden_commands: [],
+          },
+          risk: 'low',
+          risk_reason: 'User added node.',
+          expected_output: 'Result.',
+          max_steps: 1,
+          timeout_seconds: 30,
+          status: 'planned',
+        }),
+      ],
+    }));
+    setSelectedId(id);
+  };
+
+  const deleteSelected = () => {
+    if (!selectedNode) return;
+    updateDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: current.nodes.filter((node) => node.id !== selectedNode.id),
+      edges: current.edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
     }));
   };
 
@@ -295,7 +332,6 @@ export function App() {
     const prompt = draft.trim();
     setDraft('');
     setError(null);
-    setPermissionRequest(null);
     setTrace([]);
     tokenQueueRef.current = [];
     stopTokenTimer();
@@ -308,7 +344,7 @@ export function App() {
     appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
 
     try {
-      await streamTask(prompt, mode, {
+      await streamTask(prompt, mode, reviewLevel, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop request accepted.', status: 'running' }),
         onDag: (nextDag) => {
           flushQueuedTokensNow();
@@ -362,113 +398,58 @@ export function App() {
     appendTrace({ type: 'model', label: 'interrupted', detail: 'The current UI stream was interrupted.', status: 'failed' });
   };
 
-  const approveDag = async () => {
-    if (!dag.task_id) return;
+  const confirmDag = async () => {
+    if (!dag.task_id || streaming) return;
     setError(null);
-    try {
-      const nextDag = await approveDagApi(dag.task_id);
-      syncDag(nextDag);
-      attachDagToLastAssistant(nextDag);
-      appendTrace({ type: 'dag', label: 'dag_approved', detail: 'Reviewer approved the current DAG.', status: 'completed' });
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
+    setReviewOpen(false);
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+    setStreaming(true);
+    setMessages((items) => [
+      ...items,
+      { role: 'assistant', kind: 'text', content: '' },
+    ]);
+    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming task ${dag.task_id}.`, status: 'running' });
 
-  const saveCurrentDag = async () => {
-    if (!dag.task_id) return;
-    setError(null);
     try {
-      const nextDag = await saveDag(dag.task_id, dag);
-      syncDag(nextDag);
-      attachDagToLastAssistant(nextDag);
-      appendTrace({ type: 'dag', label: 'dag_saved', detail: 'Saved edited DAG and reran validation/risk checks.', status: 'completed' });
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const executeDag = async () => {
-    if (!dag.task_id) return;
-    setError(null);
-    const runningDag: Dag = { ...dag, status: 'running' };
-    syncDag(runningDag);
-    attachDagToLastAssistant(runningDag);
-    appendTrace({ type: 'dag', label: 'dag_started', detail: 'Executor started approved DAG.', status: 'running' });
-    try {
-      const response = await executeDagApi(dag.task_id);
-      handleExecutionResponse(response);
+      await resumeDag(dag.task_id, dag, reviewLevel, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop resumed from DAG review.', status: 'running' }),
+        onDag: (nextDag) => {
+          syncDag(nextDag);
+          attachDagToLastAssistant(nextDag);
+        },
+        onTrace: (event) => {
+          setTrace((items) => [...items, event]);
+        },
+        onTool: appendToolMessage,
+        onToken: enqueueAssistantToken,
+        onDone: (payload) => {
+          flushQueuedTokensNow();
+          if (payload.dag) {
+            syncDag(payload.dag);
+            attachDagToLastAssistant(payload.dag);
+          }
+          updateLastAssistantText((message) => ({
+            ...message,
+            content: message.content || payload.message_markdown,
+            timeline: message.timeline?.length
+              ? message.timeline
+              : [{ type: 'text', content: payload.message_markdown }],
+          }));
+          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the DAG result.', status: 'completed' });
+        },
+        onError: (message) => {
+          setError(message);
+          appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
+        },
+      });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'dag', label: 'dag_failed', detail: message, status: 'failed' });
-      syncDag({ ...dag, status: dag.status === 'running' ? 'review_required' : dag.status });
-    }
-  };
-
-  const handleExecutionResponse = (response: Awaited<ReturnType<typeof executeDagApi>>) => {
-    syncDag(response.dag);
-    const mappedTrace = response.result.traces.map(mapTrace);
-    const pending = response.result.pending_permission_request ?? null;
-    setTrace(mappedTrace);
-    setPermissionRequest(pending);
-    if (pending) setReviewOpen(true);
-    setMessages((items) => [
-      ...items,
-      {
-        role: 'assistant',
-        content: response.message_markdown,
-        dagSnapshot: response.dag,
-        traceSnapshot: mappedTrace,
-        timeline: [
-          { type: 'text', content: response.message_markdown },
-          { type: 'dag', dag: response.dag },
-        ],
-      },
-    ]);
-  };
-
-  const approvePermission = async () => {
-    if (!dag.task_id || !permissionRequest || permissionBusy) return;
-    setPermissionBusy(true);
-    setError(null);
-    try {
-      const approval = await approvePermissionApi(dag.task_id, permissionRequest.requested_boundary);
-      syncDag(approval.dag);
-      setPermissionRequest(null);
-      appendTrace({
-        type: 'dag',
-        label: 'permission_approved',
-        detail: `Approved boundary for node ${permissionRequest.node_id}.`,
-        status: 'completed',
-      });
-      const response = await executeDagApi(dag.task_id);
-      handleExecutionResponse(response);
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
+      appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
     } finally {
-      setPermissionBusy(false);
-    }
-  };
-
-  const denyPermission = async () => {
-    if (!dag.task_id || !permissionRequest || permissionBusy) return;
-    setPermissionBusy(true);
-    setError(null);
-    try {
-      const response = await denyPermissionApi(dag.task_id);
-      syncDag(response.dag);
-      setPermissionRequest(null);
-      appendTrace({
-        type: 'dag',
-        label: 'permission_denied',
-        detail: `Denied boundary request for node ${permissionRequest.node_id}.`,
-        status: 'failed',
-      });
-    } catch (exc) {
-      setError(exc instanceof Error ? exc.message : String(exc));
-    } finally {
-      setPermissionBusy(false);
+      await waitForTokenQueue();
+      setStreaming(false);
     }
   };
 
@@ -484,17 +465,29 @@ export function App() {
         </div>
         <div className="top-actions">
           <div className="mode-switch" aria-label="Runtime mode">
-            {(['auto', 'direct', 'dag_creator'] as RuntimeMode[]).map((item) => (
+            {(['auto', 'dag', 'direct'] as RuntimeMode[]).map((item) => (
               <button
                 key={item}
                 className={mode === item ? 'active' : ''}
                 onClick={() => setMode(item)}
                 type="button"
               >
-                {item === 'dag_creator' ? 'DAG' : item}
+                {item}
               </button>
             ))}
           </div>
+          <select
+            className="review-select"
+            value={reviewLevel}
+            onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
+            aria-label="Review level"
+          >
+            {reviewLevels.map((level) => (
+              <option key={level} value={level}>
+                {level}
+              </option>
+            ))}
+          </select>
           {dag.nodes.length ? (
             <>
               <StatusBadge status={dag.status} />
@@ -560,14 +553,10 @@ export function App() {
           edges={edges}
           selectedNode={selectedNode}
           onClose={() => setReviewOpen(false)}
-          onApprove={approveDag}
-          onExecute={executeDag}
-          onSave={saveCurrentDag}
-          permissionRequest={permissionRequest}
-          permissionBusy={permissionBusy}
-          onApprovePermission={approvePermission}
-          onDenyPermission={denyPermission}
+          onConfirm={confirmDag}
           onPatchNode={patchSelected}
+          onAddNode={addNode}
+          onDeleteNode={deleteSelected}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onSelectNode={setSelectedId}
@@ -771,20 +760,27 @@ function clipText(value: string, maxLength: number) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
+function uniqueNodeId(dag: Dag) {
+  let index = dag.nodes.length + 1;
+  let id = `node_${index}`;
+  const existing = new Set(dag.nodes.map((node) => node.id));
+  while (existing.has(id)) {
+    index += 1;
+    id = `node_${index}`;
+  }
+  return id;
+}
+
 function DagReviewDialog({
   dag,
   nodes,
   edges,
   selectedNode,
-  permissionRequest,
-  permissionBusy,
   onClose,
-  onApprove,
-  onApprovePermission,
-  onDenyPermission,
-  onExecute,
-  onSave,
+  onConfirm,
   onPatchNode,
+  onAddNode,
+  onDeleteNode,
   onNodesChange,
   onEdgesChange,
   onSelectNode,
@@ -793,15 +789,11 @@ function DagReviewDialog({
   nodes: Node[];
   edges: Edge[];
   selectedNode?: DagNode;
-  permissionRequest: PermissionRequest | null;
-  permissionBusy: boolean;
   onClose: () => void;
-  onApprove: () => void;
-  onApprovePermission: () => void;
-  onDenyPermission: () => void;
-  onExecute: () => void;
-  onSave: () => void;
-  onPatchNode: (patch: Partial<DagNode>) => void;
+  onConfirm: () => void;
+  onPatchNode: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onAddNode: () => void;
+  onDeleteNode: () => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
@@ -819,39 +811,14 @@ function DagReviewDialog({
             <p>{dag.task_id || dag.dag_id}</p>
           </div>
           <div className="modal-actions">
-            {permissionRequest ? (
-              <>
-                <button
-                  className="secondary-button compact-button danger-button"
-                  onClick={onDenyPermission}
-                  disabled={permissionBusy}
-                  type="button"
-                >
-                  <Ban size={16} />
-                  Deny
-                </button>
-                <button
-                  className="primary-button"
-                  onClick={onApprovePermission}
-                  disabled={permissionBusy}
-                  type="button"
-                >
-                  <Check size={16} />
-                  Approve Boundary
-                </button>
-              </>
-            ) : (
-              <button className="secondary-button compact-button" onClick={onApprove} disabled={!dag.task_id} type="button">
-                <Check size={16} />
-                Approve
-              </button>
-            )}
-            {!permissionRequest ? (
-              <button className="primary-button" onClick={onExecute} disabled={dag.status !== 'approved'} type="button">
-                <Play size={17} />
-                Execute
-              </button>
-            ) : null}
+            <button className="secondary-button compact-button" onClick={onAddNode} type="button">
+              <Plus size={16} />
+              Add Node
+            </button>
+            <button className="primary-button" onClick={onConfirm} disabled={!dag.nodes.length} type="button">
+              <Check size={17} />
+              Confirm & Resume
+            </button>
             <button className="icon-button" onClick={onClose} title="Close" type="button">
               <X size={18} />
             </button>
@@ -875,9 +842,13 @@ function DagReviewDialog({
           </section>
           <aside className="modal-side">
             <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
-            {permissionRequest ? <PermissionPanel request={permissionRequest} /> : null}
             {selectedNode ? (
-              <NodeEditor node={normalizeNode(selectedNode)} onPatch={onPatchNode} onSave={onSave} />
+              <NodeEditor
+                node={normalizeNode(selectedNode)}
+                dag={dag}
+                onPatch={onPatchNode}
+                onDelete={onDeleteNode}
+              />
             ) : (
               <div className="empty-state compact">Select a DAG node to inspect details.</div>
             )}
@@ -888,42 +859,18 @@ function DagReviewDialog({
   );
 }
 
-function PermissionPanel({ request }: { request: PermissionRequest }) {
-  return (
-    <section className="permission-panel">
-      <div className="permission-panel-head">
-        <Wrench size={16} />
-        <strong>Permission Required</strong>
-        <span>{request.node_id}</span>
-      </div>
-      <p>{request.violation}</p>
-      <dl>
-        <div>
-          <dt>Mode</dt>
-          <dd>{request.requested_boundary.mode}</dd>
-        </div>
-        <div>
-          <dt>Allowed paths</dt>
-          <dd>{request.requested_boundary.allowed_paths.join(', ') || 'none'}</dd>
-        </div>
-        <div>
-          <dt>Allowed commands</dt>
-          <dd>{request.requested_boundary.allowed_commands.join(', ') || 'none'}</dd>
-        </div>
-      </dl>
-    </section>
-  );
-}
-
 function NodeEditor({
   node,
+  dag,
   onPatch,
-  onSave,
+  onDelete,
 }: {
   node: DagNode;
-  onPatch: (patch: Partial<DagNode>) => void;
-  onSave: () => void;
+  dag: Dag;
+  onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onDelete: () => void;
 }) {
+  const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
   return (
     <div className="node-editor">
       <label>
@@ -995,13 +942,28 @@ function NodeEditor({
             ))}
           </select>
         </label>
+        <label>
+          Status
+          <input value={node.status ?? 'planned'} disabled />
+        </label>
       </div>
       <label>
-        Tools
+        Depends On
         <input
-          value={node.tools.join(', ')}
-          onChange={(event) => onPatch({ tools: splitCsv(event.target.value) })}
+          value={dependsOn.join(', ')}
+          onChange={(event) => {
+            const sources = splitCsv(event.target.value).filter((source) => source !== node.id);
+            const nextEdges = [
+              ...dag.edges.filter((edge) => edge.target !== node.id),
+              ...sources.map((source) => ({ source, target: node.id, reason: 'User dependency.' })),
+            ];
+            onPatch({}, nextEdges);
+          }}
         />
+      </label>
+      <label>
+        Tools
+        <input value={node.tools.join(', ')} onChange={(event) => onPatch({ tools: splitCsv(event.target.value) })} />
       </label>
       <label>
         Allowed Paths
@@ -1013,15 +975,34 @@ function NodeEditor({
         />
       </label>
       <label>
+        Allowed Commands
+        <input
+          value={node.boundary.allowed_commands.join(', ')}
+          onChange={(event) =>
+            onPatch({ boundary: { ...node.boundary, allowed_commands: splitCsv(event.target.value) } })
+          }
+        />
+      </label>
+      <label>
         Expected Output
         <textarea value={node.expected_output} onChange={(event) => onPatch({ expected_output: event.target.value })} />
       </label>
-      <button className="secondary-button" onClick={onSave} type="button">
-        <Save size={16} />
-        Save Draft
+      <button className="secondary-button danger-button" onClick={onDelete} type="button">
+        <Trash2 size={16} />
+        Delete Node
       </button>
     </div>
   );
+}
+
+function nodeDepths(dag: Dag): Map<string, number> {
+  const depths = new Map(dag.nodes.map((node) => [node.id, 0]));
+  for (let index = 0; index < dag.nodes.length; index += 1) {
+    for (const edge of dag.edges) {
+      depths.set(edge.target, Math.max(depths.get(edge.target) ?? 0, (depths.get(edge.source) ?? 0) + 1));
+    }
+  }
+  return depths;
 }
 
 function splitCsv(value: string) {
@@ -1040,14 +1021,4 @@ function parseJsonObject(value: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function nodeDepths(dag: Dag): Map<string, number> {
-  const depths = new Map(dag.nodes.map((node) => [node.id, 0]));
-  for (let index = 0; index < dag.nodes.length; index += 1) {
-    for (const edge of dag.edges) {
-      depths.set(edge.target, Math.max(depths.get(edge.target) ?? 0, (depths.get(edge.source) ?? 0) + 1));
-    }
-  }
-  return depths;
 }

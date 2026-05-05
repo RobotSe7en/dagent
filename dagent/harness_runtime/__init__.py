@@ -1,7 +1,6 @@
 """Unified harness runtime package."""
 
 from dagent.harness_runtime.agent_loop import AgentLoop, AgentLoopResult, ControlToolResult
-from dagent.harness_runtime.control_plane import ControlPlane, TaskRecord
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -21,6 +20,8 @@ from dagent.harness_runtime.dag_replanner import (
     NoOpDAGReplanner,
     ReplanContext,
     ReplanDecision,
+    affected_node_ids_for_patch,
+    apply_node_patch_decision,
     apply_replan_decision,
 )
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
@@ -31,11 +32,11 @@ from dagent.harness_runtime.runtime import (
     HarnessRuntime,
     RuntimeMode,
 )
+from dagent.harness_runtime.task_record import TaskRecord
 
 __all__ = [
     "AgentLoop",
     "AgentLoopResult",
-    "ControlPlane",
     "ControlToolResult",
     "DAGCreationError",
     "DAGExecutionError",
@@ -54,6 +55,8 @@ __all__ = [
     "NodeExecutionResult",
     "ReplanContext",
     "ReplanDecision",
+    "affected_node_ids_for_patch",
+    "apply_node_patch_decision",
     "DagCreator",
     "RunResult",
     "RuntimeMode",

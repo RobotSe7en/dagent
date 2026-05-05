@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from dagent.factory import create_control_plane
+from dagent.factory import create_harness_runtime
 
 
 pytestmark = pytest.mark.skipif(
@@ -13,9 +13,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_minimax_dag_creator_generates_valid_dag() -> None:
-    control_plane = create_control_plane(workspace_root=".")
+    runtime = create_harness_runtime(workspace_root=".")
 
-    record = await control_plane.create_task(
+    record = await runtime.create_dag(
         "生成一个低风险计划：直接回答 dagent 是什么，不需要读取文件。",
         task_id="minimax_dag_creator_test",
     )
@@ -27,16 +27,16 @@ async def test_minimax_dag_creator_generates_valid_dag() -> None:
 
 @pytest.mark.asyncio
 async def test_minimax_harness_executes_safe_dag() -> None:
-    control_plane = create_control_plane(workspace_root=".")
+    runtime = create_harness_runtime(workspace_root=".")
 
-    record = await control_plane.create_task(
+    record = await runtime.create_dag(
         "生成并执行一个只需直接回答的计划：用一句话说明 dagent 是 human-reviewed DAG agent framework。",
         task_id="minimax_execute_test",
     )
     if record.dag.status == "review_required":
-        control_plane.approve_dag(record.task_id)
+        runtime.approve_dag(record.task_id)
 
-    result = await control_plane.execute_task(record.task_id)
+    result = await runtime.execute_dag(record.task_id)
 
     assert result.completed is True
     assert result.node_results

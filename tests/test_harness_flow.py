@@ -4,17 +4,19 @@ import json
 import pytest
 
 from dagent.harness_runtime import (
-    ControlPlane,
     DAGCreationError,
     DAGExecutionError,
     DAGExecutor,
+    HarnessRuntime,
     LLMDagCreator,
+    NodeExecutionResult,
     ReplanContext,
     ReplanDecision,
     TaskRecord,
 )
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
+from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
@@ -83,6 +85,30 @@ class StaticReplanner:
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def runtime_for(
+    *,
+    dag_creator: LLMDagCreator,
+    executor: DAGExecutor,
+    replanner=None,
+    max_replans: int = 3,
+    max_node_retries: int = 2,
+) -> HarnessRuntime:
+    return HarnessRuntime(
+        agent_loop=CompletingLoop(),
+        dag_creator=dag_creator,
+        dag_executor=executor,
+        replanner=replanner,
+        conversation_profile=AgentProfile(
+            name="conversation",
+            role="conversation",
+            layers=["soul"],
+            layer_contents={"soul": "You are a conversation agent."},
+        ),
+        max_replans=max_replans,
+        max_node_retries=max_node_retries,
+    )
 
 
 def dag_creator_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
@@ -230,6 +256,34 @@ def make_tool_executor() -> ToolExecutor:
     registry.register(
         name="fail_tool",
         handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    registry.register(
+        name="fail_unless_fixed",
+        handler=lambda text: (
+            "fixed-ok"
+            if text == "fixed"
+            else (_ for _ in ()).throw(RuntimeError(f"bad-arg:{text}"))
+        ),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    registry.register(
+        name="fail_unless_echo_fixed",
+        handler=lambda text: (
+            f"accepted:{text}"
+            if text == "echo:fixed"
+            else (_ for _ in ()).throw(RuntimeError(f"bad-output:{text}"))
+        ),
         action="read",
         parameters={
             "type": "object",
@@ -410,14 +464,14 @@ def test_llm_dag_creator_normalizes_common_boundary_mode_aliases() -> None:
     ]
 
 
-def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
+def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json())])
     dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
-    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
+    runtime = runtime_for(dag_creator=dag_creator, executor=executor)
 
-    record = run(control_plane.create_task("Do a safe task", task_id="task_1"))
-    result = run(control_plane.execute_task(record.task_id))
+    record = run(runtime.create_dag("Do a safe task", task_id="task_1"))
+    result = run(runtime.execute_dag(record.task_id))
 
     assert record.dag.status == "completed"
     assert result.completed is True
@@ -431,7 +485,7 @@ def test_control_plane_auto_approves_low_risk_dag_and_executes() -> None:
     ]
 
 
-def test_control_plane_replans_unfinished_nodes_between_layers() -> None:
+def test_harness_runtime_replans_unfinished_nodes_between_layers() -> None:
     initial = DAG(
         dag_id="dag_replan",
         task_id="task_replan",
@@ -459,24 +513,25 @@ def test_control_plane_replans_unfinished_nodes_between_layers() -> None:
             )
         ]
     )
-    control_plane = ControlPlane(
+    runtime = runtime_for(
         dag_creator=LLMDagCreator(MockProvider([])),
         executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
         replanner=replanner,
     )
-    prepared = control_plane.prepare_dag_for_review(initial)
-    control_plane.tasks["task_replan"] = TaskRecord(
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_replan"] = TaskRecord(
         task_id="task_replan",
         user_request="Use observation downstream",
         dag=prepared,
+        review_level="fast",
     )
 
-    result = run(control_plane.execute_task("task_replan"))
+    result = run(runtime.execute_dag("task_replan"))
 
     assert result.completed is True
     assert result.node_results["inspect"].final_response == "echo:observed"
     assert result.node_results["answer"].final_response == "echo:echo:observed"
-    stored = control_plane.tasks["task_replan"].dag
+    stored = runtime.tasks["task_replan"].dag
     assert stored.version == 2
     assert [event.event_type for event in result.traces] == [
         "dag_started",
@@ -494,7 +549,7 @@ def test_control_plane_replans_unfinished_nodes_between_layers() -> None:
     assert replanner.contexts[0].node_results["inspect"].final_response == "echo:observed"
 
 
-def test_control_plane_replans_after_tool_failure() -> None:
+def test_harness_runtime_replans_after_tool_failure() -> None:
     initial = DAG(
         dag_id="dag_failure_replan",
         task_id="task_failure_replan",
@@ -521,19 +576,20 @@ def test_control_plane_replans_after_tool_failure() -> None:
             )
         ]
     )
-    control_plane = ControlPlane(
+    runtime = runtime_for(
         dag_creator=LLMDagCreator(MockProvider([])),
         executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
         replanner=replanner,
     )
-    prepared = control_plane.prepare_dag_for_review(initial)
-    control_plane.tasks["task_failure_replan"] = TaskRecord(
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_failure_replan"] = TaskRecord(
         task_id="task_failure_replan",
         user_request="Recover from failure",
         dag=prepared,
+        review_level="fast",
     )
 
-    result = run(control_plane.execute_task("task_failure_replan"))
+    result = run(runtime.execute_dag("task_failure_replan"))
 
     assert result.completed is True
     assert result.node_results["fallback"].final_response == "echo:recovered"
@@ -542,34 +598,272 @@ def test_control_plane_replans_after_tool_failure() -> None:
     assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
-def test_control_plane_requires_review_after_risk_override() -> None:
+def test_harness_runtime_patches_failed_node_and_retries() -> None:
+    initial = DAG(
+        dag_id="dag_patch_retry",
+        task_id="task_patch_retry",
+        status="approved",
+        nodes=[
+            _tool_node("fragile", "fail_unless_fixed", {"text": "bad"}),
+        ],
+        edges=[],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="patch_node",
+                reason="Fix failed node args and retry.",
+                node_id="fragile",
+                args={"text": "fixed"},
+            )
+        ]
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_patch_retry"] = TaskRecord(
+        task_id="task_patch_retry",
+        user_request="Patch retry",
+        dag=prepared,
+    )
+
+    result = run(runtime.execute_dag("task_patch_retry"))
+
+    assert result.completed is True
+    assert result.node_results["fragile"].final_response == "fixed-ok"
+    assert runtime.tasks["task_patch_retry"].dag.nodes[0].args == {"text": "fixed"}
+    assert [event.event_type for event in result.traces] == [
+        "dag_started",
+        "node_started",
+        "tool_called",
+        "tool_failed",
+        "node_failed",
+        "dag_failed",
+        "node_patched",
+        "node_started",
+        "tool_called",
+        "tool_completed",
+        "node_completed",
+        "dag_completed",
+    ]
+    records = runtime.dag_executor.trace_store.records_for_task("task_patch_retry")
+    assert [record.status for record in records] == ["failed", "completed"]
+
+
+def test_harness_runtime_careful_policy_pauses_for_node_patch_review() -> None:
+    initial = DAG(
+        dag_id="dag_patch_review",
+        task_id="task_patch_review",
+        status="approved",
+        nodes=[
+            _tool_node("fragile", "fail_unless_fixed", {"text": "bad"}),
+        ],
+        edges=[],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="patch_node",
+                reason="Fix failed node args and retry.",
+                node_id="fragile",
+                args={"text": "fixed"},
+            )
+        ]
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_patch_review"] = TaskRecord(
+        task_id="task_patch_review",
+        user_request="Patch retry",
+        dag=prepared,
+        review_level="careful",
+    )
+
+    result = run(runtime.execute_dag("task_patch_review"))
+
+    record = runtime.tasks["task_patch_review"]
+    assert result.completed is False
+    assert record.pending_review is not None
+    assert record.pending_review.kind == "node_patch"
+    assert record.dag.status == "paused_for_replan"
+    assert record.pending_review.proposed_dag.nodes[0].args == {"text": "fixed"}
+
+    resumed = run(runtime.resume_dag("task_patch_review", record.pending_review.proposed_dag))
+
+    assert resumed.status == "completed"
+    assert resumed.run_result is not None
+    assert resumed.run_result.node_results["fragile"].final_response == "fixed-ok"
+
+
+def test_harness_runtime_careful_policy_pauses_for_arg_injection_review() -> None:
+    initial = DAG(
+        dag_id="dag_arg_review",
+        task_id="task_arg_review",
+        status="approved",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "fixed"}),
+            _tool_node("answer", "fail_unless_echo_fixed", {"text": "{{inspect.output}}"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_arg_review"] = TaskRecord(
+        task_id="task_arg_review",
+        user_request="Inject args",
+        dag=prepared,
+        review_level="careful",
+        node_results={
+            "inspect": NodeExecutionResult(
+                node_id="inspect",
+                final_response="echo:fixed",
+                completed=True,
+                stop_reason="completed",
+                steps=1,
+            ),
+        },
+    )
+
+    result = run(runtime.execute_dag("task_arg_review"))
+
+    record = runtime.tasks["task_arg_review"]
+    assert result.completed is False
+    assert record.pending_review is not None
+    assert record.pending_review.kind == "arg_injection"
+    assert record.pending_review.proposed_dag.nodes[1].args == {"text": "echo:fixed"}
+
+    resumed = run(runtime.resume_dag("task_arg_review", record.pending_review.proposed_dag))
+
+    assert resumed.status == "completed"
+    assert resumed.run_result is not None
+    assert resumed.run_result.node_results["answer"].final_response == "accepted:echo:fixed"
+
+
+def test_harness_runtime_marks_node_failed_when_replanner_aborts() -> None:
+    initial = DAG(
+        dag_id="dag_abort_failed_node",
+        task_id="task_abort_failed_node",
+        status="approved",
+        nodes=[
+            _tool_node("fragile", "fail_tool", {"text": "boom"}),
+        ],
+        edges=[],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="abort",
+                reason="Cannot repair.",
+            )
+        ]
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_abort_failed_node"] = TaskRecord(
+        task_id="task_abort_failed_node",
+        user_request="Abort failed node",
+        dag=prepared,
+    )
+
+    result = run(runtime.execute_dag("task_abort_failed_node"))
+
+    assert result.completed is False
+    assert runtime.tasks["task_abort_failed_node"].dag.status == "aborted"
+    assert runtime.tasks["task_abort_failed_node"].dag.nodes[0].status == "failed"
+
+
+def test_harness_runtime_patches_completed_node_and_invalidates_downstream_results() -> None:
+    initial = DAG(
+        dag_id="dag_patch_completed",
+        task_id="task_patch_completed",
+        status="approved",
+        nodes=[
+            _tool_node("list_current_files", "echo", {"text": "old"}),
+            _tool_node("answer", "fail_unless_echo_fixed", {"text": "{{list_current_files.output}}"}),
+        ],
+        edges=[DAGEdge(source="list_current_files", target="answer")],
+    )
+    replanner = StaticReplanner(
+        [
+            ReplanDecision(
+                action="patch_node",
+                reason="Rerun completed node with corrected args.",
+                node_id="list_current_files",
+                args={"text": "fixed"},
+            )
+        ]
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+        replanner=replanner,
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_patch_completed"] = TaskRecord(
+        task_id="task_patch_completed",
+        user_request="Patch completed node",
+        dag=prepared,
+        node_results={
+            "list_current_files": NodeExecutionResult(
+                node_id="list_current_files",
+                final_response="echo:old",
+                completed=True,
+                stop_reason="completed",
+                steps=1,
+            ),
+        },
+    )
+
+    result = run(runtime.execute_dag("task_patch_completed"))
+
+    assert result.completed is True
+    assert result.node_results["list_current_files"].final_response == "echo:fixed"
+    assert result.node_results["answer"].final_response == "accepted:echo:fixed"
+    assert "node_patched" in [event.event_type for event in result.traces]
+
+
+def test_harness_runtime_requires_review_after_risk_override() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json(tools=["write_file"]))])
     dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
-    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
+    runtime = runtime_for(dag_creator=dag_creator, executor=executor)
 
-    record = run(control_plane.create_task("Modify a file", task_id="task_1"))
+    record = run(runtime.create_dag("Modify a file", task_id="task_1"))
 
     assert record.dag.status == "review_required"
     assert record.dag.nodes[0].risk == "medium"
     with pytest.raises(DAGExecutionError):
-        run(control_plane.execute_task(record.task_id))
+        run(runtime.execute_dag(record.task_id))
 
-    control_plane.approve_dag(record.task_id)
-    result = run(control_plane.execute_task(record.task_id))
+    runtime.approve_dag(record.task_id)
+    result = run(runtime.execute_dag(record.task_id))
     assert result.completed is True
 
 
-def test_control_plane_pauses_for_permission_and_resumes_after_approval() -> None:
+def test_harness_runtime_pauses_for_permission_and_resumes_after_approval() -> None:
     provider = MockProvider([ChatResponse(content=dag_creator_json(tools=["run_command"]))])
     dag_creator = LLMDagCreator(provider)
     executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
-    control_plane = ControlPlane(dag_creator=dag_creator, executor=executor)
+    runtime = runtime_for(dag_creator=dag_creator, executor=executor)
 
-    record = run(control_plane.create_task("Run a command", task_id="task_1"))
+    record = run(runtime.create_dag("Run a command", task_id="task_1"))
     if record.dag.status == "review_required":
-        control_plane.approve_dag(record.task_id)
-    first_result = run(control_plane.execute_task(record.task_id))
+        runtime.approve_dag(record.task_id)
+    first_result = run(runtime.execute_dag(record.task_id))
 
     assert first_result.completed is False
     assert record.dag.status == "paused_for_permission"
@@ -578,11 +872,11 @@ def test_control_plane_pauses_for_permission_and_resumes_after_approval() -> Non
     assert record.pending_permission_request.requested_boundary.allowed_commands == ["python"]
     assert record.dag.nodes[0].status == "blocked_permission"
 
-    permission = control_plane.approve_permission(record.task_id)
+    permission = runtime.approve_permission(record.task_id)
     assert permission.status == "approved"
     assert record.dag.status == "approved"
     assert record.dag.nodes[0].boundary.allowed_commands == ["python"]
 
-    second_result = run(control_plane.execute_task(record.task_id))
+    second_result = run(runtime.execute_dag(record.task_id))
     assert second_result.completed is True
     assert record.dag.status == "completed"

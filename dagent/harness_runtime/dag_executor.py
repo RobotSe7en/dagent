@@ -328,6 +328,7 @@ class DAGExecutor:
             )
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
+            node.status = "blocked_permission"
             request = _permission_request_for_violation(dag, node, exc)
             self.trace_store.add_node_record(
                 dag=dag,
@@ -360,6 +361,7 @@ class DAGExecutor:
                 request,
             ) from exc
         except Exception as exc:
+            node.status = "failed"
             self.trace_store.add_node_record(
                 dag=dag,
                 node=node,
