@@ -749,6 +749,59 @@ def test_harness_runtime_careful_policy_pauses_for_arg_injection_review() -> Non
     assert resumed.run_result.node_results["answer"].final_response == "accepted:echo:fixed"
 
 
+def test_harness_runtime_resume_invalidates_modified_completed_node_and_downstream_results() -> None:
+    initial = DAG(
+        dag_id="dag_resume_edit",
+        task_id="task_resume_edit",
+        status="completed",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "old"}),
+            _tool_node("answer", "fail_unless_echo_fixed", {"text": "{{inspect.output}}"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
+    )
+    runtime = runtime_for(
+        dag_creator=LLMDagCreator(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    prepared.status = "completed"
+    for node in prepared.nodes:
+        node.status = "completed"
+    runtime.tasks["task_resume_edit"] = TaskRecord(
+        task_id="task_resume_edit",
+        user_request="Rerun edited node",
+        dag=prepared,
+        node_results={
+            "inspect": NodeExecutionResult(
+                node_id="inspect",
+                final_response="echo:old",
+                completed=True,
+                stop_reason="completed",
+                steps=1,
+            ),
+            "answer": NodeExecutionResult(
+                node_id="answer",
+                final_response="accepted:echo:old",
+                completed=True,
+                stop_reason="completed",
+                steps=1,
+            ),
+        },
+    )
+    edited = prepared.model_copy(deep=True)
+    edited.nodes[0].args = {"text": "fixed"}
+
+    resumed = run(runtime.resume_dag("task_resume_edit", edited))
+
+    assert resumed.status == "completed"
+    assert resumed.run_result is not None
+    assert resumed.run_result.node_results["inspect"].final_response == "echo:fixed"
+    assert resumed.run_result.node_results["answer"].final_response == "accepted:echo:fixed"
+    assert runtime.tasks["task_resume_edit"].node_results["inspect"].final_response == "echo:fixed"
+    assert runtime.tasks["task_resume_edit"].node_results["answer"].final_response == "accepted:echo:fixed"
+
+
 def test_harness_runtime_marks_node_failed_when_replanner_aborts() -> None:
     initial = DAG(
         dag_id="dag_abort_failed_node",
