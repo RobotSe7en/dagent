@@ -30,7 +30,9 @@ class TaskRecord:
     pending_permission_request: PermissionRequest | None = None
     pending_review: PendingReview | None = None
     review_level: ReviewLevel = "balanced"
+    runtime_mode: str = "auto"
     suppress_next_review: bool = False
+    continuation_count: int = 0
     node_results: dict = field(default_factory=dict)
     trace_records: list[NodeExecutionRecord] = field(default_factory=list)
 

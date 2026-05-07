@@ -59,7 +59,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     assert "dag" in event_types
     assert event_types[-1] == "done"
     assert events[-1]["status"] == "awaiting_dag_review"
-    assert events[-1]["dag"]["status"] == "approved"
+    assert events[-1]["dag"]["status"] == "review_required"
     assert "DAG" in events[-1]["message_markdown"]
 
 
@@ -141,6 +141,15 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
 
 def _tool_executor() -> ToolExecutor:
     registry = ToolRegistry()
+    registry.register(
+        name="dag_start",
+        handler=lambda: "started",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+    )
     registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",

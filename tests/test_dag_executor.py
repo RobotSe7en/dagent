@@ -148,8 +148,11 @@ def test_executor_runs_independent_nodes_concurrently() -> None:
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
-        nodes=[node("a"), node("b")],
-        edges=[],
+        nodes=[node("start"), node("a"), node("b")],
+        edges=[
+            DAGEdge(source="start", target="a"),
+            DAGEdge(source="start", target="b"),
+        ],
     )
 
     start = time.perf_counter()
@@ -257,6 +260,15 @@ def tool_node(
 
 def tool_executor() -> ToolExecutor:
     registry = ToolRegistry()
+    registry.register(
+        name="dag_start",
+        handler=lambda: "started",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+    )
     registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",

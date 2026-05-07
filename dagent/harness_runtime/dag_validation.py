@@ -19,6 +19,7 @@ def validate_dag(dag: DAG) -> None:
     - node IDs are unique
     - every executable node is a concrete tool call
     - edges reference existing nodes
+    - multi-node DAGs do not contain isolated nodes
     - graph is acyclic
     """
     if not dag.nodes:
@@ -48,6 +49,7 @@ def validate_dag(dag: DAG) -> None:
             )
 
     node_id_set = set(node_ids)
+    connected_ids: set[str] = set()
     for edge in dag.edges:
         if edge.source not in node_id_set:
             raise DAGValidationError(
@@ -57,6 +59,14 @@ def validate_dag(dag: DAG) -> None:
             raise DAGValidationError(
                 f"Edge target '{edge.target}' does not reference an existing node."
             )
+        connected_ids.add(edge.source)
+        connected_ids.add(edge.target)
+
+    if len(node_id_set) > 1:
+        isolated_ids = node_id_set - connected_ids
+        if isolated_ids:
+            isolated_list = ", ".join(sorted(isolated_ids))
+            raise DAGValidationError(f"Isolated node IDs: {isolated_list}.")
 
     _ensure_acyclic(node_id_set, [(edge.source, edge.target) for edge in dag.edges])
 

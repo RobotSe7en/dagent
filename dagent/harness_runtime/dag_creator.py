@@ -118,20 +118,24 @@ def dag_from_json_payload(payload: dict, *, task_id: str) -> DAG:
 
 
 def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
+    nodes = [_compile_plan_node(node, task=plan.task) for node in plan.nodes]
+    edges = [
+        DAGEdge(
+            source=dependency,
+            target=node.id,
+            reason=f"{node.id} depends on {dependency}.",
+        )
+        for node in plan.nodes
+        for dependency in node.depends_on
+    ]
+    if len(nodes) > 1:
+        nodes, edges = _ensure_start_node(nodes, edges)
     return DAG(
         dag_id=f"dag_{uuid4().hex}",
         task_id=task_id,
         status="draft",
-        nodes=[_compile_plan_node(node, task=plan.task) for node in plan.nodes],
-        edges=[
-            DAGEdge(
-                source=dependency,
-                target=node.id,
-                reason=f"{node.id} depends on {dependency}.",
-            )
-            for node in plan.nodes
-            for dependency in node.depends_on
-        ],
+        nodes=nodes,
+        edges=edges,
     )
 
 
@@ -154,12 +158,59 @@ def _compile_plan_node(node, *, task: str = "") -> DAGNode:
         args=args,
         tools=[tool],
         boundary=boundary,
-        risk=node.risk or _infer_risk(tool, boundary),
+        risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(tool, boundary),
         risk_reason=node.review_reason or _risk_reason(tool, boundary),
         expected_output=node.goal,
         max_steps=1,
         timeout_seconds=120,
     )
+
+
+def _ensure_start_node(
+    nodes: list[DAGNode],
+    edges: list[DAGEdge],
+) -> tuple[list[DAGNode], list[DAGEdge]]:
+    node_ids = {node.id for node in nodes}
+    start_id = "start"
+    next_nodes = list(nodes)
+    next_edges = list(edges)
+    if start_id not in node_ids:
+        next_nodes = [
+            DAGNode(
+                id=start_id,
+                title="Start",
+                goal="Mark the beginning of DAG execution.",
+                kind="tool",
+                tool="dag_start",
+                args={},
+                tools=["dag_start"],
+                boundary=Boundary(mode="read_only"),
+                risk="low",
+                risk_reason="No-op start marker.",
+                expected_output="started",
+                max_steps=1,
+                timeout_seconds=30,
+            ),
+            *next_nodes,
+        ]
+        node_ids.add(start_id)
+
+    targets = {edge.target for edge in next_edges}
+    existing_start_targets = {edge.target for edge in next_edges if edge.source == start_id}
+    root_ids = [
+        node.id
+        for node in next_nodes
+        if node.id != start_id and node.id not in targets and node.id not in existing_start_targets
+    ]
+    next_edges.extend(
+        DAGEdge(
+            source=start_id,
+            target=node_id,
+            reason=f"{node_id} starts after start.",
+        )
+        for node_id in root_ids
+    )
+    return next_nodes, next_edges
 
 
 def _infer_boundary(tool: str | None, args: dict) -> Boundary:

@@ -87,6 +87,30 @@ def test_edge_target_must_exist() -> None:
         validate_dag(dag)
 
 
+def test_multi_node_dag_rejects_isolated_nodes() -> None:
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[make_node("a"), make_node("b"), make_node("lonely")],
+        edges=[DAGEdge(source="a", target="b")],
+    )
+
+    with pytest.raises(DAGValidationError, match="Isolated node IDs: lonely"):
+        validate_dag(dag)
+
+
+def test_multi_node_dag_without_edges_is_rejected() -> None:
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[make_node("a"), make_node("b")],
+        edges=[],
+    )
+
+    with pytest.raises(DAGValidationError, match="Isolated node IDs: a, b"):
+        validate_dag(dag)
+
+
 def test_dag_must_be_acyclic() -> None:
     dag = DAG(
         dag_id="dag_1",

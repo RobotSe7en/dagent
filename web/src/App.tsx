@@ -246,11 +246,22 @@ export function App() {
     }));
   };
 
+  const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
+    Boolean(pendingReview) || ['review_required', 'paused_for_replan', 'paused_for_permission'].includes(nextDag.status);
+
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
     setTrace((items) => [...items, nextEvent]);
     return nextEvent;
+  };
+
+  const appendRuntimeTrace = (event: TraceEvent) => {
+    setTrace((items) => [...items, event]);
+    updateLastAssistantText((message) => ({
+      ...message,
+      traceSnapshot: [...(message.traceSnapshot ?? []), event],
+    }));
   };
 
   const appendToolMessage = (event: ToolStreamEvent) => {
@@ -352,9 +363,7 @@ export function App() {
           attachDagToLastAssistant(nextDag);
           setReviewOpen(true);
         },
-        onTrace: (event) => {
-          setTrace((items) => [...items, event]);
-        },
+          onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
@@ -362,15 +371,13 @@ export function App() {
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
-            setReviewOpen(true);
+            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           } else {
             updateLastAssistantText((message) => ({
               ...message,
               content: message.content || payload.message_markdown,
-              timeline: message.timeline?.length
-                ? message.timeline
-                : [{ type: 'text', content: payload.message_markdown }],
+              timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
             }));
             appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
           }
@@ -418,9 +425,7 @@ export function App() {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
         },
-        onTrace: (event) => {
-          setTrace((items) => [...items, event]);
-        },
+          onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
@@ -428,13 +433,12 @@ export function App() {
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
+            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
           }
           updateLastAssistantText((message) => ({
             ...message,
             content: message.content || payload.message_markdown,
-            timeline: message.timeline?.length
-              ? message.timeline
-              : [{ type: 'text', content: payload.message_markdown }],
+            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
           }));
           appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the DAG result.', status: 'completed' });
         },
@@ -514,8 +518,9 @@ export function App() {
                   <MessageTimeline
                     message={message}
                     loading={streaming}
-                    onOpenDag={(snapshot) => {
+                    onOpenDag={(snapshot, snapshotTrace) => {
                       syncDag(snapshot);
+                      if (snapshotTrace) setTrace(snapshotTrace);
                       setReviewOpen(true);
                     }}
                   />
@@ -551,6 +556,7 @@ export function App() {
           dag={dag}
           nodes={nodes}
           edges={edges}
+          trace={trace}
           selectedNode={selectedNode}
           onClose={() => setReviewOpen(false)}
           onConfirm={confirmDag}
@@ -582,7 +588,7 @@ function MessageTimeline({
 }: {
   message: ChatMessage;
   loading: boolean;
-  onOpenDag: (dag: Dag) => void;
+  onOpenDag: (dag: Dag, trace?: TraceEvent[]) => void;
 }) {
   if (!message.timeline?.length) {
     return <MessageContent content={message.content || (loading ? '...' : '')} />;
@@ -597,7 +603,7 @@ function MessageTimeline({
           <DagSummaryCard
             key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
             dag={item.dag}
-            onOpen={() => onOpenDag(item.dag)}
+            onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
           />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
@@ -639,6 +645,17 @@ function appendTextTimeline(
     items.push({ type: 'text', content });
   }
   return items;
+}
+
+function ensureTextTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  content: string,
+): MessageTimelineItem[] {
+  if (!content) return timeline ?? [];
+  if ((timeline ?? []).some((item) => item.type === 'text' && item.content.trim())) {
+    return timeline ?? [];
+  }
+  return appendTextTimeline(timeline, content);
 }
 
 function upsertDagTimeline(
@@ -775,6 +792,7 @@ function DagReviewDialog({
   dag,
   nodes,
   edges,
+  trace,
   selectedNode,
   onClose,
   onConfirm,
@@ -788,6 +806,7 @@ function DagReviewDialog({
   dag: Dag;
   nodes: Node[];
   edges: Edge[];
+  trace: TraceEvent[];
   selectedNode?: DagNode;
   onClose: () => void;
   onConfirm: () => void;
@@ -798,6 +817,9 @@ function DagReviewDialog({
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
 }) {
+  const selectedNodeLogs = selectedNode
+    ? trace.filter((event) => event.node_id === selectedNode.id && (!event.dag_id || event.dag_id === dag.dag_id))
+    : [];
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="DAG review">
       <div className="dag-modal">
@@ -846,6 +868,7 @@ function DagReviewDialog({
               <NodeEditor
                 node={normalizeNode(selectedNode)}
                 dag={dag}
+                logs={selectedNodeLogs}
                 onPatch={onPatchNode}
                 onDelete={onDeleteNode}
               />
@@ -862,11 +885,13 @@ function DagReviewDialog({
 function NodeEditor({
   node,
   dag,
+  logs,
   onPatch,
   onDelete,
 }: {
   node: DagNode;
   dag: Dag;
+  logs: TraceEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
@@ -991,7 +1016,37 @@ function NodeEditor({
         <Trash2 size={16} />
         Delete Node
       </button>
+      <NodeExecutionLog logs={logs} />
     </div>
+  );
+}
+
+function NodeExecutionLog({ logs }: { logs: TraceEvent[] }) {
+  return (
+    <section className="node-log-panel">
+      <div className="node-log-title">
+        <Wrench size={15} />
+        <span>Execution Log</span>
+      </div>
+      {logs.length ? (
+        <div className="node-log-list">
+          {logs.map((event) => (
+            <details key={event.id} className={`node-log-row ${event.status}`}>
+              <summary>
+                <span>{event.event_type ?? event.label}</span>
+                <em>{event.timestamp}</em>
+              </summary>
+              <p>{event.detail}</p>
+              {event.payload && Object.keys(event.payload).length ? (
+                <pre>{clipText(JSON.stringify(event.payload, null, 2), 1600)}</pre>
+              ) : null}
+            </details>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No execution events recorded for this node yet.</div>
+      )}
+    </section>
   );
 }
 

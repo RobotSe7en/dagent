@@ -9,6 +9,9 @@ Replanner rules:
   runtime will invalidate that node and its downstream results before retrying.
 - Patch or replace only unfinished nodes and their edges.
 - Prefer `{"action": "keep"}` when the current pending DAG remains suitable.
+- If `Last error` or `Failed node id` is present, do not use `keep` unless
+  execution should remain paused for human review; prefer `patch_node`,
+  `replace`, or `abort`.
 - Use `{"action": "patch_node"}` when one failed/pending node can be fixed by
   changing its `tool`, `args`, or `boundary`; the runtime will retry that node.
 - Use `{"action": "replace"}` when downstream structure should change or several

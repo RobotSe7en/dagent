@@ -15,6 +15,7 @@ ReviewKind = Literal[
     "arg_injection",
     "node_patch",
     "dag_replan",
+    "execution_error",
     "node_execution",
     "boundary_change",
 ]
