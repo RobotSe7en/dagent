@@ -31,31 +31,34 @@ class Boundary(BaseModel):
 
 class DAGNode(BaseModel):
     id: str
-    title: str
-    goal: str
-    kind: NodeKind = "agent"
     tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
-    agent: str | None = None
-    tools: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
     boundary: Boundary = Field(default_factory=Boundary)
     risk: RiskLevel = "low"
     risk_reason: str = ""
-    expected_output: str = ""
-    max_steps: int = 8
-    timeout_seconds: int = 300
     status: NodeStatus = "planned"
+    title: str = Field(default="", exclude=True)
+    goal: str = Field(default="", exclude=True)
+    kind: NodeKind = Field(default="tool", exclude=True)
+    agent: str | None = Field(default=None, exclude=True)
+    tools: list[str] = Field(default_factory=list, exclude=True)
+    skills: list[str] = Field(default_factory=list, exclude=True)
+    expected_output: str = Field(default="", exclude=True)
+    max_steps: int = Field(default=1, exclude=True)
+    timeout_seconds: int = Field(default=120, exclude=True)
 
     @model_validator(mode="after")
     def normalize_tool_node(self) -> "DAGNode":
+        if not self.title:
+            self.title = self.id.replace("_", " ").strip().title() or self.id
+        if not self.goal:
+            self.goal = f"Run {self.tool}." if self.tool else f"Run node {self.id}."
         if self.tool:
             self.kind = "tool"
-            if self.tool not in self.tools:
-                self.tools = [self.tool, *self.tools]
-            self.max_steps = min(self.max_steps, 1)
+            self.tools = [self.tool]
+            self.max_steps = 1
         elif self.kind == "tool" and self.tools:
             self.tool = self.tools[0]
-            self.max_steps = min(self.max_steps, 1)
+            self.max_steps = 1
         return self
 

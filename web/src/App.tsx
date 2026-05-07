@@ -48,11 +48,23 @@ const emptyDag: Dag = {
 };
 
 function normalizeNode(node: DagNode): DagNode {
+  const tool = node.tool ?? null;
   return {
     ...node,
-    kind: node.kind ?? (node.tool ? 'tool' : 'agent'),
-    tool: node.tool ?? null,
+    tool,
     args: node.args ?? {},
+    boundary: {
+      mode: node.boundary?.mode ?? 'read_only',
+      allowed_paths: node.boundary?.allowed_paths ?? [],
+      forbidden_tools: node.boundary?.forbidden_tools ?? [],
+      allowed_commands: node.boundary?.allowed_commands ?? [],
+      forbidden_commands: node.boundary?.forbidden_commands ?? [],
+    },
+    risk: node.risk ?? 'low',
+    risk_reason: node.risk_reason ?? '',
+    status: node.status ?? 'planned',
+    kind: 'tool',
+    tools: tool ? [tool] : [],
   };
 }
 
@@ -79,6 +91,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
+    const risk = item.risk ?? 'low';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     laneCounts.set(depth, lane + 1);
@@ -89,16 +102,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
         label: (
           <div className="dag-node">
             <div className="dag-node-top">
-              <span title={item.title}>{item.title}</span>
-              <span className={`risk-pill ${riskTone[item.risk]}`}>{item.risk}</span>
+              <span title={item.id}>{item.id}</span>
+              <span className={`risk-pill ${riskTone[risk]}`}>{risk}</span>
             </div>
-            <p title={item.goal}>{item.goal}</p>
-            <div className="dag-node-tools" title={item.tools.join(', ')}>
-              {item.kind === 'tool' && item.tool
-                ? `${item.tool} ${JSON.stringify(item.args)}`
-                : item.tools.length
-                  ? item.tools.join(', ')
-                  : 'agent'}
+            <div className="dag-node-tools" title={item.tool ? JSON.stringify(item.args) : ''}>
+              {item.tool ? `${item.tool} ${JSON.stringify(item.args)}` : 'tool not set'}
             </div>
           </div>
         ),
@@ -301,14 +309,8 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          title: 'New Node',
-          goal: 'Describe the next action.',
-          kind: 'tool',
           tool: current.nodes[0]?.tool ?? null,
           args: {},
-          agent: null,
-          tools: current.nodes[0]?.tool ? [current.nodes[0].tool] : [],
-          skills: [],
           boundary: {
             mode: 'read_only',
             allowed_paths: [],
@@ -318,9 +320,6 @@ export function App() {
           },
           risk: 'low',
           risk_reason: 'User added node.',
-          expected_output: 'Result.',
-          max_steps: 1,
-          timeout_seconds: 30,
           status: 'planned',
         }),
       ],
@@ -896,73 +895,26 @@ function NodeEditor({
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
+  const boundary = node.boundary ?? {
+    mode: 'read_only' as BoundaryMode,
+    allowed_paths: [],
+    forbidden_tools: [],
+    allowed_commands: [],
+    forbidden_commands: [],
+  };
   return (
     <div className="node-editor">
       <label>
-        Title
-        <input value={node.title} onChange={(event) => onPatch({ title: event.target.value })} />
-      </label>
-      <label>
-        Goal
-        <textarea value={node.goal} onChange={(event) => onPatch({ goal: event.target.value })} />
+        Node ID
+        <input value={node.id} disabled />
       </label>
       <div className="two-col">
         <label>
-          Kind
-          <select value={node.kind} onChange={(event) => onPatch({ kind: event.target.value as DagNode['kind'] })}>
-            <option value="tool">tool</option>
-            <option value="agent">agent</option>
-          </select>
-        </label>
-        <label>
           Risk
-          <select value={node.risk} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
+          <select value={node.risk ?? 'low'} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
             {riskLevels.map((risk) => (
               <option key={risk} value={risk}>
                 {risk}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {node.kind === 'tool' ? (
-        <>
-          <label>
-            Tool
-            <input
-              value={node.tool ?? ''}
-              onChange={(event) =>
-                onPatch({
-                  tool: event.target.value || null,
-                  tools: event.target.value ? [event.target.value] : [],
-                })
-              }
-            />
-          </label>
-          <label>
-            Args JSON
-            <textarea
-              value={JSON.stringify(node.args ?? {}, null, 2)}
-              onChange={(event) => {
-                const parsed = parseJsonObject(event.target.value);
-                if (parsed) onPatch({ args: parsed });
-              }}
-            />
-          </label>
-        </>
-      ) : null}
-      <div className="two-col">
-        <label>
-          Boundary
-          <select
-            value={node.boundary.mode}
-            onChange={(event) =>
-              onPatch({ boundary: { ...node.boundary, mode: event.target.value as BoundaryMode } })
-            }
-          >
-            {boundaryModes.map((mode) => (
-              <option key={mode} value={mode}>
-                {mode}
               </option>
             ))}
           </select>
@@ -972,6 +924,20 @@ function NodeEditor({
           <input value={node.status ?? 'planned'} disabled />
         </label>
       </div>
+      <label>
+        Tool
+        <input value={node.tool ?? ''} onChange={(event) => onPatch({ tool: event.target.value || null })} />
+      </label>
+      <label>
+        Args JSON
+        <textarea
+          value={JSON.stringify(node.args ?? {}, null, 2)}
+          onChange={(event) => {
+            const parsed = parseJsonObject(event.target.value);
+            if (parsed) onPatch({ args: parsed });
+          }}
+        />
+      </label>
       <label>
         Depends On
         <input
@@ -987,31 +953,47 @@ function NodeEditor({
         />
       </label>
       <label>
-        Tools
-        <input value={node.tools.join(', ')} onChange={(event) => onPatch({ tools: splitCsv(event.target.value) })} />
+        Review Reason
+        <textarea value={node.risk_reason ?? ''} onChange={(event) => onPatch({ risk_reason: event.target.value })} />
       </label>
-      <label>
-        Allowed Paths
-        <input
-          value={node.boundary.allowed_paths.join(', ')}
-          onChange={(event) =>
-            onPatch({ boundary: { ...node.boundary, allowed_paths: splitCsv(event.target.value) } })
-          }
-        />
-      </label>
-      <label>
-        Allowed Commands
-        <input
-          value={node.boundary.allowed_commands.join(', ')}
-          onChange={(event) =>
-            onPatch({ boundary: { ...node.boundary, allowed_commands: splitCsv(event.target.value) } })
-          }
-        />
-      </label>
-      <label>
-        Expected Output
-        <textarea value={node.expected_output} onChange={(event) => onPatch({ expected_output: event.target.value })} />
-      </label>
+      <details className="node-policy-details">
+        <summary>Execution Policy</summary>
+        <div className="two-col">
+          <label>
+            Boundary
+            <select
+              value={boundary.mode}
+              onChange={(event) =>
+                onPatch({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })
+              }
+            >
+              {boundaryModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Allowed Paths
+            <input
+              value={(boundary.allowed_paths ?? []).join(', ')}
+              onChange={(event) =>
+                onPatch({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })
+              }
+            />
+          </label>
+        </div>
+        <label>
+          Allowed Commands
+          <input
+            value={(boundary.allowed_commands ?? []).join(', ')}
+            onChange={(event) =>
+              onPatch({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })
+            }
+          />
+        </label>
+      </details>
       <button className="secondary-button danger-button" onClick={onDelete} type="button">
         <Trash2 size={16} />
         Delete Node

@@ -118,21 +118,16 @@ def _compile_plan_node(node, *, task: str = "") -> DAGNode:
         )
     args = dict(node.args or _infer_args(tool, node.goal, task))
     boundary = _infer_boundary(tool, args)
-    goal = node.goal
+    goal = node.goal or f"Run {tool}."
 
     return DAGNode(
         id=node.id,
-        title=_title_from_id(node.id),
         goal=goal,
-        kind="tool",
         tool=tool,
         args=args,
-        tools=[tool],
         boundary=boundary,
         risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(tool, boundary),
         risk_reason=node.review_reason or _risk_reason(tool, boundary),
-        expected_output=node.goal,
-        max_steps=1,
         timeout_seconds=120,
     )
 
@@ -149,17 +144,12 @@ def _ensure_start_node(
         next_nodes = [
             DAGNode(
                 id=start_id,
-                title="Start",
                 goal="Mark the beginning of DAG execution.",
-                kind="tool",
                 tool="dag_start",
                 args={},
-                tools=["dag_start"],
                 boundary=Boundary(mode="read_only"),
                 risk="low",
                 risk_reason="No-op start marker.",
-                expected_output="started",
-                max_steps=1,
                 timeout_seconds=30,
             ),
             *next_nodes,
@@ -328,14 +318,13 @@ def _infer_missing_tool(goal: str, task: str) -> str | None:
         "list files",
         "what files",
         "which files",
-        "目录",
-        "文件",
-        "有哪些文件",
-        "当前目录",
+        "\u76ee\u5f55",
+        "\u6587\u4ef6",
+        "\u6709\u54ea\u4e9b\u6587\u4ef6",
+        "\u5f53\u524d\u76ee\u5f55",
     ]
-    if any(marker in text for marker in list_file_markers) and not any(
-        marker in text for marker in ["modify", "write", "edit", "淇敼", "鍐欏叆"]
-    ):
+    write_markers = ["modify", "write", "edit", "\u4fee\u6539", "\u5199\u5165"]
+    if any(marker in text for marker in list_file_markers) and not any(marker in text for marker in write_markers):
         return "run_command"
     return None
 
@@ -343,7 +332,14 @@ def _infer_missing_tool(goal: str, task: str) -> str | None:
 def _infer_args(tool: str | None, goal: str, task: str) -> dict:
     if tool == "run_command":
         text = f"{task}\n{goal}".lower()
-        if any(marker in text for marker in ["current directory", "working directory", "当前目录", "有哪些文件", "list files"]):
+        markers = [
+            "current directory",
+            "working directory",
+            "\u5f53\u524d\u76ee\u5f55",
+            "\u6709\u54ea\u4e9b\u6587\u4ef6",
+            "list files",
+        ]
+        if any(marker in text for marker in markers):
             return {"command": "dir", "cwd": "."}
     return {}
 
