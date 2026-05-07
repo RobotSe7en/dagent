@@ -8,21 +8,10 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
     topo_batches,
 )
-from dagent.harness_runtime.dag_creator import (
+from dagent.harness_runtime.dag_agent import (
     DAGCreationError,
-    LLMDagCreator,
-    MockDagCreator,
-    DagCreator,
-)
-from dagent.harness_runtime.dag_replanner import (
-    DAGReplanner,
-    LLMLocalDAGReplanner,
-    NoOpDAGReplanner,
-    ReplanContext,
-    ReplanDecision,
-    affected_node_ids_for_patch,
-    apply_node_patch_decision,
-    apply_replan_decision,
+    DAGAgent,
+    LLMDAGAgent,
 )
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
@@ -41,27 +30,18 @@ __all__ = [
     "DAGCreationError",
     "DAGExecutionError",
     "DAGExecutor",
-    "DAGReplanner",
+    "DAGAgent",
     "DAGReviewerAgent",
     "DAGReviewResult",
     "FeedbackLearnerAgent",
     "FeedbackLearning",
     "HarnessMessageResult",
     "HarnessRuntime",
-    "LLMDagCreator",
-    "LLMLocalDAGReplanner",
-    "MockDagCreator",
-    "NoOpDAGReplanner",
+    "LLMDAGAgent",
     "NodeExecutionResult",
-    "ReplanContext",
-    "ReplanDecision",
-    "affected_node_ids_for_patch",
-    "apply_node_patch_decision",
-    "DagCreator",
     "RunResult",
     "RuntimeMode",
     "TaskRecord",
     "TraceStore",
-    "apply_replan_decision",
     "topo_batches",
 ]

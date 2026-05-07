@@ -34,7 +34,7 @@ class DAG(BaseModel):
 
 class PlanNodeSpec(BaseModel):
     id: str
-    goal: str
+    goal: str = ""
     tool: str | None = None
     args: dict = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)

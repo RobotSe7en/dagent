@@ -48,11 +48,23 @@ const emptyDag: Dag = {
 };
 
 function normalizeNode(node: DagNode): DagNode {
+  const tool = node.tool ?? null;
   return {
     ...node,
-    kind: node.kind ?? (node.tool ? 'tool' : 'agent'),
-    tool: node.tool ?? null,
+    tool,
     args: node.args ?? {},
+    boundary: {
+      mode: node.boundary?.mode ?? 'read_only',
+      allowed_paths: node.boundary?.allowed_paths ?? [],
+      forbidden_tools: node.boundary?.forbidden_tools ?? [],
+      allowed_commands: node.boundary?.allowed_commands ?? [],
+      forbidden_commands: node.boundary?.forbidden_commands ?? [],
+    },
+    risk: node.risk ?? 'low',
+    risk_reason: node.risk_reason ?? '',
+    status: node.status ?? 'planned',
+    kind: 'tool',
+    tools: tool ? [tool] : [],
   };
 }
 
@@ -79,6 +91,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
+    const risk = item.risk ?? 'low';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     laneCounts.set(depth, lane + 1);
@@ -89,16 +102,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
         label: (
           <div className="dag-node">
             <div className="dag-node-top">
-              <span title={item.title}>{item.title}</span>
-              <span className={`risk-pill ${riskTone[item.risk]}`}>{item.risk}</span>
+              <span title={item.id}>{item.id}</span>
+              <span className={`risk-pill ${riskTone[risk]}`}>{risk}</span>
             </div>
-            <p title={item.goal}>{item.goal}</p>
-            <div className="dag-node-tools" title={item.tools.join(', ')}>
-              {item.kind === 'tool' && item.tool
-                ? `${item.tool} ${JSON.stringify(item.args)}`
-                : item.tools.length
-                  ? item.tools.join(', ')
-                  : 'agent'}
+            <div className="dag-node-tools" title={item.tool ? JSON.stringify(item.args) : ''}>
+              {item.tool ? `${item.tool} ${JSON.stringify(item.args)}` : 'tool not set'}
             </div>
           </div>
         ),
@@ -123,7 +131,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
+      content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
     },
   ]);
   const [draft, setDraft] = useState('');
@@ -246,11 +254,22 @@ export function App() {
     }));
   };
 
+  const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
+    Boolean(pendingReview) || ['review_required', 'paused_for_replan', 'paused_for_permission'].includes(nextDag.status);
+
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
     setTrace((items) => [...items, nextEvent]);
     return nextEvent;
+  };
+
+  const appendRuntimeTrace = (event: TraceEvent) => {
+    setTrace((items) => [...items, event]);
+    updateLastAssistantText((message) => ({
+      ...message,
+      traceSnapshot: [...(message.traceSnapshot ?? []), event],
+    }));
   };
 
   const appendToolMessage = (event: ToolStreamEvent) => {
@@ -290,14 +309,8 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          title: 'New Node',
-          goal: 'Describe the next action.',
-          kind: 'tool',
           tool: current.nodes[0]?.tool ?? null,
           args: {},
-          agent: null,
-          tools: current.nodes[0]?.tool ? [current.nodes[0].tool] : [],
-          skills: [],
           boundary: {
             mode: 'read_only',
             allowed_paths: [],
@@ -307,9 +320,6 @@ export function App() {
           },
           risk: 'low',
           risk_reason: 'User added node.',
-          expected_output: 'Result.',
-          max_steps: 1,
-          timeout_seconds: 30,
           status: 'planned',
         }),
       ],
@@ -352,9 +362,7 @@ export function App() {
           attachDagToLastAssistant(nextDag);
           setReviewOpen(true);
         },
-        onTrace: (event) => {
-          setTrace((items) => [...items, event]);
-        },
+          onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
@@ -362,28 +370,26 @@ export function App() {
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
-            setReviewOpen(true);
+            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           } else {
             updateLastAssistantText((message) => ({
               ...message,
               content: message.content || payload.message_markdown,
-              timeline: message.timeline?.length
-                ? message.timeline
-                : [{ type: 'text', content: payload.message_markdown }],
+              timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
             }));
             appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
           }
         },
         onError: (message) => {
           setError(message);
-          appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
+          appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
       });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
+      appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
     } finally {
       await waitForTokenQueue();
       setStreaming(false);
@@ -418,9 +424,7 @@ export function App() {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
         },
-        onTrace: (event) => {
-          setTrace((items) => [...items, event]);
-        },
+          onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
@@ -428,13 +432,12 @@ export function App() {
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
+            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
           }
           updateLastAssistantText((message) => ({
             ...message,
             content: message.content || payload.message_markdown,
-            timeline: message.timeline?.length
-              ? message.timeline
-              : [{ type: 'text', content: payload.message_markdown }],
+            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
           }));
           appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the DAG result.', status: 'completed' });
         },
@@ -514,8 +517,9 @@ export function App() {
                   <MessageTimeline
                     message={message}
                     loading={streaming}
-                    onOpenDag={(snapshot) => {
+                    onOpenDag={(snapshot, snapshotTrace) => {
                       syncDag(snapshot);
+                      if (snapshotTrace) setTrace(snapshotTrace);
                       setReviewOpen(true);
                     }}
                   />
@@ -551,6 +555,7 @@ export function App() {
           dag={dag}
           nodes={nodes}
           edges={edges}
+          trace={trace}
           selectedNode={selectedNode}
           onClose={() => setReviewOpen(false)}
           onConfirm={confirmDag}
@@ -582,7 +587,7 @@ function MessageTimeline({
 }: {
   message: ChatMessage;
   loading: boolean;
-  onOpenDag: (dag: Dag) => void;
+  onOpenDag: (dag: Dag, trace?: TraceEvent[]) => void;
 }) {
   if (!message.timeline?.length) {
     return <MessageContent content={message.content || (loading ? '...' : '')} />;
@@ -597,7 +602,7 @@ function MessageTimeline({
           <DagSummaryCard
             key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
             dag={item.dag}
-            onOpen={() => onOpenDag(item.dag)}
+            onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
           />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
@@ -639,6 +644,17 @@ function appendTextTimeline(
     items.push({ type: 'text', content });
   }
   return items;
+}
+
+function ensureTextTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  content: string,
+): MessageTimelineItem[] {
+  if (!content) return timeline ?? [];
+  if ((timeline ?? []).some((item) => item.type === 'text' && item.content.trim())) {
+    return timeline ?? [];
+  }
+  return appendTextTimeline(timeline, content);
 }
 
 function upsertDagTimeline(
@@ -775,6 +791,7 @@ function DagReviewDialog({
   dag,
   nodes,
   edges,
+  trace,
   selectedNode,
   onClose,
   onConfirm,
@@ -788,6 +805,7 @@ function DagReviewDialog({
   dag: Dag;
   nodes: Node[];
   edges: Edge[];
+  trace: TraceEvent[];
   selectedNode?: DagNode;
   onClose: () => void;
   onConfirm: () => void;
@@ -798,6 +816,9 @@ function DagReviewDialog({
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
 }) {
+  const selectedNodeLogs = selectedNode
+    ? trace.filter((event) => event.node_id === selectedNode.id && (!event.dag_id || event.dag_id === dag.dag_id))
+    : [];
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="DAG review">
       <div className="dag-modal">
@@ -846,6 +867,7 @@ function DagReviewDialog({
               <NodeEditor
                 node={normalizeNode(selectedNode)}
                 dag={dag}
+                logs={selectedNodeLogs}
                 onPatch={onPatchNode}
                 onDelete={onDeleteNode}
               />
@@ -862,82 +884,37 @@ function DagReviewDialog({
 function NodeEditor({
   node,
   dag,
+  logs,
   onPatch,
   onDelete,
 }: {
   node: DagNode;
   dag: Dag;
+  logs: TraceEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
+  const boundary = node.boundary ?? {
+    mode: 'read_only' as BoundaryMode,
+    allowed_paths: [],
+    forbidden_tools: [],
+    allowed_commands: [],
+    forbidden_commands: [],
+  };
   return (
     <div className="node-editor">
       <label>
-        Title
-        <input value={node.title} onChange={(event) => onPatch({ title: event.target.value })} />
-      </label>
-      <label>
-        Goal
-        <textarea value={node.goal} onChange={(event) => onPatch({ goal: event.target.value })} />
+        Node ID
+        <input value={node.id} disabled />
       </label>
       <div className="two-col">
         <label>
-          Kind
-          <select value={node.kind} onChange={(event) => onPatch({ kind: event.target.value as DagNode['kind'] })}>
-            <option value="tool">tool</option>
-            <option value="agent">agent</option>
-          </select>
-        </label>
-        <label>
           Risk
-          <select value={node.risk} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
+          <select value={node.risk ?? 'low'} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
             {riskLevels.map((risk) => (
               <option key={risk} value={risk}>
                 {risk}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {node.kind === 'tool' ? (
-        <>
-          <label>
-            Tool
-            <input
-              value={node.tool ?? ''}
-              onChange={(event) =>
-                onPatch({
-                  tool: event.target.value || null,
-                  tools: event.target.value ? [event.target.value] : [],
-                })
-              }
-            />
-          </label>
-          <label>
-            Args JSON
-            <textarea
-              value={JSON.stringify(node.args ?? {}, null, 2)}
-              onChange={(event) => {
-                const parsed = parseJsonObject(event.target.value);
-                if (parsed) onPatch({ args: parsed });
-              }}
-            />
-          </label>
-        </>
-      ) : null}
-      <div className="two-col">
-        <label>
-          Boundary
-          <select
-            value={node.boundary.mode}
-            onChange={(event) =>
-              onPatch({ boundary: { ...node.boundary, mode: event.target.value as BoundaryMode } })
-            }
-          >
-            {boundaryModes.map((mode) => (
-              <option key={mode} value={mode}>
-                {mode}
               </option>
             ))}
           </select>
@@ -947,6 +924,20 @@ function NodeEditor({
           <input value={node.status ?? 'planned'} disabled />
         </label>
       </div>
+      <label>
+        Tool
+        <input value={node.tool ?? ''} onChange={(event) => onPatch({ tool: event.target.value || null })} />
+      </label>
+      <label>
+        Args JSON
+        <textarea
+          value={JSON.stringify(node.args ?? {}, null, 2)}
+          onChange={(event) => {
+            const parsed = parseJsonObject(event.target.value);
+            if (parsed) onPatch({ args: parsed });
+          }}
+        />
+      </label>
       <label>
         Depends On
         <input
@@ -962,36 +953,82 @@ function NodeEditor({
         />
       </label>
       <label>
-        Tools
-        <input value={node.tools.join(', ')} onChange={(event) => onPatch({ tools: splitCsv(event.target.value) })} />
+        Review Reason
+        <textarea value={node.risk_reason ?? ''} onChange={(event) => onPatch({ risk_reason: event.target.value })} />
       </label>
-      <label>
-        Allowed Paths
-        <input
-          value={node.boundary.allowed_paths.join(', ')}
-          onChange={(event) =>
-            onPatch({ boundary: { ...node.boundary, allowed_paths: splitCsv(event.target.value) } })
-          }
-        />
-      </label>
-      <label>
-        Allowed Commands
-        <input
-          value={node.boundary.allowed_commands.join(', ')}
-          onChange={(event) =>
-            onPatch({ boundary: { ...node.boundary, allowed_commands: splitCsv(event.target.value) } })
-          }
-        />
-      </label>
-      <label>
-        Expected Output
-        <textarea value={node.expected_output} onChange={(event) => onPatch({ expected_output: event.target.value })} />
-      </label>
+      <details className="node-policy-details">
+        <summary>Execution Policy</summary>
+        <div className="two-col">
+          <label>
+            Boundary
+            <select
+              value={boundary.mode}
+              onChange={(event) =>
+                onPatch({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })
+              }
+            >
+              {boundaryModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Allowed Paths
+            <input
+              value={(boundary.allowed_paths ?? []).join(', ')}
+              onChange={(event) =>
+                onPatch({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })
+              }
+            />
+          </label>
+        </div>
+        <label>
+          Allowed Commands
+          <input
+            value={(boundary.allowed_commands ?? []).join(', ')}
+            onChange={(event) =>
+              onPatch({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })
+            }
+          />
+        </label>
+      </details>
       <button className="secondary-button danger-button" onClick={onDelete} type="button">
         <Trash2 size={16} />
         Delete Node
       </button>
+      <NodeExecutionLog logs={logs} />
     </div>
+  );
+}
+
+function NodeExecutionLog({ logs }: { logs: TraceEvent[] }) {
+  return (
+    <section className="node-log-panel">
+      <div className="node-log-title">
+        <Wrench size={15} />
+        <span>Execution Log</span>
+      </div>
+      {logs.length ? (
+        <div className="node-log-list">
+          {logs.map((event) => (
+            <details key={event.id} className={`node-log-row ${event.status}`}>
+              <summary>
+                <span>{event.event_type ?? event.label}</span>
+                <em>{event.timestamp}</em>
+              </summary>
+              <p>{event.detail}</p>
+              {event.payload && Object.keys(event.payload).length ? (
+                <pre>{clipText(JSON.stringify(event.payload, null, 2), 1600)}</pre>
+              ) : null}
+            </details>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No execution events recorded for this node yet.</div>
+      )}
+    </section>
   );
 }
 

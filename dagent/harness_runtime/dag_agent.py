@@ -1,4 +1,4 @@
-"""DAG creator interfaces, mock creator, and LLM-backed creator."""
+"""DAG agent interfaces and LLM-backed agent."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ class DAGCreationError(ValueError):
     """Raised when a proposed DAG cannot become an executable tool DAG."""
 
 
-class DagCreator(ABC):
-    """Base DAG creator interface.
+class DAGAgent(ABC):
+    """Base DAG agent interface.
 
-    DAG creators propose DAGs. They do not grant final permissions.
+    DAG agents propose DAGs. They do not grant final permissions.
     """
 
     @abstractmethod
@@ -35,37 +35,8 @@ class DagCreator(ABC):
         return self.plan(user_request, task_id=task_id)
 
 
-class MockDagCreator(DagCreator):
-    """Deterministic DAG creator for tests and early development."""
-
-    def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
-        resolved_task_id = task_id or f"task_{uuid4().hex}"
-        return DAG(
-            dag_id=f"dag_{uuid4().hex}",
-            task_id=resolved_task_id,
-            status="draft",
-            nodes=[
-                DAGNode(
-                    id="list_workspace",
-                    title="List Workspace",
-                    goal=f"Inspect the workspace for request: {user_request}",
-                    kind="tool",
-                    tool="run_command",
-                    args={"command": "dir", "cwd": "."},
-                    tools=["run_command"],
-                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                    risk="low",
-                    risk_reason="Read-only workspace inspection.",
-                    expected_output="Workspace listing.",
-                    max_steps=1,
-                ),
-            ],
-            edges=[],
-        )
-
-
-class LLMDagCreator(DagCreator):
-    """DAG creator that asks an OpenAI-compatible model to produce DAG JSON."""
+class LLMDAGAgent(DAGAgent):
+    """DAG agent that asks an OpenAI-compatible model to produce DAG JSON."""
 
     def __init__(
         self,
@@ -73,7 +44,7 @@ class LLMDagCreator(DagCreator):
         *,
         profile: AgentProfile | None = None,
         profile_store: ProfileStore | None = None,
-        profile_name: str = "dag_creator",
+        profile_name: str = "dag_agent",
         prompt_builder: PromptBuilder | None = None,
         tools: list[Tool] | None = None,
     ) -> None:
@@ -118,20 +89,24 @@ def dag_from_json_payload(payload: dict, *, task_id: str) -> DAG:
 
 
 def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
+    nodes = [_compile_plan_node(node, task=plan.task) for node in plan.nodes]
+    edges = [
+        DAGEdge(
+            source=dependency,
+            target=node.id,
+            reason=f"{node.id} depends on {dependency}.",
+        )
+        for node in plan.nodes
+        for dependency in node.depends_on
+    ]
+    if len(nodes) > 1:
+        nodes, edges = _ensure_start_node(nodes, edges)
     return DAG(
         dag_id=f"dag_{uuid4().hex}",
         task_id=task_id,
         status="draft",
-        nodes=[_compile_plan_node(node, task=plan.task) for node in plan.nodes],
-        edges=[
-            DAGEdge(
-                source=dependency,
-                target=node.id,
-                reason=f"{node.id} depends on {dependency}.",
-            )
-            for node in plan.nodes
-            for dependency in node.depends_on
-        ],
+        nodes=nodes,
+        edges=edges,
     )
 
 
@@ -143,23 +118,60 @@ def _compile_plan_node(node, *, task: str = "") -> DAGNode:
         )
     args = dict(node.args or _infer_args(tool, node.goal, task))
     boundary = _infer_boundary(tool, args)
-    goal = node.goal
+    goal = node.goal or f"Run {tool}."
 
     return DAGNode(
         id=node.id,
-        title=_title_from_id(node.id),
         goal=goal,
-        kind="tool",
         tool=tool,
         args=args,
-        tools=[tool],
         boundary=boundary,
-        risk=node.risk or _infer_risk(tool, boundary),
+        risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(tool, boundary),
         risk_reason=node.review_reason or _risk_reason(tool, boundary),
-        expected_output=node.goal,
-        max_steps=1,
         timeout_seconds=120,
     )
+
+
+def _ensure_start_node(
+    nodes: list[DAGNode],
+    edges: list[DAGEdge],
+) -> tuple[list[DAGNode], list[DAGEdge]]:
+    node_ids = {node.id for node in nodes}
+    start_id = "start"
+    next_nodes = list(nodes)
+    next_edges = list(edges)
+    if start_id not in node_ids:
+        next_nodes = [
+            DAGNode(
+                id=start_id,
+                goal="Mark the beginning of DAG execution.",
+                tool="dag_start",
+                args={},
+                boundary=Boundary(mode="read_only"),
+                risk="low",
+                risk_reason="No-op start marker.",
+                timeout_seconds=30,
+            ),
+            *next_nodes,
+        ]
+        node_ids.add(start_id)
+
+    targets = {edge.target for edge in next_edges}
+    existing_start_targets = {edge.target for edge in next_edges if edge.source == start_id}
+    root_ids = [
+        node.id
+        for node in next_nodes
+        if node.id != start_id and node.id not in targets and node.id not in existing_start_targets
+    ]
+    next_edges.extend(
+        DAGEdge(
+            source=start_id,
+            target=node_id,
+            reason=f"{node_id} starts after start.",
+        )
+        for node_id in root_ids
+    )
+    return next_nodes, next_edges
 
 
 def _infer_boundary(tool: str | None, args: dict) -> Boundary:
@@ -306,14 +318,13 @@ def _infer_missing_tool(goal: str, task: str) -> str | None:
         "list files",
         "what files",
         "which files",
-        "目录",
-        "文件",
-        "有哪些文件",
-        "当前目录",
+        "\u76ee\u5f55",
+        "\u6587\u4ef6",
+        "\u6709\u54ea\u4e9b\u6587\u4ef6",
+        "\u5f53\u524d\u76ee\u5f55",
     ]
-    if any(marker in text for marker in list_file_markers) and not any(
-        marker in text for marker in ["modify", "write", "edit", "修改", "写入"]
-    ):
+    write_markers = ["modify", "write", "edit", "\u4fee\u6539", "\u5199\u5165"]
+    if any(marker in text for marker in list_file_markers) and not any(marker in text for marker in write_markers):
         return "run_command"
     return None
 
@@ -321,7 +332,14 @@ def _infer_missing_tool(goal: str, task: str) -> str | None:
 def _infer_args(tool: str | None, goal: str, task: str) -> dict:
     if tool == "run_command":
         text = f"{task}\n{goal}".lower()
-        if any(marker in text for marker in ["current directory", "working directory", "当前目录", "有哪些文件", "list files"]):
+        markers = [
+            "current directory",
+            "working directory",
+            "\u5f53\u524d\u76ee\u5f55",
+            "\u6709\u54ea\u4e9b\u6587\u4ef6",
+            "list files",
+        ]
+        if any(marker in text for marker in markers):
             return {"command": "dir", "cwd": "."}
     return {}
 

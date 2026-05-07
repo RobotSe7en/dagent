@@ -11,8 +11,7 @@ from dagent.harness_runtime import (
     DAGReviewerAgent,
     FeedbackLearnerAgent,
     HarnessRuntime,
-    LLMDagCreator,
-    LLMLocalDAGReplanner,
+    LLMDAGAgent,
 )
 from dagent.profiles import ProfileStore
 from dagent.providers import OpenAICompatibleProvider
@@ -39,23 +38,16 @@ def create_harness_runtime(
     ]
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
     dag_executor = DAGExecutor(agent_loop=agent_loop, tool_executor=tool_executor)
-    dag_creator = LLMDagCreator(
+    dag_agent = LLMDAGAgent(
         provider,
         profile_store=profile_store,
-        profile_name=resolved_config.profiles.dag_creator,
-        tools=runtime_tools,
-    )
-    replanner = LLMLocalDAGReplanner(
-        provider,
-        profile_store=profile_store,
-        profile_name=resolved_config.profiles.dag_replanner,
+        profile_name=resolved_config.profiles.dag_agent,
         tools=runtime_tools,
     )
     return HarnessRuntime(
         agent_loop=agent_loop,
-        dag_creator=dag_creator,
+        dag_agent=dag_agent,
         dag_executor=dag_executor,
-        replanner=replanner,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,
     )

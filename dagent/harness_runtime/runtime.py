@@ -1,13 +1,14 @@
 """Top-level harness runtime.
 
 The runtime owns the user-facing loop. It lets the top AgentLoop answer
-directly, use ordinary runtime tools, or call the `dag_creator` control tool.
+directly, use ordinary runtime tools, or call the `dag_agent` control tool.
 DAG nodes are executed by DAGExecutor through restricted child AgentLoops that
-do not receive `dag_creator`.
+do not receive `dag_agent`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -26,19 +27,10 @@ from dagent.harness_runtime.dag_executor import (
     _inject_placeholders,
     _next_ready_nodes,
 )
-from dagent.harness_runtime.dag_replanner import (
-    DAGReplanner,
-    NoOpDAGReplanner,
-    ReplanContext,
-    affected_node_ids_for_patch,
-    apply_node_patch_decision,
-    apply_replan_decision,
-    replan_trace_event,
-)
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.dag_creator import DagCreator
-from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
-from dagent.harness_runtime.review_policy import ReviewLevel, ReviewPolicy, review_policy
+from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.control_tools import DAG_AGENT_NAME, dag_agent_tool_definition
+from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
@@ -61,6 +53,13 @@ class HarnessMessageResult:
     pending_review: PendingReview | None = None
 
 
+@dataclass(frozen=True)
+class _DAGRevisionApplyResult:
+    reason: str
+    changed_node_ids: set[str]
+    pending_review: PendingReview | None = None
+
+
 class HarnessRuntime:
     """Runs top-level messages and manages DAG lifecycle."""
 
@@ -68,10 +67,9 @@ class HarnessRuntime:
         self,
         *,
         agent_loop: AgentLoop,
-        dag_creator: DagCreator,
+        dag_agent: DAGAgent,
         dag_executor: DAGExecutor,
         conversation_profile: AgentProfile,
-        replanner: DAGReplanner | None = None,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
         auto_execute_approved_dags: bool = True,
@@ -80,9 +78,8 @@ class HarnessRuntime:
         max_node_retries: int = 2,
     ) -> None:
         self.agent_loop = agent_loop
-        self.dag_creator = dag_creator
+        self.dag_agent = dag_agent
         self.dag_executor = dag_executor
-        self.replanner = replanner or NoOpDAGReplanner()
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
@@ -93,6 +90,8 @@ class HarnessRuntime:
         self.tasks: dict[str, TaskRecord] = {}
         self.runs: dict[str, RunResult] = {}
         self._active_review_level: ReviewLevel = "balanced"
+        self._active_user_message: str = ""
+        self._active_continuation_task_id: str | None = None
 
     async def handle_message(
         self,
@@ -104,10 +103,31 @@ class HarnessRuntime:
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult:
         if mode == "dag":
-            record = await self.create_dag(message, review_level=review_level)
+            record = await self.create_dag(
+                message,
+                review_level=review_level,
+                planning_context=self._conversation_context(),
+                runtime_mode="dag",
+            )
             if not review_policy(review_level).requires_initial_dag_review(record.dag):
                 record.dag.status = "approved"
                 result = await self.execute_dag(record.task_id)
+                if record.pending_review is not None:
+                    return HarnessMessageResult(
+                        status="awaiting_change_review",
+                        message_markdown=record.pending_review.message,
+                        dag=record.pending_review.proposed_dag,
+                        run_result=result,
+                        task_id=record.task_id,
+                        pending_review=record.pending_review,
+                        control_events=[
+                            _dag_event(
+                                record,
+                                "change_review_requested",
+                                reason=record.pending_review.message,
+                            )
+                        ],
+                    )
                 summary = await self._summarize_dag_run(record, result, on_token=on_token, on_event=on_event)
                 return HarnessMessageResult(
                     status="completed" if result.completed else "failed",
@@ -116,6 +136,7 @@ class HarnessRuntime:
                     run_result=result,
                     task_id=record.task_id,
                 )
+            record.dag.status = "review_required"
             return HarnessMessageResult(
                 status="awaiting_dag_review",
                 message_markdown=_dag_created_review_message(record),
@@ -130,22 +151,27 @@ class HarnessRuntime:
                 task_content="{{ user_message }}",
                 tools=self.runtime_tools,
                 memory=self.conversation_profile.memory,
+                context=self._conversation_context(),
                 variables={"user_message": message},
             )
         )
-        include_dag_creator = mode == "auto"
+        include_dag_agent = mode == "auto"
         self._active_review_level = review_level
-        result = await self.agent_loop.run(
-            "",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
-            max_steps=self.max_top_steps,
-            messages=messages,
-            extra_tools=[dag_creator_tool_definition()] if include_dag_creator else None,
-            control_tool_names={DAG_CREATOR_NAME} if include_dag_creator else None,
-            control_tool_handler=self._handle_control_tool if include_dag_creator else None,
-            on_token=on_token,
-            on_event=on_event,
-        )
+        self._active_user_message = message
+        try:
+            result = await self.agent_loop.run(
+                "",
+                boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                max_steps=self.max_top_steps,
+                messages=messages,
+                extra_tools=[dag_agent_tool_definition()] if include_dag_agent else None,
+                control_tool_names={DAG_AGENT_NAME} if include_dag_agent else None,
+                control_tool_handler=self._handle_control_tool if include_dag_agent else None,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        finally:
+            self._active_user_message = ""
 
         dag_event = _latest_dag_event(result.control_events)
         return HarnessMessageResult(
@@ -177,11 +203,38 @@ class HarnessRuntime:
         submitted.task_id = task_id
         submitted.dag_id = record.dag.dag_id
         submitted.version = record.dag.version + 1
+        prepared = self.prepare_dag_for_review(submitted)
+
         existing_node_ids = {node.id for node in record.dag.nodes}
-        for node_id in _changed_node_ids(record.dag, submitted):
+        changed_node_ids = _changed_node_ids(record.dag, prepared)
+        if (
+            record.pending_review is not None
+            and record.pending_review.kind == "execution_error"
+            and not changed_node_ids
+        ):
+            record.dag.status = _pending_review_dag_status(record.pending_review)
+            return HarnessMessageResult(
+                status="awaiting_change_review",
+                message_markdown=(
+                    "The failed DAG was confirmed without any node or edge changes. "
+                    "Edit the failed node, change its tool/args, or replace the DAG before resuming."
+                ),
+                dag=record.pending_review.proposed_dag,
+                task_id=task_id,
+                pending_review=record.pending_review,
+                control_events=[
+                    _dag_event(
+                        record,
+                        "change_review_requested",
+                        reason="Execution error review requires a DAG edit before retry.",
+                    )
+                ],
+            )
+
+        for node_id in changed_node_ids:
             if node_id in existing_node_ids:
                 _invalidate_patch_results(record, node_id)
-        record.dag = self.prepare_dag_for_review(submitted)
+        record.dag = prepared
         record.dag.status = "approved"
         record.pending_review = None
         record.suppress_next_review = True
@@ -196,6 +249,13 @@ class HarnessRuntime:
                 task_id=task_id,
                 pending_review=record.pending_review,
                 control_events=[_dag_event(record, "change_review_requested", reason=record.pending_review.message)],
+            )
+        if record.runtime_mode == "dag":
+            return await self._continue_dag_loop(
+                record,
+                result,
+                on_token=on_token,
+                on_event=on_event,
             )
         summary = await self._summarize_dag_run(record, result, on_token=on_token, on_event=on_event)
         return HarnessMessageResult(
@@ -213,12 +273,42 @@ class HarnessRuntime:
         *,
         task_id: str | None = None,
         review_level: ReviewLevel = "balanced",
+        planning_context: str = "",
+        runtime_mode: RuntimeMode = "auto",
     ) -> TaskRecord:
-        dag = await self.dag_creator.aplan(request, task_id=task_id)
-        dag = self.prepare_dag_for_review(dag)
-        record = TaskRecord(task_id=dag.task_id, user_request=request, dag=dag, review_level=review_level)
+        dag = await self._create_validated_dag(
+            _dag_planning_prompt(request, planning_context),
+            task_id=task_id,
+        )
+        record = TaskRecord(
+            task_id=dag.task_id,
+            user_request=request,
+            dag=dag,
+            review_level=review_level,
+            runtime_mode=runtime_mode,
+        )
         self.tasks[record.task_id] = record
         return record
+
+    async def _create_validated_dag(
+        self,
+        request: str,
+        *,
+        task_id: str | None = None,
+        max_attempts: int = 2,
+    ) -> DAG:
+        feedback = ""
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            prompt = request if not feedback else _dag_creation_feedback_prompt(request, feedback)
+            try:
+                dag = await self.dag_agent.aplan(prompt, task_id=task_id)
+                return self.prepare_dag_for_review(dag)
+            except Exception as exc:
+                last_error = exc
+                feedback = str(exc)
+        assert last_error is not None
+        raise last_error
 
     def prepare_dag_for_review(self, dag: DAG) -> DAG:
         prepared = self.dag_executor.normalize(dag)
@@ -234,6 +324,8 @@ class HarnessRuntime:
 
     async def execute_dag(self, task_id: str) -> RunResult:
         record = self.tasks[task_id]
+        if record.dag.status == "review_required":
+            raise DAGExecutionError("DAG contains medium/high risk nodes and is not approved.")
         traces = []
         replan_count = 0
         repair_counts: dict[str, int] = {}
@@ -255,71 +347,69 @@ class HarnessRuntime:
                     failed_node_id = _latest_failed_node_id(record.trace_records)
                     if failed_node_id:
                         _node_by_id(record.dag, failed_node_id).status = "failed"
-                    decision = await self.replanner.replan(
-                        ReplanContext(
-                            task_id=record.task_id,
-                            user_request=record.user_request,
-                            dag=record.dag,
-                            node_results=_completed_results(record.node_results),
-                            trace_records=record.trace_records,
-                            last_error=str(exc),
+
+                    retry_key = failed_node_id or "__dag__"
+                    repair_counts[retry_key] = repair_counts.get(retry_key, 0) + 1
+                    if repair_counts[retry_key] > self.max_node_retries:
+                        pending = self._create_execution_error_review(
+                            record,
+                            message=f"Maximum repair retries exceeded for node '{retry_key}'.",
+                            error=str(exc),
                             failed_node_id=failed_node_id,
                         )
-                    )
-                    if decision.action == "abort":
-                        traces.append(
-                            replan_trace_event(
-                                dag_id=record.dag.dag_id,
-                                decision=decision,
-                                applied=False,
-                            )
-                        )
+                        traces.append(_review_trace(record.dag.dag_id, pending))
                         result = RunResult(
                             dag_id=record.dag.dag_id,
                             completed=False,
                             node_results=dict(record.node_results),
                             traces=traces,
                         )
-                        record.dag.status = "aborted"
                         break
-                    if decision.action == "patch_node":
-                        node_id = decision.node_id or _latest_failed_node_id(record.trace_records)
-                        if not node_id:
-                            raise
-                        repair_counts[node_id] = repair_counts.get(node_id, 0) + 1
-                        if repair_counts[node_id] > self.max_node_retries:
-                            raise RuntimeError(
-                                f"Maximum repair retries exceeded for node '{node_id}'."
-                            ) from exc
-                        pending = self._maybe_create_replan_review(record, decision)
-                        if pending is not None:
-                            traces.append(_review_trace(record.dag.dag_id, pending))
-                            result = RunResult(
-                                dag_id=record.dag.dag_id,
-                                completed=False,
-                                node_results=dict(record.node_results),
-                                traces=traces,
-                            )
-                            break
-                        _invalidate_patch_results(record, node_id)
-                        record.dag = self.prepare_dag_for_review(
-                            apply_node_patch_decision(
-                                current=record.dag,
-                                decision=decision,
-                                completed_node_results=_completed_results(record.node_results),
-                            )
+
+                    if replan_count >= self.max_replans:
+                        pending = self._create_execution_error_review(
+                            record,
+                            message="Maximum DAG replans exceeded.",
+                            error=str(exc),
+                            failed_node_id=failed_node_id,
                         )
-                        traces.append(
-                            replan_trace_event(
-                                dag_id=record.dag.dag_id,
-                                decision=decision,
-                                applied=True,
-                            )
+                        traces.append(_review_trace(record.dag.dag_id, pending))
+                        result = RunResult(
+                            dag_id=record.dag.dag_id,
+                            completed=False,
+                            node_results=dict(record.node_results),
+                            traces=traces,
                         )
-                        continue
-                    if decision.action != "replace" or decision.dag is None or replan_count >= self.max_replans:
-                        raise
-                    pending = self._maybe_create_replan_review(record, decision)
+                        break
+
+                    try:
+                        proposed_dag = await self._create_next_dag_from_observation(
+                            record,
+                            last_error=str(exc),
+                            failed_node_id=failed_node_id,
+                        )
+                        applied = self._apply_next_dag_revision(
+                            record,
+                            proposed_dag,
+                            reason="Repair failed node from execution observation.",
+                        )
+                    except Exception as replan_exc:
+                        pending = self._create_execution_error_review(
+                            record,
+                            message="Node execution failed and DAG agent did not return a usable revised DAG.",
+                            error=f"{exc}\nDAG agent error: {replan_exc}",
+                            failed_node_id=failed_node_id,
+                        )
+                        traces.append(_review_trace(record.dag.dag_id, pending))
+                        result = RunResult(
+                            dag_id=record.dag.dag_id,
+                            completed=False,
+                            node_results=dict(record.node_results),
+                            traces=traces,
+                        )
+                        break
+
+                    pending = applied.pending_review
                     if pending is not None:
                         traces.append(_review_trace(record.dag.dag_id, pending))
                         result = RunResult(
@@ -329,17 +419,11 @@ class HarnessRuntime:
                             traces=traces,
                         )
                         break
-                    record.dag = self.prepare_dag_for_review(
-                        apply_replan_decision(
-                            current=record.dag,
-                            decision=decision,
-                            node_results=_completed_results(record.node_results),
-                        )
-                    )
                     traces.append(
-                        replan_trace_event(
+                        _dag_revision_trace_event(
                             dag_id=record.dag.dag_id,
-                            decision=decision,
+                            reason=applied.reason,
+                            changed_node_ids=applied.changed_node_ids,
                             applied=True,
                         )
                     )
@@ -359,70 +443,22 @@ class HarnessRuntime:
                 record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
                 if result.pending_permission_request is not None or result.completed:
                     break
-
-                decision = await self.replanner.replan(
-                    ReplanContext(
-                        task_id=record.task_id,
-                        user_request=record.user_request,
-                        dag=record.dag,
-                        node_results=_completed_results(record.node_results),
-                        trace_records=record.trace_records,
-                    )
-                )
-                if decision.action == "abort":
-                    traces.append(
-                        replan_trace_event(
-                            dag_id=record.dag.dag_id,
-                            decision=decision,
-                            applied=False,
-                        )
-                    )
-                    result = RunResult(
-                        dag_id=record.dag.dag_id,
-                        completed=False,
-                        node_results=dict(record.node_results),
-                        traces=traces,
-                    )
-                    record.dag.status = "aborted"
-                    break
-                if decision.action == "patch_node":
-                    node_id = decision.node_id or _latest_failed_node_id(record.trace_records)
-                    if not node_id:
-                        raise RuntimeError("patch_node decision requires node_id.")
-                    repair_counts[node_id] = repair_counts.get(node_id, 0) + 1
-                    if repair_counts[node_id] > self.max_node_retries:
-                        raise RuntimeError(
-                            f"Maximum repair retries exceeded for node '{node_id}'."
-                        )
-                    pending = self._maybe_create_replan_review(record, decision)
-                    if pending is not None:
-                        traces.append(_review_trace(record.dag.dag_id, pending))
-                        result = RunResult(
-                            dag_id=record.dag.dag_id,
-                            completed=False,
-                            node_results=dict(record.node_results),
-                            traces=traces,
-                        )
-                        break
-                    _invalidate_patch_results(record, node_id)
-                    record.dag = self.prepare_dag_for_review(
-                        apply_node_patch_decision(
-                            current=record.dag,
-                            decision=decision,
-                            completed_node_results=_completed_results(record.node_results),
-                        )
-                    )
-                    traces.append(
-                        replan_trace_event(
-                            dag_id=record.dag.dag_id,
-                            decision=decision,
-                            applied=True,
-                        )
-                    )
+                if replan_count >= self.max_replans:
                     continue
-                if decision.action != "replace" or decision.dag is None:
+                try:
+                    proposed_dag = await self._create_next_dag_from_observation(
+                        record,
+                        last_error="",
+                        failed_node_id=None,
+                    )
+                    applied = self._apply_next_dag_revision(
+                        record,
+                        proposed_dag,
+                        reason="Revise DAG from completed layer observation.",
+                    )
+                except Exception:
                     continue
-                pending = self._maybe_create_replan_review(record, decision)
+                pending = applied.pending_review
                 if pending is not None:
                     traces.append(_review_trace(record.dag.dag_id, pending))
                     result = RunResult(
@@ -432,23 +468,15 @@ class HarnessRuntime:
                         traces=traces,
                     )
                     break
-                record.dag = self.prepare_dag_for_review(
-                    apply_replan_decision(
-                        current=record.dag,
-                        decision=decision,
-                        node_results=_completed_results(record.node_results),
-                    )
-                )
                 traces.append(
-                    replan_trace_event(
+                    _dag_revision_trace_event(
                         dag_id=record.dag.dag_id,
-                        decision=decision,
+                        reason=applied.reason,
+                        changed_node_ids=applied.changed_node_ids,
                         applied=True,
                     )
                 )
                 replan_count += 1
-                if replan_count > self.max_replans:
-                    raise RuntimeError("Maximum DAG replans exceeded.")
                 if record.dag.status == "review_required":
                     result = RunResult(
                         dag_id=record.dag.dag_id,
@@ -457,6 +485,7 @@ class HarnessRuntime:
                         traces=traces,
                     )
                     break
+                continue
 
             result = RunResult(
                 dag_id=record.dag.dag_id,
@@ -470,7 +499,7 @@ class HarnessRuntime:
         record.node_results.update(result.node_results)
         record.runs.append(result)
         if record.pending_review is not None:
-            record.dag.status = "paused_for_replan"
+            record.dag.status = _pending_review_dag_status(record.pending_review)
         elif result.pending_permission_request is not None:
             record.pending_permission_request = result.pending_permission_request
             record.dag.status = "paused_for_permission"
@@ -570,52 +599,91 @@ class HarnessRuntime:
             traces=traces,
         )
 
-    def _maybe_create_replan_review(
+    async def _create_next_dag_from_observation(
         self,
         record: TaskRecord,
-        decision: Any,
-    ) -> PendingReview | None:
+        *,
+        last_error: str,
+        failed_node_id: str | None,
+    ) -> DAG:
+        return await self._create_validated_dag(
+            _dag_revision_prompt(
+                record,
+                last_error=last_error,
+                failed_node_id=failed_node_id,
+            ),
+            task_id=record.task_id,
+        )
+
+    def _apply_next_dag_revision(
+        self,
+        record: TaskRecord,
+        next_dag: DAG,
+        *,
+        reason: str,
+    ) -> _DAGRevisionApplyResult:
+        proposed_input = next_dag.model_copy(deep=True)
+        proposed_input.task_id = record.task_id
+        proposed_input.dag_id = record.dag.dag_id
+        proposed_input.version = record.dag.version + 1
+        proposed = self.prepare_dag_for_review(proposed_input)
+        changed_node_ids = _changed_node_ids(record.dag, proposed)
+        if not changed_node_ids:
+            raise ValueError("DAG agent returned an unchanged DAG revision.")
+
         if record.suppress_next_review:
             record.suppress_next_review = False
-            return None
-        policy = review_policy(record.review_level)
-        if not policy.requires_replan_review(decision, current=record.dag):
-            return None
-
-        if decision.action == "patch_node":
-            proposed = apply_node_patch_decision(
-                current=record.dag,
-                decision=decision,
-                completed_node_results=_completed_results(record.node_results),
-            )
-            kind = "node_patch"
-            message = f"Review proposed patch for node '{decision.node_id}'."
-        elif decision.action == "replace" and decision.dag is not None:
-            proposed = apply_replan_decision(
-                current=record.dag,
-                decision=decision,
-                node_results=_completed_results(record.node_results),
-            )
-            kind = "dag_replan"
-            message = "Review proposed local DAG replan."
         else:
-            return None
+            policy = review_policy(record.review_level)
+            if policy.requires_dag_revision_review(current=record.dag, proposed=proposed):
+                pending = PendingReview(
+                    review_id=f"review_{uuid4().hex}",
+                    kind="dag_replan",
+                    message="Review proposed DAG revision from execution observation.",
+                    proposed_dag=proposed,
+                    payload={"reason": reason, "changed_node_ids": sorted(changed_node_ids)},
+                )
+                record.pending_review = pending
+                record.dag = proposed
+                return _DAGRevisionApplyResult(
+                    reason=reason,
+                    changed_node_ids=changed_node_ids,
+                    pending_review=pending,
+                )
 
-        proposed = self.prepare_dag_for_review(proposed)
+        for node_id in changed_node_ids:
+            if any(node.id == node_id for node in record.dag.nodes):
+                _invalidate_patch_results(record, node_id)
+        record.dag = proposed
+        record.pending_review = None
+        return _DAGRevisionApplyResult(
+            reason=reason,
+            changed_node_ids=changed_node_ids,
+        )
+
+    def _create_execution_error_review(
+        self,
+        record: TaskRecord,
+        *,
+        message: str,
+        error: str,
+        failed_node_id: str | None,
+    ) -> PendingReview:
         pending = PendingReview(
             review_id=f"review_{uuid4().hex}",
-            kind=kind,
+            kind="execution_error",
             message=message,
-            proposed_dag=proposed,
-            decision=decision,
-            payload={"reason": decision.reason},
+            proposed_dag=record.dag.model_copy(deep=True),
+            payload={
+                "error": error,
+                "failed_node_id": failed_node_id,
+            },
         )
         record.pending_review = pending
-        record.dag = proposed
         return pending
 
     async def _handle_control_tool(self, tool_call: ToolCall) -> ControlToolResult:
-        if tool_call.name != DAG_CREATOR_NAME:
+        if tool_call.name != DAG_AGENT_NAME:
             raise ValueError(f"Unsupported control tool '{tool_call.name}'.")
 
         request = str(tool_call.arguments.get("request") or "").strip()
@@ -623,19 +691,108 @@ class HarnessRuntime:
         if not request:
             request = "Create a reviewable DAG for the current user task."
 
-        record = await self.create_dag(request, review_level=self._active_review_level)
-        event = _dag_event(record, "dag_created", reason=reason)
-        if record.dag.status == "review_required":
+        if self._active_continuation_task_id is not None:
+            record = self.tasks[self._active_continuation_task_id]
+            dag = await self._create_validated_dag(
+                _dag_planning_prompt(request, self._conversation_context()),
+                task_id=record.task_id,
+            )
+            record.dag = dag
+            record.dag.status = "review_required"
+            record.pending_review = None
+            record.suppress_next_review = False
+            record.continuation_count += 1
+            for node in record.dag.nodes:
+                record.node_results.pop(node.id, None)
+            event = _dag_event(record, "dag_created", reason=reason or "DAG continuation requested.")
             return ControlToolResult(
                 content=_dag_created_tool_output(record, reason=reason),
                 stop_reason="awaiting_approval",
                 events=[event],
             )
 
+        record = await self.create_dag(
+            request,
+            review_level=self._active_review_level,
+            planning_context=self._conversation_context(),
+            runtime_mode="auto",
+        )
+        if self._active_user_message:
+            record.user_request = self._active_user_message
+        record.dag.status = "review_required"
+        event = _dag_event(record, "dag_created", reason=reason)
         return ControlToolResult(
             content=_dag_created_tool_output(record, reason=reason),
             stop_reason="awaiting_approval",
             events=[event],
+        )
+
+    async def _continue_dag_loop(
+        self,
+        record: TaskRecord,
+        result: RunResult,
+        *,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> HarnessMessageResult:
+        messages = self.prompt_builder.build(
+            PromptRequest(
+                profile=self.conversation_profile,
+                task_content="{{ user_message }}",
+                tools=[],
+                memory=self.conversation_profile.memory,
+                context=self._conversation_context(),
+                variables={
+                    "user_message": (
+                        "A DAG segment has finished executing in forced DAG mode.\n"
+                        f"Original user request:\n{record.user_request}\n\n"
+                        f"DAG execution observation:\n{_dag_run_tool_output(record, result)}\n\n"
+                        "Decide the next step. If the observations are sufficient, answer the user. "
+                        "If more execution is required, call dag_agent to create the next DAG segment. "
+                        "Do not call ordinary tools directly in DAG mode."
+                    )
+                },
+            )
+        )
+        self._active_review_level = record.review_level
+        self._active_user_message = record.user_request
+        self._active_continuation_task_id = record.task_id
+        try:
+            loop_result = await self.agent_loop.run(
+                "",
+                boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                allowed_tools=[],
+                max_steps=self.max_top_steps,
+                messages=messages,
+                extra_tools=[dag_agent_tool_definition()],
+                control_tool_names={DAG_AGENT_NAME},
+                control_tool_handler=self._handle_control_tool,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        finally:
+            self._active_continuation_task_id = None
+            self._active_user_message = ""
+
+        dag_event = _latest_dag_event(loop_result.control_events)
+        if dag_event is not None and loop_result.stop_reason == "awaiting_approval":
+            return HarnessMessageResult(
+                status="awaiting_dag_review",
+                message_markdown=_dag_created_review_message(record),
+                dag=dag_event.get("dag"),
+                run_result=result,
+                task_id=record.task_id,
+                control_events=[*loop_result.control_events, _dag_event(record, "dag_executed", reason="DAG segment executed.")],
+            )
+
+        answer = loop_result.final_response.strip() or _dag_run_fallback_message(record, result)
+        return HarnessMessageResult(
+            status="completed" if result.completed else "failed",
+            message_markdown=answer,
+            dag=record.dag,
+            run_result=result,
+            task_id=record.task_id,
+            control_events=[*loop_result.control_events, _dag_event(record, "dag_executed", reason="DAG segment executed.")],
         )
 
     async def _summarize_dag_run(
@@ -667,18 +824,40 @@ class HarnessRuntime:
             stream_kwargs["on_token"] = on_token
         if on_event is not None:
             stream_kwargs["on_event"] = on_event
-        summary = await self.agent_loop.run(
-            "",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
-            max_steps=self.max_top_steps,
-            messages=messages,
-            **stream_kwargs,
-        )
-        return summary.final_response
+        try:
+            summary = await asyncio.wait_for(
+                self.agent_loop.run(
+                    "",
+                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                    max_steps=self.max_top_steps,
+                    messages=messages,
+                    **stream_kwargs,
+                ),
+                timeout=60,
+            )
+        except Exception:
+            return _dag_run_fallback_message(record, result)
+        return summary.final_response.strip() or _dag_run_fallback_message(record, result)
 
     def _initial_status(self, dag: DAG) -> str:
         needs_review = any(node.risk in {"medium", "high"} for node in dag.nodes)
         return "review_required" if needs_review else "approved"
+
+    def _conversation_context(self) -> str:
+        if not self.tasks:
+            return ""
+        payload = {
+            "recent_dag_tasks": [
+                _task_context_payload(record)
+                for record in list(self.tasks.values())[-3:]
+            ]
+        }
+        return (
+            "Recent DAG execution context is available. Use it to interpret "
+            "follow-up requests and DAG planning requests; do not repeat work "
+            "whose result is already available unless the user asks to rerun it.\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
+        )
 
 
 def _dag_event(
@@ -693,6 +872,12 @@ def _dag_event(
         "dag": record.dag,
         "reason": reason,
     }
+
+
+def _pending_review_dag_status(pending: PendingReview) -> str:
+    if pending.kind in {"dag_replan", "execution_error", "boundary_change"}:
+        return "paused_for_replan"
+    return "review_required"
 
 
 def _latest_dag_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -726,6 +911,64 @@ def _dag_created_review_message(record: TaskRecord) -> str:
     )
 
 
+def _dag_creation_feedback_prompt(request: str, feedback: str) -> str:
+    return (
+        f"{request}\n\n"
+        "The previous DAG proposal failed validation. Return a corrected "
+        "compact PlanSpec JSON only.\n"
+        f"Validation error: {feedback}"
+    )
+
+
+def _dag_planning_prompt(request: str, context: str) -> str:
+    if not context.strip():
+        return request
+    return (
+        f"{request}\n\n"
+        "Use this prior conversation and DAG execution context when planning "
+        "the new DAG. Treat the user's request above as the current request; "
+        "the context below is supporting information, not a replacement task.\n"
+        f"{context}"
+    )
+
+
+def _dag_revision_prompt(
+    record: TaskRecord,
+    *,
+    last_error: str,
+    failed_node_id: str | None,
+) -> str:
+    payload = {
+        "task_id": record.task_id,
+        "user_request": record.user_request,
+        "current_dag": record.dag.model_dump(mode="json"),
+        "completed_node_results": {
+            node_id: {
+                "completed": node_result.completed,
+                "stop_reason": node_result.stop_reason,
+                "final_response": node_result.final_response,
+            }
+            for node_id, node_result in _completed_results(record.node_results).items()
+        },
+        "recent_trace_records": [
+            trace_record.model_dump(mode="json")
+            for trace_record in record.trace_records[-12:]
+        ],
+        "failed_node_id": failed_node_id,
+        "last_error": last_error,
+    }
+    return (
+        "Revise the executable DAG after an execution observation.\n"
+        "Return one compact PlanSpec JSON object for the next DAG version.\n"
+        "Do not return action types such as keep, patch_node, replace, or abort.\n"
+        "Preserve already completed node ids and dependencies when their results "
+        "are still needed, and change the failed or downstream nodes so execution "
+        "can make progress. If a completed node result can be reused, keep that "
+        "node semantically unchanged.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
 def _review_trace(dag_id: str, pending: PendingReview) -> TraceEvent:
     return TraceEvent(
         event_id=f"trace_{uuid4().hex}",
@@ -738,6 +981,51 @@ def _review_trace(dag_id: str, pending: PendingReview) -> TraceEvent:
             **pending.payload,
         },
     )
+
+
+def _dag_revision_trace_event(
+    *,
+    dag_id: str,
+    reason: str,
+    changed_node_ids: set[str],
+    applied: bool,
+) -> TraceEvent:
+    return TraceEvent(
+        event_id=f"trace_{uuid4().hex}",
+        event_type="dag_replanned" if applied else "dag_replan_failed",
+        dag_id=dag_id,
+        payload={
+            "reason": reason,
+            "changed_node_ids": sorted(changed_node_ids),
+        },
+    )
+
+
+def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
+    return {
+        "task_id": record.task_id,
+        "dag_id": record.dag.dag_id,
+        "user_request": record.user_request,
+        "dag_status": record.dag.status,
+        "node_results": {
+            node_id: {
+                "completed": node_result.completed,
+                "stop_reason": node_result.stop_reason,
+                "final_response": node_result.final_response,
+            }
+            for node_id, node_result in record.node_results.items()
+        },
+        "recent_trace_records": [
+            {
+                "node_id": trace.node_id,
+                "tool": trace.tool,
+                "status": trace.status,
+                "output": trace.output,
+                "error": trace.error,
+            }
+            for trace in record.trace_records[-8:]
+        ],
+    }
 
 
 def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
@@ -762,6 +1050,21 @@ def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _dag_run_fallback_message(record: TaskRecord, result: RunResult) -> str:
+    lines = [
+        "DAG execution completed." if result.completed else "DAG execution stopped before completion.",
+        "",
+        "Node results:",
+    ]
+    if not result.node_results:
+        lines.append("- No completed node results were recorded.")
+    for node_id, node_result in result.node_results.items():
+        status = "completed" if node_result.completed else "failed"
+        response = node_result.final_response.strip() or node_result.stop_reason
+        lines.append(f"- `{node_id}` ({status}): {response}")
+    return "\n".join(lines)
 
 
 def _completed_results(node_results: dict) -> dict:
@@ -795,6 +1098,19 @@ def _invalidate_patch_results(record: TaskRecord, node_id: str) -> None:
             continue
 
 
+def affected_node_ids_for_patch(dag: DAG, node_id: str) -> set[str]:
+    _node_by_id(dag, node_id)
+    affected = {node_id}
+    changed = True
+    while changed:
+        changed = False
+        for edge in dag.edges:
+            if edge.source in affected and edge.target not in affected:
+                affected.add(edge.target)
+                changed = True
+    return affected
+
+
 def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:
     current_nodes = {node.id: node for node in current.nodes}
     proposed_nodes = {node.id: node for node in proposed.nodes}
@@ -805,8 +1121,14 @@ def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:
         if current_node is None:
             changed.add(node_id)
             continue
-        if current_node.model_dump(mode="json") != proposed_node.model_dump(mode="json"):
+        if _node_semantic_dump(current_node) != _node_semantic_dump(proposed_node):
             changed.add(node_id)
     if current.edges != proposed.edges:
         changed.update(proposed_nodes)
     return changed
+
+
+def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
+    dumped = node.model_dump(mode="json")
+    dumped.pop("status", None)
+    return dumped

@@ -1,4 +1,4 @@
-# dagent Handoff
+﻿# dagent Handoff
 
 This file is for continuing work from another Codex session or machine.
 
@@ -39,17 +39,17 @@ Important files:
 - `dagent/harness_runtime/runtime.py`
   - `HarnessRuntime`
   - top-level conversation-first entrypoint
-  - runs the top AgentLoop and handles `dag_creator`
+  - runs the top AgentLoop and handles `dag_agent`
 - `dagent/harness_runtime/agent_loop.py`
   - single-agent loop primitive
   - supports runtime tools and optional control tools
 - `dagent/harness_runtime/control_tools.py`
-  - `dag_creator` tool schema
-- `dagent/harness_runtime/dag_creator.py`
-  - DAG creator implementation
-  - still exports `DagCreator`, `MockDagCreator`, `LLMDagCreator`
+  - `dag_agent` tool schema
+- `dagent/harness_runtime/dag_agent.py`
+  - DAG agent implementation
+  - exports `DAGAgent`, `LLMDAGAgent`
 - `dagent/harness_runtime/dag_executor.py`
-  - executes approved DAGs using node AgentLoops without `dag_creator`
+  - executes approved DAGs using node AgentLoops without `dag_agent`
 - `dagent/api/app.py`
   - FastAPI app
   - `/messages/stream` is the default conversation-first API
@@ -70,14 +70,14 @@ flowchart TD
 
   A -->|"direct answer"| O["Return to user"]
   A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_creator"| D["Create DAG"]
+  A -->|"dag_agent"| D["Create DAG"]
 
   D -->|"review required"| UI["Return DAG for human review"]
   D -->|"approved/auto safe"| E["DAGExecutor"]
 
   UI -->|"approve"| E
 
-  E --> N["Node AgentLoop without dag_creator"]
+  E --> N["Node AgentLoop without dag_agent"]
   N --> T
 
   E --> DR["DAG result as tool output"]
@@ -86,9 +86,9 @@ flowchart TD
 
 Modes:
 
-- `auto`: top AgentLoop may call `dag_creator` when the task needs complex DAG orchestration.
-- `direct`: top AgentLoop cannot call `dag_creator`; no DAG should be created.
-- `dag_creator`: bypasses conversation and invokes DAG creation directly.
+- `auto`: top AgentLoop may call `dag_agent` when the task needs complex DAG orchestration.
+- `direct`: top AgentLoop cannot call `dag_agent`; no DAG should be created.
+- `dag`: bypasses ordinary tool choice and invokes DAG planning directly.
 
 ## Model Configuration
 
@@ -116,9 +116,9 @@ Currently important:
 - `profiles/conversation/`
   - top-level conversation agent
   - tells the model to answer directly for simple conversations/simple tools/short serial tasks
-  - only use `dag_creator` for complex orchestration
-- `profiles/dag_creator/`
-  - used by `LLMDagCreator` in `dag_creator.py`
+  - only use `dag_agent` for complex orchestration
+- `profiles/dag_agent/`
+  - used by `LLMDAGAgent` in `dag_agent.py`
 - `profiles/dag_reviewer/`
 - `profiles/feedback_learner/`
 
@@ -139,7 +139,7 @@ Invoke-WebRequest http://127.0.0.1:8001/health -UseBasicParsing
 Conversation-first stream:
 
 ```powershell
-$body = @{ message = "你好"; mode = "auto" } | ConvertTo-Json
+$body = @{ message = "娴ｇ姴銈?; mode = "auto" } | ConvertTo-Json
 Invoke-WebRequest -Uri http://127.0.0.1:8001/messages/stream -Method Post -ContentType "application/json" -Body $body -UseBasicParsing
 ```
 
@@ -212,15 +212,15 @@ git status --branch --short
 
 High-value next steps:
 
-- Improve `dag_creator` return/resume behavior after user approves a review-required DAG, so DAG result can be injected back into top AgentLoop and summarized automatically.
+- Improve `dag_agent` return/resume behavior after user approves a review-required DAG, so DAG result can be injected back into top AgentLoop and summarized automatically.
 - Add persistent session/run storage instead of current in-memory API state.
 - Add trace events for top AgentLoop tool calls, not only DAG executor traces.
-- Improve WebUI display for direct conversation traces and `dag_creator` control events.
-- Add API tests for `dag_creator` mode and runtime-created DAG approve/execute flow.
+- Improve WebUI display for direct conversation traces and `dag_agent` control events.
+- Add API tests for `dag_agent` mode and runtime-created DAG approve/execute flow.
 
 ## Notes For Future Codex
 
 - Use `apply_patch` for code edits.
 - Prefer `uv run --extra dev pytest` and `npm run build` before committing.
 - Do not reintroduce `dagent/harness/` or `dagent/runtime/`; the core package is `dagent/harness_runtime/`.
-- The class names `LLMDagCreator`, `MockDagCreator`, and `DagCreator` are currently retained for compatibility even though the file is now `dag_creator.py`.
+- The class names `LLMDAGAgent`, and `DAGAgent` are the canonical DAG agent names.

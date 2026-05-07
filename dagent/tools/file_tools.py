@@ -38,7 +38,21 @@ def grep(path: str | Path, pattern: str) -> str:
     return "\n".join(matches)
 
 
+def dag_start() -> str:
+    return "started"
+
+
 def register_file_tools(registry: ToolRegistry) -> None:
+    registry.register(
+        name="dag_start",
+        handler=dag_start,
+        action="read",
+        description="No-op DAG start marker used to connect independent root nodes.",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+    )
     registry.register(
         name="read_file",
         handler=read_file,

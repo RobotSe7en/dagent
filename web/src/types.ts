@@ -4,29 +4,29 @@ export type ReviewLevel = 'fast' | 'balanced' | 'careful' | 'manual';
 
 export interface Boundary {
   mode: BoundaryMode;
-  allowed_paths: string[];
-  forbidden_tools: string[];
-  allowed_commands: string[];
-  forbidden_commands: string[];
+  allowed_paths?: string[];
+  forbidden_tools?: string[];
+  allowed_commands?: string[];
+  forbidden_commands?: string[];
 }
 
 export interface DagNode {
   id: string;
-  title: string;
-  goal: string;
-  kind: 'agent' | 'tool';
-  tool: string | null;
-  args: Record<string, unknown>;
-  agent: string | null;
-  tools: string[];
-  skills: string[];
-  boundary: Boundary;
-  risk: RiskLevel;
-  risk_reason: string;
-  expected_output: string;
-  max_steps: number;
-  timeout_seconds: number;
+  tool?: string | null;
+  args?: Record<string, unknown>;
+  boundary?: Boundary;
+  risk?: RiskLevel;
+  risk_reason?: string;
   status?: 'planned' | 'ready' | 'running' | 'blocked_permission' | 'completed' | 'failed' | 'skipped';
+  title?: string;
+  goal?: string;
+  kind?: 'agent' | 'tool';
+  agent?: string | null;
+  tools?: string[];
+  skills?: string[];
+  expected_output?: string;
+  max_steps?: number;
+  timeout_seconds?: number;
 }
 
 export interface DagEdge {

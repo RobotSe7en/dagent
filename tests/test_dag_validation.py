@@ -1,7 +1,10 @@
+import json
+
 import pytest
 
-from dagent.harness_runtime import MockDagCreator
+from dagent.harness_runtime import LLMDAGAgent
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
+from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode
 
 
@@ -87,6 +90,30 @@ def test_edge_target_must_exist() -> None:
         validate_dag(dag)
 
 
+def test_multi_node_dag_rejects_isolated_nodes() -> None:
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[make_node("a"), make_node("b"), make_node("lonely")],
+        edges=[DAGEdge(source="a", target="b")],
+    )
+
+    with pytest.raises(DAGValidationError, match="Isolated node IDs: lonely"):
+        validate_dag(dag)
+
+
+def test_multi_node_dag_without_edges_is_rejected() -> None:
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[make_node("a"), make_node("b")],
+        edges=[],
+    )
+
+    with pytest.raises(DAGValidationError, match="Isolated node IDs: a, b"):
+        validate_dag(dag)
+
+
 def test_dag_must_be_acyclic() -> None:
     dag = DAG(
         dag_id="dag_1",
@@ -103,8 +130,31 @@ def test_dag_must_be_acyclic() -> None:
         validate_dag(dag)
 
 
-def test_mock_dag_creator_returns_valid_dag() -> None:
-    dag = MockDagCreator().plan("Summarize the repo", task_id="task_1")
+def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
+    agent = LLMDAGAgent(
+        MockProvider(
+            [
+                ChatResponse(
+                    content=json.dumps(
+                        {
+                            "task": "Summarize the repo",
+                            "nodes": [
+                                {
+                                    "id": "inspect",
+                                    "goal": "Inspect repository files.",
+                                    "tool": "run_command",
+                                    "args": {"command": "dir", "cwd": "."},
+                                    "depends_on": [],
+                                }
+                            ],
+                        }
+                    )
+                )
+            ]
+        )
+    )
+
+    dag = agent.plan("Summarize the repo", task_id="task_1")
 
     validate_dag(dag)
     assert dag.task_id == "task_1"

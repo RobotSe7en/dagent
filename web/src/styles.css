@@ -685,6 +685,105 @@ button:disabled {
   border-bottom: 1px solid #d9ded7;
 }
 
+.node-log-panel {
+  margin-top: 2px;
+  border: 1px solid #d9ded7;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fbfcfa;
+}
+
+.node-log-title {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid #e4e8e1;
+  color: #394750;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.node-log-list {
+  display: grid;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.node-log-row {
+  border-bottom: 1px solid #edf0eb;
+  background: #fff;
+}
+
+.node-log-row:last-child {
+  border-bottom: 0;
+}
+
+.node-log-row summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+  list-style: none;
+  cursor: pointer;
+  color: #4f5c65;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.node-log-row summary::-webkit-details-marker {
+  display: none;
+}
+
+.node-log-row summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-log-row summary em {
+  flex: 0 0 auto;
+  color: #737e87;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.node-log-row.failed summary {
+  color: #a33345;
+}
+
+.node-log-row.running summary {
+  color: #327a8d;
+}
+
+.node-log-row p {
+  margin: 0;
+  padding: 0 10px 9px;
+  color: #4f5c65;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.node-log-row pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 9px 10px 10px;
+  border-top: 1px solid #edf0eb;
+  background: #f7f8f5;
+  color: #394750;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .permission-panel {
   margin: 14px;
   border: 1px solid #efcf8a;

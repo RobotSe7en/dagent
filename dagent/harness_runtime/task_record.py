@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dagent.harness_runtime.dag_executor import RunResult
-from dagent.harness_runtime.dag_replanner import ReplanDecision
 from dagent.harness_runtime.review_policy import ReviewLevel, ReviewKind
 from dagent.schemas import DAG, NodeExecutionRecord, PermissionRequest
 
@@ -17,7 +16,6 @@ class PendingReview:
     kind: ReviewKind
     message: str
     proposed_dag: DAG
-    decision: ReplanDecision | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -30,7 +28,9 @@ class TaskRecord:
     pending_permission_request: PermissionRequest | None = None
     pending_review: PendingReview | None = None
     review_level: ReviewLevel = "balanced"
+    runtime_mode: str = "auto"
     suppress_next_review: bool = False
+    continuation_count: int = 0
     node_results: dict = field(default_factory=dict)
     trace_records: list[NodeExecutionRecord] = field(default_factory=list)
 

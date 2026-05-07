@@ -2,6 +2,14 @@ import type { Dag, ReviewLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
+interface DonePayload {
+  status?: string;
+  task_id: string | null;
+  dag: Dag | null;
+  pending_review?: { kind: string; message: string } | null;
+  message_markdown: string;
+}
+
 interface BackendTrace {
   event_id: string;
   event_type: string;
@@ -21,7 +29,7 @@ export async function streamTask(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
+    onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
 ): Promise<void> {
@@ -71,7 +79,7 @@ export async function resumeDag(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
+    onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
 ): Promise<void> {
@@ -94,7 +102,7 @@ async function readStream(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onDone?: (payload: { task_id: string | null; dag: Dag | null; message_markdown: string }) => void;
+    onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
 ) {

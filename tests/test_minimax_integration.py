@@ -12,15 +12,15 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-async def test_minimax_dag_creator_generates_valid_dag() -> None:
+async def test_minimax_dag_agent_generates_valid_dag() -> None:
     runtime = create_harness_runtime(workspace_root=".")
 
     record = await runtime.create_dag(
         "生成一个低风险计划：直接回答 dagent 是什么，不需要读取文件。",
-        task_id="minimax_dag_creator_test",
+        task_id="minimax_dag_agent_test",
     )
 
-    assert record.dag.task_id == "minimax_dag_creator_test"
+    assert record.dag.task_id == "minimax_dag_agent_test"
     assert record.dag.nodes
     assert record.dag.status in {"approved", "review_required"}
 

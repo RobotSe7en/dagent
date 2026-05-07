@@ -2,17 +2,17 @@
 
 > **Plan globally. Re-plan locally.**
 
-**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable DAG and runs it layer by layer. After each layer completes, it applies the lightest re-planning strategy that suffices — from zero-LLM placeholder substitution, to local parameter reasoning, to full downstream re-generation — updating only what needs to change, freezing everything already done.
+**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable DAG and runs it layer by layer. After each layer completes, it applies the lightest re-planning strategy that suffices 鈥?from zero-LLM placeholder substitution, to local parameter reasoning, to full downstream re-generation 鈥?updating only what needs to change, freezing everything already done.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
-task gets a reviewable, auditable plan up front. That plan evolves as execution proceeds —
+task gets a reviewable, auditable plan up front. That plan evolves as execution proceeds 鈥?
 only the parts that need changing are changed, and everything already executed is frozen
 and immutable.
 
-> **Design origin:** The self-planning dynamic DAG agent loop — tool-node DAG with
+> **Design origin:** The self-planning dynamic DAG agent loop 鈥?tool-node DAG with
 > three-level incremental re-planning, frozen Trace DB as the context boundary, and
-> automatic DAG-vs-AgentLoop task routing — was conceived and first implemented by the
+> automatic DAG-vs-AgentLoop task routing 鈥?was conceived and first implemented by the
 > author of this repository. First committed: **2026-05-01**.
 
 ---
@@ -30,7 +30,7 @@ Every DAG node is a deterministic tool call. Intelligence lives in the re-planne
 nodes, not inside them. Nodes are cheap, testable, and auditable.
 
 **3. Three-level re-planning with minimal context.**
-After each node completes, the executor picks the lightest strategy that suffices —
+After each node completes, the executor picks the lightest strategy that suffices 鈥?
 from zero-LLM placeholder substitution up to full downstream re-generation. Each level
 receives only the context it actually needs.
 
@@ -56,7 +56,7 @@ flowchart TD
 
   A -->|"direct answer"| O["Return to user"]
   A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_creator"| D["Create Initial DAG\ntool nodes + placeholders"]
+  A -->|"dag_agent"| D["Create Initial DAG\ntool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -90,9 +90,9 @@ After every node completes, the DAGExecutor selects the minimum re-planning stra
 
 | Level | Trigger | Context passed to LLM | Cost |
 |-------|---------|----------------------|------|
-| **1 — Placeholder Injection** | Data contract defined at creation; only values unknown | Predecessor output → direct substitution | No LLM call |
-| **2 — Light Re-planner** | Next node's tool or params require runtime reasoning | Current node output + next node definition | Lightweight |
-| **3 — DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
+| **1 鈥?Placeholder Injection** | Data contract defined at creation; only values unknown | Predecessor output 鈫?direct substitution | No LLM call |
+| **2 鈥?Light Re-planner** | Next node's tool or params require runtime reasoning | Current node output + next node definition | Lightweight |
+| **3 鈥?DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
 
 Design principles:
 
@@ -109,11 +109,11 @@ Design principles:
 |------------|------|
 | Subtasks that can run in parallel | DAG |
 | Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory — next action depends on observation | Direct AgentLoop tool calls |
-| Dynamic fan-out — node count unknown until runtime | Direct AgentLoop tool calls |
+| Exploratory 鈥?next action depends on observation | Direct AgentLoop tool calls |
+| Dynamic fan-out 鈥?node count unknown until runtime | Direct AgentLoop tool calls |
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
-sequential tool calls. The DAG Creator is responsible for this routing judgment.
+sequential tool calls. The DAG Agent is responsible for this routing judgment.
 
 ### Trace DB
 
@@ -125,10 +125,10 @@ Every completed node is written immediately on completion:
 
 Trace DB serves three purposes:
 
-1. **Audit log** — immutable record of what ran, with what inputs, and what it returned.
-2. **Re-planning source** — Level 3 re-planner reads summaries, not raw outputs, keeping
+1. **Audit log** 鈥?immutable record of what ran, with what inputs, and what it returned.
+2. **Re-planning source** 鈥?Level 3 re-planner reads summaries, not raw outputs, keeping
    context bounded regardless of how many nodes have executed.
-3. **Human review** — the WebUI surfaces the trace timeline alongside the DAG graph.
+3. **Human review** 鈥?the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ---
 
@@ -136,10 +136,10 @@ Trace DB serves three purposes:
 
 The runtime is intentionally layered:
 
-- DAG Creator proposes a DAG but does not grant permissions.
+- DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
-- Each node is a bounded tool call — no nested agent loop inside a node.
+- Each node is a bounded tool call 鈥?no nested agent loop inside a node.
 - `ToolExecutor` enforces boundaries before every tool call.
 - Human review can be triggered at initial DAG creation and after any Level 3 re-plan.
 
@@ -156,13 +156,13 @@ Boundary checks:
 
 ```text
 dagent/
-  api/              FastAPI app — task, DAG, run, and trace endpoints
-  harness_runtime/  AgentLoop, DAGExecutor, re-planner, trace recorder, dag_creator tool
+  api/              FastAPI app 鈥?task, DAG, run, and trace endpoints
+  harness_runtime/  AgentLoop, DAGExecutor, DAG agent, trace recorder, dag_agent tool
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback models
   tools/            tool registry, executor, file tools, boundary checks
   state/            prompt assembly and context management
-profiles/           editable agent profiles (dag_creator, dag_reviewer, feedback_learner)
+profiles/           editable agent profiles (dag_agent, dag_reviewer, feedback_learner)
 tests/              pytest suite
 ```
 
@@ -176,7 +176,7 @@ provider:
   timeout_seconds: 60
 profiles:
   directory: "profiles"
-  dag_creator: "dag_creator"
+  dag_agent: "dag_agent"
   dag_reviewer: "dag_reviewer"
   feedback_learner: "feedback_learner"
 ```
@@ -195,11 +195,11 @@ $env:DAGENT_CONFIG="C:\path\to\config.yaml"
 
 ## Agent Profiles
 
-Each role (DAG creator, reviewer, feedback learner) has an editable profile directory:
+Each role (DAG Agent, reviewer, feedback learner) has an editable profile directory:
 
 ```text
 profiles/
-  dag_creator/      soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  dag_agent/      soul.md  guideline.md  agent.md  memory.md  profile.yaml
   dag_reviewer/     soul.md  guideline.md  agent.md  memory.md  profile.yaml
   feedback_learner/ soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```

@@ -5,14 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 
-DAG_CREATOR_NAME = "dag_creator"
+DAG_AGENT_NAME = "dag_agent"
 
 
-def dag_creator_tool_definition() -> dict[str, Any]:
+def dag_agent_tool_definition() -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": DAG_CREATOR_NAME,
+            "name": DAG_AGENT_NAME,
             "description": (
                 "Create a reviewable DAG only for complex orchestration that benefits "
                 "from node-level planning, human review, parallelism, resumability, "

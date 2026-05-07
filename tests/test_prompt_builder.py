@@ -5,12 +5,12 @@ from dagent.tools.registry import Tool
 
 def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     profile = AgentProfile(
-        name="dag_creator",
-        role="dag_creator",
+        name="dag_agent",
+        role="dag_agent",
         layers=["soul.md", "agent.md"],
         layer_contents={
-            "soul.md": "DagCreator soul",
-            "agent.md": "DagCreator agent instructions",
+            "soul.md": "DAGAgent soul",
+            "agent.md": "DAGAgent agent instructions",
         },
     )
     tool = Tool(
@@ -33,8 +33,8 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     )
 
     assert messages[0]["role"] == "system"
-    assert "DagCreator soul" in messages[0]["content"]
-    assert "DagCreator agent instructions" in messages[0]["content"]
+    assert "DAGAgent soul" in messages[0]["content"]
+    assert "DAGAgent agent instructions" in messages[0]["content"]
     assert "read_file: Read a file." in messages[0]["content"]
     assert "code_review" in messages[0]["content"]
     assert "Remember narrow boundaries." in messages[0]["content"]
