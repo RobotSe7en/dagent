@@ -1,0 +1,10 @@
+name: dag_agent
+role: dag_agent
+description: Generates and revises reviewable DAGs from user requests and execution observations.
+layers:
+  - soul.md
+  - guideline.md
+  - agent.md
+memory_file: memory.md
+output_format: json
+

@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import AgentLoop, DAGExecutor, HarnessRuntime, LLMDagCreator
+from dagent.harness_runtime import AgentLoop, DAGExecutor, HarnessRuntime, LLMDAGAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.tools.executor import ToolExecutor
@@ -34,7 +34,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
                     tool_calls=[
                         ToolCall(
                             id="call_1",
-                            name="dag_creator",
+                            name="dag_agent",
                             arguments={
                                 "request": "Create a safe DAG.",
                                 "reason": "Needs execution.",
@@ -42,7 +42,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
                         )
                     ]
                 ),
-                ChatResponse(content=_dag_creator_json()),
+                ChatResponse(content=_dag_agent_json()),
             ]
         )
     )
@@ -71,12 +71,12 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
                     tool_calls=[
                         ToolCall(
                             id="call_1",
-                            name="dag_creator",
+                            name="dag_agent",
                             arguments={"request": "Create a safe DAG.", "reason": "Needs execution."},
                         )
                     ]
                 ),
-                ChatResponse(content=_dag_creator_json()),
+                ChatResponse(content=_dag_agent_json()),
                 ChatResponse(content="Final answer: echo:ok"),
             ]
         )
@@ -129,7 +129,7 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
     tool_executor = _tool_executor()
     return HarnessRuntime(
         agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
-        dag_creator=LLMDagCreator(provider, profile=_profile("dag_creator")),
+        dag_agent=LLMDAGAgent(provider, profile=_profile("dag_agent")),
         dag_executor=DAGExecutor(
             agent_loop=AgentLoop(provider=MockProvider([]), tool_executor=tool_executor),
             tool_executor=tool_executor,
@@ -163,7 +163,7 @@ def _tool_executor() -> ToolExecutor:
     return ToolExecutor(registry)
 
 
-def _dag_creator_json() -> str:
+def _dag_agent_json() -> str:
     return json.dumps(
         {
             "dag_id": "dag_api",

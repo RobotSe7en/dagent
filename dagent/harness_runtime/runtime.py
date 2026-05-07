@@ -1,9 +1,9 @@
 """Top-level harness runtime.
 
 The runtime owns the user-facing loop. It lets the top AgentLoop answer
-directly, use ordinary runtime tools, or call the `dag_creator` control tool.
+directly, use ordinary runtime tools, or call the `dag_agent` control tool.
 DAG nodes are executed by DAGExecutor through restricted child AgentLoops that
-do not receive `dag_creator`.
+do not receive `dag_agent`.
 """
 
 from __future__ import annotations
@@ -27,17 +27,10 @@ from dagent.harness_runtime.dag_executor import (
     _inject_placeholders,
     _next_ready_nodes,
 )
-from dagent.harness_runtime.dag_replanner import (
-    DAGReplanner,
-    NoOpDAGReplanner,
-    ReplanDecision,
-    affected_node_ids_for_patch,
-    replan_trace_event,
-)
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.dag_creator import DagCreator
-from dagent.harness_runtime.control_tools import DAG_CREATOR_NAME, dag_creator_tool_definition
-from dagent.harness_runtime.review_policy import ReviewLevel, ReviewPolicy, review_policy
+from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.control_tools import DAG_AGENT_NAME, dag_agent_tool_definition
+from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile
 from dagent.providers import ToolCall
@@ -62,7 +55,7 @@ class HarnessMessageResult:
 
 @dataclass(frozen=True)
 class _DAGRevisionApplyResult:
-    decision: ReplanDecision
+    reason: str
     changed_node_ids: set[str]
     pending_review: PendingReview | None = None
 
@@ -74,10 +67,9 @@ class HarnessRuntime:
         self,
         *,
         agent_loop: AgentLoop,
-        dag_creator: DagCreator,
+        dag_agent: DAGAgent,
         dag_executor: DAGExecutor,
         conversation_profile: AgentProfile,
-        replanner: DAGReplanner | None = None,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
         auto_execute_approved_dags: bool = True,
@@ -86,9 +78,8 @@ class HarnessRuntime:
         max_node_retries: int = 2,
     ) -> None:
         self.agent_loop = agent_loop
-        self.dag_creator = dag_creator
+        self.dag_agent = dag_agent
         self.dag_executor = dag_executor
-        self.replanner = replanner or NoOpDAGReplanner()
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
@@ -164,7 +155,7 @@ class HarnessRuntime:
                 variables={"user_message": message},
             )
         )
-        include_dag_creator = mode == "auto"
+        include_dag_agent = mode == "auto"
         self._active_review_level = review_level
         self._active_user_message = message
         try:
@@ -173,9 +164,9 @@ class HarnessRuntime:
                 boundary=Boundary(mode="read_only", allowed_paths=["."]),
                 max_steps=self.max_top_steps,
                 messages=messages,
-                extra_tools=[dag_creator_tool_definition()] if include_dag_creator else None,
-                control_tool_names={DAG_CREATOR_NAME} if include_dag_creator else None,
-                control_tool_handler=self._handle_control_tool if include_dag_creator else None,
+                extra_tools=[dag_agent_tool_definition()] if include_dag_agent else None,
+                control_tool_names={DAG_AGENT_NAME} if include_dag_agent else None,
+                control_tool_handler=self._handle_control_tool if include_dag_agent else None,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -311,7 +302,7 @@ class HarnessRuntime:
         for attempt in range(max_attempts):
             prompt = request if not feedback else _dag_creation_feedback_prompt(request, feedback)
             try:
-                dag = await self.dag_creator.aplan(prompt, task_id=task_id)
+                dag = await self.dag_agent.aplan(prompt, task_id=task_id)
                 return self.prepare_dag_for_review(dag)
             except Exception as exc:
                 last_error = exc
@@ -429,9 +420,10 @@ class HarnessRuntime:
                         )
                         break
                     traces.append(
-                        replan_trace_event(
+                        _dag_revision_trace_event(
                             dag_id=record.dag.dag_id,
-                            decision=applied.decision,
+                            reason=applied.reason,
+                            changed_node_ids=applied.changed_node_ids,
                             applied=True,
                         )
                     )
@@ -477,9 +469,10 @@ class HarnessRuntime:
                     )
                     break
                 traces.append(
-                    replan_trace_event(
+                    _dag_revision_trace_event(
                         dag_id=record.dag.dag_id,
-                        decision=applied.decision,
+                        reason=applied.reason,
+                        changed_node_ids=applied.changed_node_ids,
                         applied=True,
                     )
                 )
@@ -633,7 +626,6 @@ class HarnessRuntime:
         proposed_input.task_id = record.task_id
         proposed_input.dag_id = record.dag.dag_id
         proposed_input.version = record.dag.version + 1
-        decision = ReplanDecision(action="replace", reason=reason, dag=proposed_input)
         proposed = self.prepare_dag_for_review(proposed_input)
         changed_node_ids = _changed_node_ids(record.dag, proposed)
         if not changed_node_ids:
@@ -643,19 +635,18 @@ class HarnessRuntime:
             record.suppress_next_review = False
         else:
             policy = review_policy(record.review_level)
-            if policy.requires_replan_review(decision, current=record.dag):
+            if policy.requires_dag_revision_review(current=record.dag, proposed=proposed):
                 pending = PendingReview(
                     review_id=f"review_{uuid4().hex}",
                     kind="dag_replan",
                     message="Review proposed DAG revision from execution observation.",
                     proposed_dag=proposed,
-                    decision=decision,
                     payload={"reason": reason, "changed_node_ids": sorted(changed_node_ids)},
                 )
                 record.pending_review = pending
                 record.dag = proposed
                 return _DAGRevisionApplyResult(
-                    decision=decision,
+                    reason=reason,
                     changed_node_ids=changed_node_ids,
                     pending_review=pending,
                 )
@@ -666,7 +657,7 @@ class HarnessRuntime:
         record.dag = proposed
         record.pending_review = None
         return _DAGRevisionApplyResult(
-            decision=decision,
+            reason=reason,
             changed_node_ids=changed_node_ids,
         )
 
@@ -692,7 +683,7 @@ class HarnessRuntime:
         return pending
 
     async def _handle_control_tool(self, tool_call: ToolCall) -> ControlToolResult:
-        if tool_call.name != DAG_CREATOR_NAME:
+        if tool_call.name != DAG_AGENT_NAME:
             raise ValueError(f"Unsupported control tool '{tool_call.name}'.")
 
         request = str(tool_call.arguments.get("request") or "").strip()
@@ -757,7 +748,7 @@ class HarnessRuntime:
                         f"Original user request:\n{record.user_request}\n\n"
                         f"DAG execution observation:\n{_dag_run_tool_output(record, result)}\n\n"
                         "Decide the next step. If the observations are sufficient, answer the user. "
-                        "If more execution is required, call dag_creator to create the next DAG segment. "
+                        "If more execution is required, call dag_agent to create the next DAG segment. "
                         "Do not call ordinary tools directly in DAG mode."
                     )
                 },
@@ -773,8 +764,8 @@ class HarnessRuntime:
                 allowed_tools=[],
                 max_steps=self.max_top_steps,
                 messages=messages,
-                extra_tools=[dag_creator_tool_definition()],
-                control_tool_names={DAG_CREATOR_NAME},
+                extra_tools=[dag_agent_tool_definition()],
+                control_tool_names={DAG_AGENT_NAME},
                 control_tool_handler=self._handle_control_tool,
                 on_token=on_token,
                 on_event=on_event,
@@ -884,7 +875,7 @@ def _dag_event(
 
 
 def _pending_review_dag_status(pending: PendingReview) -> str:
-    if pending.kind in {"node_patch", "dag_replan", "execution_error", "boundary_change"}:
+    if pending.kind in {"dag_replan", "execution_error", "boundary_change"}:
         return "paused_for_replan"
     return "review_required"
 
@@ -992,6 +983,24 @@ def _review_trace(dag_id: str, pending: PendingReview) -> TraceEvent:
     )
 
 
+def _dag_revision_trace_event(
+    *,
+    dag_id: str,
+    reason: str,
+    changed_node_ids: set[str],
+    applied: bool,
+) -> TraceEvent:
+    return TraceEvent(
+        event_id=f"trace_{uuid4().hex}",
+        event_type="dag_replanned" if applied else "dag_replan_failed",
+        dag_id=dag_id,
+        payload={
+            "reason": reason,
+            "changed_node_ids": sorted(changed_node_ids),
+        },
+    )
+
+
 def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
     return {
         "task_id": record.task_id,
@@ -1087,6 +1096,19 @@ def _invalidate_patch_results(record: TaskRecord, node_id: str) -> None:
             _node_by_id(record.dag, affected_id).status = "ready"
         except KeyError:
             continue
+
+
+def affected_node_ids_for_patch(dag: DAG, node_id: str) -> set[str]:
+    _node_by_id(dag, node_id)
+    affected = {node_id}
+    changed = True
+    while changed:
+        changed = False
+        for edge in dag.edges:
+            if edge.source in affected and edge.target not in affected:
+                affected.add(edge.target)
+                changed = True
+    return affected
 
 
 def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:

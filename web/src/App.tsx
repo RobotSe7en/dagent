@@ -123,7 +123,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
+      content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
     },
   ]);
   const [draft, setDraft] = useState('');
@@ -384,13 +384,13 @@ export function App() {
         },
         onError: (message) => {
           setError(message);
-          appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
+          appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
       });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'model', label: 'dag_creator_failed', detail: message, status: 'failed' });
+      appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
     } finally {
       await waitForTokenQueue();
       setStreaming(false);

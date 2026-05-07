@@ -1,4 +1,4 @@
-"""DAG validation helpers for dag_creator and executor boundaries."""
+"""DAG validation helpers for dag_agent and executor boundaries."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""DAG creator interfaces, mock creator, and LLM-backed creator."""
+"""DAG agent interfaces and LLM-backed agent."""
 
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ class DAGCreationError(ValueError):
     """Raised when a proposed DAG cannot become an executable tool DAG."""
 
 
-class DagCreator(ABC):
-    """Base DAG creator interface.
+class DAGAgent(ABC):
+    """Base DAG agent interface.
 
-    DAG creators propose DAGs. They do not grant final permissions.
+    DAG agents propose DAGs. They do not grant final permissions.
     """
 
     @abstractmethod
@@ -35,37 +35,8 @@ class DagCreator(ABC):
         return self.plan(user_request, task_id=task_id)
 
 
-class MockDagCreator(DagCreator):
-    """Deterministic DAG creator for tests and early development."""
-
-    def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
-        resolved_task_id = task_id or f"task_{uuid4().hex}"
-        return DAG(
-            dag_id=f"dag_{uuid4().hex}",
-            task_id=resolved_task_id,
-            status="draft",
-            nodes=[
-                DAGNode(
-                    id="list_workspace",
-                    title="List Workspace",
-                    goal=f"Inspect the workspace for request: {user_request}",
-                    kind="tool",
-                    tool="run_command",
-                    args={"command": "dir", "cwd": "."},
-                    tools=["run_command"],
-                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                    risk="low",
-                    risk_reason="Read-only workspace inspection.",
-                    expected_output="Workspace listing.",
-                    max_steps=1,
-                ),
-            ],
-            edges=[],
-        )
-
-
-class LLMDagCreator(DagCreator):
-    """DAG creator that asks an OpenAI-compatible model to produce DAG JSON."""
+class LLMDAGAgent(DAGAgent):
+    """DAG agent that asks an OpenAI-compatible model to produce DAG JSON."""
 
     def __init__(
         self,
@@ -73,7 +44,7 @@ class LLMDagCreator(DagCreator):
         *,
         profile: AgentProfile | None = None,
         profile_store: ProfileStore | None = None,
-        profile_name: str = "dag_creator",
+        profile_name: str = "dag_agent",
         prompt_builder: PromptBuilder | None = None,
         tools: list[Tool] | None = None,
     ) -> None:
@@ -363,7 +334,7 @@ def _infer_missing_tool(goal: str, task: str) -> str | None:
         "当前目录",
     ]
     if any(marker in text for marker in list_file_markers) and not any(
-        marker in text for marker in ["modify", "write", "edit", "修改", "写入"]
+        marker in text for marker in ["modify", "write", "edit", "淇敼", "鍐欏叆"]
     ):
         return "run_command"
     return None

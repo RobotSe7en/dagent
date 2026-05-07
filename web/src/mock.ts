@@ -13,7 +13,7 @@ export const initialDag: Dag = {
       kind: 'agent',
       tool: null,
       args: {},
-      agent: 'dag_creator',
+      agent: 'dag_agent',
       tools: [],
       skills: [],
       boundary: {
@@ -24,7 +24,7 @@ export const initialDag: Dag = {
         forbidden_commands: [],
       },
       risk: 'low',
-      risk_reason: 'DagCreator only proposes structure.',
+      risk_reason: 'DAGAgent only proposes structure.',
       expected_output: 'Weak DAG proposal.',
       max_steps: 4,
       timeout_seconds: 120,
