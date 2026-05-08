@@ -13,12 +13,9 @@ export const initialDag: Dag = {
       boundary: {
         mode: 'read_only',
         allowed_paths: [],
-        forbidden_tools: [],
         allowed_commands: [],
-        forbidden_commands: [],
       },
       risk: 'low',
-      risk_reason: 'No-op start marker.',
     },
     {
       id: 'inspect_project',
@@ -27,12 +24,9 @@ export const initialDag: Dag = {
       boundary: {
         mode: 'read_only',
         allowed_paths: ['./'],
-        forbidden_tools: ['write_file'],
         allowed_commands: [],
-        forbidden_commands: [],
       },
       risk: 'medium',
-      risk_reason: 'Executor override: broad allowed_paths require review.',
     },
     {
       id: 'summarize_result',
@@ -41,12 +35,9 @@ export const initialDag: Dag = {
       boundary: {
         mode: 'read_only',
         allowed_paths: [],
-        forbidden_tools: [],
         allowed_commands: [],
-        forbidden_commands: [],
       },
       risk: 'low',
-      risk_reason: 'Read-only file inspection.',
     },
   ],
   edges: [
@@ -81,4 +72,3 @@ export const initialTrace: TraceEvent[] = [
     timestamp: '10:33:02',
   },
 ];
-

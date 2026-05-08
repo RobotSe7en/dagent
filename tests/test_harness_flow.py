@@ -129,20 +129,10 @@ def dag_agent_json(*, tools: list[str] | None = None, risk: str = "low") -> str:
             "nodes": [
                 {
                     "id": "inspect",
-                    "title": "Inspect",
-                    "goal": "Inspect the request",
-                    "kind": "tool",
                     "tool": tool,
                     "args": args,
-                    "agent": None,
-                    "tools": [tool],
-                    "skills": [],
                     "boundary": boundary,
                     "risk": risk,
-                    "risk_reason": "DAGAgent estimate.",
-                    "expected_output": "Inspection result.",
-                    "max_steps": 2,
-                    "timeout_seconds": 300,
                 }
             ],
             "edges": [],
@@ -173,7 +163,6 @@ def plan_spec_json() -> str:
             "nodes": [
                 {
                     "id": "list_files",
-                    "goal": "List files in the current directory.",
                     "tool": "run_command",
                     "args": {"command": "dir", "cwd": "."},
                 }
@@ -199,24 +188,18 @@ def _default_boundary_for_tool(tool: str) -> dict:
         return {
             "mode": "write_limited",
             "allowed_paths": ["notes.md"],
-            "forbidden_tools": [],
             "allowed_commands": [],
-            "forbidden_commands": [],
         }
     if tool == "run_command":
         return {
             "mode": "read_only",
             "allowed_paths": ["."],
-            "forbidden_tools": [],
             "allowed_commands": [],
-            "forbidden_commands": [],
         }
     return {
         "mode": "read_only",
         "allowed_paths": [],
-        "forbidden_tools": [],
         "allowed_commands": [],
-        "forbidden_commands": [],
     }
 
 
@@ -315,14 +298,9 @@ def make_tool_executor() -> ToolExecutor:
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
-        title=node_id.replace("_", " ").title(),
-        goal=f"Run {tool}.",
-        kind="tool",
         tool=tool,
         args=args,
-        tools=[tool],
         boundary=Boundary(mode="read_only"),
-        max_steps=1,
     )
 
 
@@ -333,38 +311,11 @@ def plan_spec_json_without_tool() -> str:
             "nodes": [
                 {
                     "id": "list_files",
-                    "goal": "列出当前目录有哪些文件。",
                     "depends_on": [],
                 }
             ],
         }
     )
-
-
-def plan_spec_json_with_unresolved_reasoning_node() -> str:
-    return json.dumps(
-        {
-            "task": "Decide the best implementation strategy",
-            "nodes": [
-                {
-                    "id": "choose_strategy",
-                    "goal": "Compare two implementation strategies and choose one.",
-                    "depends_on": [],
-                }
-            ],
-        }
-    )
-
-
-def full_dag_json_with_legacy_single_tool_node() -> str:
-    payload = json.loads(dag_agent_json(tools=["run_command"]))
-    payload["nodes"][0]["id"] = "list_files"
-    payload["nodes"][0]["title"] = "List Files"
-    payload["nodes"][0]["goal"] = "List files in the current directory."
-    payload["nodes"][0].pop("tool", None)
-    payload["nodes"][0].pop("args", None)
-    payload["nodes"][0]["expected_output"] = "Directory listing."
-    return json.dumps(payload)
 
 
 def full_dag_json_without_tool_node() -> str:
@@ -372,8 +323,6 @@ def full_dag_json_without_tool_node() -> str:
     payload["nodes"][0].pop("tool", None)
     payload["nodes"][0].pop("args", None)
     payload["nodes"][0]["tools"] = []
-    payload["nodes"][0]["kind"] = "agent"
-    payload["nodes"][0]["goal"] = "Compare two implementation strategies."
     return json.dumps(payload)
 
 
@@ -410,50 +359,22 @@ def test_llm_dag_agent_compiles_compact_plan_spec_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert dag.nodes[0].id == "list_files"
-    assert dag.nodes[0].title == "List Files"
-    assert dag.nodes[0].kind == "tool"
     assert dag.nodes[0].tool == "run_command"
     assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
-    assert dag.nodes[0].tools == ["run_command"]
     assert dag.nodes[0].boundary.mode == "read_only"
     assert dag.nodes[0].boundary.allowed_paths == ["."]
     assert dag.nodes[0].boundary.allowed_commands == []
-    assert dag.nodes[0].max_steps == 1
 
 
-def test_llm_dag_agent_infers_obvious_tool_node_when_model_omits_tool() -> None:
+def test_llm_dag_agent_rejects_plan_spec_node_without_tool() -> None:
     provider = MockProvider([ChatResponse(content=plan_spec_json_without_tool())])
     dag_agent = LLMDAGAgent(provider)
 
-    dag = run(dag_agent.aplan("褰撳墠鐩綍鏈夊摢浜涙枃浠讹紵", task_id="task_real"))
-
-    assert dag.nodes[0].kind == "tool"
-    assert dag.nodes[0].tool == "run_command"
-    assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
-    assert dag.nodes[0].tools == ["run_command"]
-
-
-def test_llm_dag_agent_rejects_plan_spec_node_without_concrete_tool() -> None:
-    provider = MockProvider([ChatResponse(content=plan_spec_json_with_unresolved_reasoning_node())])
-    dag_agent = LLMDAGAgent(provider)
-
     with pytest.raises(DAGCreationError, match="must declare one concrete tool"):
-        run(dag_agent.aplan("Choose a strategy", task_id="task_real"))
+        run(dag_agent.aplan("list files", task_id="task_real"))
 
 
-def test_llm_dag_agent_normalizes_legacy_full_dag_single_tool_node() -> None:
-    provider = MockProvider([ChatResponse(content=full_dag_json_with_legacy_single_tool_node())])
-    dag_agent = LLMDAGAgent(provider)
-
-    dag = run(dag_agent.aplan("褰撳墠鐩綍鏈夊摢浜涙枃浠讹紵", task_id="task_real"))
-
-    assert dag.nodes[0].kind == "tool"
-    assert dag.nodes[0].tool == "run_command"
-    assert dag.nodes[0].args == {"command": "dir", "cwd": "."}
-    assert dag.nodes[0].max_steps == 1
-
-
-def test_llm_dag_agent_rejects_full_dag_node_without_concrete_tool() -> None:
+def test_llm_dag_agent_rejects_full_dag_node_without_tool() -> None:
     provider = MockProvider([ChatResponse(content=full_dag_json_without_tool_node())])
     dag_agent = LLMDAGAgent(provider)
 
@@ -503,7 +424,8 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     ]
 
 
-def test_harness_runtime_replans_unfinished_nodes_between_layers() -> None:
+def test_harness_runtime_executes_layers_without_success_path_replanning() -> None:
+    """Success-path replanning was removed — layers execute with original args."""
     initial = DAG(
         dag_id="dag_replan",
         task_id="task_replan",
@@ -514,17 +436,8 @@ def test_harness_runtime_replans_unfinished_nodes_between_layers() -> None:
         ],
         edges=[DAGEdge(source="inspect", target="answer")],
     )
-    replacement = DAG(
-        dag_id="replacement",
-        task_id="task_replan",
-        nodes=[
-            _tool_node("inspect", "echo", {"text": "observed"}),
-            _tool_node("answer", "echo", {"text": "{{inspect.output}}"}),
-        ],
-        edges=[DAGEdge(source="inspect", target="answer")],
-    )
     runtime = runtime_for(
-        dag_agent=LLMDAGAgent(MockProvider([ChatResponse(content=dag_json(replacement))])),
+        dag_agent=LLMDAGAgent(MockProvider([])),
         executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
     )
     prepared = runtime.prepare_dag_for_review(initial)
@@ -539,25 +452,19 @@ def test_harness_runtime_replans_unfinished_nodes_between_layers() -> None:
 
     assert result.completed is True
     assert result.node_results["inspect"].final_response == "echo:observed"
-    assert result.node_results["answer"].final_response == "echo:echo:observed"
-    stored = runtime.tasks["task_replan"].dag
-    assert stored.version == 2
+    assert result.node_results["answer"].final_response == "echo:old"
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
         "tool_called",
         "tool_completed",
         "node_completed",
-        "dag_replanned",
         "node_started",
         "tool_called",
         "tool_completed",
         "node_completed",
         "dag_completed",
     ]
-    request = runtime.dag_agent.provider.requests[0]["messages"][-1]["content"]
-    assert "completed_node_results" in request
-    assert "echo:observed" in request
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:

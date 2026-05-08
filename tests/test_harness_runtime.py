@@ -42,6 +42,14 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    runtime = _runtime(provider)
+
+    tool_names = {tool.name for tool in runtime.dag_agent.tools}
+    assert tool_names == {"dag_start", "echo", "write_file"}
+
+
 def test_harness_runtime_direct_message_does_not_create_dag() -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     runtime = _runtime(provider)
@@ -308,21 +316,18 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
                         "nodes": [
                             {
                                 "id": "start",
-                                "goal": "Start.",
                                 "tool": "dag_start",
                                 "args": {},
                                 "depends_on": [],
                             },
                             {
                                 "id": "a",
-                                "goal": "Echo a.",
                                 "tool": "echo",
                                 "args": {"text": "a"},
                                 "depends_on": ["start"],
                             },
                             {
                                 "id": "b",
-                                "goal": "Echo b.",
                                 "tool": "echo",
                                 "args": {"text": "b"},
                                 "depends_on": ["start"],
@@ -434,9 +439,7 @@ def _dag_agent_json(
     boundary = {
         "mode": "write_limited" if tool == "write_file" else "read_only",
         "allowed_paths": ["notes.md"] if tool == "write_file" else [],
-        "forbidden_tools": [],
         "allowed_commands": [],
-        "forbidden_commands": [],
     }
     return json.dumps(
         {
@@ -447,20 +450,10 @@ def _dag_agent_json(
             "nodes": [
                 {
                     "id": node_id,
-                    "title": "Node 1",
-                    "goal": "Do work.",
-                    "kind": "tool",
                     "tool": tool,
                     "args": args,
-                    "agent": None,
-                    "tools": [tool],
-                    "skills": [],
                     "boundary": boundary,
                     "risk": "low",
-                    "risk_reason": "DAGAgent estimate.",
-                    "expected_output": "Result.",
-                    "max_steps": 1,
-                    "timeout_seconds": 30,
                 }
             ],
             "edges": [],
@@ -471,24 +464,12 @@ def _dag_agent_json(
 def _full_node(node_id: str) -> dict:
     return {
         "id": node_id,
-        "title": node_id,
-        "goal": f"Echo {node_id}.",
-        "kind": "tool",
         "tool": "echo",
         "args": {"text": node_id},
-        "agent": None,
-        "tools": ["echo"],
-        "skills": [],
         "boundary": {
             "mode": "read_only",
             "allowed_paths": [],
-            "forbidden_tools": [],
             "allowed_commands": [],
-            "forbidden_commands": [],
         },
         "risk": "low",
-        "risk_reason": "test",
-        "expected_output": "Result.",
-        "max_steps": 1,
-        "timeout_seconds": 30,
     }

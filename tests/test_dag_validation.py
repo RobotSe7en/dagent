@@ -56,13 +56,11 @@ def test_agent_nodes_are_rejected_for_executable_dags() -> None:
         nodes=[
             DAGNode(
                 id="reason",
-                title="Reason",
-                goal="Reason about the task.",
             )
         ],
     )
 
-    with pytest.raises(DAGValidationError, match="must be a tool node"):
+    with pytest.raises(DAGValidationError, match="must declare a tool"):
         validate_dag(dag)
 
 
@@ -141,8 +139,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
                             "nodes": [
                                 {
                                     "id": "inspect",
-                                    "goal": "Inspect repository files.",
-                                    "tool": "run_command",
+                                                                        "tool": "run_command",
                                     "args": {"command": "dir", "cwd": "."},
                                     "depends_on": [],
                                 }
@@ -159,5 +156,5 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     validate_dag(dag)
     assert dag.task_id == "task_1"
     assert dag.status == "draft"
-    assert [node.kind for node in dag.nodes] == ["tool"]
+    assert [node.tool for node in dag.nodes] == ["run_command"]
     assert [node.risk for node in dag.nodes] == ["low"]

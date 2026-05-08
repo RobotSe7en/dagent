@@ -173,26 +173,14 @@ def _dag_agent_json() -> str:
             "nodes": [
                 {
                     "id": "answer",
-                    "title": "Answer",
-                    "goal": "Answer the user.",
-                    "kind": "tool",
                     "tool": "echo",
                     "args": {"text": "ok"},
-                    "agent": None,
-                    "tools": ["echo"],
-                    "skills": [],
                     "boundary": {
                         "mode": "read_only",
                         "allowed_paths": [],
-                        "forbidden_tools": [],
                         "allowed_commands": [],
-                        "forbidden_commands": [],
                     },
                     "risk": "low",
-                    "risk_reason": "No risky access.",
-                    "expected_output": "Answer.",
-                    "max_steps": 1,
-                    "timeout_seconds": 30,
                 }
             ],
             "edges": [],

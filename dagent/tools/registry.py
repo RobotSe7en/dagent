@@ -59,3 +59,6 @@ class ToolRegistry:
 
     def names(self) -> set[str]:
         return set(self._tools)
+
+    def all_tools(self) -> list[Tool]:
+        return list(self._tools.values())

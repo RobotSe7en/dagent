@@ -60,9 +60,6 @@ class NodeExecutionRecord(BaseModel):
     dag_id: str
     dag_version: int
     node_id: str
-    node_title: str = ""
-    node_goal: str = ""
-    node_kind: str = "tool"
     tool: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     output: str = ""

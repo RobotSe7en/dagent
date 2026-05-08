@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ast
-import json
 from abc import ABC, abstractmethod
 from uuid import uuid4
 
@@ -26,6 +24,8 @@ class DAGAgent(ABC):
 
     DAG agents propose DAGs. They do not grant final permissions.
     """
+
+    tools: list[Tool] = []
 
     @abstractmethod
     def plan(self, user_request: str, *, task_id: str | None = None) -> DAG:
@@ -111,24 +111,19 @@ def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
 
 
 def _compile_plan_node(node, *, task: str = "") -> DAGNode:
-    tool = node.tool or _infer_missing_tool(node.goal, task)
-    if not tool:
+    if not node.tool:
         raise DAGCreationError(
             f"PlanSpec node '{node.id}' must declare one concrete tool."
         )
-    args = dict(node.args or _infer_args(tool, node.goal, task))
-    boundary = _infer_boundary(tool, args)
-    goal = node.goal or f"Run {tool}."
+    args = dict(node.args)
+    boundary = _infer_boundary(node.tool, args)
 
     return DAGNode(
         id=node.id,
-        goal=goal,
-        tool=tool,
+        tool=node.tool,
         args=args,
         boundary=boundary,
-        risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(tool, boundary),
-        risk_reason=node.review_reason or _risk_reason(tool, boundary),
-        timeout_seconds=120,
+        risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(node.tool, boundary),
     )
 
 
@@ -144,13 +139,10 @@ def _ensure_start_node(
         next_nodes = [
             DAGNode(
                 id=start_id,
-                goal="Mark the beginning of DAG execution.",
                 tool="dag_start",
                 args={},
                 boundary=Boundary(mode="read_only"),
                 risk="low",
-                risk_reason="No-op start marker.",
-                timeout_seconds=30,
             ),
             *next_nodes,
         ]
@@ -206,14 +198,6 @@ def _infer_risk(tool: str | None, boundary: Boundary) -> str:
     return "low"
 
 
-def _risk_reason(tool: str | None, boundary: Boundary) -> str:
-    return f"PlanSpec inferred from tool={tool}, boundary={boundary.mode}."
-
-
-def _title_from_id(node_id: str) -> str:
-    return node_id.replace("_", " ").strip().title() or "Node"
-
-
 def _command_executable(command: str) -> str:
     return command.split(maxsplit=1)[0] if command else ""
 
@@ -224,7 +208,7 @@ def _is_full_dag_payload(payload: dict) -> bool:
     nodes = payload.get("nodes", [])
     return any(
         isinstance(node, dict)
-        and any(key in node for key in {"title", "tools", "boundary", "expected_output"})
+        and any(key in node for key in {"boundary"})
         for node in nodes
     ) if isinstance(nodes, list) else False
 
@@ -277,84 +261,19 @@ def _normalize_tool_nodes(payload: dict) -> None:
     nodes = payload.get("nodes", [])
     if not isinstance(nodes, list):
         return
-    task = str(payload.get("task") or "")
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        goal = str(node.get("goal") or "")
-        explicit_tool = node.get("tool")
-        tool = explicit_tool
+        tool = node.get("tool")
         if not isinstance(tool, str) or not tool.strip():
             tools = node.get("tools")
             if isinstance(tools, list) and len(tools) == 1 and isinstance(tools[0], str):
-                tool = tools[0]
+                node["tool"] = tools[0]
             else:
-                tool = _infer_missing_tool(goal, task)
-        if not tool:
-            node_id = str(node.get("id") or "<unknown>")
-            raise DAGCreationError(
-                f"Full DAG node '{node_id}' must declare one concrete tool."
-            )
-
-        args = node.get("args")
-        if not isinstance(args, dict) or not args:
-            extracted_args = _extract_args_from_goal(goal)
-            inferred_args = _infer_args(tool, goal, task)
-            args = extracted_args or inferred_args
-        node["kind"] = "tool"
-        node["tool"] = tool
-        node["args"] = args
-        tools = node.get("tools")
-        if not isinstance(tools, list) or tool not in tools:
-            node["tools"] = [tool]
-        node["max_steps"] = 1
+                node_id = str(node.get("id") or "<unknown>")
+                raise DAGCreationError(
+                    f"Full DAG node '{node_id}' must declare one concrete tool."
+                )
+        node.setdefault("args", {})
 
 
-def _infer_missing_tool(goal: str, task: str) -> str | None:
-    text = f"{task}\n{goal}".lower()
-    list_file_markers = [
-        "current directory",
-        "working directory",
-        "list files",
-        "what files",
-        "which files",
-        "\u76ee\u5f55",
-        "\u6587\u4ef6",
-        "\u6709\u54ea\u4e9b\u6587\u4ef6",
-        "\u5f53\u524d\u76ee\u5f55",
-    ]
-    write_markers = ["modify", "write", "edit", "\u4fee\u6539", "\u5199\u5165"]
-    if any(marker in text for marker in list_file_markers) and not any(marker in text for marker in write_markers):
-        return "run_command"
-    return None
-
-
-def _infer_args(tool: str | None, goal: str, task: str) -> dict:
-    if tool == "run_command":
-        text = f"{task}\n{goal}".lower()
-        markers = [
-            "current directory",
-            "working directory",
-            "\u5f53\u524d\u76ee\u5f55",
-            "\u6709\u54ea\u4e9b\u6587\u4ef6",
-            "list files",
-        ]
-        if any(marker in text for marker in markers):
-            return {"command": "dir", "cwd": "."}
-    return {}
-
-
-def _extract_args_from_goal(goal: str) -> dict:
-    marker = "arguments:"
-    index = goal.lower().find(marker)
-    if index == -1:
-        return {}
-    candidate = goal[index + len(marker):].strip().rstrip(".")
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError:
-        try:
-            value = ast.literal_eval(candidate)
-        except (SyntaxError, ValueError):
-            return {}
-    return value if isinstance(value, dict) else {}

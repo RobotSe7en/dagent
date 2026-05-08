@@ -10,7 +10,6 @@ from dagent.tools.boundary import (
     enforce_action_allowed,
     enforce_command_allowed,
     enforce_path_allowed,
-    enforce_tool_allowed,
 )
 from dagent.tools.registry import ToolRegistry
 
@@ -38,7 +37,6 @@ class ToolExecutor:
             raise ToolExecutionError(f"Tool '{tool_name}' is not registered.")
 
         try:
-            enforce_tool_allowed(tool_name, boundary)
             enforce_action_allowed(tool.action, boundary)
         except Exception as exc:
             if hasattr(exc, "tool_name"):
