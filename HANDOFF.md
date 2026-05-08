@@ -6,8 +6,9 @@ This file is for continuing work from another session or machine.
 
 - GitHub: https://github.com/RobotSe7en/dagent.git
 - Main branch: `main`
-- Latest commit: `f213fb1 Simplify DAGNode schema, fix runtime bugs, and improve DAG agent tooling`
-- Open PR: `claude/friendly-bhaskara-959f3b` → `main`
+- Current branch: `codex/llm-facing-planspec-dsl`
+- Latest commit on this branch: `6f111ef Improve DAG planning and execution recovery`
+- Previous open PR noted in older handoff: `claude/friendly-bhaskara-959f3b` -> `main`
 
 If GitHub access is unstable, use the local Clash proxy:
 
@@ -36,25 +37,25 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 
 | File | Responsibility |
 |------|----------------|
-| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` — top-level orchestrator, manages DAG lifecycle, execute_dag loop |
+| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` - top-level orchestrator, manages DAG lifecycle, execute_dag loop |
 | `dagent/harness_runtime/agent_loop.py` | Single-agent loop primitive with runtime/control tools |
-| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` — asks LLM to produce PlanSpec DSL, compiles to DAG, with JSON fallback |
-| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` — layer-by-layer DAG execution with placeholder injection |
+| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` - asks LLM to produce PlanSpec DSL, compiles to DAG, with JSON fallback |
+| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` - layer-by-layer DAG execution with placeholder injection |
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
-| `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` — four levels: fast/balanced/careful/manual |
+| `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` - four levels: fast/balanced/careful/manual |
 | `dagent/harness_runtime/trace_store.py` | Immutable trace storage for completed node records |
 | `dagent/harness_runtime/control_tools.py` | `dag_agent` tool schema for top AgentLoop |
 | `dagent/schemas/node.py` | `DAGNode` (6 fields: id, tool, args, boundary, risk, status) and `Boundary` |
 | `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
 | `dagent/tools/registry.py` | `ToolRegistry` with `all_tools()` for dynamic injection |
 | `dagent/tools/boundary.py` | Boundary enforcement (path, command, action checks) |
-| `dagent/api/app.py` | FastAPI app — `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
+| `dagent/api/app.py` | FastAPI app - `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
 | `web/src/App.tsx` | WebUI with Auto/Direct/DAG modes, DAG review dialog |
 | `profiles/dag_agent/agent.md` | DAG agent system prompt |
 
 ## DAGNode Schema (Current)
 
-Every DAG node is a deterministic tool call — no agent nodes, no goals:
+Every DAG node is a deterministic tool call - no agent nodes, no goals:
 
 ```python
 class DAGNode(BaseModel):
@@ -106,10 +107,10 @@ Modes:
 
 - **Tool-node-only DAG**: every node is a direct tool call. Intelligence lives in the replanner, not in node agents.
 - **Placeholder injection (Level 1 replanning)**: `{{node_id.output}}` in args gets replaced with actual output. Happens automatically in `_execute_next_ready_layer`.
-- **Error-path replanning (Level 3)**: on node failure, `_create_next_dag_from_observation` asks the LLM for a revised DAG. Success-path replanning was removed — layers execute as planned without LLM intervention.
+- **Error-path replanning (Level 3)**: on node failure, `_create_next_dag_from_observation` asks the LLM for a revised DAG. Success-path replanning was removed - layers execute as planned without LLM intervention.
 - **dag_start auto-complete**: synthetic start nodes (`tool="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
 - **Dynamic tool injection**: `HarnessRuntime.__init__` injects `dag_executor.tool_executor.registry.all_tools()` into `dag_agent.tools`, which `PromptBuilder` renders as `## Available Tools` in the prompt.
-- **Boundary enforcement**: whitelist approach — `allowed_paths` and `allowed_commands` constrain what each node can access.
+- **Boundary enforcement**: whitelist approach - `allowed_paths` and `allowed_commands` constrain what each node can access.
 
 ## Available Tools (registered in ToolRegistry)
 
@@ -158,7 +159,7 @@ Tests:
 
 ```powershell
 uv run --extra dev pytest
-# Expected: 94 passed, 2 skipped
+# Expected locally on 2026-05-09: 107 passed, 2 skipped
 ```
 
 Frontend type check:
@@ -168,14 +169,15 @@ cd web
 npx tsc --noEmit
 ```
 
-## Recent Changes (this PR)
+## Recent Changes (this branch)
 
-1. **Schema cleanup**: removed 13 obsolete DAGNode fields and all goal-based inference code
-2. **Fixed infinite loop**: `execute_dag` now breaks when no nodes make progress
-3. **Fixed excessive replanning**: removed success-path LLM re-generation that caused continuous replanning
-4. **Start node skip**: `dag_start` nodes auto-complete without execution/approval
-5. **Dynamic tool injection**: tools injected from registry into DAG agent prompt at runtime
-6. **Frontend fix**: thinking blocks no longer split when DAG card arrives mid-stream
+1. **LLM-facing PlanSpec DSL**: DAGAgent now prefers compact DSL output, parses it into PlanSpec/DAG, and keeps JSON as fallback.
+2. **DAG conversation context**: forced DAG mode, auto dag_agent creation, continuation DAGs, and failure replanning now pass recent user/assistant history plus structured DAG execution context.
+3. **Unknown tool feedback**: DAG validation checks node tools against the runtime registry and feeds unknown-tool errors back to DAGAgent for replanning.
+4. **Execution recovery fixes**: failed parallel layers preserve successful sibling results, stale failed trace node ids are ignored after replanning, and failed DAG mode no longer loops through repeated approvals.
+5. **Command failure semantics**: `run_command` now raises `ToolExecutionError` on non-zero exit codes, so DAG traces show `tool_failed`/`node_failed` instead of `tool_completed`.
+6. **WebUI DAG fixes**: completed/failed DAG cards are no longer confirmable, and final assistant output is appended correctly after DAG review/execution.
+7. **File tool safety**: `grep` skips heavy generated directories and caps large result sets.
 
 ## Suggested Next Work
 
