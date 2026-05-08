@@ -42,15 +42,26 @@ from dagent.tools.registry import Tool
 RuntimeMode = Literal["auto", "direct", "dag"]
 
 
+@dataclass
+class PendingToolReview:
+    review_id: str
+    tool_call: ToolCall
+    messages: list[dict[str, Any]]
+    mode: RuntimeMode
+    review_level: ReviewLevel
+    remaining_steps: int
+
+
 @dataclass(frozen=True)
 class HarnessMessageResult:
-    status: Literal["completed", "awaiting_dag_review", "awaiting_change_review", "awaiting_approval", "failed"]
+    status: Literal["completed", "awaiting_dag_review", "awaiting_change_review", "awaiting_approval", "awaiting_tool_review", "failed"]
     message_markdown: str
     dag: DAG | None = None
     run_result: RunResult | None = None
     task_id: str | None = None
     control_events: list[dict[str, Any]] = field(default_factory=list)
     pending_review: PendingReview | None = None
+    pending_tool_review: PendingToolReview | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +108,8 @@ class HarnessRuntime:
         self._active_review_level: ReviewLevel = "balanced"
         self._active_user_message: str = ""
         self._active_continuation_task_id: str | None = None
+        self._pending_tool_review: PendingToolReview | None = None
+        self._conversation_history: list[dict[str, Any]] = []
 
     async def handle_message(
         self,
@@ -150,7 +163,7 @@ class HarnessRuntime:
                 control_events=[_dag_event(record, "dag_created", reason="Forced DAG mode.")],
             )
 
-        messages = self.prompt_builder.build(
+        base_messages = self.prompt_builder.build(
             PromptRequest(
                 profile=self.conversation_profile,
                 task_content="{{ user_message }}",
@@ -160,23 +173,48 @@ class HarnessRuntime:
                 variables={"user_message": message},
             )
         )
+        system_msg = base_messages[0]
+        current_user_msg = base_messages[1]
+        messages = [system_msg, *self._conversation_history, current_user_msg]
         include_dag_agent = mode == "auto"
         self._active_review_level = review_level
         self._active_user_message = message
+        policy = review_policy(review_level)
+        reviewed_tool_names = {
+            tool.name
+            for tool in self.runtime_tools
+            if policy.requires_tool_review(tool.risk)
+        }
+        control_names: set[str] = set(reviewed_tool_names)
+        if include_dag_agent:
+            control_names.add(DAG_AGENT_NAME)
+        extra_tools = [dag_agent_tool_definition()] if include_dag_agent else None
+        has_control = bool(control_names)
         try:
             result = await self.agent_loop.run(
                 "",
                 boundary=Boundary(mode="read_only", allowed_paths=["."]),
                 max_steps=self.max_top_steps,
                 messages=messages,
-                extra_tools=[dag_agent_tool_definition()] if include_dag_agent else None,
-                control_tool_names={DAG_AGENT_NAME} if include_dag_agent else None,
-                control_tool_handler=self._handle_control_tool if include_dag_agent else None,
+                extra_tools=extra_tools,
+                control_tool_names=control_names if has_control else None,
+                control_tool_handler=self._handle_control_tool if has_control else None,
                 on_token=on_token,
                 on_event=on_event,
             )
         finally:
             self._active_user_message = ""
+
+        if result.stop_reason == "pending_tool_review" and self._pending_tool_review is not None:
+            self._pending_tool_review.messages = result.messages
+            self._pending_tool_review.mode = mode
+            self._pending_tool_review.remaining_steps = max(1, self.max_top_steps - result.steps)
+            ptr = self._pending_tool_review
+            return HarnessMessageResult(
+                status="awaiting_tool_review",
+                message_markdown=f"Tool `{ptr.tool_call.name}` requires approval before execution.",
+                pending_tool_review=ptr,
+            )
 
         dag_event = _latest_dag_event(result.control_events)
         return HarnessMessageResult(
@@ -542,7 +580,9 @@ class HarnessRuntime:
                 proposed_dag=proposed,
                 payload={"node_ids": injected_nodes},
             )
-        elif policy.requires_node_execution_review():
+        elif policy.requires_node_execution_review() and any(
+            node.tool != "dag_start" for node in ready_nodes
+        ):
             pending = PendingReview(
                 review_id=f"review_{uuid4().hex}",
                 kind="node_execution",
@@ -647,9 +687,155 @@ class HarnessRuntime:
         record.pending_review = pending
         return pending
 
+    def _handle_tool_review(self, tool_call: ToolCall) -> ControlToolResult:
+        tool = self.agent_loop.tool_executor.registry.get(tool_call.name)
+        risk = tool.risk if tool else "unknown"
+        self._pending_tool_review = PendingToolReview(
+            review_id=f"tool_review_{uuid4().hex}",
+            tool_call=tool_call,
+            messages=[],
+            mode="auto",
+            review_level=self._active_review_level,
+            remaining_steps=self.max_top_steps,
+        )
+        return ControlToolResult(
+            content=f"[PENDING_REVIEW] Tool '{tool_call.name}' (risk={risk}) is awaiting human approval. Execution paused.",
+            stop_reason="pending_tool_review",
+        )
+
+    async def resume_tool_review(
+        self,
+        approved: bool,
+        *,
+        review_level: ReviewLevel | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> HarnessMessageResult:
+        ptr = self._pending_tool_review
+        if ptr is None:
+            raise KeyError("No pending tool review.")
+
+        self._pending_tool_review = None
+        if review_level is not None:
+            ptr.review_level = review_level
+
+        messages = list(ptr.messages)
+        if not approved:
+            denied_content = "[DENIED] The user denied this tool call. Try an alternative approach or ask the user for guidance."
+            _replace_pending_tool_message(messages, ptr.tool_call.id, denied_content)
+            _emit_tool_review_event(on_event, ptr.tool_call, "tool_error", denied_content)
+            policy = review_policy(ptr.review_level)
+            reviewed_tool_names = {
+                tool.name
+                for tool in self.runtime_tools
+                if policy.requires_tool_review(tool.risk)
+            }
+            include_dag_agent = ptr.mode == "auto"
+            control_names: set[str] = set(reviewed_tool_names)
+            if include_dag_agent:
+                control_names.add(DAG_AGENT_NAME)
+            has_control = bool(control_names)
+            self._active_review_level = ptr.review_level
+            try:
+                result = await self.agent_loop.run(
+                    "",
+                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                    max_steps=ptr.remaining_steps,
+                    messages=messages,
+                    extra_tools=[dag_agent_tool_definition()] if include_dag_agent else None,
+                    control_tool_names=control_names if has_control else None,
+                    control_tool_handler=self._handle_control_tool if has_control else None,
+                    on_token=on_token,
+                    on_event=on_event,
+                )
+            finally:
+                self._active_user_message = ""
+
+            if result.stop_reason == "pending_tool_review" and self._pending_tool_review is not None:
+                self._pending_tool_review.messages = result.messages
+                self._pending_tool_review.mode = ptr.mode
+                self._pending_tool_review.remaining_steps = max(1, ptr.remaining_steps - result.steps)
+                new_ptr = self._pending_tool_review
+                return HarnessMessageResult(
+                    status="awaiting_tool_review",
+                    message_markdown=f"Tool `{new_ptr.tool_call.name}` requires approval before execution.",
+                    pending_tool_review=new_ptr,
+                )
+            return HarnessMessageResult(
+                status="completed",
+                message_markdown=result.final_response,
+            )
+
+        is_error = False
+        try:
+            tool_result = self.agent_loop.tool_executor.execute(
+                ptr.tool_call.name,
+                ptr.tool_call.arguments,
+                boundary=Boundary(mode="full", allowed_paths=["."]),
+            )
+        except Exception as exc:
+            tool_result = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+            is_error = True
+
+        _replace_pending_tool_message(messages, ptr.tool_call.id, tool_result)
+        _emit_tool_review_event(
+            on_event, ptr.tool_call,
+            "tool_error" if is_error else "tool_result",
+            tool_result,
+        )
+
+        policy = review_policy(ptr.review_level)
+        reviewed_tool_names = {
+            tool.name
+            for tool in self.runtime_tools
+            if policy.requires_tool_review(tool.risk)
+        }
+        include_dag_agent = ptr.mode == "auto"
+        control_names = set(reviewed_tool_names)
+        if include_dag_agent:
+            control_names.add(DAG_AGENT_NAME)
+        has_control = bool(control_names)
+        self._active_review_level = ptr.review_level
+        try:
+            result = await self.agent_loop.run(
+                "",
+                boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                max_steps=ptr.remaining_steps,
+                messages=messages,
+                extra_tools=[dag_agent_tool_definition()] if include_dag_agent else None,
+                control_tool_names=control_names if has_control else None,
+                control_tool_handler=self._handle_control_tool if has_control else None,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        finally:
+            self._active_user_message = ""
+
+        if result.stop_reason == "pending_tool_review" and self._pending_tool_review is not None:
+            self._pending_tool_review.messages = result.messages
+            self._pending_tool_review.mode = ptr.mode
+            self._pending_tool_review.remaining_steps = max(1, ptr.remaining_steps - result.steps)
+            new_ptr = self._pending_tool_review
+            return HarnessMessageResult(
+                status="awaiting_tool_review",
+                message_markdown=f"Tool `{new_ptr.tool_call.name}` requires approval before execution.",
+                pending_tool_review=new_ptr,
+            )
+
+        dag_event = _latest_dag_event(result.control_events)
+        return HarnessMessageResult(
+            status="awaiting_dag_review" if result.stop_reason == "awaiting_approval" else "completed",
+            message_markdown=result.final_response,
+            dag=dag_event.get("dag") if dag_event else None,
+            run_result=dag_event.get("run_result") if dag_event else None,
+            task_id=dag_event.get("task_id") if dag_event else None,
+            control_events=result.control_events,
+            pending_review=dag_event.get("pending_review") if dag_event else None,
+        )
+
     async def _handle_control_tool(self, tool_call: ToolCall) -> ControlToolResult:
         if tool_call.name != DAG_AGENT_NAME:
-            raise ValueError(f"Unsupported control tool '{tool_call.name}'.")
+            return self._handle_tool_review(tool_call)
 
         request = str(tool_call.arguments.get("request") or "").strip()
         reason = str(tool_call.arguments.get("reason") or "").strip()
@@ -1097,3 +1283,37 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
     return dumped
+
+
+def _emit_tool_review_event(
+    on_event: Any,
+    tool_call: ToolCall,
+    event_type: str,
+    content: str,
+) -> None:
+    if on_event is None:
+        return
+    on_event({
+        "type": event_type,
+        "tool_call_id": tool_call.id,
+        "name": tool_call.name,
+        "arguments": tool_call.arguments,
+        "content": content,
+    })
+
+
+def _replace_pending_tool_message(
+    messages: list[dict[str, Any]],
+    tool_call_id: str,
+    content: str,
+) -> None:
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call_id:
+            messages[i] = {**msg, "content": content}
+            return
+    messages.append({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": content,
+    })

@@ -72,6 +72,7 @@ def register_file_tools(registry: ToolRegistry) -> None:
         handler=write_file,
         action="write",
         path_args=("path",),
+        risk="medium",
         description="Write UTF-8 text to a file.",
         parameters={
             "type": "object",

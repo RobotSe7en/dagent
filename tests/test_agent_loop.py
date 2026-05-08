@@ -176,7 +176,7 @@ def test_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     assert len(provider.requests) == 1
 
 
-def test_agent_loop_enforces_boundary_for_tool_calls(tmp_path: Path) -> None:
+def test_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path: Path) -> None:
     provider = MockProvider(
         [
             ChatResponse(
@@ -187,17 +187,22 @@ def test_agent_loop_enforces_boundary_for_tool_calls(tmp_path: Path) -> None:
                         arguments={"path": "notes.txt", "content": "nope"},
                     )
                 ]
-            )
+            ),
+            ChatResponse(content="Sorry, I can't write files."),
         ]
     )
     loop = make_loop(tmp_path, provider)
 
-    with pytest.raises(BoundaryViolation, match="read_only"):
-        run(
-            loop.run(
-                "Write notes",
-                boundary=Boundary(mode="read_only", allowed_paths=["."]),
-            )
+    result = run(
+        loop.run(
+            "Write notes",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
         )
+    )
+
+    assert result.completed is True
+    tool_msg = result.messages[2]
+    assert tool_msg["role"] == "tool"
+    assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]
 
 

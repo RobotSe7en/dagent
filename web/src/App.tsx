@@ -19,6 +19,7 @@ import {
   Check,
   CircleStop,
   GitBranch,
+  MessageSquarePlus,
   Plus,
   Send,
   SlidersHorizontal,
@@ -26,8 +27,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { resumeDag, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
+import { resetSession, resumeDag, resumeToolReview, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolReview, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -77,7 +78,7 @@ interface ChatMessage {
 type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
-  | { type: 'tool'; event: ToolStreamEvent };
+  | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent };
 
 type RuntimeMode = 'auto' | 'direct' | 'dag';
 
@@ -117,7 +118,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     target: edge.target,
     label: edge.reason,
     animated: dag.status === 'running',
-    style: { stroke: '#2dd4bf', strokeWidth: 1.5, opacity: 0.5 },
+    style: { stroke: '#94a3b8', strokeWidth: 1.5 },
   }));
   return { nodes, edges };
 }
@@ -138,6 +139,7 @@ export function App() {
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [pendingToolReview, setPendingToolReview] = useState<ToolReview | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -270,12 +272,22 @@ export function App() {
   };
 
   const appendToolMessage = (event: ToolStreamEvent) => {
+    if (event.type === 'tool_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
-    updateLastAssistantText((message) => ({
-      ...message,
-      toolEvents: [...(message.toolEvents ?? []), event],
-      timeline: [...(message.timeline ?? []), { type: 'tool', event }],
-    }));
+    updateLastAssistantText((message) => {
+      const toolEvents = [...(message.toolEvents ?? []), event];
+      const timeline = [...(message.timeline ?? [])];
+      if (event.type === 'tool_result' || event.type === 'tool_error') {
+        const idx = findMatchingToolCall(timeline, event.tool_call_id);
+        if (idx !== -1) {
+          const item = timeline[idx] as { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent };
+          timeline[idx] = { ...item, result: event };
+          return { ...message, toolEvents, timeline };
+        }
+      }
+      timeline.push({ type: 'tool', event });
+      return { ...message, toolEvents, timeline };
+    });
   };
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
@@ -356,11 +368,18 @@ export function App() {
           attachDagToLastAssistant(nextDag);
           setReviewOpen(true);
         },
-          onTrace: appendRuntimeTrace,
+        onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
+        onToolReview: (review) => {
+          flushQueuedTokensNow();
+          setPendingToolReview(review);
+        },
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
           flushQueuedTokensNow();
+          if (payload.pending_tool_review) {
+            setPendingToolReview(payload.pending_tool_review);
+          }
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
@@ -418,11 +437,18 @@ export function App() {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
         },
-          onTrace: appendRuntimeTrace,
+        onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
+        onToolReview: (review) => {
+          flushQueuedTokensNow();
+          setPendingToolReview(review);
+        },
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
           flushQueuedTokensNow();
+          if (payload.pending_tool_review) {
+            setPendingToolReview(payload.pending_tool_review);
+          }
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
@@ -448,6 +474,78 @@ export function App() {
       await waitForTokenQueue();
       setStreaming(false);
     }
+  };
+
+  const handleToolReviewDecision = async (approved: boolean) => {
+    if (streaming || !pendingToolReview) return;
+    setPendingToolReview(null);
+    setError(null);
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+    setStreaming(true);
+    const action = approved ? 'approved' : 'denied';
+    appendTrace({ type: 'tool', label: `tool_${action}`, detail: `${pendingToolReview.tool_name} ${action}.`, status: approved ? 'running' : 'failed' });
+
+    try {
+      await resumeToolReview(approved, reviewLevel, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Resumed after tool review.', status: 'running' }),
+        onDag: (nextDag) => {
+          syncDag(nextDag);
+          attachDagToLastAssistant(nextDag);
+        },
+        onTrace: appendRuntimeTrace,
+        onTool: appendToolMessage,
+        onToolReview: (review) => {
+          flushQueuedTokensNow();
+          setPendingToolReview(review);
+        },
+        onToken: enqueueAssistantToken,
+        onDone: (payload) => {
+          flushQueuedTokensNow();
+          if (payload.pending_tool_review) {
+            setPendingToolReview(payload.pending_tool_review);
+          }
+          if (payload.dag) {
+            syncDag(payload.dag);
+            attachDagToLastAssistant(payload.dag);
+            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
+          }
+          updateLastAssistantText((message) => ({
+            ...message,
+            content: message.content || payload.message_markdown,
+            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
+          }));
+          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Completed after tool review.', status: 'completed' });
+        },
+        onError: (message) => {
+          setError(message);
+          appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+        },
+      });
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setError(message);
+    } finally {
+      await waitForTokenQueue();
+      setStreaming(false);
+    }
+  };
+
+  const newChat = () => {
+    if (streaming) return;
+    resetSession().catch(() => {});
+    setMessages([{
+      role: 'assistant',
+      content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
+    }]);
+    setDraft('');
+    syncDag(emptyDag);
+    setTrace([]);
+    setError(null);
+    setReviewOpen(false);
+    setPendingToolReview(null);
+    tokenQueueRef.current = [];
+    stopTokenTimer();
   };
 
   return (
@@ -522,6 +620,14 @@ export function App() {
               </div>
             ))}
           </div>
+          {pendingToolReview ? (
+            <ToolReviewPanel
+              review={pendingToolReview}
+              onApprove={() => handleToolReviewDecision(true)}
+              onDeny={() => handleToolReviewDecision(false)}
+              disabled={streaming}
+            />
+          ) : null}
           <div className="composer">
             <textarea
               value={draft}
@@ -531,14 +637,19 @@ export function App() {
               }}
               placeholder="Ask for a plan, review, or execution result"
             />
-            <div className="composer-actions">
-              <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
-                <CircleStop size={18} />
+            <div className="composer-bar">
+              <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
+                <MessageSquarePlus size={18} />
               </button>
-              <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
-                <Send size={17} />
-                Send
-              </button>
+              <div className="composer-actions">
+                <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
+                  <CircleStop size={18} />
+                </button>
+                <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
+                  <Send size={17} />
+                  Send
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -574,6 +685,49 @@ function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   );
 }
 
+function ToolReviewPanel({
+  review,
+  onApprove,
+  onDeny,
+  disabled,
+}: {
+  review: ToolReview;
+  onApprove: () => void;
+  onDeny: () => void;
+  disabled: boolean;
+}) {
+  const riskPill = review.risk !== 'unknown' ? riskClass[review.risk as RiskLevel] : '';
+  return (
+    <div className="tool-review-panel">
+      <div className="tool-review-head">
+        <Wrench size={16} />
+        <strong>Tool Review Required</strong>
+        {riskPill ? <span className={`risk-pill ${riskPill}`}>{review.risk}</span> : null}
+      </div>
+      <div className="tool-review-body">
+        <div className="tool-review-field">
+          <span className="tool-review-label">Tool</span>
+          <code>{review.tool_name}</code>
+        </div>
+        <div className="tool-review-field">
+          <span className="tool-review-label">Arguments</span>
+          <pre>{JSON.stringify(review.arguments, null, 2)}</pre>
+        </div>
+      </div>
+      <div className="tool-review-actions">
+        <button className="danger-button secondary-button" onClick={onDeny} disabled={disabled} type="button">
+          <X size={14} />
+          Deny
+        </button>
+        <button className="primary-button" onClick={onApprove} disabled={disabled} type="button">
+          <Check size={14} />
+          Approve
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MessageTimeline({
   message,
   loading,
@@ -591,7 +745,7 @@ function MessageTimeline({
     <div className="message-timeline">
       {message.timeline.map((item, index) =>
         item.type === 'tool' ? (
-          <ToolEventCard key={`${item.event.tool_call_id}-${item.event.type}-${index}`} event={item.event} />
+          <ToolEventCard key={`${item.event.tool_call_id}-${index}`} event={item.event} result={item.result} />
         ) : item.type === 'dag' ? (
           <DagSummaryCard
             key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
@@ -631,15 +785,24 @@ function appendTextTimeline(
 ): MessageTimelineItem[] {
   if (!content) return timeline ?? [];
   const items = [...(timeline ?? [])];
+  const last = items[items.length - 1];
+  if (last?.type === 'text') {
+    items[items.length - 1] = { type: 'text', content: `${last.content}${content}` };
+    return items;
+  }
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
-    if (item.type === 'text') {
+    if (item.type === 'text' && hasUnclosedThink(item.content)) {
       items[i] = { type: 'text', content: `${item.content}${content}` };
       return items;
     }
   }
   items.push({ type: 'text', content });
   return items;
+}
+
+function hasUnclosedThink(content: string): boolean {
+  return (content.match(/<think>/g) || []).length > (content.match(/<\/think>/g) || []).length;
 }
 
 function ensureTextTimeline(
@@ -728,20 +891,52 @@ function DagSummaryCard({
   );
 }
 
-function ToolEventCard({ event }: { event: ToolStreamEvent }) {
-  const isCall = event.type === 'tool_call';
-  const isError = event.type === 'tool_error';
-  const detail = isCall ? formatToolArguments(event.arguments) : event.content || '';
+function hasNonZeroExitCode(content?: string): boolean {
+  if (!content) return false;
+  const match = content.match(/exit_code=(\d+)/);
+  return match !== null && match[1] !== '0';
+}
+
+function ToolEventCard({ event, result }: { event: ToolStreamEvent; result?: ToolStreamEvent }) {
+  const resultContent = result?.content || (event.type !== 'tool_call' ? event.content || '' : '');
+  const isError = result?.type === 'tool_error' || event.type === 'tool_error';
+  const isExitError = !isError && hasNonZeroExitCode(resultContent);
+  const showError = isError || isExitError;
+  const statusLabel = result
+    ? (isError ? 'failed' : isExitError ? 'error' : 'done')
+    : (event.type === 'tool_call' ? 'running' : event.type === 'tool_error' ? 'failed' : 'done');
+  const argsText = formatToolArguments(event.arguments);
   return (
-    <details className={`tool-event-card ${event.type}`}>
+    <details className={`tool-event-card ${showError ? 'tool_error' : event.type}`}>
       <summary className="tool-event-head">
         <Wrench size={14} />
         <strong>{event.name}</strong>
-        <span>{isCall ? 'calling' : isError ? 'failed' : 'result'}</span>
+        <span>{statusLabel}</span>
       </summary>
-      {detail ? <pre>{clipText(detail, 1200)}</pre> : null}
+      {argsText ? (
+        <div className="tool-section">
+          <div className="tool-section-label">Args</div>
+          <pre>{clipText(argsText, 800)}</pre>
+        </div>
+      ) : null}
+      {resultContent ? (
+        <div className="tool-section">
+          <div className="tool-section-label">{showError ? 'Error' : 'Result'}</div>
+          <pre>{clipText(resultContent, 1200)}</pre>
+        </div>
+      ) : null}
     </details>
   );
+}
+
+function findMatchingToolCall(timeline: MessageTimelineItem[], toolCallId: string): number {
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    const item = timeline[i];
+    if (item.type === 'tool' && item.event.tool_call_id === toolCallId && item.event.type === 'tool_call') {
+      return i;
+    }
+  }
+  return -1;
 }
 
 function TraceQueue({ trace }: { trace: TraceEvent[] }) {
@@ -852,8 +1047,8 @@ function DagReviewDialog({
               fitView
               fitViewOptions={{ padding: 0.2 }}
             >
-              <Background color="#1e2736" gap={20} />
-              <MiniMap pannable zoomable nodeColor="#2dd4bf" maskColor="rgba(11,15,20,0.7)" />
+              <Background color="#e2e4ea" gap={20} />
+              <MiniMap pannable zoomable nodeColor="#4f6ef7" maskColor="rgba(245,246,248,0.7)" />
               <Controls />
             </ReactFlow>
           </section>

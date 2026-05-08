@@ -1,12 +1,17 @@
-import type { Dag, ReviewLevel, ToolStreamEvent, TraceEvent } from './types';
+import type { Dag, ReviewLevel, ToolReview, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
+
+export async function resetSession(): Promise<void> {
+  await fetch(`${API_BASE}/session/reset`, { method: 'POST' });
+}
 
 interface DonePayload {
   status?: string;
   task_id: string | null;
   dag: Dag | null;
   pending_review?: { kind: string; message: string } | null;
+  pending_tool_review?: ToolReview | null;
   message_markdown: string;
 }
 
@@ -28,6 +33,7 @@ export async function streamTask(
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
+    onToolReview?: (review: ToolReview) => void;
     onToken?: (content: string) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
@@ -62,6 +68,7 @@ export async function streamTask(
       if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
         handlers.onTool?.(event);
       }
+      if (event.type === 'tool_review') handlers.onToolReview?.(event.tool_review);
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
@@ -78,6 +85,7 @@ export async function resumeDag(
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
+    onToolReview?: (review: ToolReview) => void;
     onToken?: (content: string) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
@@ -94,6 +102,31 @@ export async function resumeDag(
   await readStream(response, handlers);
 }
 
+export async function resumeToolReview(
+  approved: boolean,
+  reviewLevel: ReviewLevel,
+  handlers: {
+    onStatus?: (status: string) => void;
+    onDag?: (dag: Dag) => void;
+    onTrace?: (event: TraceEvent) => void;
+    onTool?: (event: ToolStreamEvent) => void;
+    onToolReview?: (review: ToolReview) => void;
+    onToken?: (content: string) => void;
+    onDone?: (payload: DonePayload) => void;
+    onError?: (message: string) => void;
+  },
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/messages/resume-tool`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved, review_level: reviewLevel }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage(response));
+  }
+  await readStream(response, handlers);
+}
+
 async function readStream(
   response: Response,
   handlers: {
@@ -101,6 +134,7 @@ async function readStream(
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
+    onToolReview?: (review: ToolReview) => void;
     onToken?: (content: string) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
@@ -127,6 +161,7 @@ async function readStream(
       if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
         handlers.onTool?.(event);
       }
+      if (event.type === 'tool_review') handlers.onToolReview?.(event.tool_review);
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
