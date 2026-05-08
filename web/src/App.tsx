@@ -29,10 +29,10 @@ import {
 import { resumeDag, streamTask } from './api';
 import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
-const riskTone: Record<RiskLevel, string> = {
-  low: 'bg-emerald-100 text-emerald-800 border-emerald-300',
-  medium: 'bg-amber-100 text-amber-900 border-amber-300',
-  high: 'bg-rose-100 text-rose-800 border-rose-300',
+const riskClass: Record<RiskLevel, string> = {
+  low: 'risk-low',
+  medium: 'risk-medium',
+  high: 'risk-high',
 };
 
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
@@ -87,18 +87,20 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
     const risk = item.risk ?? 'low';
+    const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
       position: { x: 80 + depth * 300, y: 70 + lane * 170 },
+      className: `status-${status}`,
       data: {
         label: (
-          <div className="dag-node">
+          <div className={`dag-node dag-node-status-${status}`}>
             <div className="dag-node-top">
               <span title={item.id}>{item.id}</span>
-              <span className={`risk-pill ${riskTone[risk]}`}>{risk}</span>
+              <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
             </div>
             <div className="dag-node-tools" title={item.tool ? JSON.stringify(item.args) : ''}>
               {item.tool ? `${item.tool} ${JSON.stringify(item.args)}` : 'tool not set'}
@@ -115,7 +117,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     target: edge.target,
     label: edge.reason,
     animated: dag.status === 'running',
-    style: { stroke: '#44736f', strokeWidth: 2 },
+    style: { stroke: '#2dd4bf', strokeWidth: 1.5, opacity: 0.5 },
   }));
   return { nodes, edges };
 }
@@ -698,7 +700,7 @@ function splitThinking(content: string): Array<{ type: 'answer' | 'think'; conte
 }
 
 function StatusBadge({ status }: { status: Dag['status'] }) {
-  return <span className="status-badge">{status}</span>;
+  return <span className="status-badge" data-status={status}>{status}</span>;
 }
 
 function DagSummaryCard({
@@ -850,8 +852,8 @@ function DagReviewDialog({
               fitView
               fitViewOptions={{ padding: 0.2 }}
             >
-              <Background color="#d4dad5" gap={18} />
-              <MiniMap pannable zoomable nodeColor="#44736f" maskColor="rgba(247,248,245,.68)" />
+              <Background color="#1e2736" gap={20} />
+              <MiniMap pannable zoomable nodeColor="#2dd4bf" maskColor="rgba(11,15,20,0.7)" />
               <Controls />
             </ReactFlow>
           </section>
