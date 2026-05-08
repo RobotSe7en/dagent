@@ -4,19 +4,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: '#172029',
-        panel: '#f7f8f5',
-        line: '#d9ded7',
-        moss: '#5e7f67',
-        berry: '#8b4f6f',
-        amber: '#c18b3b',
-        cyan: '#327a8d',
+        ink: '#e2e8f0',
+        panel: '#131920',
+        line: '#232e3c',
+        moss: '#22c55e',
+        berry: '#a78bfa',
+        amber: '#f59e0b',
+        cyan: '#2dd4bf',
       },
       boxShadow: {
-        soft: '0 12px 30px rgba(23, 32, 41, 0.08)',
+        soft: '0 12px 30px rgba(0, 0, 0, 0.3)',
       },
     },
   },
   plugins: [],
 };
-
