@@ -1,13 +1,13 @@
-﻿# dagent Handoff
+# dagent Handoff
 
-This file is for continuing work from another Codex session or machine.
+This file is for continuing work from another session or machine.
 
 ## Repository
 
 - GitHub: https://github.com/RobotSe7en/dagent.git
-- Local project root expected by current work: `dagent/`
 - Main branch: `main`
-- Latest known commit when this handoff was written: `b751ea8 Remove legacy runtime packages`
+- Latest commit: `f213fb1 Simplify DAGNode schema, fix runtime bugs, and improve DAG agent tooling`
+- Open PR: `claude/friendly-bhaskara-959f3b` → `main`
 
 If GitHub access is unstable, use the local Clash proxy:
 
@@ -15,53 +15,65 @@ If GitHub access is unstable, use the local Clash proxy:
 git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push
 ```
 
-## Current Architecture
-
-The project has been refactored to use a single core runtime package:
+## Architecture
 
 ```text
 dagent/
-  api/              FastAPI API
+  api/              FastAPI API (SSE streaming)
   harness_runtime/  core runtime, agent loop, DAG creation/execution/review/trace
   providers/        OpenAI-compatible and mock providers
-  schemas/          DAG, node, edge, trace, feedback schemas
-  state/            prompt assembly
-  tools/            registry, executor, file tools, boundaries
-profiles/           editable agent profiles
-web/                React/Vite UI
+  schemas/          DAG, node, edge, trace schemas
+  state/            prompt assembly (PromptBuilder)
+  tools/            registry, executor, file tools, boundary enforcement
+profiles/           editable agent profiles (Markdown/YAML)
+web/                React + Vite + Tailwind frontend
 tests/              pytest suite
 ```
 
-Legacy `dagent/harness/` and `dagent/runtime/` directories were removed. Use imports from `dagent.harness_runtime`.
+Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dagent/runtime/`.
 
-Important files:
+### Core Files
 
-- `dagent/harness_runtime/runtime.py`
-  - `HarnessRuntime`
-  - top-level conversation-first entrypoint
-  - runs the top AgentLoop and handles `dag_agent`
-- `dagent/harness_runtime/agent_loop.py`
-  - single-agent loop primitive
-  - supports runtime tools and optional control tools
-- `dagent/harness_runtime/control_tools.py`
-  - `dag_agent` tool schema
-- `dagent/harness_runtime/dag_agent.py`
-  - DAG agent implementation
-  - exports `DAGAgent`, `LLMDAGAgent`
-- `dagent/harness_runtime/dag_executor.py`
-  - executes approved DAGs using node AgentLoops without `dag_agent`
-- `dagent/api/app.py`
-  - FastAPI app
-  - `/messages/stream` is the default conversation-first API
-  - `/tasks/stream` remains as a force-DAG compatibility path
-- `web/src/App.tsx`
-  - WebUI with `Auto | Direct | DAG` modes
-- `web/src/api.ts`
-  - frontend API client
+| File | Responsibility |
+|------|----------------|
+| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` — top-level orchestrator, manages DAG lifecycle, execute_dag loop |
+| `dagent/harness_runtime/agent_loop.py` | Single-agent loop primitive with runtime/control tools |
+| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` — asks LLM to produce PlanSpec JSON, compiles to DAG |
+| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` — layer-by-layer DAG execution with placeholder injection |
+| `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
+| `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` — four levels: fast/balanced/careful/manual |
+| `dagent/harness_runtime/trace_store.py` | Immutable trace storage for completed node records |
+| `dagent/harness_runtime/control_tools.py` | `dag_agent` tool schema for top AgentLoop |
+| `dagent/schemas/node.py` | `DAGNode` (6 fields: id, tool, args, boundary, risk, status) and `Boundary` |
+| `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
+| `dagent/tools/registry.py` | `ToolRegistry` with `all_tools()` for dynamic injection |
+| `dagent/tools/boundary.py` | Boundary enforcement (path, command, action checks) |
+| `dagent/api/app.py` | FastAPI app — `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
+| `web/src/App.tsx` | WebUI with Auto/Direct/DAG modes, DAG review dialog |
+| `profiles/dag_agent/agent.md` | DAG agent system prompt |
+
+## DAGNode Schema (Current)
+
+Every DAG node is a deterministic tool call — no agent nodes, no goals:
+
+```python
+class DAGNode(BaseModel):
+    id: str
+    tool: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    boundary: Boundary = Field(default_factory=Boundary)
+    risk: RiskLevel = "low"           # low | medium | high
+    status: NodeStatus = "planned"    # planned | ready | running | blocked_permission | completed | failed | skipped
+
+class Boundary(BaseModel):
+    mode: BoundaryMode = "read_only"  # read_only | write_limited | full
+    allowed_paths: list[str] = []
+    allowed_commands: list[str] = []
+```
+
+Removed fields (do NOT reintroduce): `risk_reason`, `title`, `goal`, `kind`, `agent`, `tools`, `skills`, `expected_output`, `max_steps`, `timeout_seconds`, `forbidden_tools`, `forbidden_commands`.
 
 ## Runtime Flow
-
-The intended architecture is:
 
 ```mermaid
 flowchart TD
@@ -70,14 +82,14 @@ flowchart TD
 
   A -->|"direct answer"| O["Return to user"]
   A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_agent"| D["Create DAG"]
+  A -->|"dag_agent"| D["LLMDAGAgent"]
 
   D -->|"review required"| UI["Return DAG for human review"]
-  D -->|"approved/auto safe"| E["DAGExecutor"]
+  D -->|"auto approved (low risk)"| E["DAGExecutor"]
 
-  UI -->|"approve"| E
+  UI -->|"approve/edit"| E
 
-  E --> N["Node AgentLoop without dag_agent"]
+  E -->|"layer-by-layer"| N["execute_tool_node"]
   N --> T
 
   E --> DR["DAG result as tool output"]
@@ -86,15 +98,34 @@ flowchart TD
 
 Modes:
 
-- `auto`: top AgentLoop may call `dag_agent` when the task needs complex DAG orchestration.
-- `direct`: top AgentLoop cannot call `dag_agent`; no DAG should be created.
-- `dag`: bypasses ordinary tool choice and invokes DAG planning directly.
+- `auto`: top AgentLoop may call `dag_agent` when the task needs orchestration.
+- `direct`: top AgentLoop cannot call `dag_agent`; no DAG created.
+- `dag`: bypasses tool choice, invokes DAG planning directly.
+
+### Key Design Decisions
+
+- **Tool-node-only DAG**: every node is a direct tool call. Intelligence lives in the replanner, not in node agents.
+- **Placeholder injection (Level 1 replanning)**: `{{node_id.output}}` in args gets replaced with actual output. Happens automatically in `_execute_next_ready_layer`.
+- **Error-path replanning (Level 3)**: on node failure, `_create_next_dag_from_observation` asks the LLM for a revised DAG. Success-path replanning was removed — layers execute as planned without LLM intervention.
+- **dag_start auto-complete**: synthetic start nodes (`tool="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
+- **Dynamic tool injection**: `HarnessRuntime.__init__` injects `dag_executor.tool_executor.registry.all_tools()` into `dag_agent.tools`, which `PromptBuilder` renders as `## Available Tools` in the prompt.
+- **Boundary enforcement**: whitelist approach — `allowed_paths` and `allowed_commands` constrain what each node can access.
+
+## Available Tools (registered in ToolRegistry)
+
+| Tool | Action | Description |
+|------|--------|-------------|
+| `dag_start` | read | No-op start marker for connecting root nodes |
+| `read_file` | read | Read a UTF-8 text file |
+| `write_file` | write | Write UTF-8 text to a file |
+| `grep` | read | Search files for a regex pattern |
+| `run_command` | read/write | Run a shell command with boundary checks |
+
+Tools are dynamically injected into the DAG agent prompt. Do NOT hardcode tool names in profile files.
 
 ## Model Configuration
 
-Config is in `config.yaml`.
-
-Current provider:
+Config in `config.yaml`:
 
 ```yaml
 provider:
@@ -103,124 +134,61 @@ provider:
   api_key_env: "MINIMAX_API_KEY"
 ```
 
-The key lives in `.env` as `MINIMAX_API_KEY=...`; `.env` is ignored by git.
+Key lives in `.env` as `MINIMAX_API_KEY=...`; `.env` is gitignored. Do not commit secrets.
 
-Do not commit secrets.
+## Running
 
-## Profiles
-
-Profiles are Markdown/YAML based and live in `profiles/`.
-
-Currently important:
-
-- `profiles/conversation/`
-  - top-level conversation agent
-  - tells the model to answer directly for simple conversations/simple tools/short serial tasks
-  - only use `dag_agent` for complex orchestration
-- `profiles/dag_agent/`
-  - used by `LLMDAGAgent` in `dag_agent.py`
-- `profiles/dag_reviewer/`
-- `profiles/feedback_learner/`
-
-## API
-
-Start backend:
+Backend:
 
 ```powershell
 uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
 ```
 
-Health:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8001/health -UseBasicParsing
-```
-
-Conversation-first stream:
-
-```powershell
-$body = @{ message = "娴ｇ姴銈?; mode = "auto" } | ConvertTo-Json
-Invoke-WebRequest -Uri http://127.0.0.1:8001/messages/stream -Method Post -ContentType "application/json" -Body $body -UseBasicParsing
-```
-
-Expected for simple greetings: direct answer and `"dag": null`.
-
-## WebUI
-
-Frontend is in `web/`.
-
-Install/build:
+Frontend dev:
 
 ```powershell
 cd web
 npm install
-npm run build
-```
-
-Dev server:
-
-```powershell
 $env:VITE_API_TARGET="http://127.0.0.1:8001"
 npm run dev
+# Open http://127.0.0.1:5173
 ```
 
-Open:
-
-```text
-http://127.0.0.1:5173
-```
-
-The WebUI has `Auto | Direct | DAG` mode buttons.
-
-## Verification
-
-Run Python tests:
+Tests:
 
 ```powershell
 uv run --extra dev pytest
+# Expected: 94 passed, 2 skipped
 ```
 
-Expected at this handoff:
-
-```text
-42 passed, 2 skipped
-```
-
-Run frontend build:
+Frontend type check:
 
 ```powershell
 cd web
-npm run build
+npx tsc --noEmit
 ```
 
-## Current Git State At Handoff
+## Recent Changes (this PR)
 
-The latest pushed work includes:
-
-- `47071e7 Add conversation-first harness runtime`
-- `8effa4d Merge runtime modules into harness_runtime`
-- `b751ea8 Remove legacy runtime packages`
-
-Before continuing:
-
-```powershell
-git pull
-git status --branch --short
-```
+1. **Schema cleanup**: removed 13 obsolete DAGNode fields and all goal-based inference code
+2. **Fixed infinite loop**: `execute_dag` now breaks when no nodes make progress
+3. **Fixed excessive replanning**: removed success-path LLM re-generation that caused continuous replanning
+4. **Start node skip**: `dag_start` nodes auto-complete without execution/approval
+5. **Dynamic tool injection**: tools injected from registry into DAG agent prompt at runtime
+6. **Frontend fix**: thinking blocks no longer split when DAG card arrives mid-stream
 
 ## Suggested Next Work
 
-High-value next steps:
+- Add `list_files` / `list_directory` as a proper registered tool (currently uses `run_command` + `dir`)
+- Implement Level 2 replanning (light local param adjustment between layers, without full LLM re-generation)
+- Add persistent session/run storage (currently in-memory)
+- Improve trace events for top AgentLoop tool calls
+- Add WebUI node execution status indicators (running/completed/failed coloring)
+- Install `gh` CLI for PR automation (`winget install GitHub.cli`)
 
-- Improve `dag_agent` return/resume behavior after user approves a review-required DAG, so DAG result can be injected back into top AgentLoop and summarized automatically.
-- Add persistent session/run storage instead of current in-memory API state.
-- Add trace events for top AgentLoop tool calls, not only DAG executor traces.
-- Improve WebUI display for direct conversation traces and `dag_agent` control events.
-- Add API tests for `dag_agent` mode and runtime-created DAG approve/execute flow.
+## Notes
 
-## Notes For Future Codex
-
-- Use `apply_patch` for code edits.
-- Prefer `uv run --extra dev pytest` and `npm run build` before committing.
-- Do not reintroduce `dagent/harness/` or `dagent/runtime/`; the core package is `dagent/harness_runtime/`.
-- The class names `LLMDAGAgent`, and `DAGAgent` are the canonical DAG agent names.
+- Use `uv run --extra dev pytest` and `npx tsc --noEmit` before committing.
+- Do not reintroduce `dagent/harness/` or `dagent/runtime/`.
+- Canonical class names: `LLMDAGAgent`, `DAGAgent`, `HarnessRuntime`, `DAGExecutor`.
+- `PlanNodeSpec` fields: `id`, `tool`, `args`, `depends_on`, `risk`. No `goal`.
