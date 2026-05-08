@@ -57,6 +57,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     events = _sse_events(response.text)
     event_types = [event["type"] for event in events]
     assert "dag" in event_types
+    assert "token" not in event_types
     assert event_types[-1] == "done"
     assert events[-1]["status"] == "awaiting_dag_review"
     assert events[-1]["dag"]["status"] == "review_required"

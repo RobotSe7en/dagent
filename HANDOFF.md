@@ -38,7 +38,7 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 |------|----------------|
 | `dagent/harness_runtime/runtime.py` | `HarnessRuntime` — top-level orchestrator, manages DAG lifecycle, execute_dag loop |
 | `dagent/harness_runtime/agent_loop.py` | Single-agent loop primitive with runtime/control tools |
-| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` — asks LLM to produce PlanSpec JSON, compiles to DAG |
+| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` — asks LLM to produce PlanSpec DSL, compiles to DAG, with JSON fallback |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` — layer-by-layer DAG execution with placeholder injection |
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
 | `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` — four levels: fast/balanced/careful/manual |

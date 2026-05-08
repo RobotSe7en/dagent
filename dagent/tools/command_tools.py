@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from dagent.tools.executor import ToolExecutionError
 from dagent.tools.registry import ToolRegistry
 
 
@@ -26,11 +27,14 @@ def run_command(
         for part in [result.stdout.strip(), result.stderr.strip()]
         if part
     )
-    return (
+    formatted = (
         f"exit_code={result.returncode}\n{output}"
         if output
         else f"exit_code={result.returncode}"
     )
+    if result.returncode != 0:
+        raise ToolExecutionError(formatted)
+    return formatted
 
 
 def register_command_tools(registry: ToolRegistry) -> None:

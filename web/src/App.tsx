@@ -814,8 +814,10 @@ function ensureTextTimeline(
   content: string,
 ): MessageTimelineItem[] {
   if (!content) return timeline ?? [];
-  if ((timeline ?? []).some((item) => item.type === 'text' && item.content.trim())) {
-    return timeline ?? [];
+  const items = timeline ?? [];
+  const last = items[items.length - 1];
+  if (last?.type === 'text' && last.content.trim()) {
+    return items;
   }
   return appendTextTimeline(timeline, content);
 }

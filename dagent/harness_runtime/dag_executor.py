@@ -70,6 +70,7 @@ class DAGExecutor:
         self.tool_executor = tool_executor or getattr(agent_loop, "tool_executor", None)
         self.trace_recorder = trace_recorder or TraceRecorder()
         self.trace_store = trace_store or TraceStore()
+        self.partial_node_results: dict[str, NodeExecutionResult] = {}
 
     async def execute(
         self,
@@ -123,6 +124,7 @@ class DAGExecutor:
         returned node records and patch the pending DAG before the next call.
         """
         self.trace_recorder = TraceRecorder()
+        self.partial_node_results = {}
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self.apply_risk_overrides(normalized)
@@ -172,6 +174,10 @@ class DAGExecutor:
             ],
             return_exceptions=True,
         )
+        for result in batch_results:
+            if isinstance(result, NodeExecutionResult):
+                node_results[result.node_id] = result
+
         for node, result in zip(pending_nodes, batch_results):
             if isinstance(result, PermissionBlocked):
                 node_results[result.node_result.node_id] = result.node_result
@@ -196,8 +202,8 @@ class DAGExecutor:
             if isinstance(result, Exception):
                 dag.status = "failed"
                 self.trace_recorder.record("dag_failed", dag_id=dag.dag_id)
+                self.partial_node_results = dict(node_results)
                 raise result
-            node_results[result.node_id] = result
         return None
 
     def normalize(self, dag: DAG) -> DAG:

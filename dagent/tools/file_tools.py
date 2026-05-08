@@ -9,6 +9,17 @@ from dagent.tools.command_tools import register_command_tools
 from dagent.tools.registry import ToolRegistry
 
 
+GREP_EXCLUDED_DIRS = {
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    "dist",
+    "node_modules",
+}
+GREP_MAX_MATCHES = 200
+
+
 def read_file(path: str | Path) -> str:
     return Path(path).read_text(encoding="utf-8", errors="replace")
 
@@ -23,7 +34,10 @@ def write_file(path: str | Path, content: str) -> str:
 def grep(path: str | Path, pattern: str) -> str:
     root = Path(path)
     matcher = re.compile(pattern)
-    files = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+    files = [root] if root.is_file() else [
+        p for p in root.rglob("*")
+        if p.is_file() and not any(part in GREP_EXCLUDED_DIRS for part in p.parts)
+    ]
     matches: list[str] = []
 
     for file_path in files:
@@ -34,6 +48,9 @@ def grep(path: str | Path, pattern: str) -> str:
         for line_number, line in enumerate(lines, start=1):
             if matcher.search(line):
                 matches.append(f"{file_path}:{line_number}:{line}")
+                if len(matches) >= GREP_MAX_MATCHES:
+                    matches.append(f"[TRUNCATED] grep stopped after {GREP_MAX_MATCHES} matches.")
+                    return "\n".join(matches)
 
     return "\n".join(matches)
 
