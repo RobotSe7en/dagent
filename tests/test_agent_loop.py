@@ -201,21 +201,3 @@ def test_agent_loop_enforces_boundary_for_tool_calls(tmp_path: Path) -> None:
         )
 
 
-def test_agent_loop_hides_forbidden_tools_from_provider(tmp_path: Path) -> None:
-    provider = MockProvider([ChatResponse(content="No tools needed.")])
-    loop = make_loop(tmp_path, provider)
-
-    run(
-        loop.run(
-            "Answer directly",
-            boundary=Boundary(mode="read_only", forbidden_tools=["write_file"]),
-        )
-    )
-
-    exposed_names = {
-        tool_definition["function"]["name"]
-        for tool_definition in provider.requests[0]["tools"]
-    }
-    assert "read_file" in exposed_names
-    assert "grep" in exposed_names
-    assert "write_file" not in exposed_names

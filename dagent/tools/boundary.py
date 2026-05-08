@@ -46,14 +46,6 @@ DEFAULT_READ_ONLY_COMMANDS = {
 }
 
 
-def enforce_tool_allowed(tool_name: str, boundary: Boundary) -> None:
-    if tool_name in boundary.forbidden_tools:
-        raise BoundaryViolation(
-            f"Tool '{tool_name}' is forbidden by boundary.",
-            tool_name=tool_name,
-        )
-
-
 def enforce_action_allowed(action: str, boundary: Boundary) -> None:
     if action in WRITE_ACTIONS and boundary.mode == "read_only":
         raise BoundaryViolation(
@@ -72,12 +64,6 @@ def enforce_command_allowed(command: str, boundary: Boundary) -> None:
     executable = _command_executable(command)
     if not executable:
         raise BoundaryViolation("Command cannot be empty.", command=command)
-
-    if executable in boundary.forbidden_commands or command in boundary.forbidden_commands:
-        raise BoundaryViolation(
-            f"Command '{executable}' is forbidden by boundary.",
-            command=command,
-        )
 
     allowed = boundary.allowed_commands or _default_allowed_commands(boundary)
     if not allowed:

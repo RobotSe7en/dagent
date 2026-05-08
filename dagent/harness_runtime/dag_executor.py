@@ -6,10 +6,9 @@ import asyncio
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
-from dagent.harness_runtime.agent_loop import AgentLoopResult
 from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.trace_recorder import TraceRecorder
 from dagent.harness_runtime.trace_store import TraceStore
@@ -23,19 +22,6 @@ PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response
 
 class DAGExecutionError(RuntimeError):
     """Raised when a DAG cannot be executed safely."""
-
-
-class NodeAgentLoop(Protocol):
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        """Run one DAG node."""
 
 
 @dataclass(frozen=True)
@@ -222,8 +208,6 @@ class DAGExecutor:
             required_risk = self._required_risk_for_node(node)
             if _risk_rank(required_risk) > _risk_rank(node.risk):
                 node.risk = required_risk
-                suffix = f" Executor override: tools/boundary require {required_risk} risk."
-                node.risk_reason = (node.risk_reason + suffix).strip()
 
     async def execute_node(
         self,
@@ -231,71 +215,17 @@ class DAGExecutor:
         dag: DAG,
         completed_results: dict[str, NodeExecutionResult],
     ) -> NodeExecutionResult:
+        if node.tool == "dag_start":
+            node.status = "completed"
+            return NodeExecutionResult(
+                node_id=node.id,
+                final_response="started",
+                completed=True,
+                stop_reason="completed",
+                steps=0,
+            )
         self.trace_recorder.record("node_started", dag_id=dag.dag_id, node_id=node.id)
-        if node.kind == "tool":
-            return self.execute_tool_node(node, dag)
-
-        prompt = _node_prompt(node, completed_results)
-        try:
-            loop_result = await self.agent_loop.run(
-                prompt,
-                boundary=node.boundary,
-                max_steps=node.max_steps,
-                allowed_tools=node.tools,
-            )
-        except BoundaryViolation as exc:
-            request = _permission_request_for_violation(dag, node, exc)
-            self.trace_recorder.record(
-                "permission_requested",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload=request.model_dump(mode="json"),
-            )
-            self.trace_recorder.record(
-                "node_blocked_permission",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={"error": str(exc), "request_id": request.request_id},
-            )
-            raise PermissionBlocked(
-                NodeExecutionResult(
-                    node_id=node.id,
-                    final_response="",
-                    completed=False,
-                    stop_reason="blocked_permission",
-                    steps=0,
-                ),
-                request,
-            ) from exc
-        except Exception as exc:
-            self.trace_recorder.record(
-                "node_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={"error": str(exc)},
-            )
-            raise
-
-        result = NodeExecutionResult(
-            node_id=node.id,
-            final_response=loop_result.final_response,
-            completed=loop_result.completed,
-            stop_reason=loop_result.stop_reason,
-            steps=loop_result.steps,
-        )
-        node.status = "completed" if result.completed else "failed"
-        self._record_tool_trace(dag.dag_id, node.id, loop_result.messages)
-        self.trace_recorder.record(
-            "node_completed" if result.completed else "node_failed",
-            dag_id=dag.dag_id,
-            node_id=node.id,
-            payload={
-                "completed": result.completed,
-                "stop_reason": result.stop_reason,
-                "steps": result.steps,
-            },
-        )
-        return result
+        return self.execute_tool_node(node, dag)
 
     def execute_tool_node(
         self,
@@ -463,7 +393,6 @@ class DAGExecutor:
         medium_tools = {"edit_file", "write_file", "shell"}
         high_tools = {"delete_file", "db_write", "deploy", "send_message"}
         node_tools = [node.tool] if node.tool else []
-        node_tools.extend(node.tools)
 
         if any(tool in medium_tools for tool in node_tools):
             risk = _max_risk(risk, "medium")
@@ -608,20 +537,6 @@ def _find_unresolved_placeholders(value: Any) -> set[str]:
     if isinstance(value, str):
         return set(re.findall(r"{{[^{}]+}}", value))
     return set()
-
-
-def _node_prompt(
-    node: DAGNode,
-    completed_results: dict[str, NodeExecutionResult],
-) -> str:
-    parts = [f"Node goal: {node.goal}"]
-    if node.expected_output:
-        parts.append(f"Expected output: {node.expected_output}")
-    if completed_results:
-        parts.append("Prior node results:")
-        for result in completed_results.values():
-            parts.append(f"- {result.node_id}: {result.final_response}")
-    return "\n".join(parts)
 
 
 def _risk_rank(risk: str) -> int:

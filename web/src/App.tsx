@@ -56,15 +56,10 @@ function normalizeNode(node: DagNode): DagNode {
     boundary: {
       mode: node.boundary?.mode ?? 'read_only',
       allowed_paths: node.boundary?.allowed_paths ?? [],
-      forbidden_tools: node.boundary?.forbidden_tools ?? [],
       allowed_commands: node.boundary?.allowed_commands ?? [],
-      forbidden_commands: node.boundary?.forbidden_commands ?? [],
     },
     risk: node.risk ?? 'low',
-    risk_reason: node.risk_reason ?? '',
     status: node.status ?? 'planned',
-    kind: 'tool',
-    tools: tool ? [tool] : [],
   };
 }
 
@@ -314,12 +309,9 @@ export function App() {
           boundary: {
             mode: 'read_only',
             allowed_paths: [],
-            forbidden_tools: [],
             allowed_commands: [],
-            forbidden_commands: [],
           },
           risk: 'low',
-          risk_reason: 'User added node.',
           status: 'planned',
         }),
       ],
@@ -637,12 +629,14 @@ function appendTextTimeline(
 ): MessageTimelineItem[] {
   if (!content) return timeline ?? [];
   const items = [...(timeline ?? [])];
-  const last = items[items.length - 1];
-  if (last?.type === 'text') {
-    items[items.length - 1] = { ...last, content: `${last.content}${content}` };
-  } else {
-    items.push({ type: 'text', content });
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.type === 'text') {
+      items[i] = { type: 'text', content: `${item.content}${content}` };
+      return items;
+    }
   }
+  items.push({ type: 'text', content });
   return items;
 }
 
@@ -898,9 +892,7 @@ function NodeEditor({
   const boundary = node.boundary ?? {
     mode: 'read_only' as BoundaryMode,
     allowed_paths: [],
-    forbidden_tools: [],
     allowed_commands: [],
-    forbidden_commands: [],
   };
   return (
     <div className="node-editor">
@@ -951,10 +943,6 @@ function NodeEditor({
             onPatch({}, nextEdges);
           }}
         />
-      </label>
-      <label>
-        Review Reason
-        <textarea value={node.risk_reason ?? ''} onChange={(event) => onPatch({ risk_reason: event.target.value })} />
       </label>
       <details className="node-policy-details">
         <summary>Execution Policy</summary>

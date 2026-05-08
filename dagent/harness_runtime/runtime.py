@@ -83,6 +83,11 @@ class HarnessRuntime:
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
+        if (
+            not dag_agent.tools
+            and dag_executor.tool_executor is not None
+        ):
+            dag_agent.tools = dag_executor.tool_executor.registry.all_tools()
         self.auto_execute_approved_dags = auto_execute_approved_dags
         self.max_top_steps = max_top_steps
         self.max_replans = max_replans
@@ -439,53 +444,13 @@ class HarnessRuntime:
                     continue
 
                 traces.extend(result.traces)
+                prev_count = len(record.node_results)
                 record.node_results.update(result.node_results)
                 record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
                 if result.pending_permission_request is not None or result.completed:
                     break
-                if replan_count >= self.max_replans:
-                    continue
-                try:
-                    proposed_dag = await self._create_next_dag_from_observation(
-                        record,
-                        last_error="",
-                        failed_node_id=None,
-                    )
-                    applied = self._apply_next_dag_revision(
-                        record,
-                        proposed_dag,
-                        reason="Revise DAG from completed layer observation.",
-                    )
-                except Exception:
-                    continue
-                pending = applied.pending_review
-                if pending is not None:
-                    traces.append(_review_trace(record.dag.dag_id, pending))
-                    result = RunResult(
-                        dag_id=record.dag.dag_id,
-                        completed=False,
-                        node_results=dict(record.node_results),
-                        traces=traces,
-                    )
+                if len(record.node_results) == prev_count:
                     break
-                traces.append(
-                    _dag_revision_trace_event(
-                        dag_id=record.dag.dag_id,
-                        reason=applied.reason,
-                        changed_node_ids=applied.changed_node_ids,
-                        applied=True,
-                    )
-                )
-                replan_count += 1
-                if record.dag.status == "review_required":
-                    result = RunResult(
-                        dag_id=record.dag.dag_id,
-                        completed=False,
-                        node_results=dict(record.node_results),
-                        traces=traces,
-                    )
-                    break
-                continue
 
             result = RunResult(
                 dag_id=record.dag.dag_id,

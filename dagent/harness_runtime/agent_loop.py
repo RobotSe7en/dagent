@@ -170,8 +170,6 @@ class AgentLoop:
         for name in tool_names:
             if allowed is not None and name not in allowed:
                 continue
-            if name in boundary.forbidden_tools:
-                continue
             tool = self.tool_executor.registry.get(name)
             if tool is None:
                 continue

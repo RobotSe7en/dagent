@@ -99,19 +99,6 @@ def test_absolute_path_cannot_escape_allowed_path(tmp_path: Path) -> None:
         )
 
 
-def test_forbidden_tools_are_blocked(tmp_path: Path) -> None:
-    target = tmp_path / "notes.txt"
-    target.write_text("hello", encoding="utf-8")
-    executor = make_executor(tmp_path)
-
-    with pytest.raises(BoundaryViolation, match="forbidden"):
-        executor.execute(
-            "read_file",
-            {"path": "notes.txt"},
-            boundary=Boundary(mode="read_only", forbidden_tools=["read_file"]),
-        )
-
-
 def test_unregistered_tool_reports_error(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
