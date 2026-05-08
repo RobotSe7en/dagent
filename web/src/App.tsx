@@ -123,6 +123,10 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   return { nodes, edges };
 }
 
+function isDagConfirmable(dag: Dag): boolean {
+  return !['completed', 'failed', 'aborted', 'running'].includes(dag.status);
+}
+
 export function App() {
   const [dag, setDag] = useState<Dag>(emptyDag);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -810,8 +814,10 @@ function ensureTextTimeline(
   content: string,
 ): MessageTimelineItem[] {
   if (!content) return timeline ?? [];
-  if ((timeline ?? []).some((item) => item.type === 'text' && item.content.trim())) {
-    return timeline ?? [];
+  const items = timeline ?? [];
+  const last = items[items.length - 1];
+  if (last?.type === 'text' && last.content.trim()) {
+    return items;
   }
   return appendTextTimeline(timeline, content);
 }
@@ -874,6 +880,7 @@ function DagSummaryCard({
   onOpen: () => void;
 }) {
   const riskyNodes = dag.nodes.filter((node) => node.risk !== 'low').length;
+  const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">
       <div className="dag-summary-head">
@@ -885,7 +892,7 @@ function DagSummaryCard({
         <span>{dag.nodes.length} nodes</span>
         <span>{dag.edges.length} edges</span>
         <span>{riskyNodes} review</span>
-        <span>open flow</span>
+        <span>{actionLabel}</span>
       </div>
     </button>
   );
@@ -1007,6 +1014,7 @@ function DagReviewDialog({
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
 }) {
+  const canConfirm = dag.nodes.length > 0 && isDagConfirmable(dag);
   const selectedNodeLogs = selectedNode
     ? trace.filter((event) => event.node_id === selectedNode.id && (!event.dag_id || event.dag_id === dag.dag_id))
     : [];
@@ -1027,9 +1035,9 @@ function DagReviewDialog({
               <Plus size={16} />
               Add Node
             </button>
-            <button className="primary-button" onClick={onConfirm} disabled={!dag.nodes.length} type="button">
+            <button className="primary-button" onClick={onConfirm} disabled={!canConfirm} type="button">
               <Check size={17} />
-              Confirm & Resume
+              {canConfirm ? 'Confirm & Resume' : 'Completed'}
             </button>
             <button className="icon-button" onClick={onClose} title="Close" type="button">
               <X size={18} />

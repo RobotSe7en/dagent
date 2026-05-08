@@ -47,7 +47,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     runtime = _runtime(provider)
 
     tool_names = {tool.name for tool in runtime.dag_agent.tools}
-    assert tool_names == {"dag_start", "echo", "write_file"}
+    assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
 def test_harness_runtime_direct_message_does_not_create_dag() -> None:
@@ -60,6 +60,83 @@ def test_harness_runtime_direct_message_does_not_create_dag() -> None:
     assert result.message_markdown == "hello"
     assert result.dag is None
     assert runtime.tasks == {}
+
+
+def test_harness_runtime_direct_followup_includes_conversation_history() -> None:
+    provider = MockProvider([
+        ChatResponse(content="The project color is blue."),
+        ChatResponse(content="It is blue."),
+    ])
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Remember that the project color is blue.", mode="direct"))
+    second = run(runtime.handle_message("What color did I mention?", mode="direct"))
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    second_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in second_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert second_messages[1]["content"] == "Remember that the project color is blue."
+    assert second_messages[2]["content"] == "The project color is blue."
+    assert second_messages[3]["content"] == "What color did I mention?"
+
+
+def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
+    provider = MockProvider([
+        ChatResponse(content="The project color is blue."),
+        ChatResponse(content=_dag_agent_json()),
+    ])
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Remember that the project color is blue.", mode="direct"))
+    second = run(runtime.handle_message("Use that color in a DAG task.", mode="dag"))
+
+    assert first.status == "completed"
+    assert second.status == "awaiting_dag_review"
+    dag_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in dag_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert dag_messages[1]["content"] == "Remember that the project color is blue."
+    assert dag_messages[2]["content"] == "The project color is blue."
+    assert "Use that color in a DAG task." in dag_messages[3]["content"]
+
+
+def test_harness_runtime_auto_dag_planning_includes_current_user_message() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="dag_agent",
+                        arguments={
+                            "request": "Create a DAG for it.",
+                            "reason": "Needs reviewable orchestration.",
+                        },
+                    )
+                ]
+            ),
+            ChatResponse(content=_dag_agent_json()),
+        ]
+    )
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Create a DAG that uses the blue project color.", mode="auto"))
+
+    assert result.status == "awaiting_dag_review"
+    dag_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in dag_messages] == ["system", "user", "user"]
+    assert dag_messages[1]["content"] == "Create a DAG that uses the blue project color."
+    assert "Create a DAG for it." in dag_messages[2]["content"]
 
 
 def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
@@ -251,6 +328,45 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
     assert tool_names == ["dag_agent"]
 
 
+def test_harness_runtime_completed_dag_resume_is_idempotent() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(content=_dag_agent_json()),
+            ChatResponse(content="final dag-mode answer"),
+        ]
+    )
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Create a safe DAG", mode="dag"))
+    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+    repeated = run(runtime.resume_dag(first.task_id, resumed.dag))
+
+    assert repeated.status == "completed"
+    assert repeated.message_markdown == "final dag-mode answer"
+    assert repeated.run_result is resumed.run_result
+    assert len(runtime.tasks[first.task_id].runs) == 1
+    assert len(provider.requests) == 2
+
+
+def test_harness_runtime_dag_mode_does_not_summarize_failed_execution_review() -> None:
+    provider = MockProvider([ChatResponse(content=_dag_agent_json(tools=["fail_tool"], text="boom"))])
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Create a failing DAG", mode="dag"))
+    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+
+    assert resumed.status == "awaiting_change_review"
+    assert resumed.pending_review is not None
+    assert resumed.dag is not None
+    assert resumed.dag.status == "paused_for_replan"
+    assert "Node execution failed" in resumed.message_markdown
+    assert not any(
+        "DAG execution observation" in message.get("content", "")
+        for request in provider.requests
+        for message in request["messages"]
+    )
+
+
 def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation() -> None:
     provider = MockProvider(
         [
@@ -350,6 +466,37 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
     assert "Isolated node IDs" in provider.requests[1]["messages"][-1]["content"]
 
 
+def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=(
+                    "task: inspect current directory\n"
+                    "get_current_dir = get_current_dir()\n"
+                )
+            ),
+            ChatResponse(
+                content=(
+                    "task: inspect current directory\n"
+                    "inspect = echo(text=\"use available tools\")\n"
+                )
+            ),
+        ]
+    )
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Where am I?", mode="dag"))
+
+    assert result.status == "awaiting_dag_review"
+    assert result.dag is not None
+    assert result.dag.nodes[0].tool == "echo"
+    assert len(provider.requests) == 2
+    feedback = provider.requests[1]["messages"][-1]["content"]
+    assert "Unknown tool(s): get_current_dir" in feedback
+    assert "Available tools:" in feedback
+    assert "echo" in feedback
+
+
 def _runtime(
     provider: MockProvider,
     *,
@@ -405,6 +552,16 @@ def make_tool_executor() -> ToolExecutor:
                 "content": {"type": "string"},
             },
             "required": ["path"],
+        },
+    )
+    registry.register(
+        name="fail_tool",
+        handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
         },
     )
     return ToolExecutor(registry)

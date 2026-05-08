@@ -15,6 +15,7 @@ from dagent.harness_runtime import (
 from dagent.harness_runtime.dag_validation import DAGValidationError
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
+from dagent.harness_runtime.dag_agent import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 from dagent.tools.boundary import BoundaryViolation
@@ -366,6 +367,61 @@ def test_llm_dag_agent_compiles_compact_plan_spec_into_dag() -> None:
     assert dag.nodes[0].boundary.allowed_commands == []
 
 
+def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
+    provider = MockProvider([
+        ChatResponse(
+            content=(
+                "task: inspect project\n"
+                "start = dag_start()\n"
+                "list_files = run_command(command=\"dir\", cwd=\".\") after start\n"
+                "read_readme = read_file(path=\"README.md\") after list_files\n"
+            )
+        )
+    ])
+    dag_agent = LLMDAGAgent(provider)
+
+    dag = run(dag_agent.aplan("What files are here?", task_id="task_real"))
+
+    assert dag.task_id == "task_real"
+    assert [node.id for node in dag.nodes] == ["start", "list_files", "read_readme"]
+    assert dag.nodes[1].tool == "run_command"
+    assert dag.nodes[1].args == {"command": "dir", "cwd": "."}
+    assert [(edge.source, edge.target) for edge in dag.edges] == [
+        ("start", "list_files"),
+        ("list_files", "read_readme"),
+    ]
+
+
+def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
+    plan = parse_plan_spec_dsl(
+        """
+        PLAN_SPEC
+        task: inspect project
+        inspect = run_command({"command": "dir", "cwd": "."})
+        END_PLAN_SPEC
+        """
+    )
+
+    assert plan.task == "inspect project"
+    assert plan.nodes[0].id == "inspect"
+    assert plan.nodes[0].args == {"command": "dir", "cwd": "."}
+
+
+def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
+    plan = parse_plan_spec_dsl(
+        """
+        <think>The user wants repository inspection.</think>
+        Here is the requested plan.
+        task: inspect project
+        inspect = run_command(command="dir", cwd=".")
+        """
+    )
+
+    assert plan.task == "inspect project"
+    assert plan.nodes[0].id == "inspect"
+    assert plan.nodes[0].args == {"command": "dir", "cwd": "."}
+
+
 def test_llm_dag_agent_rejects_plan_spec_node_without_tool() -> None:
     provider = MockProvider([ChatResponse(content=plan_spec_json_without_tool())])
     dag_agent = LLMDAGAgent(provider)
@@ -542,6 +598,48 @@ def test_harness_runtime_pauses_when_failed_tool_cannot_be_replanned() -> None:
     assert [event.event_type for event in result.traces][-1] == "review_requested"
 
 
+def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> None:
+    initial = DAG(
+        dag_id="dag_parallel_failure",
+        task_id="task_parallel_failure",
+        status="approved",
+        nodes=[
+            _tool_node("start", "dag_start", {}),
+            _tool_node("ok", "echo", {"text": "kept"}),
+            _tool_node("bad_a", "fail_tool", {"text": "a"}),
+            _tool_node("bad_b", "fail_tool", {"text": "b"}),
+        ],
+        edges=[
+            DAGEdge(source="start", target="ok"),
+            DAGEdge(source="start", target="bad_a"),
+            DAGEdge(source="start", target="bad_b"),
+        ],
+    )
+    runtime = runtime_for(
+        dag_agent=LLMDAGAgent(MockProvider([])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_parallel_failure"] = TaskRecord(
+        task_id="task_parallel_failure",
+        user_request="Recover from parallel failure",
+        dag=prepared,
+        review_level="fast",
+    )
+
+    result = run(runtime.execute_dag("task_parallel_failure"))
+    record = runtime.tasks["task_parallel_failure"]
+
+    assert result.completed is False
+    assert result.node_results["ok"].final_response == "echo:kept"
+    assert record.node_results["ok"].final_response == "echo:kept"
+    node_statuses = {node.id: node.status for node in record.dag.nodes}
+    assert node_statuses["ok"] == "completed"
+    assert node_statuses["bad_a"] == "failed"
+    assert record.pending_review is not None
+    assert record.dag.status == "paused_for_replan"
+
+
 def test_harness_runtime_execution_error_review_requires_dag_edit_before_resume() -> None:
     initial = DAG(
         dag_id="dag_failure_requires_edit",
@@ -608,6 +706,47 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
     assert record.pending_review.kind == "execution_error"
     assert "failed:boom" in record.pending_review.payload["error"]
     assert record.dag.status == "paused_for_replan"
+
+
+def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None:
+    initial = DAG(
+        dag_id="dag_stale_trace",
+        task_id="task_stale_trace",
+        status="approved",
+        nodes=[
+            _tool_node("search_config", "fail_tool", {"text": "old"}),
+        ],
+        edges=[],
+    )
+    replacement = DAG(
+        dag_id="replacement",
+        task_id="task_stale_trace",
+        nodes=[
+            _tool_node("current_failure", "fail_tool", {"text": "current"}),
+        ],
+        edges=[],
+    )
+    runtime = runtime_for(
+        dag_agent=LLMDAGAgent(MockProvider([ChatResponse(content=dag_json(replacement))])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_stale_trace"] = TaskRecord(
+        task_id="task_stale_trace",
+        user_request="Recover from stale failed node traces",
+        dag=prepared,
+        review_level="fast",
+    )
+
+    result = run(runtime.execute_dag("task_stale_trace"))
+
+    record = runtime.tasks["task_stale_trace"]
+    assert result.completed is False
+    assert record.pending_review is not None
+    assert record.pending_review.kind == "execution_error"
+    assert record.pending_review.payload["failed_node_id"] == "current_failure"
+    assert "search_config" not in {node.id for node in record.dag.nodes}
+    assert {node.id: node.status for node in record.dag.nodes}["current_failure"] == "failed"
 
 
 def test_harness_runtime_patches_failed_node_and_retries() -> None:

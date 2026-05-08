@@ -1,34 +1,30 @@
-Generate a compact tool-only PlanSpec JSON object with this shape:
+Generate a compact tool-only PlanSpec DSL with this shape:
 
-{
-  "task": "short restatement of the user request",
-  "nodes": [
-    {
-      "id": "read_readme",
-      "tool": "read_file",
-      "args": {
-        "path": "README.md"
-      },
-      "depends_on": []
-    }
-  ]
-}
+task: short restatement of the user request
+read_readme = read_file(path="README.md")
+search_tests = grep(pattern="pytest", path=".") after read_readme
 
 Node ids must be descriptive snake_case names (e.g. inspect_repo, write_config).
 
-Only write these fields: task, nodes, id, tool, args, depends_on.
+Only write the DSL. Do not include markdown fences or explanation.
 Do not write dag_id, task_id, status, boundary, or edges. The system will
 infer execution policy, risk, and edges.
 
-Every node must declare `tool` and `args`. The executor runs each node directly
-as that tool call without a child agent loop, so each node must be one concrete
-executable action. If the task needs analysis, express the next observable tool
-call that obtains the information needed for later local replanning.
+Every node line must use:
 
-For multi-node plans, include a `start` node using tool `dag_start` with empty
-args `{}`. Every root work node that has no real dependency should list
-`"start"` in `depends_on`. This makes parallel branches explicit instead of
-leaving isolated nodes.
+node_id = tool_name(key="value", other_key=123) after dependency_one, dependency_two
+
+Omit `after ...` when the node has no dependency. Use empty parentheses for
+tools without arguments, such as `start = dag_start()`.
+
+The executor runs each node directly as that tool call without a child agent
+loop, so each node must be one concrete executable action. If the task needs
+analysis, express the next observable tool call that obtains the information
+needed for later local replanning.
+
+For multi-node plans, include a `start` node using `dag_start()`. Every root
+work node that has no real dependency should use `after start`. This makes
+parallel branches explicit instead of leaving isolated nodes.
 
 If you receive validation feedback, return a corrected PlanSpec that fixes the
 reported structural error. Do not explain the fix.

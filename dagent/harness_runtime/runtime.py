@@ -27,7 +27,7 @@ from dagent.harness_runtime.dag_executor import (
     _inject_placeholders,
     _next_ready_nodes,
 )
-from dagent.harness_runtime.dag_validation import validate_dag
+from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.control_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
@@ -40,6 +40,7 @@ from dagent.tools.registry import Tool
 
 
 RuntimeMode = Literal["auto", "direct", "dag"]
+MAX_CONVERSATION_HISTORY_MESSAGES = 20
 
 
 @dataclass
@@ -147,6 +148,8 @@ class HarnessRuntime:
                         ],
                     )
                 summary = await self._summarize_dag_run(record, result, on_token=on_token, on_event=on_event)
+                record.message_markdown = summary
+                self._append_conversation_turn(record.user_request, summary)
                 return HarnessMessageResult(
                     status="completed" if result.completed else "failed",
                     message_markdown=summary,
@@ -216,6 +219,7 @@ class HarnessRuntime:
                 pending_tool_review=ptr,
             )
 
+        self._remember_conversation_messages(result.messages)
         dag_event = _latest_dag_event(result.control_events)
         return HarnessMessageResult(
             status="awaiting_dag_review" if result.stop_reason == "awaiting_approval" else "completed",
@@ -240,6 +244,20 @@ class HarnessRuntime:
             raise KeyError(f"Unknown task '{task_id}'.")
 
         record = self.tasks[task_id]
+        if (
+            record.dag.status == "completed"
+            and record.runs
+            and record.pending_review is None
+            and record.pending_permission_request is None
+        ):
+            result = record.runs[-1]
+            return HarnessMessageResult(
+                status="completed" if result.completed else "failed",
+                message_markdown=record.message_markdown or _dag_run_fallback_message(record, result),
+                dag=record.dag,
+                run_result=result,
+                task_id=task_id,
+            )
         if review_level is not None:
             record.review_level = review_level
         submitted = dag.model_copy(deep=True)
@@ -294,6 +312,16 @@ class HarnessRuntime:
                 control_events=[_dag_event(record, "change_review_requested", reason=record.pending_review.message)],
             )
         if record.runtime_mode == "dag":
+            if not result.completed:
+                return HarnessMessageResult(
+                    status="awaiting_change_review" if record.pending_review else "failed",
+                    message_markdown=record.pending_review.message if record.pending_review else _dag_run_fallback_message(record, result),
+                    dag=record.pending_review.proposed_dag if record.pending_review else record.dag,
+                    run_result=result,
+                    task_id=task_id,
+                    pending_review=record.pending_review,
+                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution paused before completion.")],
+                )
             return await self._continue_dag_loop(
                 record,
                 result,
@@ -301,6 +329,8 @@ class HarnessRuntime:
                 on_event=on_event,
             )
         summary = await self._summarize_dag_run(record, result, on_token=on_token, on_event=on_event)
+        record.message_markdown = summary
+        self._append_conversation_turn(record.user_request, summary)
         return HarnessMessageResult(
             status="completed" if result.completed else "failed",
             message_markdown=summary,
@@ -322,6 +352,7 @@ class HarnessRuntime:
         dag = await self._create_validated_dag(
             _dag_planning_prompt(request, planning_context),
             task_id=task_id,
+            conversation_messages=self._dag_conversation_messages(),
         )
         record = TaskRecord(
             task_id=dag.task_id,
@@ -338,6 +369,7 @@ class HarnessRuntime:
         request: str,
         *,
         task_id: str | None = None,
+        conversation_messages: list[dict[str, Any]] | None = None,
         max_attempts: int = 2,
     ) -> DAG:
         feedback = ""
@@ -345,7 +377,11 @@ class HarnessRuntime:
         for attempt in range(max_attempts):
             prompt = request if not feedback else _dag_creation_feedback_prompt(request, feedback)
             try:
-                dag = await self.dag_agent.aplan(prompt, task_id=task_id)
+                dag = await self.dag_agent.aplan(
+                    prompt,
+                    task_id=task_id,
+                    conversation_messages=conversation_messages,
+                )
                 return self.prepare_dag_for_review(dag)
             except Exception as exc:
                 last_error = exc
@@ -356,9 +392,27 @@ class HarnessRuntime:
     def prepare_dag_for_review(self, dag: DAG) -> DAG:
         prepared = self.dag_executor.normalize(dag)
         validate_dag(prepared)
+        self._validate_dag_tools(prepared)
         self.dag_executor.apply_risk_overrides(prepared)
         prepared.status = self._initial_status(prepared)
         return prepared
+
+    def _validate_dag_tools(self, dag: DAG) -> None:
+        if self.dag_executor.tool_executor is None:
+            return
+        available_tools = self.dag_executor.tool_executor.registry.names()
+        unknown_tools = sorted({
+            node.tool
+            for node in dag.nodes
+            if node.tool and node.tool not in available_tools
+        })
+        if unknown_tools:
+            raise DAGValidationError(
+                "Unknown tool(s): "
+                f"{', '.join(unknown_tools)}. "
+                "Available tools: "
+                f"{', '.join(sorted(available_tools))}."
+            )
 
     def approve_dag(self, task_id: str) -> DAG:
         record = self.tasks[task_id]
@@ -386,10 +440,21 @@ class HarnessRuntime:
                     )
                 except Exception as exc:
                     traces.extend(self.dag_executor.trace_recorder.events)
+                    current_node_ids = _dag_node_ids(record.dag)
+                    record.node_results.update(
+                        {
+                            node_id: node_result
+                            for node_id, node_result in self.dag_executor.partial_node_results.items()
+                            if node_id in current_node_ids
+                        }
+                    )
+                    for node_id, node_result in self.dag_executor.partial_node_results.items():
+                        if node_id in current_node_ids:
+                            _node_by_id(record.dag, node_id).status = "completed" if node_result.completed else "failed"
                     record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
-                    failed_node_id = _latest_failed_node_id(record.trace_records)
-                    if failed_node_id:
-                        _node_by_id(record.dag, failed_node_id).status = "failed"
+                    failed_node_id = _latest_failed_node_id(record.trace_records, valid_node_ids=current_node_ids)
+                    for failed_id in _failed_node_ids(record.trace_records, valid_node_ids=current_node_ids):
+                        _node_by_id(record.dag, failed_id).status = "failed"
 
                     retry_key = failed_node_id or "__dag__"
                     repair_counts[retry_key] = repair_counts.get(retry_key, 0) + 1
@@ -618,6 +683,7 @@ class HarnessRuntime:
                 failed_node_id=failed_node_id,
             ),
             task_id=record.task_id,
+            conversation_messages=self._dag_conversation_messages(),
         )
 
     def _apply_next_dag_revision(
@@ -674,11 +740,13 @@ class HarnessRuntime:
         error: str,
         failed_node_id: str | None,
     ) -> PendingReview:
+        proposed_dag = record.dag.model_copy(deep=True)
+        proposed_dag.status = "paused_for_replan"
         pending = PendingReview(
             review_id=f"review_{uuid4().hex}",
             kind="execution_error",
             message=message,
-            proposed_dag=record.dag.model_copy(deep=True),
+            proposed_dag=proposed_dag,
             payload={
                 "error": error,
                 "failed_node_id": failed_node_id,
@@ -761,6 +829,7 @@ class HarnessRuntime:
                     message_markdown=f"Tool `{new_ptr.tool_call.name}` requires approval before execution.",
                     pending_tool_review=new_ptr,
                 )
+            self._remember_conversation_messages(result.messages)
             return HarnessMessageResult(
                 status="completed",
                 message_markdown=result.final_response,
@@ -822,6 +891,7 @@ class HarnessRuntime:
                 pending_tool_review=new_ptr,
             )
 
+        self._remember_conversation_messages(result.messages)
         dag_event = _latest_dag_event(result.control_events)
         return HarnessMessageResult(
             status="awaiting_dag_review" if result.stop_reason == "awaiting_approval" else "completed",
@@ -847,6 +917,7 @@ class HarnessRuntime:
             dag = await self._create_validated_dag(
                 _dag_planning_prompt(request, self._conversation_context()),
                 task_id=record.task_id,
+                conversation_messages=self._dag_conversation_messages(),
             )
             record.dag = dag
             record.dag.status = "review_required"
@@ -937,6 +1008,8 @@ class HarnessRuntime:
             )
 
         answer = loop_result.final_response.strip() or _dag_run_fallback_message(record, result)
+        record.message_markdown = answer
+        self._append_conversation_turn(record.user_request, answer)
         return HarnessMessageResult(
             status="completed" if result.completed else "failed",
             message_markdown=answer,
@@ -1010,6 +1083,37 @@ class HarnessRuntime:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
+    def _dag_conversation_messages(self) -> list[dict[str, Any]]:
+        messages = list(self._conversation_history)
+        active_user_message = self._active_user_message.strip()
+        if active_user_message and not (
+            messages
+            and messages[-1].get("role") == "user"
+            and messages[-1].get("content") == active_user_message
+        ):
+            messages.append({"role": "user", "content": active_user_message})
+        return messages[-MAX_CONVERSATION_HISTORY_MESSAGES:]
+
+    def _remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
+        self._conversation_history = [
+            message
+            for message in (_conversation_message_copy(item) for item in messages)
+            if message is not None
+        ][-MAX_CONVERSATION_HISTORY_MESSAGES:]
+
+    def _append_conversation_turn(self, user_message: str, assistant_message: str) -> None:
+        user_message = user_message.strip()
+        assistant_message = assistant_message.strip()
+        if user_message and not (
+            self._conversation_history
+            and self._conversation_history[-1].get("role") == "user"
+            and self._conversation_history[-1].get("content") == user_message
+        ):
+            self._conversation_history.append({"role": "user", "content": user_message})
+        if assistant_message:
+            self._conversation_history.append({"role": "assistant", "content": assistant_message})
+        self._conversation_history = self._conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
+
 
 def _dag_event(
     record: TaskRecord,
@@ -1066,7 +1170,7 @@ def _dag_creation_feedback_prompt(request: str, feedback: str) -> str:
     return (
         f"{request}\n\n"
         "The previous DAG proposal failed validation. Return a corrected "
-        "compact PlanSpec JSON only.\n"
+        "compact PlanSpec DSL only.\n"
         f"Validation error: {feedback}"
     )
 
@@ -1110,7 +1214,7 @@ def _dag_revision_prompt(
     }
     return (
         "Revise the executable DAG after an execution observation.\n"
-        "Return one compact PlanSpec JSON object for the next DAG version.\n"
+        "Return one compact PlanSpec DSL for the next DAG version.\n"
         "Do not return action types such as keep, patch_node, replace, or abort.\n"
         "Preserve already completed node ids and dependencies when their results "
         "are still needed, and change the failed or downstream nodes so execution "
@@ -1179,6 +1283,16 @@ def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
     }
 
 
+def _conversation_message_copy(message: dict[str, Any]) -> dict[str, Any] | None:
+    role = message.get("role")
+    if role not in {"user", "assistant"}:
+        return None
+    content = message.get("content")
+    if not content:
+        return None
+    return {"role": role, "content": content}
+
+
 def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
     return json.dumps(
         {
@@ -1233,11 +1347,31 @@ def _node_by_id(dag: DAG, node_id: str):
     raise KeyError(node_id)
 
 
-def _latest_failed_node_id(records: list[NodeExecutionRecord]) -> str | None:
+def _dag_node_ids(dag: DAG) -> set[str]:
+    return {node.id for node in dag.nodes}
+
+
+def _latest_failed_node_id(
+    records: list[NodeExecutionRecord],
+    *,
+    valid_node_ids: set[str] | None = None,
+) -> str | None:
     for record in reversed(records):
-        if record.status == "failed":
+        if record.status == "failed" and (valid_node_ids is None or record.node_id in valid_node_ids):
             return record.node_id
     return None
+
+
+def _failed_node_ids(
+    records: list[NodeExecutionRecord],
+    *,
+    valid_node_ids: set[str] | None = None,
+) -> set[str]:
+    return {
+        record.node_id
+        for record in records
+        if record.status == "failed" and (valid_node_ids is None or record.node_id in valid_node_ids)
+    }
 
 
 def _invalidate_patch_results(record: TaskRecord, node_id: str) -> None:

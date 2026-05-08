@@ -1,9 +1,11 @@
 from pathlib import Path
+import sys
 
 import pytest
 
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
+from dagent.tools.command_tools import run_command
 from dagent.tools.executor import ToolExecutionError, ToolExecutor
 from dagent.tools.file_tools import create_file_tool_registry
 
@@ -125,6 +127,26 @@ def test_grep_searches_allowed_files(tmp_path: Path) -> None:
     assert "b.txt:2:alphabet" in result
 
 
+def test_grep_skips_heavy_generated_directories(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "hidden.txt").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "hidden.txt").write_text("alpha\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = executor.execute(
+        "grep",
+        {"path": ".", "pattern": "alpha"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert "src" in result
+    assert ".venv" not in result
+    assert "node_modules" not in result
+
+
 def test_run_command_executes_allowed_command_in_allowed_cwd(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
@@ -140,6 +162,13 @@ def test_run_command_executes_allowed_command_in_allowed_cwd(tmp_path: Path) -> 
 
     assert "exit_code=0" in result
     assert "hello" in result
+
+
+def test_run_command_raises_when_process_exits_nonzero(tmp_path: Path) -> None:
+    command = f'"{sys.executable}" -c "raise SystemExit(3)"'
+
+    with pytest.raises(ToolExecutionError, match="exit_code=3"):
+        run_command(command, cwd=tmp_path)
 
 
 def test_read_only_node_can_run_explicitly_allowed_command(tmp_path: Path) -> None:

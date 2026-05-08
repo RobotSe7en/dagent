@@ -116,9 +116,6 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
         message = _runtime_message_markdown(result)
-        if result.dag is not None:
-            for chunk in _chunks(message, size=36):
-                yield _sse({"type": "token", "content": chunk})
         yield _sse(
             {
                 "type": "done",
