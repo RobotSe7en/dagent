@@ -40,6 +40,7 @@ def register_command_tools(registry: ToolRegistry) -> None:
         action="command",
         path_args=("cwd",),
         command_args=("command",),
+        risk="high",
         default_args={"cwd": ".", "timeout_seconds": 30},
         description=(
             "Run a bounded command in a bounded working directory. "

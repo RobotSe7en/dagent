@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\", \"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\", \"User\"\\); Set-Location \"D:\\\\danny\\\\llm\\\\vibe_coding\\\\dagent\\\\.claude\\\\worktrees\\\\funny-saha-b80c4c\"; gh auth status 2>&1)",
+      "PowerShell(cd D:\\\\danny\\\\llm\\\\vibe_coding\\\\dagent\\\\.claude\\\\worktrees\\\\funny-saha-b80c4c; $env:PYTEST_TMP = \"D:\\\\tmp_pytest\"; if \\(-not \\(Test-Path $env:PYTEST_TMP\\)\\) { New-Item -ItemType Directory $env:PYTEST_TMP -Force | Out-Null }; python -m pytest tests/test_agent_loop.py -x -v --basetemp=\"D:\\\\tmp_pytest\\\\base\" 2>&1)"
+    ]
+  }
+}

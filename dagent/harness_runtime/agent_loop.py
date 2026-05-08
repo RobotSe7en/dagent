@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary
+from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 
 
@@ -130,16 +131,52 @@ class AgentLoop:
                     continue
 
                 if allowed_tools is not None and tool_call.name not in allowed_tools:
-                    raise ValueError(f"Tool '{tool_call.name}' is not allowed for this node.")
+                    error_content = f"[ERROR] Tool '{tool_call.name}' is not allowed. Available tools: {', '.join(allowed_tools)}."
+                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": error_content,
+                        }
+                    )
+                    continue
                 try:
                     tool_result = self.tool_executor.execute(
                         tool_call.name,
                         tool_call.arguments,
                         boundary=boundary,
                     )
+                except BoundaryViolation as exc:
+                    error_content = (
+                        f"[BOUNDARY_VIOLATION] {exc}\n"
+                        f"Tool '{tool_call.name}' exceeded the current boundary. "
+                        "Adjust your arguments to stay within allowed paths/commands, "
+                        "or use an alternative approach."
+                    )
+                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": error_content,
+                        }
+                    )
+                    continue
                 except Exception as exc:
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=str(exc))
-                    raise
+                    error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": error_content,
+                        }
+                    )
+                    continue
                 loop_messages.append(
                     {
                         "role": "tool",

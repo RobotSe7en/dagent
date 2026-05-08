@@ -16,6 +16,7 @@ ReviewKind = Literal[
     "execution_error",
     "node_execution",
     "boundary_change",
+    "tool_execution",
 ]
 
 
@@ -33,6 +34,15 @@ class ReviewPolicy:
 
     def requires_node_execution_review(self) -> bool:
         return self.level == "manual"
+
+    def requires_tool_review(self, tool_risk: str) -> bool:
+        if self.level == "fast":
+            return False
+        if self.level == "balanced":
+            return tool_risk == "high"
+        if self.level == "careful":
+            return tool_risk in {"medium", "high"}
+        return True
 
     def requires_dag_revision_review(self, *, current: DAG, proposed: DAG) -> bool:
         if self.level == "manual":

@@ -65,6 +65,9 @@ def enforce_command_allowed(command: str, boundary: Boundary) -> None:
     if not executable:
         raise BoundaryViolation("Command cannot be empty.", command=command)
 
+    if boundary.mode == "full":
+        return
+
     allowed = boundary.allowed_commands or _default_allowed_commands(boundary)
     if not allowed:
         raise BoundaryViolation(

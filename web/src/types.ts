@@ -91,6 +91,14 @@ export interface ToolStreamEvent {
   content?: string;
 }
 
+export interface ToolReview {
+  review_id: string;
+  tool_name: string;
+  tool_call_id: string;
+  arguments: Record<string, unknown>;
+  risk: RiskLevel | 'unknown';
+}
+
 export interface RunResult {
   dag_id: string;
   completed: boolean;

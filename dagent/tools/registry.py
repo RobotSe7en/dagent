@@ -9,6 +9,7 @@ from typing import Any
 
 ToolHandler = Callable[..., str]
 ToolAction = str
+ToolRisk = str
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class Tool:
     default_args: dict[str, Any] | None = None
     description: str = ""
     parameters: dict | None = None
+    risk: ToolRisk = "low"
 
 
 class ToolRegistry:
@@ -40,6 +42,7 @@ class ToolRegistry:
         default_args: dict[str, Any] | None = None,
         description: str = "",
         parameters: dict | None = None,
+        risk: ToolRisk = "low",
     ) -> None:
         if name in self._tools:
             raise ValueError(f"Tool '{name}' is already registered.")
@@ -52,6 +55,7 @@ class ToolRegistry:
             default_args=default_args,
             description=description,
             parameters=parameters,
+            risk=risk,
         )
 
     def get(self, name: str) -> Tool | None:
