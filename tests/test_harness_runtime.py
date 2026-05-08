@@ -62,6 +62,30 @@ def test_harness_runtime_direct_message_does_not_create_dag() -> None:
     assert runtime.tasks == {}
 
 
+def test_harness_runtime_direct_followup_includes_conversation_history() -> None:
+    provider = MockProvider([
+        ChatResponse(content="The project color is blue."),
+        ChatResponse(content="It is blue."),
+    ])
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Remember that the project color is blue.", mode="direct"))
+    second = run(runtime.handle_message("What color did I mention?", mode="direct"))
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    second_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in second_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert second_messages[1]["content"] == "Remember that the project color is blue."
+    assert second_messages[2]["content"] == "The project color is blue."
+    assert second_messages[3]["content"] == "What color did I mention?"
+
+
 def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     provider = MockProvider(
         [
@@ -249,6 +273,26 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
         for tool in provider.requests[-1]["tools"]
     ]
     assert tool_names == ["dag_agent"]
+
+
+def test_harness_runtime_completed_dag_resume_is_idempotent() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(content=_dag_agent_json()),
+            ChatResponse(content="final dag-mode answer"),
+        ]
+    )
+    runtime = _runtime(provider)
+
+    first = run(runtime.handle_message("Create a safe DAG", mode="dag"))
+    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+    repeated = run(runtime.resume_dag(first.task_id, resumed.dag))
+
+    assert repeated.status == "completed"
+    assert repeated.message_markdown == "final dag-mode answer"
+    assert repeated.run_result is resumed.run_result
+    assert len(runtime.tasks[first.task_id].runs) == 1
+    assert len(provider.requests) == 2
 
 
 def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation() -> None:

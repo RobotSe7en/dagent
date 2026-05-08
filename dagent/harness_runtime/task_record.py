@@ -31,6 +31,7 @@ class TaskRecord:
     runtime_mode: str = "auto"
     suppress_next_review: bool = False
     continuation_count: int = 0
+    message_markdown: str = ""
     node_results: dict = field(default_factory=dict)
     trace_records: list[NodeExecutionRecord] = field(default_factory=list)
 
