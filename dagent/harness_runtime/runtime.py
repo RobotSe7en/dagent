@@ -29,7 +29,7 @@ from dagent.harness_runtime.dag_executor import (
 )
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.harness_runtime.dag_agent import DAGAgent
-from dagent.harness_runtime.control_tools import DAG_AGENT_NAME, dag_agent_tool_definition
+from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile
