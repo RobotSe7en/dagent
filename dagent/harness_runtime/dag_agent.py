@@ -62,7 +62,7 @@ class DAGAgent(ABC):
 
 
 class LLMDAGAgent(DAGAgent):
-    """DAG agent that asks an OpenAI-compatible model to produce DAG JSON."""
+    """DAG agent that asks an LLM to produce a PlanSpec DSL or JSON DAG."""
 
     def __init__(
         self,
@@ -273,7 +273,7 @@ def compile_plan_spec(
     tools: list[Tool] | None = None,
 ) -> DAG:
     tool_index = {t.name: t for t in (tools or [])}
-    nodes = [_compile_plan_node(node, task=plan.task, tool_index=tool_index) for node in plan.nodes]
+    nodes = [_compile_plan_node(node, tool_index=tool_index) for node in plan.nodes]
     edges = [
         DAGEdge(
             source=dependency,
@@ -297,7 +297,6 @@ def compile_plan_spec(
 def _compile_plan_node(
     node,
     *,
-    task: str = "",
     tool_index: dict[str, Tool] | None = None,
 ) -> DAGNode:
     if not node.tool:
@@ -372,8 +371,6 @@ def _infer_boundary(tool_obj: Tool | None, args: dict) -> Boundary:
     if tool_obj.action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
-
-
 
 
 
