@@ -14,7 +14,7 @@ from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
+from dagent.harness_runtime.review_policy import effective_risk
 from dagent.tools.registry import Tool
 
 
@@ -127,7 +127,7 @@ class LLMDAGAgent(DAGAgent):
         response = await self.provider.chat(
             messages
         )
-        return dag_from_model_output(response.content, task_id=resolved_task_id)
+        return dag_from_model_output(response.content, task_id=resolved_task_id, tools=self.tools)
 
 
 def _conversation_message_copies(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -140,7 +140,12 @@ def _conversation_message_copies(messages: list[dict[str, Any]]) -> list[dict[st
     return copied
 
 
-def dag_from_model_output(content: str, *, task_id: str) -> DAG:
+def dag_from_model_output(
+    content: str,
+    *,
+    task_id: str,
+    tools: list[Tool] | None = None,
+) -> DAG:
     try:
         plan = parse_plan_spec_dsl(content)
     except DAGCreationError as dsl_error:
@@ -151,8 +156,8 @@ def dag_from_model_output(content: str, *, task_id: str) -> DAG:
                 f"Agent response was neither valid PlanSpec DSL nor JSON. "
                 f"DSL error: {dsl_error}; JSON error: {json_error}"
             ) from dsl_error
-        return dag_from_json_payload(payload, task_id=task_id)
-    return compile_plan_spec(plan, task_id=task_id)
+        return dag_from_json_payload(payload, task_id=task_id, tools=tools)
+    return compile_plan_spec(plan, task_id=task_id, tools=tools)
 
 
 def parse_plan_spec_dsl(content: str) -> PlanSpec:
@@ -248,16 +253,27 @@ def _parse_depends_on(deps_text: str | None) -> list[str]:
     ]
 
 
-def dag_from_json_payload(payload: dict, *, task_id: str) -> DAG:
+def dag_from_json_payload(
+    payload: dict,
+    *,
+    task_id: str,
+    tools: list[Tool] | None = None,
+) -> DAG:
     if _is_full_dag_payload(payload):
-        return _full_dag_from_payload(payload, task_id)
+        return _full_dag_from_payload(payload, task_id, tools=tools)
 
     plan = PlanSpec.model_validate(payload)
-    return compile_plan_spec(plan, task_id=task_id)
+    return compile_plan_spec(plan, task_id=task_id, tools=tools)
 
 
-def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
-    nodes = [_compile_plan_node(node, task=plan.task) for node in plan.nodes]
+def compile_plan_spec(
+    plan: PlanSpec,
+    *,
+    task_id: str,
+    tools: list[Tool] | None = None,
+) -> DAG:
+    tool_index = {t.name: t for t in (tools or [])}
+    nodes = [_compile_plan_node(node, task=plan.task, tool_index=tool_index) for node in plan.nodes]
     edges = [
         DAGEdge(
             source=dependency,
@@ -278,20 +294,28 @@ def compile_plan_spec(plan: PlanSpec, *, task_id: str) -> DAG:
     )
 
 
-def _compile_plan_node(node, *, task: str = "") -> DAGNode:
+def _compile_plan_node(
+    node,
+    *,
+    task: str = "",
+    tool_index: dict[str, Tool] | None = None,
+) -> DAGNode:
     if not node.tool:
         raise DAGCreationError(
             f"PlanSpec node '{node.id}' must declare one concrete tool."
         )
     args = dict(node.args)
-    boundary = _infer_boundary(node.tool, args)
+    registered = (tool_index or {}).get(node.tool)
+    boundary = _infer_boundary(registered, args)
+
+    risk = effective_risk(registered, args)
 
     return DAGNode(
         id=node.id,
         tool=node.tool,
         args=args,
         boundary=boundary,
-        risk=node.risk if node.risk in {"low", "medium", "high"} else _infer_risk(node.tool, boundary),
+        risk=risk,
     )
 
 
@@ -334,40 +358,23 @@ def _ensure_start_node(
     return next_nodes, next_edges
 
 
-def _infer_boundary(tool: str | None, args: dict) -> Boundary:
-    if tool == "write_file":
-        return Boundary(
-            mode="write_limited",
-            allowed_paths=[str(args.get("path") or ".")],
-        )
-    if tool == "run_command":
-        command = str(args.get("command") or "").strip()
-        executable = _command_executable(command)
-        cwd = str(args.get("cwd") or ".")
-        is_default_read_only = executable in DEFAULT_READ_ONLY_COMMANDS
-        return Boundary(
-            mode="read_only" if is_default_read_only else "write_limited",
-            allowed_paths=[cwd],
-            allowed_commands=[] if is_default_read_only else [executable or command],
-        )
-    if tool in {"read_file", "grep"}:
-        return Boundary(
-            mode="read_only",
-            allowed_paths=[str(args.get("path") or ".")],
-        )
-    return Boundary(mode="read_only")
+def _infer_boundary(tool_obj: Tool | None, args: dict) -> Boundary:
+    """Infer boundary from tool registration info.
+
+    If the tool provides a custom boundary_fn, use it.
+    Otherwise, derive boundary from Tool.action and Tool.path_args.
+    """
+    if tool_obj is not None and tool_obj.boundary_fn is not None:
+        return tool_obj.boundary_fn(args)
+    if tool_obj is None:
+        return Boundary(mode="read_only")
+    paths = [str(args.get(p) or ".") for p in tool_obj.path_args] or ["."]
+    if tool_obj.action == "write":
+        return Boundary(mode="write_limited", allowed_paths=paths)
+    return Boundary(mode="read_only", allowed_paths=paths)
 
 
-def _infer_risk(tool: str | None, boundary: Boundary) -> str:
-    if tool == "write_file":
-        return "medium"
-    if tool == "run_command" and boundary.mode != "read_only":
-        return "medium"
-    return "low"
 
-
-def _command_executable(command: str) -> str:
-    return command.split(maxsplit=1)[0] if command else ""
 
 
 def _is_full_dag_payload(payload: dict) -> bool:
@@ -381,7 +388,12 @@ def _is_full_dag_payload(payload: dict) -> bool:
     ) if isinstance(nodes, list) else False
 
 
-def _full_dag_from_payload(payload: dict, task_id: str) -> DAG:
+def _full_dag_from_payload(
+    payload: dict,
+    task_id: str,
+    *,
+    tools: list[Tool] | None = None,
+) -> DAG:
     payload.setdefault("dag_id", f"dag_{uuid4().hex}")
     payload["task_id"] = task_id
     payload.setdefault("version", 1)
@@ -390,7 +402,17 @@ def _full_dag_from_payload(payload: dict, task_id: str) -> DAG:
     payload.setdefault("edges", [])
     _normalize_boundary_modes(payload)
     _normalize_tool_nodes(payload)
-    return DAG.model_validate(payload)
+    dag = DAG.model_validate(payload)
+    _apply_effective_risk(dag, tools)
+    return dag
+
+
+def _apply_effective_risk(dag: DAG, tools: list[Tool] | None = None) -> None:
+    """Recompute risk for every node using effective_risk(tool, args)."""
+    tool_index = {t.name: t for t in (tools or [])}
+    for node in dag.nodes:
+        registered = tool_index.get(node.tool) if node.tool else None
+        node.risk = effective_risk(registered, node.args)
 
 
 def _normalize_boundary_modes(payload: dict) -> None:
