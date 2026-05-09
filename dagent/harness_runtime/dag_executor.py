@@ -1,4 +1,4 @@
-"""DAG executor with validation, risk override, scheduling, and trace."""
+"""DAG executor with validation, scheduling, and trace."""
 
 from __future__ import annotations
 
@@ -353,38 +353,6 @@ class DAGExecutor:
             },
         )
         return result
-
-    def _record_tool_trace(
-        self,
-        dag_id: str,
-        node_id: str,
-        messages: list[dict],
-    ) -> None:
-        for message in messages:
-            if message.get("role") == "assistant":
-                for tool_call in message.get("tool_calls", []):
-                    function = tool_call.get("function", {})
-                    self.trace_recorder.record(
-                        "tool_called",
-                        dag_id=dag_id,
-                        node_id=node_id,
-                        payload={
-                            "tool_call_id": tool_call.get("id"),
-                            "name": function.get("name"),
-                            "arguments": function.get("arguments"),
-                        },
-                    )
-            if message.get("role") == "tool":
-                self.trace_recorder.record(
-                    "tool_completed",
-                    dag_id=dag_id,
-                    node_id=node_id,
-                    payload={
-                        "tool_call_id": message.get("tool_call_id"),
-                        "name": message.get("name"),
-                        "content": message.get("content"),
-                    },
-                )
 
     def _enforce_review_gate(self, dag: DAG) -> None:
         needs_approval = any(node.risk in {"medium", "high"} for node in dag.nodes)
