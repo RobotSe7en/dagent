@@ -545,6 +545,7 @@ def make_tool_executor() -> ToolExecutor:
         handler=lambda path, content="": f"wrote:{path}:{content}",
         action="write",
         path_args=("path",),
+        risk="medium",
         parameters={
             "type": "object",
             "properties": {

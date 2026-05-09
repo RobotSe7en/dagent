@@ -196,7 +196,7 @@ def test_medium_risk_dag_requires_approval() -> None:
         dag_id="dag_1",
         task_id="task_1",
         status="draft",
-        nodes=[node("write", tools=["write_file"], risk="low")],
+        nodes=[node("write", tools=["write_file"], risk="medium")],
     )
 
     with pytest.raises(DAGExecutionError, match="not approved"):
@@ -211,7 +211,7 @@ def test_high_risk_dag_requires_approval() -> None:
         dag_id="dag_1",
         task_id="task_1",
         status="draft",
-        nodes=[node("deploy", tools=["deploy"], risk="low")],
+        nodes=[node("write", tools=["write_file"], risk="high")],
     )
 
     with pytest.raises(DAGExecutionError, match="not approved"):
@@ -219,7 +219,7 @@ def test_high_risk_dag_requires_approval() -> None:
     assert loop.calls == []
 
 
-def test_broad_allowed_paths_promotes_to_medium_and_requires_approval() -> None:
+def test_read_only_broad_paths_does_not_require_approval() -> None:
     executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
@@ -234,8 +234,9 @@ def test_broad_allowed_paths_promotes_to_medium_and_requires_approval() -> None:
         ],
     )
 
-    with pytest.raises(DAGExecutionError, match="not approved"):
-        run(executor.execute(dag))
+    result = run(executor.execute(dag))
+
+    assert result.completed is True
 
 
 def tool_node(
@@ -298,6 +299,7 @@ def tool_executor() -> ToolExecutor:
         handler=lambda path, content="": f"wrote:{path}:{content}",
         action="write",
         path_args=("path",),
+        risk="medium",
         parameters={
             "type": "object",
             "properties": {

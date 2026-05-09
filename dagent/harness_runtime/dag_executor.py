@@ -81,7 +81,6 @@ class DAGExecutor:
         self.trace_recorder = TraceRecorder()
         normalized = self.normalize(dag)
         validate_dag(normalized)
-        self.apply_risk_overrides(normalized)
         self._enforce_review_gate(normalized)
 
         normalized.status = "running"
@@ -127,7 +126,6 @@ class DAGExecutor:
         self.partial_node_results = {}
         normalized = self.normalize(dag)
         validate_dag(normalized)
-        self.apply_risk_overrides(normalized)
         self._enforce_review_gate(normalized)
         normalized.status = "running"
         if record_dag_start:
@@ -208,12 +206,6 @@ class DAGExecutor:
 
     def normalize(self, dag: DAG) -> DAG:
         return dag.model_copy(deep=True)
-
-    def apply_risk_overrides(self, dag: DAG) -> None:
-        for node in dag.nodes:
-            required_risk = self._required_risk_for_node(node)
-            if _risk_rank(required_risk) > _risk_rank(node.risk):
-                node.risk = required_risk
 
     async def execute_node(
         self,
@@ -394,22 +386,6 @@ class DAGExecutor:
                     },
                 )
 
-    def _required_risk_for_node(self, node: DAGNode) -> str:
-        risk = "low"
-        medium_tools = {"edit_file", "write_file", "shell"}
-        high_tools = {"delete_file", "db_write", "deploy", "send_message"}
-        node_tools = [node.tool] if node.tool else []
-
-        if any(tool in medium_tools for tool in node_tools):
-            risk = _max_risk(risk, "medium")
-        if any(tool in high_tools for tool in node_tools):
-            risk = _max_risk(risk, "high")
-        if node.boundary.allowed_paths in (["."], ["./"]):
-            risk = _max_risk(risk, "medium")
-        if node.boundary.mode == "full":
-            risk = _max_risk(risk, "medium")
-        return risk
-
     def _enforce_review_gate(self, dag: DAG) -> None:
         needs_approval = any(node.risk in {"medium", "high"} for node in dag.nodes)
         if needs_approval and dag.status != "approved":
@@ -543,14 +519,6 @@ def _find_unresolved_placeholders(value: Any) -> set[str]:
     if isinstance(value, str):
         return set(re.findall(r"{{[^{}]+}}", value))
     return set()
-
-
-def _risk_rank(risk: str) -> int:
-    return {"low": 0, "medium": 1, "high": 2}[risk]
-
-
-def _max_risk(left: str, right: str) -> str:
-    return left if _risk_rank(left) >= _risk_rank(right) else right
 
 
 def _node_by_id(dag: DAG, node_id: str) -> DAGNode:

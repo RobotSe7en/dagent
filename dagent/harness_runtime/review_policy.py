@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from dagent.schemas import DAG
+from dagent.tools.registry import Tool
 
 
 ReviewLevel = Literal["fast", "balanced", "careful", "manual"]
@@ -52,6 +53,20 @@ class ReviewPolicy:
 
 def review_policy(level: ReviewLevel | None) -> ReviewPolicy:
     return ReviewPolicy(level=level or "balanced")
+
+
+def effective_risk(tool: Tool | None, args: dict | None = None) -> str:
+    """Compute the effective risk for a tool call.
+
+    If the tool provides a risk_fn, it is called with the args to compute
+    dynamic risk (e.g. run_command checks command whitelist).
+    Otherwise, the static Tool.risk is returned.
+    """
+    if tool is None:
+        return "low"
+    if tool.risk_fn is not None and args is not None:
+        return tool.risk_fn(args)
+    return tool.risk
 
 
 def _has_medium_or_high_risk(dag: DAG) -> bool:

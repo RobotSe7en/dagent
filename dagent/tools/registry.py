@@ -10,6 +10,8 @@ from typing import Any
 ToolHandler = Callable[..., str]
 ToolAction = str
 ToolRisk = str
+BoundaryFn = Callable[..., Any]
+RiskFn = Callable[..., ToolRisk]
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,8 @@ class Tool:
     description: str = ""
     parameters: dict | None = None
     risk: ToolRisk = "low"
+    boundary_fn: BoundaryFn | None = None
+    risk_fn: RiskFn | None = None
 
 
 class ToolRegistry:
@@ -43,6 +47,8 @@ class ToolRegistry:
         description: str = "",
         parameters: dict | None = None,
         risk: ToolRisk = "low",
+        boundary_fn: BoundaryFn | None = None,
+        risk_fn: RiskFn | None = None,
     ) -> None:
         if name in self._tools:
             raise ValueError(f"Tool '{name}' is already registered.")
@@ -56,6 +62,8 @@ class ToolRegistry:
             description=description,
             parameters=parameters,
             risk=risk,
+            boundary_fn=boundary_fn,
+            risk_fn=risk_fn,
         )
 
     def get(self, name: str) -> Tool | None:

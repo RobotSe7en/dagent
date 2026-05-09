@@ -37,7 +37,6 @@ class PlanNodeSpec(BaseModel):
     tool: str | None = None
     args: dict = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
-    risk: str | None = None
 
 
 class PlanSpec(BaseModel):

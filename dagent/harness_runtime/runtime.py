@@ -393,7 +393,6 @@ class HarnessRuntime:
         prepared = self.dag_executor.normalize(dag)
         validate_dag(prepared)
         self._validate_dag_tools(prepared)
-        self.dag_executor.apply_risk_overrides(prepared)
         prepared.status = self._initial_status(prepared)
         return prepared
 

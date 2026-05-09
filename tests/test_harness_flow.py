@@ -19,6 +19,7 @@ from dagent.harness_runtime.dag_agent import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 from dagent.tools.boundary import BoundaryViolation
+from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
 from dagent.tools.registry import ToolRegistry
@@ -230,6 +231,7 @@ def make_tool_executor() -> ToolExecutor:
         handler=lambda path, content="": f"wrote:{path}:{content}",
         action="write",
         path_args=("path",),
+        risk="medium",
         parameters={
             "type": "object",
             "properties": {
@@ -245,6 +247,8 @@ def make_tool_executor() -> ToolExecutor:
         action="command",
         path_args=("cwd",),
         command_args=("command",),
+        boundary_fn=_infer_command_boundary,
+        risk_fn=_infer_command_risk,
         default_args={"cwd": ".", "timeout_seconds": 30},
         parameters={
             "type": "object",
@@ -354,7 +358,7 @@ def test_llm_dag_agent_parses_model_json_into_dag() -> None:
 
 def test_llm_dag_agent_compiles_compact_plan_spec_into_dag() -> None:
     provider = MockProvider([ChatResponse(content=plan_spec_json())])
-    dag_agent = LLMDAGAgent(provider)
+    dag_agent = LLMDAGAgent(provider, tools=make_tool_executor().registry.all_tools())
 
     dag = run(dag_agent.aplan("What files are here?", task_id="task_real"))
 
@@ -378,7 +382,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
             )
         )
     ])
-    dag_agent = LLMDAGAgent(provider)
+    dag_agent = LLMDAGAgent(provider, tools=make_tool_executor().registry.all_tools())
 
     dag = run(dag_agent.aplan("What files are here?", task_id="task_real"))
 
