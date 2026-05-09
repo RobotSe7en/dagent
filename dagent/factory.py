@@ -7,11 +7,11 @@ from pathlib import Path
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
     AgentLoop,
+    DAGAgentLoop,
     DAGExecutor,
     DAGReviewerAgent,
     FeedbackLearnerAgent,
     HarnessRuntime,
-    LLMDAGAgent,
 )
 from dagent.profiles import ProfileStore
 from dagent.providers import OpenAICompatibleProvider
@@ -37,17 +37,17 @@ def create_harness_runtime(
         if (tool := tool_executor.registry.get(name)) is not None
     ]
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(agent_loop=agent_loop, tool_executor=tool_executor)
-    dag_agent = LLMDAGAgent(
+    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    dag_agent_loop = DAGAgentLoop(
         provider,
+        dag_executor=dag_executor,
         profile_store=profile_store,
         profile_name=resolved_config.profiles.dag_agent,
         tools=runtime_tools,
     )
     return HarnessRuntime(
         agent_loop=agent_loop,
-        dag_agent=dag_agent,
-        dag_executor=dag_executor,
+        dag_agent_loop=dag_agent_loop,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,
     )

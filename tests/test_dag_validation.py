@@ -1,11 +1,15 @@
 import json
+import asyncio
 
 import pytest
 
-from dagent.harness_runtime import LLMDAGAgent
+from dagent.harness_runtime import DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
+from dagent.harness_runtime.agent_loop import AgentLoop
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode
+from dagent.tools.executor import ToolExecutor
+from dagent.tools.registry import ToolRegistry
 
 
 def make_node(node_id: str) -> DAGNode:
@@ -129,29 +133,33 @@ def test_dag_must_be_acyclic() -> None:
 
 
 def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
-    agent = LLMDAGAgent(
-        MockProvider(
-            [
-                ChatResponse(
-                    content=json.dumps(
-                        {
-                            "task": "Summarize the repo",
-                            "nodes": [
-                                {
-                                    "id": "inspect",
-                                                                        "tool": "run_command",
-                                    "args": {"command": "dir", "cwd": "."},
-                                    "depends_on": [],
-                                }
-                            ],
-                        }
-                    )
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content=json.dumps(
+                    {
+                        "task": "Summarize the repo",
+                        "nodes": [
+                            {
+                                "id": "inspect",
+                                "tool": "run_command",
+                                "args": {"command": "dir", "cwd": "."},
+                                "depends_on": [],
+                            }
+                        ],
+                    }
                 )
-            ]
-        )
+            )
+        ]
+    )
+    registry = ToolRegistry()
+    tool_executor = ToolExecutor(registry)
+    agent = DAGAgentLoop(
+        provider,
+        dag_executor=DAGExecutor(tool_executor=tool_executor),
     )
 
-    dag = agent.plan("Summarize the repo", task_id="task_1")
+    dag = asyncio.run(agent._ask_model_for_dag("Summarize the repo", task_id="task_1", dag_messages=[]))
 
     validate_dag(dag)
     assert dag.task_id == "task_1"

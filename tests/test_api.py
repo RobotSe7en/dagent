@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import AgentLoop, DAGExecutor, HarnessRuntime, LLMDAGAgent
+from dagent.harness_runtime import AgentLoop, DAGAgentLoop, DAGExecutor, HarnessRuntime
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.tools.executor import ToolExecutor
@@ -128,15 +128,15 @@ def test_api_old_dag_lifecycle_routes_are_removed() -> None:
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:
     tool_executor = _tool_executor()
+    dag_executor = DAGExecutor(tool_executor=tool_executor)
     return HarnessRuntime(
         agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
-        dag_agent=LLMDAGAgent(provider, profile=_profile("dag_agent")),
-        dag_executor=DAGExecutor(
-            agent_loop=AgentLoop(provider=MockProvider([]), tool_executor=tool_executor),
-            tool_executor=tool_executor,
+        dag_agent_loop=DAGAgentLoop(
+            provider,
+            dag_executor=dag_executor,
+            profile=_profile("dag_agent"),
         ),
         conversation_profile=_profile("conversation"),
-        auto_execute_approved_dags=True,
     )
 
 
@@ -165,28 +165,7 @@ def _tool_executor() -> ToolExecutor:
 
 
 def _dag_agent_json() -> str:
-    return json.dumps(
-        {
-            "dag_id": "dag_api",
-            "task_id": "ignored",
-            "version": 1,
-            "status": "draft",
-            "nodes": [
-                {
-                    "id": "answer",
-                    "tool": "echo",
-                    "args": {"text": "ok"},
-                    "boundary": {
-                        "mode": "read_only",
-                        "allowed_paths": [],
-                        "allowed_commands": [],
-                    },
-                    "risk": "low",
-                }
-            ],
-            "edges": [],
-        }
-    )
+    return 'task: mock\nanswer = echo(text="ok")\n'
 
 
 def _profile(name: str) -> AgentProfile:

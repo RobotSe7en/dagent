@@ -4,9 +4,9 @@ import json
 from dagent.harness_runtime import (
     AgentLoop,
     AgentLoopResult,
+    DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    LLMDAGAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -46,7 +46,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
-    tool_names = {tool.name for tool in runtime.dag_agent.tools}
+    tool_names = {tool.name for tool in runtime.dag_agent_loop.tools}
     assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
@@ -283,7 +283,7 @@ def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> No
     dag_agent_requests = [
         request
         for request in provider.requests
-        if any("Use this prior conversation and DAG execution context" in message.get("content", "") for message in request["messages"])
+        if any("DAG observation: planning_context" in message.get("content", "") for message in request["messages"])
     ]
     assert dag_agent_requests
     followup_prompt = "\n".join(message.get("content", "") for message in dag_agent_requests[-1]["messages"])
@@ -501,21 +501,20 @@ def _runtime(
     provider: MockProvider,
     *,
     node_loop: CompletingLoop | None = None,
-    auto_execute_approved_dags: bool = False,
 ) -> HarnessRuntime:
     tool_executor = make_tool_executor()
     agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_agent = LLMDAGAgent(provider, profile=_dag_agent_profile())
+    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    dag_agent_loop = DAGAgentLoop(
+        provider,
+        dag_executor=dag_executor,
+        profile=_dag_agent_profile(),
+    )
     return HarnessRuntime(
         agent_loop=agent_loop,
-        dag_agent=dag_agent,
-        dag_executor=DAGExecutor(
-            agent_loop=node_loop or CompletingLoop(),
-            tool_executor=tool_executor,
-        ),
+        dag_agent_loop=dag_agent_loop,
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
-        auto_execute_approved_dags=auto_execute_approved_dags,
     )
 
 
@@ -593,41 +592,5 @@ def _dag_agent_json(
     text: str = "ok",
 ) -> str:
     tool = (tools or ["echo"])[0]
-    args = {"path": "notes.md", "content": "hi"} if tool == "write_file" else {"text": text}
-    boundary = {
-        "mode": "write_limited" if tool == "write_file" else "read_only",
-        "allowed_paths": ["notes.md"] if tool == "write_file" else [],
-        "allowed_commands": [],
-    }
-    return json.dumps(
-        {
-            "dag_id": "dag_runtime",
-            "task_id": "ignored",
-            "version": 1,
-            "status": "draft",
-            "nodes": [
-                {
-                    "id": node_id,
-                    "tool": tool,
-                    "args": args,
-                    "boundary": boundary,
-                    "risk": "low",
-                }
-            ],
-            "edges": [],
-        }
-    )
-
-
-def _full_node(node_id: str) -> dict:
-    return {
-        "id": node_id,
-        "tool": "echo",
-        "args": {"text": node_id},
-        "boundary": {
-            "mode": "read_only",
-            "allowed_paths": [],
-            "allowed_commands": [],
-        },
-        "risk": "low",
-    }
+    args = 'path="notes.md", content="hi"' if tool == "write_file" else f'text="{text}"'
+    return f"task: mock\n{node_id} = {tool}({args})\n"

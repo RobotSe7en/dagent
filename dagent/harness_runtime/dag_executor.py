@@ -56,58 +56,19 @@ class RunResult:
 
 
 class DAGExecutor:
-    """Executes approved DAGs through bounded node-level agent loops."""
+    """Executes approved DAGs as direct bounded tool-node calls."""
 
     def __init__(
         self,
         *,
-        agent_loop: NodeAgentLoop,
-        tool_executor: ToolExecutor | None = None,
+        tool_executor: ToolExecutor,
         trace_recorder: TraceRecorder | None = None,
         trace_store: TraceStore | None = None,
     ) -> None:
-        self.agent_loop = agent_loop
-        self.tool_executor = tool_executor or getattr(agent_loop, "tool_executor", None)
+        self.tool_executor = tool_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
         self.trace_store = trace_store or TraceStore()
         self.partial_node_results: dict[str, NodeExecutionResult] = {}
-
-    async def execute(
-        self,
-        dag: DAG,
-        *,
-        initial_results: dict[str, NodeExecutionResult] | None = None,
-    ) -> RunResult:
-        self.trace_recorder = TraceRecorder()
-        normalized = self.normalize(dag)
-        validate_dag(normalized)
-        self._enforce_review_gate(normalized)
-
-        normalized.status = "running"
-        self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
-        node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
-
-        while not _all_nodes_completed(normalized, node_results):
-            permission_result = await self._execute_next_ready_layer(
-                normalized,
-                node_results,
-            )
-            if permission_result is not None:
-                return permission_result
-
-        completed = all(result.completed for result in node_results.values())
-        normalized.status = "completed" if completed else "failed"
-        self.trace_recorder.record(
-            "dag_completed" if completed else "dag_failed",
-            dag_id=normalized.dag_id,
-            payload={"completed": completed},
-        )
-        return RunResult(
-            dag_id=normalized.dag_id,
-            completed=completed,
-            node_results=node_results,
-            traces=list(self.trace_recorder.events),
-        )
 
     async def execute_next_ready_layer(
         self,
@@ -360,7 +321,7 @@ class DAGExecutor:
             raise DAGExecutionError("DAG contains medium/high risk nodes and is not approved.")
 
 
-def topo_batches(dag: DAG) -> list[list[DAGNode]]:
+def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
     nodes_by_id = {node.id: node for node in dag.nodes}
     outgoing: dict[str, list[str]] = defaultdict(list)
     indegree = {node.id: 0 for node in dag.nodes}
@@ -395,7 +356,7 @@ def _next_ready_nodes(
         for node_id, result in node_results.items()
         if result.completed
     }
-    for batch in topo_batches(dag):
+    for batch in _topo_batches(dag):
         pending_nodes = [node for node in batch if node.id not in node_results]
         if not pending_nodes:
             continue

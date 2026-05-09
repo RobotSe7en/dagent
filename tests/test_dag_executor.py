@@ -1,72 +1,11 @@
 import asyncio
-import time
 
 import pytest
 
-from dagent.harness_runtime import AgentLoopResult, DAGExecutionError, DAGExecutor, topo_batches
+from dagent.harness_runtime import DAGExecutionError, DAGExecutor
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
-from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
-
-
-class FakeAgentLoop:
-    def __init__(self, delay_seconds: float = 0) -> None:
-        self.delay_seconds = delay_seconds
-        self.calls: list[dict] = []
-
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        if self.delay_seconds:
-            await asyncio.sleep(self.delay_seconds)
-        self.calls.append(
-            {
-                "user_message": user_message,
-                "boundary": boundary,
-                "max_steps": max_steps,
-                "allowed_tools": allowed_tools,
-            }
-        )
-        goal = user_message.splitlines()[0].removeprefix("Node goal: ")
-        return AgentLoopResult(
-            final_response=f"done:{goal}",
-            messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
-        )
-
-
-class BoundaryBlockingLoop(FakeAgentLoop):
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        self.calls.append(
-            {
-                "user_message": user_message,
-                "boundary": boundary,
-                "max_steps": max_steps,
-                "allowed_tools": allowed_tools,
-            }
-        )
-        raise BoundaryViolation(
-            "Write access is not allowed.",
-            action="write",
-            path="notes.md",
-        )
 
 
 def run(coro):
@@ -95,25 +34,8 @@ def node(
     )
 
 
-def test_topo_batches_groups_parallel_nodes() -> None:
-    dag = DAG(
-        dag_id="dag_1",
-        task_id="task_1",
-        nodes=[node("a"), node("b"), node("c")],
-        edges=[
-            DAGEdge(source="a", target="c"),
-            DAGEdge(source="b", target="c"),
-        ],
-    )
-
-    batches = topo_batches(dag)
-
-    assert [[n.id for n in batch] for batch in batches] == [["a", "b"], ["c"]]
-
-
 def test_executor_runs_ordered_dag_and_records_trace() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -121,14 +43,20 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
         edges=[DAGEdge(source="a", target="b")],
     )
 
-    result = run(executor.execute(dag))
+    first = run(executor.execute_next_ready_layer(dag))
+    result = run(
+        executor.execute_next_ready_layer(
+            dag,
+            initial_results=first.node_results,
+            record_dag_start=False,
+        )
+    )
 
     assert result.completed is True
     assert list(result.node_results) == ["a", "b"]
     assert result.node_results["a"].final_response == "echo:a"
     assert result.node_results["b"].final_response == "echo:b"
-    assert loop.calls == []
-    assert [event.event_type for event in result.traces] == [
+    assert [event.event_type for event in [*first.traces, *result.traces]] == [
         "dag_started",
         "node_started",
         "tool_called",
@@ -142,30 +70,8 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
     ]
 
 
-def test_executor_runs_independent_nodes_concurrently() -> None:
-    loop = FakeAgentLoop(delay_seconds=0.1)
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
-    dag = DAG(
-        dag_id="dag_1",
-        task_id="task_1",
-        nodes=[node("start"), node("a"), node("b")],
-        edges=[
-            DAGEdge(source="start", target="a"),
-            DAGEdge(source="start", target="b"),
-        ],
-    )
-
-    start = time.perf_counter()
-    result = run(executor.execute(dag))
-    elapsed = time.perf_counter() - start
-
-    assert result.completed is True
-    assert elapsed < 0.18
-
-
 def test_risk_override_promotes_write_file_to_medium() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -181,17 +87,15 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
         ],
     )
 
-    result = run(executor.execute(dag))
+    result = run(executor.execute_next_ready_layer(dag))
 
     assert result.completed is True
     assert result.node_results["write"].final_response.endswith("notes.md:hi")
-    assert loop.calls == []
     assert dag.nodes[0].risk == "low"
 
 
 def test_medium_risk_dag_requires_approval() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -200,13 +104,11 @@ def test_medium_risk_dag_requires_approval() -> None:
     )
 
     with pytest.raises(DAGExecutionError, match="not approved"):
-        run(executor.execute(dag))
-    assert loop.calls == []
+        run(executor.execute_next_ready_layer(dag))
 
 
 def test_high_risk_dag_requires_approval() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -215,12 +117,11 @@ def test_high_risk_dag_requires_approval() -> None:
     )
 
     with pytest.raises(DAGExecutionError, match="not approved"):
-        run(executor.execute(dag))
-    assert loop.calls == []
+        run(executor.execute_next_ready_layer(dag))
 
 
 def test_read_only_broad_paths_does_not_require_approval() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -234,7 +135,7 @@ def test_read_only_broad_paths_does_not_require_approval() -> None:
         ],
     )
 
-    result = run(executor.execute(dag))
+    result = run(executor.execute_next_ready_layer(dag))
 
     assert result.completed is True
 
@@ -323,7 +224,7 @@ def tool_executor() -> ToolExecutor:
 
 
 def test_executor_pauses_when_node_requests_permission() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -339,7 +240,7 @@ def test_executor_pauses_when_node_requests_permission() -> None:
         ],
     )
 
-    result = run(executor.execute(dag))
+    result = run(executor.execute_next_ready_layer(dag))
 
     assert result.completed is False
     assert result.pending_permission_request is not None
@@ -358,8 +259,7 @@ def test_executor_pauses_when_node_requests_permission() -> None:
 
 
 def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -372,7 +272,7 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
         ],
     )
 
-    result = run(executor.execute(dag))
+    result = run(executor.execute_next_ready_layer(dag))
 
     assert result.completed is True
     assert result.node_results["echo"].final_response == "echo:hi"
@@ -383,7 +283,6 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
     assert records[0].args == {"text": "hi"}
     assert records[0].output == "echo:hi"
     assert records[0].status == "completed"
-    assert loop.calls == []
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
@@ -395,8 +294,7 @@ def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -429,11 +327,10 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
     assert second.completed is True
     assert list(second.node_results) == ["a", "b"]
     assert [record.node_id for record in executor.trace_store.records_for_task("task_1")] == ["a", "b"]
-    assert loop.calls == []
 
 
 def test_executor_injects_completed_node_output_into_downstream_args() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -444,7 +341,8 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
         edges=[DAGEdge(source="source", target="sink")],
     )
 
-    result = run(executor.execute(dag))
+    first = run(executor.execute_next_ready_layer(dag))
+    result = run(executor.execute_next_ready_layer(dag, initial_results=first.node_results))
 
     assert result.completed is True
     assert result.node_results["source"].final_response == "echo:value"
@@ -455,7 +353,7 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
 
 
 def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -474,7 +372,7 @@ def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
 
 
 def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -484,13 +382,13 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
     )
 
     with pytest.raises(DAGExecutionError, match="missing"):
-        run(executor.execute(dag))
+        run(executor.execute_next_ready_layer(dag))
 
     assert executor.trace_store.records_for_task("task_1") == []
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
-    executor = DAGExecutor(agent_loop=FakeAgentLoop(), tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     failing_node = tool_node(
         "fragile",
         tool="fail_tool",
@@ -510,8 +408,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
 
 
 def test_tool_node_boundary_violation_pauses_for_permission() -> None:
-    loop = FakeAgentLoop()
-    executor = DAGExecutor(agent_loop=loop, tool_executor=tool_executor())
+    executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -527,7 +424,7 @@ def test_tool_node_boundary_violation_pauses_for_permission() -> None:
         ],
     )
 
-    result = run(executor.execute(dag))
+    result = run(executor.execute_next_ready_layer(dag))
 
     assert result.completed is False
     assert result.pending_permission_request is not None
@@ -541,4 +438,3 @@ def test_tool_node_boundary_violation_pauses_for_permission() -> None:
     assert records[0].args == {"path": "notes.md", "content": "hi"}
     assert records[0].status == "blocked_permission"
     assert records[0].error
-    assert loop.calls == []

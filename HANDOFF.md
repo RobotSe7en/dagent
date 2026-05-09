@@ -37,9 +37,9 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 
 | File | Responsibility |
 |------|----------------|
-| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` - top-level orchestrator, manages DAG lifecycle, execute_dag loop |
+| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` - top-level auto/direct/dag router and user-facing summarizer |
 | `dagent/harness_runtime/agent_loop.py` | Single-agent loop primitive with runtime/control tools |
-| `dagent/harness_runtime/dag_agent.py` | `LLMDAGAgent` - asks LLM to produce PlanSpec DSL, compiles to DAG, with JSON fallback |
+| `dagent/harness_runtime/dag_agent.py` | `DAGAgentLoop` - owns DAG messages, initial planning, review checkpoints, layer execution, observation, and replanning |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` - layer-by-layer DAG execution with placeholder injection |
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
 | `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` (fast/balanced/careful/manual) + `effective_risk()` |
@@ -83,7 +83,7 @@ flowchart TD
 
   A -->|"direct answer"| O["Return to user"]
   A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_agent"| D["LLMDAGAgent"]
+  A -->|"dag_agent"| D["DAGAgentLoop"]
 
   D -->|"review required"| UI["Return DAG for human review"]
   D -->|"auto approved (low risk)"| E["DAGExecutor"]
@@ -107,8 +107,8 @@ Modes:
 
 - **Tool-node-only DAG**: every node is a direct tool call. Intelligence lives in the replanner, not in node agents.
 - **Placeholder injection (Level 1 replanning)**: `{{node_id.output}}` in args gets replaced with actual output. Happens automatically in `_execute_next_ready_layer`.
-- **Unified replanning (Level 2+3)**: after each layer executes (success or failure), `_replan_after_layer` calls `dag_agent.aplan()` with formatted replan data. The LLM decides: NO_CHANGE (skip), adjust parameters (L2), or restructure the remaining subgraph (L3). On failure, replan is mandatory; on success, NO_CHANGE skips revision. Replan instructions are in `profiles/dag_agent/agent.md`.
-- **DAG agent session memory**: `dag_messages` (a `[user, assistant, ...]` list) persists across the entire plan → execute → replan lifecycle. Seeded with conversation history at `create_dag` time, then each `aplan()` call appends its prompt and response. This gives the LLM full context of its prior planning decisions during replanning, without needing a separate AgentLoop.
+- **Unified replanning (Level 2+3)**: after each layer executes (success or failure), `_replan_after_layer` uses the internal DAG model-call path with formatted replan data. The LLM decides: NO_CHANGE (skip), adjust parameters (L2), or restructure the remaining subgraph (L3). On failure, replan is mandatory; on success, NO_CHANGE skips revision. Replan instructions are in `profiles/dag_agent/agent.md`.
+- **DAG agent session memory**: `dag_messages` (a `[user, assistant, ...]` list) persists across the entire plan → execute → replan lifecycle. Seeded with conversation history at `DAGAgentLoop.run()` time, then each internal DAG model call appends its prompt and response. This gives the LLM full context of its prior planning decisions during replanning, without needing a separate AgentLoop.
 - **dag_start auto-complete**: synthetic start nodes (`tool="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
 - **Dynamic tool injection**: `HarnessRuntime.__init__` injects `dag_executor.tool_executor.registry.all_tools()` into `dag_agent.tools`, which `PromptBuilder` renders as `## Available Tools` in the prompt.
 - **Boundary enforcement**: whitelist approach - `allowed_paths` and `allowed_commands` constrain what each node can access.
@@ -200,9 +200,12 @@ npx tsc --noEmit
 4. **LLM no longer proposes risk**: Removed `risk` field from `PlanNodeSpec`. Risk is computed server-side via `effective_risk()`.
 5. **Renamed `control_tools.py` → `auto_mode_tools.py`** for clarity.
 6. **Full DAG JSON path fix**: `_full_dag_from_payload` now calls `_apply_effective_risk(dag, tools)` to recompute risk consistently.
-7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `TaskRecord`, seeded from conversation history at `create_dag` time. Each `aplan()` call appends its prompt and response. Removed `conversation_messages` parameter entirely — all context flows through `dag_messages`.
+7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `TaskRecord`, seeded from conversation history at `DAGAgentLoop.run()` time. Each internal DAG model call appends its prompt and response. Removed `conversation_messages` parameter entirely — all context flows through `dag_messages`.
 8. **Complete DSL replan**: Replan always returns a complete PlanSpec DSL including both completed and pending nodes. Removed `_merge_completed_nodes` and all partial DSL merge logic from `runtime.py`.
-9. **Simplified replan DAG application**: Removed `_apply_next_dag_revision`, `_DAGRevisionApplyResult`, `requires_dag_revision_review`, and `_dag_revision_changes_execution`. Replan DAGs now go through the same `prepare_dag_for_review` + `requires_initial_dag_review` path as initial DAGs — no diff-based review. `_apply_replan` replaces the DAG, keeps unchanged completed node results, and drops results for removed or modified nodes.
+9. **Simplified replan DAG application**: Removed `_apply_next_dag_revision`, `_DAGRevisionApplyResult`, `requires_dag_revision_review`, and `_dag_revision_changes_execution`. Replan DAGs now go through the same `DAGAgentLoop.prepare_for_review` + `requires_initial_dag_review` path as initial DAGs — no diff-based review. `_apply_replan` replaces the DAG, keeps unchanged completed node results, and drops results for removed or modified nodes.
+10. **DAGAgentLoop consolidation**: Removed public `LLMDAGAgent`/`DAGAgent` and `aplan()` APIs. DAG creation, validation retries, review pauses, execution, permission handling, and replanning now live behind `DAGAgentLoop.run()` / `resume()` / `execute()`. `HarnessRuntime` only routes modes, handles top AgentLoop tool review, and summarizes DAG results.
+11. **Event-style DAG observations**: Removed separate `_dag_planning_prompt` and `_replan_user_message` prompt builders. DAGAgentLoop now feeds history plus `_format_dag_observation()` messages for planning context, validation feedback, successful layers, and failed layers; `agent.md` remains the source of planning/replanning rules.
+
 
 ### Earlier changes (merged from `codex/llm-facing-planspec-dsl`):
 
@@ -219,20 +222,20 @@ npx tsc --noEmit
 | Level | Description | Status |
 |-------|-------------|--------|
 | 1 - Placeholder Injection | `{{node_id.output}}` in args replaced with upstream output | ✅ Implemented (`_inject_placeholders` in `dag_executor.py`) |
-| 2+3 - Unified Replan | LLM decides: no change, adjust params, or restructure subgraph | ✅ Implemented (`_replan_after_layer` in `runtime.py`, `aplan` in `dag_agent.py`) |
+| 2+3 - Unified Replan | LLM decides: no change, adjust params, or restructure subgraph | ✅ Implemented (`DAGAgentLoop._replan_after_layer` in `dag_agent.py`) |
 
 After each layer executes, L1 placeholder injection runs first (code, no LLM). Then
-`_replan_after_layer` formats replan data and calls `dag_agent.aplan()` — the same
+`_replan_after_layer` formats replan data and uses the internal DAG model-call path — the same
 method used for initial planning. `dag_from_model_output` returns `None` for `NO_CHANGE`.
 The LLM returns `NO_CHANGE` (no replan needed), adjusted PlanSpec DSL (param tweaks), or
 a restructured PlanSpec DSL (new/removed/reordered nodes). On the error path, replan is
 mandatory (NO_CHANGE raises). Replan instructions are in `profiles/dag_agent/agent.md`.
 
 DAG agent session memory: `dag_messages` on `TaskRecord` is a single `[user, assistant, ...]`
-list seeded with conversation history at `create_dag` time. Each `aplan()` call appends its
+list seeded with conversation history at `DAGAgentLoop.run()` time. Each internal DAG model call appends its
 prompt and response. The LLM sees: conversation history → initial planning exchange →
 layer result → replan response → next layer result → ... as one continuous conversation.
-`aplan()` no longer accepts `conversation_messages`; all context flows through `dag_messages`.
+There is no public `aplan()` planner API; all context flows through `dag_messages`.
 
 ## Suggested Next Work
 - Add `list_files` / `list_directory` as a proper registered tool (currently uses `run_command` + `dir`)
@@ -245,5 +248,5 @@ layer result → replan response → next layer result → ... as one continuous
 
 - Use `uv run --extra dev pytest` and `npx tsc --noEmit` before committing.
 - Do not reintroduce `dagent/harness/` or `dagent/runtime/`.
-- Canonical class names: `LLMDAGAgent`, `DAGAgent`, `HarnessRuntime`, `DAGExecutor`.
+- Canonical class names: `DAGAgentLoop`, `HarnessRuntime`, `DAGExecutor`.
 - `PlanNodeSpec` fields: `id`, `tool`, `args`, `depends_on`. No `goal`, no `risk` (risk is computed server-side).

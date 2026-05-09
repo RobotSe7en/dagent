@@ -6,12 +6,11 @@ from dagent.harness_runtime.dag_executor import (
     DAGExecutor,
     NodeExecutionResult,
     RunResult,
-    topo_batches,
 )
 from dagent.harness_runtime.dag_agent import (
     DAGCreationError,
-    DAGAgent,
-    LLMDAGAgent,
+    DAGAgentLoop,
+    DAGAgentLoopResult,
 )
 from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
@@ -31,19 +30,18 @@ __all__ = [
     "DAGCreationError",
     "DAGExecutionError",
     "DAGExecutor",
-    "DAGAgent",
+    "DAGAgentLoop",
+    "DAGAgentLoopResult",
     "DAGReviewerAgent",
     "DAGReviewResult",
     "FeedbackLearnerAgent",
     "FeedbackLearning",
     "HarnessMessageResult",
     "HarnessRuntime",
-    "LLMDAGAgent",
     "NodeExecutionResult",
     "PendingToolReview",
     "RunResult",
     "RuntimeMode",
     "TaskRecord",
     "TraceStore",
-    "topo_batches",
 ]
