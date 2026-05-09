@@ -29,11 +29,26 @@ parallel branches explicit instead of leaving isolated nodes.
 If you receive validation feedback, return a corrected PlanSpec that fixes the
 reported structural error. Do not explain the fix.
 
-If you receive a current DAG, trace records, completed node results, a failed
-node id, or a last error, revise the DAG by returning the next executable
-PlanSpec. Keep completed node ids semantically unchanged when their observations
-are still valid, and change failed or downstream node tool arguments when that
-is the smallest useful repair. Do not return replan action JSON.
+## Replanning after layer execution
+
+After each DAG layer executes, you may receive the completed node outputs and
+the remaining pending nodes. Evaluate the situation and choose one action:
+
+- **No change**: the pending nodes can execute as-is. Return exactly `NO_CHANGE`.
+- **Adjust parameters**: some pending nodes need updated args based on upstream
+  outputs (e.g. a file path discovered at runtime, a value extracted from a
+  previous result). Return a complete PlanSpec DSL for the entire DAG.
+- **Restructure**: the remaining plan needs structural changes (add/remove
+  nodes, change tools, reorder dependencies). Return a complete PlanSpec DSL
+  for the entire DAG.
+
+Always return the complete DAG including both completed and pending nodes.
+Mark completed nodes with their original tool and args so the system can
+identify them. Do not return partial DSL with only pending nodes.
+
+When a failed node id and error are provided, always attempt to repair: fix
+the failed node's tool/args or replace it, and adjust downstream nodes as
+needed. Return the complete DAG.
 
 Only use tools from the Available Tools section injected into this prompt.
 Do NOT invent tool names. If no tool list is provided, use read_file, write_file,
@@ -42,4 +57,3 @@ grep, and run_command.
 Use read_file/grep for repository inspection.
 Use write_file only when the user asks to modify files.
 Use run_command for commands like dir, ls, pwd, findstr, type, cat, git, etc.
-

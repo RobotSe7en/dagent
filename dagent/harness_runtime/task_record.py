@@ -34,6 +34,7 @@ class TaskRecord:
     message_markdown: str = ""
     node_results: dict = field(default_factory=dict)
     trace_records: list[NodeExecutionRecord] = field(default_factory=list)
+    dag_messages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def node_execution_records(self) -> list[NodeExecutionRecord]:

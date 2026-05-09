@@ -43,21 +43,21 @@ class DAGAgent(ABC):
         user_request: str,
         *,
         task_id: str | None = None,
-        conversation_messages: list[dict[str, Any]] | None = None,
-    ) -> DAG:
-        """Create a proposed DAG for a user request."""
+        dag_messages: list[dict[str, Any]] | None = None,
+    ) -> DAG | None:
+        """Create a proposed DAG for a user request. Returns None for NO_CHANGE."""
 
     async def aplan(
         self,
         user_request: str,
         *,
         task_id: str | None = None,
-        conversation_messages: list[dict[str, Any]] | None = None,
-    ) -> DAG:
+        dag_messages: list[dict[str, Any]] | None = None,
+    ) -> DAG | None:
         return self.plan(
             user_request,
             task_id=task_id,
-            conversation_messages=conversation_messages,
+            dag_messages=dag_messages,
         )
 
 
@@ -84,13 +84,13 @@ class LLMDAGAgent(DAGAgent):
         user_request: str,
         *,
         task_id: str | None = None,
-        conversation_messages: list[dict[str, Any]] | None = None,
-    ) -> DAG:
+        dag_messages: list[dict[str, Any]] | None = None,
+    ) -> DAG | None:
         return asyncio.run(
             self.aplan(
                 user_request,
                 task_id=task_id,
-                conversation_messages=conversation_messages,
+                dag_messages=dag_messages,
             )
         )
 
@@ -99,8 +99,8 @@ class LLMDAGAgent(DAGAgent):
         user_request: str,
         *,
         task_id: str | None = None,
-        conversation_messages: list[dict[str, Any]] | None = None,
-    ) -> DAG:
+        dag_messages: list[dict[str, Any]] | None = None,
+    ) -> DAG | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages = self.prompt_builder.build(
             PromptRequest(
@@ -118,26 +118,21 @@ class LLMDAGAgent(DAGAgent):
                 },
             )
         )
-        if conversation_messages:
-            messages = [
-                messages[0],
-                *_conversation_message_copies(conversation_messages),
-                messages[1],
-            ]
-        response = await self.provider.chat(
-            messages
-        )
+        system_msg = messages[0]
+        user_msg = messages[1]
+        if dag_messages is not None:
+            messages = [system_msg, *dag_messages, user_msg]
+        response = await self.provider.chat(messages)
+        if dag_messages is not None:
+            dag_messages.append({"role": "user", "content": user_request})
+            dag_messages.append({"role": "assistant", "content": response.content})
         return dag_from_model_output(response.content, task_id=resolved_task_id, tools=self.tools)
 
 
-def _conversation_message_copies(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
-    copied = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
-            copied.append({"role": role, "content": content})
-    return copied
+def _is_no_change(content: str) -> bool:
+    cleaned = _strip_thinking_blocks(content).strip().upper()
+    return cleaned in {"NO_CHANGE", "NO CHANGE", "NOCHANGE"}
+
 
 
 def dag_from_model_output(
@@ -145,7 +140,9 @@ def dag_from_model_output(
     *,
     task_id: str,
     tools: list[Tool] | None = None,
-) -> DAG:
+) -> DAG | None:
+    if _is_no_change(content):
+        return None
     try:
         plan = parse_plan_spec_dsl(content)
     except DAGCreationError as dsl_error:

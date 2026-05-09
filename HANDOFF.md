@@ -107,7 +107,8 @@ Modes:
 
 - **Tool-node-only DAG**: every node is a direct tool call. Intelligence lives in the replanner, not in node agents.
 - **Placeholder injection (Level 1 replanning)**: `{{node_id.output}}` in args gets replaced with actual output. Happens automatically in `_execute_next_ready_layer`.
-- **Error-path replanning (Level 3)**: on node failure, `_create_next_dag_from_observation` asks the LLM for a revised DAG. Success-path replanning was removed - layers execute as planned without LLM intervention.
+- **Unified replanning (Level 2+3)**: after each layer executes (success or failure), `_replan_after_layer` calls `dag_agent.aplan()` with formatted replan data. The LLM decides: NO_CHANGE (skip), adjust parameters (L2), or restructure the remaining subgraph (L3). On failure, replan is mandatory; on success, NO_CHANGE skips revision. Replan instructions are in `profiles/dag_agent/agent.md`.
+- **DAG agent session memory**: `dag_messages` (a `[user, assistant, ...]` list) persists across the entire plan → execute → replan lifecycle. Seeded with conversation history at `create_dag` time, then each `aplan()` call appends its prompt and response. This gives the LLM full context of its prior planning decisions during replanning, without needing a separate AgentLoop.
 - **dag_start auto-complete**: synthetic start nodes (`tool="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
 - **Dynamic tool injection**: `HarnessRuntime.__init__` injects `dag_executor.tool_executor.registry.all_tools()` into `dag_agent.tools`, which `PromptBuilder` renders as `## Available Tools` in the prompt.
 - **Boundary enforcement**: whitelist approach - `allowed_paths` and `allowed_commands` constrain what each node can access.
@@ -199,29 +200,41 @@ npx tsc --noEmit
 4. **LLM no longer proposes risk**: Removed `risk` field from `PlanNodeSpec`. Risk is computed server-side via `effective_risk()`.
 5. **Renamed `control_tools.py` → `auto_mode_tools.py`** for clarity.
 6. **Full DAG JSON path fix**: `_full_dag_from_payload` now calls `_apply_effective_risk(dag, tools)` to recompute risk consistently.
+7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `TaskRecord`, seeded from conversation history at `create_dag` time. Each `aplan()` call appends its prompt and response. Removed `conversation_messages` parameter entirely — all context flows through `dag_messages`.
+8. **Complete DSL replan**: Replan always returns a complete PlanSpec DSL including both completed and pending nodes. Removed `_merge_completed_nodes` and all partial DSL merge logic from `runtime.py`.
+9. **Simplified replan DAG application**: Removed `_apply_next_dag_revision`, `_DAGRevisionApplyResult`, `requires_dag_revision_review`, and `_dag_revision_changes_execution`. Replan DAGs now go through the same `prepare_dag_for_review` + `requires_initial_dag_review` path as initial DAGs — no diff-based review. `_apply_replan` replaces the DAG, keeps unchanged completed node results, and drops results for removed or modified nodes.
 
 ### Earlier changes (merged from `codex/llm-facing-planspec-dsl`):
 
-7. **LLM-facing PlanSpec DSL**: DAGAgent now prefers compact DSL output, parses it into PlanSpec/DAG, and keeps JSON as fallback.
-8. **DAG conversation context**: forced DAG mode, auto dag_agent creation, continuation DAGs, and failure replanning now pass recent user/assistant history plus structured DAG execution context.
-9. **Unknown tool feedback**: DAG validation checks node tools against the runtime registry and feeds unknown-tool errors back to DAGAgent for replanning.
-10. **Execution recovery fixes**: failed parallel layers preserve successful sibling results, stale failed trace node ids are ignored after replanning, and failed DAG mode no longer loops through repeated approvals.
-11. **Command failure semantics**: `run_command` now raises `ToolExecutionError` on non-zero exit codes, so DAG traces show `tool_failed`/`node_failed` instead of `tool_completed`.
-12. **WebUI DAG fixes**: completed/failed DAG cards are no longer confirmable, and final assistant output is appended correctly after DAG review/execution.
-13. **File tool safety**: `grep` skips heavy generated directories and caps large result sets.
+10. **LLM-facing PlanSpec DSL**: DAGAgent now prefers compact DSL output, parses it into PlanSpec/DAG, and keeps JSON as fallback.
+11. **DAG conversation context**: forced DAG mode, auto dag_agent creation, continuation DAGs, and failure replanning now pass recent user/assistant history plus structured DAG execution context.
+12. **Unknown tool feedback**: DAG validation checks node tools against the runtime registry and feeds unknown-tool errors back to DAGAgent for replanning.
+13. **Execution recovery fixes**: failed parallel layers preserve successful sibling results, stale failed trace node ids are ignored after replanning, and failed DAG mode no longer loops through repeated approvals.
+14. **Command failure semantics**: `run_command` now raises `ToolExecutionError` on non-zero exit codes, so DAG traces show `tool_failed`/`node_failed` instead of `tool_completed`.
+15. **WebUI DAG fixes**: completed/failed DAG cards are no longer confirmable, and final assistant output is appended correctly after DAG review/execution.
+16. **File tool safety**: `grep` skips heavy generated directories and caps large result sets.
 
 ## Three-Level Replan Status
 
 | Level | Description | Status |
 |-------|-------------|--------|
-| 1 - Placeholder Injection | `$ref(node_id)` in args replaced with upstream output | ✅ Implemented (`_inject_placeholders` in `dag_executor.py`) |
-| 2 - Light Re-planner | Lightweight LLM adjusts next node params based on upstream output | ❌ Not implemented (`dag_executor.py:122` says "does not replan yet") |
-| 3 - DAG Re-generator | Full LLM re-generation of pending subgraph | ⚠️ Error-path only (`_create_next_dag_from_observation` in `runtime.py`, triggers on node failure only) |
+| 1 - Placeholder Injection | `{{node_id.output}}` in args replaced with upstream output | ✅ Implemented (`_inject_placeholders` in `dag_executor.py`) |
+| 2+3 - Unified Replan | LLM decides: no change, adjust params, or restructure subgraph | ✅ Implemented (`_replan_after_layer` in `runtime.py`, `aplan` in `dag_agent.py`) |
+
+After each layer executes, L1 placeholder injection runs first (code, no LLM). Then
+`_replan_after_layer` formats replan data and calls `dag_agent.aplan()` — the same
+method used for initial planning. `dag_from_model_output` returns `None` for `NO_CHANGE`.
+The LLM returns `NO_CHANGE` (no replan needed), adjusted PlanSpec DSL (param tweaks), or
+a restructured PlanSpec DSL (new/removed/reordered nodes). On the error path, replan is
+mandatory (NO_CHANGE raises). Replan instructions are in `profiles/dag_agent/agent.md`.
+
+DAG agent session memory: `dag_messages` on `TaskRecord` is a single `[user, assistant, ...]`
+list seeded with conversation history at `create_dag` time. Each `aplan()` call appends its
+prompt and response. The LLM sees: conversation history → initial planning exchange →
+layer result → replan response → next layer result → ... as one continuous conversation.
+`aplan()` no longer accepts `conversation_messages`; all context flows through `dag_messages`.
 
 ## Suggested Next Work
-
-- **Implement Level 2 replanning** (light local param adjustment between layers, without full LLM re-generation)
-- **Implement success-path Level 3** (proactive re-generation after each layer, not just on error)
 - Add `list_files` / `list_directory` as a proper registered tool (currently uses `run_command` + `dir`)
 - Add persistent session/run storage (currently in-memory)
 - Improve trace events for top AgentLoop tool calls

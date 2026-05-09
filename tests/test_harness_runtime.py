@@ -462,7 +462,7 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
     assert result.dag is not None
     assert [node.id for node in result.dag.nodes] == ["start", "a", "b"]
     assert len(provider.requests) == 2
-    assert "failed validation" in provider.requests[1]["messages"][-1]["content"]
+    assert "Validation error:" in provider.requests[1]["messages"][-1]["content"]
     assert "Isolated node IDs" in provider.requests[1]["messages"][-1]["content"]
 
 

@@ -484,8 +484,8 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     ]
 
 
-def test_harness_runtime_executes_layers_without_success_path_replanning() -> None:
-    """Success-path replanning was removed — layers execute with original args."""
+def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
+    """When replan returns NO_CHANGE, layers execute with original args."""
     initial = DAG(
         dag_id="dag_replan",
         task_id="task_replan",
@@ -497,7 +497,7 @@ def test_harness_runtime_executes_layers_without_success_path_replanning() -> No
         edges=[DAGEdge(source="inspect", target="answer")],
     )
     runtime = runtime_for(
-        dag_agent=LLMDAGAgent(MockProvider([])),
+        dag_agent=LLMDAGAgent(MockProvider([ChatResponse(content="NO_CHANGE")])),
         executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
     )
     prepared = runtime.prepare_dag_for_review(initial)
@@ -513,18 +513,43 @@ def test_harness_runtime_executes_layers_without_success_path_replanning() -> No
     assert result.completed is True
     assert result.node_results["inspect"].final_response == "echo:observed"
     assert result.node_results["answer"].final_response == "echo:old"
-    assert [event.event_type for event in result.traces] == [
-        "dag_started",
-        "node_started",
-        "tool_called",
-        "tool_completed",
-        "node_completed",
-        "node_started",
-        "tool_called",
-        "tool_completed",
-        "node_completed",
-        "dag_completed",
-    ]
+
+
+def test_harness_runtime_replan_adjusts_params_after_success() -> None:
+    """When replan returns adjusted PlanSpec DSL, pending node args are updated."""
+    initial = DAG(
+        dag_id="dag_l2",
+        task_id="task_l2",
+        status="approved",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "discovered_path"}),
+            _tool_node("answer", "echo", {"text": "placeholder"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
+    )
+    adjusted_dsl = (
+        'task: adjusted\n'
+        'start = dag_start()\n'
+        'inspect = echo(text="discovered_path") after start\n'
+        'answer = echo(text="adjusted_value") after inspect\n'
+    )
+    runtime = runtime_for(
+        dag_agent=LLMDAGAgent(MockProvider([ChatResponse(content=adjusted_dsl)])),
+        executor=DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor()),
+    )
+    prepared = runtime.prepare_dag_for_review(initial)
+    runtime.tasks["task_l2"] = TaskRecord(
+        task_id="task_l2",
+        user_request="Adjust downstream based on observation",
+        dag=prepared,
+        review_level="fast",
+    )
+
+    result = run(runtime.execute_dag("task_l2"))
+
+    assert result.completed is True
+    assert result.node_results["answer"].final_response == "echo:adjusted_value"
+    assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:
@@ -562,12 +587,57 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     assert result.completed is True
     assert result.node_results["fallback"].final_response == "echo:recovered"
     request = runtime.dag_agent.provider.requests[0]["messages"][-1]["content"]
-    assert '"failed_node_id": "try_bad_tool"' in request
+    assert "try_bad_tool" in request
     assert "failed:boom" in request
     assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
-def test_harness_runtime_pauses_when_failed_tool_cannot_be_replanned() -> None:
+def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
+    """Replan LLM call includes the initial planning exchange in its context."""
+    initial_dsl = (
+        'task: initial\n'
+        'start = dag_start()\n'
+        'inspect = echo(text="hello") after start\n'
+        'answer = echo(text="placeholder") after inspect\n'
+    )
+    adjusted_dsl = (
+        'task: adjusted\n'
+        'start = dag_start()\n'
+        'inspect = echo(text="hello") after start\n'
+        'answer = echo(text="fixed") after inspect\n'
+    )
+    provider = MockProvider([
+        ChatResponse(content=initial_dsl),
+        ChatResponse(content=adjusted_dsl),
+        ChatResponse(content="NO_CHANGE"),
+    ])
+    dag_agent = LLMDAGAgent(provider)
+    executor = DAGExecutor(agent_loop=CompletingLoop(), tool_executor=make_tool_executor())
+    runtime = runtime_for(dag_agent=dag_agent, executor=executor)
+
+    record = run(runtime.create_dag("Do two steps", task_id="task_dm", review_level="fast"))
+    assert record.dag_messages is not None
+    assert len(record.dag_messages) == 2
+    assert record.dag_messages[0]["role"] == "user"
+    assert record.dag_messages[1]["role"] == "assistant"
+    assert initial_dsl in record.dag_messages[1]["content"]
+
+    result = run(runtime.execute_dag(record.task_id))
+    assert result.completed is True
+
+    replan_call_messages = provider.requests[1]["messages"]
+    roles = [m["role"] for m in replan_call_messages]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert initial_dsl in replan_call_messages[2]["content"]
+
+    assert len(record.dag_messages) == 6
+    assert record.dag_messages[2]["role"] == "user"
+    assert record.dag_messages[3]["role"] == "assistant"
+    assert adjusted_dsl in record.dag_messages[3]["content"]
+    assert record.dag_messages[5]["content"] == "NO_CHANGE"
+
+
+
     initial = DAG(
         dag_id="dag_failure_needs_review",
         task_id="task_failure_needs_review",

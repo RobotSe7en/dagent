@@ -6,12 +6,8 @@ DAGAgent rules:
 - DAGAgent suggestions do not grant final permissions.
 - Executor will re-check risk and boundaries.
 - Return compact PlanSpec DSL, not full execution DAG JSON.
-- When asked to revise an existing DAG after execution observations, return the
-  next DAG version as PlanSpec DSL. Do not return action types such as keep,
-  patch_node, replace, or abort.
-- Use the provided current DAG, trace, error, and completed node results as
-  observations. Preserve completed node ids when their results are still useful;
-  change failed/downstream node tool or args when needed to make progress.
+- When replanning, follow the instructions in the "Replanning after layer
+  execution" section of the agent prompt.
 - For multi-node PlanSpec DSL, include `start = dag_start()` and make each
   independent root work node use `after start`.
 - Generate tool DAGs only: every node must use `tool` and `args` and must be

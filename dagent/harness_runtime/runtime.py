@@ -28,7 +28,7 @@ from dagent.harness_runtime.dag_executor import (
     _next_ready_nodes,
 )
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
-from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.dag_agent import DAGAgent, DAGCreationError
 from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
@@ -63,13 +63,6 @@ class HarnessMessageResult:
     control_events: list[dict[str, Any]] = field(default_factory=list)
     pending_review: PendingReview | None = None
     pending_tool_review: PendingToolReview | None = None
-
-
-@dataclass(frozen=True)
-class _DAGRevisionApplyResult:
-    reason: str
-    changed_node_ids: set[str]
-    pending_review: PendingReview | None = None
 
 
 class HarnessRuntime:
@@ -348,11 +341,14 @@ class HarnessRuntime:
         review_level: ReviewLevel = "balanced",
         planning_context: str = "",
         runtime_mode: RuntimeMode = "auto",
+        dag_messages: list[dict[str, Any]] | None = None,
     ) -> TaskRecord:
+        if dag_messages is None:
+            dag_messages = self._new_dag_messages()
         dag = await self._create_validated_dag(
             _dag_planning_prompt(request, planning_context),
             task_id=task_id,
-            conversation_messages=self._dag_conversation_messages(),
+            dag_messages=dag_messages,
         )
         record = TaskRecord(
             task_id=dag.task_id,
@@ -360,6 +356,7 @@ class HarnessRuntime:
             dag=dag,
             review_level=review_level,
             runtime_mode=runtime_mode,
+            dag_messages=dag_messages,
         )
         self.tasks[record.task_id] = record
         return record
@@ -369,19 +366,21 @@ class HarnessRuntime:
         request: str,
         *,
         task_id: str | None = None,
-        conversation_messages: list[dict[str, Any]] | None = None,
+        dag_messages: list[dict[str, Any]] | None = None,
         max_attempts: int = 2,
     ) -> DAG:
         feedback = ""
         last_error: Exception | None = None
         for attempt in range(max_attempts):
-            prompt = request if not feedback else _dag_creation_feedback_prompt(request, feedback)
+            prompt = request if not feedback else f"{request}\n\nValidation error: {feedback}"
             try:
                 dag = await self.dag_agent.aplan(
                     prompt,
                     task_id=task_id,
-                    conversation_messages=conversation_messages,
+                    dag_messages=dag_messages,
                 )
+                if dag is None:
+                    raise DAGCreationError("DAG agent returned NO_CHANGE for initial planning.")
                 return self.prepare_dag_for_review(dag)
             except Exception as exc:
                 last_error = exc
@@ -490,16 +489,15 @@ class HarnessRuntime:
                         break
 
                     try:
-                        proposed_dag = await self._create_next_dag_from_observation(
+                        proposed_dag = await self._replan_after_layer(
                             record,
                             last_error=str(exc),
                             failed_node_id=failed_node_id,
                         )
-                        applied = self._apply_next_dag_revision(
-                            record,
-                            proposed_dag,
-                            reason="Repair failed node from execution observation.",
-                        )
+                        if proposed_dag is None:
+                            raise ValueError("Replan returned NO_CHANGE on a failed layer.")
+                        reason = "Repair failed node from execution observation."
+                        self._apply_replan(record, proposed_dag)
                     except Exception as replan_exc:
                         pending = self._create_execution_error_review(
                             record,
@@ -516,22 +514,10 @@ class HarnessRuntime:
                         )
                         break
 
-                    pending = applied.pending_review
-                    if pending is not None:
-                        traces.append(_review_trace(record.dag.dag_id, pending))
-                        result = RunResult(
-                            dag_id=record.dag.dag_id,
-                            completed=False,
-                            node_results=dict(record.node_results),
-                            traces=traces,
-                        )
-                        break
                     traces.append(
                         _dag_revision_trace_event(
                             dag_id=record.dag.dag_id,
-                            reason=applied.reason,
-                            changed_node_ids=applied.changed_node_ids,
-                            applied=True,
+                            reason=reason,
                         )
                     )
                     replan_count += 1
@@ -553,6 +539,30 @@ class HarnessRuntime:
                     break
                 if len(record.node_results) == prev_count:
                     break
+
+                if replan_count < self.max_replans:
+                    try:
+                        proposed_dag = await self._replan_after_layer(record)
+                    except Exception:
+                        proposed_dag = None
+                    if proposed_dag is not None:
+                        reason = "Replan after successful layer execution."
+                        self._apply_replan(record, proposed_dag)
+                        traces.append(
+                            _dag_revision_trace_event(
+                                dag_id=record.dag.dag_id,
+                                reason=reason,
+                            )
+                        )
+                        replan_count += 1
+                        if record.dag.status == "review_required":
+                            result = RunResult(
+                                dag_id=record.dag.dag_id,
+                                completed=False,
+                                node_results=dict(record.node_results),
+                                traces=traces,
+                            )
+                            break
 
             result = RunResult(
                 dag_id=record.dag.dag_id,
@@ -668,68 +678,68 @@ class HarnessRuntime:
             traces=traces,
         )
 
-    async def _create_next_dag_from_observation(
+    async def _replan_after_layer(
         self,
         record: TaskRecord,
         *,
-        last_error: str,
-        failed_node_id: str | None,
-    ) -> DAG:
-        return await self._create_validated_dag(
-            _dag_revision_prompt(
-                record,
-                last_error=last_error,
-                failed_node_id=failed_node_id,
-            ),
-            task_id=record.task_id,
-            conversation_messages=self._dag_conversation_messages(),
+        last_error: str = "",
+        failed_node_id: str | None = None,
+        max_attempts: int = 2,
+    ) -> DAG | None:
+        replan_request = _replan_user_message(
+            record,
+            last_error=last_error,
+            failed_node_id=failed_node_id,
         )
+        feedback = ""
+        last_exc: Exception | None = None
+        for attempt in range(max_attempts):
+            prompt = replan_request if not feedback else f"{replan_request}\n\nValidation error: {feedback}"
+            dag = await self.dag_agent.aplan(
+                prompt,
+                task_id=record.task_id,
+                dag_messages=record.dag_messages,
+            )
+            if dag is None:
+                return None
+            try:
+                return self.prepare_dag_for_review(dag)
+            except Exception as exc:
+                last_exc = exc
+                feedback = str(exc)
+        assert last_exc is not None
+        raise last_exc
 
-    def _apply_next_dag_revision(
-        self,
-        record: TaskRecord,
-        next_dag: DAG,
-        *,
-        reason: str,
-    ) -> _DAGRevisionApplyResult:
-        proposed_input = next_dag.model_copy(deep=True)
-        proposed_input.task_id = record.task_id
-        proposed_input.dag_id = record.dag.dag_id
-        proposed_input.version = record.dag.version + 1
-        proposed = self.prepare_dag_for_review(proposed_input)
-        changed_node_ids = _changed_node_ids(record.dag, proposed)
-        if not changed_node_ids:
-            raise ValueError("DAG agent returned an unchanged DAG revision.")
-
-        if record.suppress_next_review:
-            record.suppress_next_review = False
+    def _apply_replan(self, record: TaskRecord, next_dag: DAG) -> None:
+        prepared = next_dag.model_copy(deep=True)
+        prepared.task_id = record.task_id
+        prepared.dag_id = record.dag.dag_id
+        prepared.version = record.dag.version + 1
+        prepared = self.prepare_dag_for_review(prepared)
+        policy = review_policy(record.review_level)
+        if policy.requires_initial_dag_review(prepared):
+            prepared.status = "review_required"
+        new_nodes = {node.id: node for node in prepared.nodes}
+        old_nodes = {node.id: node for node in record.dag.nodes}
+        for nid in list(record.node_results):
+            new_node = new_nodes.get(nid)
+            if new_node is None:
+                del record.node_results[nid]
+                continue
+            old_node = old_nodes.get(nid)
+            if old_node is None or old_node.tool != new_node.tool or old_node.args != new_node.args:
+                del record.node_results[nid]
+        record.dag = prepared
+        if prepared.status == "review_required":
+            record.pending_review = PendingReview(
+                review_id=f"review_{uuid4().hex}",
+                kind="dag_replan",
+                message="Review proposed DAG revision from replanning.",
+                proposed_dag=prepared,
+                payload={},
+            )
         else:
-            policy = review_policy(record.review_level)
-            if policy.requires_dag_revision_review(current=record.dag, proposed=proposed):
-                pending = PendingReview(
-                    review_id=f"review_{uuid4().hex}",
-                    kind="dag_replan",
-                    message="Review proposed DAG revision from execution observation.",
-                    proposed_dag=proposed,
-                    payload={"reason": reason, "changed_node_ids": sorted(changed_node_ids)},
-                )
-                record.pending_review = pending
-                record.dag = proposed
-                return _DAGRevisionApplyResult(
-                    reason=reason,
-                    changed_node_ids=changed_node_ids,
-                    pending_review=pending,
-                )
-
-        for node_id in changed_node_ids:
-            if any(node.id == node_id for node in record.dag.nodes):
-                _invalidate_patch_results(record, node_id)
-        record.dag = proposed
-        record.pending_review = None
-        return _DAGRevisionApplyResult(
-            reason=reason,
-            changed_node_ids=changed_node_ids,
-        )
+            record.pending_review = None
 
     def _create_execution_error_review(
         self,
@@ -916,7 +926,7 @@ class HarnessRuntime:
             dag = await self._create_validated_dag(
                 _dag_planning_prompt(request, self._conversation_context()),
                 task_id=record.task_id,
-                conversation_messages=self._dag_conversation_messages(),
+                dag_messages=record.dag_messages,
             )
             record.dag = dag
             record.dag.status = "review_required"
@@ -1082,15 +1092,21 @@ class HarnessRuntime:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    def _dag_conversation_messages(self) -> list[dict[str, Any]]:
-        messages = list(self._conversation_history)
-        active_user_message = self._active_user_message.strip()
-        if active_user_message and not (
+    def _new_dag_messages(self) -> list[dict[str, Any]]:
+        """Create a new dag_messages list seeded with conversation history."""
+        messages: list[dict[str, Any]] = []
+        for msg in self._conversation_history:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        active = self._active_user_message.strip()
+        if active and not (
             messages
             and messages[-1].get("role") == "user"
-            and messages[-1].get("content") == active_user_message
+            and messages[-1].get("content") == active
         ):
-            messages.append({"role": "user", "content": active_user_message})
+            messages.append({"role": "user", "content": active})
         return messages[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
     def _remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
@@ -1165,14 +1181,6 @@ def _dag_created_review_message(record: TaskRecord) -> str:
     )
 
 
-def _dag_creation_feedback_prompt(request: str, feedback: str) -> str:
-    return (
-        f"{request}\n\n"
-        "The previous DAG proposal failed validation. Return a corrected "
-        "compact PlanSpec DSL only.\n"
-        f"Validation error: {feedback}"
-    )
-
 
 def _dag_planning_prompt(request: str, context: str) -> str:
     if not context.strip():
@@ -1186,41 +1194,58 @@ def _dag_planning_prompt(request: str, context: str) -> str:
     )
 
 
-def _dag_revision_prompt(
+
+def _replan_user_message(
     record: TaskRecord,
     *,
-    last_error: str,
-    failed_node_id: str | None,
+    last_error: str = "",
+    failed_node_id: str | None = None,
 ) -> str:
-    payload = {
-        "task_id": record.task_id,
-        "user_request": record.user_request,
-        "current_dag": record.dag.model_dump(mode="json"),
-        "completed_node_results": {
-            node_id: {
-                "completed": node_result.completed,
-                "stop_reason": node_result.stop_reason,
-                "final_response": node_result.final_response,
-            }
-            for node_id, node_result in _completed_results(record.node_results).items()
-        },
-        "recent_trace_records": [
-            trace_record.model_dump(mode="json")
-            for trace_record in record.trace_records[-12:]
-        ],
-        "failed_node_id": failed_node_id,
-        "last_error": last_error,
-    }
-    return (
-        "Revise the executable DAG after an execution observation.\n"
-        "Return one compact PlanSpec DSL for the next DAG version.\n"
-        "Do not return action types such as keep, patch_node, replace, or abort.\n"
-        "Preserve already completed node ids and dependencies when their results "
-        "are still needed, and change the failed or downstream nodes so execution "
-        "can make progress. If a completed node result can be reused, keep that "
-        "node semantically unchanged.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False)}"
-    )
+    sections = [
+        f"Task id: {record.task_id}",
+        f"Original user request:\n{record.user_request}",
+    ]
+
+    completed = _completed_results(record.node_results)
+    if completed:
+        lines = []
+        for node_id, node_result in completed.items():
+            output = node_result.final_response.strip()
+            if len(output) > 500:
+                output = output[:500] + "..."
+            lines.append(f"- {node_id}: {output}")
+        sections.append("Completed nodes:\n" + "\n".join(lines))
+    else:
+        sections.append("Completed nodes: None")
+
+    completed_ids = {nid for nid, r in record.node_results.items() if r.completed}
+    pending = [n for n in record.dag.nodes if n.id not in completed_ids and n.tool != "dag_start"]
+    if pending:
+        lines = []
+        for node in pending:
+            args_str = json.dumps(node.args, ensure_ascii=False) if node.args else "()"
+            deps = [e.source for e in record.dag.edges if e.target == node.id]
+            dep_str = f" after {', '.join(deps)}" if deps else ""
+            lines.append(f"- {node.id} = {node.tool}({args_str}){dep_str}")
+        sections.append("Pending nodes (current plan):\n" + "\n".join(lines))
+    else:
+        sections.append("Pending nodes: None")
+
+    obs_parts = []
+    if failed_node_id:
+        obs_parts.append(f"Failed node: {failed_node_id}")
+    if last_error:
+        obs_parts.append(f"Error: {last_error}")
+    if not obs_parts:
+        obs_parts.append("Layer executed successfully.")
+    recent = record.trace_records[-6:]
+    if recent:
+        obs_parts.append("Recent trace:")
+        for tr in recent:
+            obs_parts.append(f"  - {tr.node_id} ({tr.tool}): {tr.status}" + (f" error={tr.error}" if tr.error else ""))
+    sections.append("Observation:\n" + "\n".join(obs_parts))
+
+    return "\n\n".join(sections)
 
 
 def _review_trace(dag_id: str, pending: PendingReview) -> TraceEvent:
@@ -1241,17 +1266,12 @@ def _dag_revision_trace_event(
     *,
     dag_id: str,
     reason: str,
-    changed_node_ids: set[str],
-    applied: bool,
 ) -> TraceEvent:
     return TraceEvent(
         event_id=f"trace_{uuid4().hex}",
-        event_type="dag_replanned" if applied else "dag_replan_failed",
+        event_type="dag_replanned",
         dag_id=dag_id,
-        payload={
-            "reason": reason,
-            "changed_node_ids": sorted(changed_node_ids),
-        },
+        payload={"reason": reason},
     )
 
 
