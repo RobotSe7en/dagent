@@ -32,11 +32,11 @@ class DAGReviewerAgent:
         payload = await self.agent.run_json(
             task_content=(
                 "User request:\n{{ user_request }}\n\n"
-                "Proposed DAG JSON:\n{{ dag_json }}\n\n"
+                "Proposed DAG snapshot:\n{{ dag_snapshot }}\n\n"
                 "Review the DAG now."
             ),
             user_request=user_request,
-            dag_json=dag.model_dump_json(indent=2),
+            dag_snapshot=dag.model_dump_json(indent=2),
         )
         return DAGReviewResult(
             approved=bool(payload.get("approved", False)),

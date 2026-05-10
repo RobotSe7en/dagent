@@ -42,7 +42,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
                         )
                     ]
                 ),
-                ChatResponse(content=_dag_agent_json()),
+                ChatResponse(content=_dag_agent_dsl()),
             ]
         )
     )
@@ -50,7 +50,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto"},
+        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
     )
 
     assert response.status_code == 200
@@ -62,6 +62,99 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     assert events[-1]["status"] == "awaiting_dag_review"
     assert events[-1]["dag"]["status"] == "review_required"
     assert "DAG" in events[-1]["message_markdown"]
+
+
+def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider(
+            [
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="dag_agent",
+                            arguments={"request": "Create a safe DAG.", "reason": "Needs execution."},
+                        )
+                    ]
+                ),
+                ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),
+                ChatResponse(content="Final answer: echo:ok"),
+            ]
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "fast"},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    done_index = next(index for index, event in enumerate(events) if event["type"] == "done")
+    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
+    assert "<think>planning dag</think>" in token_text
+    assert any(event.get("type") == "trace" for event in events[:done_index])
+    assert events[-1]["status"] == "completed"
+    assert events[-1]["dag"]["status"] == "completed"
+
+
+def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider(
+            [
+                ChatResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="dag_agent",
+                            arguments={"request": "Create a DAG that needs repair.", "reason": "Needs execution."},
+                        )
+                    ]
+                ),
+                ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),
+                ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),
+                ChatResponse(content="Recovered after replanning."),
+            ]
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "repair through DAG", "mode": "auto", "review_level": "fast"},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    dag_events = [event["dag"] for event in events if event["type"] == "dag"]
+    assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
+    assert any(dag["version"] == 2 and dag["status"] == "completed" for dag in dag_events)
+    assert events[-1]["message_markdown"] == "Recovered after replanning."
+
+
+def test_api_dag_mode_summarizes_failed_fast_dag() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider(
+            [
+                ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
+                ChatResponse(content="NO_CHANGE"),
+                ChatResponse(content="The DAG failed after retrying the failing node."),
+            ]
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "run a failing DAG", "mode": "dag", "review_level": "fast"},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["dag"]["status"] == "failed"
+    assert events[-1]["message_markdown"] == "The DAG failed after retrying the failing node."
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> None:
@@ -77,7 +170,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
                         )
                     ]
                 ),
-                ChatResponse(content=_dag_agent_json()),
+                ChatResponse(content=_dag_agent_dsl()),
                 ChatResponse(content="Final answer: echo:ok"),
             ]
         )
@@ -86,7 +179,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
 
     stream_response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto"},
+        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
     )
     task_id = _sse_events(stream_response.text)[-1]["task_id"]
 
@@ -161,10 +254,20 @@ def _tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
+    registry.register(
+        name="fail_tool",
+        handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
     return ToolExecutor(registry)
 
 
-def _dag_agent_json() -> str:
+def _dag_agent_dsl() -> str:
     return 'task: mock\nanswer = echo(text="ok")\n'
 
 

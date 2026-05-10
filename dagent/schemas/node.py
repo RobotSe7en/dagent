@@ -12,7 +12,6 @@ NodeStatus = Literal[
     "planned",
     "ready",
     "running",
-    "blocked_permission",
     "completed",
     "failed",
     "skipped",

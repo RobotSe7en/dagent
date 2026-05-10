@@ -580,80 +580,6 @@ select {
 }
 
 /* ── Message trace ── */
-.message-trace {
-  margin-top: 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-surface);
-  overflow: hidden;
-  min-width: 0;
-  max-width: 100%;
-  box-shadow: var(--shadow-sm);
-}
-
-.message-trace-title {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.message-trace-list {
-  display: grid;
-  max-height: 150px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-
-.message-trace-row {
-  min-height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.message-trace-row:last-child {
-  border-bottom: 0;
-}
-
-.message-trace-row span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.message-trace-row em {
-  font-style: normal;
-  font-weight: 700;
-  font-size: 11px;
-}
-
-.message-trace-row.completed em {
-  color: var(--accent-green);
-}
-
-.message-trace-row.failed em {
-  color: var(--accent-red);
-}
-
-.message-trace-row.running em {
-  color: var(--accent-blue);
-}
-
 /* ── Error banner ── */
 .error-banner {
   margin: 12px 24px 0;
@@ -664,83 +590,6 @@ select {
   color: var(--accent-red);
   font-size: 13px;
   font-weight: 600;
-}
-
-/* ── Tool review panel ── */
-.tool-review-panel {
-  margin: 0 24px;
-  border: 1px solid #fde68a;
-  border-radius: 12px;
-  background: #fffbeb;
-  padding: 14px 16px;
-  box-shadow: var(--shadow-md);
-}
-
-.tool-review-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--accent-amber);
-  margin-bottom: 12px;
-}
-
-.tool-review-head strong {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.tool-review-body {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.tool-review-field {
-  display: grid;
-  gap: 4px;
-}
-
-.tool-review-label {
-  font-size: 10px;
-  font-weight: 750;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-
-.tool-review-field code {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent-purple);
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 2px 6px;
-  display: inline-block;
-}
-
-.tool-review-field pre {
-  max-height: 160px;
-  margin: 0;
-  overflow: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #fafbfc;
-  color: var(--text-secondary);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.tool-review-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 
 /* ── Composer ── */
@@ -848,7 +697,6 @@ select {
 .dag-node-status-running .dag-node-tools { color: var(--accent-blue); }
 .dag-node-status-completed .dag-node-tools { color: var(--accent-green); }
 .dag-node-status-failed .dag-node-tools { color: var(--accent-red); }
-.dag-node-status-blocked_permission .dag-node-tools { color: var(--accent-amber); }
 .dag-node-status-skipped .dag-node-tools { color: var(--text-muted); opacity: 0.5; }
 
 /* ── Risk pill & Status badge ── */
@@ -910,9 +758,7 @@ select {
   color: #dc2626;
 }
 
-.status-badge[data-status="review_required"],
-.status-badge[data-status="paused_for_replan"],
-.status-badge[data-status="paused_for_permission"] {
+.status-badge[data-status="review_required"] {
   border-color: #fde68a;
   background: #fffbeb;
   color: #b45309;
@@ -1477,11 +1323,6 @@ pre.readonly-field {
 .react-flow__node-default.status-failed {
   border-color: #fca5a5;
   box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.08), var(--shadow-md);
-}
-
-.react-flow__node-default.status-blocked_permission {
-  border-color: #fde68a;
-  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.08), var(--shadow-md);
 }
 
 .react-flow__node-default.status-skipped {

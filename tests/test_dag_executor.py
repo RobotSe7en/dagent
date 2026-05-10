@@ -223,7 +223,7 @@ def tool_executor() -> ToolExecutor:
     return ToolExecutor(registry)
 
 
-def test_executor_pauses_when_node_requests_permission() -> None:
+def test_executor_treats_boundary_violation_as_node_failure() -> None:
     executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
@@ -240,21 +240,16 @@ def test_executor_pauses_when_node_requests_permission() -> None:
         ],
     )
 
-    result = run(executor.execute_next_ready_layer(dag))
+    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+        run(executor.execute_next_ready_layer(dag))
 
-    assert result.completed is False
-    assert result.pending_permission_request is not None
-    assert result.pending_permission_request.node_id == "write"
-    assert result.pending_permission_request.requested_boundary.mode == "write_limited"
-    assert result.pending_permission_request.requested_boundary.allowed_paths == ["notes.md"]
-    assert result.node_results["write"].stop_reason == "blocked_permission"
-    assert [event.event_type for event in result.traces] == [
+    assert [event.event_type for event in executor.trace_recorder.events] == [
         "dag_started",
         "node_started",
         "tool_called",
-        "permission_requested",
-        "node_blocked_permission",
-        "dag_paused",
+        "tool_failed",
+        "node_failed",
+        "dag_failed",
     ]
 
 
@@ -407,7 +402,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
     assert records[-1].status == "failed"
 
 
-def test_tool_node_boundary_violation_pauses_for_permission() -> None:
+def test_tool_node_boundary_violation_records_failed_node() -> None:
     executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",
@@ -424,17 +419,14 @@ def test_tool_node_boundary_violation_pauses_for_permission() -> None:
         ],
     )
 
-    result = run(executor.execute_next_ready_layer(dag))
+    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+        run(executor.execute_next_ready_layer(dag))
 
-    assert result.completed is False
-    assert result.pending_permission_request is not None
-    assert result.pending_permission_request.node_id == "write_note"
-    assert result.pending_permission_request.requested_boundary.mode == "write_limited"
-    assert result.pending_permission_request.requested_boundary.allowed_paths == ["notes.md"]
     records = executor.trace_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "write_note"
     assert records[0].tool == "write_note"
     assert records[0].args == {"path": "notes.md", "content": "hi"}
-    assert records[0].status == "blocked_permission"
+    assert records[0].status == "failed"
+    assert records[0].stop_reason == "boundary_violation"
     assert records[0].error

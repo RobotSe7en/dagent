@@ -18,7 +18,6 @@ from dagent.harness_runtime.trace_store import TraceStore
 from dagent.harness_runtime.runtime import (
     HarnessMessageResult,
     HarnessRuntime,
-    PendingToolReview,
     RuntimeMode,
 )
 from dagent.harness_runtime.task_record import TaskRecord
@@ -39,7 +38,6 @@ __all__ = [
     "HarnessMessageResult",
     "HarnessRuntime",
     "NodeExecutionResult",
-    "PendingToolReview",
     "RunResult",
     "RuntimeMode",
     "TaskRecord",

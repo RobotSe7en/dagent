@@ -19,13 +19,9 @@ TraceEventType = Literal[
     "node_started",
     "node_completed",
     "node_failed",
-    "node_blocked_permission",
     "tool_called",
     "tool_completed",
     "tool_failed",
-    "permission_requested",
-    "permission_approved",
-    "permission_denied",
 ]
 
 
@@ -50,7 +46,6 @@ class TraceSpan(BaseModel):
 NodeExecutionStatus = Literal[
     "completed",
     "failed",
-    "blocked_permission",
 ]
 
 

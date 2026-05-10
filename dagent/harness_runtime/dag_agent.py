@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import ast
-import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -14,16 +14,14 @@ from dagent.harness_runtime.dag_executor import (
     DAGExecutor,
     RunResult,
     _inject_placeholders,
-    _next_ready_nodes,
 )
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
-from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
+from dagent.harness_runtime.review_policy import ReviewLevel, effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile, ProfileStore
-from dagent.providers import ChatProvider
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, NodeExecutionRecord, PermissionRequest, PlanSpec, TraceEvent
+from dagent.providers import ChatProvider, ChatResponse
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, NodeExecutionRecord, PlanSpec, TraceEvent
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.harness_runtime.review_policy import effective_risk
 from dagent.tools.registry import Tool
 
 
@@ -83,11 +81,14 @@ class DAGAgentLoop:
         request: str,
         *,
         task_id: str | None = None,
-        review_level: ReviewLevel = "balanced",
+        review_level: ReviewLevel = "fast",
         planning_context: str = "",
         runtime_mode: str = "auto",
         dag_messages: list[dict[str, Any]] | None = None,
         force_review: bool = False,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
     ) -> DAGAgentLoopResult:
         record = await self._create_record(
             request,
@@ -96,18 +97,29 @@ class DAGAgentLoop:
             planning_context=planning_context,
             runtime_mode=runtime_mode,
             dag_messages=dag_messages,
+            on_token=on_token,
         )
-        if force_review or review_policy(review_level).requires_initial_dag_review(record.dag):
+        if force_review or review_policy(review_level).reviews_dag_changes():
             record.dag.status = "review_required"
+            _emit_dag(on_dag, record.dag)
+            record.pending_review = PendingReview(
+                review_id=f"review_{uuid4().hex}",
+                kind="initial_dag",
+                message="Review proposed DAG before execution.",
+                proposed_dag=record.dag,
+                payload={},
+            )
             return DAGAgentLoopResult(
                 status="awaiting_dag_review",
                 message_markdown=_dag_created_review_message(record),
                 dag=record.dag,
                 task_id=record.task_id,
+                pending_review=record.pending_review,
             )
 
         record.dag.status = "approved"
-        result = await self.execute(record.task_id)
+        _emit_dag(on_dag, record.dag)
+        result = await self.execute(record.task_id, on_token=on_token, on_trace=on_trace, on_dag=on_dag)
         if record.pending_review is not None:
             return DAGAgentLoopResult(
                 status="awaiting_change_review",
@@ -130,6 +142,9 @@ class DAGAgentLoop:
         task_id: str,
         dag: DAG,
         review_level: ReviewLevel | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
     ) -> DAGAgentLoopResult:
         if task_id not in self.tasks:
             raise KeyError(f"Unknown task '{task_id}'.")
@@ -139,7 +154,6 @@ class DAGAgentLoop:
             record.dag.status == "completed"
             and record.runs
             and record.pending_review is None
-            and record.pending_permission_request is None
         ):
             result = record.runs[-1]
             return DAGAgentLoopResult(
@@ -159,32 +173,15 @@ class DAGAgentLoop:
 
         existing_node_ids = {node.id for node in record.dag.nodes}
         changed_node_ids = _changed_node_ids(record.dag, prepared)
-        if (
-            record.pending_review is not None
-            and record.pending_review.kind == "execution_error"
-            and not changed_node_ids
-        ):
-            record.dag.status = _pending_review_dag_status(record.pending_review)
-            return DAGAgentLoopResult(
-                status="awaiting_change_review",
-                message_markdown=(
-                    "The failed DAG was confirmed without any node or edge changes. "
-                    "Edit the failed node, change its tool/args, or replace the DAG before resuming."
-                ),
-                dag=record.pending_review.proposed_dag,
-                task_id=task_id,
-                pending_review=record.pending_review,
-            )
-
         for node_id in changed_node_ids:
             if node_id in existing_node_ids:
                 _invalidate_patch_results(record, node_id)
         record.dag = prepared
         record.dag.status = "approved"
         record.pending_review = None
-        record.suppress_next_review = True
+        _emit_dag(on_dag, record.dag)
 
-        result = await self.execute(task_id)
+        result = await self.execute(task_id, on_token=on_token, on_trace=on_trace, on_dag=on_dag)
         if record.pending_review is not None:
             return DAGAgentLoopResult(
                 status="awaiting_change_review",
@@ -210,44 +207,16 @@ class DAGAgentLoop:
             task_id=task_id,
         )
 
-    def approve_permission(
-        self,
-        task_id: str,
-        *,
-        boundary: Boundary | None = None,
-    ) -> PermissionRequest:
-        record = self.tasks[task_id]
-        if not record.runs or record.runs[-1].pending_permission_request is None:
-            raise KeyError("No pending permission request.")
-        request = record.runs[-1].pending_permission_request
-        node = _node_by_id(record.dag, request.node_id)
-        node.boundary = boundary or request.requested_boundary
-        node.status = "ready"
-        request.status = "approved"
-        record.pending_permission_request = None
-        record.dag.status = "approved"
-        return request
-
-    def deny_permission(self, task_id: str) -> PermissionRequest:
-        record = self.tasks[task_id]
-        if not record.runs or record.runs[-1].pending_permission_request is None:
-            raise KeyError("No pending permission request.")
-        request = record.runs[-1].pending_permission_request
-        request.status = "denied"
-        record.pending_permission_request = None
-        _node_by_id(record.dag, request.node_id).status = "failed"
-        record.dag.status = "aborted"
-        return request
-
     async def _create_record(
         self,
         request: str,
         *,
         task_id: str | None = None,
-        review_level: ReviewLevel = "balanced",
+        review_level: ReviewLevel = "fast",
         planning_context: str = "",
         runtime_mode: str = "auto",
         dag_messages: list[dict[str, Any]] | None = None,
+        on_token: Callable[[str], None] | None = None,
     ) -> TaskRecord:
         if dag_messages is None:
             dag_messages = []
@@ -265,6 +234,7 @@ class DAGAgentLoop:
             request,
             task_id=task_id,
             dag_messages=dag_messages,
+            on_token=on_token,
         )
         record = TaskRecord(
             task_id=dag.task_id,
@@ -284,6 +254,7 @@ class DAGAgentLoop:
         task_id: str | None = None,
         dag_messages: list[dict[str, Any]] | None = None,
         max_attempts: int = 2,
+        on_token: Callable[[str], None] | None = None,
     ) -> DAG:
         feedback = ""
         last_error: Exception | None = None
@@ -299,6 +270,7 @@ class DAGAgentLoop:
                     prompt,
                     task_id=task_id,
                     dag_messages=dag_messages,
+                    on_token=on_token,
                 )
                 if dag is None:
                     raise DAGCreationError("DAG agent returned NO_CHANGE for initial planning.")
@@ -315,6 +287,7 @@ class DAGAgentLoop:
         *,
         task_id: str | None,
         dag_messages: list[dict[str, Any]] | None,
+        on_token: Callable[[str], None] | None = None,
     ) -> DAG | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages = self.prompt_builder.build(
@@ -336,7 +309,7 @@ class DAGAgentLoop:
         user_msg = messages[1]
         if dag_messages is not None:
             messages = [system_msg, *dag_messages, user_msg]
-        response = await self.provider.chat(messages)
+        response = await _chat_for_dag(self.provider, messages, on_token=on_token)
         if dag_messages is not None:
             dag_messages.append({"role": "user", "content": user_request})
             dag_messages.append({"role": "assistant", "content": response.content})
@@ -346,7 +319,7 @@ class DAGAgentLoop:
         prepared = self.dag_executor.normalize(dag)
         validate_dag(prepared)
         self._validate_dag_tools(prepared)
-        prepared.status = self._initial_status(prepared)
+        prepared.status = "approved"
         return prepared
 
     def _validate_dag_tools(self, dag: DAG) -> None:
@@ -371,7 +344,14 @@ class DAGAgentLoop:
         record.dag.status = "approved"
         return record.dag
 
-    async def execute(self, task_id: str) -> RunResult:
+    async def execute(
+        self,
+        task_id: str,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> RunResult:
         record = self.tasks[task_id]
         if record.dag.status == "review_required":
             raise DAGExecutionError("DAG contains medium/high risk nodes and is not approved.")
@@ -380,15 +360,12 @@ class DAGAgentLoop:
         repair_counts: dict[str, int] = {}
         try:
             while True:
-                review_result = self._maybe_pause_for_arg_injection_or_node_execution(record, traces)
-                if review_result is not None:
-                    result = review_result
-                    break
                 try:
                     result = await self.dag_executor.execute_next_ready_layer(
                         record.dag,
                         initial_results=_completed_results(record.node_results),
                         record_dag_start=not traces,
+                        on_trace=on_trace,
                     )
                 except Exception as exc:
                     traces.extend(self.dag_executor.trace_recorder.events)
@@ -407,17 +384,12 @@ class DAGAgentLoop:
                     failed_node_id = _latest_failed_node_id(record.trace_records, valid_node_ids=current_node_ids)
                     for failed_id in _failed_node_ids(record.trace_records, valid_node_ids=current_node_ids):
                         _node_by_id(record.dag, failed_id).status = "failed"
+                    record.dag.status = "failed"
+                    _emit_dag(on_dag, record.dag)
 
                     retry_key = failed_node_id or "__dag__"
                     repair_counts[retry_key] = repair_counts.get(retry_key, 0) + 1
                     if repair_counts[retry_key] > self.max_node_retries:
-                        pending = self._create_execution_error_review(
-                            record,
-                            message=f"Maximum repair retries exceeded for node '{retry_key}'.",
-                            error=str(exc),
-                            failed_node_id=failed_node_id,
-                        )
-                        traces.append(_review_trace(record.dag.dag_id, pending))
                         result = RunResult(
                             dag_id=record.dag.dag_id,
                             completed=False,
@@ -427,13 +399,6 @@ class DAGAgentLoop:
                         break
 
                     if replan_count >= self.max_replans:
-                        pending = self._create_execution_error_review(
-                            record,
-                            message="Maximum DAG replans exceeded.",
-                            error=str(exc),
-                            failed_node_id=failed_node_id,
-                        )
-                        traces.append(_review_trace(record.dag.dag_id, pending))
                         result = RunResult(
                             dag_id=record.dag.dag_id,
                             completed=False,
@@ -447,19 +412,18 @@ class DAGAgentLoop:
                             record,
                             last_error=str(exc),
                             failed_node_id=failed_node_id,
+                            on_token=on_token,
                         )
                         if proposed_dag is None:
                             raise ValueError("Replan returned NO_CHANGE on a failed layer.")
                         reason = "Repair failed node from execution observation."
                         self._apply_replan(record, proposed_dag)
+                        _emit_dag(on_dag, record.dag)
                     except Exception as replan_exc:
-                        pending = self._create_execution_error_review(
-                            record,
-                            message="Node execution failed and DAG agent did not return a usable revised DAG.",
-                            error=f"{exc}\nDAG agent error: {replan_exc}",
-                            failed_node_id=failed_node_id,
-                        )
-                        traces.append(_review_trace(record.dag.dag_id, pending))
+                        traces.append(_dag_revision_trace_event(
+                            dag_id=record.dag.dag_id,
+                            reason=f"DAG agent could not repair failed node: {replan_exc}",
+                        ))
                         result = RunResult(
                             dag_id=record.dag.dag_id,
                             completed=False,
@@ -484,19 +448,20 @@ class DAGAgentLoop:
                 prev_count = len(record.node_results)
                 record.node_results.update(result.node_results)
                 record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
-                if result.pending_permission_request is not None or result.completed:
+                if result.completed:
                     break
                 if len(record.node_results) == prev_count:
                     break
 
                 if replan_count < self.max_replans:
                     try:
-                        proposed_dag = await self._replan_after_layer(record)
+                        proposed_dag = await self._replan_after_layer(record, on_token=on_token)
                     except Exception:
                         proposed_dag = None
                     if proposed_dag is not None:
                         reason = "Replan after successful layer execution."
                         self._apply_replan(record, proposed_dag)
+                        _emit_dag(on_dag, record.dag)
                         traces.append(_dag_revision_trace_event(dag_id=record.dag.dag_id, reason=reason))
                         replan_count += 1
                         if record.dag.status == "review_required":
@@ -513,18 +478,13 @@ class DAGAgentLoop:
                 completed=result.completed,
                 node_results=result.node_results,
                 traces=traces,
-                pending_permission_request=result.pending_permission_request,
             )
         finally:
             record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
         record.node_results.update(result.node_results)
         record.runs.append(result)
         if record.pending_review is not None:
-            record.dag.status = _pending_review_dag_status(record.pending_review)
-        elif result.pending_permission_request is not None:
-            record.pending_permission_request = result.pending_permission_request
-            record.dag.status = "paused_for_permission"
-            _node_by_id(record.dag, result.pending_permission_request.node_id).status = "blocked_permission"
+            record.dag.status = "review_required"
         elif record.dag.status == "review_required":
             pass
         elif record.dag.status == "aborted":
@@ -533,63 +493,9 @@ class DAGAgentLoop:
             record.dag.status = "completed" if result.completed else "failed"
             for node_id, node_result in result.node_results.items():
                 _node_by_id(record.dag, node_id).status = "completed" if node_result.completed else "failed"
+        _emit_dag(on_dag, record.dag)
         self.runs[f"run_{uuid4().hex}"] = result
         return result
-
-    def _maybe_pause_for_arg_injection_or_node_execution(
-        self,
-        record: TaskRecord,
-        traces: list[TraceEvent],
-    ) -> RunResult | None:
-        if record.suppress_next_review:
-            record.suppress_next_review = False
-            return None
-
-        policy = review_policy(record.review_level)
-        ready_nodes = _next_ready_nodes(record.dag, _completed_results(record.node_results))
-        if not ready_nodes:
-            return None
-
-        proposed = record.dag.model_copy(deep=True)
-        proposed_nodes = {node.id: node for node in proposed.nodes}
-        injected_nodes: list[str] = []
-        for node in ready_nodes:
-            proposed_node = proposed_nodes[node.id]
-            injected_args = _inject_placeholders(proposed_node.args, _completed_results(record.node_results))
-            if injected_args != proposed_node.args:
-                proposed_node.args = injected_args
-                injected_nodes.append(node.id)
-
-        pending: PendingReview | None = None
-        if injected_nodes and policy.requires_arg_injection_review():
-            pending = PendingReview(
-                review_id=f"review_{uuid4().hex}",
-                kind="arg_injection",
-                message=f"Review injected args for node(s): {', '.join(injected_nodes)}.",
-                proposed_dag=proposed,
-                payload={"node_ids": injected_nodes},
-            )
-        elif policy.requires_node_execution_review() and any(node.tool != "dag_start" for node in ready_nodes):
-            pending = PendingReview(
-                review_id=f"review_{uuid4().hex}",
-                kind="node_execution",
-                message=f"Review next node execution layer: {', '.join(node.id for node in ready_nodes)}.",
-                proposed_dag=proposed,
-                payload={"node_ids": [node.id for node in ready_nodes]},
-            )
-
-        if pending is None:
-            return None
-
-        record.pending_review = pending
-        record.dag = proposed
-        traces.append(_review_trace(record.dag.dag_id, pending))
-        return RunResult(
-            dag_id=record.dag.dag_id,
-            completed=False,
-            node_results=dict(record.node_results),
-            traces=traces,
-        )
 
     async def _replan_after_layer(
         self,
@@ -598,6 +504,7 @@ class DAGAgentLoop:
         last_error: str = "",
         failed_node_id: str | None = None,
         max_attempts: int = 2,
+        on_token: Callable[[str], None] | None = None,
     ) -> DAG | None:
         observation = _format_dag_observation(
             kind="layer_failed" if last_error or failed_node_id else "layer_completed",
@@ -621,6 +528,7 @@ class DAGAgentLoop:
                 prompt,
                 task_id=record.task_id,
                 dag_messages=record.dag_messages,
+                on_token=on_token,
             )
             if dag is None:
                 return None
@@ -638,8 +546,9 @@ class DAGAgentLoop:
         prepared.dag_id = record.dag.dag_id
         prepared.version = record.dag.version + 1
         prepared = self.prepare_for_review(prepared)
-        policy = review_policy(record.review_level)
-        if policy.requires_initial_dag_review(prepared):
+        changed_node_ids = _changed_node_ids(record.dag, prepared)
+        needs_review = bool(changed_node_ids) and review_policy(record.review_level).reviews_dag_changes()
+        if needs_review:
             prepared.status = "review_required"
         new_nodes = {node.id: node for node in prepared.nodes}
         old_nodes = {node.id: node for node in record.dag.nodes}
@@ -652,7 +561,7 @@ class DAGAgentLoop:
             if old_node is None or old_node.tool != new_node.tool or old_node.args != new_node.args:
                 del record.node_results[nid]
         record.dag = prepared
-        if prepared.status == "review_required":
+        if needs_review:
             record.pending_review = PendingReview(
                 review_id=f"review_{uuid4().hex}",
                 kind="dag_replan",
@@ -663,29 +572,53 @@ class DAGAgentLoop:
         else:
             record.pending_review = None
 
-    def _create_execution_error_review(
-        self,
-        record: TaskRecord,
-        *,
-        message: str,
-        error: str,
-        failed_node_id: str | None,
-    ) -> PendingReview:
-        proposed_dag = record.dag.model_copy(deep=True)
-        proposed_dag.status = "paused_for_replan"
-        pending = PendingReview(
-            review_id=f"review_{uuid4().hex}",
-            kind="execution_error",
-            message=message,
-            proposed_dag=proposed_dag,
-            payload={"error": error, "failed_node_id": failed_node_id},
-        )
-        record.pending_review = pending
-        return pending
 
-    def _initial_status(self, dag: DAG) -> str:
-        needs_review = any(node.risk in {"medium", "high"} for node in dag.nodes)
-        return "review_required" if needs_review else "approved"
+async def _chat_for_dag(
+    provider: ChatProvider,
+    messages: list[dict[str, Any]],
+    *,
+    on_token: Callable[[str], None] | None = None,
+) -> ChatResponse:
+    if on_token is None or not hasattr(provider, "stream_chat"):
+        return await provider.chat(messages)
+
+    content = ""
+    visible = ""
+    response: ChatResponse | None = None
+    async for event in provider.stream_chat(messages):
+        if event.type == "token" and event.content:
+            content += event.content
+            next_visible = _visible_thinking_markup(content)
+            if next_visible.startswith(visible):
+                delta = next_visible[len(visible):]
+                if delta:
+                    on_token(delta)
+                visible = next_visible
+        elif event.type == "done":
+            response = event.response
+    return response or ChatResponse(content=content)
+
+
+def _visible_thinking_markup(content: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    lower = content.lower()
+    while cursor < len(content):
+        open_index = lower.find("<think>", cursor)
+        if open_index == -1:
+            break
+        close_index = lower.find("</think>", open_index + len("<think>"))
+        if close_index == -1:
+            parts.append(content[open_index:])
+            break
+        parts.append(content[open_index:close_index + len("</think>")])
+        cursor = close_index + len("</think>")
+    return "".join(parts)
+
+
+def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:
+    if on_dag is not None:
+        on_dag(dag.model_copy(deep=True))
 
 
 def _is_no_change(content: str) -> bool:
@@ -859,6 +792,14 @@ def _ensure_start_node(
     start_id = "start"
     next_nodes = list(nodes)
     next_edges = list(edges)
+    targets = {edge.target for edge in next_edges}
+    existing_start_targets = {edge.target for edge in next_edges if edge.source == start_id}
+    root_ids = [
+        node.id
+        for node in next_nodes
+        if node.id != start_id and node.id not in targets and node.id not in existing_start_targets
+    ]
+
     if start_id not in node_ids:
         next_nodes = [
             DAGNode(
@@ -870,15 +811,9 @@ def _ensure_start_node(
             ),
             *next_nodes,
         ]
-        node_ids.add(start_id)
+    elif not root_ids:
+        return next_nodes, next_edges
 
-    targets = {edge.target for edge in next_edges}
-    existing_start_targets = {edge.target for edge in next_edges if edge.source == start_id}
-    root_ids = [
-        node.id
-        for node in next_nodes
-        if node.id != start_id and node.id not in targets and node.id not in existing_start_targets
-    ]
     next_edges.extend(
         DAGEdge(
             source=start_id,
@@ -904,12 +839,6 @@ def _infer_boundary(tool_obj: Tool | None, args: dict) -> Boundary:
     if tool_obj.action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
-
-def _pending_review_dag_status(pending: PendingReview) -> str:
-    if pending.kind in {"dag_replan", "execution_error", "boundary_change"}:
-        return "paused_for_replan"
-    return "review_required"
-
 
 def _dag_created_review_message(record: TaskRecord) -> str:
     return "\n".join(

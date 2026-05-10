@@ -1,6 +1,6 @@
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type BoundaryMode = 'read_only' | 'write_limited' | 'full';
-export type ReviewLevel = 'fast' | 'balanced' | 'careful' | 'manual';
+export type ReviewLevel = 'fast' | 'careful';
 
 export interface Boundary {
   mode: BoundaryMode;
@@ -14,7 +14,7 @@ export interface DagNode {
   args?: Record<string, unknown>;
   boundary?: Boundary;
   risk?: RiskLevel;
-  status?: 'planned' | 'ready' | 'running' | 'blocked_permission' | 'completed' | 'failed' | 'skipped';
+  status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
 }
 
 export interface DagEdge {
@@ -33,23 +33,11 @@ export interface Dag {
     | 'review_required'
     | 'approved'
     | 'running'
-    | 'paused_for_permission'
-    | 'paused_for_replan'
     | 'completed'
     | 'failed'
     | 'aborted';
   nodes: DagNode[];
   edges: DagEdge[];
-}
-
-export interface PermissionRequest {
-  request_id: string;
-  dag_id: string;
-  node_id: string;
-  reason: string;
-  violation: string;
-  requested_boundary: Boundary;
-  status: 'pending' | 'approved' | 'denied';
 }
 
 export interface TraceEvent {
@@ -77,7 +65,7 @@ export interface NodeExecutionRecord {
   args: Record<string, unknown>;
   output: string;
   error: string | null;
-  status: 'completed' | 'failed' | 'blocked_permission';
+  status: 'completed' | 'failed';
   stop_reason: string;
   steps: number;
   created_at: string;
@@ -91,18 +79,9 @@ export interface ToolStreamEvent {
   content?: string;
 }
 
-export interface ToolReview {
-  review_id: string;
-  tool_name: string;
-  tool_call_id: string;
-  arguments: Record<string, unknown>;
-  risk: RiskLevel | 'unknown';
-}
-
 export interface RunResult {
   dag_id: string;
   completed: boolean;
-  pending_permission_request?: PermissionRequest | null;
   trace_records?: NodeExecutionRecord[];
   node_results: Record<
     string,

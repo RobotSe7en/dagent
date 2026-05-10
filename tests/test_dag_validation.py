@@ -1,4 +1,3 @@
-import json
 import asyncio
 
 import pytest
@@ -136,19 +135,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     provider = MockProvider(
         [
             ChatResponse(
-                content=json.dumps(
-                    {
-                        "task": "Summarize the repo",
-                        "nodes": [
-                            {
-                                "id": "inspect",
-                                "tool": "run_command",
-                                "args": {"command": "dir", "cwd": "."},
-                                "depends_on": [],
-                            }
-                        ],
-                    }
-                )
+                content='inspect = run_command(command="dir", cwd=".")'
             )
         ]
     )

@@ -15,8 +15,6 @@ DAGStatus = Literal[
     "review_required",
     "approved",
     "running",
-    "paused_for_permission",
-    "paused_for_replan",
     "completed",
     "failed",
     "aborted",

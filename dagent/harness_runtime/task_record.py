@@ -7,7 +7,7 @@ from typing import Any
 
 from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.review_policy import ReviewLevel, ReviewKind
-from dagent.schemas import DAG, NodeExecutionRecord, PermissionRequest
+from dagent.schemas import DAG, NodeExecutionRecord
 
 
 @dataclass
@@ -25,11 +25,9 @@ class TaskRecord:
     user_request: str
     dag: DAG
     runs: list[RunResult] = field(default_factory=list)
-    pending_permission_request: PermissionRequest | None = None
     pending_review: PendingReview | None = None
-    review_level: ReviewLevel = "balanced"
+    review_level: ReviewLevel = "fast"
     runtime_mode: str = "auto"
-    suppress_next_review: bool = False
     continuation_count: int = 0
     message_markdown: str = ""
     node_results: dict = field(default_factory=dict)

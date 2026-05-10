@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
 
 from dagent.harness_runtime.dag_validation import validate_dag
 from dagent.harness_runtime.trace_recorder import TraceRecorder
 from dagent.harness_runtime.trace_store import TraceStore
-from dagent.schemas import DAG, Boundary, DAGNode, PermissionRequest, TraceEvent
+from dagent.schemas import DAG, Boundary, DAGNode, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
 
@@ -33,26 +33,12 @@ class NodeExecutionResult:
     steps: int
 
 
-class PermissionBlocked(Exception):
-    """Internal signal that a node paused for a permission decision."""
-
-    def __init__(
-        self,
-        node_result: NodeExecutionResult,
-        request: PermissionRequest,
-    ) -> None:
-        super().__init__(request.violation)
-        self.node_result = node_result
-        self.request = request
-
-
 @dataclass(frozen=True)
 class RunResult:
     dag_id: str
     completed: bool
     node_results: dict[str, NodeExecutionResult]
     traces: list[TraceEvent] = field(default_factory=list)
-    pending_permission_request: PermissionRequest | None = None
 
 
 class DAGExecutor:
@@ -76,6 +62,7 @@ class DAGExecutor:
         *,
         initial_results: dict[str, NodeExecutionResult] | None = None,
         record_dag_start: bool = True,
+        on_trace: Callable[[TraceEvent], None] | None = None,
     ) -> RunResult:
         """Execute only the next currently-ready DAG layer.
 
@@ -83,7 +70,7 @@ class DAGExecutor:
         It deliberately does not replan yet; later phases can observe the
         returned node records and patch the pending DAG before the next call.
         """
-        self.trace_recorder = TraceRecorder()
+        self.trace_recorder = TraceRecorder(on_record=on_trace)
         self.partial_node_results = {}
         normalized = self.normalize(dag)
         validate_dag(normalized)
@@ -137,27 +124,7 @@ class DAGExecutor:
             if isinstance(result, NodeExecutionResult):
                 node_results[result.node_id] = result
 
-        for node, result in zip(pending_nodes, batch_results):
-            if isinstance(result, PermissionBlocked):
-                node_results[result.node_result.node_id] = result.node_result
-                dag.status = "paused_for_permission"
-                blocked_node = _node_by_id(dag, result.node_result.node_id)
-                blocked_node.status = "blocked_permission"
-                self.trace_recorder.record(
-                    "dag_paused",
-                    dag_id=dag.dag_id,
-                    payload={
-                        "reason": "permission_required",
-                        "node_id": result.node_result.node_id,
-                    },
-                )
-                return RunResult(
-                    dag_id=dag.dag_id,
-                    completed=False,
-                    node_results=node_results,
-                    traces=list(self.trace_recorder.events),
-                    pending_permission_request=result.request,
-                )
+        for result in batch_results:
             if isinstance(result, Exception):
                 dag.status = "failed"
                 self.trace_recorder.record("dag_failed", dag_id=dag.dag_id)
@@ -217,38 +184,32 @@ class DAGExecutor:
             )
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
-            node.status = "blocked_permission"
-            request = _permission_request_for_violation(dag, node, exc)
+            node.status = "failed"
             self.trace_store.add_node_record(
                 dag=dag,
                 node=node,
                 error=str(exc),
-                status="blocked_permission",
-                stop_reason="blocked_permission",
-                steps=0,
+                status="failed",
+                stop_reason="boundary_violation",
+                steps=1,
             )
             self.trace_recorder.record(
-                "permission_requested",
+                "tool_failed",
                 dag_id=dag.dag_id,
                 node_id=node.id,
-                payload=request.model_dump(mode="json"),
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "name": node.tool,
+                    "error": str(exc),
+                },
             )
             self.trace_recorder.record(
-                "node_blocked_permission",
+                "node_failed",
                 dag_id=dag.dag_id,
                 node_id=node.id,
-                payload={"error": str(exc), "request_id": request.request_id},
+                payload={"error": str(exc)},
             )
-            raise PermissionBlocked(
-                NodeExecutionResult(
-                    node_id=node.id,
-                    final_response="",
-                    completed=False,
-                    stop_reason="blocked_permission",
-                    steps=0,
-                ),
-                request,
-            ) from exc
+            raise
         except Exception as exc:
             node.status = "failed"
             self.trace_store.add_node_record(
@@ -457,33 +418,6 @@ def _node_by_id(dag: DAG, node_id: str) -> DAGNode:
     raise DAGExecutionError(f"Node '{node_id}' not found.")
 
 
-def _permission_request_for_violation(
-    dag: DAG,
-    node: DAGNode,
-    violation: BoundaryViolation,
-) -> PermissionRequest:
-    requested = node.boundary.model_copy(deep=True)
-    if violation.action == "write" and requested.mode == "read_only":
-        requested.mode = "write_limited"
-    if violation.path and violation.path not in requested.allowed_paths:
-        requested.allowed_paths.append(violation.path)
-    if violation.command:
-        executable = _command_executable(violation.command)
-        command_grant = executable or violation.command
-        if command_grant and command_grant not in requested.allowed_commands:
-            requested.allowed_commands.append(command_grant)
-    return PermissionRequest(
-        request_id=f"perm_{uuid4().hex}",
-        dag_id=dag.dag_id,
-        node_id=node.id,
-        reason=(
-            f"Node '{node.id}' needs expanded boundary permissions to continue."
-        ),
-        violation=str(violation),
-        requested_boundary=requested,
-    )
-
-
 def _augment_tool_violation(
     violation: BoundaryViolation,
     node: DAGNode,
@@ -510,5 +444,3 @@ def _augment_tool_violation(
                 break
 
 
-def _command_executable(command: str) -> str:
-    return command.strip().split(maxsplit=1)[0] if command.strip() else ""

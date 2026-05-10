@@ -27,8 +27,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { resetSession, resumeDag, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolReview, ToolStreamEvent, TraceEvent } from './types';
+import { resetSession, resumeDag, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -38,7 +38,7 @@ const riskClass: Record<RiskLevel, string> = {
 
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
-const reviewLevels: ReviewLevel[] = ['balanced', 'fast', 'careful', 'manual'];
+const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -138,12 +138,11 @@ export function App() {
   ]);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<RuntimeMode>('auto');
-  const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('balanced');
+  const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [pendingToolReview, setPendingToolReview] = useState<ToolReview | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -258,7 +257,7 @@ export function App() {
   };
 
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
-    Boolean(pendingReview) || ['review_required', 'paused_for_replan', 'paused_for_permission'].includes(nextDag.status);
+    Boolean(pendingReview) || nextDag.status === 'review_required';
 
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -370,33 +369,30 @@ export function App() {
           flushQueuedTokensNow();
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
-          setReviewOpen(true);
+          if (shouldOpenDagReview(nextDag)) setReviewOpen(true);
         },
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
-        onToolReview: (review) => {
-          flushQueuedTokensNow();
-          setPendingToolReview(review);
-        },
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
           flushQueuedTokensNow();
-          if (payload.pending_tool_review) {
-            setPendingToolReview(payload.pending_tool_review);
-          }
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
             if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
-          } else {
-            updateLastAssistantText((message) => ({
-              ...message,
-              content: message.content || payload.message_markdown,
-              timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
-            }));
-            appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop returned a direct answer.', status: 'completed' });
           }
+          updateLastAssistantText((message) => ({
+            ...message,
+            content: message.content || payload.message_markdown,
+            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
+          }));
+          appendTrace({
+            type: 'model',
+            label: 'agent_loop_completed',
+            detail: payload.dag ? 'Top AgentLoop summarized the DAG result.' : 'Top AgentLoop returned a direct answer.',
+            status: payload.status === 'failed' ? 'failed' : 'completed',
+          });
         },
         onError: (message) => {
           setError(message);
@@ -443,16 +439,9 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
-        onToolReview: (review) => {
-          flushQueuedTokensNow();
-          setPendingToolReview(review);
-        },
         onToken: enqueueAssistantToken,
         onDone: (payload) => {
           flushQueuedTokensNow();
-          if (payload.pending_tool_review) {
-            setPendingToolReview(payload.pending_tool_review);
-          }
           if (payload.dag) {
             syncDag(payload.dag);
             attachDagToLastAssistant(payload.dag);
@@ -480,61 +469,6 @@ export function App() {
     }
   };
 
-  const handleToolReviewDecision = async (approved: boolean) => {
-    if (streaming || !pendingToolReview) return;
-    setPendingToolReview(null);
-    setError(null);
-    tokenQueueRef.current = [];
-    stopTokenTimer();
-    setStreaming(true);
-    const action = approved ? 'approved' : 'denied';
-    appendTrace({ type: 'tool', label: `tool_${action}`, detail: `${pendingToolReview.tool_name} ${action}.`, status: approved ? 'running' : 'failed' });
-
-    try {
-      await resumeToolReview(approved, reviewLevel, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Resumed after tool review.', status: 'running' }),
-        onDag: (nextDag) => {
-          syncDag(nextDag);
-          attachDagToLastAssistant(nextDag);
-        },
-        onTrace: appendRuntimeTrace,
-        onTool: appendToolMessage,
-        onToolReview: (review) => {
-          flushQueuedTokensNow();
-          setPendingToolReview(review);
-        },
-        onToken: enqueueAssistantToken,
-        onDone: (payload) => {
-          flushQueuedTokensNow();
-          if (payload.pending_tool_review) {
-            setPendingToolReview(payload.pending_tool_review);
-          }
-          if (payload.dag) {
-            syncDag(payload.dag);
-            attachDagToLastAssistant(payload.dag);
-            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
-          }
-          updateLastAssistantText((message) => ({
-            ...message,
-            content: message.content || payload.message_markdown,
-            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
-          }));
-          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Completed after tool review.', status: 'completed' });
-        },
-        onError: (message) => {
-          setError(message);
-          appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
-        },
-      });
-    } catch (exc) {
-      const message = exc instanceof Error ? exc.message : String(exc);
-      setError(message);
-    } finally {
-      await waitForTokenQueue();
-      setStreaming(false);
-    }
-  };
-
   const newChat = () => {
     if (streaming) return;
     resetSession().catch(() => {});
@@ -547,7 +481,6 @@ export function App() {
     setTrace([]);
     setError(null);
     setReviewOpen(false);
-    setPendingToolReview(null);
     tokenQueueRef.current = [];
     stopTokenTimer();
   };
@@ -620,18 +553,9 @@ export function App() {
                     }}
                   />
                 )}
-                {message.traceSnapshot?.length ? <TraceQueue trace={message.traceSnapshot} /> : null}
               </div>
             ))}
           </div>
-          {pendingToolReview ? (
-            <ToolReviewPanel
-              review={pendingToolReview}
-              onApprove={() => handleToolReviewDecision(true)}
-              onDeny={() => handleToolReviewDecision(false)}
-              disabled={streaming}
-            />
-          ) : null}
           <div className="composer">
             <textarea
               value={draft}
@@ -685,49 +609,6 @@ function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
     <div className="pane-title">
       {icon}
       <span>{title}</span>
-    </div>
-  );
-}
-
-function ToolReviewPanel({
-  review,
-  onApprove,
-  onDeny,
-  disabled,
-}: {
-  review: ToolReview;
-  onApprove: () => void;
-  onDeny: () => void;
-  disabled: boolean;
-}) {
-  const riskPill = review.risk !== 'unknown' ? riskClass[review.risk as RiskLevel] : '';
-  return (
-    <div className="tool-review-panel">
-      <div className="tool-review-head">
-        <Wrench size={16} />
-        <strong>Tool Review Required</strong>
-        {riskPill ? <span className={`risk-pill ${riskPill}`}>{review.risk}</span> : null}
-      </div>
-      <div className="tool-review-body">
-        <div className="tool-review-field">
-          <span className="tool-review-label">Tool</span>
-          <code>{review.tool_name}</code>
-        </div>
-        <div className="tool-review-field">
-          <span className="tool-review-label">Arguments</span>
-          <pre>{JSON.stringify(review.arguments, null, 2)}</pre>
-        </div>
-      </div>
-      <div className="tool-review-actions">
-        <button className="danger-button secondary-button" onClick={onDeny} disabled={disabled} type="button">
-          <X size={14} />
-          Deny
-        </button>
-        <button className="primary-button" onClick={onApprove} disabled={disabled} type="button">
-          <Check size={14} />
-          Approve
-        </button>
-      </div>
     </div>
   );
 }
@@ -829,14 +710,14 @@ function upsertDagTimeline(
   const items = [...(timeline ?? [])];
   const dagKey = dag.task_id || dag.dag_id;
   const existingIndex = items.findIndex(
-    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey,
+    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey && item.dag.version === dag.version,
   );
   if (existingIndex !== -1) {
     items[existingIndex] = { type: 'dag', dag };
     return items;
   }
   const last = items[items.length - 1];
-  if (last?.type === 'dag') {
+  if (last?.type === 'dag' && (last.dag.task_id || last.dag.dag_id) === dagKey && last.dag.version === dag.version) {
     items[items.length - 1] = { type: 'dag', dag };
   } else {
     items.push({ type: 'dag', dag });
@@ -944,25 +825,6 @@ function findMatchingToolCall(timeline: MessageTimelineItem[], toolCallId: strin
     }
   }
   return -1;
-}
-
-function TraceQueue({ trace }: { trace: TraceEvent[] }) {
-  return (
-    <div className="message-trace">
-      <div className="message-trace-title">
-        <Wrench size={14} />
-        <span>Trace</span>
-      </div>
-      <div className="message-trace-list">
-        {trace.map((event) => (
-          <div key={event.id} className={`message-trace-row ${event.status}`}>
-            <span>{event.label}</span>
-            <em>{event.status}</em>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function formatToolArguments(value: Record<string, unknown>) {
