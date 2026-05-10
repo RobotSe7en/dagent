@@ -44,10 +44,10 @@ def runtime_for(
     dag_agent_loop: DAGAgentLoop,
     executor: DAGExecutor,
     agent_loop=None,
-    max_replans: int = 3,
+    max_cycles: int = 6,
     max_node_retries: int = 2,
 ) -> HarnessRuntime:
-    dag_agent_loop.max_replans = max_replans
+    dag_agent_loop.max_cycles = max_cycles
     dag_agent_loop.max_node_retries = max_node_retries
     return HarnessRuntime(
         agent_loop=agent_loop or CompletingLoop(),
@@ -189,21 +189,21 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
                 "task: inspect project\n"
                 "start = dag_start()\n"
                 "list_files = run_command(command=\"dir\", cwd=\".\") after start\n"
-                "read_readme = read_file(path=\"README.md\") after list_files\n"
+                "show_result = echo(text=\"done\") after list_files\n"
             )
         )
     ])
     dag_agent = dag_loop_for(provider, tools=make_tool_executor().registry.all_tools())
 
-    dag = run(dag_agent._ask_model_for_dag("What files are here?", task_id="task_real", dag_messages=[]))
+    dag = run(dag_agent._request_dag("What files are here?", task_id="task_real", dag_messages=[]))
 
     assert dag.task_id == "task_real"
-    assert [node.id for node in dag.nodes] == ["start", "list_files", "read_readme"]
+    assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
     assert dag.nodes[1].tool == "run_command"
     assert dag.nodes[1].args == {"command": "dir", "cwd": "."}
     assert [(edge.source, edge.target) for edge in dag.edges] == [
         ("start", "list_files"),
-        ("list_files", "read_readme"),
+        ("list_files", "show_result"),
     ]
 
 
@@ -238,7 +238,10 @@ def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
 
 
 def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
-    provider = MockProvider([ChatResponse(content='inspect = echo(text="ok")')])
+    provider = MockProvider([
+        ChatResponse(content='inspect = echo(text="ok")'),
+        ChatResponse(content="The echo returned ok."),
+    ])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(tool_executor=make_tool_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
@@ -251,6 +254,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     assert loop_result.status == "completed"
     assert result.completed is True
     assert record.dag.status == "completed"
+    assert record.message_markdown == "The echo returned ok."
 
 
 def test_harness_runtime_careful_reviews_initial_dag() -> None:
@@ -282,7 +286,10 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
         edges=[DAGEdge(source="inspect", target="answer")],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content="NO_CHANGE")])),
+        dag_agent_loop=dag_loop_for(MockProvider([
+            ChatResponse(content="NO_CHANGE"),
+            ChatResponse(content="Both nodes completed."),
+        ])),
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
@@ -319,7 +326,11 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
         'answer = echo(text="adjusted_value") after inspect\n'
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=adjusted_dsl)])),
+        dag_agent_loop=dag_loop_for(MockProvider([
+            ChatResponse(content=adjusted_dsl),
+            ChatResponse(content="NO_CHANGE"),
+            ChatResponse(content="Adjusted and completed."),
+        ])),
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
@@ -395,7 +406,10 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
         edges=[],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement))])),
+        dag_agent_loop=dag_loop_for(MockProvider([
+            ChatResponse(content=dag_dsl_from_dag(replacement)),
+            ChatResponse(content="Recovery complete."),
+        ])),
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
@@ -434,6 +448,7 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
         ChatResponse(content=initial_dsl),
         ChatResponse(content=adjusted_dsl),
         ChatResponse(content="NO_CHANGE"),
+        ChatResponse(content="All steps completed."),
     ])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(tool_executor=make_tool_executor())
@@ -479,7 +494,6 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
     assert record.dag.status == "failed"
     assert record.dag.nodes[0].status == "failed"
     assert record.pending_review is None
-    assert [event.event_type for event in result.traces][-1] == "dag_replanned"
 
 
 def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> None:
@@ -642,7 +656,10 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
         edges=[],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement))])),
+        dag_agent_loop=dag_loop_for(MockProvider([
+            ChatResponse(content=dag_dsl_from_dag(replacement)),
+            ChatResponse(content="Patched and completed."),
+        ])),
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)

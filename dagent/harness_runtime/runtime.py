@@ -22,7 +22,7 @@ from dagent.harness_runtime.agent_loop import (
 from dagent.harness_runtime.dag_executor import (
     RunResult,
 )
-from dagent.harness_runtime.dag_agent import DAGAgentLoop
+from dagent.harness_runtime.dag_agent import DAGAgentLoop, dag_run_fallback_message
 from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
@@ -72,7 +72,6 @@ class HarnessRuntime:
         self._active_review_level: ReviewLevel = "fast"
         self._active_user_message: str = ""
         self._active_continuation_task_id: str | None = None
-        self._active_on_token: TokenHandler | None = None
         self._active_on_event: LoopEventHandler | None = None
         self._conversation_history: list[dict[str, Any]] = []
 
@@ -92,7 +91,6 @@ class HarnessRuntime:
                 planning_context=self._conversation_context(),
                 runtime_mode="dag",
                 dag_messages=self._new_dag_messages(),
-                on_token=on_token,
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -149,7 +147,6 @@ class HarnessRuntime:
         include_dag_agent = mode == "auto"
         self._active_review_level = review_level
         self._active_user_message = message
-        self._active_on_token = on_token
         self._active_on_event = on_event
         control_names: set[str] = {DAG_AGENT_NAME} if include_dag_agent else set()
         extra_tools = [dag_agent_tool_definition()] if include_dag_agent else None
@@ -168,7 +165,6 @@ class HarnessRuntime:
             )
         finally:
             self._active_user_message = ""
-            self._active_on_token = None
             self._active_on_event = None
 
         self._remember_conversation_messages(result.messages)
@@ -196,7 +192,6 @@ class HarnessRuntime:
             task_id,
             dag,
             review_level=review_level,
-            on_token=on_token,
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
@@ -283,7 +278,6 @@ class HarnessRuntime:
                 runtime_mode=prior_record.runtime_mode,
                 dag_messages=dag_messages,
                 force_review=review_policy(prior_record.review_level).reviews_dag_changes(),
-                on_token=self._active_on_token,
                 on_trace=_trace_event_emitter(self._active_on_event),
                 on_dag=_dag_event_emitter(self._active_on_event),
             )
@@ -309,7 +303,6 @@ class HarnessRuntime:
             runtime_mode="auto",
             dag_messages=dag_messages,
             force_review=review_policy(self._active_review_level).reviews_dag_changes(),
-            on_token=self._active_on_token,
             on_trace=_trace_event_emitter(self._active_on_event),
             on_dag=_dag_event_emitter(self._active_on_event),
         )
@@ -382,7 +375,7 @@ class HarnessRuntime:
                 control_events=[*loop_result.control_events, _dag_event(record, "dag_executed", reason="DAG segment executed.")],
             )
 
-        answer = loop_result.final_response.strip() or _dag_run_fallback_message(record, result)
+        answer = loop_result.final_response.strip() or dag_run_fallback_message(record, result)
         record.message_markdown = answer
         self._append_conversation_turn(record.user_request, answer)
         return HarnessMessageResult(
@@ -435,8 +428,8 @@ class HarnessRuntime:
                 timeout=60,
             )
         except Exception:
-            return _dag_run_fallback_message(record, result)
-        return summary.final_response.strip() or _dag_run_fallback_message(record, result)
+            return dag_run_fallback_message(record, result)
+        return summary.final_response.strip() or dag_run_fallback_message(record, result)
 
     def _conversation_context(self) -> str:
         if not self.tasks:
@@ -652,50 +645,3 @@ def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
     )
 
 
-def _dag_run_fallback_message(record: TaskRecord, result: RunResult) -> str:
-    lines = [
-        "DAG execution completed." if result.completed else "DAG execution stopped before completion.",
-        "",
-        "Node results:",
-    ]
-    if not result.node_results:
-        lines.append("- No completed node results were recorded.")
-    for node_id, node_result in result.node_results.items():
-        status = "completed" if node_result.completed else "failed"
-        response = node_result.final_response.strip() or node_result.stop_reason
-        lines.append(f"- `{node_id}` ({status}): {response}")
-    return "\n".join(lines)
-
-
-def _emit_tool_review_event(
-    on_event: Any,
-    tool_call: ToolCall,
-    event_type: str,
-    content: str,
-) -> None:
-    if on_event is None:
-        return
-    on_event({
-        "type": event_type,
-        "tool_call_id": tool_call.id,
-        "name": tool_call.name,
-        "arguments": tool_call.arguments,
-        "content": content,
-    })
-
-
-def _replace_pending_tool_message(
-    messages: list[dict[str, Any]],
-    tool_call_id: str,
-    content: str,
-) -> None:
-    for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call_id:
-            messages[i] = {**msg, "content": content}
-            return
-    messages.append({
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": content,
-    })
