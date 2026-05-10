@@ -70,7 +70,6 @@ class HarnessRuntime:
         self.tasks = dag_agent_loop.tasks
         self._active_review_level: ReviewLevel = "fast"
         self._active_user_message: str = ""
-        self._active_continuation_task_id: str | None = None
         self._active_on_token: TokenHandler | None = None
         self._active_on_event: LoopEventHandler | None = None
         self._conversation_history: list[dict[str, Any]] = []
@@ -96,27 +95,14 @@ class HarnessRuntime:
                 on_dag=_dag_event_emitter(on_event),
             )
             record = self.tasks[loop_result.task_id] if loop_result.task_id else None
-            if (
-                loop_result.status == "failed"
-                and record is not None
-                and loop_result.run_result is not None
-                and loop_result.message_markdown.strip()
-            ):
+            if loop_result.status == "awaiting_dag_review" and record is not None:
                 return HarnessMessageResult(
-                    status="failed",
+                    status="awaiting_dag_review",
                     message_markdown=loop_result.message_markdown,
                     dag=loop_result.dag,
-                    run_result=loop_result.run_result,
                     task_id=loop_result.task_id,
                     pending_review=loop_result.pending_review,
-                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution failed.")],
-                )
-            if loop_result.status in {"completed", "failed"} and record is not None and loop_result.run_result is not None:
-                return await self._continue_dag_loop(
-                    record,
-                    loop_result.run_result,
-                    on_token=on_token,
-                    on_event=on_event,
+                    control_events=[_dag_event(record, "dag_created", reason="Forced DAG mode.")],
                 )
             if loop_result.status == "awaiting_change_review" and record is not None:
                 return HarnessMessageResult(
@@ -128,23 +114,20 @@ class HarnessRuntime:
                     pending_review=loop_result.pending_review,
                     control_events=[_dag_event(record, "change_review_requested", reason=loop_result.message_markdown)],
                 )
-            if loop_result.status == "failed" and record is not None:
+            if record is not None:
+                self._append_conversation_turn(record.user_request, loop_result.message_markdown)
                 return HarnessMessageResult(
-                    status="failed",
+                    status=loop_result.status,
                     message_markdown=loop_result.message_markdown,
                     dag=loop_result.dag,
                     run_result=loop_result.run_result,
                     task_id=loop_result.task_id,
-                    pending_review=loop_result.pending_review,
-                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution failed.")],
+                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution completed.")],
                 )
-            assert record is not None
             return HarnessMessageResult(
-                status="awaiting_dag_review",
+                status="failed",
                 message_markdown=loop_result.message_markdown,
-                dag=loop_result.dag,
                 task_id=loop_result.task_id,
-                control_events=[_dag_event(record, "dag_created", reason="Forced DAG mode.")],
             )
 
         base_messages = self.prompt_builder.build(
@@ -215,61 +198,23 @@ class HarnessRuntime:
             on_dag=_dag_event_emitter(on_event),
         )
         record = self.tasks[task_id]
-        if (
-            loop_result.status == "completed"
-            and record.dag.status == "completed"
-            and record.message_markdown
-        ):
+
+        if loop_result.status in {"awaiting_dag_review", "awaiting_change_review"}:
             return HarnessMessageResult(
-                status="completed",
-                message_markdown=record.message_markdown,
-                dag=loop_result.dag,
-                run_result=loop_result.run_result,
-                task_id=task_id,
-            )
-        if loop_result.status == "awaiting_change_review":
-            return HarnessMessageResult(
-                status="awaiting_change_review",
+                status=loop_result.status,
                 message_markdown=loop_result.message_markdown,
                 dag=loop_result.dag,
                 run_result=loop_result.run_result,
                 task_id=task_id,
                 pending_review=loop_result.pending_review,
-                control_events=[_dag_event(record, "change_review_requested", reason=loop_result.message_markdown)],
+                control_events=[_dag_event(record, "dag_executed", reason="DAG paused for review.")],
             )
-        if loop_result.status == "failed":
-            return HarnessMessageResult(
-                status="failed",
-                message_markdown=loop_result.message_markdown,
-                dag=loop_result.dag,
-                run_result=loop_result.run_result,
-                task_id=task_id,
-            )
-        if record.runtime_mode == "dag":
-            if loop_result.run_result is None or not loop_result.run_result.completed:
-                return HarnessMessageResult(
-                    status="awaiting_change_review" if loop_result.pending_review else "failed",
-                    message_markdown=loop_result.message_markdown,
-                    dag=loop_result.dag,
-                    run_result=loop_result.run_result,
-                    task_id=task_id,
-                    pending_review=loop_result.pending_review,
-                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution paused before completion.")],
-                )
-            return await self._continue_dag_loop(
-                record,
-                loop_result.run_result,
-                on_token=on_token,
-                on_event=on_event,
-            )
-        assert loop_result.run_result is not None
-        summary = await self._summarize_dag_run(record, loop_result.run_result, on_token=on_token, on_event=on_event)
-        record.message_markdown = summary
-        self._append_conversation_turn(record.user_request, summary)
+
+        self._append_conversation_turn(record.user_request, loop_result.message_markdown)
         return HarnessMessageResult(
-            status="completed" if loop_result.run_result.completed else "failed",
-            message_markdown=summary,
-            dag=record.dag,
+            status=loop_result.status,
+            message_markdown=loop_result.message_markdown,
+            dag=loop_result.dag,
             run_result=loop_result.run_result,
             task_id=task_id,
             control_events=[_dag_event(record, "dag_executed", reason="User confirmed DAG.")],
@@ -283,37 +228,6 @@ class HarnessRuntime:
         reason = str(tool_call.arguments.get("reason") or "").strip()
         if not request:
             request = "Create a reviewable DAG for the current user task."
-
-        if self._active_continuation_task_id is not None:
-            prior_record = self.tasks[self._active_continuation_task_id]
-            dag_messages = prior_record.dag_messages
-            prior_results = dict(prior_record.node_results)
-            prior_continuation_count = prior_record.continuation_count
-            loop_result = await self.dag_agent_loop.run(
-                request,
-                task_id=prior_record.task_id,
-                review_level=prior_record.review_level,
-                planning_context=self._conversation_context(),
-                runtime_mode=prior_record.runtime_mode,
-                dag_messages=dag_messages,
-                force_review=review_policy(prior_record.review_level).reviews_dag_changes(),
-                on_token=self._active_on_token,
-                on_trace=_trace_event_emitter(self._active_on_event),
-                on_dag=_dag_event_emitter(self._active_on_event),
-            )
-            assert loop_result.task_id is not None
-            record = self.tasks[loop_result.task_id]
-            new_results = dict(record.node_results)
-            record.node_results = {**prior_results, **new_results}
-            record.continuation_count = prior_continuation_count + 1
-            for node in record.dag.nodes:
-                if loop_result.status == "awaiting_dag_review":
-                    record.node_results.pop(node.id, None)
-            return _control_result_from_dag_loop(
-                record,
-                loop_result,
-                reason=reason or "DAG continuation requested.",
-            )
 
         dag_messages = self._new_dag_messages()
         loop_result = await self.dag_agent_loop.run(
@@ -336,121 +250,6 @@ class HarnessRuntime:
             loop_result,
             reason=reason,
         )
-
-    async def _continue_dag_loop(
-        self,
-        record: TaskRecord,
-        result: RunResult,
-        *,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> HarnessMessageResult:
-        messages = self.prompt_builder.build(
-            PromptRequest(
-                profile=self.conversation_profile,
-                task_content="{{ user_message }}",
-                tools=[],
-                memory=self.conversation_profile.memory,
-                context=self._conversation_context(),
-                variables={
-                    "user_message": (
-                        "A DAG segment has finished executing in forced DAG mode.\n"
-                        f"Original user request:\n{record.user_request}\n\n"
-                        f"DAG execution observation:\n{_dag_run_tool_output(record, result)}\n\n"
-                        "Decide the next step. If the observations are sufficient, answer the user. "
-                        "If more execution is required, call dag_agent to create the next DAG segment. "
-                        "Do not call ordinary tools directly in DAG mode."
-                    )
-                },
-            )
-        )
-        self._active_review_level = record.review_level
-        self._active_user_message = record.user_request
-        self._active_continuation_task_id = record.task_id
-        try:
-            loop_result = await self.agent_loop.run(
-                "",
-                boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                allowed_tools=[],
-                max_steps=self.max_top_steps,
-                messages=messages,
-                extra_tools=[dag_agent_tool_definition()],
-                control_tool_names={DAG_AGENT_NAME},
-                control_tool_handler=self._handle_control_tool,
-                on_token=on_token,
-                on_event=on_event,
-            )
-        finally:
-            self._active_continuation_task_id = None
-            self._active_user_message = ""
-
-        dag_event = _latest_dag_event(loop_result.control_events)
-        if dag_event is not None and loop_result.stop_reason == "awaiting_approval":
-            current_record = self.tasks[record.task_id]
-            return HarnessMessageResult(
-                status="awaiting_dag_review",
-                message_markdown=_dag_created_review_message(current_record),
-                dag=dag_event.get("dag"),
-                run_result=result,
-                task_id=record.task_id,
-                control_events=[*loop_result.control_events, _dag_event(record, "dag_executed", reason="DAG segment executed.")],
-            )
-
-        answer = loop_result.final_response.strip() or dag_run_fallback_message(record, result)
-        record.message_markdown = answer
-        self._append_conversation_turn(record.user_request, answer)
-        return HarnessMessageResult(
-            status="completed" if result.completed else "failed",
-            message_markdown=answer,
-            dag=record.dag,
-            run_result=result,
-            task_id=record.task_id,
-            control_events=[*loop_result.control_events, _dag_event(record, "dag_executed", reason="DAG segment executed.")],
-        )
-
-    async def _summarize_dag_run(
-        self,
-        record: TaskRecord,
-        result: RunResult,
-        *,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> str:
-        messages = self.prompt_builder.build(
-            PromptRequest(
-                profile=self.conversation_profile,
-                task_content="{{ user_message }}",
-                tools=self.runtime_tools,
-                memory=self.conversation_profile.memory,
-                variables={
-                    "user_message": (
-                        "The user confirmed a DAG and it has been executed.\n"
-                        f"Original request:\n{record.user_request}\n\n"
-                        f"DAG execution observation:\n{_dag_run_tool_output(record, result)}\n\n"
-                        "Answer the user's original request directly."
-                    )
-                },
-            )
-        )
-        stream_kwargs: dict[str, Any] = {}
-        if on_token is not None:
-            stream_kwargs["on_token"] = on_token
-        if on_event is not None:
-            stream_kwargs["on_event"] = on_event
-        try:
-            summary = await asyncio.wait_for(
-                self.agent_loop.run(
-                    "",
-                    boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                    max_steps=self.max_top_steps,
-                    messages=messages,
-                    **stream_kwargs,
-                ),
-                timeout=60,
-            )
-        except Exception:
-            return dag_run_fallback_message(record, result)
-        return summary.final_response.strip() or dag_run_fallback_message(record, result)
 
     def _conversation_context(self) -> str:
         if not self.tasks:

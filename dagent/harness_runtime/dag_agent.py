@@ -177,7 +177,7 @@ class DAGAgentLoop:
             on_dag=on_dag,
             max_cycles=max(0, self.max_cycles - cycles_used),
         )
-        return self._wrap_execute_result(record, result)
+        return self._finalize_run(record, result)
 
     async def resume(
         self,
@@ -225,7 +225,7 @@ class DAGAgentLoop:
         _emit_dag(on_dag, record.dag)
 
         result = await self.execute(task_id, on_token=on_token, on_trace=on_trace, on_dag=on_dag)
-        return self._wrap_execute_result(record, result)
+        return self._finalize_run(record, result)
 
     # ------------------------------------------------------------------
     # Unified execution loop
@@ -349,7 +349,7 @@ class DAGAgentLoop:
             return True
         return review_policy(record.review_level).reviews_dag_changes()
 
-    def _wrap_execute_result(self, record: TaskRecord, result: RunResult) -> DAGAgentLoopResult:
+    def _finalize_run(self, record: TaskRecord, result: RunResult) -> DAGAgentLoopResult:
         if record.pending_review is not None:
             return DAGAgentLoopResult(
                 status="awaiting_change_review",
