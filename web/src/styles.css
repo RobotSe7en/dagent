@@ -579,7 +579,6 @@ select {
   scrollbar-color: var(--border) transparent;
 }
 
-/* ── Message trace ── */
 /* ── Error banner ── */
 .error-banner {
   margin: 12px 24px 0;

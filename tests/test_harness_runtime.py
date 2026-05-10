@@ -348,7 +348,7 @@ def test_harness_runtime_dag_mode_fails_without_review() -> None:
     assert first.dag.status == "failed"
     assert first.message_markdown == "The DAG failed after exhausting repair attempts."
     assert any(
-        "DAG execution observation" in message.get("content", "")
+        "DAG observation" in message.get("content", "")
         for request in provider.requests
         for message in request["messages"]
     )

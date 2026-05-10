@@ -218,16 +218,12 @@ def _runtime_message_markdown(result) -> str:
     if result.run_result is not None and result.message_markdown.strip():
         return result.message_markdown
     if result.dag is not None:
-        medium_or_high = [
-            node for node in result.dag.nodes
-            if node.risk in {"medium", "high"}
-        ]
         if result.dag.status == "approved":
             review_line = "- **Next action:** The top AgentLoop will continue execution when it is safe to do so."
-        elif medium_or_high:
-            review_line = f"- **Review required:** {len(medium_or_high)} node(s) need human approval."
+        elif result.dag.status == "review_required":
+            review_line = "- **Review required:** Inspect the proposed DAG changes, then confirm to resume execution."
         else:
-            review_line = "- **Next action:** Inspect the generated DAG trace."
+            review_line = "- **Next action:** Inspect the generated DAG timeline."
         return "\n".join(
             [
                 "### DAG created",
@@ -252,10 +248,6 @@ def _review_payload(review) -> dict[str, Any]:
         "dag": review.proposed_dag.model_dump(mode="json"),
         "payload": review.payload,
     }
-
-
-def _chunks(text: str, *, size: int) -> list[str]:
-    return [text[index:index + size] for index in range(0, len(text), size)]
 
 
 def _sse(payload: dict[str, Any]) -> str:

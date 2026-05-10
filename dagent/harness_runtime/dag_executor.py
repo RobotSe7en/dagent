@@ -279,7 +279,7 @@ class DAGExecutor:
     def _enforce_review_gate(self, dag: DAG) -> None:
         needs_approval = any(node.risk in {"medium", "high"} for node in dag.nodes)
         if needs_approval and dag.status != "approved":
-            raise DAGExecutionError("DAG contains medium/high risk nodes and is not approved.")
+            raise DAGExecutionError("DAG is not approved for execution.")
 
 
 def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
@@ -409,13 +409,6 @@ def _find_unresolved_placeholders(value: Any) -> set[str]:
     if isinstance(value, str):
         return set(re.findall(r"{{[^{}]+}}", value))
     return set()
-
-
-def _node_by_id(dag: DAG, node_id: str) -> DAGNode:
-    for node in dag.nodes:
-        if node.id == node_id:
-            return node
-    raise DAGExecutionError(f"Node '{node_id}' not found.")
 
 
 def _augment_tool_violation(

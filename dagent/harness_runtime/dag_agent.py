@@ -59,7 +59,6 @@ class DAGAgentLoop:
         prompt_builder: PromptBuilder | None = None,
         tools: list[Tool] | None = None,
         max_cycles: int = 6,
-        max_node_retries: int = 2,
     ) -> None:
         self.provider = provider
         self.dag_executor = dag_executor
@@ -71,7 +70,6 @@ class DAGAgentLoop:
             else []
         )
         self.max_cycles = max_cycles
-        self.max_node_retries = max_node_retries
         self.tasks: dict[str, TaskRecord] = {}
         self.runs: dict[str, RunResult] = {}
 
@@ -89,6 +87,7 @@ class DAGAgentLoop:
         runtime_mode: str = "auto",
         dag_messages: list[dict[str, Any]] | None = None,
         force_review: bool = False,
+        on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> DAGAgentLoopResult:
@@ -105,12 +104,34 @@ class DAGAgentLoop:
                 ),
             })
 
-        response = await self._request_dag(
-            request,
-            task_id=task_id,
-            dag_messages=dag_messages,
-            allow_no_change=False,
-        )
+        response: DAG | str | None = None
+        planning_prompt = request
+        cycles_used = 0
+        for _ in range(self.max_cycles):
+            cycles_used += 1
+            try:
+                response = await self._request_dag(
+                    planning_prompt,
+                    task_id=task_id,
+                    dag_messages=dag_messages,
+                    allow_no_change=False,
+                    on_token=on_token,
+                )
+                break
+            except Exception as exc:
+                planning_prompt = _format_dag_observation(
+                    kind="validation_error",
+                    task_id=task_id,
+                    user_request=request,
+                    planning_context=planning_context,
+                    validation_error=str(exc),
+                )
+        else:
+            return DAGAgentLoopResult(
+                status="failed",
+                message_markdown="DAG planning failed before an executable DAG could be created.",
+                task_id=task_id or f"task_{uuid4().hex}",
+            )
 
         if isinstance(response, str):
             return DAGAgentLoopResult(
@@ -129,7 +150,7 @@ class DAGAgentLoop:
         )
         self.tasks[record.task_id] = record
 
-        if self._needs_review(record, record.dag, force=force_review):
+        if self._needs_review(record, force=force_review):
             record.dag.status = "review_required"
             _emit_dag(on_dag, record.dag)
             record.pending_review = PendingReview(
@@ -149,7 +170,13 @@ class DAGAgentLoop:
 
         record.dag.status = "approved"
         _emit_dag(on_dag, record.dag)
-        result = await self.execute(record.task_id, on_trace=on_trace, on_dag=on_dag)
+        result = await self.execute(
+            record.task_id,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
+            max_cycles=max(0, self.max_cycles - cycles_used),
+        )
         return self._wrap_execute_result(record, result)
 
     async def resume(
@@ -157,6 +184,7 @@ class DAGAgentLoop:
         task_id: str,
         dag: DAG,
         review_level: ReviewLevel | None = None,
+        on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> DAGAgentLoopResult:
@@ -196,7 +224,7 @@ class DAGAgentLoop:
         record.pending_review = None
         _emit_dag(on_dag, record.dag)
 
-        result = await self.execute(task_id, on_trace=on_trace, on_dag=on_dag)
+        result = await self.execute(task_id, on_token=on_token, on_trace=on_trace, on_dag=on_dag)
         return self._wrap_execute_result(record, result)
 
     # ------------------------------------------------------------------
@@ -207,58 +235,53 @@ class DAGAgentLoop:
         self,
         task_id: str,
         *,
+        on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
+        max_cycles: int | None = None,
     ) -> RunResult:
         record = self.tasks[task_id]
         if record.dag.status == "review_required":
-            raise DAGExecutionError("DAG contains medium/high risk nodes and is not approved.")
+            raise DAGExecutionError("DAG is awaiting review and is not approved.")
 
         traces: list[TraceEvent] = []
         cycle = 0
-        repair_counts: dict[str, int] = {}
         failed_node_id: str | None = None
+        cycle_limit = self.max_cycles if max_cycles is None else max_cycles
+        pending_observation: str | None = None
 
-        while cycle < self.max_cycles:
+        while cycle < cycle_limit:
             cycle += 1
 
-            # Execute next ready layer
-            layer_failed = False
-            try:
-                layer = await self.dag_executor.execute_next_ready_layer(
-                    record.dag,
-                    initial_results=_completed_results(record.node_results),
-                    record_dag_start=not traces,
-                    on_trace=on_trace,
-                )
-            except Exception as exc:
-                layer_failed = True
-                self._absorb_partial_results(record, traces, on_dag)
-                failed_node_id = _latest_failed_node_id(record.trace_records, valid_node_ids=_dag_node_ids(record.dag))
-                retry_key = failed_node_id or "__dag__"
-                repair_counts[retry_key] = repair_counts.get(retry_key, 0) + 1
-                if repair_counts[retry_key] > self.max_node_retries:
-                    break
-                layer = RunResult(
-                    dag_id=record.dag.dag_id,
-                    completed=False,
-                    node_results=dict(record.node_results),
-                    traces=[],
-                )
-                layer_error = str(exc)
+            if pending_observation is None:
+                # Execute next ready layer
+                layer_failed = False
+                try:
+                    layer = await self.dag_executor.execute_next_ready_layer(
+                        record.dag,
+                        initial_results=_completed_results(record.node_results),
+                        record_dag_start=not traces,
+                        on_trace=on_trace,
+                    )
+                except Exception as exc:
+                    layer_failed = True
+                    self._absorb_partial_results(record, traces, on_dag)
+                    failed_node_id = _latest_failed_node_id(
+                        record.trace_records,
+                        valid_node_ids=_dag_node_ids(record.dag),
+                    )
+                    layer_error = str(exc)
 
-            if not layer_failed:
-                traces.extend(layer.traces)
-                new_node_ids = set(layer.node_results) - set(record.node_results)
-                record.node_results.update(layer.node_results)
-                record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
-                if new_node_ids and all(nid == "start" for nid in new_node_ids):
-                    continue
-                layer_error = ""
+                if not layer_failed:
+                    traces.extend(layer.traces)
+                    new_node_ids = set(layer.node_results) - set(record.node_results)
+                    record.node_results.update(layer.node_results)
+                    record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+                    if new_node_ids and all(nid == "start" for nid in new_node_ids):
+                        continue
+                    layer_error = ""
 
-            # Ask LLM for next step — it decides whether to continue, replan, or finish
-            try:
-                observation = _format_dag_observation(
+                pending_observation = _format_dag_observation(
                     kind="layer_failed" if layer_failed else "layer_completed",
                     task_id=record.task_id,
                     user_request=record.user_request,
@@ -266,28 +289,50 @@ class DAGAgentLoop:
                     last_error=layer_error if layer_failed else "",
                     failed_node_id=failed_node_id if layer_failed else None,
                 )
+
+            # Ask LLM for next step — it decides whether to continue, replan, or finish
+            try:
                 response = await self._request_dag(
-                    observation,
+                    pending_observation,
                     task_id=record.task_id,
                     dag_messages=record.dag_messages,
+                    on_token=on_token,
                 )
-            except Exception:
+            except Exception as exc:
                 traces.append(_dag_revision_trace_event(dag_id=record.dag.dag_id))
-                break
+                pending_observation = _format_dag_observation(
+                    kind="validation_error",
+                    task_id=record.task_id,
+                    user_request=record.user_request,
+                    record=record,
+                    validation_error=str(exc),
+                )
+                continue
 
             if isinstance(response, str):
                 record.message_markdown = response
                 break
 
             if response is None:
-                if layer_failed:
-                    break
+                pending_observation = None
                 continue
 
             # Apply the new DAG
-            self._apply_replan(record, response)
+            try:
+                self._apply_replan(record, response)
+            except Exception as exc:
+                traces.append(_dag_revision_trace_event(dag_id=record.dag.dag_id))
+                pending_observation = _format_dag_observation(
+                    kind="validation_error",
+                    task_id=record.task_id,
+                    user_request=record.user_request,
+                    record=record,
+                    validation_error=str(exc),
+                )
+                continue
             traces.append(_dag_revision_trace_event(dag_id=record.dag.dag_id))
             _emit_dag(on_dag, record.dag)
+            pending_observation = None
 
             # Review gate
             if record.dag.status == "review_required":
@@ -299,7 +344,7 @@ class DAGAgentLoop:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _needs_review(self, record: TaskRecord, dag: DAG, *, force: bool = False) -> bool:
+    def _needs_review(self, record: TaskRecord, *, force: bool = False) -> bool:
         if force:
             return True
         return review_policy(record.review_level).reviews_dag_changes()
@@ -350,50 +395,35 @@ class DAGAgentLoop:
         task_id: str | None,
         dag_messages: list[dict[str, Any]] | None,
         allow_no_change: bool = True,
-        max_attempts: int = 2,
+        on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
         """Call LLM with prompt, return a DAG, a final answer string, or None (NO_CHANGE)."""
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        feedback = ""
-        last_exc: Exception | None = None
-        for _ in range(max_attempts):
-            request = prompt if not feedback else _format_dag_observation(
-                kind="validation_error",
-                task_id=task_id,
-                user_request=prompt,
-                validation_error=feedback,
+        messages = self.prompt_builder.build(
+            PromptRequest(
+                profile=self.profile,
+                task_content="Task id: {{ task_id }}\n{{ user_request }}",
+                tools=self.tools,
+                memory=self.profile.memory,
+                variables={"user_request": prompt, "task_id": resolved_task_id},
             )
-            messages = self.prompt_builder.build(
-                PromptRequest(
-                    profile=self.profile,
-                    task_content="Task id: {{ task_id }}\n{{ user_request }}",
-                    tools=self.tools,
-                    memory=self.profile.memory,
-                    variables={"user_request": request, "task_id": resolved_task_id},
-                )
-            )
-            system_msg = messages[0]
-            user_msg = messages[1]
-            if dag_messages is not None:
-                messages = [system_msg, *dag_messages, user_msg]
-            response = await _chat_for_dag(self.provider, messages)
-            if dag_messages is not None:
-                dag_messages.append({"role": "user", "content": request})
-                dag_messages.append({"role": "assistant", "content": response.content})
-            result = dag_from_model_output(response.content, task_id=resolved_task_id, tools=self.tools)
-            if result is None:
-                if not allow_no_change:
-                    raise DAGCreationError("DAG agent returned NO_CHANGE for initial planning.")
-                return None
-            if isinstance(result, str):
-                return result
-            try:
-                return self.prepare_for_review(result)
-            except Exception as exc:
-                last_exc = exc
-                feedback = str(exc)
-        assert last_exc is not None
-        raise last_exc
+        )
+        system_msg = messages[0]
+        user_msg = messages[1]
+        if dag_messages is not None:
+            messages = [system_msg, *dag_messages, user_msg]
+        response = await _chat_for_dag(self.provider, messages, on_token=on_token)
+        if dag_messages is not None:
+            dag_messages.append({"role": "user", "content": prompt})
+            dag_messages.append({"role": "assistant", "content": response.content})
+        result = dag_from_model_output(response.content, task_id=resolved_task_id, tools=self.tools)
+        if result is None:
+            if not allow_no_change:
+                raise DAGCreationError("DAG agent returned NO_CHANGE for initial planning.")
+            return None
+        if isinstance(result, str):
+            return result
+        return self.prepare_for_review(result)
 
     def _apply_replan(self, record: TaskRecord, next_dag: DAG) -> None:
         prepared = next_dag.model_copy(deep=True)
@@ -406,18 +436,20 @@ class DAGAgentLoop:
         needs_review = bool(changed) and review_policy(record.review_level).reviews_dag_changes()
         if needs_review:
             prepared.status = "review_required"
+        else:
+            prepared.status = "approved"
 
-        # Remove stale results for changed/deleted nodes
+        # Remove stale results for changed/deleted nodes and their downstream
         new_nodes = {node.id: node for node in prepared.nodes}
         old_nodes = {node.id: node for node in record.dag.nodes}
         for nid in list(record.node_results):
             new_node = new_nodes.get(nid)
             if new_node is None:
-                del record.node_results[nid]
+                _invalidate_patch_results(record, nid)
                 continue
             old_node = old_nodes.get(nid)
             if old_node is None or old_node.tool != new_node.tool or old_node.args != new_node.args:
-                del record.node_results[nid]
+                _invalidate_patch_results(record, nid)
 
         record.dag = prepared
         if needs_review:
@@ -438,9 +470,12 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None,
     ) -> RunResult:
         record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
-        completed = bool(record.message_markdown) or all(
+        all_nodes_completed = all(
             nid in record.node_results and record.node_results[nid].completed
             for nid in _dag_node_ids(record.dag)
+        )
+        completed = record.dag.status != "failed" and (
+            bool(record.message_markdown) or all_nodes_completed
         )
         result = RunResult(
             dag_id=record.dag.dag_id,
@@ -470,7 +505,6 @@ class DAGAgentLoop:
         prepared = self.dag_executor.normalize(dag)
         validate_dag(prepared)
         self._validate_dag_tools(prepared)
-        prepared.status = "approved"
         return prepared
 
     def _validate_dag_tools(self, dag: DAG) -> None:
@@ -490,12 +524,6 @@ class DAGAgentLoop:
                 f"{', '.join(sorted(available_tools))}."
             )
 
-    def approve_dag(self, task_id: str) -> DAG:
-        record = self.tasks[task_id]
-        record.dag.status = "approved"
-        return record.dag
-
-
 # ------------------------------------------------------------------
 # LLM communication
 # ------------------------------------------------------------------
@@ -503,8 +531,44 @@ class DAGAgentLoop:
 async def _chat_for_dag(
     provider: ChatProvider,
     messages: list[dict[str, Any]],
+    *,
+    on_token: Callable[[str], None] | None = None,
 ) -> ChatResponse:
-    return await provider.chat(messages)
+    if on_token is None or not hasattr(provider, "stream_chat"):
+        return await provider.chat(messages)
+
+    content = ""
+    visible = ""
+    response: ChatResponse | None = None
+    async for event in provider.stream_chat(messages):
+        if event.type == "token" and event.content:
+            content += event.content
+            next_visible = _visible_thinking_markup(content)
+            if next_visible.startswith(visible):
+                delta = next_visible[len(visible):]
+                if delta:
+                    on_token(delta)
+                visible = next_visible
+        elif event.type == "done":
+            response = event.response
+    return response or ChatResponse(content=content)
+
+
+def _visible_thinking_markup(content: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    lower = content.lower()
+    while cursor < len(content):
+        open_index = lower.find("<think>", cursor)
+        if open_index == -1:
+            break
+        close_index = lower.find("</think>", open_index + len("<think>"))
+        if close_index == -1:
+            parts.append(content[open_index:])
+            break
+        parts.append(content[open_index:close_index + len("</think>")])
+        cursor = close_index + len("</think>")
+    return "".join(parts)
 
 
 # ------------------------------------------------------------------

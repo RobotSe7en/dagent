@@ -22,7 +22,7 @@ from dagent.harness_runtime.agent_loop import (
 from dagent.harness_runtime.dag_executor import (
     RunResult,
 )
-from dagent.harness_runtime.dag_agent import DAGAgentLoop, dag_run_fallback_message
+from dagent.harness_runtime.dag_agent import DAGAgentLoop, dag_run_fallback_message, _dag_created_review_message
 from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
@@ -68,10 +68,10 @@ class HarnessRuntime:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_top_steps = max_top_steps
         self.tasks = dag_agent_loop.tasks
-        self.runs = dag_agent_loop.runs
         self._active_review_level: ReviewLevel = "fast"
         self._active_user_message: str = ""
         self._active_continuation_task_id: str | None = None
+        self._active_on_token: TokenHandler | None = None
         self._active_on_event: LoopEventHandler | None = None
         self._conversation_history: list[dict[str, Any]] = []
 
@@ -91,10 +91,26 @@ class HarnessRuntime:
                 planning_context=self._conversation_context(),
                 runtime_mode="dag",
                 dag_messages=self._new_dag_messages(),
+                on_token=on_token,
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
             record = self.tasks[loop_result.task_id] if loop_result.task_id else None
+            if (
+                loop_result.status == "failed"
+                and record is not None
+                and loop_result.run_result is not None
+                and loop_result.message_markdown.strip()
+            ):
+                return HarnessMessageResult(
+                    status="failed",
+                    message_markdown=loop_result.message_markdown,
+                    dag=loop_result.dag,
+                    run_result=loop_result.run_result,
+                    task_id=loop_result.task_id,
+                    pending_review=loop_result.pending_review,
+                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution failed.")],
+                )
             if loop_result.status in {"completed", "failed"} and record is not None and loop_result.run_result is not None:
                 return await self._continue_dag_loop(
                     record,
@@ -147,6 +163,7 @@ class HarnessRuntime:
         include_dag_agent = mode == "auto"
         self._active_review_level = review_level
         self._active_user_message = message
+        self._active_on_token = on_token
         self._active_on_event = on_event
         control_names: set[str] = {DAG_AGENT_NAME} if include_dag_agent else set()
         extra_tools = [dag_agent_tool_definition()] if include_dag_agent else None
@@ -165,6 +182,7 @@ class HarnessRuntime:
             )
         finally:
             self._active_user_message = ""
+            self._active_on_token = None
             self._active_on_event = None
 
         self._remember_conversation_messages(result.messages)
@@ -192,6 +210,7 @@ class HarnessRuntime:
             task_id,
             dag,
             review_level=review_level,
+            on_token=on_token,
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
@@ -278,6 +297,7 @@ class HarnessRuntime:
                 runtime_mode=prior_record.runtime_mode,
                 dag_messages=dag_messages,
                 force_review=review_policy(prior_record.review_level).reviews_dag_changes(),
+                on_token=self._active_on_token,
                 on_trace=_trace_event_emitter(self._active_on_event),
                 on_dag=_dag_event_emitter(self._active_on_event),
             )
@@ -303,6 +323,7 @@ class HarnessRuntime:
             runtime_mode="auto",
             dag_messages=dag_messages,
             force_review=review_policy(self._active_review_level).reviews_dag_changes(),
+            on_token=self._active_on_token,
             on_trace=_trace_event_emitter(self._active_on_event),
             on_dag=_dag_event_emitter(self._active_on_event),
         )
@@ -569,19 +590,6 @@ def _dag_created_tool_output(record: TaskRecord, *, reason: str) -> str:
         },
         ensure_ascii=False,
     )
-
-
-def _dag_created_review_message(record: TaskRecord) -> str:
-    return "\n".join(
-        [
-            "### DAG ready for review",
-            f"- **Task:** `{record.task_id}`",
-            f"- **Status:** `{record.dag.status}`",
-            f"- **Nodes:** {len(record.dag.nodes)}",
-            "- **Next action:** Review and edit the DAG, then confirm to resume execution.",
-        ]
-    )
-
 
 
 def _task_context_payload(record: TaskRecord) -> dict[str, Any]:

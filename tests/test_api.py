@@ -93,6 +93,8 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     done_index = next(index for index, event in enumerate(events) if event["type"] == "done")
+    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
+    assert "<think>planning dag</think>" in token_text
     assert any(event.get("type") == "trace" for event in events[:done_index])
     assert events[-1]["status"] == "completed"
     assert events[-1]["dag"]["status"] == "completed"

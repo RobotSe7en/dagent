@@ -37,9 +37,10 @@ async def test_minimax_harness_executes_safe_dag() -> None:
         review_level="fast",
     )
     if result.run_result is None:
-        record = runtime.tasks[result.task_id]
-        runtime.dag_agent_loop.approve_dag(record.task_id)
-        run_result = await runtime.dag_agent_loop.execute(record.task_id)
+        assert result.dag is not None
+        resumed = await runtime.dag_agent_loop.resume(result.task_id, result.dag, review_level="fast")
+        assert resumed.run_result is not None
+        run_result = resumed.run_result
     else:
         run_result = result.run_result
 

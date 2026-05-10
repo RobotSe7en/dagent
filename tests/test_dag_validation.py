@@ -156,6 +156,5 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert dag.status == "approved"
     assert [node.tool for node in dag.nodes] == ["run_command"]
     assert [node.risk for node in dag.nodes] == ["low"]

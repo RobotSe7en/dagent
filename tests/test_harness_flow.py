@@ -45,10 +45,8 @@ def runtime_for(
     executor: DAGExecutor,
     agent_loop=None,
     max_cycles: int = 6,
-    max_node_retries: int = 2,
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
-    dag_agent_loop.max_node_retries = max_node_retries
     return HarnessRuntime(
         agent_loop=agent_loop or CompletingLoop(),
         dag_agent_loop=dag_agent_loop,
