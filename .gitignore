@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache/
+.tmp_pytest/
 __pycache__/
 *.py[cod]
 *.log

@@ -359,7 +359,6 @@ def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation(
         [
             ChatResponse(content=_dag_agent_dsl()),
             ChatResponse(content="NO_CHANGE"),
-            ChatResponse(content=_dag_agent_dsl(node_id="node_2", text="next")),
         ]
     )
     runtime = _runtime(provider)
@@ -367,14 +366,12 @@ def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation(
     first = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="careful"))
     resumed = run(runtime.resume_dag(first.task_id, first.dag))
 
-    assert resumed.status == "awaiting_change_review"
+    assert resumed.status == "completed"
     assert resumed.task_id == first.task_id
     assert resumed.dag is not None
     assert resumed.dag.task_id == first.task_id
+    assert resumed.dag.status == "completed"
     assert len(runtime.tasks) == 1
-    continuation_request = provider.requests[-1]
-    prompt = "\n".join(message.get("content", "") for message in continuation_request["messages"])
-    assert "echo:ok" in prompt
 
 
 def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None:

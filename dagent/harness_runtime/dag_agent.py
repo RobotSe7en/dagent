@@ -282,7 +282,7 @@ class DAGAgentLoop:
                     layer_error = ""
 
                 pending_observation = _format_dag_observation(
-                    kind="layer_failed" if layer_failed else "layer_completed",
+                    kind="layer_failed" if layer_failed else ("dag_executed" if layer.completed else "layer_completed"),
                     task_id=record.task_id,
                     user_request=record.user_request,
                     record=record,
@@ -314,6 +314,8 @@ class DAGAgentLoop:
                 break
 
             if response is None:
+                if _dag_completed(record):
+                    break
                 pending_observation = None
                 continue
 
@@ -558,17 +560,28 @@ def _visible_thinking_markup(content: str) -> str:
     parts: list[str] = []
     cursor = 0
     lower = content.lower()
+    found_think = False
     while cursor < len(content):
         open_index = lower.find("<think>", cursor)
         if open_index == -1:
+            if found_think:
+                parts.append(content[cursor:])
             break
+        found_think = True
+        parts.append(content[cursor:open_index])
         close_index = lower.find("</think>", open_index + len("<think>"))
         if close_index == -1:
             parts.append(content[open_index:])
+            cursor = len(content)
             break
         parts.append(content[open_index:close_index + len("</think>")])
         cursor = close_index + len("</think>")
     return "".join(parts)
+
+
+def _strip_thinking_blocks(content: str) -> str:
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"<think>.*", "", content, flags=re.IGNORECASE | re.DOTALL)
 
 
 # ------------------------------------------------------------------
@@ -641,11 +654,6 @@ def _plan_spec_lines(content: str) -> list[tuple[int, str]]:
             continue
         lines.append((line_number, line))
     return lines
-
-
-def _strip_thinking_blocks(content: str) -> str:
-    content = re.sub(r"<think>.*?</think>", "", content, flags=re.IGNORECASE | re.DOTALL)
-    return re.sub(r"<think>.*", "", content, flags=re.IGNORECASE | re.DOTALL)
 
 
 def _parse_args(args_text: str, *, line_number: int) -> dict:
@@ -899,6 +907,13 @@ def _node_by_id(dag: DAG, node_id: str):
 
 def _dag_node_ids(dag: DAG) -> set[str]:
     return {node.id for node in dag.nodes}
+
+
+def _dag_completed(record: TaskRecord) -> bool:
+    return all(
+        node.id in record.node_results and record.node_results[node.id].completed
+        for node in record.dag.nodes
+    )
 
 
 def _latest_failed_node_id(

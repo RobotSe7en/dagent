@@ -50,6 +50,10 @@ When a failed node id and error are provided, always attempt to repair: fix
 the failed node's tool/args or replace it, and adjust downstream nodes as
 needed. Return the complete DAG.
 
+When you receive a `dag_executed` observation, the DAG has finished executing.
+Summarize the completed node outputs and answer the user's original request
+directly in plain text. Do NOT return a DAG or PlanSpec DSL in this case.
+
 Only use tools from the Available Tools section injected into this prompt.
 Do NOT invent tool names. If no tool list is provided, use read_file, write_file,
 grep, and run_command.
