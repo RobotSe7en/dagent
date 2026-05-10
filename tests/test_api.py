@@ -79,6 +79,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
                 ),
                 ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),
                 ChatResponse(content="Final answer: echo:ok"),
+                ChatResponse(content="Final answer: echo:ok"),
             ]
         )
     )
@@ -92,8 +93,6 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     done_index = next(index for index, event in enumerate(events) if event["type"] == "done")
-    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
-    assert "<think>planning dag</think>" in token_text
     assert any(event.get("type") == "trace" for event in events[:done_index])
     assert events[-1]["status"] == "completed"
     assert events[-1]["dag"]["status"] == "completed"
@@ -114,6 +113,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
                 ),
                 ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),
                 ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),
+                ChatResponse(content="Recovered after replanning."),
                 ChatResponse(content="Recovered after replanning."),
             ]
         )

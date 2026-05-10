@@ -140,16 +140,22 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
         ]
     )
     registry = ToolRegistry()
+    registry.register(
+        name="run_command",
+        handler=lambda command, cwd=".": f"ran:{command}",
+        action="read",
+        parameters={"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}},
+    )
     tool_executor = ToolExecutor(registry)
     agent = DAGAgentLoop(
         provider,
         dag_executor=DAGExecutor(tool_executor=tool_executor),
     )
 
-    dag = asyncio.run(agent._ask_model_for_dag("Summarize the repo", task_id="task_1", dag_messages=[]))
+    dag = asyncio.run(agent._request_dag("Summarize the repo", task_id="task_1", dag_messages=[], allow_no_change=False))
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert dag.status == "draft"
+    assert dag.status == "approved"
     assert [node.tool for node in dag.nodes] == ["run_command"]
     assert [node.risk for node in dag.nodes] == ["low"]
