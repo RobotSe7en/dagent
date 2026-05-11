@@ -168,6 +168,24 @@ select {
   border-color: var(--accent-blue);
 }
 
+.reviewer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.reviewer-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent-blue);
+}
+
 /* ── Workspace ── */
 .workspace {
   min-height: 0;

@@ -6,6 +6,22 @@ export async function resetSession(): Promise<void> {
   await fetch(`${API_BASE}/session/reset`, { method: 'POST' });
 }
 
+export async function getReviewerStatus(): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/settings/reviewer`);
+  const data = await res.json();
+  return Boolean(data.enabled);
+}
+
+export async function setReviewerEnabled(enabled: boolean): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/settings/reviewer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  const data = await res.json();
+  return Boolean(data.enabled);
+}
+
 interface DonePayload {
   status?: string;
   task_id: string | null;

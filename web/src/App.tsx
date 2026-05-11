@@ -27,7 +27,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { resetSession, resumeDag, streamTask } from './api';
+import { getReviewerStatus, setReviewerEnabled as apiSetReviewer, resetSession, resumeDag, streamTask } from './api';
 import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
@@ -143,6 +143,7 @@ export function App() {
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewerEnabled, setReviewerEnabled] = useState(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -152,6 +153,10 @@ export function App() {
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
+
+  useEffect(() => {
+    getReviewerStatus().then(setReviewerEnabled).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const element = messageListRef.current;
@@ -520,6 +525,19 @@ export function App() {
               </option>
             ))}
           </select>
+          <label className="reviewer-toggle" title="Enable result quality reviewer">
+            <input
+              type="checkbox"
+              checked={reviewerEnabled}
+              onChange={async (e) => {
+                const next = e.target.checked;
+                setReviewerEnabled(next);
+                const actual = await apiSetReviewer(next);
+                setReviewerEnabled(actual);
+              }}
+            />
+            Reviewer
+          </label>
           {dag.nodes.length ? (
             <>
               <StatusBadge status={dag.status} />

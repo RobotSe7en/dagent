@@ -12,7 +12,12 @@ from dagent.harness_runtime.dag_agent import (
     DAGAgentLoop,
     DAGAgentLoopResult,
 )
-from dagent.harness_runtime.dag_review import DAGReviewerAgent, DAGReviewResult
+from dagent.harness_runtime.result_reviewer import (
+    ResultReviewerAgent,
+    ReviewResult,
+    ReviewIssue,
+    format_review_feedback,
+)
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.trace_store import TraceStore
 from dagent.harness_runtime.runtime import (
@@ -31,8 +36,10 @@ __all__ = [
     "DAGExecutor",
     "DAGAgentLoop",
     "DAGAgentLoopResult",
-    "DAGReviewerAgent",
-    "DAGReviewResult",
+    "ResultReviewerAgent",
+    "ReviewResult",
+    "ReviewIssue",
+    "format_review_feedback",
     "FeedbackLearnerAgent",
     "FeedbackLearning",
     "HarnessMessageResult",

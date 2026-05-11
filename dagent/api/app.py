@@ -57,6 +57,19 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/settings/reviewer")
+async def get_reviewer_status() -> dict[str, bool]:
+    runtime = state.get_harness_runtime()
+    return {"enabled": runtime.enable_reviewer}
+
+
+@app.post("/settings/reviewer")
+async def toggle_reviewer(payload: dict[str, bool]) -> dict[str, bool]:
+    runtime = state.get_harness_runtime()
+    runtime.enable_reviewer = payload.get("enabled", False)
+    return {"enabled": runtime.enable_reviewer}
+
+
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
     state.harness_runtime = None
