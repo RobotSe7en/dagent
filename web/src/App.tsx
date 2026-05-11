@@ -646,6 +646,17 @@ function MessageTimeline({
   );
 }
 
+const DSL_NODE_RE = /^[A-Za-z][A-Za-z0-9_-]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*\(.*\)/;
+
+function looksLikeDsl(text: string): boolean {
+  const lines = text.trim().split('\n').filter((l) => l.trim());
+  if (lines.length === 0) return false;
+  const dslLines = lines.filter(
+    (l) => DSL_NODE_RE.test(l.trim()) || /^task:/i.test(l.trim()),
+  );
+  return dslLines.length >= lines.length * 0.5;
+}
+
 function MessageContent({ content }: { content: string }) {
   const parts = useMemo(() => splitThinking(content), [content]);
   return (
@@ -656,7 +667,7 @@ function MessageContent({ content }: { content: string }) {
             <summary>Thinking</summary>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.content || '...'}</ReactMarkdown>
           </details>
-        ) : (
+        ) : looksLikeDsl(part.content) ? null : (
           <ReactMarkdown key={`${part.type}-${index}`} remarkPlugins={[remarkGfm]}>{part.content}</ReactMarkdown>
         ),
       )}

@@ -94,7 +94,14 @@ class HarnessRuntime:
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
-            record = self.tasks[loop_result.task_id] if loop_result.task_id else None
+            record = self.tasks.get(loop_result.task_id) if loop_result.task_id else None
+            if record is None:
+                self._append_conversation_turn(message, loop_result.message_markdown)
+                return HarnessMessageResult(
+                    status=loop_result.status,
+                    message_markdown=loop_result.message_markdown,
+                    task_id=loop_result.task_id,
+                )
             if loop_result.status == "awaiting_dag_review" and record is not None:
                 return HarnessMessageResult(
                     status="awaiting_dag_review",
@@ -241,8 +248,12 @@ class HarnessRuntime:
             on_trace=_trace_event_emitter(self._active_on_event),
             on_dag=_dag_event_emitter(self._active_on_event),
         )
-        assert loop_result.task_id is not None
-        record = self.tasks[loop_result.task_id]
+
+        record = self.tasks.get(loop_result.task_id) if loop_result.task_id else None
+        if record is None:
+            return ControlToolResult(
+                content=loop_result.message_markdown,
+            )
         if self._active_user_message:
             record.user_request = self._active_user_message
         return _control_result_from_dag_loop(

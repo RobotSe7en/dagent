@@ -130,14 +130,12 @@ class DAGAgentLoop:
             return DAGAgentLoopResult(
                 status="failed",
                 message_markdown="DAG planning failed before an executable DAG could be created.",
-                task_id=task_id or f"task_{uuid4().hex}",
             )
 
         if isinstance(response, str):
             return DAGAgentLoopResult(
                 status="completed",
                 message_markdown=response,
-                task_id=task_id or f"task_{uuid4().hex}",
             )
 
         record = TaskRecord(
