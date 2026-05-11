@@ -9,7 +9,7 @@ from dagent.harness_runtime import (
     AgentLoop,
     DAGAgentLoop,
     DAGExecutor,
-    DAGReviewerAgent,
+    ResultReviewerAgent,
     FeedbackLearnerAgent,
     HarnessRuntime,
 )
@@ -45,28 +45,43 @@ def create_harness_runtime(
         profile_name=resolved_config.profiles.dag_agent,
         tools=runtime_tools,
     )
+    reviewer = _try_load_reviewer(provider, profile_store, resolved_config)
     return HarnessRuntime(
         agent_loop=agent_loop,
         dag_agent_loop=dag_agent_loop,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,
+        reviewer=reviewer,
+        enable_reviewer=resolved_config.enable_result_reviewer,
     )
 
 
 def create_profile_agents(
     *,
     config: DagentConfig | None = None,
-) -> tuple[DAGReviewerAgent, FeedbackLearnerAgent]:
+) -> tuple[ResultReviewerAgent, FeedbackLearnerAgent]:
     resolved_config = config or load_config()
     provider = OpenAICompatibleProvider(resolved_config.provider)
     profile_store = ProfileStore(resolved_config.profiles.directory)
     return (
-        DAGReviewerAgent(
+        ResultReviewerAgent(
             provider=provider,
-            profile=profile_store.load(resolved_config.profiles.dag_reviewer),
+            profile=profile_store.load(resolved_config.profiles.result_reviewer),
         ),
         FeedbackLearnerAgent(
             provider=provider,
             profile=profile_store.load(resolved_config.profiles.feedback_learner),
         ),
     )
+
+
+def _try_load_reviewer(
+    provider: OpenAICompatibleProvider,
+    profile_store: ProfileStore,
+    config: DagentConfig,
+) -> ResultReviewerAgent | None:
+    try:
+        profile = profile_store.load(config.profiles.result_reviewer)
+    except Exception:
+        return None
+    return ResultReviewerAgent(provider=provider, profile=profile)

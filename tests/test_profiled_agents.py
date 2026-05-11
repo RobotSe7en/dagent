@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from dagent.harness_runtime import DAGReviewerAgent, FeedbackLearnerAgent
+from dagent.harness_runtime import ResultReviewerAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGNode, TraceEvent
@@ -24,7 +24,7 @@ def profile(role: str) -> AgentProfile:
     )
 
 
-def test_dag_reviewer_agent_parses_review_json() -> None:
+def test_result_reviewer_agent_parses_review_json() -> None:
     provider = MockProvider(
         [
             ChatResponse(
@@ -38,21 +38,24 @@ def test_dag_reviewer_agent_parses_review_json() -> None:
                                 "message": "Boundary too broad.",
                             }
                         ],
-                        "suggested_changes": [{"op": "replace"}],
+                        "summary": "Result incomplete.",
                     }
                 )
             )
         ]
     )
-    reviewer = DAGReviewerAgent(provider=provider, profile=profile("dag_reviewer"))
-    dag = DAG(dag_id="dag_1", task_id="task_1", nodes=[DAGNode(id="n1", title="N1", goal="G")])
+    reviewer = ResultReviewerAgent(provider=provider, profile=profile("result_reviewer"))
 
-    result = run(reviewer.review(user_request="check", dag=dag))
+    result = run(reviewer.review(
+        user_request="check",
+        final_answer="some answer",
+        execution_context="node n1 completed",
+    ))
 
     assert result.approved is False
     assert result.issues[0].node_id == "n1"
     assert result.issues[0].severity == "high"
-    assert result.suggested_changes == [{"op": "replace"}]
+    assert result.summary == "Result incomplete."
 
 
 def test_feedback_learner_agent_returns_notes() -> None:

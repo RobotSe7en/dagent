@@ -34,13 +34,14 @@ class ProviderConfig(BaseModel):
 class DagentConfig(BaseModel):
     provider: ProviderConfig
     profiles: "ProfilesConfig" = Field(default_factory=lambda: ProfilesConfig())
+    enable_result_reviewer: bool = False
 
 
 class ProfilesConfig(BaseModel):
     directory: str = "profiles"
     conversation: str = "conversation"
     dag_agent: str = "dag_agent"
-    dag_reviewer: str = "dag_reviewer"
+    result_reviewer: str = "result_reviewer"
     feedback_learner: str = "feedback_learner"
 
 

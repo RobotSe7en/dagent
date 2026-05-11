@@ -23,6 +23,7 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
 )
 from dagent.harness_runtime.dag_agent import DAGAgentLoop, dag_run_fallback_message, _dag_created_review_message
+from dagent.harness_runtime.result_reviewer import ResultReviewerAgent, format_review_feedback
 from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
@@ -59,14 +60,20 @@ class HarnessRuntime:
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
+        reviewer: ResultReviewerAgent | None = None,
+        enable_reviewer: bool = False,
         max_top_steps: int = 8,
+        max_review_retries: int = 1,
     ) -> None:
         self.agent_loop = agent_loop
         self.dag_agent_loop = dag_agent_loop
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self.reviewer = reviewer
+        self.enable_reviewer = enable_reviewer
         self.max_top_steps = max_top_steps
+        self.max_review_retries = max_review_retries
         self.tasks = dag_agent_loop.tasks
         self._active_review_level: ReviewLevel = "fast"
         self._active_user_message: str = ""
@@ -122,6 +129,11 @@ class HarnessRuntime:
                     control_events=[_dag_event(record, "change_review_requested", reason=loop_result.message_markdown)],
                 )
             if record is not None:
+                loop_result = await self._maybe_review_dag(
+                    loop_result, record, message,
+                    review_level=review_level,
+                    on_token=on_token, on_event=on_event,
+                )
                 self._append_conversation_turn(record.user_request, loop_result.message_markdown)
                 return HarnessMessageResult(
                     status=loop_result.status,
@@ -177,9 +189,17 @@ class HarnessRuntime:
 
         self._remember_conversation_messages(result.messages)
         dag_event = _latest_dag_event(result.control_events)
+        final_response = result.final_response
+        if result.stop_reason != "awaiting_approval" and self.enable_reviewer and self.reviewer:
+            dag = dag_event.get("dag") if dag_event else None
+            run_result = dag_event.get("run_result") if dag_event else None
+            final_response = await self._maybe_review(
+                message, final_response,
+                dag=dag, run_result=run_result,
+            )
         return HarnessMessageResult(
             status="awaiting_dag_review" if result.stop_reason == "awaiting_approval" else "completed",
-            message_markdown=result.final_response,
+            message_markdown=final_response,
             dag=dag_event.get("dag") if dag_event else None,
             run_result=dag_event.get("run_result") if dag_event else None,
             task_id=dag_event.get("task_id") if dag_event else None,
@@ -217,6 +237,11 @@ class HarnessRuntime:
                 control_events=[_dag_event(record, "dag_executed", reason="DAG paused for review.")],
             )
 
+        loop_result = await self._maybe_review_dag(
+            loop_result, record, record.user_request,
+            review_level=review_level or record.review_level,
+            on_token=on_token, on_event=on_event,
+        )
         self._append_conversation_turn(record.user_request, loop_result.message_markdown)
         return HarnessMessageResult(
             status=loop_result.status,
@@ -314,6 +339,93 @@ class HarnessRuntime:
         if assistant_message:
             self._conversation_history.append({"role": "assistant", "content": assistant_message})
         self._conversation_history = self._conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
+
+    # ------------------------------------------------------------------
+    # Result review
+    # ------------------------------------------------------------------
+
+    async def _maybe_review(
+        self,
+        user_request: str,
+        final_answer: str,
+        *,
+        dag: DAG | None = None,
+        run_result: RunResult | None = None,
+    ) -> str:
+        if not self.enable_reviewer or not self.reviewer or not final_answer.strip():
+            return final_answer
+        execution_context = _format_execution_context(dag, run_result) if run_result else ""
+        review = await self.reviewer.review(
+            user_request=user_request,
+            final_answer=final_answer,
+            execution_context=execution_context,
+        )
+        if review.approved:
+            return final_answer
+        feedback = format_review_feedback(review)
+        return f"{final_answer}\n\n---\n**Reviewer notes:**\n{feedback}"
+
+    async def _maybe_review_dag(
+        self,
+        loop_result,
+        record: TaskRecord,
+        user_request: str,
+        *,
+        review_level: ReviewLevel,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ):
+        if not self.enable_reviewer or not self.reviewer or not loop_result.run_result:
+            return loop_result
+        execution_context = _format_execution_context(loop_result.dag, loop_result.run_result)
+        review = await self.reviewer.review(
+            user_request=user_request,
+            final_answer=loop_result.message_markdown,
+            execution_context=execution_context,
+        )
+        if review.approved:
+            return loop_result
+        feedback = format_review_feedback(review)
+        for _retry in range(self.max_review_retries):
+            planning_context = self._conversation_context() + "\n\n" + feedback
+            retry_result = await self.dag_agent_loop.run(
+                user_request,
+                review_level=review_level,
+                planning_context=planning_context,
+                runtime_mode=record.runtime_mode,
+                dag_messages=self._new_dag_messages(),
+                on_token=on_token,
+                on_trace=_trace_event_emitter(on_event),
+                on_dag=_dag_event_emitter(on_event),
+            )
+            if retry_result.task_id and retry_result.task_id in self.tasks:
+                record = self.tasks[retry_result.task_id]
+            if not retry_result.run_result:
+                return retry_result
+            review = await self.reviewer.review(
+                user_request=user_request,
+                final_answer=retry_result.message_markdown,
+                execution_context=_format_execution_context(retry_result.dag, retry_result.run_result),
+            )
+            if review.approved:
+                return retry_result
+            feedback = format_review_feedback(review)
+        return retry_result
+
+
+def _format_execution_context(dag: DAG | None, run_result: RunResult | None) -> str:
+    lines: list[str] = []
+    if dag:
+        lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
+        for node in dag.nodes:
+            lines.append(f"  - {node.id}: {node.tool}({node.args})")
+    if run_result and run_result.node_results:
+        lines.append("Node execution results:")
+        for node_id, node_result in run_result.node_results.items():
+            status = "completed" if node_result.completed else "failed"
+            response = node_result.final_response.strip()[:500] or node_result.stop_reason
+            lines.append(f"  - {node_id} ({status}): {response}")
+    return "\n".join(lines) if lines else ""
 
 
 def _dag_event(
