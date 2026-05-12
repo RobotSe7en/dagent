@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from uuid import uuid4
 
 from dagent.harness_runtime.loop_result import LoopResult
+from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.harness_runtime.task_record import PendingReview
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
+from dagent.tools.registry import Tool
+import dagent.harness_runtime.review_policy as _rp
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,8 @@ class ControlToolResult:
     content: str
     stop_reason: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    needs_review: bool = False
+    review_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,8 @@ class AgentLoopResult:
     completed: bool
     stop_reason: str
     control_events: list[dict[str, Any]] = field(default_factory=list)
+    needs_review: bool = False
+    pending_review: PendingReview | None = None
 
     def to_loop_result(self) -> LoopResult:
         """Convert to the unified LoopResult contract."""
@@ -38,6 +47,8 @@ class AgentLoopResult:
             final_answer=self.final_response,
             messages=self.messages,
             completed=self.completed,
+            needs_human_review=self.needs_review,
+            pending_review=self.pending_review,
         )
 
 
@@ -57,6 +68,35 @@ class AgentLoop:
     ) -> None:
         self.provider = provider
         self.tool_executor = tool_executor
+
+    def create_tool_guard(
+        self,
+        review_level: "_rp.ReviewLevel",
+        boundary: Boundary,
+        tools: list[Tool],
+    ) -> ControlToolHandler:
+        policy = review_policy(review_level)
+
+        async def guard(tool_call: ToolCall) -> ControlToolResult:
+            tool_obj = next((t for t in tools if t.name == tool_call.name), None)
+            risk = effective_risk(tool_obj, tool_call.arguments)
+            if not policy.reviews_tool(risk):
+                try:
+                    result_content = self.tool_executor.execute(
+                        tool_call.name, tool_call.arguments, boundary=boundary
+                    )
+                except Exception as exc:
+                    return ControlToolResult(
+                        content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
+                    )
+                return ControlToolResult(content=result_content)
+            return ControlToolResult(
+                content=f"[PENDING_REVIEW] Tool '{tool_call.name}' requires human review (risk={risk}).",
+                needs_review=True,
+                review_payload={"tool_name": tool_call.name, "risk": risk},
+            )
+
+        return guard
 
     async def run(
         self,
@@ -129,6 +169,28 @@ class AgentLoop:
                         "tool_result",
                         content=control_result.content,
                     )
+                    if control_result.needs_review:
+                        pending_review = PendingReview(
+                            review_id=f"review_{uuid4().hex}",
+                            kind="tool_review",
+                            message=f"Review tool call: {tool_call.name}",
+                            tool_call={
+                                "tool_call_id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments,
+                            },
+                            payload=control_result.review_payload or {},
+                        )
+                        return AgentLoopResult(
+                            final_response="",
+                            messages=loop_messages,
+                            steps=step,
+                            completed=False,
+                            stop_reason="tool_review_pending",
+                            control_events=control_events,
+                            needs_review=True,
+                            pending_review=pending_review,
+                        )
                     if control_result.stop_reason:
                         return AgentLoopResult(
                             final_response=control_result.content,

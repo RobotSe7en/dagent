@@ -79,6 +79,21 @@ export interface ToolStreamEvent {
   content?: string;
 }
 
+export interface ToolCallPayload {
+  tool_call_id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ReviewEventPayload {
+  review_id: string;
+  kind: 'initial_dag' | 'dag_replan' | 'tool_review';
+  message: string;
+  dag?: Dag;
+  tool_call?: ToolCallPayload;
+  payload?: Record<string, unknown>;
+}
+
 export interface RunResult {
   dag_id: string;
   completed: boolean;

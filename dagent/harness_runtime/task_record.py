@@ -7,7 +7,7 @@ from typing import Any
 
 from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.review_policy import ReviewLevel, ReviewKind
-from dagent.schemas import DAG, NodeExecutionRecord
+from dagent.schemas import DAG, Boundary, NodeExecutionRecord
 
 
 @dataclass
@@ -15,8 +15,21 @@ class PendingReview:
     review_id: str
     kind: ReviewKind
     message: str
-    proposed_dag: DAG
+    proposed_dag: DAG | None = None
+    tool_call: dict[str, Any] | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DirectTaskState:
+    review_id: str
+    messages: list[dict[str, Any]]
+    review_level: ReviewLevel
+    boundary: "Boundary"
+    tool_call_id: str
+    tool_name: str
+    tool_args: dict[str, Any]
+    risk: str
 
 
 @dataclass

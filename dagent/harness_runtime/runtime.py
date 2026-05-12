@@ -20,7 +20,7 @@ from dagent.harness_runtime.dag_agent import DAGAgentLoop
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.result_reviewer import ResultReviewerAgent, format_review_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.harness_runtime.task_record import PendingReview
+from dagent.harness_runtime.task_record import DirectTaskState, PendingReview
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG, TraceEvent
@@ -48,7 +48,7 @@ serial work, or anything that does not need structured orchestration.\
 
 @dataclass(frozen=True)
 class HarnessMessageResult:
-    status: Literal["completed", "awaiting_dag_review", "awaiting_change_review", "awaiting_approval", "failed"]
+    status: Literal["completed", "awaiting_dag_review", "awaiting_tool_review", "awaiting_change_review", "awaiting_approval", "failed"]
     message_markdown: str
     dag: DAG | None = None
     run_result: RunResult | None = None
@@ -86,10 +86,102 @@ class HarnessRuntime:
         self.max_review_retries = max_review_retries
         self.tasks = dag_agent_loop.tasks
         self._conversation_history: list[dict[str, Any]] = []
+        self._direct_task_states: dict[str, DirectTaskState] = {}
 
     # ==================================================================
     # Public API
     # ==================================================================
+
+    def _review_status(self, pending_review: PendingReview | None) -> str:
+        if pending_review and pending_review.kind == "tool_review":
+            return "awaiting_tool_review"
+        if pending_review and pending_review.kind == "initial_dag":
+            return "awaiting_dag_review"
+        return "awaiting_change_review"
+
+    def _human_review_gate(self, loop_result: LoopResult) -> HarnessMessageResult | None:
+        if not loop_result.needs_human_review:
+            return None
+        return HarnessMessageResult(
+            status=self._review_status(loop_result.pending_review),
+            message_markdown="",
+            dag=loop_result.dag,
+            run_result=loop_result.run_result,
+            task_id=loop_result.task_id,
+            events=loop_result.events,
+            pending_review=loop_result.pending_review,
+        )
+
+    async def _run_review_cycle(
+        self,
+        loop_result: LoopResult,
+        user_request: str,
+        *,
+        on_event: LoopEventHandler | None,
+    ) -> tuple[bool, str | None]:
+        approved = True
+        feedback: str | None = None
+        if not self.enable_reviewer or not self.reviewer:
+            return approved, feedback
+        if not loop_result.execution_context.strip():
+            return approved, feedback
+        if on_event:
+            on_event({"type": "reviewing", "message": "Reviewing result quality..."})
+        review = await self.reviewer.review(
+            user_request=user_request,
+            final_answer=loop_result.final_answer,
+            execution_context=loop_result.execution_context,
+        )
+        if review.approved:
+            if on_event:
+                on_event({
+                    "type": "review_passed",
+                    "approved": True,
+                    "summary": review.summary,
+                    "issues": [
+                        {"message": issue.message, "node_id": issue.node_id}
+                        for issue in review.issues
+                    ],
+                })
+            return approved, feedback
+        feedback = format_review_feedback(review)
+        approved = False
+        if on_event:
+            on_event({
+                "type": "retry",
+                "reason": feedback,
+                "summary": review.summary,
+                "issues": [
+                    {"message": issue.message, "node_id": issue.node_id}
+                    for issue in review.issues
+                ],
+            })
+        return approved, feedback
+
+    async def _build_summary_result(
+        self,
+        loop_result: LoopResult,
+        user_request: str,
+        *,
+        on_token: TokenHandler | None,
+    ) -> HarnessMessageResult:
+        summary = await self._summarize(
+            user_request=user_request,
+            execution_context=loop_result.execution_context,
+            final_answer=loop_result.final_answer,
+            on_token=on_token,
+        )
+        if not loop_result.messages:
+            self._append_conversation_turn(user_request, summary)
+        return HarnessMessageResult(
+            status="completed" if loop_result.completed else "failed",
+            message_markdown=summary,
+            dag=loop_result.dag,
+            run_result=loop_result.run_result,
+            task_id=loop_result.task_id,
+            events=loop_result.events,
+            pending_review=loop_result.pending_review,
+        )
 
     async def handle_message(
         self,
@@ -121,90 +213,36 @@ class HarnessRuntime:
                 on_event=on_event,
             )
 
-            # Human review gate — return immediately, no message needed
-            if loop_result.needs_human_review:
-                status = (
-                    "awaiting_dag_review"
-                    if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
-                    else "awaiting_change_review"
-                )
-                return HarnessMessageResult(
-                    status=status,
-                    message_markdown="",
-                    dag=loop_result.dag,
-                    run_result=loop_result.run_result,
-                    task_id=loop_result.task_id,
-                    events=loop_result.events,
-                    pending_review=loop_result.pending_review,
-                )
+            gate = self._human_review_gate(loop_result)
+            if gate is not None:
+                if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
+                    review = loop_result.pending_review
+                    self._direct_task_states[review.review_id] = DirectTaskState(
+                        review_id=review.review_id,
+                        messages=loop_result.messages,
+                        review_level=review_level,
+                        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                        tool_call_id=review.tool_call["tool_call_id"],
+                        tool_name=review.tool_call["name"],
+                        tool_args=review.tool_call["arguments"],
+                        risk=review.payload.get("risk", "low"),
+                    )
+                return gate
 
-            # Review
-            if not self.enable_reviewer or not self.reviewer:
-                break
-            if not loop_result.execution_context.strip():
-                break
-
-            if on_event:
-                on_event({"type": "reviewing", "message": "Reviewing result quality..."})
-            review = await self.reviewer.review(
-                user_request=message,
-                final_answer=loop_result.final_answer,
-                execution_context=loop_result.execution_context,
+            approved, review_feedback = await self._run_review_cycle(
+                loop_result,
+                message,
+                on_event=on_event,
             )
-            if review.approved:
-                if on_event:
-                    on_event({
-                        "type": "review_passed",
-                        "approved": True,
-                        "summary": review.summary,
-                        "issues": [
-                            {"message": issue.message, "node_id": issue.node_id}
-                            for issue in review.issues
-                        ],
-                    })
+            if approved:
                 break
-
-            feedback = format_review_feedback(review)
-            prior_messages = loop_result.messages  # carry forward for retry
-            if on_event:
-                on_event({
-                    "type": "retry",
-                    "reason": feedback,
-                    "summary": review.summary,
-                    "issues": [
-                        {"message": issue.message, "node_id": issue.node_id}
-                        for issue in review.issues
-                    ],
-                })
+            feedback = review_feedback
+            prior_messages = loop_result.messages
 
             assert loop_result is not None
 
-        # Record conversation only after review passes (not during retry loop).
         self._record_conversation(loop_result)
-
-        # 3. Summarize — always, for all modes
-        summary = await self._summarize(
-            user_request=message,
-            execution_context=loop_result.execution_context,
-            final_answer=loop_result.final_answer,
-            on_token=on_token,
-        )
-
-        status = "completed" if loop_result.completed else "failed"
-
-        # DAG mode has no conversation messages, so append the turn.
-        if not loop_result.messages:
-            self._append_conversation_turn(message, summary)
-
-        return HarnessMessageResult(
-            status=status,
-            message_markdown=summary,
-            dag=loop_result.dag,
-            run_result=loop_result.run_result,
-            task_id=loop_result.task_id,
-            events=loop_result.events,
-            pending_review=loop_result.pending_review,
-        )
+        return await self._build_summary_result(loop_result, message, on_token=on_token)
 
     async def resume_dag(
         self,
@@ -228,24 +266,10 @@ class HarnessRuntime:
         )
         loop_result = dag_result.to_loop_result()
 
-        # Human review gate — no message needed
-        if loop_result.needs_human_review:
-            status = (
-                "awaiting_dag_review"
-                if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
-                else "awaiting_change_review"
-            )
-            return HarnessMessageResult(
-                status=status,
-                message_markdown="",
-                dag=loop_result.dag,
-                run_result=loop_result.run_result,
-                task_id=loop_result.task_id,
-                events=loop_result.events,
-                pending_review=loop_result.pending_review,
-            )
+        gate = self._human_review_gate(loop_result)
+        if gate is not None:
+            return gate
 
-        # Idempotent resume: already completed before this call
         if was_completed and dag_result.run_result is record.runs[-1]:
             return HarnessMessageResult(
                 status="completed",
@@ -256,7 +280,6 @@ class HarnessRuntime:
                 events=loop_result.events,
             )
 
-        # Review cycle
         feedback: str | None = None
         for _attempt in range(self.max_review_retries + 1):
             if feedback is not None:
@@ -271,79 +294,22 @@ class HarnessRuntime:
                     on_dag=_dag_event_emitter(on_event),
                 )
                 loop_result = retry_dag_result.to_loop_result()
-                if loop_result.needs_human_review:
-                    status = (
-                        "awaiting_dag_review"
-                        if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
-                        else "awaiting_change_review"
-                    )
-                    return HarnessMessageResult(
-                        status=status,
-                        message_markdown="",
-                        dag=loop_result.dag,
-                        run_result=loop_result.run_result,
-                        task_id=loop_result.task_id,
-                        events=loop_result.events,
-                        pending_review=loop_result.pending_review,
-                    )
+                gate = self._human_review_gate(loop_result)
+                if gate is not None:
+                    return gate
                 if not loop_result.execution_context.strip():
                     break
 
-            if not self.enable_reviewer or not self.reviewer:
-                break
-            if not loop_result.execution_context.strip():
-                break
-
-            if on_event:
-                on_event({"type": "reviewing", "message": "Reviewing result quality..."})
-            review = await self.reviewer.review(
-                user_request=record.user_request,
-                final_answer=loop_result.final_answer,
-                execution_context=loop_result.execution_context,
+            approved, review_feedback = await self._run_review_cycle(
+                loop_result,
+                record.user_request,
+                on_event=on_event,
             )
-            if review.approved:
-                if on_event:
-                    on_event({
-                        "type": "review_passed",
-                        "approved": True,
-                        "summary": review.summary,
-                        "issues": [
-                            {"message": issue.message, "node_id": issue.node_id}
-                            for issue in review.issues
-                        ],
-                    })
+            if approved:
                 break
-            feedback = format_review_feedback(review)
-            if on_event:
-                on_event({
-                    "type": "retry",
-                    "reason": feedback,
-                    "summary": review.summary,
-                    "issues": [
-                        {"message": issue.message, "node_id": issue.node_id}
-                        for issue in review.issues
-                    ],
-                })
+            feedback = review_feedback
 
-        # Summarize — always
-        summary = await self._summarize(
-            user_request=record.user_request,
-            execution_context=loop_result.execution_context,
-            final_answer=loop_result.final_answer,
-            on_token=on_token,
-        )
-
-        self._append_conversation_turn(record.user_request, summary)
-
-        status = "completed" if loop_result.completed else "failed"
-        return HarnessMessageResult(
-            status=status,
-            message_markdown=summary,
-            dag=loop_result.dag,
-            run_result=loop_result.run_result,
-            task_id=task_id,
-            events=loop_result.events,
-        )
+        return await self._build_summary_result(loop_result, record.user_request, on_token=on_token)
 
     # ==================================================================
     # Route
@@ -407,6 +373,7 @@ class HarnessRuntime:
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self._run_direct(
                 message,
+                review_level=review_level,
                 feedback=feedback,
                 prior_messages=prior_messages,
                 on_token=thinking_only,
@@ -417,6 +384,7 @@ class HarnessRuntime:
         self,
         message: str,
         *,
+        review_level: ReviewLevel = "fast",
         feedback: str | None = None,
         prior_messages: list[dict[str, Any]] | None = None,
         on_token: TokenHandler | None,
@@ -424,13 +392,9 @@ class HarnessRuntime:
     ) -> LoopResult:
         """Run AgentLoop and return unified LoopResult."""
         if prior_messages and feedback:
-            # Retry: continue from the previous attempt's full conversation
-            # so the agent sees its prior tool calls / errors, plus the
-            # reviewer feedback.
             messages = list(prior_messages)
             messages.append({"role": "user", "content": feedback})
         else:
-            # First attempt: build messages from scratch.
             base_messages = self.prompt_builder.build(
                 PromptRequest(
                     profile=self.conversation_profile,
@@ -445,15 +409,77 @@ class HarnessRuntime:
             current_user_msg = base_messages[1]
             messages = [system_msg, *self._conversation_history, current_user_msg]
 
+        boundary = Boundary(mode="read_only", allowed_paths=["."])
+        control_tool_names = {t.name for t in self.runtime_tools if t.risk in {"medium", "high"} or t.risk_fn is not None}
         result = await self.agent_loop.run(
             "",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=boundary,
             max_steps=self.max_top_steps,
             messages=messages,
+            control_tool_names=control_tool_names,
+            control_tool_handler=self.agent_loop.create_tool_guard(review_level, boundary, self.runtime_tools),
             on_token=on_token,
             on_event=on_event,
         )
         return result.to_loop_result()
+
+    async def resume_direct(
+        self,
+        review_id: str,
+        approved: bool,
+        *,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> HarnessMessageResult | None:
+        state = self._direct_task_states.pop(review_id, None)
+        if state is None:
+            return None
+
+        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=state.tool_name)
+        if approved:
+            try:
+                feed_content = self.agent_loop.tool_executor.execute(
+                    state.tool_name, state.tool_args, boundary=state.boundary
+                )
+            except Exception as exc:
+                feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+
+        state.messages.append({
+            "role": "tool",
+            "tool_call_id": state.tool_call_id,
+            "name": state.tool_name,
+            "content": feed_content,
+        })
+
+        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+        result = await self.agent_loop.run(
+            "",
+            boundary=state.boundary,
+            max_steps=self.max_top_steps,
+            messages=state.messages,
+            control_tool_names={t.name for t in self.runtime_tools if t.risk in {"medium", "high"} or t.risk_fn is not None},
+            control_tool_handler=self.agent_loop.create_tool_guard(state.review_level, state.boundary, self.runtime_tools),
+            on_token=thinking_only,
+            on_event=on_event,
+        )
+        loop_result = result.to_loop_result()
+
+        from dagent.harness_runtime.agent_loop import _format_direct_execution_context
+        loop_result = LoopResult(
+            execution_context=_format_direct_execution_context(loop_result.messages),
+            final_answer=loop_result.final_answer,
+            messages=loop_result.messages,
+            completed=loop_result.completed,
+            needs_human_review=loop_result.needs_human_review,
+            pending_review=loop_result.pending_review,
+        )
+
+        gate = self._human_review_gate(loop_result)
+        if gate is not None:
+            return gate
+
+        await self._run_review_cycle(loop_result, "(resumed from tool review)", on_event=on_event)
+        return await self._build_summary_result(loop_result, "(resumed from tool review)", on_token=on_token)
 
     # ==================================================================
     # Summarize

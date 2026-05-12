@@ -1558,3 +1558,32 @@ pre.readonly-field {
   background: #f0fdf4;
   color: #16a34a;
 }
+
+/* ── Tool Review Risk Badge ── */
+.risk-badge {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.risk-high {
+  border-color: #fca5a5;
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.risk-medium {
+  border-color: #fcd34d;
+  color: #d97706;
+  background: #fffbeb;
+}
+
+.risk-low {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: var(--bg-raised);
+}
