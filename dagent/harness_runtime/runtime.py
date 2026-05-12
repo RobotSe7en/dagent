@@ -144,6 +144,8 @@ class HarnessRuntime:
             if not loop_result.execution_context.strip():
                 break
 
+            if on_event:
+                on_event({"type": "reviewing", "message": "Reviewing result quality..."})
             review = await self.reviewer.review(
                 user_request=message,
                 final_answer=loop_result.final_answer,
@@ -170,12 +172,12 @@ class HarnessRuntime:
                     "reason": feedback,
                     "summary": review.summary,
                     "issues": [
-                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        {"message": issue.message, "node_id": issue.node_id}
                         for issue in review.issues
                     ],
                 })
 
-        assert loop_result is not None
+            assert loop_result is not None
 
         # Record conversation only after review passes (not during retry loop).
         self._record_conversation(loop_result)
@@ -261,9 +263,9 @@ class HarnessRuntime:
                 retry_dag_result = await self.dag_agent_loop.run(
                     record.user_request,
                     review_level=review_level or record.review_level,
-                    planning_context=self._conversation_context() + "\n\n" + feedback,
+                    planning_context=self._tasks_context() + "\n\n" + feedback,
                     runtime_mode=record.runtime_mode,
-                    dag_messages=self._new_dag_messages(record.user_request),
+                    conversation_history=self._conversation_history,
                     on_token=on_token,
                     on_trace=_trace_event_emitter(on_event),
                     on_dag=_dag_event_emitter(on_event),
@@ -292,6 +294,8 @@ class HarnessRuntime:
             if not loop_result.execution_context.strip():
                 break
 
+            if on_event:
+                on_event({"type": "reviewing", "message": "Reviewing result quality..."})
             review = await self.reviewer.review(
                 user_request=record.user_request,
                 final_answer=loop_result.final_answer,
@@ -316,7 +320,7 @@ class HarnessRuntime:
                     "reason": feedback,
                     "summary": review.summary,
                     "issues": [
-                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        {"message": issue.message, "node_id": issue.node_id}
                         for issue in review.issues
                     ],
                 })
@@ -347,7 +351,7 @@ class HarnessRuntime:
 
     async def _route(self, message: str) -> Literal["dag", "direct"]:
         """Lightweight LLM classifier."""
-        context = self._conversation_context()
+        context = self._tasks_context()
         user_content = message
         if context:
             user_content = f"Conversation context:\n{context}\n\nUser message:\n{message}"
@@ -382,16 +386,17 @@ class HarnessRuntime:
     ) -> LoopResult:
         """Dispatch to the appropriate loop and return a unified LoopResult."""
         if mode == "dag":
-            planning_context = self._conversation_context()
+            planning_context = self._tasks_context()
             if feedback:
                 planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
+            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             dag_result = await self.dag_agent_loop.run(
                 message,
                 review_level=review_level,
                 planning_context=planning_context,
                 runtime_mode=str(mode),
-                dag_messages=self._new_dag_messages(message),
-                on_token=on_token,
+                conversation_history=self._conversation_history,
+                on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -432,7 +437,7 @@ class HarnessRuntime:
                     task_content="{{ user_message }}",
                     tools=self.runtime_tools,
                     memory=self.conversation_profile.memory,
-                    context=self._conversation_context(),
+                    context=self._tasks_context(),
                     variables={"user_message": message},
                 )
             )
@@ -517,7 +522,7 @@ class HarnessRuntime:
     # Conversation history
     # ==================================================================
 
-    def _conversation_context(self) -> str:
+    def _tasks_context(self) -> str:
         if not self.tasks:
             return ""
         payload = {
@@ -532,23 +537,6 @@ class HarnessRuntime:
             "whose result is already available unless the user asks to rerun it.\n"
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
-
-    def _new_dag_messages(self, active_user_message: str = "") -> list[dict[str, Any]]:
-        """Create a new dag_messages list seeded with conversation history."""
-        messages: list[dict[str, Any]] = []
-        for msg in self._conversation_history:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role in {"user", "assistant"} and content:
-                messages.append({"role": role, "content": content})
-        active = active_user_message.strip()
-        if active and not (
-            messages
-            and messages[-1].get("role") == "user"
-            and messages[-1].get("content") == active
-        ):
-            messages.append({"role": "user", "content": active})
-        return messages[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
     def _remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
         self._conversation_history = [
