@@ -1,4 +1,4 @@
-import type { Dag, ReviewLevel, ReviewFeedbackEvent, ToolStreamEvent, TraceEvent } from './types';
+import type { Dag, ReviewLevel, ReviewFeedbackEvent, ReviewEventPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -217,4 +217,32 @@ function traceDetail(event: BackendTrace): string {
 
 function clip(value: string): string {
   return value.length > 180 ? `${value.slice(0, 177)}...` : value;
+}
+
+export async function resumeToolReview(
+  reviewId: string,
+  approved: boolean,
+  handlers: {
+    onStatus?: (status: string) => void;
+    onToken?: (content: string) => void;
+    onRetry?: (event: ReviewFeedbackEvent) => void;
+    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
+    onDone?: (payload: DonePayload) => void;
+    onError?: (message: string) => void;
+  },
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/messages/resume-tool`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ review_id: reviewId, approved }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage((response as unknown) as Response));
+  }
+  await readStream(response, {
+    ...handlers,
+    onDag: undefined,
+    onTrace: undefined,
+    onTool: undefined,
+  });
 }

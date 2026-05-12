@@ -29,8 +29,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { getReviewerStatus, setReviewerEnabled as apiSetReviewer, resetSession, resumeDag, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewFeedbackEvent, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
+import { getReviewerStatus, setReviewerEnabled as apiSetReviewer, resetSession, resumeDag, resumeToolReview, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ReviewFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -148,6 +148,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewerEnabled, setReviewerEnabled] = useState(false);
+  const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
@@ -267,6 +268,14 @@ export function App() {
 
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
     Boolean(pendingReview) || nextDag.status === 'review_required';
+
+  const handlePendingReview = (pendingReview?: { kind: string } | null) => {
+    if (!pendingReview) return;
+    if (pendingReview.kind === 'tool_review') {
+      setToolReview(pendingReview as ReviewEventPayload);
+      return;
+    }
+  };
 
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -409,6 +418,7 @@ export function App() {
             if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           }
+          handlePendingReview(payload.pending_review);
           updateLastAssistantText((message) => ({
             ...message,
             content: message.content || payload.message_markdown,
@@ -476,6 +486,7 @@ export function App() {
             attachDagToLastAssistant(payload.dag);
             if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
           }
+          handlePendingReview(payload.pending_review);
           updateLastAssistantText((message) => ({
             ...message,
             content: message.content || payload.message_markdown,
@@ -492,6 +503,50 @@ export function App() {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
+    } finally {
+      await waitForTokenQueue();
+      setStreaming(false);
+    }
+  };
+
+  const confirmToolReview = async (approved: boolean) => {
+    if (!toolReview || streaming) return;
+    setToolReview(null);
+    setError(null);
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+    setStreaming(true);
+    setMessages((items) => [
+      ...items,
+      { role: 'assistant', kind: 'text', content: '' },
+    ]);
+    appendTrace({ type: 'model', label: 'tool_review_resumed', detail: `Tool review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
+
+    try {
+      await resumeToolReview(toolReview.review_id, approved, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'AgentLoop resumed from tool review.', status: 'running' }),
+        onToken: enqueueAssistantToken,
+        onRetry: appendReviewFeedback,
+        onReviewing: appendReviewing,
+        onDone: (payload) => {
+          flushQueuedTokensNow();
+          handlePendingReview(payload.pending_review);
+          updateLastAssistantText((message) => ({
+            ...message,
+            content: message.content || payload.message_markdown,
+            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
+          }));
+          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the result.', status: 'completed' });
+        },
+        onError: (message) => {
+          setError(message);
+          appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+        },
+      });
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      setError(message);
+      appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
     } finally {
       await waitForTokenQueue();
       setStreaming(false);
@@ -640,6 +695,15 @@ export function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onSelectNode={setSelectedId}
+        />
+      ) : null}
+
+      {toolReview ? (
+        <ToolReviewDialog
+          review={toolReview}
+          onApprove={() => confirmToolReview(true)}
+          onReject={() => confirmToolReview(false)}
+          onClose={() => setToolReview(null)}
         />
       ) : null}
     </div>
@@ -952,6 +1016,65 @@ function uniqueNodeId(dag: Dag) {
     id = `node_${index}`;
   }
   return id;
+}
+
+function ToolReviewDialog({
+  review,
+  onApprove,
+  onReject,
+  onClose,
+}: {
+  review: ReviewEventPayload;
+  onApprove: () => void;
+  onReject: () => void;
+  onClose: () => void;
+}) {
+  const toolCall = review.tool_call;
+  const argsText = toolCall ? JSON.stringify(toolCall.arguments, null, 2) : '';
+  const risk = (review.payload?.risk as string) || 'low';
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Tool review">
+      <div className="dag-modal">
+        <header className="modal-header">
+          <div>
+            <div className="modal-title">
+              <AlertTriangle size={20} />
+              <span>Tool Review</span>
+              <span className={`risk-badge risk-${risk}`}>{risk.toUpperCase()}</span>
+            </div>
+            <p>{toolCall?.name || review.message}</p>
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button compact-button" onClick={onReject} type="button">
+              <X size={16} />
+              Reject
+            </button>
+            <button className="primary-button" onClick={onApprove} type="button">
+              <Check size={17} />
+              Approve
+            </button>
+            <button className="icon-button" onClick={onClose} title="Close" type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </header>
+        <div className="modal-body">
+          {toolCall ? (
+            <div className="tool-section">
+              <div className="tool-section-label">Tool</div>
+              <p><strong>{toolCall.name}</strong></p>
+            </div>
+          ) : null}
+          {argsText ? (
+            <div className="tool-section">
+              <div className="tool-section-label">Arguments</div>
+              <pre>{clipText(argsText, 1200)}</pre>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function DagReviewDialog({

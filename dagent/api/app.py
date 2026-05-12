@@ -32,6 +32,11 @@ class ResumeDagRequest(BaseModel):
     review_level: ReviewLevel | None = None
 
 
+class ResumeToolRequest(BaseModel):
+    review_id: str = Field(min_length=1)
+    approved: bool
+
+
 class ApiState:
     def __init__(self) -> None:
         self.harness_runtime: HarnessRuntime | None = None
@@ -210,6 +215,63 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.post("/messages/resume-tool")
+async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
+    async def events():
+        yield _sse({"type": "status", "message": "agent_loop_resumed"})
+        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def on_token(content: str) -> None:
+            event_queue.put_nowait({"type": "token", "content": content})
+
+        def on_event(event: dict[str, Any]) -> None:
+            event_queue.put_nowait(event)
+
+        task = asyncio.create_task(
+            state.get_harness_runtime().resume_direct(
+                request.review_id,
+                request.approved,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        )
+        try:
+            while not task.done():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse(event)
+            while not event_queue.empty():
+                yield _sse(event_queue.get_nowait())
+            result = await task
+        except Exception as exc:
+            if not task.done():
+                task.cancel()
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        if result is None:
+            yield _sse({"type": "error", "message": "Review session not found."})
+            return
+
+        if result.pending_review is not None:
+            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
+
+        yield _sse(
+            {
+                "type": "done",
+                "status": result.status,
+                "task_id": result.task_id,
+                "dag": None,
+                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
+                "message_markdown": result.message_markdown,
+            }
+        )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @app.get("/tasks/{task_id}/trace")
 async def get_task_trace(task_id: str) -> dict[str, Any]:
     if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
@@ -230,13 +292,21 @@ def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
 
 
 def _review_payload(review) -> dict[str, Any]:
-    return {
+    payload = {
         "review_id": review.review_id,
         "kind": review.kind,
         "message": review.message,
-        "dag": review.proposed_dag.model_dump(mode="json"),
         "payload": review.payload,
     }
+    if review.proposed_dag is not None:
+        payload["dag"] = review.proposed_dag.model_dump(mode="json")
+    if review.tool_call is not None:
+        payload["tool_call"] = {
+            "tool_call_id": review.tool_call["tool_call_id"],
+            "name": review.tool_call["name"],
+            "arguments": review.tool_call["arguments"],
+        }
+    return payload
 
 
 def _sse(payload: dict[str, Any]) -> str:

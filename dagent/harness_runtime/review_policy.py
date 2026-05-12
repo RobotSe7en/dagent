@@ -9,7 +9,7 @@ from dagent.tools.registry import Tool
 
 
 ReviewLevel = Literal["fast", "careful"]
-ReviewKind = Literal["initial_dag", "dag_replan"]
+ReviewKind = Literal["initial_dag", "dag_replan", "tool_review"]
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,9 @@ class ReviewPolicy:
 
     def reviews_dag_changes(self) -> bool:
         return self.level == "careful"
+
+    def reviews_tool(self, risk: str) -> bool:
+        return self.level == "careful" and risk in {"medium", "high"}
 
 
 def review_policy(level: ReviewLevel | None) -> ReviewPolicy:
