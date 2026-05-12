@@ -1,4 +1,4 @@
-import type { Dag, ReviewLevel, ToolStreamEvent, TraceEvent } from './types';
+import type { Dag, ReviewLevel, ReviewFeedbackEvent, ToolStreamEvent, TraceEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -49,6 +49,7 @@ export async function streamTask(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
+    onRetry?: (event: ReviewFeedbackEvent) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -83,6 +84,7 @@ export async function streamTask(
         handlers.onTool?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
+      if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }
@@ -99,6 +101,7 @@ export async function resumeDag(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
+    onRetry?: (event: ReviewFeedbackEvent) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -122,6 +125,7 @@ async function readStream(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
+    onRetry?: (event: ReviewFeedbackEvent) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -148,6 +152,7 @@ async function readStream(
         handlers.onTool?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
+      if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }

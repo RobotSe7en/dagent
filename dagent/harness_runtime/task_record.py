@@ -29,7 +29,7 @@ class TaskRecord:
     review_level: ReviewLevel = "fast"
     runtime_mode: str = "auto"
     continuation_count: int = 0
-    message_markdown: str = ""
+    final_response: str = ""
     node_results: dict = field(default_factory=dict)
     trace_records: list[NodeExecutionRecord] = field(default_factory=list)
     dag_messages: list[dict[str, Any]] = field(default_factory=list)

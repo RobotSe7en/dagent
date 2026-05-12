@@ -26,6 +26,10 @@ class LoopResult:
     messages: list[dict[str, Any]]
     """Conversation messages produced during the loop, for runtime to record."""
 
+    final_answer: str = ""
+    """The answer produced by the loop, for the reviewer to assess.
+    This is NOT the user-facing message — _summarize() still produces that."""
+
     events: list[dict[str, Any]] = field(default_factory=list)
     """UI-facing events produced by the loop (dag_created, dag_executed, etc.)."""
 

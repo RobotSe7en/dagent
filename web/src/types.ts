@@ -95,3 +95,17 @@ export interface RunResult {
   >;
   traces: TraceEvent[];
 }
+
+export interface ReviewIssue {
+  severity: string;
+  message: string;
+  node_id?: string | null;
+}
+
+export interface ReviewFeedbackEvent {
+  type: 'retry' | 'review_passed';
+  approved?: boolean;
+  reason?: string;
+  summary: string;
+  issues: ReviewIssue[];
+}

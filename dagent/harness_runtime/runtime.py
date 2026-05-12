@@ -146,16 +146,34 @@ class HarnessRuntime:
 
             review = await self.reviewer.review(
                 user_request=message,
-                final_answer="",
+                final_answer=loop_result.final_answer,
                 execution_context=loop_result.execution_context,
             )
             if review.approved:
+                if on_event:
+                    on_event({
+                        "type": "review_passed",
+                        "approved": True,
+                        "summary": review.summary,
+                        "issues": [
+                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            for issue in review.issues
+                        ],
+                    })
                 break
 
             feedback = format_review_feedback(review)
             prior_messages = loop_result.messages  # carry forward for retry
             if on_event:
-                on_event({"type": "retry", "reason": feedback})
+                on_event({
+                    "type": "retry",
+                    "reason": feedback,
+                    "summary": review.summary,
+                    "issues": [
+                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        for issue in review.issues
+                    ],
+                })
 
         assert loop_result is not None
 
@@ -166,6 +184,7 @@ class HarnessRuntime:
         summary = await self._summarize(
             user_request=message,
             execution_context=loop_result.execution_context,
+            final_answer=loop_result.final_answer,
             on_token=on_token,
         )
 
@@ -250,7 +269,22 @@ class HarnessRuntime:
                     on_dag=_dag_event_emitter(on_event),
                 )
                 loop_result = retry_dag_result.to_loop_result()
-                if loop_result.needs_human_review or not loop_result.execution_context.strip():
+                if loop_result.needs_human_review:
+                    status = (
+                        "awaiting_dag_review"
+                        if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
+                        else "awaiting_change_review"
+                    )
+                    return HarnessMessageResult(
+                        status=status,
+                        message_markdown="",
+                        dag=loop_result.dag,
+                        run_result=loop_result.run_result,
+                        task_id=loop_result.task_id,
+                        events=loop_result.events,
+                        pending_review=loop_result.pending_review,
+                    )
+                if not loop_result.execution_context.strip():
                     break
 
             if not self.enable_reviewer or not self.reviewer:
@@ -260,19 +294,38 @@ class HarnessRuntime:
 
             review = await self.reviewer.review(
                 user_request=record.user_request,
-                final_answer="",
+                final_answer=loop_result.final_answer,
                 execution_context=loop_result.execution_context,
             )
             if review.approved:
+                if on_event:
+                    on_event({
+                        "type": "review_passed",
+                        "approved": True,
+                        "summary": review.summary,
+                        "issues": [
+                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            for issue in review.issues
+                        ],
+                    })
                 break
             feedback = format_review_feedback(review)
             if on_event:
-                on_event({"type": "retry", "reason": feedback})
+                on_event({
+                    "type": "retry",
+                    "reason": feedback,
+                    "summary": review.summary,
+                    "issues": [
+                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        for issue in review.issues
+                    ],
+                })
 
         # Summarize — always
         summary = await self._summarize(
             user_request=record.user_request,
             execution_context=loop_result.execution_context,
+            final_answer=loop_result.final_answer,
             on_token=on_token,
         )
 
@@ -406,6 +459,7 @@ class HarnessRuntime:
         *,
         user_request: str,
         execution_context: str,
+        final_answer: str = "",
         on_token: TokenHandler | None = None,
     ) -> str:
         """Streaming LLM call that produces the user-facing answer."""
@@ -413,7 +467,12 @@ class HarnessRuntime:
             "You are summarizing the results of a task execution for the user.\n\n"
             "User's original request:\n{{ user_request }}\n\n"
             "Execution results:\n{{ execution_context }}\n\n"
+            "{% if final_answer %}"
+            "The loop produced this answer:\n{{ final_answer }}\n\n"
+            "{% endif %}"
             "Provide a clear, helpful answer to the user based on these results. "
+            "Preserve specific details from the loop's answer — names, numbers, "
+            "paths, and factual claims must be carried forward exactly. "
             "Be concise and focus on what the user asked for."
         )
         messages = self.prompt_builder.build(
@@ -424,6 +483,7 @@ class HarnessRuntime:
                 variables={
                     "user_request": user_request,
                     "execution_context": execution_context,
+                    "final_answer": final_answer,
                 },
             )
         )

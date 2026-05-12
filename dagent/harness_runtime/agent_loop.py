@@ -35,6 +35,7 @@ class AgentLoopResult:
         """Convert to the unified LoopResult contract."""
         return LoopResult(
             execution_context=_format_direct_execution_context(self.messages),
+            final_answer=self.final_response,
             messages=self.messages,
             completed=self.completed,
         )
@@ -292,11 +293,7 @@ class AgentLoop:
 
 
 def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
-    """Summarize an AgentLoop conversation for the reviewer/summarizer.
-
-    Includes tool call results and the assistant's final response so that
-    ``_summarize()`` has enough context even when no tools were called.
-    """
+    """Summarize AgentLoop tool calls for the reviewer/summarizer."""
     lines: list[str] = []
     for message in messages:
         if message.get("role") == "tool":
@@ -304,16 +301,6 @@ def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
             content = str(message.get("content", ""))[:500]
             lines.append(f"  - {name}: {content}")
 
-    # Always include the assistant's final textual response.
-    final_response = ""
-    for message in reversed(messages):
-        if message.get("role") == "assistant" and message.get("content"):
-            final_response = str(message["content"])
-            break
-
-    parts: list[str] = []
-    if lines:
-        parts.append("Tool call results:\n" + "\n".join(lines))
-    if final_response:
-        parts.append(f"Assistant response:\n{final_response}")
-    return "\n\n".join(parts)
+    if not lines:
+        return ""
+    return "Tool call results:\n" + "\n".join(lines)

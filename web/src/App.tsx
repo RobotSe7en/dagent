@@ -15,6 +15,7 @@ import {
   type NodeChange,
 } from '@xyflow/react';
 import {
+  AlertTriangle,
   Bot,
   Check,
   CircleStop,
@@ -28,7 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { getReviewerStatus, setReviewerEnabled as apiSetReviewer, resetSession, resumeDag, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewFeedbackEvent, ReviewLevel, RiskLevel, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -78,7 +79,8 @@ interface ChatMessage {
 type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
-  | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent };
+  | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent }
+  | { type: 'review'; event: ReviewFeedbackEvent };
 
 type RuntimeMode = 'auto' | 'direct' | 'dag';
 
@@ -279,6 +281,14 @@ export function App() {
     }));
   };
 
+  const appendReviewFeedback = (event: ReviewFeedbackEvent) => {
+    flushQueuedTokensNow();
+    updateLastAssistantText((message) => ({
+      ...message,
+      timeline: [...(message.timeline ?? []), { type: 'review', event }],
+    }));
+  };
+
   const appendToolMessage = (event: ToolStreamEvent) => {
     if (event.type === 'tool_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
@@ -379,6 +389,7 @@ export function App() {
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
+        onRetry: appendReviewFeedback,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -445,6 +456,7 @@ export function App() {
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
+        onRetry: appendReviewFeedback,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -655,6 +667,8 @@ function MessageTimeline({
             dag={item.dag}
             onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
           />
+        ) : item.type === 'review' ? (
+          <ReviewFeedbackCard key={`review-${index}`} event={item.event} />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
         ) : null,
@@ -805,6 +819,46 @@ function DagSummaryCard({
         <span>{actionLabel}</span>
       </div>
     </button>
+  );
+}
+
+function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
+  const approved = event.type === 'review_passed' || event.approved === true;
+  const severityLabels: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
+  return (
+    <details className={`tool-event-card ${approved ? 'review-passed' : 'review-feedback'}`}>
+      <summary className="tool-event-head">
+        {approved ? <Check size={14} /> : <AlertTriangle size={14} />}
+        <strong>Reviewer {approved ? 'Approved' : 'Feedback'}</strong>
+        <span>{approved ? 'passed' : 'retry'}</span>
+      </summary>
+      {event.summary ? (
+        <div className="tool-section">
+          <div className="tool-section-label">Summary</div>
+          <p>{event.summary}</p>
+        </div>
+      ) : null}
+      {!approved && event.issues.length ? (
+        <div className="tool-section">
+          <div className="tool-section-label">Issues</div>
+          <ul className="review-issues">
+            {event.issues.map((issue, index) => (
+              <li key={index} className={`review-severity-${issue.severity}`}>
+                <span className="review-severity-badge">{severityLabels[issue.severity] || issue.severity}</span>
+                {issue.node_id ? <em>[{issue.node_id}]</em> : null}
+                <span>{issue.message}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {!approved && event.reason ? (
+        <div className="tool-section">
+          <div className="tool-section-label">Feedback to Agent</div>
+          <p>{event.reason}</p>
+        </div>
+      ) : null}
+    </details>
   );
 }
 

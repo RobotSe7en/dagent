@@ -1479,3 +1479,82 @@ pre.readonly-field {
     min-height: 74px;
   }
 }
+
+/* ── Reviewer Feedback ── */
+.review-feedback {
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.review-feedback .tool-event-head {
+  color: #92400e;
+}
+
+.review-passed {
+  border-left: 3px solid #16a34a;
+  background: #f0fdf4;
+}
+
+.review-passed .tool-event-head {
+  color: #166534;
+}
+
+.review-feedback .tool-section p,
+.review-passed .tool-section p {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--gray-800);
+}
+
+.review-issues {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.review-issues li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--gray-700);
+}
+
+.review-issues li em {
+  flex-shrink: 0;
+  color: var(--gray-500);
+  font-style: normal;
+  font-size: 12px;
+  background: var(--gray-100);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.review-severity-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.review-severity-high .review-severity-badge,
+.review-severity-critical .review-severity-badge {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.review-severity-medium .review-severity-badge {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.review-severity-low .review-severity-badge {
+  background: #f0fdf4;
+  color: #16a34a;
+}
