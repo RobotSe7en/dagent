@@ -5,10 +5,12 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
+    ResultReviewerAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
+from dagent.harness_runtime.result_reviewer import ReviewIssue, ReviewResult
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -454,6 +456,82 @@ def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
     assert result.message_markdown == "summarized answer"
 
 
+def test_resume_direct_retries_when_reviewer_rejects_after_tool_approval() -> None:
+    tool_executor = make_tool_executor()
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="write_file",
+                    arguments={"path": "notes.md", "content": "hi"},
+                )
+            ]
+        ),
+        ChatResponse(content="bad answer"),
+        ChatResponse(content="good answer"),
+        ChatResponse(content="summary"),
+    ])
+    agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
+    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    runtime = HarnessRuntime(
+        provider=provider,
+        agent_loop=agent_loop,
+        dag_agent_loop=DAGAgentLoop(provider, dag_executor=dag_executor, profile=_dag_agent_profile()),
+        conversation_profile=_conversation_profile(),
+        runtime_tools=tool_executor.registry.all_tools(),
+        reviewer=_RejectThenApproveReviewer(),
+        enable_reviewer=True,
+    )
+
+    first = run(runtime.handle_message("Write a note", mode="direct", review_level="careful"))
+    resumed = run(runtime.resume_direct(first.pending_review.review_id, approved=True))
+
+    assert first.status == "awaiting_tool_review"
+    assert resumed.status == "completed"
+    assert resumed.message_markdown == "summary"
+    retry_request = provider.requests[2]["messages"]
+    assert "Please address these issues." in retry_request[-1]["content"]
+
+
+def test_harness_runtime_skips_invalid_json_result_reviewer_response() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),       # DAG agent
+        ChatResponse(content="NO_CHANGE"),            # execute observation
+        ChatResponse(content="looks fine to me"),     # result reviewer, invalid JSON
+        ChatResponse(content="summarized answer"),    # _summarize()
+    ])
+    tool_executor = make_tool_executor()
+    runtime = HarnessRuntime(
+        provider=provider,
+        agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
+        dag_agent_loop=DAGAgentLoop(provider, dag_executor=DAGExecutor(tool_executor=tool_executor), profile=_dag_agent_profile()),
+        conversation_profile=_conversation_profile(),
+        reviewer=ResultReviewerAgent(provider=provider, profile=_reviewer_profile()),
+        enable_reviewer=True,
+    )
+
+    result = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="fast"))
+
+    assert result.status == "completed"
+    assert result.message_markdown == "summarized answer"
+
+
+class _RejectThenApproveReviewer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def review(self, *, user_request: str, final_answer: str, execution_context: str = "") -> ReviewResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ReviewResult(
+                approved=False,
+                summary="Needs a better answer.",
+                issues=[ReviewIssue(message="Try again.")],
+            )
+        return ReviewResult(approved=True, summary="ok")
+
+
 def _runtime(
     provider: MockProvider,
     *,
@@ -540,6 +618,15 @@ def _dag_agent_profile() -> AgentProfile:
         role="dag_agent",
         layers=["soul"],
         layer_contents={"soul": "You are a DAG creator."},
+    )
+
+
+def _reviewer_profile() -> AgentProfile:
+    return AgentProfile(
+        name="result_reviewer",
+        role="result_reviewer",
+        layers=["soul"],
+        layer_contents={"soul": "You are a result reviewer."},
     )
 
 

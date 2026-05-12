@@ -1,11 +1,12 @@
 """Top-level harness runtime.
 
-The runtime orchestrates: route → loop → review → summarize.
-It does not know how loops execute internally — it only consumes LoopResult.
+The runtime orchestrates: route -> loop -> review -> summarize.
+It does not know how loops execute internally; it only consumes LoopResult.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -57,8 +58,18 @@ class HarnessMessageResult:
     pending_review: PendingReview | None = None
 
 
+@dataclass(frozen=True)
+class _ReviewRetryOutcome:
+    loop_result: LoopResult
+    gate: HarnessMessageResult | None = None
+
+
+ReviewableLoop = Callable[[str | None, LoopResult | None], Awaitable[LoopResult]]
+ReviewGateHandler = Callable[[LoopResult], None]
+
+
 class HarnessRuntime:
-    """Orchestrates: route → loop → review → summarize."""
+    """Orchestrates: route -> loop -> review -> summarize."""
 
     def __init__(
         self,
@@ -183,6 +194,41 @@ class HarnessRuntime:
             pending_review=loop_result.pending_review,
         )
 
+    async def _run_with_review_retries(
+        self,
+        user_request: str,
+        *,
+        run_once: ReviewableLoop,
+        initial_loop_result: LoopResult | None = None,
+        on_gate: ReviewGateHandler | None = None,
+        on_event: LoopEventHandler | None,
+    ) -> _ReviewRetryOutcome:
+        feedback: str | None = None
+        loop_result: LoopResult | None = initial_loop_result
+
+        for _attempt in range(self.max_review_retries + 1):
+            if loop_result is None or feedback is not None:
+                loop_result = await run_once(feedback, loop_result)
+
+            gate = self._human_review_gate(loop_result)
+            if gate is not None:
+                if on_gate is not None:
+                    on_gate(loop_result)
+                return _ReviewRetryOutcome(loop_result=loop_result, gate=gate)
+
+            approved, review_feedback = await self._run_review_cycle(
+                loop_result,
+                user_request,
+                on_event=on_event,
+            )
+            if approved:
+                return _ReviewRetryOutcome(loop_result=loop_result)
+            feedback = review_feedback
+
+        if loop_result is None:
+            raise RuntimeError("Review retry loop did not execute.")
+        return _ReviewRetryOutcome(loop_result=loop_result)
+
     async def handle_message(
         self,
         message: str,
@@ -197,13 +243,9 @@ class HarnessRuntime:
         if mode == "auto":
             resolved_mode = await self._route(message)
 
-        # 2. Loop + Review cycle
-        feedback: str | None = None
-        loop_result: LoopResult | None = None
-        prior_messages: list[dict[str, Any]] | None = None
-
-        for _attempt in range(self.max_review_retries + 1):
-            loop_result = await self._execute_loop(
+        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+            prior_messages = previous_result.messages if feedback and previous_result else None
+            return await self._execute_loop(
                 message,
                 mode=resolved_mode,
                 review_level=review_level,
@@ -213,36 +255,21 @@ class HarnessRuntime:
                 on_event=on_event,
             )
 
-            gate = self._human_review_gate(loop_result)
-            if gate is not None:
-                if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
-                    review = loop_result.pending_review
-                    self._direct_task_states[review.review_id] = DirectTaskState(
-                        review_id=review.review_id,
-                        messages=loop_result.messages,
-                        review_level=review_level,
-                        boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                        tool_call_id=review.tool_call["tool_call_id"],
-                        tool_name=review.tool_call["name"],
-                        tool_args=review.tool_call["arguments"],
-                        risk=review.payload.get("risk", "low"),
-                    )
-                return gate
+        def on_gate(loop_result: LoopResult) -> None:
+            if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
+                self._store_direct_review_state(message, review_level, loop_result)
 
-            approved, review_feedback = await self._run_review_cycle(
-                loop_result,
-                message,
-                on_event=on_event,
-            )
-            if approved:
-                break
-            feedback = review_feedback
-            prior_messages = loop_result.messages
+        outcome = await self._run_with_review_retries(
+            message,
+            run_once=run_once,
+            on_gate=on_gate,
+            on_event=on_event,
+        )
+        if outcome.gate is not None:
+            return outcome.gate
 
-            assert loop_result is not None
-
-        self._record_conversation(loop_result)
-        return await self._build_summary_result(loop_result, message, on_token=on_token)
+        self._record_conversation(outcome.loop_result)
+        return await self._build_summary_result(outcome.loop_result, message, on_token=on_token)
 
     async def resume_dag(
         self,
@@ -255,12 +282,13 @@ class HarnessRuntime:
     ) -> HarnessMessageResult:
         record = self.tasks[task_id]
         was_completed = record.dag.status == "completed" and len(record.runs) > 0
+        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
 
         dag_result = await self.dag_agent_loop.resume(
             task_id,
             dag,
             review_level=review_level,
-            on_token=on_token,
+            on_token=thinking_only,
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
@@ -280,36 +308,34 @@ class HarnessRuntime:
                 events=loop_result.events,
             )
 
-        feedback: str | None = None
-        for _attempt in range(self.max_review_retries + 1):
-            if feedback is not None:
-                retry_dag_result = await self.dag_agent_loop.run(
-                    record.user_request,
-                    review_level=review_level or record.review_level,
-                    planning_context=self._tasks_context() + "\n\n" + feedback,
-                    runtime_mode=record.runtime_mode,
-                    conversation_history=self._conversation_history,
-                    on_token=on_token,
-                    on_trace=_trace_event_emitter(on_event),
-                    on_dag=_dag_event_emitter(on_event),
+        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+            planning_context = self._tasks_context()
+            if feedback:
+                planning_context = (
+                    f"{planning_context}\n\n{feedback}" if planning_context else feedback
                 )
-                loop_result = retry_dag_result.to_loop_result()
-                gate = self._human_review_gate(loop_result)
-                if gate is not None:
-                    return gate
-                if not loop_result.execution_context.strip():
-                    break
-
-            approved, review_feedback = await self._run_review_cycle(
-                loop_result,
+            retry_dag_result = await self.dag_agent_loop.run(
                 record.user_request,
-                on_event=on_event,
+                review_level=review_level or record.review_level,
+                planning_context=planning_context,
+                runtime_mode=record.runtime_mode,
+                conversation_history=self._conversation_history,
+                on_token=thinking_only,
+                on_trace=_trace_event_emitter(on_event),
+                on_dag=_dag_event_emitter(on_event),
             )
-            if approved:
-                break
-            feedback = review_feedback
+            return retry_dag_result.to_loop_result()
 
-        return await self._build_summary_result(loop_result, record.user_request, on_token=on_token)
+        outcome = await self._run_with_review_retries(
+            record.user_request,
+            run_once=run_once,
+            initial_loop_result=loop_result,
+            on_event=on_event,
+        )
+        if outcome.gate is not None:
+            return outcome.gate
+
+        return await self._build_summary_result(outcome.loop_result, record.user_request, on_token=on_token)
 
     # ==================================================================
     # Route
@@ -410,7 +436,7 @@ class HarnessRuntime:
             messages = [system_msg, *self._conversation_history, current_user_msg]
 
         boundary = Boundary(mode="read_only", allowed_paths=["."])
-        control_tool_names = {t.name for t in self.runtime_tools if t.risk in {"medium", "high"} or t.risk_fn is not None}
+        control_tool_names = self._reviewable_tool_names()
         result = await self.agent_loop.run(
             "",
             boundary=boundary,
@@ -419,6 +445,59 @@ class HarnessRuntime:
             control_tool_names=control_tool_names,
             control_tool_handler=self.agent_loop.create_tool_guard(review_level, boundary, self.runtime_tools),
             on_token=on_token,
+            on_event=on_event,
+        )
+        return result.to_loop_result()
+
+    def _reviewable_tool_names(self) -> set[str]:
+        return {
+            tool.name
+            for tool in self.runtime_tools
+            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
+        }
+
+    def _store_direct_review_state(
+        self,
+        user_request: str,
+        review_level: ReviewLevel,
+        loop_result: LoopResult,
+    ) -> None:
+        review = loop_result.pending_review
+        if review is None or review.kind != "tool_review" or review.tool_call is None:
+            return
+        self._direct_task_states[review.review_id] = DirectTaskState(
+            review_id=review.review_id,
+            user_request=user_request,
+            messages=loop_result.messages,
+            review_level=review_level,
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            tool_call_id=review.tool_call["tool_call_id"],
+            tool_name=review.tool_call["name"],
+            tool_args=review.tool_call["arguments"],
+            risk=review.payload.get("risk", "low"),
+        )
+
+    async def _continue_direct_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        state: DirectTaskState,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> LoopResult:
+        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+        result = await self.agent_loop.run(
+            "",
+            boundary=state.boundary,
+            max_steps=self.max_top_steps,
+            messages=messages,
+            control_tool_names=self._reviewable_tool_names(),
+            control_tool_handler=self.agent_loop.create_tool_guard(
+                state.review_level,
+                state.boundary,
+                self.runtime_tools,
+            ),
+            on_token=thinking_only,
             on_event=on_event,
         )
         return result.to_loop_result()
@@ -451,35 +530,33 @@ class HarnessRuntime:
             "content": feed_content,
         })
 
-        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        result = await self.agent_loop.run(
-            "",
-            boundary=state.boundary,
-            max_steps=self.max_top_steps,
-            messages=state.messages,
-            control_tool_names={t.name for t in self.runtime_tools if t.risk in {"medium", "high"} or t.risk_fn is not None},
-            control_tool_handler=self.agent_loop.create_tool_guard(state.review_level, state.boundary, self.runtime_tools),
-            on_token=thinking_only,
+        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+            messages = state.messages
+            if feedback:
+                prior_messages = previous_result.messages if previous_result else messages
+                messages = [*prior_messages, {"role": "user", "content": feedback}]
+            return await self._continue_direct_messages(
+                messages,
+                state=state,
+                on_token=on_token,
+                on_event=on_event,
+            )
+
+        def on_gate(loop_result: LoopResult) -> None:
+            if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
+                self._store_direct_review_state(state.user_request, state.review_level, loop_result)
+
+        outcome = await self._run_with_review_retries(
+            state.user_request,
+            run_once=run_once,
+            on_gate=on_gate,
             on_event=on_event,
         )
-        loop_result = result.to_loop_result()
+        if outcome.gate is not None:
+            return outcome.gate
 
-        from dagent.harness_runtime.agent_loop import _format_direct_execution_context
-        loop_result = LoopResult(
-            execution_context=_format_direct_execution_context(loop_result.messages),
-            final_answer=loop_result.final_answer,
-            messages=loop_result.messages,
-            completed=loop_result.completed,
-            needs_human_review=loop_result.needs_human_review,
-            pending_review=loop_result.pending_review,
-        )
-
-        gate = self._human_review_gate(loop_result)
-        if gate is not None:
-            return gate
-
-        await self._run_review_cycle(loop_result, "(resumed from tool review)", on_event=on_event)
-        return await self._build_summary_result(loop_result, "(resumed from tool review)", on_token=on_token)
+        self._record_conversation(outcome.loop_result)
+        return await self._build_summary_result(outcome.loop_result, state.user_request, on_token=on_token)
 
     # ==================================================================
     # Summarize
@@ -502,7 +579,7 @@ class HarnessRuntime:
             "The loop produced this answer:\n{{ final_answer }}\n\n"
             "{% endif %}"
             "Provide a clear, helpful answer to the user based on these results. "
-            "Preserve specific details from the loop's answer — names, numbers, "
+            "Preserve specific details from the loop's answer: names, numbers, "
             "paths, and factual claims must be carried forward exactly. "
             "Be concise and focus on what the user asked for."
         )
@@ -594,12 +671,12 @@ class _ThinkTagFilter:
 
     Two modes (controlled by ``keep``):
 
-    * ``keep="inside"`` — forward only tokens *inside* ``<think>…</think>``
+    * ``keep="inside"``: forward only tokens inside ``<think>...</think>``
       (including the tags themselves).  Used during AgentLoop execution so the
       user sees the model's reasoning but not the answer (which will come from
       ``_summarize()``).
 
-    * ``keep="outside"`` — forward only tokens *outside* ``<think>…</think>``.
+    * ``keep="outside"``: forward only tokens outside ``<think>...</think>``.
       Used during ``_summarize()`` so the user sees the final answer but not
       the summarizer's internal reasoning.
     """
@@ -625,10 +702,10 @@ class _ThinkTagFilter:
                 if idx == -1:
                     # No opening tag.  Keep a small tail in case a tag is
                     # split across tokens, but only if '<' is present in
-                    # the tail — otherwise the tail cannot start a tag.
+                    # the tail; otherwise the tail cannot start a tag.
                     keep = len(self._OPEN) - 1
                     if len(self._buf) > keep and "<" not in self._buf[-keep:]:
-                        # No chance of a partial tag — flush everything.
+                        # No chance of a partial tag; flush everything.
                         if self._should_emit():
                             self._downstream(self._buf)
                         self._buf = ""
@@ -642,7 +719,7 @@ class _ThinkTagFilter:
                 before = self._buf[:idx]
                 if before and self._should_emit():
                     self._downstream(before)
-                # The tag itself — emit if keeping inside
+                # Emit the tag itself if keeping inside.
                 tag_end = idx + len(self._OPEN)
                 self._inside = True
                 if self._should_emit():
@@ -653,7 +730,7 @@ class _ThinkTagFilter:
                 if idx == -1:
                     safe_len = len(self._buf) - (len(self._CLOSE) - 1)
                     if safe_len > 0 and "<" not in self._buf[-max(len(self._CLOSE) - 1, 0):]:
-                        # No partial close tag possible — flush all.
+                        # No partial close tag possible; flush all.
                         if self._should_emit():
                             self._downstream(self._buf)
                         self._buf = ""
@@ -668,7 +745,7 @@ class _ThinkTagFilter:
                 inside_text = self._buf[:idx]
                 if inside_text and self._should_emit():
                     self._downstream(inside_text)
-                # Closing tag — about to leave inside
+                # Closing tag; about to leave inside.
                 if self._should_emit():
                     self._downstream(self._buf[idx:tag_end])
                 self._buf = self._buf[tag_end:]

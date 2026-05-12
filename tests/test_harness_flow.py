@@ -8,7 +8,7 @@ from dagent.harness_runtime import (
 )
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import AgentLoopResult
-from dagent.harness_runtime.dag_agent import parse_plan_spec_dsl
+from dagent.harness_runtime.dag_compiler import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk

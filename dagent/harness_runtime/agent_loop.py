@@ -363,6 +363,17 @@ def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
             content = str(message.get("content", ""))[:500]
             lines.append(f"  - {name}: {content}")
 
-    if not lines:
-        return ""
-    return "Tool call results:\n" + "\n".join(lines)
+    if lines:
+        return "Tool call results:\n" + "\n".join(lines)
+
+    final_answer = _last_assistant_content(messages)
+    if final_answer:
+        return f"Assistant response:\n{final_answer[:1000]}"
+    return ""
+
+
+def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "assistant" and message.get("content"):
+            return str(message["content"])
+    return ""

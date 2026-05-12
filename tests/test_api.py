@@ -169,6 +169,38 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     assert records[0]["status"] == "completed"
 
 
+def test_api_resume_dag_streams_only_summary_answer_once() -> None:
+    state.harness_runtime = _runtime(
+        MockProvider([
+            ChatResponse(content="dag"),            # _route()
+            ChatResponse(content=_dag_agent_dsl()),  # DAG agent
+            ChatResponse(content="<think>observe</think>DAG agent final answer"),
+            ChatResponse(content="Summarized final answer"),
+        ])
+    )
+    client = TestClient(app)
+
+    stream_response = client.post(
+        "/messages/stream",
+        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
+    )
+    task_id = _sse_events(stream_response.text)[-1]["task_id"]
+    dag = _sse_events(stream_response.text)[-1]["dag"]
+
+    resume_response = client.post(
+        "/messages/resume",
+        json={"task_id": task_id, "dag": dag},
+    )
+
+    assert resume_response.status_code == 200
+    events = _sse_events(resume_response.text)
+    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
+    assert "<think>observe</think>" in token_text
+    assert "DAG agent final answer" not in token_text
+    assert token_text.count("Summarized final answer") == 1
+    assert events[-1]["message_markdown"] == "Summarized final answer"
+
+
 def test_api_old_dag_lifecycle_routes_are_removed() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
