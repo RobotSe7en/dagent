@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
@@ -29,6 +30,15 @@ class AgentLoopResult:
     completed: bool
     stop_reason: str
     control_events: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_loop_result(self) -> LoopResult:
+        """Convert to the unified LoopResult contract."""
+        return LoopResult(
+            execution_context=_format_direct_execution_context(self.messages),
+            final_answer=self.final_response,
+            messages=self.messages,
+            completed=self.completed,
+        )
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
@@ -280,3 +290,17 @@ class AgentLoop:
         if content is not None:
             payload["content"] = content
         on_event(payload)
+
+
+def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
+    """Summarize AgentLoop tool calls for the reviewer/summarizer."""
+    lines: list[str] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            name = message.get("name", "unknown")
+            content = str(message.get("content", ""))[:500]
+            lines.append(f"  - {name}: {content}")
+
+    if not lines:
+        return ""
+    return "Tool call results:\n" + "\n".join(lines)

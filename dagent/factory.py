@@ -47,6 +47,7 @@ def create_harness_runtime(
     )
     reviewer = _try_load_reviewer(provider, profile_store, resolved_config)
     return HarnessRuntime(
+        provider=provider,
         agent_loop=agent_loop,
         dag_agent_loop=dag_agent_loop,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),

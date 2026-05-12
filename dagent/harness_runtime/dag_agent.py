@@ -15,6 +15,7 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
 )
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel, effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile, ProfileStore
@@ -38,11 +39,34 @@ _PLAN_NODE_RE = re.compile(
 @dataclass(frozen=True)
 class DAGAgentLoopResult:
     status: str
-    message_markdown: str
+    final_response: str
     dag: DAG | None = None
     run_result: RunResult | None = None
     task_id: str | None = None
     pending_review: PendingReview | None = None
+
+    def to_loop_result(self) -> LoopResult:
+        """Convert to the unified LoopResult contract."""
+        events: list[dict[str, Any]] = []
+        if self.task_id and self.dag:
+            if self.status == "awaiting_dag_review":
+                events.append({"kind": "dag_created", "task_id": self.task_id, "dag": self.dag})
+            elif self.status == "awaiting_change_review":
+                events.append({"kind": "change_review_requested", "task_id": self.task_id, "dag": self.dag})
+            else:
+                events.append({"kind": "dag_executed", "task_id": self.task_id, "dag": self.dag})
+        return LoopResult(
+            execution_context=format_dag_execution_context(self.dag, self.run_result),
+            final_answer=self.final_response,
+            messages=[],
+            events=events,
+            dag=self.dag,
+            run_result=self.run_result,
+            task_id=self.task_id,
+            needs_human_review=self.status in {"awaiting_dag_review", "awaiting_change_review"},
+            pending_review=self.pending_review,
+            completed=self.status not in {"failed", "awaiting_dag_review", "awaiting_change_review"},
+        )
 
 
 class DAGAgentLoop:
@@ -129,13 +153,13 @@ class DAGAgentLoop:
         else:
             return DAGAgentLoopResult(
                 status="failed",
-                message_markdown="DAG planning failed before an executable DAG could be created.",
+                final_response="DAG planning failed before an executable DAG could be created.",
             )
 
         if isinstance(response, str):
             return DAGAgentLoopResult(
                 status="completed",
-                message_markdown=response,
+                final_response=response,
             )
 
         record = TaskRecord(
@@ -160,7 +184,7 @@ class DAGAgentLoop:
             )
             return DAGAgentLoopResult(
                 status="awaiting_dag_review",
-                message_markdown=_dag_created_review_message(record),
+                final_response=_dag_created_review_message(record),
                 dag=record.dag,
                 task_id=record.task_id,
                 pending_review=record.pending_review,
@@ -198,7 +222,7 @@ class DAGAgentLoop:
             result = record.runs[-1]
             return DAGAgentLoopResult(
                 status="completed" if result.completed else "failed",
-                message_markdown=record.message_markdown or dag_run_fallback_message(record, result),
+                final_response=record.final_response or dag_run_fallback_message(record, result),
                 dag=record.dag,
                 run_result=result,
                 task_id=task_id,
@@ -308,7 +332,7 @@ class DAGAgentLoop:
                 continue
 
             if isinstance(response, str):
-                record.message_markdown = response
+                record.final_response = response
                 break
 
             if response is None:
@@ -353,16 +377,16 @@ class DAGAgentLoop:
         if record.pending_review is not None:
             return DAGAgentLoopResult(
                 status="awaiting_change_review",
-                message_markdown=record.pending_review.message,
+                final_response=record.pending_review.message,
                 dag=record.pending_review.proposed_dag,
                 run_result=result,
                 task_id=record.task_id,
                 pending_review=record.pending_review,
             )
-        message = record.message_markdown or dag_run_fallback_message(record, result)
+        message = record.final_response or dag_run_fallback_message(record, result)
         return DAGAgentLoopResult(
             status="completed" if result.completed else "failed",
-            message_markdown=message,
+            final_response=message,
             dag=record.dag,
             run_result=result,
             task_id=record.task_id,
@@ -475,7 +499,7 @@ class DAGAgentLoop:
             for nid in _dag_node_ids(record.dag)
         )
         completed = record.dag.status != "failed" and (
-            bool(record.message_markdown) or all_nodes_completed
+            bool(record.final_response) or all_nodes_completed
         )
         result = RunResult(
             dag_id=record.dag.dag_id,
@@ -555,26 +579,20 @@ async def _chat_for_dag(
 
 
 def _visible_thinking_markup(content: str) -> str:
-    parts: list[str] = []
-    cursor = 0
+    """Return visible content from the first <think> block onwards.
+
+    Text before the first <think> block is conversational preamble that is
+    not useful to stream — suppressing it avoids a burst when the think
+    block finally arrives.
+
+    Everything from the first <think> onwards is included: think blocks +
+    the DAG DSL / answer text between and after them.
+    """
     lower = content.lower()
-    found_think = False
-    while cursor < len(content):
-        open_index = lower.find("<think>", cursor)
-        if open_index == -1:
-            if found_think:
-                parts.append(content[cursor:])
-            break
-        found_think = True
-        parts.append(content[cursor:open_index])
-        close_index = lower.find("</think>", open_index + len("<think>"))
-        if close_index == -1:
-            parts.append(content[open_index:])
-            cursor = len(content)
-            break
-        parts.append(content[open_index:close_index + len("</think>")])
-        cursor = close_index + len("</think>")
-    return "".join(parts)
+    open_index = lower.find("<think>")
+    if open_index == -1:
+        return ""
+    return content[open_index:]
 
 
 def _strip_thinking_blocks(content: str) -> str:
@@ -853,6 +871,22 @@ def _dag_created_review_message(record: TaskRecord) -> str:
         f"- **Nodes:** {len(record.dag.nodes)}",
         "- **Next action:** Review and edit the DAG, then confirm to resume execution.",
     ])
+
+
+def format_dag_execution_context(dag: DAG | None, run_result: RunResult | None) -> str:
+    """Format DAG execution details for the reviewer and summarizer."""
+    lines: list[str] = []
+    if dag:
+        lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
+        for node in dag.nodes:
+            lines.append(f"  - {node.id}: {node.tool}({node.args})")
+    if run_result and run_result.node_results:
+        lines.append("Node execution results:")
+        for node_id, node_result in run_result.node_results.items():
+            status = "completed" if node_result.completed else "failed"
+            response = node_result.final_response.strip()[:500] or node_result.stop_reason
+            lines.append(f"  - {node_id} ({status}): {response}")
+    return "\n".join(lines) if lines else ""
 
 
 def dag_run_fallback_message(record: TaskRecord, result: RunResult) -> str:

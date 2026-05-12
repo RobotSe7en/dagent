@@ -44,7 +44,7 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
 | `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` (`fast`/`careful`) + `effective_risk()` |
 | `dagent/harness_runtime/trace_store.py` | Immutable trace storage for completed node records |
-| `dagent/harness_runtime/auto_mode_tools.py` | `dag_agent` tool schema for top AgentLoop (auto mode routing) |
+| `dagent/harness_runtime/loop_result.py` | `LoopResult` - unified contract between loops and the runtime |
 | `dagent/schemas/node.py` | `DAGNode` (6 fields: id, tool, args, boundary, risk, status) and `Boundary` |
 | `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
 | `dagent/tools/registry.py` | `ToolRegistry` with `all_tools()`, Tool has `boundary_fn`/`risk_fn` callbacks |
@@ -216,7 +216,7 @@ npx tsc --noEmit
 2. **Tool-owned boundary/risk inference**: `boundary_fn` and `risk_fn` on Tool registration. `run_command` uses command whitelist (read-only commands→low risk, others→high). No more hardcoded tool names in `dag_agent.py`.
 3. **Dead code cleanup**: Removed `apply_risk_overrides`, `_required_risk_for_node`, `_risk_rank`, `_max_risk`, `_record_tool_trace` from `dag_executor.py`. Removed `_infer_risk`, `_max_risk_str`, `_RISK_RANK` from `dag_agent.py`. Removed unused `task` param from `_compile_plan_node`.
 4. **LLM no longer proposes risk**: Removed `risk` field from `PlanNodeSpec`. Risk is computed server-side via `effective_risk()`.
-5. **Renamed `control_tools.py` �?`auto_mode_tools.py`** for clarity.
+5. **Removed `auto_mode_tools.py`**: Routing is now a lightweight LLM classifier in `runtime.py._route()`, not a tool-based approach.
 6. **DSL-only DAG creation**: Removed the legacy full-DAG compatibility path and updated tests to feed PlanSpec DSL fixtures.
 7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `TaskRecord`, seeded from conversation history at `DAGAgentLoop.run()` time. Each internal DAG model call appends its prompt and response. Removed `conversation_messages` parameter entirely �?all context flows through `dag_messages`.
 8. **Complete DSL replan**: Replan always returns a complete PlanSpec DSL including both completed and pending nodes. Removed `_merge_completed_nodes` and all partial DSL merge logic from `runtime.py`.

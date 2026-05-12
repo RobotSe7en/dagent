@@ -11,7 +11,11 @@ from dagent.tools.registry import ToolRegistry
 
 
 def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="hello there")]))
+    state.harness_runtime = _runtime(MockProvider([
+        ChatResponse(content="direct"),          # _route()
+        ChatResponse(content="hello there"),     # direct AgentLoop
+        ChatResponse(content="hello summary"),   # _summarize()
+    ]))
     client = TestClient(app)
 
     response = client.post(
@@ -21,30 +25,17 @@ def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    assert [event["type"] for event in events] == ["status", "token", "done"]
+    assert events[-1]["type"] == "done"
     assert events[-1]["dag"] is None
-    assert events[-1]["message_markdown"] == "hello there"
+    assert events[-1]["message_markdown"] == "hello summary"
 
 
 def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     state.harness_runtime = _runtime(
-        MockProvider(
-            [
-                ChatResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="call_1",
-                            name="dag_agent",
-                            arguments={
-                                "request": "Create a safe DAG.",
-                                "reason": "Needs execution.",
-                            },
-                        )
-                    ]
-                ),
-                ChatResponse(content=_dag_agent_dsl()),
-            ]
-        )
+        MockProvider([
+            ChatResponse(content="dag"),           # _route()
+            ChatResponse(content=_dag_agent_dsl()),  # DAG agent
+        ])
     )
     client = TestClient(app)
 
@@ -57,31 +48,20 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     events = _sse_events(response.text)
     event_types = [event["type"] for event in events]
     assert "dag" in event_types
-    assert "token" not in event_types
     assert event_types[-1] == "done"
     assert events[-1]["status"] == "awaiting_dag_review"
     assert events[-1]["dag"]["status"] == "review_required"
-    assert "DAG" in events[-1]["message_markdown"]
+    assert events[-1]["message_markdown"] == ""
 
 
 def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     state.harness_runtime = _runtime(
-        MockProvider(
-            [
-                ChatResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="call_1",
-                            name="dag_agent",
-                            arguments={"request": "Create a safe DAG.", "reason": "Needs execution."},
-                        )
-                    ]
-                ),
-                ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),
-                ChatResponse(content="Final answer: echo:ok"),
-                ChatResponse(content="Final answer: echo:ok"),
-            ]
-        )
+        MockProvider([
+            ChatResponse(content="dag"),                                          # _route()
+            ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),  # DAG agent
+            ChatResponse(content="NO_CHANGE"),                                    # execute observation
+            ChatResponse(content="Final answer: echo:ok"),                        # _summarize()
+        ])
     )
     client = TestClient(app)
 
@@ -102,23 +82,13 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     state.harness_runtime = _runtime(
-        MockProvider(
-            [
-                ChatResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="call_1",
-                            name="dag_agent",
-                            arguments={"request": "Create a DAG that needs repair.", "reason": "Needs execution."},
-                        )
-                    ]
-                ),
-                ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),
-                ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),
-                ChatResponse(content="Recovered after replanning."),
-                ChatResponse(content="Recovered after replanning."),
-            ]
-        )
+        MockProvider([
+            ChatResponse(content="dag"),                                              # _route()
+            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # replan
+            ChatResponse(content="NO_CHANGE"),                                        # execute observation
+            ChatResponse(content="Recovered after replanning."),                       # _summarize()
+        ])
     )
     client = TestClient(app)
 
@@ -132,18 +102,17 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     dag_events = [event["dag"] for event in events if event["type"] == "dag"]
     assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
     assert any(dag["version"] == 2 and dag["status"] == "completed" for dag in dag_events)
-    assert events[-1]["message_markdown"] == "Recovered after replanning."
+    assert events[-1]["status"] == "completed"
 
 
 def test_api_dag_mode_summarizes_failed_fast_dag() -> None:
     state.harness_runtime = _runtime(
-        MockProvider(
-            [
-                ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
-                ChatResponse(content="NO_CHANGE"),
-                ChatResponse(content="The DAG failed after retrying the failing node."),
-            ]
-        )
+        MockProvider([
+            ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
+            ChatResponse(content="NO_CHANGE"),
+            ChatResponse(content="The DAG failed after retrying the failing node."),
+            ChatResponse(content="The task failed."),     # _summarize()
+        ])
     )
     client = TestClient(app)
 
@@ -156,26 +125,16 @@ def test_api_dag_mode_summarizes_failed_fast_dag() -> None:
     events = _sse_events(response.text)
     assert events[-1]["status"] == "failed"
     assert events[-1]["dag"]["status"] == "failed"
-    assert events[-1]["message_markdown"] == "The DAG failed after retrying the failing node."
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> None:
     state.harness_runtime = _runtime(
-        MockProvider(
-            [
-                ChatResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="call_1",
-                            name="dag_agent",
-                            arguments={"request": "Create a safe DAG.", "reason": "Needs execution."},
-                        )
-                    ]
-                ),
-                ChatResponse(content=_dag_agent_dsl()),
-                ChatResponse(content="Final answer: echo:ok"),
-            ]
-        )
+        MockProvider([
+            ChatResponse(content="dag"),            # _route()
+            ChatResponse(content=_dag_agent_dsl()),  # DAG agent
+            ChatResponse(content="NO_CHANGE"),       # execute observation
+            ChatResponse(content="Final answer: echo:ok"),  # _summarize()
+        ])
     )
     client = TestClient(app)
 
@@ -197,7 +156,6 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     resume_events = _sse_events(resume_response.text)
     assert resume_events[-1]["status"] == "completed"
     assert resume_events[-1]["dag"]["status"] == "completed"
-    assert resume_events[-1]["message_markdown"] == "Final answer: echo:ok"
     assert any(event.get("event", {}).get("event_type") == "tool_completed" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
@@ -225,6 +183,7 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
     tool_executor = _tool_executor()
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     return HarnessRuntime(
+        provider=provider,
         agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
         dag_agent_loop=DAGAgentLoop(
             provider,

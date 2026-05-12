@@ -1,34 +1,28 @@
 """Top-level harness runtime.
 
-The runtime owns the user-facing loop. It lets the top AgentLoop answer
-directly, use ordinary runtime tools, or call the `dag_agent` control tool.
-DAG lifecycle state lives in DAGAgentLoop; this module routes UI-facing
-messages and summarizes DAG observations back to the user.
+The runtime orchestrates: route → loop → review → summarize.
+It does not know how loops execute internally — it only consumes LoopResult.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.harness_runtime.agent_loop import (
     AgentLoop,
-    ControlToolResult,
     LoopEventHandler,
     TokenHandler,
 )
-from dagent.harness_runtime.dag_executor import (
-    RunResult,
-)
-from dagent.harness_runtime.dag_agent import DAGAgentLoop, dag_run_fallback_message, _dag_created_review_message
+from dagent.harness_runtime.dag_executor import RunResult
+from dagent.harness_runtime.dag_agent import DAGAgentLoop
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.result_reviewer import ResultReviewerAgent, format_review_feedback
-from dagent.harness_runtime.auto_mode_tools import DAG_AGENT_NAME, dag_agent_tool_definition
-from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
-from dagent.harness_runtime.task_record import PendingReview, TaskRecord
+from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.harness_runtime.task_record import PendingReview
 from dagent.profiles import AgentProfile
-from dagent.providers import ToolCall
+from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG, TraceEvent
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
@@ -36,6 +30,20 @@ from dagent.tools.registry import Tool
 
 RuntimeMode = Literal["auto", "direct", "dag"]
 MAX_CONVERSATION_HISTORY_MESSAGES = 20
+
+_ROUTE_SYSTEM_PROMPT = """\
+You are a routing classifier.  Given the user message and conversation context, \
+decide whether the request needs a multi-step DAG pipeline or can be handled by a \
+single direct agent loop.
+
+Respond with exactly one word: "dag" or "direct".
+
+Choose "dag" ONLY when the task clearly benefits from node-level planning, \
+parallelism, human review gates, resumability, or multi-agent coordination.
+
+Choose "direct" for greetings, simple Q&A, single tool calls, ordinary short \
+serial work, or anything that does not need structured orchestration.\
+"""
 
 
 @dataclass(frozen=True)
@@ -45,16 +53,17 @@ class HarnessMessageResult:
     dag: DAG | None = None
     run_result: RunResult | None = None
     task_id: str | None = None
-    control_events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
     pending_review: PendingReview | None = None
 
 
 class HarnessRuntime:
-    """Runs top-level messages and manages DAG lifecycle."""
+    """Orchestrates: route → loop → review → summarize."""
 
     def __init__(
         self,
         *,
+        provider: ChatProvider,
         agent_loop: AgentLoop,
         dag_agent_loop: DAGAgentLoop,
         conversation_profile: AgentProfile,
@@ -65,6 +74,7 @@ class HarnessRuntime:
         max_top_steps: int = 8,
         max_review_retries: int = 1,
     ) -> None:
+        self.provider = provider
         self.agent_loop = agent_loop
         self.dag_agent_loop = dag_agent_loop
         self.conversation_profile = conversation_profile
@@ -75,11 +85,11 @@ class HarnessRuntime:
         self.max_top_steps = max_top_steps
         self.max_review_retries = max_review_retries
         self.tasks = dag_agent_loop.tasks
-        self._active_review_level: ReviewLevel = "fast"
-        self._active_user_message: str = ""
-        self._active_on_token: TokenHandler | None = None
-        self._active_on_event: LoopEventHandler | None = None
         self._conversation_history: list[dict[str, Any]] = []
+
+    # ==================================================================
+    # Public API
+    # ==================================================================
 
     async def handle_message(
         self,
@@ -90,121 +100,108 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult:
-        if mode == "dag":
-            loop_result = await self.dag_agent_loop.run(
-                message,
-                review_level=review_level,
-                planning_context=self._conversation_context(),
-                runtime_mode="dag",
-                dag_messages=self._new_dag_messages(),
-                on_token=on_token,
-                on_trace=_trace_event_emitter(on_event),
-                on_dag=_dag_event_emitter(on_event),
-            )
-            record = self.tasks.get(loop_result.task_id) if loop_result.task_id else None
-            if record is None:
-                self._append_conversation_turn(message, loop_result.message_markdown)
-                return HarnessMessageResult(
-                    status=loop_result.status,
-                    message_markdown=loop_result.message_markdown,
-                    task_id=loop_result.task_id,
-                )
-            if loop_result.status == "awaiting_dag_review" and record is not None:
-                return HarnessMessageResult(
-                    status="awaiting_dag_review",
-                    message_markdown=loop_result.message_markdown,
-                    dag=loop_result.dag,
-                    task_id=loop_result.task_id,
-                    pending_review=loop_result.pending_review,
-                    control_events=[_dag_event(record, "dag_created", reason="Forced DAG mode.")],
-                )
-            if loop_result.status == "awaiting_change_review" and record is not None:
-                return HarnessMessageResult(
-                    status="awaiting_change_review",
-                    message_markdown=loop_result.message_markdown,
-                    dag=loop_result.dag,
-                    run_result=loop_result.run_result,
-                    task_id=loop_result.task_id,
-                    pending_review=loop_result.pending_review,
-                    control_events=[_dag_event(record, "change_review_requested", reason=loop_result.message_markdown)],
-                )
-            if record is not None:
-                loop_result = await self._maybe_review_dag(
-                    loop_result, record, message,
-                    review_level=review_level,
-                    on_token=on_token, on_event=on_event,
-                )
-                self._append_conversation_turn(record.user_request, loop_result.message_markdown)
-                return HarnessMessageResult(
-                    status=loop_result.status,
-                    message_markdown=loop_result.message_markdown,
-                    dag=loop_result.dag,
-                    run_result=loop_result.run_result,
-                    task_id=loop_result.task_id,
-                    control_events=[_dag_event(record, "dag_executed", reason="DAG execution completed.")],
-                )
-            return HarnessMessageResult(
-                status="failed",
-                message_markdown=loop_result.message_markdown,
-                task_id=loop_result.task_id,
-            )
+        # 1. Route
+        resolved_mode = mode
+        if mode == "auto":
+            resolved_mode = await self._route(message)
 
-        base_messages = self.prompt_builder.build(
-            PromptRequest(
-                profile=self.conversation_profile,
-                task_content="{{ user_message }}",
-                tools=self.runtime_tools,
-                memory=self.conversation_profile.memory,
-                context=self._conversation_context(),
-                variables={"user_message": message},
-            )
-        )
-        system_msg = base_messages[0]
-        current_user_msg = base_messages[1]
-        messages = [system_msg, *self._conversation_history, current_user_msg]
-        include_dag_agent = mode == "auto"
-        self._active_review_level = review_level
-        self._active_user_message = message
-        self._active_on_token = on_token
-        self._active_on_event = on_event
-        control_names: set[str] = {DAG_AGENT_NAME} if include_dag_agent else set()
-        extra_tools = [dag_agent_tool_definition()] if include_dag_agent else None
-        has_control = bool(control_names)
-        try:
-            result = await self.agent_loop.run(
-                "",
-                boundary=Boundary(mode="read_only", allowed_paths=["."]),
-                max_steps=self.max_top_steps,
-                messages=messages,
-                extra_tools=extra_tools,
-                control_tool_names=control_names if has_control else None,
-                control_tool_handler=self._handle_control_tool if has_control else None,
+        # 2. Loop + Review cycle
+        feedback: str | None = None
+        loop_result: LoopResult | None = None
+        prior_messages: list[dict[str, Any]] | None = None
+
+        for _attempt in range(self.max_review_retries + 1):
+            loop_result = await self._execute_loop(
+                message,
+                mode=resolved_mode,
+                review_level=review_level,
+                feedback=feedback,
+                prior_messages=prior_messages,
                 on_token=on_token,
                 on_event=on_event,
             )
-        finally:
-            self._active_user_message = ""
-            self._active_on_token = None
-            self._active_on_event = None
 
-        self._remember_conversation_messages(result.messages)
-        dag_event = _latest_dag_event(result.control_events)
-        final_response = result.final_response
-        if result.stop_reason != "awaiting_approval" and self.enable_reviewer and self.reviewer:
-            dag = dag_event.get("dag") if dag_event else None
-            run_result = dag_event.get("run_result") if dag_event else None
-            final_response = await self._maybe_review(
-                message, final_response,
-                dag=dag, run_result=run_result,
+            # Human review gate — return immediately, no message needed
+            if loop_result.needs_human_review:
+                status = (
+                    "awaiting_dag_review"
+                    if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
+                    else "awaiting_change_review"
+                )
+                return HarnessMessageResult(
+                    status=status,
+                    message_markdown="",
+                    dag=loop_result.dag,
+                    run_result=loop_result.run_result,
+                    task_id=loop_result.task_id,
+                    events=loop_result.events,
+                    pending_review=loop_result.pending_review,
+                )
+
+            # Review
+            if not self.enable_reviewer or not self.reviewer:
+                break
+            if not loop_result.execution_context.strip():
+                break
+
+            review = await self.reviewer.review(
+                user_request=message,
+                final_answer=loop_result.final_answer,
+                execution_context=loop_result.execution_context,
             )
+            if review.approved:
+                if on_event:
+                    on_event({
+                        "type": "review_passed",
+                        "approved": True,
+                        "summary": review.summary,
+                        "issues": [
+                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            for issue in review.issues
+                        ],
+                    })
+                break
+
+            feedback = format_review_feedback(review)
+            prior_messages = loop_result.messages  # carry forward for retry
+            if on_event:
+                on_event({
+                    "type": "retry",
+                    "reason": feedback,
+                    "summary": review.summary,
+                    "issues": [
+                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        for issue in review.issues
+                    ],
+                })
+
+        assert loop_result is not None
+
+        # Record conversation only after review passes (not during retry loop).
+        self._record_conversation(loop_result)
+
+        # 3. Summarize — always, for all modes
+        summary = await self._summarize(
+            user_request=message,
+            execution_context=loop_result.execution_context,
+            final_answer=loop_result.final_answer,
+            on_token=on_token,
+        )
+
+        status = "completed" if loop_result.completed else "failed"
+
+        # DAG mode has no conversation messages, so append the turn.
+        if not loop_result.messages:
+            self._append_conversation_turn(message, summary)
+
         return HarnessMessageResult(
-            status="awaiting_dag_review" if result.stop_reason == "awaiting_approval" else "completed",
-            message_markdown=final_response,
-            dag=dag_event.get("dag") if dag_event else None,
-            run_result=dag_event.get("run_result") if dag_event else None,
-            task_id=dag_event.get("task_id") if dag_event else None,
-            control_events=result.control_events,
-            pending_review=dag_event.get("pending_review") if dag_event else None,
+            status=status,
+            message_markdown=summary,
+            dag=loop_result.dag,
+            run_result=loop_result.run_result,
+            task_id=loop_result.task_id,
+            events=loop_result.events,
+            pending_review=loop_result.pending_review,
         )
 
     async def resume_dag(
@@ -216,7 +213,10 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult:
-        loop_result = await self.dag_agent_loop.resume(
+        record = self.tasks[task_id]
+        was_completed = record.dag.status == "completed" and len(record.runs) > 0
+
+        dag_result = await self.dag_agent_loop.resume(
             task_id,
             dag,
             review_level=review_level,
@@ -224,68 +224,298 @@ class HarnessRuntime:
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
-        record = self.tasks[task_id]
+        loop_result = dag_result.to_loop_result()
 
-        if loop_result.status in {"awaiting_dag_review", "awaiting_change_review"}:
+        # Human review gate — no message needed
+        if loop_result.needs_human_review:
+            status = (
+                "awaiting_dag_review"
+                if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
+                else "awaiting_change_review"
+            )
             return HarnessMessageResult(
-                status=loop_result.status,
-                message_markdown=loop_result.message_markdown,
+                status=status,
+                message_markdown="",
+                dag=loop_result.dag,
+                run_result=loop_result.run_result,
+                task_id=loop_result.task_id,
+                events=loop_result.events,
+                pending_review=loop_result.pending_review,
+            )
+
+        # Idempotent resume: already completed before this call
+        if was_completed and dag_result.run_result is record.runs[-1]:
+            return HarnessMessageResult(
+                status="completed",
+                message_markdown="",
                 dag=loop_result.dag,
                 run_result=loop_result.run_result,
                 task_id=task_id,
-                pending_review=loop_result.pending_review,
-                control_events=[_dag_event(record, "dag_executed", reason="DAG paused for review.")],
+                events=loop_result.events,
             )
 
-        loop_result = await self._maybe_review_dag(
-            loop_result, record, record.user_request,
-            review_level=review_level or record.review_level,
-            on_token=on_token, on_event=on_event,
+        # Review cycle
+        feedback: str | None = None
+        for _attempt in range(self.max_review_retries + 1):
+            if feedback is not None:
+                retry_dag_result = await self.dag_agent_loop.run(
+                    record.user_request,
+                    review_level=review_level or record.review_level,
+                    planning_context=self._conversation_context() + "\n\n" + feedback,
+                    runtime_mode=record.runtime_mode,
+                    dag_messages=self._new_dag_messages(record.user_request),
+                    on_token=on_token,
+                    on_trace=_trace_event_emitter(on_event),
+                    on_dag=_dag_event_emitter(on_event),
+                )
+                loop_result = retry_dag_result.to_loop_result()
+                if loop_result.needs_human_review:
+                    status = (
+                        "awaiting_dag_review"
+                        if loop_result.pending_review and loop_result.pending_review.kind == "initial_dag"
+                        else "awaiting_change_review"
+                    )
+                    return HarnessMessageResult(
+                        status=status,
+                        message_markdown="",
+                        dag=loop_result.dag,
+                        run_result=loop_result.run_result,
+                        task_id=loop_result.task_id,
+                        events=loop_result.events,
+                        pending_review=loop_result.pending_review,
+                    )
+                if not loop_result.execution_context.strip():
+                    break
+
+            if not self.enable_reviewer or not self.reviewer:
+                break
+            if not loop_result.execution_context.strip():
+                break
+
+            review = await self.reviewer.review(
+                user_request=record.user_request,
+                final_answer=loop_result.final_answer,
+                execution_context=loop_result.execution_context,
+            )
+            if review.approved:
+                if on_event:
+                    on_event({
+                        "type": "review_passed",
+                        "approved": True,
+                        "summary": review.summary,
+                        "issues": [
+                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            for issue in review.issues
+                        ],
+                    })
+                break
+            feedback = format_review_feedback(review)
+            if on_event:
+                on_event({
+                    "type": "retry",
+                    "reason": feedback,
+                    "summary": review.summary,
+                    "issues": [
+                        {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                        for issue in review.issues
+                    ],
+                })
+
+        # Summarize — always
+        summary = await self._summarize(
+            user_request=record.user_request,
+            execution_context=loop_result.execution_context,
+            final_answer=loop_result.final_answer,
+            on_token=on_token,
         )
-        self._append_conversation_turn(record.user_request, loop_result.message_markdown)
+
+        self._append_conversation_turn(record.user_request, summary)
+
+        status = "completed" if loop_result.completed else "failed"
         return HarnessMessageResult(
-            status=loop_result.status,
-            message_markdown=loop_result.message_markdown,
+            status=status,
+            message_markdown=summary,
             dag=loop_result.dag,
             run_result=loop_result.run_result,
             task_id=task_id,
-            control_events=[_dag_event(record, "dag_executed", reason="User confirmed DAG.")],
+            events=loop_result.events,
         )
 
-    async def _handle_control_tool(self, tool_call: ToolCall) -> ControlToolResult:
-        if tool_call.name != DAG_AGENT_NAME:
-            raise ValueError(f"Unexpected control tool '{tool_call.name}'.")
+    # ==================================================================
+    # Route
+    # ==================================================================
 
-        request = str(tool_call.arguments.get("request") or "").strip()
-        reason = str(tool_call.arguments.get("reason") or "").strip()
-        if not request:
-            request = "Create a reviewable DAG for the current user task."
+    async def _route(self, message: str) -> Literal["dag", "direct"]:
+        """Lightweight LLM classifier."""
+        context = self._conversation_context()
+        user_content = message
+        if context:
+            user_content = f"Conversation context:\n{context}\n\nUser message:\n{message}"
 
-        dag_messages = self._new_dag_messages()
-        loop_result = await self.dag_agent_loop.run(
-            request,
-            review_level=self._active_review_level,
-            planning_context=self._conversation_context(),
-            runtime_mode="auto",
-            dag_messages=dag_messages,
-            force_review=review_policy(self._active_review_level).reviews_dag_changes(),
-            on_token=self._active_on_token,
-            on_trace=_trace_event_emitter(self._active_on_event),
-            on_dag=_dag_event_emitter(self._active_on_event),
-        )
+        messages = [
+            {"role": "system", "content": _ROUTE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        try:
+            response = await self.provider.chat(messages)
+            decision = response.content.strip().lower()
+            if decision in {"dag", "direct"}:
+                return decision  # type: ignore[return-value]
+        except Exception:
+            pass
+        return "direct"
 
-        record = self.tasks.get(loop_result.task_id) if loop_result.task_id else None
-        if record is None:
-            return ControlToolResult(
-                content=loop_result.message_markdown,
+    # ==================================================================
+    # Loop execution
+    # ==================================================================
+
+    async def _execute_loop(
+        self,
+        message: str,
+        *,
+        mode: RuntimeMode,
+        review_level: ReviewLevel,
+        feedback: str | None,
+        prior_messages: list[dict[str, Any]] | None = None,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> LoopResult:
+        """Dispatch to the appropriate loop and return a unified LoopResult."""
+        if mode == "dag":
+            planning_context = self._conversation_context()
+            if feedback:
+                planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
+            dag_result = await self.dag_agent_loop.run(
+                message,
+                review_level=review_level,
+                planning_context=planning_context,
+                runtime_mode=str(mode),
+                dag_messages=self._new_dag_messages(message),
+                on_token=on_token,
+                on_trace=_trace_event_emitter(on_event),
+                on_dag=_dag_event_emitter(on_event),
             )
-        if self._active_user_message:
-            record.user_request = self._active_user_message
-        return _control_result_from_dag_loop(
-            record,
-            loop_result,
-            reason=reason,
+            return dag_result.to_loop_result()
+        else:
+            # Direct mode: only stream <think> blocks from the loop.
+            # The actual answer comes from _summarize().
+            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            return await self._run_direct(
+                message,
+                feedback=feedback,
+                prior_messages=prior_messages,
+                on_token=thinking_only,
+                on_event=on_event,
+            )
+
+    async def _run_direct(
+        self,
+        message: str,
+        *,
+        feedback: str | None = None,
+        prior_messages: list[dict[str, Any]] | None = None,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> LoopResult:
+        """Run AgentLoop and return unified LoopResult."""
+        if prior_messages and feedback:
+            # Retry: continue from the previous attempt's full conversation
+            # so the agent sees its prior tool calls / errors, plus the
+            # reviewer feedback.
+            messages = list(prior_messages)
+            messages.append({"role": "user", "content": feedback})
+        else:
+            # First attempt: build messages from scratch.
+            base_messages = self.prompt_builder.build(
+                PromptRequest(
+                    profile=self.conversation_profile,
+                    task_content="{{ user_message }}",
+                    tools=self.runtime_tools,
+                    memory=self.conversation_profile.memory,
+                    context=self._conversation_context(),
+                    variables={"user_message": message},
+                )
+            )
+            system_msg = base_messages[0]
+            current_user_msg = base_messages[1]
+            messages = [system_msg, *self._conversation_history, current_user_msg]
+
+        result = await self.agent_loop.run(
+            "",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            max_steps=self.max_top_steps,
+            messages=messages,
+            on_token=on_token,
+            on_event=on_event,
         )
+        return result.to_loop_result()
+
+    # ==================================================================
+    # Summarize
+    # ==================================================================
+
+    async def _summarize(
+        self,
+        *,
+        user_request: str,
+        execution_context: str,
+        final_answer: str = "",
+        on_token: TokenHandler | None = None,
+    ) -> str:
+        """Streaming LLM call that produces the user-facing answer."""
+        task_content = (
+            "You are summarizing the results of a task execution for the user.\n\n"
+            "User's original request:\n{{ user_request }}\n\n"
+            "Execution results:\n{{ execution_context }}\n\n"
+            "{% if final_answer %}"
+            "The loop produced this answer:\n{{ final_answer }}\n\n"
+            "{% endif %}"
+            "Provide a clear, helpful answer to the user based on these results. "
+            "Preserve specific details from the loop's answer — names, numbers, "
+            "paths, and factual claims must be carried forward exactly. "
+            "Be concise and focus on what the user asked for."
+        )
+        messages = self.prompt_builder.build(
+            PromptRequest(
+                profile=self.conversation_profile,
+                task_content=task_content,
+                memory=self.conversation_profile.memory,
+                variables={
+                    "user_request": user_request,
+                    "execution_context": execution_context,
+                    "final_answer": final_answer,
+                },
+            )
+        )
+
+        if on_token is not None and hasattr(self.provider, "stream_chat"):
+            # Only stream the answer, not the summarizer's <think> reasoning.
+            answer_only = _ThinkTagFilter(on_token, keep="outside")
+            content = ""
+            response = None
+            async for event in self.provider.stream_chat(messages):
+                if event.type == "token" and event.content:
+                    answer_only(event.content)
+                    content += event.content
+                elif event.type == "done":
+                    response = event.response
+            return (response.content if response else content) or content
+        else:
+            response = await self.provider.chat(messages)
+            return response.content
+
+    def _record_conversation(self, loop_result: LoopResult) -> None:
+        """Record loop messages into conversation history.
+
+        For direct mode the full AgentLoop conversation replaces history.
+        For DAG mode there are no conversation messages (DAG has internal state).
+        """
+        if loop_result.messages:
+            self._remember_conversation_messages(loop_result.messages)
+
+    # ==================================================================
+    # Conversation history
+    # ==================================================================
 
     def _conversation_context(self) -> str:
         if not self.tasks:
@@ -303,7 +533,7 @@ class HarnessRuntime:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    def _new_dag_messages(self) -> list[dict[str, Any]]:
+    def _new_dag_messages(self, active_user_message: str = "") -> list[dict[str, Any]]:
         """Create a new dag_messages list seeded with conversation history."""
         messages: list[dict[str, Any]] = []
         for msg in self._conversation_history:
@@ -311,7 +541,7 @@ class HarnessRuntime:
             content = msg.get("content")
             if role in {"user", "assistant"} and content:
                 messages.append({"role": role, "content": content})
-        active = self._active_user_message.strip()
+        active = active_user_message.strip()
         if active and not (
             messages
             and messages[-1].get("role") == "user"
@@ -340,113 +570,95 @@ class HarnessRuntime:
             self._conversation_history.append({"role": "assistant", "content": assistant_message})
         self._conversation_history = self._conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
-    # ------------------------------------------------------------------
-    # Result review
-    # ------------------------------------------------------------------
 
-    async def _maybe_review(
-        self,
-        user_request: str,
-        final_answer: str,
-        *,
-        dag: DAG | None = None,
-        run_result: RunResult | None = None,
-    ) -> str:
-        if not self.enable_reviewer or not self.reviewer or not final_answer.strip():
-            return final_answer
-        execution_context = _format_execution_context(dag, run_result) if run_result else ""
-        review = await self.reviewer.review(
-            user_request=user_request,
-            final_answer=final_answer,
-            execution_context=execution_context,
-        )
-        if review.approved:
-            return final_answer
-        feedback = format_review_feedback(review)
-        return f"{final_answer}\n\n---\n**Reviewer notes:**\n{feedback}"
+# ------------------------------------------------------------------
+# Module-level helpers
+# ------------------------------------------------------------------
 
-    async def _maybe_review_dag(
-        self,
-        loop_result,
-        record: TaskRecord,
-        user_request: str,
-        *,
-        review_level: ReviewLevel,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ):
-        if not self.enable_reviewer or not self.reviewer or not loop_result.run_result:
-            return loop_result
-        execution_context = _format_execution_context(loop_result.dag, loop_result.run_result)
-        review = await self.reviewer.review(
-            user_request=user_request,
-            final_answer=loop_result.message_markdown,
-            execution_context=execution_context,
-        )
-        if review.approved:
-            return loop_result
-        feedback = format_review_feedback(review)
-        for _retry in range(self.max_review_retries):
-            planning_context = self._conversation_context() + "\n\n" + feedback
-            retry_result = await self.dag_agent_loop.run(
-                user_request,
-                review_level=review_level,
-                planning_context=planning_context,
-                runtime_mode=record.runtime_mode,
-                dag_messages=self._new_dag_messages(),
-                on_token=on_token,
-                on_trace=_trace_event_emitter(on_event),
-                on_dag=_dag_event_emitter(on_event),
-            )
-            if retry_result.task_id and retry_result.task_id in self.tasks:
-                record = self.tasks[retry_result.task_id]
-            if not retry_result.run_result:
-                return retry_result
-            review = await self.reviewer.review(
-                user_request=user_request,
-                final_answer=retry_result.message_markdown,
-                execution_context=_format_execution_context(retry_result.dag, retry_result.run_result),
-            )
-            if review.approved:
-                return retry_result
-            feedback = format_review_feedback(review)
-        return retry_result
+class _ThinkTagFilter:
+    """Streaming filter that selectively forwards tokens based on <think> blocks.
 
+    Two modes (controlled by ``keep``):
 
-def _format_execution_context(dag: DAG | None, run_result: RunResult | None) -> str:
-    lines: list[str] = []
-    if dag:
-        lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
-        for node in dag.nodes:
-            lines.append(f"  - {node.id}: {node.tool}({node.args})")
-    if run_result and run_result.node_results:
-        lines.append("Node execution results:")
-        for node_id, node_result in run_result.node_results.items():
-            status = "completed" if node_result.completed else "failed"
-            response = node_result.final_response.strip()[:500] or node_result.stop_reason
-            lines.append(f"  - {node_id} ({status}): {response}")
-    return "\n".join(lines) if lines else ""
+    * ``keep="inside"`` — forward only tokens *inside* ``<think>…</think>``
+      (including the tags themselves).  Used during AgentLoop execution so the
+      user sees the model's reasoning but not the answer (which will come from
+      ``_summarize()``).
 
+    * ``keep="outside"`` — forward only tokens *outside* ``<think>…</think>``.
+      Used during ``_summarize()`` so the user sees the final answer but not
+      the summarizer's internal reasoning.
+    """
 
-def _dag_event(
-    record: TaskRecord,
-    kind: str,
-    *,
-    reason: str = "",
-) -> dict[str, Any]:
-    return {
-        "kind": kind,
-        "task_id": record.task_id,
-        "dag": record.dag,
-        "reason": reason,
-    }
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
 
+    def __init__(self, downstream: TokenHandler, *, keep: str = "inside") -> None:
+        assert keep in {"inside", "outside"}
+        self._downstream = downstream
+        self._keep = keep
+        self._buf = ""
+        self._inside = False
 
-def _latest_dag_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for event in reversed(events):
-        if event.get("kind") in {"dag_created", "dag_executed"}:
-            return event
-    return None
+    def _should_emit(self) -> bool:
+        return (self._keep == "inside") == self._inside
+
+    def __call__(self, token: str) -> None:
+        self._buf += token
+        while self._buf:
+            if not self._inside:
+                idx = self._buf.lower().find(self._OPEN)
+                if idx == -1:
+                    # No opening tag.  Keep a small tail in case a tag is
+                    # split across tokens, but only if '<' is present in
+                    # the tail — otherwise the tail cannot start a tag.
+                    keep = len(self._OPEN) - 1
+                    if len(self._buf) > keep and "<" not in self._buf[-keep:]:
+                        # No chance of a partial tag — flush everything.
+                        if self._should_emit():
+                            self._downstream(self._buf)
+                        self._buf = ""
+                    else:
+                        safe = self._buf[:-keep] if len(self._buf) > keep else ""
+                        if safe and self._should_emit():
+                            self._downstream(safe)
+                        self._buf = self._buf[len(safe):]
+                    return
+                # Text before <think>
+                before = self._buf[:idx]
+                if before and self._should_emit():
+                    self._downstream(before)
+                # The tag itself — emit if keeping inside
+                tag_end = idx + len(self._OPEN)
+                self._inside = True
+                if self._should_emit():
+                    self._downstream(self._buf[idx:tag_end])
+                self._buf = self._buf[tag_end:]
+            else:
+                idx = self._buf.lower().find(self._CLOSE)
+                if idx == -1:
+                    safe_len = len(self._buf) - (len(self._CLOSE) - 1)
+                    if safe_len > 0 and "<" not in self._buf[-max(len(self._CLOSE) - 1, 0):]:
+                        # No partial close tag possible — flush all.
+                        if self._should_emit():
+                            self._downstream(self._buf)
+                        self._buf = ""
+                    elif safe_len > 0:
+                        safe = self._buf[:safe_len]
+                        if self._should_emit():
+                            self._downstream(safe)
+                        self._buf = self._buf[safe_len:]
+                    return
+                # Text inside think + closing tag
+                tag_end = idx + len(self._CLOSE)
+                inside_text = self._buf[:idx]
+                if inside_text and self._should_emit():
+                    self._downstream(inside_text)
+                # Closing tag — about to leave inside
+                if self._should_emit():
+                    self._downstream(self._buf[idx:tag_end])
+                self._buf = self._buf[tag_end:]
+                self._inside = False
 
 
 def _trace_event_emitter(on_event: LoopEventHandler | None):
@@ -469,52 +681,7 @@ def _dag_event_emitter(on_event: LoopEventHandler | None):
     return emit
 
 
-def _control_result_from_dag_loop(
-    record: TaskRecord,
-    loop_result,
-    *,
-    reason: str,
-) -> ControlToolResult:
-    if loop_result.status in {"awaiting_dag_review", "awaiting_change_review"}:
-        event = _dag_event(
-            record,
-            "dag_created",
-            reason=reason,
-        )
-        event["pending_review"] = loop_result.pending_review
-        return ControlToolResult(
-            content=_dag_created_tool_output(record, reason=reason),
-            stop_reason="awaiting_approval",
-            events=[event],
-        )
-
-    event = _dag_event(
-        record,
-        "dag_executed",
-        reason=reason or "DAG executed.",
-    )
-    event["run_result"] = loop_result.run_result
-    content = (
-        _dag_run_tool_output(record, loop_result.run_result)
-        if loop_result.run_result is not None
-        else loop_result.message_markdown
-    )
-    return ControlToolResult(content=content, events=[event])
-
-
-def _dag_created_tool_output(record: TaskRecord, *, reason: str) -> str:
-    return json.dumps(
-        {
-            "status": record.dag.status,
-            "task_id": record.task_id,
-            "reason": reason,
-            "dag": record.dag.model_dump(mode="json"),
-        },
-        ensure_ascii=False,
-    )
-
-
-def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
+def _task_context_payload(record) -> dict[str, Any]:
     return {
         "task_id": record.task_id,
         "dag_id": record.dag.dag_id,
@@ -549,29 +716,3 @@ def _conversation_message_copy(message: dict[str, Any]) -> dict[str, Any] | None
     if not content:
         return None
     return {"role": role, "content": content}
-
-
-def _dag_run_tool_output(record: TaskRecord, result: RunResult) -> str:
-    return json.dumps(
-        {
-            "status": "completed" if result.completed else "failed",
-            "task_id": record.task_id,
-            "dag_id": result.dag_id,
-            "user_request": record.user_request,
-            "instruction": (
-                "Summarize the DAG execution result and answer the user's original "
-                "request directly. Use the node_results as observations."
-            ),
-            "node_results": {
-                node_id: {
-                    "completed": node_result.completed,
-                    "stop_reason": node_result.stop_reason,
-                    "final_response": node_result.final_response,
-                }
-                for node_id, node_result in result.node_results.items()
-            },
-        },
-        ensure_ascii=False,
-    )
-
-

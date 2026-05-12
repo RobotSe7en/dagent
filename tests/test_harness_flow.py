@@ -48,6 +48,7 @@ def runtime_for(
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
     return HarnessRuntime(
+        provider=dag_agent_loop.provider,
         agent_loop=agent_loop or CompletingLoop(),
         dag_agent_loop=dag_agent_loop,
         conversation_profile=AgentProfile(
@@ -238,7 +239,7 @@ def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
 def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     provider = MockProvider([
         ChatResponse(content='inspect = echo(text="ok")'),
-        ChatResponse(content="The echo returned ok."),
+        ChatResponse(content="NO_CHANGE"),
     ])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(tool_executor=make_tool_executor())
@@ -252,7 +253,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     assert loop_result.status == "completed"
     assert result.completed is True
     assert record.dag.status == "completed"
-    assert record.message_markdown == "The echo returned ok."
+    assert result.node_results["inspect"].final_response == "echo:ok"
 
 
 def test_harness_runtime_careful_reviews_initial_dag() -> None:

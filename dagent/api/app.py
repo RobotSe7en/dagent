@@ -129,7 +129,6 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 emitted_trace_ids.add(trace.event_id)
                 yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
-        message = _runtime_message_markdown(result)
         yield _sse(
             {
                 "type": "done",
@@ -137,7 +136,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 "task_id": result.task_id,
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "message_markdown": message,
+                "message_markdown": result.message_markdown,
             }
         )
 
@@ -197,7 +196,6 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
                 emitted_trace_ids.add(trace.event_id)
                 yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
-        message = _runtime_message_markdown(result)
         yield _sse(
             {
                 "type": "done",
@@ -205,7 +203,7 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
                 "task_id": result.task_id,
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "message_markdown": message,
+                "message_markdown": result.message_markdown,
             }
         )
 
@@ -225,28 +223,6 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
         }
 
     raise HTTPException(status_code=404, detail="Task not found.")
-
-
-def _runtime_message_markdown(result) -> str:
-    if result.run_result is not None and result.message_markdown.strip():
-        return result.message_markdown
-    if result.dag is not None:
-        if result.dag.status == "approved":
-            review_line = "- **Next action:** The top AgentLoop will continue execution when it is safe to do so."
-        elif result.dag.status == "review_required":
-            review_line = "- **Review required:** Inspect the proposed DAG changes, then confirm to resume execution."
-        else:
-            review_line = "- **Next action:** Inspect the generated DAG timeline."
-        return "\n".join(
-            [
-                "### DAG created",
-                f"- **Task:** `{result.task_id}`",
-                f"- **Status:** `{result.dag.status}`",
-                f"- **Nodes:** {len(result.dag.nodes)}",
-                review_line,
-            ]
-        )
-    return result.message_markdown
 
 
 def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
