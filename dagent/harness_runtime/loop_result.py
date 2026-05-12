@@ -15,7 +15,7 @@ class LoopResult:
     """Common contract between any loop (AgentLoop, DAGAgentLoop) and the runtime.
 
     Every loop is responsible for populating this with its own results.
-    The runtime never inspects internal loop state — it only reads LoopResult.
+    The runtime never inspects internal loop state; it only reads LoopResult.
     """
 
     # What happened
@@ -28,7 +28,7 @@ class LoopResult:
 
     final_answer: str = ""
     """The answer produced by the loop, for the reviewer to assess.
-    This is NOT the user-facing message — _summarize() still produces that."""
+    This is NOT the user-facing message; _summarize() still produces that."""
 
     events: list[dict[str, Any]] = field(default_factory=list)
     """UI-facing events produced by the loop (dag_created, dag_executed, etc.)."""

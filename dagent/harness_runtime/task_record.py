@@ -23,6 +23,7 @@ class PendingReview:
 @dataclass
 class DirectTaskState:
     review_id: str
+    user_request: str
     messages: list[dict[str, Any]]
     review_level: ReviewLevel
     boundary: "Boundary"

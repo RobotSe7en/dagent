@@ -7,11 +7,8 @@ from dagent.harness_runtime.dag_executor import (
     NodeExecutionResult,
     RunResult,
 )
-from dagent.harness_runtime.dag_agent import (
-    DAGCreationError,
-    DAGAgentLoop,
-    DAGAgentLoopResult,
-)
+from dagent.harness_runtime.dag_agent import DAGAgentLoop, DAGAgentLoopResult
+from dagent.harness_runtime.dag_compiler import DAGCreationError
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.result_reviewer import (
     ResultReviewerAgent,
