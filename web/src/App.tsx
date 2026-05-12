@@ -20,6 +20,7 @@ import {
   Check,
   CircleStop,
   GitBranch,
+  Loader,
   MessageSquarePlus,
   Plus,
   Send,
@@ -80,7 +81,8 @@ type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
   | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent }
-  | { type: 'review'; event: ReviewFeedbackEvent };
+  | { type: 'review'; event: ReviewFeedbackEvent }
+  | { type: 'reviewing' };
 
 type RuntimeMode = 'auto' | 'direct' | 'dag';
 
@@ -289,6 +291,14 @@ export function App() {
     }));
   };
 
+  const appendReviewing = () => {
+    flushQueuedTokensNow();
+    updateLastAssistantText((message) => ({
+      ...message,
+      timeline: [...(message.timeline ?? []), { type: 'reviewing' }],
+    }));
+  };
+
   const appendToolMessage = (event: ToolStreamEvent) => {
     if (event.type === 'tool_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
@@ -390,6 +400,7 @@ export function App() {
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendReviewFeedback,
+        onReviewing: appendReviewing,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -457,6 +468,7 @@ export function App() {
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendReviewFeedback,
+        onReviewing: appendReviewing,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -669,6 +681,8 @@ function MessageTimeline({
           />
         ) : item.type === 'review' ? (
           <ReviewFeedbackCard key={`review-${index}`} event={item.event} />
+        ) : item.type === 'reviewing' ? (
+          <ReviewingIndicator key={`reviewing-${index}`} />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
         ) : null,
@@ -819,6 +833,18 @@ function DagSummaryCard({
         <span>{actionLabel}</span>
       </div>
     </button>
+  );
+}
+
+function ReviewingIndicator() {
+  return (
+    <details className="tool-event-card">
+      <summary className="tool-event-head">
+        <Loader size={14} />
+        <strong>Reviewing result quality...</strong>
+        <span>reviewing</span>
+      </summary>
+    </details>
   );
 }
 

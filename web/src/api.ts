@@ -50,6 +50,7 @@ export async function streamTask(
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ReviewFeedbackEvent) => void;
+    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -85,6 +86,7 @@ export async function streamTask(
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
+      if (event.type === 'reviewing') handlers.onReviewing?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }
@@ -102,6 +104,7 @@ export async function resumeDag(
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ReviewFeedbackEvent) => void;
+    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -126,6 +129,7 @@ async function readStream(
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ReviewFeedbackEvent) => void;
+    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -153,6 +157,7 @@ async function readStream(
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
+      if (event.type === 'reviewing') handlers.onReviewing?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }

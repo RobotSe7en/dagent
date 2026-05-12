@@ -109,14 +109,13 @@ class DAGAgentLoop:
         review_level: ReviewLevel = "fast",
         planning_context: str = "",
         runtime_mode: str = "auto",
-        dag_messages: list[dict[str, Any]] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> DAGAgentLoopResult:
-        if dag_messages is None:
-            dag_messages = []
+        dag_messages: list[dict[str, Any]] = _build_dag_messages(conversation_history or [], active_user_message=request)
         if planning_context.strip():
             dag_messages.append({
                 "role": "user",
@@ -1014,3 +1013,20 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
     return dumped
+
+
+def _build_dag_messages(conversation_history: list[dict[str, Any]], *, active_user_message: str) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for msg in conversation_history:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    active = active_user_message.strip()
+    if active and not (
+        messages
+        and messages[-1].get("role") == "user"
+        and messages[-1].get("content") == active
+    ):
+        messages.append({"role": "user", "content": active})
+    return messages[-20:]
