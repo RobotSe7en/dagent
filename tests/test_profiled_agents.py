@@ -34,7 +34,6 @@ def test_result_reviewer_agent_parses_review_json() -> None:
                         "issues": [
                             {
                                 "node_id": "n1",
-                                "severity": "high",
                                 "message": "Boundary too broad.",
                             }
                         ],
@@ -54,7 +53,6 @@ def test_result_reviewer_agent_parses_review_json() -> None:
 
     assert result.approved is False
     assert result.issues[0].node_id == "n1"
-    assert result.issues[0].severity == "high"
     assert result.summary == "Result incomplete."
 
 

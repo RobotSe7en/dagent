@@ -824,7 +824,6 @@ function DagSummaryCard({
 
 function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
   const approved = event.type === 'review_passed' || event.approved === true;
-  const severityLabels: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
   return (
     <details className={`tool-event-card ${approved ? 'review-passed' : 'review-feedback'}`}>
       <summary className="tool-event-head">
@@ -843,8 +842,7 @@ function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
           <div className="tool-section-label">Issues</div>
           <ul className="review-issues">
             {event.issues.map((issue, index) => (
-              <li key={index} className={`review-severity-${issue.severity}`}>
-                <span className="review-severity-badge">{severityLabels[issue.severity] || issue.severity}</span>
+              <li key={index}>
                 {issue.node_id ? <em>[{issue.node_id}]</em> : null}
                 <span>{issue.message}</span>
               </li>

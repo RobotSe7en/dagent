@@ -1534,6 +1534,8 @@ pre.readonly-field {
   border-radius: 3px;
 }
 
+}
+
 .review-severity-badge {
   flex-shrink: 0;
   font-size: 11px;
