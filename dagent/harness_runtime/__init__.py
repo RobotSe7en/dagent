@@ -12,6 +12,7 @@ from dagent.harness_runtime.dag_agent import (
     DAGAgentLoop,
     DAGAgentLoopResult,
 )
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.result_reviewer import (
     ResultReviewerAgent,
     ReviewResult,
@@ -36,6 +37,7 @@ __all__ = [
     "DAGExecutor",
     "DAGAgentLoop",
     "DAGAgentLoopResult",
+    "LoopResult",
     "ResultReviewerAgent",
     "ReviewResult",
     "ReviewIssue",

@@ -15,6 +15,7 @@ from dagent.harness_runtime.dag_executor import (
     RunResult,
 )
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel, effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview, TaskRecord
 from dagent.profiles import AgentProfile, ProfileStore
@@ -43,6 +44,28 @@ class DAGAgentLoopResult:
     run_result: RunResult | None = None
     task_id: str | None = None
     pending_review: PendingReview | None = None
+
+    def to_loop_result(self) -> LoopResult:
+        """Convert to the unified LoopResult contract."""
+        events: list[dict[str, Any]] = []
+        if self.task_id and self.dag:
+            if self.status == "awaiting_dag_review":
+                events.append({"kind": "dag_created", "task_id": self.task_id, "dag": self.dag})
+            elif self.status == "awaiting_change_review":
+                events.append({"kind": "change_review_requested", "task_id": self.task_id, "dag": self.dag})
+            else:
+                events.append({"kind": "dag_executed", "task_id": self.task_id, "dag": self.dag})
+        return LoopResult(
+            execution_context=format_dag_execution_context(self.dag, self.run_result),
+            messages=[],
+            events=events,
+            dag=self.dag,
+            run_result=self.run_result,
+            task_id=self.task_id,
+            needs_human_review=self.status in {"awaiting_dag_review", "awaiting_change_review"},
+            pending_review=self.pending_review,
+            completed=self.status not in {"failed", "awaiting_dag_review", "awaiting_change_review"},
+        )
 
 
 class DAGAgentLoop:
@@ -308,7 +331,6 @@ class DAGAgentLoop:
                 continue
 
             if isinstance(response, str):
-                record.message_markdown = response
                 break
 
             if response is None:
@@ -853,6 +875,22 @@ def _dag_created_review_message(record: TaskRecord) -> str:
         f"- **Nodes:** {len(record.dag.nodes)}",
         "- **Next action:** Review and edit the DAG, then confirm to resume execution.",
     ])
+
+
+def format_dag_execution_context(dag: DAG | None, run_result: RunResult | None) -> str:
+    """Format DAG execution details for the reviewer and summarizer."""
+    lines: list[str] = []
+    if dag:
+        lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
+        for node in dag.nodes:
+            lines.append(f"  - {node.id}: {node.tool}({node.args})")
+    if run_result and run_result.node_results:
+        lines.append("Node execution results:")
+        for node_id, node_result in run_result.node_results.items():
+            status = "completed" if node_result.completed else "failed"
+            response = node_result.final_response.strip()[:500] or node_result.stop_reason
+            lines.append(f"  - {node_id} ({status}): {response}")
+    return "\n".join(lines) if lines else ""
 
 
 def dag_run_fallback_message(record: TaskRecord, result: RunResult) -> str:

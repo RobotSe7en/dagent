@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from dagent.harness_runtime.loop_result import LoopResult
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
@@ -29,6 +30,14 @@ class AgentLoopResult:
     completed: bool
     stop_reason: str
     control_events: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_loop_result(self) -> LoopResult:
+        """Convert to the unified LoopResult contract."""
+        return LoopResult(
+            execution_context=_format_direct_execution_context(self.messages),
+            messages=self.messages,
+            completed=self.completed,
+        )
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
@@ -280,3 +289,31 @@ class AgentLoop:
         if content is not None:
             payload["content"] = content
         on_event(payload)
+
+
+def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
+    """Summarize an AgentLoop conversation for the reviewer/summarizer.
+
+    Includes tool call results and the assistant's final response so that
+    ``_summarize()`` has enough context even when no tools were called.
+    """
+    lines: list[str] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            name = message.get("name", "unknown")
+            content = str(message.get("content", ""))[:500]
+            lines.append(f"  - {name}: {content}")
+
+    # Always include the assistant's final textual response.
+    final_response = ""
+    for message in reversed(messages):
+        if message.get("role") == "assistant" and message.get("content"):
+            final_response = str(message["content"])
+            break
+
+    parts: list[str] = []
+    if lines:
+        parts.append("Tool call results:\n" + "\n".join(lines))
+    if final_response:
+        parts.append(f"Assistant response:\n{final_response}")
+    return "\n\n".join(parts)
