@@ -11,7 +11,6 @@ from dagent.providers import ChatProvider
 
 @dataclass(frozen=True)
 class ReviewIssue:
-    severity: str
     message: str
     node_id: str | None = None
 
@@ -48,17 +47,26 @@ class ResultReviewerAgent:
             final_answer=final_answer or "(no answer provided)",
             execution_context=execution_context,
         )
-        return ReviewResult(
-            approved=bool(payload.get("approved", False)),
-            issues=[
+        issues = [
+            ReviewIssue(
+                message=str(issue.get("message", "")),
+                node_id=issue.get("node_id"),
+            )
+            for issue in payload.get("issues", [])
+            if isinstance(issue, dict) and issue.get("message")
+        ]
+        approved = bool(payload.get("approved", False))
+        # Guard: rejected without issues — supplement a generic issue so the
+        # agent has actionable feedback instead of an empty retry reason.
+        if not approved and not issues:
+            issues = [
                 ReviewIssue(
-                    severity=str(issue.get("severity", "medium")),
-                    message=str(issue.get("message", "")),
-                    node_id=issue.get("node_id"),
+                    message="The answer does not sufficiently address the user's request.",
                 )
-                for issue in payload.get("issues", [])
-                if isinstance(issue, dict)
-            ],
+            ]
+        return ReviewResult(
+            approved=approved,
+            issues=issues,
             summary=str(payload.get("summary", "")),
         )
 
@@ -69,6 +77,6 @@ def format_review_feedback(review: ReviewResult) -> str:
         lines.append(f"Summary: {review.summary}")
     for issue in review.issues:
         node_prefix = f"[{issue.node_id}] " if issue.node_id else ""
-        lines.append(f"- {node_prefix}({issue.severity}) {issue.message}")
+        lines.append(f"- {node_prefix}{issue.message}")
     lines.append("\nPlease address these issues.")
     return "\n".join(lines)

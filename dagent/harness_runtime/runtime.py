@@ -156,7 +156,7 @@ class HarnessRuntime:
                         "approved": True,
                         "summary": review.summary,
                         "issues": [
-                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            {"message": issue.message, "node_id": issue.node_id}
                             for issue in review.issues
                         ],
                     })
@@ -304,7 +304,7 @@ class HarnessRuntime:
                         "approved": True,
                         "summary": review.summary,
                         "issues": [
-                            {"severity": issue.severity, "message": issue.message, "node_id": issue.node_id}
+                            {"message": issue.message, "node_id": issue.node_id}
                             for issue in review.issues
                         ],
                     })

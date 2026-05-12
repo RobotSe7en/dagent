@@ -97,7 +97,6 @@ export interface RunResult {
 }
 
 export interface ReviewIssue {
-  severity: string;
   message: string;
   node_id?: string | null;
 }
