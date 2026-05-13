@@ -12,7 +12,7 @@ and immutable.
 
 > **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
 > three-level incremental re-planning, frozen Trace DB as the context boundary, and
-> automatic DAG-vs-AgentLoop task routing - was conceived and first implemented by the
+> automatic DAG-vs-direct task routing - was conceived and first implemented by the
 > author of this repository. First committed: **2026-05-01**.
 
 ---
@@ -47,16 +47,22 @@ trigger a second review. The human is never bypassed.
 
 ## Architecture
 
-### Dynamic DAG Agent Loop
+### Harness Runtime
 
 ```mermaid
 flowchart TD
   U["User"] --> R["HarnessRuntime"]
-  R --> A["Top AgentLoop"]
+  R -->|"auto mode"| ROUTE["Route\ndag or direct"]
+  R -->|"direct mode"| TA["ToolAgentLoop"]
+  R -->|"dag mode"| DA["DAGAgentLoop"]
 
-  A -->|"direct answer"| O["Return to user"]
-  A -->|"runtime tool"| T["ToolExecutor"]
-  A -->|"dag_agent"| D["Create Initial DAG\ntool nodes + placeholders"]
+  ROUTE -->|"direct"| TA
+  ROUTE -->|"dag"| DA
+
+  TA -->|"bounded tool calls"| T["ToolExecutor"]
+  TA -->|"loop result"| G["Human Review Gate"]
+
+  DA --> D["Create Initial DAG\ntool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -81,8 +87,22 @@ flowchart TD
   UI2 -->|"approve"| E
 
   NXT -->|"DAG complete"| DR["DAG Result Summary"]
-  DR --> A
+  DR --> G
+
+  G -->|"approval needed"| UI3["Human Review"]
+  UI3 -->|"approve / reject"| R
+  G -->|"no human gate"| V["Result Validation\noptional LLM validator"]
+  V -->|"issues found"| RTRY["Retry with validation feedback"]
+  RTRY --> TA
+  RTRY --> DA
+  V -->|"passed / disabled"| S["Summarize"]
+  S --> O["Return to user"]
 ```
+
+`HarnessRuntime` is the top-level control layer. It owns routing, session state,
+human review gates, optional result validation, retry feedback, and final summarization.
+The execution details stay inside `ToolAgentLoop` for direct tool-use work and
+`DAGAgentLoop` for structured DAG work.
 
 ### Three-Level Re-planning
 
@@ -109,11 +129,12 @@ Design principles:
 |------------|------|
 | Subtasks that can run in parallel | DAG |
 | Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory - next action depends on observation | Direct AgentLoop tool calls |
-| Dynamic fan-out - node count unknown until runtime | Direct AgentLoop tool calls |
+| Exploratory - next action depends on observation | Direct `ToolAgentLoop` tool calls |
+| Dynamic fan-out - node count unknown until runtime | Direct `ToolAgentLoop` tool calls |
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
-sequential tool calls. The DAG Agent is responsible for this routing judgment.
+sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
+before dispatching to `ToolAgentLoop` or `DAGAgentLoop`.
 
 ### Trace DB
 
@@ -136,12 +157,18 @@ Trace DB serves three purposes:
 
 The runtime is intentionally layered:
 
+- `HarnessRuntime` routes requests, manages runtime session state, applies human
+  review gates, optionally validates final results, and summarizes the answer.
 - DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
 - Each node is a bounded tool call - no nested agent loop inside a node.
 - `ToolExecutor` enforces boundaries before every tool call.
-- Human review can be triggered at initial DAG creation and after any Level 3 re-plan.
+- Human review can be triggered by direct tool calls, initial DAG creation, and after
+  any Level 3 re-plan.
+- Optional result validation uses a separate `result_validator` profile to check the
+  final answer against the original user request and execution context. If validation
+  finds issues, the runtime retries once with validator feedback.
 
 Boundary checks:
 
@@ -157,7 +184,8 @@ Boundary checks:
 ```text
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
-  harness_runtime/  AgentLoop, DAGExecutor, DAG agent, trace recorder, dag_agent tool
+  harness_runtime/  runtime orchestration, ToolAgentLoop, DAGAgentLoop, validation,
+                    session state, event adapters, trace recording, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback models
   tools/            tool registry, executor, file tools, boundary checks
@@ -174,8 +202,11 @@ provider:
   model: "MiniMax-M2.1"
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
+  strip_thinking: false
+enable_result_validation: false
 profiles:
   directory: "profiles"
+  conversation: "conversation"
   dag_agent: "dag_agent"
   result_validator: "result_validator"
   feedback_learner: "feedback_learner"
@@ -195,13 +226,14 @@ $env:DAGENT_CONFIG="C:\path\to\config.yaml"
 
 ## Agent Profiles
 
-Each role (DAG Agent, result validator, feedback learner) has an editable profile directory:
+Each role has an editable profile directory:
 
 ```text
 profiles/
-  dag_agent/      soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  result_validator/     soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  feedback_learner/ soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  conversation/       soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  dag_agent/          soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  result_validator/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  feedback_learner/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```
 
 `profile.yaml` defines ordered prompt layers. Dynamic content (tools, task context,
@@ -212,7 +244,7 @@ trace data) is injected at runtime and never stored in profile files.
 ## Development
 
 ```powershell
-uv run --extra dev pytest          # 42 passed, 2 skipped (MockProvider)
+uv run --extra dev pytest
 ```
 
 Real provider integration tests:
@@ -248,25 +280,21 @@ async def main():
 asyncio.run(main())
 ```
 
-Run the full dynamic DAG agent loop:
+Run the harness runtime:
 
 ```python
 import asyncio
-from dagent.factory import create_control_plane
+from dagent.factory import create_harness_runtime
 
 async def main():
-    cp = create_control_plane(workspace_root=".")
-    record = await cp.create_task(
+    runtime = create_harness_runtime(workspace_root=".")
+    result = await runtime.handle_message(
         "Read README and summarize the implemented milestones.",
-        task_id="demo_task",
+        mode="auto",
+        review_level="fast",
     )
-    if record.dag.status == "review_required":
-        cp.approve_dag(record.task_id)
-
-    result = await cp.execute_task(record.task_id)
-    print("completed:", result.completed)
-    for node_id, node_result in result.node_results.items():
-        print(node_id, node_result.final_response)
+    print(result.status)
+    print(result.message_markdown)
 
 asyncio.run(main())
 ```
