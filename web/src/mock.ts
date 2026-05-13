@@ -8,36 +8,42 @@ export const initialDag: Dag = {
   nodes: [
     {
       id: 'plan_request',
-      tool: 'dag_start',
-      args: {},
-      boundary: {
-        mode: 'read_only',
-        allowed_paths: [],
-        allowed_commands: [],
+      invocation: {
+        tool_name: 'dag_start',
+        arguments: {},
+        boundary: {
+          mode: 'read_only',
+          allowed_paths: [],
+          allowed_commands: [],
+        },
+        risk: 'low',
       },
-      risk: 'low',
     },
     {
       id: 'inspect_project',
-      tool: 'grep',
-      args: { pattern: 'DAG', path: '.' },
-      boundary: {
-        mode: 'read_only',
-        allowed_paths: ['./'],
-        allowed_commands: [],
+      invocation: {
+        tool_name: 'grep',
+        arguments: { pattern: 'DAG', path: '.' },
+        boundary: {
+          mode: 'read_only',
+          allowed_paths: ['./'],
+          allowed_commands: [],
+        },
+        risk: 'medium',
       },
-      risk: 'medium',
     },
     {
       id: 'summarize_result',
-      tool: 'read_file',
-      args: { path: 'README.md' },
-      boundary: {
-        mode: 'read_only',
-        allowed_paths: [],
-        allowed_commands: [],
+      invocation: {
+        tool_name: 'read_file',
+        arguments: { path: 'README.md' },
+        boundary: {
+          mode: 'read_only',
+          allowed_paths: [],
+          allowed_commands: [],
+        },
+        risk: 'low',
       },
-      risk: 'low',
     },
   ],
   edges: [

@@ -1,4 +1,4 @@
-"""In-memory trace recording for DAG runs."""
+"""In-memory runtime trace recording for DAG runs."""
 
 from __future__ import annotations
 
@@ -33,4 +33,3 @@ class TraceRecorder:
         self.events.append(event)
         if self.on_record is not None:
             self.on_record(event)
-

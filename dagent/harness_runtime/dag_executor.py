@@ -6,13 +6,12 @@ import asyncio
 import re
 from collections.abc import Callable
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
 from typing import Any
 
-from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.trace_recorder import TraceRecorder
-from dagent.harness_runtime.trace_store import TraceStore
-from dagent.schemas import DAG, Boundary, DAGNode, TraceEvent
+from dagent.harness_runtime.dag_builder import validate_dag
+from dagent.harness_runtime.runtime_trace import TraceRecorder
+from dagent.harness_runtime.task_record import ToolExecutionStore
+from dagent.schemas import DAG, DAGNode, DAGNodeResult, DAGRunResult, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
 
@@ -24,23 +23,6 @@ class DAGExecutionError(RuntimeError):
     """Raised when a DAG cannot be executed safely."""
 
 
-@dataclass(frozen=True)
-class NodeExecutionResult:
-    node_id: str
-    final_response: str
-    completed: bool
-    stop_reason: str
-    steps: int
-
-
-@dataclass(frozen=True)
-class RunResult:
-    dag_id: str
-    completed: bool
-    node_results: dict[str, NodeExecutionResult]
-    traces: list[TraceEvent] = field(default_factory=list)
-
-
 class DAGExecutor:
     """Executes approved DAGs as direct bounded tool-node calls."""
 
@@ -49,21 +31,21 @@ class DAGExecutor:
         *,
         tool_executor: ToolExecutor,
         trace_recorder: TraceRecorder | None = None,
-        trace_store: TraceStore | None = None,
+        execution_store: ToolExecutionStore | None = None,
     ) -> None:
         self.tool_executor = tool_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
-        self.trace_store = trace_store or TraceStore()
-        self.partial_node_results: dict[str, NodeExecutionResult] = {}
+        self.execution_store = execution_store or ToolExecutionStore()
+        self.partial_node_results: dict[str, DAGNodeResult] = {}
 
     async def execute_next_ready_layer(
         self,
         dag: DAG,
         *,
-        initial_results: dict[str, NodeExecutionResult] | None = None,
+        initial_results: dict[str, DAGNodeResult] | None = None,
         record_dag_start: bool = True,
         on_trace: Callable[[TraceEvent], None] | None = None,
-    ) -> RunResult:
+    ) -> DAGRunResult:
         """Execute only the next currently-ready DAG layer.
 
         This is the step-wise execution entrypoint for the dynamic DAG loop.
@@ -78,7 +60,7 @@ class DAGExecutor:
         normalized.status = "running"
         if record_dag_start:
             self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
-        node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
+        node_results: dict[str, DAGNodeResult] = dict(initial_results or {})
 
         permission_result = await self._execute_next_ready_layer(
             normalized,
@@ -95,23 +77,27 @@ class DAGExecutor:
                 dag_id=normalized.dag_id,
                 payload={"completed": True},
             )
-        return RunResult(
+        return DAGRunResult(
             dag_id=normalized.dag_id,
             completed=completed,
             node_results=node_results,
             traces=list(self.trace_recorder.events),
+            execution_records=self.execution_store.records_for_dag(normalized.dag_id),
         )
 
     async def _execute_next_ready_layer(
         self,
         dag: DAG,
-        node_results: dict[str, NodeExecutionResult],
-    ) -> RunResult | None:
+        node_results: dict[str, DAGNodeResult],
+    ) -> DAGRunResult | None:
         pending_nodes = _next_ready_nodes(dag, node_results)
         if not pending_nodes:
             return None
         for node in pending_nodes:
-            node.args = _inject_placeholders(node.args, node_results)
+            node.invocation.arguments = _inject_placeholders(
+                node.invocation.arguments,
+                node_results,
+            )
             _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
             *[
@@ -121,7 +107,7 @@ class DAGExecutor:
             return_exceptions=True,
         )
         for result in batch_results:
-            if isinstance(result, NodeExecutionResult):
+            if isinstance(result, DAGNodeResult):
                 node_results[result.node_id] = result
 
         for result in batch_results:
@@ -139,11 +125,11 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-        completed_results: dict[str, NodeExecutionResult],
-    ) -> NodeExecutionResult:
-        if node.tool == "dag_start":
+        completed_results: dict[str, DAGNodeResult],
+    ) -> DAGNodeResult:
+        if node.invocation.tool_name == "dag_start":
             node.status = "completed"
-            return NodeExecutionResult(
+            return DAGNodeResult(
                 node_id=node.id,
                 final_response="started",
                 completed=True,
@@ -157,41 +143,45 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-    ) -> NodeExecutionResult:
+    ) -> DAGNodeResult:
         if self.tool_executor is None:
             raise ToolExecutionError(
                 "DAGExecutor cannot execute tool nodes without a ToolExecutor."
             )
-        if not node.tool:
+        invocation = node.invocation
+        if not invocation.tool_name:
             raise ToolExecutionError(f"Tool node '{node.id}' has no tool name.")
 
-        tool_call_id = f"node_{node.id}"
+        tool_call_id = invocation.invocation_id
         self.trace_recorder.record(
             "tool_called",
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": node.tool,
-                "arguments": node.args,
+                "name": invocation.tool_name,
+                "arguments": invocation.arguments,
             },
         )
         try:
             content = self.tool_executor.execute(
-                node.tool,
-                node.args,
-                boundary=node.boundary,
+                invocation.tool_name,
+                invocation.arguments,
+                boundary=invocation.boundary,
             )
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
             node.status = "failed"
-            self.trace_store.add_node_record(
-                dag=dag,
-                node=node,
+            self.execution_store.add_record(
+                task_id=dag.task_id,
+                invocation=invocation,
+                source="dag_node",
                 error=str(exc),
                 status="failed",
                 stop_reason="boundary_violation",
                 steps=1,
+                dag=dag,
+                node=node,
             )
             self.trace_recorder.record(
                 "tool_failed",
@@ -199,7 +189,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": node.tool,
+                    "name": invocation.tool_name,
                     "error": str(exc),
                 },
             )
@@ -212,13 +202,16 @@ class DAGExecutor:
             raise
         except Exception as exc:
             node.status = "failed"
-            self.trace_store.add_node_record(
-                dag=dag,
-                node=node,
+            self.execution_store.add_record(
+                task_id=dag.task_id,
+                invocation=invocation,
+                source="dag_node",
                 error=str(exc),
                 status="failed",
                 stop_reason="tool_error",
                 steps=1,
+                dag=dag,
+                node=node,
             )
             self.trace_recorder.record(
                 "tool_failed",
@@ -226,7 +219,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": node.tool,
+                    "name": invocation.tool_name,
                     "error": str(exc),
                 },
             )
@@ -244,19 +237,22 @@ class DAGExecutor:
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": node.tool,
+                "name": invocation.tool_name,
                 "content": content,
             },
         )
-        self.trace_store.add_node_record(
-            dag=dag,
-            node=node,
+        self.execution_store.add_record(
+            task_id=dag.task_id,
+            invocation=invocation,
+            source="dag_node",
             output=content,
             status="completed",
             stop_reason="completed",
             steps=1,
+            dag=dag,
+            node=node,
         )
-        result = NodeExecutionResult(
+        result = DAGNodeResult(
             node_id=node.id,
             final_response=content,
             completed=True,
@@ -277,7 +273,7 @@ class DAGExecutor:
         return result
 
     def _enforce_review_gate(self, dag: DAG) -> None:
-        needs_approval = any(node.risk in {"medium", "high"} for node in dag.nodes)
+        needs_approval = any(node.invocation.risk in {"medium", "high"} for node in dag.nodes)
         if needs_approval and dag.status != "approved":
             raise DAGExecutionError("DAG is not approved for execution.")
 
@@ -310,7 +306,7 @@ def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
 
 def _next_ready_nodes(
     dag: DAG,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> list[DAGNode]:
     completed_ids = {
         node_id
@@ -336,7 +332,7 @@ def _next_ready_nodes(
 
 def _all_nodes_completed(
     dag: DAG,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> bool:
     return all(
         node.id in node_results and node_results[node.id].completed
@@ -346,7 +342,7 @@ def _all_nodes_completed(
 
 def _inject_placeholders(
     value: Any,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> Any:
     if isinstance(value, dict):
         return {
@@ -370,7 +366,7 @@ def _inject_placeholders(
 
 def _placeholder_value(
     match: re.Match[str],
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> Any:
     node_id = match.group(1)
     field = match.group(2)
@@ -387,7 +383,7 @@ def _placeholder_value(
 
 
 def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
-    unresolved = _find_unresolved_placeholders(node.args)
+    unresolved = _find_unresolved_placeholders(node.invocation.arguments)
     if unresolved:
         joined = ", ".join(sorted(unresolved))
         raise DAGExecutionError(
@@ -416,22 +412,23 @@ def _augment_tool_violation(
     node: DAGNode,
     tool_executor: ToolExecutor,
 ) -> None:
-    if node.tool and not violation.tool_name:
-        violation.tool_name = node.tool
-    tool = tool_executor.registry.get(node.tool) if node.tool else None
+    invocation = node.invocation
+    if invocation.tool_name and not violation.tool_name:
+        violation.tool_name = invocation.tool_name
+    tool = tool_executor.registry.get(invocation.tool_name) if invocation.tool_name else None
     if tool is None:
         return
     if not violation.action:
         violation.action = tool.action
     if not violation.path:
         for arg_name in tool.path_args:
-            value = node.args.get(arg_name)
+            value = invocation.arguments.get(arg_name)
             if value is not None:
                 violation.path = str(value)
                 break
     if not violation.command:
         for arg_name in tool.command_args:
-            value = node.args.get(arg_name)
+            value = invocation.arguments.get(arg_name)
             if value is not None:
                 violation.command = str(value)
                 break

@@ -26,15 +26,11 @@ class MessageRequest(BaseModel):
     review_level: ReviewLevel = "fast"
 
 
-class ResumeDagRequest(BaseModel):
-    task_id: str = Field(min_length=1)
-    dag: DAG
-    review_level: ReviewLevel | None = None
-
-
-class ResumeToolRequest(BaseModel):
+class ResumeReviewRequest(BaseModel):
     review_id: str = Field(min_length=1)
-    approved: bool
+    dag: DAG | None = None
+    approved: bool = True
+    review_level: ReviewLevel | None = None
 
 
 class ApiState:
@@ -127,8 +123,8 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.run_result is not None:
-            for trace in result.run_result.traces:
+        if result.dag_run is not None:
+            for trace in result.dag_run.traces:
                 if trace.event_id in emitted_trace_ids:
                     continue
                 emitted_trace_ids.add(trace.event_id)
@@ -149,7 +145,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 
 
 @app.post("/messages/resume")
-async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
+async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_resumed"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -166,71 +162,11 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
-            state.get_harness_runtime().resume_dag(
-                request.task_id,
-                request.dag,
-                review_level=request.review_level,
-                on_token=on_token,
-                on_event=on_event,
-            )
-        )
-        try:
-            while not task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    continue
-                yield _sse(event)
-            while not event_queue.empty():
-                yield _sse(event_queue.get_nowait())
-            result = await task
-        except Exception as exc:
-            if not task.done():
-                task.cancel()
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        if result.dag is not None:
-            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
-        if result.pending_review is not None:
-            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.run_result is not None:
-            for trace in result.run_result.traces:
-                if trace.event_id in emitted_trace_ids:
-                    continue
-                emitted_trace_ids.add(trace.event_id)
-                yield _sse({"type": "trace", "event": _trace_payload(trace)})
-
-        yield _sse(
-            {
-                "type": "done",
-                "status": result.status,
-                "task_id": result.task_id,
-                "dag": result.dag.model_dump(mode="json") if result.dag else None,
-                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "final_answer": result.final_answer,
-            }
-        )
-
-    return StreamingResponse(events(), media_type="text/event-stream")
-
-
-@app.post("/messages/resume-tool")
-async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
-    async def events():
-        yield _sse({"type": "status", "message": "harness_runtime_resumed"})
-        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        def on_token(content: str) -> None:
-            event_queue.put_nowait({"type": "token", "content": content})
-
-        def on_event(event: dict[str, Any]) -> None:
-            event_queue.put_nowait(event)
-
-        task = asyncio.create_task(
-            state.get_harness_runtime().resume_tool(
+            state.get_harness_runtime().resume_review(
                 request.review_id,
-                request.approved,
+                dag=request.dag,
+                approved=request.approved,
+                review_level=request.review_level,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -255,15 +191,23 @@ async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
             yield _sse({"type": "error", "message": "Review session not found."})
             return
 
+        if result.dag is not None:
+            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
+        if result.dag_run is not None:
+            for trace in result.dag_run.traces:
+                if trace.event_id in emitted_trace_ids:
+                    continue
+                emitted_trace_ids.add(trace.event_id)
+                yield _sse({"type": "trace", "event": _trace_payload(trace)})
 
         yield _sse(
             {
                 "type": "done",
                 "status": result.status,
                 "task_id": result.task_id,
-                "dag": None,
+                "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "final_answer": result.final_answer,
             }
@@ -280,7 +224,7 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
             "task_id": task_id,
             "records": [
                 record.model_dump(mode="json")
-                for record in runtime.dag_agent_loop.dag_executor.trace_store.records_for_task(task_id)
+                for record in runtime.dag_agent_loop.dag_executor.execution_store.records_for_task(task_id)
             ],
         }
 

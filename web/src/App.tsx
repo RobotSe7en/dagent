@@ -29,7 +29,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDag, resumeToolReview, streamTask } from './api';
+import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
 import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
@@ -51,17 +51,20 @@ const emptyDag: Dag = {
 };
 
 function normalizeNode(node: DagNode): DagNode {
-  const tool = node.tool ?? null;
+  const invocation = node.invocation;
   return {
     ...node,
-    tool,
-    args: node.args ?? {},
-    boundary: {
-      mode: node.boundary?.mode ?? 'read_only',
-      allowed_paths: node.boundary?.allowed_paths ?? [],
-      allowed_commands: node.boundary?.allowed_commands ?? [],
+    invocation: {
+      ...invocation,
+      tool_name: invocation.tool_name ?? '',
+      arguments: invocation.arguments ?? {},
+      boundary: {
+        mode: invocation.boundary?.mode ?? 'read_only',
+        allowed_paths: invocation.boundary?.allowed_paths ?? [],
+        allowed_commands: invocation.boundary?.allowed_commands ?? [],
+      },
+      risk: invocation.risk ?? 'low',
     },
-    risk: node.risk ?? 'low',
     status: node.status ?? 'planned',
   };
 }
@@ -91,7 +94,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
-    const risk = item.risk ?? 'low';
+    const risk = item.invocation.risk ?? 'low';
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
@@ -107,8 +110,13 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
               <span title={item.id}>{item.id}</span>
               <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
             </div>
-            <div className="dag-node-tools" title={item.tool ? JSON.stringify(item.args) : ''}>
-              {item.tool ? `${item.tool} ${JSON.stringify(item.args)}` : 'tool not set'}
+            <div
+              className="dag-node-tools"
+              title={item.invocation.tool_name ? JSON.stringify(item.invocation.arguments) : ''}
+            >
+              {item.invocation.tool_name
+                ? `${item.invocation.tool_name} ${JSON.stringify(item.invocation.arguments)}`
+                : 'tool not set'}
             </div>
           </div>
         ),
@@ -150,6 +158,7 @@ export function App() {
   const [validationEnabled, setValidationEnabled] = useState(false);
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [dagReview, setDagReview] = useState<ReviewEventPayload | null>(null);
   const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
@@ -316,12 +325,13 @@ export function App() {
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
     Boolean(pendingReview) || nextDag.status === 'review_required';
 
-  const handlePendingReview = (pendingReview?: { kind: string } | null) => {
+  const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
     if (pendingReview.kind === 'tool_review') {
       setToolReview(pendingReview as ReviewEventPayload);
       return;
     }
+    setDagReview(pendingReview);
   };
 
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
@@ -402,14 +412,16 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          tool: current.nodes[0]?.tool ?? null,
-          args: {},
-          boundary: {
-            mode: 'read_only',
-            allowed_paths: [],
-            allowed_commands: [],
+          invocation: {
+            tool_name: current.nodes[0]?.invocation.tool_name ?? '',
+            arguments: {},
+            boundary: {
+              mode: 'read_only',
+              allowed_paths: [],
+              allowed_commands: [],
+            },
+            risk: 'low',
           },
-          risk: 'low',
           status: 'planned',
         }),
       ],
@@ -498,7 +510,7 @@ export function App() {
   };
 
   const confirmDag = async () => {
-    if (!dag.task_id || streaming) return;
+    if (!dagReview || streaming) return;
     setError(null);
     setReviewOpen(false);
     tokenQueueRef.current = [];
@@ -508,10 +520,12 @@ export function App() {
       ...items,
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming task ${dag.task_id}.`, status: 'running' });
+    const reviewId = dagReview.review_id;
+    setDagReview(null);
+    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming review ${reviewId}.`, status: 'running' });
 
     try {
-      await resumeDag(dag.task_id, dag, reviewLevel, {
+      await resumeDagReview(reviewId, dag, reviewLevel, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
@@ -595,6 +609,8 @@ export function App() {
       const enabled = await getValidationStatus();
       setValidationEnabled(enabled);
       setValidationError(null);
+      setDagReview(null);
+      setToolReview(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -920,7 +936,7 @@ function DagSummaryCard({
   dag: Dag;
   onOpen: () => void;
 }) {
-  const riskyNodes = dag.nodes.filter((node) => node.risk !== 'low').length;
+  const riskyNodes = dag.nodes.filter((node) => node.invocation.risk !== 'low').length;
   const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">
@@ -1225,11 +1241,14 @@ function NodeEditor({
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
-  const boundary = node.boundary ?? {
+  const invocation = node.invocation;
+  const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
     allowed_paths: [],
     allowed_commands: [],
   };
+  const patchInvocation = (patch: Partial<typeof invocation>) =>
+    onPatch({ invocation: { ...invocation, ...patch } });
   return (
     <div className="node-editor">
       <label>
@@ -1239,7 +1258,10 @@ function NodeEditor({
       <div className="two-col">
         <label>
           Risk
-          <select value={node.risk ?? 'low'} onChange={(event) => onPatch({ risk: event.target.value as RiskLevel })}>
+          <select
+            value={invocation.risk ?? 'low'}
+            onChange={(event) => patchInvocation({ risk: event.target.value as RiskLevel })}
+          >
             {riskLevels.map((risk) => (
               <option key={risk} value={risk}>
                 {risk}
@@ -1254,15 +1276,18 @@ function NodeEditor({
       </div>
       <label>
         Tool
-        <input value={node.tool ?? ''} onChange={(event) => onPatch({ tool: event.target.value || null })} />
+        <input
+          value={invocation.tool_name}
+          onChange={(event) => patchInvocation({ tool_name: event.target.value })}
+        />
       </label>
       <label>
         Args JSON
         <textarea
-          value={JSON.stringify(node.args ?? {}, null, 2)}
+          value={JSON.stringify(invocation.arguments ?? {}, null, 2)}
           onChange={(event) => {
             const parsed = parseJsonObject(event.target.value);
-            if (parsed) onPatch({ args: parsed });
+            if (parsed) patchInvocation({ arguments: parsed });
           }}
         />
       </label>
@@ -1288,7 +1313,7 @@ function NodeEditor({
             <select
               value={boundary.mode}
               onChange={(event) =>
-                onPatch({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })
+                patchInvocation({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })
               }
             >
               {boundaryModes.map((mode) => (
@@ -1303,7 +1328,7 @@ function NodeEditor({
             <input
               value={(boundary.allowed_paths ?? []).join(', ')}
               onChange={(event) =>
-                onPatch({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })
+                patchInvocation({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })
               }
             />
           </label>
@@ -1313,7 +1338,7 @@ function NodeEditor({
           <input
             value={(boundary.allowed_commands ?? []).join(', ')}
             onChange={(event) =>
-              onPatch({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })
+              patchInvocation({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })
             }
           />
         </label>

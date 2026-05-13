@@ -7,16 +7,18 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
-from dagent.harness_runtime.dag_compiler import strip_thinking_blocks
-from dagent.harness_runtime.loop_result import LoopResult
+from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
-from dagent.harness_runtime.task_record import PendingReview
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary
+from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
 import dagent.harness_runtime.review_policy as _rp
+
+
+MAX_EXECUTION_CONTEXT_CHARS = 16000
+MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
 
 
 @dataclass(frozen=True)
@@ -28,29 +30,6 @@ class ControlToolResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     needs_review: bool = False
     review_payload: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ToolAgentLoopResult:
-    final_response: str
-    messages: list[dict[str, Any]]
-    steps: int
-    completed: bool
-    stop_reason: str
-    control_events: list[dict[str, Any]] = field(default_factory=list)
-    needs_review: bool = False
-    pending_review: PendingReview | None = None
-
-    def to_loop_result(self) -> LoopResult:
-        """Convert to the unified LoopResult contract."""
-        return LoopResult(
-            execution_context=_format_tool_execution_context(self.messages),
-            final_answer=self.final_response,
-            messages=self.messages,
-            completed=self.completed,
-            needs_human_review=self.needs_review,
-            pending_review=self.pending_review,
-        )
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
@@ -112,7 +91,7 @@ class ToolAgentLoop:
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> ToolAgentLoopResult:
+    ) -> LoopOutcome:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
@@ -120,6 +99,7 @@ class ToolAgentLoop:
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
         control_events: list[dict[str, Any]] = []
+        invocations: list[ToolInvocation] = []
 
         for step in range(1, max_steps + 1):
             tool_definitions = [
@@ -136,16 +116,25 @@ class ToolAgentLoop:
             loop_messages.append(assistant_message)
 
             if not response.tool_calls:
-                return ToolAgentLoopResult(
-                    final_response=strip_thinking_blocks(response.content).strip(),
+                return LoopOutcome(
+                    status="completed",
+                    execution_context=_format_tool_execution_context(loop_messages),
+                    final_answer=strip_thinking_blocks(response.content).strip(),
                     messages=loop_messages,
-                    steps=step,
-                    completed=True,
-                    stop_reason="completed",
-                    control_events=control_events,
+                    events=control_events,
+                    invocations=invocations,
                 )
 
             for tool_call in response.tool_calls:
+                tool_obj = self.tool_executor.registry.get(tool_call.name)
+                invocation = ToolInvocation(
+                    invocation_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    boundary=boundary,
+                    risk=effective_risk(tool_obj, tool_call.arguments),
+                )
+                invocations.append(invocation)
                 self._emit_tool_event(on_event, tool_call, "tool_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
@@ -182,24 +171,22 @@ class ToolAgentLoop:
                             },
                             payload=control_result.review_payload or {},
                         )
-                        return ToolAgentLoopResult(
-                            final_response="",
+                        return LoopOutcome(
+                            status="awaiting_review",
+                            execution_context=_format_tool_execution_context(loop_messages),
                             messages=loop_messages,
-                            steps=step,
-                            completed=False,
-                            stop_reason="tool_review_pending",
-                            control_events=control_events,
-                            needs_review=True,
+                            events=control_events,
+                            invocations=invocations,
                             pending_review=pending_review,
                         )
                     if control_result.stop_reason:
-                        return ToolAgentLoopResult(
-                            final_response=control_result.content,
+                        return LoopOutcome(
+                            status="failed",
+                            execution_context=_format_tool_execution_context(loop_messages),
+                            final_answer=control_result.content,
                             messages=loop_messages,
-                            steps=step,
-                            completed=False,
-                            stop_reason=control_result.stop_reason,
-                            control_events=control_events,
+                            events=control_events,
+                            invocations=invocations,
                         )
                     continue
 
@@ -260,13 +247,12 @@ class ToolAgentLoop:
                 )
                 self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
 
-        return ToolAgentLoopResult(
-            final_response="",
+        return LoopOutcome(
+            status="failed",
+            execution_context=_format_tool_execution_context(loop_messages),
             messages=loop_messages,
-            steps=max_steps,
-            completed=False,
-            stop_reason="max_steps",
-            control_events=control_events,
+            events=control_events,
+            invocations=invocations,
         )
 
     def _tool_definitions_for_boundary(
@@ -361,15 +347,24 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
     for message in messages:
         if message.get("role") == "tool":
             name = message.get("name", "unknown")
-            content = str(message.get("content", ""))[:500]
+            content = _context_excerpt(
+                str(message.get("content", "")),
+                limit=MAX_TOOL_RESULT_CONTEXT_CHARS,
+            )
             lines.append(f"  - {name}: {content}")
 
     if lines:
-        return "Tool call results:\n" + "\n".join(lines)
+        return _context_excerpt(
+            "Tool call results:\n" + "\n".join(lines),
+            limit=MAX_EXECUTION_CONTEXT_CHARS,
+        )
 
     final_answer = _last_assistant_content(messages)
     if final_answer:
-        return f"Assistant response:\n{final_answer[:1000]}"
+        return _context_excerpt(
+            f"Assistant response:\n{final_answer}",
+            limit=MAX_EXECUTION_CONTEXT_CHARS,
+        )
     return ""
 
 
@@ -378,3 +373,9 @@ def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "assistant" and message.get("content"):
             return str(message["content"])
     return ""
+
+
+def _context_excerpt(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"

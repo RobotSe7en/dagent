@@ -1,13 +1,12 @@
-"""DAG node and execution boundary schemas."""
+"""DAG node schemas."""
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from dagent.schemas.invocation import ToolInvocation
 
-
-BoundaryMode = Literal["read_only", "write_limited", "full"]
 NodeStatus = Literal[
     "planned",
     "ready",
@@ -16,20 +15,10 @@ NodeStatus = Literal[
     "failed",
     "skipped",
 ]
-RiskLevel = Literal["low", "medium", "high"]
-
-
-class Boundary(BaseModel):
-    mode: BoundaryMode = "read_only"
-    allowed_paths: list[str] = Field(default_factory=list)
-    allowed_commands: list[str] = Field(default_factory=list)
 
 
 class DAGNode(BaseModel):
     id: str
-    tool: str | None = None
-    args: dict[str, Any] = Field(default_factory=dict)
-    boundary: Boundary = Field(default_factory=Boundary)
-    risk: RiskLevel = "low"
+    invocation: ToolInvocation
     status: NodeStatus = "planned"
 

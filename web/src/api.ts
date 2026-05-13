@@ -28,7 +28,7 @@ interface DonePayload {
   status?: string;
   task_id: string | null;
   dag: Dag | null;
-  pending_review?: { kind: string; message: string } | null;
+  pending_review?: ReviewEventPayload | null;
   final_answer: string;
 }
 
@@ -95,8 +95,8 @@ export async function streamTask(
   }
 }
 
-export async function resumeDag(
-  taskId: string,
+export async function resumeDagReview(
+  reviewId: string,
   dag: Dag,
   reviewLevel: ReviewLevel,
   handlers: {
@@ -114,7 +114,7 @@ export async function resumeDag(
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_id: taskId, dag, review_level: reviewLevel }),
+    body: JSON.stringify({ review_id: reviewId, dag, review_level: reviewLevel }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
@@ -233,7 +233,7 @@ export async function resumeToolReview(
     onError?: (message: string) => void;
   },
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/messages/resume-tool`, {
+  const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ review_id: reviewId, approved }),

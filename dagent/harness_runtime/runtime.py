@@ -1,13 +1,12 @@
 """Top-level harness runtime.
 
 The runtime orchestrates: route -> loop -> review -> validation -> final result.
-It does not know how loops execute internally; it only consumes LoopResult.
+It does not know how loops execute internally; it only consumes LoopOutcome.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.harness_runtime.tool_agent import (
@@ -15,10 +14,8 @@ from dagent.harness_runtime.tool_agent import (
     LoopEventHandler,
     TokenHandler,
 )
-from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.dag_agent import DAGAgentLoop
-from dagent.harness_runtime.loop_result import LoopResult
-from dagent.harness_runtime.result_validator import ResultValidatorAgent, format_validation_feedback
+from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
@@ -26,10 +23,10 @@ from dagent.harness_runtime.runtime_events import (
     _dag_event_emitter,
     _trace_event_emitter,
 )
-from dagent.harness_runtime.task_record import ToolTaskState, PendingReview
+from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
-from dagent.schemas import Boundary, DAG
+from dagent.schemas import Boundary, DAG, LoopOutcome, RuntimeResponse, ToolInvocation
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
@@ -51,25 +48,7 @@ serial work, or anything that does not need structured orchestration.\
 """
 
 
-@dataclass(frozen=True)
-class HarnessMessageResult:
-    status: Literal["completed", "awaiting_dag_review", "awaiting_tool_review", "awaiting_change_review", "awaiting_approval", "failed"]
-    final_answer: str
-    dag: DAG | None = None
-    run_result: RunResult | None = None
-    task_id: str | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
-    pending_review: PendingReview | None = None
-
-
-@dataclass(frozen=True)
-class _GateFlowOutcome:
-    loop_result: LoopResult
-    gate: HarnessMessageResult | None = None
-
-
-LoopRunner = Callable[[str | None, LoopResult | None], Awaitable[LoopResult]]
-ReviewGateCallback = Callable[[LoopResult], None]
+LoopRunner = Callable[[str | None, LoopOutcome | None], Awaitable[LoopOutcome]]
 
 
 class HarnessRuntime:
@@ -84,7 +63,7 @@ class HarnessRuntime:
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
-        validator: ResultValidatorAgent | None = None,
+        validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_top_steps: int = 8,
         max_validation_retries: int = 1,
@@ -99,36 +78,17 @@ class HarnessRuntime:
         self.enable_validation = enable_validation
         self.max_top_steps = max_top_steps
         self.max_validation_retries = max_validation_retries
-        self.tasks = dag_agent_loop.tasks
-        self.session = HarnessRuntimeSession(tasks=self.tasks)
+        self.session = HarnessRuntimeSession(initial_tasks=dag_agent_loop.tasks)
+        self.tasks = self.session.tasks
+        self.dag_agent_loop.tasks = self.tasks
 
     # ==================================================================
     # Public API
     # ==================================================================
 
-    def _review_status(self, pending_review: PendingReview | None) -> str:
-        if pending_review and pending_review.kind == "tool_review":
-            return "awaiting_tool_review"
-        if pending_review and pending_review.kind == "initial_dag":
-            return "awaiting_dag_review"
-        return "awaiting_change_review"
-
-    def _human_review_gate(self, loop_result: LoopResult) -> HarnessMessageResult | None:
-        if not loop_result.needs_human_review:
-            return None
-        return HarnessMessageResult(
-            status=self._review_status(loop_result.pending_review),
-            final_answer="",
-            dag=loop_result.dag,
-            run_result=loop_result.run_result,
-            task_id=loop_result.task_id,
-            events=loop_result.events,
-            pending_review=loop_result.pending_review,
-        )
-
-    async def _validate_loop_result(
+    async def _validate_loop_outcome(
         self,
-        loop_result: LoopResult,
+        loop_outcome: LoopOutcome,
         user_request: str,
         *,
         on_event: LoopEventHandler | None,
@@ -137,14 +97,14 @@ class HarnessRuntime:
         feedback: str | None = None
         if not self.enable_validation or not self.validator:
             return passed, feedback
-        if not loop_result.execution_context.strip():
+        if not loop_outcome.execution_context.strip():
             return passed, feedback
         if on_event:
             on_event({"type": "validating", "message": "Validating result quality..."})
         validation = await self.validator.validate(
             user_request=user_request,
-            final_answer=loop_result.final_answer,
-            execution_context=loop_result.execution_context,
+            final_answer=loop_outcome.final_answer,
+            execution_context=loop_outcome.execution_context,
         )
         if validation.passed:
             if on_event:
@@ -172,58 +132,36 @@ class HarnessRuntime:
             })
         return passed, feedback
 
-    def _build_final_result(
-        self,
-        loop_result: LoopResult,
-        user_request: str,
-    ) -> HarnessMessageResult:
-        final_answer = loop_result.final_answer.strip() or _fallback_final_answer(loop_result)
-        if not loop_result.messages:
-            self.session.append_conversation_turn(user_request, final_answer)
-        return HarnessMessageResult(
-            status="completed" if loop_result.completed else "failed",
-            final_answer=final_answer,
-            dag=loop_result.dag,
-            run_result=loop_result.run_result,
-            task_id=loop_result.task_id,
-            events=loop_result.events,
-            pending_review=loop_result.pending_review,
-        )
-
     async def _run_with_review_and_validation(
         self,
         user_request: str,
         *,
         run_once: LoopRunner,
-        initial_loop_result: LoopResult | None = None,
-        on_gate: ReviewGateCallback | None = None,
+        initial_loop_outcome: LoopOutcome | None = None,
         on_event: LoopEventHandler | None,
-    ) -> _GateFlowOutcome:
+    ) -> LoopOutcome:
         feedback: str | None = None
-        loop_result: LoopResult | None = initial_loop_result
+        loop_outcome: LoopOutcome | None = initial_loop_outcome
 
         for _attempt in range(self.max_validation_retries + 1):
-            if loop_result is None or feedback is not None:
-                loop_result = await run_once(feedback, loop_result)
+            if loop_outcome is None or feedback is not None:
+                loop_outcome = await run_once(feedback, loop_outcome)
 
-            gate = self._human_review_gate(loop_result)
-            if gate is not None:
-                if on_gate is not None:
-                    on_gate(loop_result)
-                return _GateFlowOutcome(loop_result=loop_result, gate=gate)
+            if loop_outcome.status == "awaiting_review":
+                return loop_outcome
 
-            passed, validation_feedback = await self._validate_loop_result(
-                loop_result,
+            passed, validation_feedback = await self._validate_loop_outcome(
+                loop_outcome,
                 user_request,
                 on_event=on_event,
             )
             if passed:
-                return _GateFlowOutcome(loop_result=loop_result)
+                return loop_outcome
             feedback = validation_feedback
 
-        if loop_result is None:
+        if loop_outcome is None:
             raise RuntimeError("Validation retry loop did not execute.")
-        return _GateFlowOutcome(loop_result=loop_result)
+        return loop_outcome
 
     async def handle_message(
         self,
@@ -233,13 +171,13 @@ class HarnessRuntime:
         review_level: ReviewLevel = "fast",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> HarnessMessageResult:
+    ) -> RuntimeResponse:
         # 1. Route
         resolved_mode = mode
         if mode == "auto":
             resolved_mode = await self._route(message)
 
-        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+        async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
             prior_messages = previous_result.messages if feedback and previous_result else None
             return await self._execute_loop(
                 message,
@@ -251,36 +189,64 @@ class HarnessRuntime:
                 on_event=on_event,
             )
 
-        def on_gate(loop_result: LoopResult) -> None:
-            if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
-                self._store_tool_review_state(message, review_level, loop_result)
-
         outcome = await self._run_with_review_and_validation(
             message,
             run_once=run_once,
-            on_gate=on_gate,
             on_event=on_event,
         )
-        if outcome.gate is not None:
-            return outcome.gate
+        return self._finish_loop_outcome(
+            outcome,
+            message,
+            resolved_mode,
+            review_level,
+            record_conversation=True,
+        )
 
-        self.session.record_conversation(outcome.loop_result)
-        return self._build_final_result(outcome.loop_result, message)
-
-    async def resume_dag(
+    async def resume_review(
         self,
-        task_id: str,
+        review_id: str,
+        *,
+        dag: DAG | None = None,
+        approved: bool = True,
+        review_level: ReviewLevel | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> RuntimeResponse | None:
+        state = self.session.pop_review_continuation(review_id)
+        if state is None:
+            return None
+        if state.kind == "tool_review":
+            return await self._resume_tool_review(
+                state,
+                approved=approved,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        if dag is None:
+            return None
+        return await self._resume_dag_review(
+            state,
+            dag,
+            review_level=review_level,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def _resume_dag_review(
+        self,
+        state: ReviewContinuation,
         dag: DAG,
         review_level: ReviewLevel | None = None,
         *,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> HarnessMessageResult:
+    ) -> RuntimeResponse:
+        task_id = state.task_id
         record = self.tasks[task_id]
-        was_completed = record.dag.status == "completed" and len(record.runs) > 0
+        self.session.discard_review_continuations_for_task(task_id)
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
 
-        dag_result = await self.dag_agent_loop.resume(
+        loop_outcome = await self.dag_agent_loop.resume(
             task_id,
             dag,
             review_level=review_level,
@@ -288,31 +254,25 @@ class HarnessRuntime:
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
-        loop_result = dag_result.to_loop_result()
 
-        gate = self._human_review_gate(loop_result)
-        if gate is not None:
-            return gate
-
-        if was_completed and dag_result.run_result is record.runs[-1]:
-            return HarnessMessageResult(
-                status="completed",
-                final_answer="",
-                dag=loop_result.dag,
-                run_result=loop_result.run_result,
+        if loop_outcome.status == "awaiting_review":
+            return self._finish_loop_outcome(
+                loop_outcome,
+                record.user_request,
+                "dag",
+                review_level or state.review_level,
                 task_id=task_id,
-                events=loop_result.events,
             )
 
-        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+        async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
             planning_context = self.session.tasks_context()
             if feedback:
                 planning_context = (
                     f"{planning_context}\n\n{feedback}" if planning_context else feedback
                 )
-            retry_dag_result = await self.dag_agent_loop.run(
+            return await self.dag_agent_loop.run(
                 record.user_request,
-                review_level=review_level or record.review_level,
+                review_level=review_level or state.review_level,
                 planning_context=planning_context,
                 runtime_mode=record.runtime_mode,
                 conversation_history=self.session.conversation_history,
@@ -320,18 +280,20 @@ class HarnessRuntime:
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
-            return retry_dag_result.to_loop_result()
 
         outcome = await self._run_with_review_and_validation(
             record.user_request,
             run_once=run_once,
-            initial_loop_result=loop_result,
+            initial_loop_outcome=loop_outcome,
             on_event=on_event,
         )
-        if outcome.gate is not None:
-            return outcome.gate
-
-        return self._build_final_result(outcome.loop_result, record.user_request)
+        return self._finish_loop_outcome(
+            outcome,
+            record.user_request,
+            "dag",
+            review_level or state.review_level,
+            task_id=task_id,
+        )
 
     # ==================================================================
     # Route
@@ -371,14 +333,14 @@ class HarnessRuntime:
         prior_messages: list[dict[str, Any]] | None = None,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
-    ) -> LoopResult:
-        """Dispatch to the appropriate loop and return a unified LoopResult."""
+    ) -> LoopOutcome:
+        """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
             planning_context = self.session.tasks_context()
             if feedback:
                 planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-            dag_result = await self.dag_agent_loop.run(
+            return await self.dag_agent_loop.run(
                 message,
                 review_level=review_level,
                 planning_context=planning_context,
@@ -388,7 +350,6 @@ class HarnessRuntime:
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
-            return dag_result.to_loop_result()
         elif mode == "tool":
             # Tool mode: only stream <think> blocks from the loop.
             # The final answer is returned in the done payload.
@@ -413,8 +374,8 @@ class HarnessRuntime:
         prior_messages: list[dict[str, Any]] | None = None,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
-    ) -> LoopResult:
-        """Run ToolAgentLoop and return unified LoopResult."""
+    ) -> LoopOutcome:
+        """Run ToolAgentLoop and return unified LoopOutcome."""
         if prior_messages and feedback:
             messages = list(prior_messages)
             messages.append({"role": "user", "content": feedback})
@@ -435,7 +396,7 @@ class HarnessRuntime:
 
         boundary = Boundary(mode="read_only", allowed_paths=["."])
         control_tool_names = self._reviewable_tool_names()
-        result = await self.tool_agent_loop.run(
+        return await self.tool_agent_loop.run(
             "",
             boundary=boundary,
             max_steps=self.max_top_steps,
@@ -445,7 +406,6 @@ class HarnessRuntime:
             on_token=on_token,
             on_event=on_event,
         )
-        return result.to_loop_result()
 
     def _reviewable_tool_names(self) -> set[str]:
         return {
@@ -454,73 +414,65 @@ class HarnessRuntime:
             if tool.risk in {"medium", "high"} or tool.risk_fn is not None
         }
 
-    def _store_tool_review_state(
-        self,
-        user_request: str,
-        review_level: ReviewLevel,
-        loop_result: LoopResult,
-    ) -> None:
-        self.session.store_tool_review_state(
-            user_request=user_request,
-            review_level=review_level,
-            loop_result=loop_result,
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
-        )
-
     async def _continue_tool_messages(
         self,
         messages: list[dict[str, Any]],
         *,
-        state: ToolTaskState,
+        state: ReviewContinuation,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
-    ) -> LoopResult:
+    ) -> LoopOutcome:
+        invocation = state.pending_invocation
+        if invocation is None:
+            raise ValueError("Tool review continuation is missing pending invocation.")
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        result = await self.tool_agent_loop.run(
+        return await self.tool_agent_loop.run(
             "",
-            boundary=state.boundary,
+            boundary=invocation.boundary,
             max_steps=self.max_top_steps,
             messages=messages,
             control_tool_names=self._reviewable_tool_names(),
             control_tool_handler=self.tool_agent_loop.create_tool_guard(
                 state.review_level,
-                state.boundary,
+                invocation.boundary,
                 self.runtime_tools,
             ),
             on_token=thinking_only,
             on_event=on_event,
         )
-        return result.to_loop_result()
 
-    async def resume_tool(
+    async def _resume_tool_review(
         self,
-        review_id: str,
-        approved: bool,
+        state: ReviewContinuation,
         *,
+        approved: bool,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> HarnessMessageResult | None:
-        state = self.session.pop_tool_review_state(review_id)
-        if state is None:
+    ) -> RuntimeResponse | None:
+        invocation = state.pending_invocation
+        if (
+            state.kind != "tool_review"
+            or invocation is None
+        ):
             return None
 
-        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=state.tool_name)
+        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
         if approved:
             try:
                 feed_content = self.tool_agent_loop.tool_executor.execute(
-                    state.tool_name, state.tool_args, boundary=state.boundary
+                    invocation.tool_name, invocation.arguments, boundary=invocation.boundary
                 )
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
         state.messages.append({
             "role": "tool",
-            "tool_call_id": state.tool_call_id,
-            "name": state.tool_name,
+            "tool_call_id": invocation.invocation_id,
+            "name": invocation.tool_name,
             "content": feed_content,
         })
 
-        async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
+        async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
             messages = state.messages
             if feedback:
                 prior_messages = previous_result.messages if previous_result else messages
@@ -532,26 +484,84 @@ class HarnessRuntime:
                 on_event=on_event,
             )
 
-        def on_gate(loop_result: LoopResult) -> None:
-            if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
-                self._store_tool_review_state(state.user_request, state.review_level, loop_result)
-
         outcome = await self._run_with_review_and_validation(
             state.user_request,
             run_once=run_once,
-            on_gate=on_gate,
             on_event=on_event,
         )
-        if outcome.gate is not None:
-            return outcome.gate
+        return self._finish_loop_outcome(
+            outcome,
+            state.user_request,
+            "tool",
+            state.review_level,
+            record_conversation=True,
+            extra_invocations=state.invocations,
+            task_id=state.task_id,
+        )
 
-        self.session.record_conversation(outcome.loop_result)
-        return self._build_final_result(outcome.loop_result, state.user_request)
+    def _finish_loop_outcome(
+        self,
+        outcome: LoopOutcome,
+        user_request: str,
+        mode: Literal["tool", "dag"],
+        review_level: ReviewLevel,
+        *,
+        record_conversation: bool = False,
+        extra_invocations: list[ToolInvocation] | None = None,
+        task_id: str | None = None,
+    ) -> RuntimeResponse:
+        invocations = [*(extra_invocations or []), *outcome.invocations]
+        if outcome.status == "awaiting_review":
+            record = self.session.record_outcome(
+                task_id=task_id,
+                mode=mode,
+                user_request=user_request,
+                review_level=review_level,
+                loop_outcome=outcome,
+                invocations=invocations,
+            )
+            return _gate_result_for_task(outcome, record.task_id)
+
+        if record_conversation:
+            self.session.record_conversation(outcome)
+        record = self.session.record_outcome(
+            task_id=task_id,
+            mode=mode,
+            user_request=user_request,
+            review_level=review_level,
+            loop_outcome=outcome,
+            invocations=invocations,
+        )
+        final_answer = outcome.final_answer.strip() or _fallback_final_answer(outcome)
+        if not outcome.messages:
+            self.session.append_conversation_turn(user_request, final_answer)
+        return RuntimeResponse(
+            status=outcome.status,
+            final_answer=final_answer,
+            dag=outcome.dag,
+            dag_run=outcome.dag_run,
+            task_id=record.task_id,
+            events=outcome.events,
+            pending_review=outcome.pending_review,
+        )
 
 
-def _fallback_final_answer(loop_result: LoopResult) -> str:
-    if loop_result.execution_context.strip():
-        return loop_result.execution_context.strip()
-    if loop_result.completed:
+def _fallback_final_answer(loop_outcome: LoopOutcome) -> str:
+    if loop_outcome.execution_context.strip():
+        return loop_outcome.execution_context.strip()
+    if loop_outcome.status == "completed":
         return "The task completed, but no final answer was produced."
     return "The task did not complete, and no final answer was produced."
+
+
+def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeResponse:
+    return RuntimeResponse(
+        status="awaiting_review",
+        final_answer="",
+        dag=loop_outcome.dag,
+        dag_run=loop_outcome.dag_run,
+        task_id=task_id,
+        events=loop_outcome.events,
+        pending_review=loop_outcome.pending_review,
+    )
+

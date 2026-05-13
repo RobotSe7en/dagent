@@ -1,16 +1,16 @@
 import asyncio
 from dagent.harness_runtime import (
     ToolAgentLoop,
-    ToolAgentLoopResult,
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    ResultValidatorAgent,
+    LoopOutcome,
+    ValidatorAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
-from dagent.harness_runtime.result_validator import ValidationIssue, ValidationResult
+from dagent.schemas import ValidationIssue, ValidationResult
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -27,14 +27,12 @@ class CompletingLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
-    ) -> ToolAgentLoopResult:
+    ) -> LoopOutcome:
         self.calls += 1
-        return ToolAgentLoopResult(
-            final_response="node complete",
+        return LoopOutcome(
+            status="completed",
+            final_answer="node complete",
             messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
         )
 
 
@@ -62,7 +60,12 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert result.status == "completed"
     assert result.final_answer == "hello"
     assert result.dag is None
-    assert runtime.tasks == {}
+    assert result.task_id is not None
+    assert len(runtime.tasks) == 1
+    record = runtime.tasks[result.task_id]
+    assert record.mode == "tool"
+    assert record.status == "completed"
+    assert record.final_response == "hello"
 
 
 def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
@@ -101,7 +104,9 @@ def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     second = run(runtime.handle_message("Use that color in a DAG task.", mode="dag", review_level="careful"))
 
     assert first.status == "completed"
-    assert second.status == "awaiting_dag_review"
+    assert second.status == "awaiting_review"
+    assert second.pending_review is not None
+    assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
     dag_messages = provider.requests[1]["messages"]
     # Expect: system, conv_user, conv_assistant, active_user, planning_context
@@ -126,7 +131,9 @@ def test_harness_runtime_auto_routes_to_dag() -> None:
         review_level="careful",
     ))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
 
 
@@ -139,10 +146,12 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
 
     result = run(runtime.handle_message("Do a complex risky task", mode="auto", review_level="careful"))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
-    assert result.dag.nodes[0].risk == "medium"
+    assert result.dag.nodes[0].invocation.risk == "medium"
     assert result.task_id in runtime.tasks
 
 
@@ -156,13 +165,15 @@ def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
 
     result = run(runtime.handle_message("Create a safe DAG", mode="auto", review_level="careful"))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
     assert node_loop.calls == 0
 
 
-def test_harness_runtime_resume_dag_returns_final_answer() -> None:
+def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode, no routing)
         ChatResponse(content="Here is the final answer."),  # execute loop observation
@@ -171,13 +182,23 @@ def test_harness_runtime_resume_dag_returns_final_answer() -> None:
     runtime = _runtime(provider, node_loop=node_loop)
 
     result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
-    resumed = run(runtime.resume_dag(result.task_id, result.dag))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, dag=result.dag))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert resumed.status == "completed"
-    assert resumed.run_result is not None
-    assert resumed.run_result.completed is True
+    assert resumed.dag_run is not None
+    assert resumed.dag_run.completed is True
+    assert resumed.dag_run.execution_records
     assert resumed.final_answer == "Here is the final answer."
+    runtime_task = runtime.session.runtime_tasks[result.task_id]
+    assert runtime_task.mode == "dag"
+    assert runtime_task.dag_state is not None
+    assert runtime_task.invocations
+    assert runtime_task.execution_records
+    assert runtime_task.execution_records[0].source == "dag_node"
+    assert runtime_task.execution_records[0].invocation.tool_name == "echo"
 
 
 def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> None:
@@ -190,11 +211,13 @@ def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> No
     runtime = _runtime(provider)
 
     first = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
-    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+    resumed = run(runtime.resume_review(first.pending_review.review_id, dag=first.dag))
     second = run(runtime.handle_message("What about the previous result?", mode="auto", review_level="careful"))
 
     assert resumed.status == "completed"
-    assert second.status == "awaiting_dag_review"
+    assert second.status == "awaiting_review"
+    assert second.pending_review is not None
+    assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
     dag_agent_requests = [
         request
@@ -213,7 +236,9 @@ def test_harness_runtime_dag_mode_forces_reviewable_dag_without_top_tool_call() 
 
     result = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="careful"))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
     assert result.task_id in runtime.tasks
@@ -228,15 +253,15 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
     runtime = _runtime(provider)
 
     first = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="careful"))
-    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+    resumed = run(runtime.resume_review(first.pending_review.review_id, dag=first.dag))
 
     assert resumed.status == "completed"
     assert resumed.final_answer == "final dag-mode answer"
-    assert resumed.run_result is not None
-    assert resumed.run_result.node_results["node_1"].final_response == "echo:ok"
+    assert resumed.dag_run is not None
+    assert resumed.dag_run.node_results["node_1"].final_response == "echo:ok"
 
 
-def test_harness_runtime_completed_dag_resume_is_idempotent() -> None:
+def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
         ChatResponse(content="final dag-mode answer"),
@@ -244,12 +269,10 @@ def test_harness_runtime_completed_dag_resume_is_idempotent() -> None:
     runtime = _runtime(provider)
 
     first = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="careful"))
-    resumed = run(runtime.resume_dag(first.task_id, first.dag))
-    repeated = run(runtime.resume_dag(first.task_id, resumed.dag))
+    resumed = run(runtime.resume_review(first.pending_review.review_id, dag=first.dag))
+    repeated = run(runtime.resume_review(first.pending_review.review_id, dag=resumed.dag))
 
-    assert repeated.status == "completed"
-    assert repeated.final_answer == ""
-    assert repeated.run_result is resumed.run_result
+    assert repeated is None
     assert len(runtime.tasks[first.task_id].runs) == 1
     assert len(provider.requests) == 2  # dag_agent + execute observation
 
@@ -283,7 +306,7 @@ def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation(
     runtime = _runtime(provider)
 
     first = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="careful"))
-    resumed = run(runtime.resume_dag(first.task_id, first.dag))
+    resumed = run(runtime.resume_review(first.pending_review.review_id, dag=first.dag))
 
     assert resumed.status == "completed"
     assert resumed.task_id == first.task_id
@@ -306,7 +329,9 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
 
     result = run(runtime.handle_message("Create a fixed DAG", mode="dag", review_level="careful"))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert [node.id for node in result.dag.nodes] == ["start", "a", "b"]
     assert len(provider.requests) == 2
@@ -332,9 +357,11 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
 
     result = run(runtime.handle_message("Where am I?", mode="dag", review_level="careful"))
 
-    assert result.status == "awaiting_dag_review"
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].tool == "echo"
+    assert result.dag.nodes[0].invocation.tool_name == "echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
     assert "Unknown tool(s): get_current_dir" in feedback
@@ -441,7 +468,7 @@ def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
     assert result.final_answer == "The answer."
 
 
-def test_resume_tool_retries_when_validator_rejects_after_tool_approval() -> None:
+def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> None:
     tool_executor = make_tool_executor()
     provider = MockProvider([
         ChatResponse(
@@ -469,20 +496,37 @@ def test_resume_tool_retries_when_validator_rejects_after_tool_approval() -> Non
     )
 
     first = run(runtime.handle_message("Write a note", mode="tool", review_level="careful"))
-    resumed = run(runtime.resume_tool(first.pending_review.review_id, approved=True))
+    resumed = run(runtime.resume_review(first.pending_review.review_id, approved=True))
 
-    assert first.status == "awaiting_tool_review"
+    assert first.status == "awaiting_review"
+    assert first.task_id is not None
+    assert first.pending_review is not None
+    assert first.pending_review.kind == "tool_review"
     assert resumed.status == "completed"
+    assert resumed.task_id == first.task_id
     assert resumed.final_answer == "good answer"
+    tool_tasks = [
+        task
+        for task in runtime.session.runtime_tasks.values()
+        if task.mode == "tool"
+    ]
+    assert len(tool_tasks) == 1
+    assert tool_tasks[0].task_id == first.task_id
+    assert tool_tasks[0].status == "completed"
+    assert tool_tasks[0].tool_state is not None
+    assert tool_tasks[0].invocations
+    assert tool_tasks[0].execution_records
+    assert tool_tasks[0].execution_records[0].source == "tool_loop"
+    assert tool_tasks[0].execution_records[0].invocation.tool_name == "write_file"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
-def test_harness_runtime_skips_invalid_json_result_validator_response() -> None:
+def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),       # DAG agent
         ChatResponse(content="NO_CHANGE"),            # execute observation
-        ChatResponse(content="looks fine to me"),     # result validator, invalid JSON
+        ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
     tool_executor = make_tool_executor()
     runtime = HarnessRuntime(
@@ -490,7 +534,7 @@ def test_harness_runtime_skips_invalid_json_result_validator_response() -> None:
         tool_agent_loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
         dag_agent_loop=DAGAgentLoop(provider, dag_executor=DAGExecutor(tool_executor=tool_executor), profile=_dag_agent_profile()),
         conversation_profile=_conversation_profile(),
-        validator=ResultValidatorAgent(provider=provider, profile=_validator_profile()),
+        validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
     )
 
@@ -605,10 +649,10 @@ def _dag_agent_profile() -> AgentProfile:
 
 def _validator_profile() -> AgentProfile:
     return AgentProfile(
-        name="result_validator",
-        role="result_validator",
+        name="validator_agent",
+        role="validator_agent",
         layers=["soul"],
-        layer_contents={"soul": "You are a result validator."},
+        layer_contents={"soul": "You are a validator agent."},
     )
 
 

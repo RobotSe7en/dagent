@@ -48,7 +48,8 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     event_types = [event["type"] for event in events]
     assert "dag" in event_types
     assert event_types[-1] == "done"
-    assert events[-1]["status"] == "awaiting_dag_review"
+    assert events[-1]["status"] == "awaiting_review"
+    assert events[-1]["pending_review"]["kind"] == "initial_dag"
     assert events[-1]["dag"]["status"] == "review_required"
     assert events[-1]["final_answer"] == ""
 
@@ -137,14 +138,15 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
         "/messages/stream",
         json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
     )
-    task_id = _sse_events(stream_response.text)[-1]["task_id"]
-
-    dag = _sse_events(stream_response.text)[-1]["dag"]
-    dag["nodes"][0]["args"] = {"text": "reviewed"}
+    stream_events = _sse_events(stream_response.text)
+    task_id = stream_events[-1]["task_id"]
+    review_id = stream_events[-1]["pending_review"]["review_id"]
+    dag = stream_events[-1]["dag"]
+    dag["nodes"][0]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
         "/messages/resume",
-        json={"task_id": task_id, "dag": dag},
+        json={"review_id": review_id, "dag": dag},
     )
 
     assert resume_response.status_code == 200
@@ -164,7 +166,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     assert records[0]["status"] == "completed"
 
 
-def test_api_resume_dag_returns_final_answer_without_streaming_answer_text() -> None:
+def test_api_resume_review_returns_final_answer_without_streaming_answer_text() -> None:
     state.harness_runtime = _runtime(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
@@ -178,12 +180,13 @@ def test_api_resume_dag_returns_final_answer_without_streaming_answer_text() -> 
         "/messages/stream",
         json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
     )
-    task_id = _sse_events(stream_response.text)[-1]["task_id"]
-    dag = _sse_events(stream_response.text)[-1]["dag"]
+    stream_events = _sse_events(stream_response.text)
+    review_id = stream_events[-1]["pending_review"]["review_id"]
+    dag = stream_events[-1]["dag"]
 
     resume_response = client.post(
         "/messages/resume",
-        json={"task_id": task_id, "dag": dag},
+        json={"review_id": review_id, "dag": dag},
     )
 
     assert resume_response.status_code == 200

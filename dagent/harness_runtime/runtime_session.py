@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
-from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.harness_runtime.task_record import ToolTaskState, TaskRecord
-from dagent.schemas import Boundary
+from dagent.harness_runtime.task_record import (
+    ReviewContinuation,
+    RuntimeTaskMode,
+    RuntimeTaskRecord,
+    pending_review_invocation,
+    task_context_payload,
+)
+from dagent.schemas import LoopOutcome, ToolInvocation
 
 
 MAX_CONVERSATION_HISTORY_MESSAGES = 20
@@ -17,18 +23,24 @@ MAX_CONVERSATION_HISTORY_MESSAGES = 20
 class HarnessRuntimeSession:
     """Mutable conversation and review state owned by a harness session."""
 
-    def __init__(self, *, tasks: dict[str, TaskRecord]) -> None:
-        self.tasks = tasks
+    def __init__(
+        self,
+        *,
+        initial_tasks: dict[str, RuntimeTaskRecord] | None = None,
+    ) -> None:
+        self.tasks: dict[str, RuntimeTaskRecord] = dict(initial_tasks or {})
         self.conversation_history: list[dict[str, Any]] = []
-        self._tool_task_states: dict[str, ToolTaskState] = {}
+        self.runtime_tasks = self.tasks
+        self._review_continuations: dict[str, ReviewContinuation] = {}
 
     def tasks_context(self) -> str:
         if not self.tasks:
             return ""
         payload = {
             "recent_dag_tasks": [
-                _task_context_payload(record)
-                for record in list(self.tasks.values())[-3:]
+                task_context_payload(record)
+                for record in list(self.runtime_tasks.values())[-3:]
+                if record.dag_state is not None
             ]
         }
         return (
@@ -38,14 +50,14 @@ class HarnessRuntimeSession:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    def record_conversation(self, loop_result: LoopResult) -> None:
+    def record_conversation(self, loop_outcome: LoopOutcome) -> None:
         """Record loop messages into conversation history.
 
         For tool mode the full ToolAgentLoop conversation replaces history.
         For DAG mode there are no conversation messages (DAG has internal state).
         """
-        if loop_result.messages:
-            self.remember_conversation_messages(loop_result.messages)
+        if loop_outcome.messages:
+            self.remember_conversation_messages(loop_outcome.messages)
 
     def remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
         self.conversation_history = [
@@ -67,58 +79,81 @@ class HarnessRuntimeSession:
             self.conversation_history.append({"role": "assistant", "content": assistant_message})
         self.conversation_history = self.conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
-    def store_tool_review_state(
+    def store_review_continuation(
         self,
+        *,
+        task_id: str,
         user_request: str,
         review_level: ReviewLevel,
-        loop_result: LoopResult,
-        *,
-        boundary: Boundary,
+        loop_outcome: LoopOutcome,
     ) -> None:
-        review = loop_result.pending_review
-        if review is None or review.kind != "tool_review" or review.tool_call is None:
+        review = loop_outcome.pending_review
+        if review is None:
             return
-        self._tool_task_states[review.review_id] = ToolTaskState(
+        self._review_continuations[review.review_id] = ReviewContinuation(
             review_id=review.review_id,
+            task_id=task_id,
+            kind=review.kind,
             user_request=user_request,
-            messages=loop_result.messages,
+            messages=loop_outcome.messages,
+            invocations=loop_outcome.invocations,
             review_level=review_level,
-            boundary=boundary,
-            tool_call_id=review.tool_call["tool_call_id"],
-            tool_name=review.tool_call["name"],
-            tool_args=review.tool_call["arguments"],
-            risk=review.payload.get("risk", "low"),
+            pending_invocation=pending_review_invocation(loop_outcome),
         )
 
-    def pop_tool_review_state(self, review_id: str) -> ToolTaskState | None:
-        return self._tool_task_states.pop(review_id, None)
+    def pop_review_continuation(self, review_id: str) -> ReviewContinuation | None:
+        return self._review_continuations.pop(review_id, None)
 
+    def discard_review_continuations_for_task(self, task_id: str) -> None:
+        stale_review_ids = [
+            review_id
+            for review_id, continuation in self._review_continuations.items()
+            if continuation.task_id == task_id
+        ]
+        for review_id in stale_review_ids:
+            self._review_continuations.pop(review_id, None)
 
-def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "dag_id": record.dag.dag_id,
-        "user_request": record.user_request,
-        "dag_status": record.dag.status,
-        "node_results": {
-            node_id: {
-                "completed": node_result.completed,
-                "stop_reason": node_result.stop_reason,
-                "final_response": node_result.final_response,
-            }
-            for node_id, node_result in record.node_results.items()
-        },
-        "recent_trace_records": [
-            {
-                "node_id": trace.node_id,
-                "tool": trace.tool,
-                "status": trace.status,
-                "output": trace.output,
-                "error": trace.error,
-            }
-            for trace in record.trace_records[-8:]
-        ],
-    }
+    def record_outcome(
+        self,
+        *,
+        task_id: str | None,
+        mode: RuntimeTaskMode,
+        user_request: str,
+        review_level: ReviewLevel,
+        loop_outcome: LoopOutcome,
+        invocations: list[ToolInvocation] | None = None,
+    ) -> RuntimeTaskRecord:
+        resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
+        record = self.runtime_tasks.get(resolved_task_id)
+        if record is None:
+            if mode == "dag" and loop_outcome.dag is not None:
+                record = RuntimeTaskRecord.dag_task(
+                    task_id=resolved_task_id,
+                    user_request=user_request,
+                    dag=loop_outcome.dag,
+                    review_level=review_level,
+                )
+            else:
+                record = RuntimeTaskRecord(
+                    task_id=resolved_task_id,
+                    mode=mode,
+                    user_request=user_request,
+                    review_level=review_level,
+                )
+        record.apply_outcome(
+            loop_outcome,
+            review_level=review_level,
+            invocations=invocations,
+        )
+        self.runtime_tasks[resolved_task_id] = record
+        if loop_outcome.status == "awaiting_review":
+            self.store_review_continuation(
+                task_id=record.task_id,
+                user_request=user_request,
+                review_level=review_level,
+                loop_outcome=loop_outcome,
+            )
+        return record
 
 
 def _conversation_message_copy(message: dict[str, Any]) -> dict[str, Any] | None:

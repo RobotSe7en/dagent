@@ -8,12 +8,17 @@ export interface Boundary {
   allowed_commands?: string[];
 }
 
-export interface DagNode {
-  id: string;
-  tool?: string | null;
-  args?: Record<string, unknown>;
+export interface ToolInvocation {
+  invocation_id?: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
   boundary?: Boundary;
   risk?: RiskLevel;
+}
+
+export interface DagNode {
+  id: string;
+  invocation: ToolInvocation;
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
 }
 
@@ -29,7 +34,6 @@ export interface Dag {
   version: number;
   status:
     | 'draft'
-    | 'awaiting_dag_review'
     | 'review_required'
     | 'approved'
     | 'running'
@@ -55,19 +59,19 @@ export interface TraceEvent {
   timestamp: string;
 }
 
-export interface NodeExecutionRecord {
+export interface ToolExecutionRecord {
   record_id: string;
   task_id: string;
-  dag_id: string;
-  dag_version: number;
-  node_id: string;
-  tool: string | null;
-  args: Record<string, unknown>;
+  invocation: ToolInvocation;
+  source: 'tool_loop' | 'dag_node';
   output: string;
   error: string | null;
   status: 'completed' | 'failed';
   stop_reason: string;
   steps: number;
+  dag_id?: string | null;
+  dag_version?: number | null;
+  node_id?: string | null;
   created_at: string;
 }
 
@@ -94,10 +98,10 @@ export interface ReviewEventPayload {
   payload?: Record<string, unknown>;
 }
 
-export interface RunResult {
+export interface DagRunResult {
   dag_id: string;
   completed: boolean;
-  trace_records?: NodeExecutionRecord[];
+  execution_records?: ToolExecutionRecord[];
   node_results: Record<
     string,
     {

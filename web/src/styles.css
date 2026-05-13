@@ -806,7 +806,7 @@ select {
 }
 
 .status-badge[data-status="draft"],
-.status-badge[data-status="awaiting_dag_review"] {
+.status-badge[data-status="awaiting_review"] {
   border-color: var(--border);
   background: var(--bg-raised);
   color: var(--text-muted);
