@@ -86,7 +86,7 @@ flowchart TD
   NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
   UI2 -->|"approve"| E
 
-  NXT -->|"DAG complete"| DR["DAG Result Summary"]
+  NXT -->|"DAG complete"| DR["DAGAgentLoop Result"]
   DR --> G
 
   G -->|"approval needed"| UI3["Human Review"]
@@ -95,14 +95,14 @@ flowchart TD
   V -->|"issues found"| RTRY["Retry with validation feedback"]
   RTRY --> TA
   RTRY --> DA
-  V -->|"passed / disabled"| S["Summarize"]
-  S --> O["Return to user"]
+  V -->|"passed / disabled"| O["Return final_answer\nto user"]
 ```
 
 `HarnessRuntime` is the top-level control layer. It owns routing, session state,
 human review gates, optional result validation, retry feedback, and final result delivery.
 The execution details stay inside `ToolAgentLoop` for tool-use work and
-`DAGAgentLoop` for structured DAG work.
+`DAGAgentLoop` for structured DAG work. Once review and validation pass, the runtime
+returns the loop's `final_answer` directly without a separate summarization step.
 
 ### Three-Level Re-planning
 
