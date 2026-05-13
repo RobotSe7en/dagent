@@ -37,7 +37,7 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
-        if not node.tool:
+        if not node.invocation.tool_name:
             raise DAGValidationError(f"Node '{node.id}' must declare a tool.")
 
     node_id_set = set(node_ids)

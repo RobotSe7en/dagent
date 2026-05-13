@@ -4,13 +4,13 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    TaskRecord,
+    RuntimeTaskRecord,
 )
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime import ToolAgentLoopResult
 from dagent.harness_runtime.dag_compiler import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, ToolInvocation
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
@@ -70,8 +70,8 @@ def dag_dsl_from_dag(dag: DAG) -> str:
     for node in dag.nodes:
         deps = [e.source for e in dag.edges if e.target == node.id]
         deps_str = f" after {', '.join(deps)}" if deps else ""
-        args = ", ".join(f'{k}={repr(v)}' for k, v in node.args.items())
-        lines.append(f'{node.id} = {node.tool}({args}){deps_str}')
+        args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
+        lines.append(f'{node.id} = {node.invocation.tool_name}({args}){deps_str}')
     return "\n".join(lines)
 
 
@@ -173,9 +173,11 @@ def make_tool_executor() -> ToolExecutor:
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
-        tool=tool,
-        args=args,
-        boundary=Boundary(mode="read_only"),
+        invocation=ToolInvocation(
+            tool_name=tool,
+            arguments=args,
+            boundary=Boundary(mode="read_only"),
+        ),
     )
 
 
@@ -198,8 +200,8 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
-    assert dag.nodes[1].tool == "run_command"
-    assert dag.nodes[1].args == {"command": "dir", "cwd": "."}
+    assert dag.nodes[1].invocation.tool_name == "run_command"
+    assert dag.nodes[1].invocation.arguments == {"command": "dir", "cwd": "."}
     assert [(edge.source, edge.target) for edge in dag.edges] == [
         ("start", "list_files"),
         ("list_files", "show_result"),
@@ -265,7 +267,7 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
     loop_result = run(runtime.dag_agent_loop.run("Do a reviewed task", task_id="task_1", review_level="careful"))
     record = runtime.tasks["task_1"]
 
-    assert loop_result.status == "awaiting_dag_review"
+    assert loop_result.status == "awaiting_review"
     assert loop_result.run_result is None
     assert record.dag.status == "review_required"
     assert record.pending_review is not None
@@ -292,7 +294,7 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_replan"] = TaskRecord(
+    runtime.tasks["task_replan"] = RuntimeTaskRecord.dag_task(
         task_id="task_replan",
         user_request="Use observation downstream",
         dag=prepared,
@@ -333,7 +335,7 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_l2"] = TaskRecord(
+    runtime.tasks["task_l2"] = RuntimeTaskRecord.dag_task(
         task_id="task_l2",
         user_request="Adjust downstream based on observation",
         dag=prepared,
@@ -369,7 +371,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_l2_review"] = TaskRecord(
+    runtime.tasks["task_l2_review"] = RuntimeTaskRecord.dag_task(
         task_id="task_l2_review",
         user_request="Adjust downstream based on observation",
         dag=prepared,
@@ -383,7 +385,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     assert record.dag.status == "review_required"
     assert record.pending_review is not None
     assert record.pending_review.kind == "dag_replan"
-    assert record.pending_review.proposed_dag.nodes[-1].args == {"text": "adjusted_value"}
+    assert record.pending_review.proposed_dag.nodes[-1].invocation.arguments == {"text": "adjusted_value"}
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:
@@ -412,7 +414,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_failure_replan"] = TaskRecord(
+    runtime.tasks["task_failure_replan"] = RuntimeTaskRecord.dag_task(
         task_id="task_failure_replan",
         user_request="Recover from failure",
         dag=prepared,
@@ -479,7 +481,7 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_failure_needs_review"] = TaskRecord(
+    runtime.tasks["task_failure_needs_review"] = RuntimeTaskRecord.dag_task(
         task_id="task_failure_needs_review",
         user_request="Recover from failure",
         dag=prepared,
@@ -517,7 +519,7 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_parallel_failure"] = TaskRecord(
+    runtime.tasks["task_parallel_failure"] = RuntimeTaskRecord.dag_task(
         task_id="task_parallel_failure",
         user_request="Recover from parallel failure",
         dag=prepared,
@@ -552,7 +554,7 @@ def test_harness_runtime_fails_when_replan_is_unavailable() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_failure_requires_edit"] = TaskRecord(
+    runtime.tasks["task_failure_requires_edit"] = RuntimeTaskRecord.dag_task(
         task_id="task_failure_requires_edit",
         user_request="Recover from failure",
         dag=prepared,
@@ -581,7 +583,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_dag_agent_failure_review"] = TaskRecord(
+    runtime.tasks["task_dag_agent_failure_review"] = RuntimeTaskRecord.dag_task(
         task_id="task_dag_agent_failure_review",
         user_request="Recover from failure",
         dag=prepared,
@@ -619,7 +621,7 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_stale_trace"] = TaskRecord(
+    runtime.tasks["task_stale_trace"] = RuntimeTaskRecord.dag_task(
         task_id="task_stale_trace",
         user_request="Recover from stale failed node traces",
         dag=prepared,
@@ -662,7 +664,7 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
         executor=DAGExecutor(tool_executor=make_tool_executor()),
     )
     prepared = runtime.dag_agent_loop.prepare_for_review(initial)
-    runtime.tasks["task_patch_retry"] = TaskRecord(
+    runtime.tasks["task_patch_retry"] = RuntimeTaskRecord.dag_task(
         task_id="task_patch_retry",
         user_request="Patch and retry",
         dag=prepared,

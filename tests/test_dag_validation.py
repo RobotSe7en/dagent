@@ -6,7 +6,7 @@ from dagent.harness_runtime import DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.harness_runtime.tool_agent import ToolAgentLoop
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGEdge, DAGNode
+from dagent.schemas import DAG, DAGEdge, DAGNode, ToolInvocation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -14,12 +14,7 @@ from dagent.tools.registry import ToolRegistry
 def make_node(node_id: str) -> DAGNode:
     return DAGNode(
         id=node_id,
-        title=node_id,
-        goal=f"Complete {node_id}",
-        kind="tool",
-        tool="echo",
-        args={"text": node_id},
-        tools=["echo"],
+        invocation=ToolInvocation(tool_name="echo", arguments={"text": node_id}),
     )
 
 
@@ -59,6 +54,7 @@ def test_agent_nodes_are_rejected_for_executable_dags() -> None:
         nodes=[
             DAGNode(
                 id="reason",
+                invocation=ToolInvocation(tool_name=""),
             )
         ],
     )
@@ -156,5 +152,5 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.tool for node in dag.nodes] == ["run_command"]
-    assert [node.risk for node in dag.nodes] == ["low"]
+    assert [node.invocation.tool_name for node in dag.nodes] == ["run_command"]
+    assert [node.invocation.risk for node in dag.nodes] == ["low"]

@@ -23,7 +23,14 @@ from dagent.harness_runtime.runtime import (
     HarnessRuntime,
     RuntimeMode,
 )
-from dagent.harness_runtime.task_record import TaskRecord
+from dagent.harness_runtime.task_record import (
+    DAGTaskState,
+    ReviewContinuation,
+    RuntimeTaskMode,
+    RuntimeTaskRecord,
+    RuntimeTaskStatus,
+    ToolTaskState,
+)
 
 __all__ = [
     "ToolAgentLoop",
@@ -46,6 +53,11 @@ __all__ = [
     "NodeExecutionResult",
     "RunResult",
     "RuntimeMode",
-    "TaskRecord",
+    "RuntimeTaskRecord",
+    "RuntimeTaskMode",
+    "RuntimeTaskStatus",
+    "DAGTaskState",
+    "ReviewContinuation",
+    "ToolTaskState",
     "TraceStore",
 ]

@@ -48,7 +48,8 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     event_types = [event["type"] for event in events]
     assert "dag" in event_types
     assert event_types[-1] == "done"
-    assert events[-1]["status"] == "awaiting_dag_review"
+    assert events[-1]["status"] == "awaiting_review"
+    assert events[-1]["pending_review"]["kind"] == "initial_dag"
     assert events[-1]["dag"]["status"] == "review_required"
     assert events[-1]["final_answer"] == ""
 
@@ -140,7 +141,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     task_id = _sse_events(stream_response.text)[-1]["task_id"]
 
     dag = _sse_events(stream_response.text)[-1]["dag"]
-    dag["nodes"][0]["args"] = {"text": "reviewed"}
+    dag["nodes"][0]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
         "/messages/resume",

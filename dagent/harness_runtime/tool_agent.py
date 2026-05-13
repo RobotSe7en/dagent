@@ -12,7 +12,7 @@ from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary
+from dagent.schemas import Boundary, ToolInvocation
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
@@ -38,6 +38,7 @@ class ToolAgentLoopResult:
     completed: bool
     stop_reason: str
     control_events: list[dict[str, Any]] = field(default_factory=list)
+    invocations: list[ToolInvocation] = field(default_factory=list)
     needs_review: bool = False
     pending_review: PendingReview | None = None
 
@@ -47,6 +48,7 @@ class ToolAgentLoopResult:
             execution_context=_format_tool_execution_context(self.messages),
             final_answer=self.final_response,
             messages=self.messages,
+            invocations=self.invocations,
             completed=self.completed,
             needs_human_review=self.needs_review,
             pending_review=self.pending_review,
@@ -120,6 +122,7 @@ class ToolAgentLoop:
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
         control_events: list[dict[str, Any]] = []
+        invocations: list[ToolInvocation] = []
 
         for step in range(1, max_steps + 1):
             tool_definitions = [
@@ -143,9 +146,19 @@ class ToolAgentLoop:
                     completed=True,
                     stop_reason="completed",
                     control_events=control_events,
+                    invocations=invocations,
                 )
 
             for tool_call in response.tool_calls:
+                tool_obj = self.tool_executor.registry.get(tool_call.name)
+                invocation = ToolInvocation(
+                    invocation_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    boundary=boundary,
+                    risk=effective_risk(tool_obj, tool_call.arguments),
+                )
+                invocations.append(invocation)
                 self._emit_tool_event(on_event, tool_call, "tool_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
@@ -189,6 +202,7 @@ class ToolAgentLoop:
                             completed=False,
                             stop_reason="tool_review_pending",
                             control_events=control_events,
+                            invocations=invocations,
                             needs_review=True,
                             pending_review=pending_review,
                         )
@@ -200,6 +214,7 @@ class ToolAgentLoop:
                             completed=False,
                             stop_reason=control_result.stop_reason,
                             control_events=control_events,
+                            invocations=invocations,
                         )
                     continue
 
@@ -267,6 +282,7 @@ class ToolAgentLoop:
             completed=False,
             stop_reason="max_steps",
             control_events=control_events,
+            invocations=invocations,
         )
 
     def _tool_definitions_for_boundary(

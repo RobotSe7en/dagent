@@ -37,20 +37,22 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 
 | File | Responsibility |
 |------|----------------|
-| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` - top-level auto/direct/dag router and user-facing summarizer |
-| `dagent/harness_runtime/agent_loop.py` | Single-agent loop primitive with runtime/control tools |
+| `dagent/harness_runtime/runtime.py` | `HarnessRuntime` - top-level auto/tool/dag router, review gate, validation, and final result adapter |
+| `dagent/harness_runtime/tool_agent.py` | `ToolAgentLoop` - bounded tool-use loop with tool invocation recording and tool review gates |
 | `dagent/harness_runtime/dag_agent.py` | `DAGAgentLoop` - owns DAG messages, initial planning, review checkpoints, layer execution, observation, and replanning |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` - layer-by-layer DAG execution with placeholder injection |
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
 | `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` (`fast`/`careful`) + `effective_risk()` |
 | `dagent/harness_runtime/trace_store.py` | Immutable trace storage for completed node records |
 | `dagent/harness_runtime/loop_result.py` | `LoopResult` - unified contract between loops and the runtime |
-| `dagent/schemas/node.py` | `DAGNode` (6 fields: id, tool, args, boundary, risk, status) and `Boundary` |
+| `dagent/schemas/node.py` | `DAGNode` (`id`, `invocation`, `status`) |
+| `dagent/schemas/invocation.py` | `ToolInvocation` shared by tool mode and DAG nodes |
+| `dagent/schemas/common.py` | Shared `Boundary` and risk primitives |
 | `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
 | `dagent/tools/registry.py` | `ToolRegistry` with `all_tools()`, Tool has `boundary_fn`/`risk_fn` callbacks |
 | `dagent/tools/boundary.py` | Boundary enforcement (path, command, action checks) |
 | `dagent/api/app.py` | FastAPI app - `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
-| `web/src/App.tsx` | WebUI with Auto/Direct/DAG modes, DAG review dialog |
+| `web/src/App.tsx` | WebUI with Auto/Tool/DAG modes, review dialogs, and validation controls |
 | `profiles/dag_agent/agent.md` | DAG agent system prompt |
 
 ## DAGNode Schema (Current)
@@ -60,11 +62,15 @@ Every DAG node is a deterministic tool call - no agent nodes, no goals:
 ```python
 class DAGNode(BaseModel):
     id: str
-    tool: str | None = None
-    args: dict[str, Any] = Field(default_factory=dict)
+    invocation: ToolInvocation
+    status: NodeStatus = "planned"    # planned | ready | running | completed | failed | skipped
+
+class ToolInvocation(BaseModel):
+    invocation_id: str
+    tool_name: str
+    arguments: dict[str, Any]
     boundary: Boundary = Field(default_factory=Boundary)
     risk: RiskLevel = "low"           # low | medium | high
-    status: NodeStatus = "planned"    # planned | ready | running | completed | failed | skipped
 
 class Boundary(BaseModel):
     mode: BoundaryMode = "read_only"  # read_only | write_limited | full
@@ -80,7 +86,7 @@ Removed fields (do NOT reintroduce): `risk_reason`, `title`, `goal`, `kind`, `ag
 User request �?DAGAgentLoop.run()
   ├── Initial planning (LLM via _request_dag, max_cycles budget)
   │     ├── DAG → review gate (fast=auto, careful=pause)
-  │     └── Text → direct answer, return
+  │     └── Text → final answer, return
   │
   ├── execute() loop (unified, max_cycles budget)
   │     └── while cycle < max_cycles:
@@ -88,7 +94,7 @@ User request �?DAGAgentLoop.run()
   │           ├── fmt observation (layer_completed / layer_failed / dag_executed)
   │           ├── _request_dag(observation) → LLM
   │           │     ├── new DAG → _apply_replan → loop
-  │           │     ├── text → set message_markdown → break
+  │           │     ├── text → set final_response → break
   │           │     └── NO_CHANGE
   │           │           ├── DAG completed → break
   │           │           └── otherwise → continue
@@ -97,11 +103,11 @@ User request �?DAGAgentLoop.run()
   └── _finalize_run → DAGAgentLoopResult → return to runtime
 
 Runtime:
-  handle_message / resume_dag → dasm_agent_loop.run() / resume() → pass through
-  (no _continue_dag_loop, no _summarize_dag_run �?DAG loop self-contained)
+  handle_message / resume_dag → dag_agent_loop.run() / resume() → review/validation/final result adapter
+  (DAG loop self-contained; runtime only adapts review, validation, task state, and final result)
 ```
 
-The observe-replan loop is fully self-contained within DAGAgentLoop. Runtime only routes modes and adapts UI. `_continue_dag_loop` and `_summarize_dag_run` have been removed.
+The observe-replan loop is fully self-contained within DAGAgentLoop. Runtime routes modes, records unified task state, gates human review, runs optional validation, and returns `final_answer`. `_continue_dag_loop` and `_summarize_dag_run` have been removed.
 
 ### Key Design Decisions
 
@@ -109,7 +115,7 @@ The observe-replan loop is fully self-contained within DAGAgentLoop. Runtime onl
 - **Placeholder injection (Level 1 replanning)**: `{{node_id.output}}` in args gets replaced with actual output. Happens automatically in `_execute_next_ready_layer`.
 - **LLM-driven unified loop**: Initial planning and L2/L3 replanning use the same `_request_dag()` call — pass `dag_messages` history + current observation, get back a DAG (continue), final answer string (done), or `None` (NO_CHANGE). The execute loop has no code-level success/failure branching; every layer result goes to the LLM, which decides the strategy. Loop terminates when the LLM returns a final answer instead of a DAG. `dag_from_model_output()` returns `DAG | str | None` by trying DSL parsing first, falling back to final answer string if content is not valid DSL.
 - **DAG agent session memory**: `dag_messages` (a `[user, assistant, ...]` list) persists across the entire plan �?execute �?replan lifecycle. Seeded with conversation history at `DAGAgentLoop.run()` time, then each internal DAG model call appends its prompt and response. This gives the LLM full context of its prior planning decisions during replanning, without needing a separate AgentLoop.
-- **dag_start auto-complete**: synthetic start nodes (`tool="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
+- **dag_start auto-complete**: synthetic start nodes (`invocation.tool_name="dag_start"`) are auto-completed in `execute_node` without calling ToolExecutor.
 - **Dynamic tool injection**: `HarnessRuntime.__init__` injects `dag_executor.tool_executor.registry.all_tools()` into `dag_agent.tools`, which `PromptBuilder` renders as `## Available Tools` in the prompt.
 - **Boundary enforcement**: whitelist approach - `allowed_paths` and `allowed_commands` constrain what each node can access.
 - **Risk/boundary separation**: risk = "need approval?" (pre-execution), boundary = "allowed to execute?" (runtime constraint). `effective_risk(tool, args)` in `review_policy.py` is the single source of truth.
@@ -143,7 +149,7 @@ ReviewPolicy (2 levels)             # in review_policy.py
   careful  -> pause when a DAG is created or changed
 ```
 
-All three modes (auto/direct/dag) go through `ToolExecutor.execute()` which enforces boundary constraints.
+All three modes (auto/tool/dag) go through `ToolExecutor.execute()` when they execute tools, and it enforces boundary constraints.
 
 ## Model Configuration
 
@@ -198,7 +204,7 @@ npx tsc --noEmit
 
 2. **DAG completed detection**: `_dag_completed()` checks all nodes are in `record.node_results` with `completed=True`. NO_CHANGE after DAG completion → break (no infinite loop). Completed DAG observation uses `kind="dag_executed"` instead of `layer_completed`.
 
-3. **Removed `_continue_dag_loop` / `_summarize_dag_run` from runtime**: DAGAgentLoop is now fully self-contained. After `execute()`, `run()` calls `_finalize_run()` to wrap the result. Runtime just passes through — no multi-segment DAG continuation, no external LLM summarization. Removed `_active_continuation_task_id`.
+3. **Runtime no longer summarizes DAG output**: DAGAgentLoop is now fully self-contained. After `execute()`, `run()` calls `_finalize_run()` to wrap the result. Runtime records task state, handles review/validation, and returns the loop's `final_answer`; there is no multi-segment DAG continuation and no external LLM summarization.
 
 4. **Fixed replan downstream invalidation**: `_apply_replan` now cascades result invalidation to downstream nodes via `_invalidate_patch_results()` (was: only invalidated nodes with changed tool/args, missing dependents).
 
@@ -218,10 +224,10 @@ npx tsc --noEmit
 4. **LLM no longer proposes risk**: Removed `risk` field from `PlanNodeSpec`. Risk is computed server-side via `effective_risk()`.
 5. **Removed `auto_mode_tools.py`**: Routing is now a lightweight LLM classifier in `runtime.py._route()`, not a tool-based approach.
 6. **DSL-only DAG creation**: Removed the legacy full-DAG compatibility path and updated tests to feed PlanSpec DSL fixtures.
-7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `TaskRecord`, seeded from conversation history at `DAGAgentLoop.run()` time. Each internal DAG model call appends its prompt and response. Removed `conversation_messages` parameter entirely �?all context flows through `dag_messages`.
+7. **DAG agent session memory (`dag_messages`)**: Single `[user, assistant, ...]` message list on `RuntimeTaskRecord.dag_state`, seeded from conversation history at `DAGAgentLoop.run()` time. Each internal DAG model call appends its prompt and response. Removed `conversation_messages` parameter entirely - all context flows through `dag_messages`.
 8. **Complete DSL replan**: Replan always returns a complete PlanSpec DSL including both completed and pending nodes. Removed `_merge_completed_nodes` and all partial DSL merge logic from `runtime.py`.
 9. **Simplified review modes**: `fast` runs DAG creation/replans without human checkpoints; `careful` pauses only when the DAG is created or changed. Execution failures and boundary violations feed back into LLM replanning instead of creating separate human review or permission gates.
-10. **DAGAgentLoop consolidation**: Removed public `LLMDAGAgent`/`DAGAgent` and `aplan()` APIs. DAG creation, validation retries, execution, and replanning now live behind `DAGAgentLoop.run()` / `resume()` / `execute()`. `HarnessRuntime` only routes modes and summarizes DAG results.
+10. **DAGAgentLoop consolidation**: Removed public `LLMDAGAgent`/`DAGAgent` and `aplan()` APIs. DAG creation, validation retries, execution, and replanning now live behind `DAGAgentLoop.run()` / `resume()` / `execute()`. `HarnessRuntime` routes modes, handles review/validation, and returns loop `final_answer`.
 11. **Event-style DAG observations**: Removed separate `_dag_planning_prompt` and `_replan_user_message` prompt builders. DAGAgentLoop now feeds history plus `_format_dag_observation()` messages for planning context, validation feedback, successful layers, and failed layers; `agent.md` remains the source of planning/replanning rules.
 12. **Unified LLM-driven execute loop**: Removed `layer.completed` code-determined termination. Every layer result (success or failure) goes to the LLM via `_request_dag`. The LLM returns: a new DAG (continue), NO_CHANGE (execute next layer, or break if DAG completed), or a final answer string (loop ends). `dag_from_model_output` returns `DAG | str | None`.
 
@@ -247,7 +253,7 @@ After each layer executes, L1 placeholder injection runs first (code, no LLM). T
 `dag_from_model_output()` returns `DAG | str | None`:
 
 - **DAG**: valid PlanSpec DSL. Applied via `_apply_replan`, loop continues.
-- **str**: LLM final answer string, sets `record.message_markdown`, loop ends.
+- **str**: LLM final answer string, sets `record.final_response`, loop ends.
 - **None**: `NO_CHANGE` signal. If DAG completed (`_dag_completed`) → break; otherwise continue executing.
 
 Initial planning uses the same `_request_dag` with `allow_no_change=False` (NO_CHANGE is an error for initial planning).

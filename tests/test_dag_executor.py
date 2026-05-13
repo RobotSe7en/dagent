@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, ToolInvocation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -23,14 +23,12 @@ def node(
     tool = (tools or ["echo"])[0]
     return DAGNode(
         id=node_id,
-        title=node_id,
-        goal=f"goal {node_id}",
-        kind="tool",
-        tool=tool,
-        args=args or {"text": node_id},
-        tools=[tool],
-        risk=risk,
-        boundary=boundary or Boundary(),
+        invocation=ToolInvocation(
+            tool_name=tool,
+            arguments=args or {"text": node_id},
+            boundary=boundary or Boundary(),
+            risk=risk,
+        ),
     )
 
 
@@ -91,7 +89,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
     assert result.completed is True
     assert result.node_results["write"].final_response.endswith("notes.md:hi")
-    assert dag.nodes[0].risk == "low"
+    assert dag.nodes[0].invocation.risk == "low"
 
 
 def test_medium_risk_dag_requires_approval() -> None:
@@ -150,13 +148,12 @@ def tool_node(
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
-        title=node_id,
-        goal=f"run {tool}",
-        kind="tool",
-        tool=tool,
-        args=args,
-        risk=risk,
-        boundary=boundary or Boundary(),
+        invocation=ToolInvocation(
+            tool_name=tool,
+            arguments=args,
+            boundary=boundary or Boundary(),
+            risk=risk,
+        ),
     )
 
 

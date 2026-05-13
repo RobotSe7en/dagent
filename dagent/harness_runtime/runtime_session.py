@@ -7,8 +7,15 @@ from typing import Any
 
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.harness_runtime.task_record import ToolTaskState, TaskRecord
-from dagent.schemas import Boundary
+from dagent.harness_runtime.task_record import (
+    DAGTaskState,
+    ReviewContinuation,
+    RuntimeTaskMode,
+    RuntimeTaskRecord,
+    RuntimeTaskStatus,
+    ToolTaskState,
+)
+from dagent.schemas import Boundary, ToolInvocation
 
 
 MAX_CONVERSATION_HISTORY_MESSAGES = 20
@@ -17,10 +24,11 @@ MAX_CONVERSATION_HISTORY_MESSAGES = 20
 class HarnessRuntimeSession:
     """Mutable conversation and review state owned by a harness session."""
 
-    def __init__(self, *, tasks: dict[str, TaskRecord]) -> None:
+    def __init__(self, *, tasks: dict[str, RuntimeTaskRecord]) -> None:
         self.tasks = tasks
         self.conversation_history: list[dict[str, Any]] = []
-        self._tool_task_states: dict[str, ToolTaskState] = {}
+        self.runtime_tasks = tasks
+        self._review_continuations: dict[str, ReviewContinuation] = {}
 
     def tasks_context(self) -> str:
         if not self.tasks:
@@ -28,7 +36,8 @@ class HarnessRuntimeSession:
         payload = {
             "recent_dag_tasks": [
                 _task_context_payload(record)
-                for record in list(self.tasks.values())[-3:]
+                for record in list(self.runtime_tasks.values())[-3:]
+                if record.dag_state is not None
             ]
         }
         return (
@@ -67,34 +76,108 @@ class HarnessRuntimeSession:
             self.conversation_history.append({"role": "assistant", "content": assistant_message})
         self.conversation_history = self.conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
-    def store_tool_review_state(
+    def store_review_continuation(
         self,
+        *,
+        task_id: str,
         user_request: str,
         review_level: ReviewLevel,
         loop_result: LoopResult,
-        *,
         boundary: Boundary,
     ) -> None:
         review = loop_result.pending_review
-        if review is None or review.kind != "tool_review" or review.tool_call is None:
+        if review is None:
             return
-        self._tool_task_states[review.review_id] = ToolTaskState(
+        tool_call = review.tool_call or {}
+        self._review_continuations[review.review_id] = ReviewContinuation(
             review_id=review.review_id,
+            task_id=task_id,
+            kind=review.kind,
             user_request=user_request,
             messages=loop_result.messages,
+            invocations=loop_result.invocations,
             review_level=review_level,
             boundary=boundary,
-            tool_call_id=review.tool_call["tool_call_id"],
-            tool_name=review.tool_call["name"],
-            tool_args=review.tool_call["arguments"],
+            tool_call_id=tool_call.get("tool_call_id"),
+            tool_name=tool_call.get("name"),
+            tool_args=tool_call.get("arguments", {}),
             risk=review.payload.get("risk", "low"),
         )
 
-    def pop_tool_review_state(self, review_id: str) -> ToolTaskState | None:
-        return self._tool_task_states.pop(review_id, None)
+    def pop_review_continuation(self, review_id: str) -> ReviewContinuation | None:
+        return self._review_continuations.pop(review_id, None)
+
+    def discard_review_continuations_for_task(self, task_id: str) -> None:
+        stale_review_ids = [
+            review_id
+            for review_id, continuation in self._review_continuations.items()
+            if continuation.task_id == task_id
+        ]
+        for review_id in stale_review_ids:
+            self._review_continuations.pop(review_id, None)
+
+    def record_runtime_task(
+        self,
+        *,
+        task_id: str,
+        mode: RuntimeTaskMode,
+        user_request: str,
+        review_level: ReviewLevel,
+        status: RuntimeTaskStatus,
+        loop_result: LoopResult,
+        invocations: list[ToolInvocation] | None = None,
+    ) -> RuntimeTaskRecord:
+        existing = self.runtime_tasks.get(task_id)
+        execution_records = list(existing.trace_records) if existing and existing.dag_state else []
+        task_invocations = invocations if invocations is not None else loop_result.invocations
+        record = existing or (
+            RuntimeTaskRecord.dag_task(
+                task_id=task_id,
+                user_request=user_request,
+                dag=loop_result.dag,
+                review_level=review_level,
+            )
+            if mode == "dag" and loop_result.dag is not None
+            else RuntimeTaskRecord.tool_task(
+                task_id=task_id,
+                user_request=user_request,
+                review_level=review_level,
+            )
+        )
+        record.status = status
+        record.review_level = review_level
+        record.pending_review = loop_result.pending_review
+        record.final_response = loop_result.final_answer
+        record.invocations = {
+            invocation.invocation_id: invocation
+            for invocation in task_invocations
+        }
+        record.execution_records = execution_records
+        if loop_result.dag is not None:
+            if record.dag_state is None:
+                record.dag_state = DAGTaskState(dag=loop_result.dag)
+            record.dag_state.dag = loop_result.dag
+            if loop_result.run_result and loop_result.run_result not in record.dag_state.runs:
+                record.dag_state.runs.append(loop_result.run_result)
+            if loop_result.run_result:
+                record.dag_state.node_results = loop_result.run_result.node_results
+            record.dag_state.trace_records = execution_records
+        else:
+            previous_boundary = (
+                record.tool_state.boundary
+                if record.tool_state is not None
+                else Boundary(mode="read_only", allowed_paths=["."])
+            )
+            record.tool_state = ToolTaskState(
+                messages=loop_result.messages,
+                boundary=previous_boundary,
+                steps=len(task_invocations),
+            )
+        self.runtime_tasks[task_id] = record
+        return record
 
 
-def _task_context_payload(record: TaskRecord) -> dict[str, Any]:
+def _task_context_payload(record: RuntimeTaskRecord) -> dict[str, Any]:
     return {
         "task_id": record.task_id,
         "dag_id": record.dag.dag_id,

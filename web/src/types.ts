@@ -8,12 +8,17 @@ export interface Boundary {
   allowed_commands?: string[];
 }
 
-export interface DagNode {
-  id: string;
-  tool?: string | null;
-  args?: Record<string, unknown>;
+export interface ToolInvocation {
+  invocation_id?: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
   boundary?: Boundary;
   risk?: RiskLevel;
+}
+
+export interface DagNode {
+  id: string;
+  invocation: ToolInvocation;
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
 }
 
@@ -29,7 +34,6 @@ export interface Dag {
   version: number;
   status:
     | 'draft'
-    | 'awaiting_dag_review'
     | 'review_required'
     | 'approved'
     | 'running'

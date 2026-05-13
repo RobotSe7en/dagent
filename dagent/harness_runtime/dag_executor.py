@@ -111,7 +111,10 @@ class DAGExecutor:
         if not pending_nodes:
             return None
         for node in pending_nodes:
-            node.args = _inject_placeholders(node.args, node_results)
+            node.invocation.arguments = _inject_placeholders(
+                node.invocation.arguments,
+                node_results,
+            )
             _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
             *[
@@ -141,7 +144,7 @@ class DAGExecutor:
         dag: DAG,
         completed_results: dict[str, NodeExecutionResult],
     ) -> NodeExecutionResult:
-        if node.tool == "dag_start":
+        if node.invocation.tool_name == "dag_start":
             node.status = "completed"
             return NodeExecutionResult(
                 node_id=node.id,
@@ -162,25 +165,26 @@ class DAGExecutor:
             raise ToolExecutionError(
                 "DAGExecutor cannot execute tool nodes without a ToolExecutor."
             )
-        if not node.tool:
+        invocation = node.invocation
+        if not invocation.tool_name:
             raise ToolExecutionError(f"Tool node '{node.id}' has no tool name.")
 
-        tool_call_id = f"node_{node.id}"
+        tool_call_id = invocation.invocation_id
         self.trace_recorder.record(
             "tool_called",
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": node.tool,
-                "arguments": node.args,
+                "name": invocation.tool_name,
+                "arguments": invocation.arguments,
             },
         )
         try:
             content = self.tool_executor.execute(
-                node.tool,
-                node.args,
-                boundary=node.boundary,
+                invocation.tool_name,
+                invocation.arguments,
+                boundary=invocation.boundary,
             )
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
@@ -199,7 +203,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": node.tool,
+                    "name": invocation.tool_name,
                     "error": str(exc),
                 },
             )
@@ -226,7 +230,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": node.tool,
+                    "name": invocation.tool_name,
                     "error": str(exc),
                 },
             )
@@ -244,7 +248,7 @@ class DAGExecutor:
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": node.tool,
+                "name": invocation.tool_name,
                 "content": content,
             },
         )
@@ -277,7 +281,7 @@ class DAGExecutor:
         return result
 
     def _enforce_review_gate(self, dag: DAG) -> None:
-        needs_approval = any(node.risk in {"medium", "high"} for node in dag.nodes)
+        needs_approval = any(node.invocation.risk in {"medium", "high"} for node in dag.nodes)
         if needs_approval and dag.status != "approved":
             raise DAGExecutionError("DAG is not approved for execution.")
 
@@ -387,7 +391,7 @@ def _placeholder_value(
 
 
 def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
-    unresolved = _find_unresolved_placeholders(node.args)
+    unresolved = _find_unresolved_placeholders(node.invocation.arguments)
     if unresolved:
         joined = ", ".join(sorted(unresolved))
         raise DAGExecutionError(
@@ -416,22 +420,23 @@ def _augment_tool_violation(
     node: DAGNode,
     tool_executor: ToolExecutor,
 ) -> None:
-    if node.tool and not violation.tool_name:
-        violation.tool_name = node.tool
-    tool = tool_executor.registry.get(node.tool) if node.tool else None
+    invocation = node.invocation
+    if invocation.tool_name and not violation.tool_name:
+        violation.tool_name = invocation.tool_name
+    tool = tool_executor.registry.get(invocation.tool_name) if invocation.tool_name else None
     if tool is None:
         return
     if not violation.action:
         violation.action = tool.action
     if not violation.path:
         for arg_name in tool.path_args:
-            value = node.args.get(arg_name)
+            value = invocation.arguments.get(arg_name)
             if value is not None:
                 violation.path = str(value)
                 break
     if not violation.command:
         for arg_name in tool.command_args:
-            value = node.args.get(arg_name)
+            value = invocation.arguments.get(arg_name)
             if value is not None:
                 violation.command = str(value)
                 break

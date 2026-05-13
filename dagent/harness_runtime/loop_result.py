@@ -7,7 +7,7 @@ from typing import Any
 
 from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.task_record import PendingReview
-from dagent.schemas import DAG
+from dagent.schemas import DAG, ToolInvocation
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,9 @@ class LoopResult:
 
     events: list[dict[str, Any]] = field(default_factory=list)
     """UI-facing events produced by the loop (dag_created, dag_executed, etc.)."""
+
+    invocations: list[ToolInvocation] = field(default_factory=list)
+    """Tool invocations produced by the loop, independent of execution shape."""
 
     # DAG-specific (None for tool mode)
     dag: DAG | None = None

@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from dagent.harness_runtime.review_policy import effective_risk
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, ToolInvocation
 from dagent.tools.registry import Tool
 
 
@@ -173,10 +173,12 @@ def _compile_plan_node(
     registered = (tool_index or {}).get(node.tool)
     return DAGNode(
         id=node.id,
-        tool=node.tool,
-        args=args,
-        boundary=_infer_boundary(registered, args),
-        risk=effective_risk(registered, args),
+        invocation=ToolInvocation(
+            tool_name=node.tool,
+            arguments=args,
+            boundary=_infer_boundary(registered, args),
+            risk=effective_risk(registered, args),
+        ),
     )
 
 
@@ -200,10 +202,12 @@ def _ensure_start_node(
         next_nodes = [
             DAGNode(
                 id=start_id,
-                tool="dag_start",
-                args={},
-                boundary=Boundary(mode="read_only"),
-                risk="low",
+                invocation=ToolInvocation(
+                    tool_name="dag_start",
+                    arguments={},
+                    boundary=Boundary(mode="read_only"),
+                    risk="low",
+                ),
             ),
             *next_nodes,
         ]
