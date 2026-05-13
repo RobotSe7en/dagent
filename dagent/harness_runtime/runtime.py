@@ -1,6 +1,6 @@
 """Top-level harness runtime.
 
-The runtime orchestrates: route -> loop -> review -> summarize.
+The runtime orchestrates: route -> loop -> review -> validation -> final result.
 It does not know how loops execute internally; it only consumes LoopResult.
 """
 
@@ -54,7 +54,7 @@ serial work, or anything that does not need structured orchestration.\
 @dataclass(frozen=True)
 class HarnessMessageResult:
     status: Literal["completed", "awaiting_dag_review", "awaiting_tool_review", "awaiting_change_review", "awaiting_approval", "failed"]
-    message_markdown: str
+    final_answer: str
     dag: DAG | None = None
     run_result: RunResult | None = None
     task_id: str | None = None
@@ -73,7 +73,7 @@ ReviewGateCallback = Callable[[LoopResult], None]
 
 
 class HarnessRuntime:
-    """Orchestrates: route -> loop -> review -> summarize."""
+    """Orchestrates: route -> loop -> review -> validation -> final result."""
 
     def __init__(
         self,
@@ -118,7 +118,7 @@ class HarnessRuntime:
             return None
         return HarnessMessageResult(
             status=self._review_status(loop_result.pending_review),
-            message_markdown="",
+            final_answer="",
             dag=loop_result.dag,
             run_result=loop_result.run_result,
             task_id=loop_result.task_id,
@@ -172,24 +172,17 @@ class HarnessRuntime:
             })
         return passed, feedback
 
-    async def _build_summary_result(
+    def _build_final_result(
         self,
         loop_result: LoopResult,
         user_request: str,
-        *,
-        on_token: TokenHandler | None,
     ) -> HarnessMessageResult:
-        summary = await self._summarize(
-            user_request=user_request,
-            execution_context=loop_result.execution_context,
-            final_answer=loop_result.final_answer,
-            on_token=on_token,
-        )
+        final_answer = loop_result.final_answer.strip() or _fallback_final_answer(loop_result)
         if not loop_result.messages:
-            self.session.append_conversation_turn(user_request, summary)
+            self.session.append_conversation_turn(user_request, final_answer)
         return HarnessMessageResult(
             status="completed" if loop_result.completed else "failed",
-            message_markdown=summary,
+            final_answer=final_answer,
             dag=loop_result.dag,
             run_result=loop_result.run_result,
             task_id=loop_result.task_id,
@@ -272,7 +265,7 @@ class HarnessRuntime:
             return outcome.gate
 
         self.session.record_conversation(outcome.loop_result)
-        return await self._build_summary_result(outcome.loop_result, message, on_token=on_token)
+        return self._build_final_result(outcome.loop_result, message)
 
     async def resume_dag(
         self,
@@ -304,7 +297,7 @@ class HarnessRuntime:
         if was_completed and dag_result.run_result is record.runs[-1]:
             return HarnessMessageResult(
                 status="completed",
-                message_markdown="",
+                final_answer="",
                 dag=loop_result.dag,
                 run_result=loop_result.run_result,
                 task_id=task_id,
@@ -338,7 +331,7 @@ class HarnessRuntime:
         if outcome.gate is not None:
             return outcome.gate
 
-        return await self._build_summary_result(outcome.loop_result, record.user_request, on_token=on_token)
+        return self._build_final_result(outcome.loop_result, record.user_request)
 
     # ==================================================================
     # Route
@@ -398,7 +391,7 @@ class HarnessRuntime:
             return dag_result.to_loop_result()
         elif mode == "tool":
             # Tool mode: only stream <think> blocks from the loop.
-            # The actual answer comes from _summarize().
+            # The final answer is returned in the done payload.
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self._run_tool(
                 message,
@@ -553,58 +546,12 @@ class HarnessRuntime:
             return outcome.gate
 
         self.session.record_conversation(outcome.loop_result)
-        return await self._build_summary_result(outcome.loop_result, state.user_request, on_token=on_token)
+        return self._build_final_result(outcome.loop_result, state.user_request)
 
-    # ==================================================================
-    # Summarize
-    # ==================================================================
 
-    async def _summarize(
-        self,
-        *,
-        user_request: str,
-        execution_context: str,
-        final_answer: str = "",
-        on_token: TokenHandler | None = None,
-    ) -> str:
-        """Streaming LLM call that produces the user-facing answer."""
-        task_content = (
-            "You are summarizing the results of a task execution for the user.\n\n"
-            "User's original request:\n{{ user_request }}\n\n"
-            "Execution results:\n{{ execution_context }}\n\n"
-            "{% if final_answer %}"
-            "The loop produced this answer:\n{{ final_answer }}\n\n"
-            "{% endif %}"
-            "Provide a clear, helpful answer to the user based on these results. "
-            "Preserve specific details from the loop's answer: names, numbers, "
-            "paths, and factual claims must be carried forward exactly. "
-            "Be concise and focus on what the user asked for."
-        )
-        messages = self.prompt_builder.build(
-            PromptRequest(
-                profile=self.conversation_profile,
-                task_content=task_content,
-                memory=self.conversation_profile.memory,
-                variables={
-                    "user_request": user_request,
-                    "execution_context": execution_context,
-                    "final_answer": final_answer,
-                },
-            )
-        )
-
-        if on_token is not None and hasattr(self.provider, "stream_chat"):
-            # Only stream the answer, not the summarizer's <think> reasoning.
-            answer_only = _ThinkTagFilter(on_token, keep="outside")
-            content = ""
-            response = None
-            async for event in self.provider.stream_chat(messages):
-                if event.type == "token" and event.content:
-                    answer_only(event.content)
-                    content += event.content
-                elif event.type == "done":
-                    response = event.response
-            return (response.content if response else content) or content
-        else:
-            response = await self.provider.chat(messages)
-            return response.content
+def _fallback_final_answer(loop_result: LoopResult) -> str:
+    if loop_result.execution_context.strip():
+        return loop_result.execution_context.strip()
+    if loop_result.completed:
+        return "The task completed, but no final answer was produced."
+    return "The task did not complete, and no final answer was produced."

@@ -141,7 +141,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 "task_id": result.task_id,
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "message_markdown": result.message_markdown,
+                "final_answer": result.final_answer,
             }
         )
 
@@ -208,7 +208,7 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
                 "task_id": result.task_id,
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "message_markdown": result.message_markdown,
+                "final_answer": result.final_answer,
             }
         )
 
@@ -265,7 +265,7 @@ async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
                 "task_id": result.task_id,
                 "dag": None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "message_markdown": result.message_markdown,
+                "final_answer": result.final_answer,
             }
         )
 

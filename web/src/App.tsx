@@ -281,7 +281,17 @@ export function App() {
 
   const enqueueAssistantToken = (content: string) => {
     if (!content) return;
+    const shouldFlushImmediately = tokenQueueRef.current.length === 0 && tokenTimerRef.current === null;
     tokenQueueRef.current.push(content);
+    if (shouldFlushImmediately) {
+      flushTokenQueue();
+    }
+    ensureTokenTimer();
+  };
+
+  const enqueueFinalAnswer = (finalAnswer: string) => {
+    if (!finalAnswer) return;
+    tokenQueueRef.current.push(finalAnswer);
     ensureTokenTimer();
   };
 
@@ -456,15 +466,11 @@ export function App() {
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
           }
           handlePendingReview(payload.pending_review);
-          updateLastAssistantText((message) => ({
-            ...message,
-            content: message.content || payload.message_markdown,
-            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
-          }));
+          enqueueFinalAnswer(payload.final_answer);
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: payload.dag ? 'HarnessRuntime summarized the DAG result.' : 'ToolAgentLoop completed the request.',
+            detail: payload.dag ? 'DAGAgentLoop completed the request.' : 'ToolAgentLoop completed the request.',
             status: payload.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -524,12 +530,8 @@ export function App() {
             if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
           }
           handlePendingReview(payload.pending_review);
-          updateLastAssistantText((message) => ({
-            ...message,
-            content: message.content || payload.message_markdown,
-            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
-          }));
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'HarnessRuntime summarized the DAG result.', status: 'completed' });
+          enqueueFinalAnswer(payload.final_answer);
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAGAgentLoop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
@@ -568,12 +570,8 @@ export function App() {
         onDone: (payload) => {
           flushQueuedTokensNow();
           handlePendingReview(payload.pending_review);
-          updateLastAssistantText((message) => ({
-            ...message,
-            content: message.content || payload.message_markdown,
-            timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
-          }));
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'HarnessRuntime summarized the result.', status: 'completed' });
+          enqueueFinalAnswer(payload.final_answer);
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'ToolAgentLoop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);

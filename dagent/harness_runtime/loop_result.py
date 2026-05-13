@@ -21,14 +21,13 @@ class LoopResult:
     # What happened
     execution_context: str
     """Human-readable summary of what the loop did (tool calls, node results, etc.).
-    Used by the validator and the summarizer.  Each loop formats this itself."""
+    Used by the validator and deterministic fallback output. Each loop formats this itself."""
 
     messages: list[dict[str, Any]]
     """Conversation messages produced during the loop, for runtime to record."""
 
     final_answer: str = ""
-    """The answer produced by the loop, for the validator to assess.
-    This is NOT the user-facing message; _summarize() still produces that."""
+    """The user-facing answer produced by the loop and checked by validation."""
 
     events: list[dict[str, Any]] = field(default_factory=list)
     """UI-facing events produced by the loop (dag_created, dag_executed, etc.)."""

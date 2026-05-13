@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
+from dagent.harness_runtime.dag_compiler import strip_thinking_blocks
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview
@@ -136,7 +137,7 @@ class ToolAgentLoop:
 
             if not response.tool_calls:
                 return ToolAgentLoopResult(
-                    final_response=response.content,
+                    final_response=strip_thinking_blocks(response.content).strip(),
                     messages=loop_messages,
                     steps=step,
                     completed=True,
@@ -355,7 +356,7 @@ class ToolAgentLoop:
 
 
 def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
-    """Summarize ToolAgentLoop tool calls for the validator/summarizer."""
+    """Format ToolAgentLoop tool calls for validation and fallback output."""
     lines: list[str] = []
     for message in messages:
         if message.get("role") == "tool":

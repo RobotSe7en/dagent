@@ -100,7 +100,7 @@ flowchart TD
 ```
 
 `HarnessRuntime` is the top-level control layer. It owns routing, session state,
-human review gates, optional result validation, retry feedback, and final summarization.
+human review gates, optional result validation, retry feedback, and final result delivery.
 The execution details stay inside `ToolAgentLoop` for tool-use work and
 `DAGAgentLoop` for structured DAG work.
 
@@ -158,7 +158,7 @@ Trace DB serves three purposes:
 The runtime is intentionally layered:
 
 - `HarnessRuntime` routes requests, manages runtime session state, applies human
-  review gates, optionally validates final results, and summarizes the answer.
+  review gates, optionally validates final results, and returns the loop's final answer.
 - DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
@@ -294,7 +294,7 @@ async def main():
         review_level="fast",
     )
     print(result.status)
-    print(result.message_markdown)
+    print(result.final_answer)
 
 asyncio.run(main())
 ```

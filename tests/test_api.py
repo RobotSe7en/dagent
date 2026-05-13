@@ -14,7 +14,6 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     state.harness_runtime = _runtime(MockProvider([
         ChatResponse(content="tool"),            # _route()
         ChatResponse(content="hello there"),     # ToolAgentLoop
-        ChatResponse(content="hello summary"),   # _summarize()
     ]))
     client = TestClient(app)
 
@@ -27,7 +26,7 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     events = _sse_events(response.text)
     assert events[-1]["type"] == "done"
     assert events[-1]["dag"] is None
-    assert events[-1]["message_markdown"] == "hello summary"
+    assert events[-1]["final_answer"] == "hello there"
 
 
 def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
@@ -51,7 +50,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     assert event_types[-1] == "done"
     assert events[-1]["status"] == "awaiting_dag_review"
     assert events[-1]["dag"]["status"] == "review_required"
-    assert events[-1]["message_markdown"] == ""
+    assert events[-1]["final_answer"] == ""
 
 
 def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
@@ -59,8 +58,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
         MockProvider([
             ChatResponse(content="dag"),                                          # _route()
             ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),  # DAG agent
-            ChatResponse(content="NO_CHANGE"),                                    # execute observation
-            ChatResponse(content="Final answer: echo:ok"),                        # _summarize()
+            ChatResponse(content="Final answer: echo:ok"),                        # execute observation
         ])
     )
     client = TestClient(app)
@@ -86,8 +84,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
             ChatResponse(content="dag"),                                              # _route()
             ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
             ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # replan
-            ChatResponse(content="NO_CHANGE"),                                        # execute observation
-            ChatResponse(content="Recovered after replanning."),                       # _summarize()
+            ChatResponse(content="Recovered after replanning."),                       # execute observation
         ])
     )
     client = TestClient(app)
@@ -105,13 +102,12 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     assert events[-1]["status"] == "completed"
 
 
-def test_api_dag_mode_summarizes_failed_fast_dag() -> None:
+def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     state.harness_runtime = _runtime(
         MockProvider([
             ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
             ChatResponse(content="NO_CHANGE"),
             ChatResponse(content="The DAG failed after retrying the failing node."),
-            ChatResponse(content="The task failed."),     # _summarize()
         ])
     )
     client = TestClient(app)
@@ -132,8 +128,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
-            ChatResponse(content="NO_CHANGE"),       # execute observation
-            ChatResponse(content="Final answer: echo:ok"),  # _summarize()
+            ChatResponse(content="Final answer: echo:ok"),  # execute observation
         ])
     )
     client = TestClient(app)
@@ -169,13 +164,12 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     assert records[0]["status"] == "completed"
 
 
-def test_api_resume_dag_streams_only_summary_answer_once() -> None:
+def test_api_resume_dag_returns_final_answer_without_streaming_answer_text() -> None:
     state.harness_runtime = _runtime(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
             ChatResponse(content="<think>observe</think>DAG agent final answer"),
-            ChatResponse(content="Summarized final answer"),
         ])
     )
     client = TestClient(app)
@@ -197,8 +191,7 @@ def test_api_resume_dag_streams_only_summary_answer_once() -> None:
     token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
     assert "<think>observe</think>" in token_text
     assert "DAG agent final answer" not in token_text
-    assert token_text.count("Summarized final answer") == 1
-    assert events[-1]["message_markdown"] == "Summarized final answer"
+    assert events[-1]["final_answer"] == "DAG agent final answer"
 
 
 def test_api_old_dag_lifecycle_routes_are_removed() -> None:

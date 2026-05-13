@@ -12,13 +12,11 @@ class _ThinkTagFilter:
     Two modes (controlled by ``keep``):
 
     * ``keep="inside"``: forward only tokens inside ``<think>...</think>``
-      (including the tags themselves). Used during ToolAgentLoop execution so the
-      user sees the model's reasoning but not the answer (which will come from
-      ``_summarize()``).
+      (including the tags themselves). Used during loop execution so the user
+      sees model reasoning while the final answer is returned in the done payload.
 
     * ``keep="outside"``: forward only tokens outside ``<think>...</think>``.
-      Used during ``_summarize()`` so the user sees the final answer but not
-      the summarizer's internal reasoning.
+      Useful for answer streams that should hide model reasoning.
     """
 
     _OPEN = "<think>"

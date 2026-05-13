@@ -29,7 +29,7 @@ interface DonePayload {
   task_id: string | null;
   dag: Dag | null;
   pending_review?: { kind: string; message: string } | null;
-  message_markdown: string;
+  final_answer: string;
 }
 
 interface BackendTrace {

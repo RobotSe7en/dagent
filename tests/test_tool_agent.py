@@ -52,7 +52,7 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
 
     assert result.completed is True
     assert tokens == ["<think>checking</think>\nDone."]
-    assert result.final_response == "<think>checking</think>\nDone."
+    assert result.final_response == "Done."
 
 
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
