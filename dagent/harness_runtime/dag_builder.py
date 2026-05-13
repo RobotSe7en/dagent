@@ -1,7 +1,8 @@
-"""Compile model PlanSpec output into executable DAGs."""
+"""Build executable DAGs from model output and validate DAG structure."""
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 import ast
 import re
 from typing import Any
@@ -14,6 +15,10 @@ from dagent.tools.registry import Tool
 
 class DAGCreationError(ValueError):
     """Raised when a proposed DAG cannot become an executable tool DAG."""
+
+
+class DAGValidationError(ValueError):
+    """Raised when a DAG violates structural validation rules."""
 
 
 _PLAN_NODE_RE = re.compile(
@@ -91,6 +96,49 @@ def compile_plan_spec(
         nodes=nodes,
         edges=edges,
     )
+
+
+def validate_dag(dag: DAG) -> None:
+    """Validate DAG structure."""
+    if not dag.nodes:
+        raise DAGValidationError("DAG must contain at least one node.")
+
+    node_ids = [node.id for node in dag.nodes]
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for node_id in node_ids:
+        if node_id in seen:
+            duplicates.add(node_id)
+        seen.add(node_id)
+    if duplicates:
+        duplicate_list = ", ".join(sorted(duplicates))
+        raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
+
+    for node in dag.nodes:
+        if not node.invocation.tool_name:
+            raise DAGValidationError(f"Node '{node.id}' must declare a tool.")
+
+    node_id_set = set(node_ids)
+    connected_ids: set[str] = set()
+    for edge in dag.edges:
+        if edge.source not in node_id_set:
+            raise DAGValidationError(
+                f"Edge source '{edge.source}' does not reference an existing node."
+            )
+        if edge.target not in node_id_set:
+            raise DAGValidationError(
+                f"Edge target '{edge.target}' does not reference an existing node."
+            )
+        connected_ids.add(edge.source)
+        connected_ids.add(edge.target)
+
+    if len(node_id_set) > 1:
+        isolated_ids = node_id_set - connected_ids
+        if isolated_ids:
+            isolated_list = ", ".join(sorted(isolated_ids))
+            raise DAGValidationError(f"Isolated node IDs: {isolated_list}.")
+
+    _ensure_acyclic(node_id_set, [(edge.source, edge.target) for edge in dag.edges])
 
 
 def strip_thinking_blocks(content: str) -> str:
@@ -223,6 +271,29 @@ def _ensure_start_node(
         for node_id in root_ids
     )
     return next_nodes, next_edges
+
+
+def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:
+    outgoing: dict[str, list[str]] = defaultdict(list)
+    indegree = {node_id: 0 for node_id in node_ids}
+
+    for source, target in edges:
+        outgoing[source].append(target)
+        indegree[target] += 1
+
+    queue = deque(node_id for node_id, degree in indegree.items() if degree == 0)
+    visited_count = 0
+
+    while queue:
+        current = queue.popleft()
+        visited_count += 1
+        for target in outgoing[current]:
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                queue.append(target)
+
+    if visited_count != len(node_ids):
+        raise DAGValidationError("DAG must be acyclic.")
 
 
 def _infer_boundary(tool_obj: Tool | None, args: dict[str, Any]) -> Boundary:

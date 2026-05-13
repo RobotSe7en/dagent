@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from dagent.harness_runtime.dag_validation import validate_dag
+from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.harness_runtime.runtime_trace import TraceRecorder
 from dagent.harness_runtime.task_record import ToolExecutionStore
 from dagent.schemas import DAG, Boundary, DAGNode, ToolExecutionRecord, TraceEvent

@@ -8,7 +8,7 @@ from dagent.harness_runtime.dag_executor import (
     DAGRunResult,
 )
 from dagent.harness_runtime.dag_agent import DAGAgentLoop
-from dagent.harness_runtime.dag_compiler import DAGCreationError
+from dagent.harness_runtime.dag_builder import DAGCreationError
 from dagent.harness_runtime.loop_outcome import LoopOutcome
 from dagent.harness_runtime.result_validator import (
     ResultValidatorAgent,

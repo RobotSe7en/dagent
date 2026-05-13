@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
-from dagent.harness_runtime.dag_compiler import strip_thinking_blocks
+from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.loop_outcome import LoopOutcome
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview

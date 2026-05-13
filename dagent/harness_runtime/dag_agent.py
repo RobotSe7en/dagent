@@ -11,11 +11,12 @@ from dagent.harness_runtime.dag_executor import (
     DAGExecutor,
     DAGRunResult,
 )
-from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
 from dagent.harness_runtime.loop_outcome import LoopOutcome, LoopStatus
-from dagent.harness_runtime.dag_compiler import (
+from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
+    DAGValidationError,
     dag_from_model_output,
+    validate_dag,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, RuntimeTaskRecord
