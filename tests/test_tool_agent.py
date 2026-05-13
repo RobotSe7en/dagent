@@ -97,6 +97,66 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     assert provider.requests[1]["messages"][-1]["role"] == "tool"
 
 
+def test_tool_agent_loop_execution_context_keeps_evidence_after_500_chars(
+    tmp_path: Path,
+) -> None:
+    evidence = "x" * 650 + " recent commit: 2026-05-14 00:17:20 +0800"
+    (tmp_path / "notes.txt").write_text(evidence, encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "notes.txt"},
+                    )
+                ]
+            ),
+            ChatResponse(content="The recent commit was at 2026-05-14 00:17:20 +0800."),
+        ]
+    )
+    loop = make_loop(tmp_path, provider)
+
+    result = run(
+        loop.run(
+            "Read notes",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        )
+    )
+
+    assert "2026-05-14 00:17:20 +0800" in result.execution_context
+    assert "[TRUNCATED" not in result.execution_context
+
+
+def test_tool_agent_loop_marks_truncated_execution_context(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("x" * 5000, encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "notes.txt"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Read it."),
+        ]
+    )
+    loop = make_loop(tmp_path, provider)
+
+    result = run(
+        loop.run(
+            "Read notes",
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        )
+    )
+
+    assert "[TRUNCATED after 4000 chars]" in result.execution_context
+
+
 def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello from file", encoding="utf-8")
     provider = MockProvider(

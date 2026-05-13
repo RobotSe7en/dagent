@@ -17,6 +17,10 @@ from dagent.tools.registry import Tool
 import dagent.harness_runtime.review_policy as _rp
 
 
+MAX_EXECUTION_CONTEXT_CHARS = 16000
+MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
+
+
 @dataclass(frozen=True)
 class ControlToolResult:
     """Result returned by a harness-level control tool."""
@@ -343,15 +347,24 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
     for message in messages:
         if message.get("role") == "tool":
             name = message.get("name", "unknown")
-            content = str(message.get("content", ""))[:500]
+            content = _context_excerpt(
+                str(message.get("content", "")),
+                limit=MAX_TOOL_RESULT_CONTEXT_CHARS,
+            )
             lines.append(f"  - {name}: {content}")
 
     if lines:
-        return "Tool call results:\n" + "\n".join(lines)
+        return _context_excerpt(
+            "Tool call results:\n" + "\n".join(lines),
+            limit=MAX_EXECUTION_CONTEXT_CHARS,
+        )
 
     final_answer = _last_assistant_content(messages)
     if final_answer:
-        return f"Assistant response:\n{final_answer[:1000]}"
+        return _context_excerpt(
+            f"Assistant response:\n{final_answer}",
+            limit=MAX_EXECUTION_CONTEXT_CHARS,
+        )
     return ""
 
 
@@ -360,3 +373,9 @@ def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "assistant" and message.get("content"):
             return str(message["content"])
     return ""
+
+
+def _context_excerpt(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"

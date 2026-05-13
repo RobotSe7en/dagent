@@ -34,6 +34,11 @@ from dagent.schemas import (
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
+
+MAX_EXECUTION_CONTEXT_CHARS = 16000
+MAX_NODE_RESULT_CONTEXT_CHARS = 4000
+
+
 class DAGAgentLoop:
     """Owns the DAG agent conversation, reviews, execution, and replanning."""
 
@@ -647,9 +652,20 @@ def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) 
         lines.append("Node execution results:")
         for node_id, node_result in dag_run.node_results.items():
             status = "completed" if node_result.completed else "failed"
-            response = node_result.final_response.strip()[:500] or node_result.stop_reason
+            response = (
+                _context_excerpt(
+                    node_result.final_response.strip(),
+                    limit=MAX_NODE_RESULT_CONTEXT_CHARS,
+                )
+                or node_result.stop_reason
+            )
             lines.append(f"  - {node_id} ({status}): {response}")
-    return "\n".join(lines) if lines else ""
+    if not lines:
+        return ""
+    return _context_excerpt(
+        "\n".join(lines),
+        limit=MAX_EXECUTION_CONTEXT_CHARS,
+    )
 
 
 def dag_run_fallback_message(record: RuntimeTaskRecord, result: DAGRunResult) -> str:
@@ -818,6 +834,12 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
     return dumped
+
+
+def _context_excerpt(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"
 
 
 def _build_dag_messages(conversation_history: list[dict[str, Any]], *, active_user_message: str) -> list[dict[str, Any]]:
