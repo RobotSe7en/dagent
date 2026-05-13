@@ -1,10 +1,10 @@
 import asyncio
 from dagent.harness_runtime import (
     ToolAgentLoop,
-    ToolAgentLoopResult,
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
+    LoopOutcome,
     ResultValidatorAgent,
 )
 from dagent.profiles import AgentProfile
@@ -27,14 +27,12 @@ class CompletingLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
-    ) -> ToolAgentLoopResult:
+    ) -> LoopOutcome:
         self.calls += 1
-        return ToolAgentLoopResult(
-            final_response="node complete",
+        return LoopOutcome(
+            status="completed",
+            final_answer="node complete",
             messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
         )
 
 
@@ -190,9 +188,9 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert resumed.status == "completed"
-    assert resumed.run_result is not None
-    assert resumed.run_result.completed is True
-    assert resumed.run_result.execution_records
+    assert resumed.dag_run is not None
+    assert resumed.dag_run.completed is True
+    assert resumed.dag_run.execution_records
     assert resumed.final_answer == "Here is the final answer."
     runtime_task = runtime.session.runtime_tasks[result.task_id]
     assert runtime_task.mode == "dag"
@@ -259,8 +257,8 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
 
     assert resumed.status == "completed"
     assert resumed.final_answer == "final dag-mode answer"
-    assert resumed.run_result is not None
-    assert resumed.run_result.node_results["node_1"].final_response == "echo:ok"
+    assert resumed.dag_run is not None
+    assert resumed.dag_run.node_results["node_1"].final_response == "echo:ok"
 
 
 def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:

@@ -25,7 +25,7 @@ class DAGExecutionError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class NodeExecutionResult:
+class DAGNodeResult:
     node_id: str
     final_response: str
     completed: bool
@@ -34,10 +34,10 @@ class NodeExecutionResult:
 
 
 @dataclass(frozen=True)
-class RunResult:
+class DAGRunResult:
     dag_id: str
     completed: bool
-    node_results: dict[str, NodeExecutionResult]
+    node_results: dict[str, DAGNodeResult]
     traces: list[TraceEvent] = field(default_factory=list)
     execution_records: list[ToolExecutionRecord] = field(default_factory=list)
 
@@ -55,16 +55,16 @@ class DAGExecutor:
         self.tool_executor = tool_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
         self.execution_store = execution_store or ToolExecutionStore()
-        self.partial_node_results: dict[str, NodeExecutionResult] = {}
+        self.partial_node_results: dict[str, DAGNodeResult] = {}
 
     async def execute_next_ready_layer(
         self,
         dag: DAG,
         *,
-        initial_results: dict[str, NodeExecutionResult] | None = None,
+        initial_results: dict[str, DAGNodeResult] | None = None,
         record_dag_start: bool = True,
         on_trace: Callable[[TraceEvent], None] | None = None,
-    ) -> RunResult:
+    ) -> DAGRunResult:
         """Execute only the next currently-ready DAG layer.
 
         This is the step-wise execution entrypoint for the dynamic DAG loop.
@@ -79,7 +79,7 @@ class DAGExecutor:
         normalized.status = "running"
         if record_dag_start:
             self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
-        node_results: dict[str, NodeExecutionResult] = dict(initial_results or {})
+        node_results: dict[str, DAGNodeResult] = dict(initial_results or {})
 
         permission_result = await self._execute_next_ready_layer(
             normalized,
@@ -96,7 +96,7 @@ class DAGExecutor:
                 dag_id=normalized.dag_id,
                 payload={"completed": True},
             )
-        return RunResult(
+        return DAGRunResult(
             dag_id=normalized.dag_id,
             completed=completed,
             node_results=node_results,
@@ -107,8 +107,8 @@ class DAGExecutor:
     async def _execute_next_ready_layer(
         self,
         dag: DAG,
-        node_results: dict[str, NodeExecutionResult],
-    ) -> RunResult | None:
+        node_results: dict[str, DAGNodeResult],
+    ) -> DAGRunResult | None:
         pending_nodes = _next_ready_nodes(dag, node_results)
         if not pending_nodes:
             return None
@@ -126,7 +126,7 @@ class DAGExecutor:
             return_exceptions=True,
         )
         for result in batch_results:
-            if isinstance(result, NodeExecutionResult):
+            if isinstance(result, DAGNodeResult):
                 node_results[result.node_id] = result
 
         for result in batch_results:
@@ -144,11 +144,11 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-        completed_results: dict[str, NodeExecutionResult],
-    ) -> NodeExecutionResult:
+        completed_results: dict[str, DAGNodeResult],
+    ) -> DAGNodeResult:
         if node.invocation.tool_name == "dag_start":
             node.status = "completed"
-            return NodeExecutionResult(
+            return DAGNodeResult(
                 node_id=node.id,
                 final_response="started",
                 completed=True,
@@ -162,7 +162,7 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-    ) -> NodeExecutionResult:
+    ) -> DAGNodeResult:
         if self.tool_executor is None:
             raise ToolExecutionError(
                 "DAGExecutor cannot execute tool nodes without a ToolExecutor."
@@ -271,7 +271,7 @@ class DAGExecutor:
             dag=dag,
             node=node,
         )
-        result = NodeExecutionResult(
+        result = DAGNodeResult(
             node_id=node.id,
             final_response=content,
             completed=True,
@@ -325,7 +325,7 @@ def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
 
 def _next_ready_nodes(
     dag: DAG,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> list[DAGNode]:
     completed_ids = {
         node_id
@@ -351,7 +351,7 @@ def _next_ready_nodes(
 
 def _all_nodes_completed(
     dag: DAG,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> bool:
     return all(
         node.id in node_results and node_results[node.id].completed
@@ -361,7 +361,7 @@ def _all_nodes_completed(
 
 def _inject_placeholders(
     value: Any,
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> Any:
     if isinstance(value, dict):
         return {
@@ -385,7 +385,7 @@ def _inject_placeholders(
 
 def _placeholder_value(
     match: re.Match[str],
-    node_results: dict[str, NodeExecutionResult],
+    node_results: dict[str, DAGNodeResult],
 ) -> Any:
     node_id = match.group(1)
     field = match.group(2)

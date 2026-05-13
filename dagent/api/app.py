@@ -123,8 +123,8 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.run_result is not None:
-            for trace in result.run_result.traces:
+        if result.dag_run is not None:
+            for trace in result.dag_run.traces:
                 if trace.event_id in emitted_trace_ids:
                     continue
                 emitted_trace_ids.add(trace.event_id)
@@ -195,8 +195,8 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.run_result is not None:
-            for trace in result.run_result.traces:
+        if result.dag_run is not None:
+            for trace in result.dag_run.traces:
                 if trace.event_id in emitted_trace_ids:
                     continue
                 emitted_trace_ids.add(trace.event_id)

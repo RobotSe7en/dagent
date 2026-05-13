@@ -31,9 +31,8 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
         )
     )
 
-    assert result.completed is True
-    assert result.final_response == "Done."
-    assert result.steps == 1
+    assert result.status == "completed"
+    assert result.final_answer == "Done."
     assert result.messages[-1] == {"role": "assistant", "content": "Done."}
 
 
@@ -50,9 +49,9 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
         )
     )
 
-    assert result.completed is True
+    assert result.status == "completed"
     assert tokens == ["<think>checking</think>\nDone."]
-    assert result.final_response == "Done."
+    assert result.final_answer == "Done."
 
 
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
@@ -82,9 +81,8 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
         )
     )
 
-    assert result.completed is True
-    assert result.final_response == "I read it."
-    assert result.steps == 2
+    assert result.status == "completed"
+    assert result.final_answer == "I read it."
     assert result.messages[1]["role"] == "assistant"
     assert result.messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
     assert result.messages[1]["tool_calls"][0]["function"]["arguments"] == (
@@ -126,7 +124,7 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
         )
     )
 
-    assert result.completed is True
+    assert result.status == "completed"
     assert [event["type"] for event in events] == ["tool_call", "tool_result"]
     assert events[0] == {
         "type": "tool_call",
@@ -169,10 +167,8 @@ def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
         )
     )
 
-    assert result.completed is False
-    assert result.stop_reason == "max_steps"
-    assert result.steps == 1
-    assert result.final_response == ""
+    assert result.status == "failed"
+    assert result.final_answer == ""
     assert len(provider.requests) == 1
 
 
@@ -200,7 +196,7 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
         )
     )
 
-    assert result.completed is True
+    assert result.status == "completed"
     tool_msg = result.messages[2]
     assert tool_msg["role"] == "tool"
     assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]

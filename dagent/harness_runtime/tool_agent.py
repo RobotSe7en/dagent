@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from dagent.harness_runtime.dag_compiler import strip_thinking_blocks
-from dagent.harness_runtime.loop_result import LoopResult
+from dagent.harness_runtime.loop_outcome import LoopOutcome
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
 from dagent.harness_runtime.task_record import PendingReview
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
@@ -28,31 +28,6 @@ class ControlToolResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     needs_review: bool = False
     review_payload: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ToolAgentLoopResult:
-    final_response: str
-    messages: list[dict[str, Any]]
-    steps: int
-    completed: bool
-    stop_reason: str
-    control_events: list[dict[str, Any]] = field(default_factory=list)
-    invocations: list[ToolInvocation] = field(default_factory=list)
-    needs_review: bool = False
-    pending_review: PendingReview | None = None
-
-    def to_loop_result(self) -> LoopResult:
-        """Convert to the unified LoopResult contract."""
-        return LoopResult(
-            execution_context=_format_tool_execution_context(self.messages),
-            final_answer=self.final_response,
-            messages=self.messages,
-            invocations=self.invocations,
-            completed=self.completed,
-            needs_human_review=self.needs_review,
-            pending_review=self.pending_review,
-        )
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
@@ -114,7 +89,7 @@ class ToolAgentLoop:
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> ToolAgentLoopResult:
+    ) -> LoopOutcome:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
@@ -139,13 +114,12 @@ class ToolAgentLoop:
             loop_messages.append(assistant_message)
 
             if not response.tool_calls:
-                return ToolAgentLoopResult(
-                    final_response=strip_thinking_blocks(response.content).strip(),
+                return LoopOutcome(
+                    status="completed",
+                    execution_context=_format_tool_execution_context(loop_messages),
+                    final_answer=strip_thinking_blocks(response.content).strip(),
                     messages=loop_messages,
-                    steps=step,
-                    completed=True,
-                    stop_reason="completed",
-                    control_events=control_events,
+                    events=control_events,
                     invocations=invocations,
                 )
 
@@ -195,25 +169,21 @@ class ToolAgentLoop:
                             },
                             payload=control_result.review_payload or {},
                         )
-                        return ToolAgentLoopResult(
-                            final_response="",
+                        return LoopOutcome(
+                            status="awaiting_review",
+                            execution_context=_format_tool_execution_context(loop_messages),
                             messages=loop_messages,
-                            steps=step,
-                            completed=False,
-                            stop_reason="tool_review_pending",
-                            control_events=control_events,
+                            events=control_events,
                             invocations=invocations,
-                            needs_review=True,
                             pending_review=pending_review,
                         )
                     if control_result.stop_reason:
-                        return ToolAgentLoopResult(
-                            final_response=control_result.content,
+                        return LoopOutcome(
+                            status="failed",
+                            execution_context=_format_tool_execution_context(loop_messages),
+                            final_answer=control_result.content,
                             messages=loop_messages,
-                            steps=step,
-                            completed=False,
-                            stop_reason=control_result.stop_reason,
-                            control_events=control_events,
+                            events=control_events,
                             invocations=invocations,
                         )
                     continue
@@ -275,13 +245,11 @@ class ToolAgentLoop:
                 )
                 self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
 
-        return ToolAgentLoopResult(
-            final_response="",
+        return LoopOutcome(
+            status="failed",
+            execution_context=_format_tool_execution_context(loop_messages),
             messages=loop_messages,
-            steps=max_steps,
-            completed=False,
-            stop_reason="max_steps",
-            control_events=control_events,
+            events=control_events,
             invocations=invocations,
         )
 

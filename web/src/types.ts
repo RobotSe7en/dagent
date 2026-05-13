@@ -98,7 +98,7 @@ export interface ReviewEventPayload {
   payload?: Record<string, unknown>;
 }
 
-export interface RunResult {
+export interface DagRunResult {
   dag_id: string;
   completed: boolean;
   execution_records?: ToolExecutionRecord[];

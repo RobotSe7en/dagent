@@ -4,10 +4,10 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
+    LoopOutcome,
     RuntimeTaskRecord,
 )
 from dagent.providers import ChatResponse, MockProvider
-from dagent.harness_runtime import ToolAgentLoopResult
 from dagent.harness_runtime.dag_compiler import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, ToolInvocation
@@ -25,13 +25,11 @@ class CompletingLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
-    ) -> ToolAgentLoopResult:
-        return ToolAgentLoopResult(
-            final_response="node complete",
+    ) -> LoopOutcome:
+        return LoopOutcome(
+            status="completed",
+            final_answer="node complete",
             messages=[],
-            steps=1,
-            completed=True,
-            stop_reason="completed",
         )
 
 
@@ -247,12 +245,12 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     executor = DAGExecutor(tool_executor=make_tool_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
-    loop_result = run(runtime.dag_agent_loop.run("Do a safe task", task_id="task_1", review_level="fast"))
+    loop_outcome = run(runtime.dag_agent_loop.run("Do a safe task", task_id="task_1", review_level="fast"))
     record = runtime.tasks["task_1"]
-    result = loop_result.run_result
+    result = loop_outcome.dag_run
     assert result is not None
 
-    assert loop_result.status == "completed"
+    assert loop_outcome.status == "completed"
     assert result.completed is True
     assert record.dag.status == "completed"
     assert result.node_results["inspect"].final_response == "echo:ok"
@@ -264,11 +262,11 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
     executor = DAGExecutor(tool_executor=make_tool_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
-    loop_result = run(runtime.dag_agent_loop.run("Do a reviewed task", task_id="task_1", review_level="careful"))
+    loop_outcome = run(runtime.dag_agent_loop.run("Do a reviewed task", task_id="task_1", review_level="careful"))
     record = runtime.tasks["task_1"]
 
-    assert loop_result.status == "awaiting_review"
-    assert loop_result.run_result is None
+    assert loop_outcome.status == "awaiting_review"
+    assert loop_outcome.dag_run is None
     assert record.dag.status == "review_required"
     assert record.pending_review is not None
     assert record.pending_review.kind == "initial_dag"
@@ -461,8 +459,8 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
     assert record.dag_messages[0]["role"] == "user"
     assert record.dag_messages[1]["role"] == "assistant"
     assert initial_dsl in record.dag_messages[1]["content"]
-    assert result.run_result is not None
-    assert result.run_result.completed is True
+    assert result.dag_run is not None
+    assert result.dag_run.completed is True
     assert record.dag.status == "completed"
 
 

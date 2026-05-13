@@ -6,17 +6,16 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from dagent.harness_runtime.loop_result import LoopResult
+from dagent.harness_runtime.loop_outcome import LoopOutcome
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.task_record import (
-    DAGTaskState,
     ReviewContinuation,
     RuntimeTaskMode,
     RuntimeTaskRecord,
-    RuntimeTaskStatus,
-    ToolTaskState,
+    pending_review_invocation,
+    task_context_payload,
 )
-from dagent.schemas import Boundary, ToolExecutionRecord, ToolInvocation
+from dagent.schemas import ToolInvocation
 
 
 MAX_CONVERSATION_HISTORY_MESSAGES = 20
@@ -40,7 +39,7 @@ class HarnessRuntimeSession:
             return ""
         payload = {
             "recent_dag_tasks": [
-                _task_context_payload(record)
+                task_context_payload(record)
                 for record in list(self.runtime_tasks.values())[-3:]
                 if record.dag_state is not None
             ]
@@ -52,14 +51,14 @@ class HarnessRuntimeSession:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
-    def record_conversation(self, loop_result: LoopResult) -> None:
+    def record_conversation(self, loop_outcome: LoopOutcome) -> None:
         """Record loop messages into conversation history.
 
         For tool mode the full ToolAgentLoop conversation replaces history.
         For DAG mode there are no conversation messages (DAG has internal state).
         """
-        if loop_result.messages:
-            self.remember_conversation_messages(loop_result.messages)
+        if loop_outcome.messages:
+            self.remember_conversation_messages(loop_outcome.messages)
 
     def remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
         self.conversation_history = [
@@ -87,9 +86,9 @@ class HarnessRuntimeSession:
         task_id: str,
         user_request: str,
         review_level: ReviewLevel,
-        loop_result: LoopResult,
+        loop_outcome: LoopOutcome,
     ) -> None:
-        review = loop_result.pending_review
+        review = loop_outcome.pending_review
         if review is None:
             return
         self._review_continuations[review.review_id] = ReviewContinuation(
@@ -97,10 +96,10 @@ class HarnessRuntimeSession:
             task_id=task_id,
             kind=review.kind,
             user_request=user_request,
-            messages=loop_result.messages,
-            invocations=loop_result.invocations,
+            messages=loop_outcome.messages,
+            invocations=loop_outcome.invocations,
             review_level=review_level,
-            pending_invocation=_pending_review_invocation(loop_result),
+            pending_invocation=pending_review_invocation(loop_outcome),
         )
 
     def pop_review_continuation(self, review_id: str) -> ReviewContinuation | None:
@@ -115,186 +114,47 @@ class HarnessRuntimeSession:
         for review_id in stale_review_ids:
             self._review_continuations.pop(review_id, None)
 
-    def record_loop_outcome(
+    def record_outcome(
         self,
         *,
         task_id: str | None,
         mode: RuntimeTaskMode,
         user_request: str,
         review_level: ReviewLevel,
-        needs_human_review: bool,
-        loop_result: LoopResult,
+        loop_outcome: LoopOutcome,
         invocations: list[ToolInvocation] | None = None,
     ) -> RuntimeTaskRecord:
-        resolved_task_id = task_id or loop_result.task_id or f"task_{uuid4().hex}"
-        record = self.record_runtime_task(
-            task_id=resolved_task_id,
-            mode=mode,
-            user_request=user_request,
+        resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
+        record = self.runtime_tasks.get(resolved_task_id)
+        if record is None:
+            if mode == "dag" and loop_outcome.dag is not None:
+                record = RuntimeTaskRecord.dag_task(
+                    task_id=resolved_task_id,
+                    user_request=user_request,
+                    dag=loop_outcome.dag,
+                    review_level=review_level,
+                )
+            else:
+                record = RuntimeTaskRecord(
+                    task_id=resolved_task_id,
+                    mode=mode,
+                    user_request=user_request,
+                    review_level=review_level,
+                )
+        record.apply_outcome(
+            loop_outcome,
             review_level=review_level,
-            status=(
-                "awaiting_review"
-                if needs_human_review
-                else "completed" if loop_result.completed else "failed"
-            ),
-            loop_result=loop_result,
             invocations=invocations,
         )
-        if needs_human_review:
+        self.runtime_tasks[resolved_task_id] = record
+        if loop_outcome.status == "awaiting_review":
             self.store_review_continuation(
                 task_id=record.task_id,
                 user_request=user_request,
                 review_level=review_level,
-                loop_result=loop_result,
+                loop_outcome=loop_outcome,
             )
         return record
-
-    def record_runtime_task(
-        self,
-        *,
-        task_id: str,
-        mode: RuntimeTaskMode,
-        user_request: str,
-        review_level: ReviewLevel,
-        status: RuntimeTaskStatus,
-        loop_result: LoopResult,
-        invocations: list[ToolInvocation] | None = None,
-    ) -> RuntimeTaskRecord:
-        existing = self.runtime_tasks.get(task_id)
-        execution_records = list(existing.execution_records) if existing else []
-        if loop_result.run_result is not None:
-            execution_records = list(loop_result.run_result.execution_records)
-        task_invocations = invocations if invocations is not None else loop_result.invocations
-        record = existing or (
-            RuntimeTaskRecord.dag_task(
-                task_id=task_id,
-                user_request=user_request,
-                dag=loop_result.dag,
-                review_level=review_level,
-            )
-            if mode == "dag" and loop_result.dag is not None
-            else RuntimeTaskRecord.tool_task(
-                task_id=task_id,
-                user_request=user_request,
-                review_level=review_level,
-            )
-        )
-        record.status = status
-        record.review_level = review_level
-        record.pending_review = loop_result.pending_review
-        record.final_response = loop_result.final_answer
-        record.invocations = {
-            invocation.invocation_id: invocation
-            for invocation in task_invocations
-        }
-        if loop_result.dag is not None:
-            if record.dag_state is None:
-                record.dag_state = DAGTaskState(dag=loop_result.dag)
-            record.dag_state.dag = loop_result.dag
-            if loop_result.run_result and loop_result.run_result not in record.dag_state.runs:
-                record.dag_state.runs.append(loop_result.run_result)
-            if loop_result.run_result:
-                record.dag_state.node_results = loop_result.run_result.node_results
-            record.execution_records = execution_records
-        else:
-            previous_boundary = (
-                record.tool_state.boundary
-                if record.tool_state is not None
-                else Boundary(mode="read_only", allowed_paths=["."])
-            )
-            record.tool_state = ToolTaskState(
-                messages=loop_result.messages,
-                boundary=previous_boundary,
-                steps=len(task_invocations),
-            )
-            record.execution_records = _tool_loop_execution_records(
-                task_id=task_id,
-                messages=loop_result.messages,
-                invocations=task_invocations,
-            )
-        self.runtime_tasks[task_id] = record
-        return record
-
-
-def _task_context_payload(record: RuntimeTaskRecord) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "dag_id": record.dag.dag_id,
-        "user_request": record.user_request,
-        "dag_status": record.dag.status,
-        "node_results": {
-            node_id: {
-                "completed": node_result.completed,
-                "stop_reason": node_result.stop_reason,
-                "final_response": node_result.final_response,
-            }
-            for node_id, node_result in record.node_results.items()
-        },
-        "recent_execution_records": [
-            {
-                "node_id": record_item.node_id,
-                "tool": record_item.invocation.tool_name,
-                "status": record_item.status,
-                "output": record_item.output,
-                "error": record_item.error,
-            }
-            for record_item in record.execution_records[-8:]
-        ],
-    }
-
-
-def _pending_review_invocation(loop_result: LoopResult) -> ToolInvocation | None:
-    review = loop_result.pending_review
-    if review is None or review.kind != "tool_review":
-        return None
-    tool_call_id = (review.tool_call or {}).get("tool_call_id")
-    if tool_call_id:
-        for invocation in reversed(loop_result.invocations):
-            if invocation.invocation_id == tool_call_id:
-                return invocation
-    return loop_result.invocations[-1] if loop_result.invocations else None
-
-
-def _tool_loop_execution_records(
-    *,
-    task_id: str,
-    messages: list[dict[str, Any]],
-    invocations: list[ToolInvocation],
-) -> list[ToolExecutionRecord]:
-    invocations_by_id = {
-        invocation.invocation_id: invocation
-        for invocation in invocations
-    }
-    tool_messages: dict[str, dict[str, Any]] = {}
-    for message in messages:
-        if message.get("role") != "tool":
-            continue
-        tool_call_id = message.get("tool_call_id")
-        if not isinstance(tool_call_id, str) or tool_call_id not in invocations_by_id:
-            continue
-        content = str(message.get("content", ""))
-        if content.startswith("[PENDING_REVIEW]") or content.startswith("[DENIED]"):
-            continue
-        tool_messages[tool_call_id] = message
-
-    records: list[ToolExecutionRecord] = []
-    for tool_call_id, message in tool_messages.items():
-        content = str(message.get("content", ""))
-        failed = content.startswith(("[TOOL_ERROR]", "[BOUNDARY_VIOLATION]", "[ERROR]"))
-        records.append(
-            ToolExecutionRecord(
-                record_id=f"tool_execution_{uuid4().hex}",
-                task_id=task_id,
-                invocation=invocations_by_id[tool_call_id].model_copy(deep=True),
-                source="tool_loop",
-                output="" if failed else content,
-                error=content if failed else None,
-                status="failed" if failed else "completed",
-                stop_reason="tool_error" if failed else "completed",
-                steps=1,
-            )
-        )
-    return records
 
 
 def _conversation_message_copy(message: dict[str, Any]) -> dict[str, Any] | None:

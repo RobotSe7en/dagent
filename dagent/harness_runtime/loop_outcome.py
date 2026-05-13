@@ -3,27 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
-from dagent.harness_runtime.dag_executor import RunResult
+from dagent.harness_runtime.dag_executor import DAGRunResult
 from dagent.harness_runtime.task_record import PendingReview
 from dagent.schemas import DAG, ToolInvocation
 
+LoopStatus = Literal["completed", "awaiting_review", "failed"]
+
 
 @dataclass(frozen=True)
-class LoopResult:
+class LoopOutcome:
     """Common contract between any loop (ToolAgentLoop, DAGAgentLoop) and the runtime.
 
     Every loop is responsible for populating this with its own results.
-    The runtime never inspects internal loop state; it only reads LoopResult.
+    The runtime never inspects internal loop state; it only reads LoopOutcome.
     """
 
-    # What happened
-    execution_context: str
+    status: LoopStatus
+    """High-level loop state consumed by runtime orchestration."""
+
+    execution_context: str = ""
     """Human-readable summary of what the loop did (tool calls, node results, etc.).
     Used by the validator and deterministic fallback output. Each loop formats this itself."""
 
-    messages: list[dict[str, Any]]
+    messages: list[dict[str, Any]] = field(default_factory=list)
     """Conversation messages produced during the loop, for runtime to record."""
 
     final_answer: str = ""
@@ -37,13 +41,7 @@ class LoopResult:
 
     # DAG-specific (None for tool mode)
     dag: DAG | None = None
-    run_result: RunResult | None = None
+    dag_run: DAGRunResult | None = None
     task_id: str | None = None
 
-    # Flow control
-    needs_human_review: bool = False
     pending_review: PendingReview | None = None
-
-    # Status
-    completed: bool = True
-    """Whether the loop finished successfully."""
