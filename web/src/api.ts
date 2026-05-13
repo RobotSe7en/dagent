@@ -43,7 +43,7 @@ interface BackendTrace {
 
 export async function streamTask(
   message: string,
-  mode: 'auto' | 'direct' | 'dag',
+  mode: 'auto' | 'tool' | 'dag',
   reviewLevel: ReviewLevel,
   handlers: {
     onStatus?: (status: string) => void;

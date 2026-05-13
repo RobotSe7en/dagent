@@ -50,10 +50,10 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
-def test_harness_runtime_direct_message_does_not_create_dag() -> None:
+def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     provider = MockProvider([
-        ChatResponse(content="direct"),       # _route()
-        ChatResponse(content="hello"),        # direct ToolAgentLoop
+        ChatResponse(content="tool"),         # _route()
+        ChatResponse(content="hello"),        # ToolAgentLoop
         ChatResponse(content="hello summary"),  # _summarize()
     ])
     runtime = _runtime(provider)
@@ -66,22 +66,22 @@ def test_harness_runtime_direct_message_does_not_create_dag() -> None:
     assert runtime.tasks == {}
 
 
-def test_harness_runtime_direct_followup_includes_conversation_history() -> None:
+def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
     provider = MockProvider([
-        ChatResponse(content="The project color is blue."),  # direct ToolAgentLoop
+        ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content="Noted, blue."),                # _summarize()
-        ChatResponse(content="It is blue."),                 # direct ToolAgentLoop
+        ChatResponse(content="It is blue."),                 # ToolAgentLoop
         ChatResponse(content="Blue."),                       # _summarize()
     ])
     runtime = _runtime(provider)
 
-    first = run(runtime.handle_message("Remember that the project color is blue.", mode="direct"))
-    second = run(runtime.handle_message("What color did I mention?", mode="direct"))
+    first = run(runtime.handle_message("Remember that the project color is blue.", mode="tool"))
+    second = run(runtime.handle_message("What color did I mention?", mode="tool"))
 
     assert first.status == "completed"
     assert second.status == "completed"
-    # requests[0] = direct ToolAgentLoop, requests[1] = _summarize(),
-    # requests[2] = direct ToolAgentLoop (with history), requests[3] = _summarize()
+    # requests[0] = ToolAgentLoop, requests[1] = _summarize(),
+    # requests[2] = ToolAgentLoop (with history), requests[3] = _summarize()
     second_agent_messages = provider.requests[2]["messages"]
     assert [message["role"] for message in second_agent_messages] == [
         "system",
@@ -96,13 +96,13 @@ def test_harness_runtime_direct_followup_includes_conversation_history() -> None
 
 def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     provider = MockProvider([
-        ChatResponse(content="The project color is blue."),  # direct ToolAgentLoop
+        ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content="Noted, blue."),                # _summarize()
         ChatResponse(content=_dag_agent_dsl()),              # DAG agent
     ])
     runtime = _runtime(provider)
 
-    first = run(runtime.handle_message("Remember that the project color is blue.", mode="direct"))
+    first = run(runtime.handle_message("Remember that the project color is blue.", mode="tool"))
     second = run(runtime.handle_message("Use that color in a DAG task.", mode="dag", review_level="careful"))
 
     assert first.status == "completed"
@@ -353,11 +353,11 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert "echo" in feedback
 
 
-def test_harness_runtime_auto_route_defaults_to_direct_on_error() -> None:
-    """When the routing LLM call fails, default to direct mode."""
+def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
+    """When the routing LLM call fails, default to tool mode."""
     call_count = [0]
     original_responses = [
-        ChatResponse(content="hello world"),      # direct ToolAgentLoop response
+        ChatResponse(content="hello world"),      # ToolAgentLoop response
         ChatResponse(content="hello summarized"),  # _summarize()
     ]
 
@@ -431,9 +431,9 @@ def test_think_tag_filter_keep_outside_passes_all_when_no_think() -> None:
     assert "Hello world" in "".join(collected)
 
 
-def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
+def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
     provider = MockProvider([
-        ChatResponse(content="<think>reasoning</think>The answer."),  # direct ToolAgentLoop
+        ChatResponse(content="<think>reasoning</think>The answer."),  # ToolAgentLoop
         ChatResponse(content="summarized answer"),                   # _summarize()
     ])
     runtime = _runtime(provider)
@@ -441,7 +441,7 @@ def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
     streamed: list[str] = []
     result = run(runtime.handle_message(
         "hello",
-        mode="direct",
+        mode="tool",
         on_token=streamed.append,
     ))
 
@@ -456,7 +456,7 @@ def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
     assert result.message_markdown == "summarized answer"
 
 
-def test_resume_direct_retries_when_validator_rejects_after_tool_approval() -> None:
+def test_resume_tool_retries_when_validator_rejects_after_tool_approval() -> None:
     tool_executor = make_tool_executor()
     provider = MockProvider([
         ChatResponse(
@@ -484,8 +484,8 @@ def test_resume_direct_retries_when_validator_rejects_after_tool_approval() -> N
         enable_validation=True,
     )
 
-    first = run(runtime.handle_message("Write a note", mode="direct", review_level="careful"))
-    resumed = run(runtime.resume_direct(first.pending_review.review_id, approved=True))
+    first = run(runtime.handle_message("Write a note", mode="tool", review_level="careful"))
+    resumed = run(runtime.resume_tool(first.pending_review.review_id, approved=True))
 
     assert first.status == "awaiting_tool_review"
     assert resumed.status == "completed"

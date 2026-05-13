@@ -84,7 +84,7 @@ type MessageTimelineItem =
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
-type RuntimeMode = 'auto' | 'direct' | 'dag';
+type RuntimeMode = 'auto' | 'tool' | 'dag';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
@@ -137,7 +137,7 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
+      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
     },
   ]);
   const [draft, setDraft] = useState('');
@@ -431,11 +431,11 @@ export function App() {
       { role: 'user', kind: 'text', content: prompt },
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'model', label: 'agent_loop_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
+    appendTrace({ type: 'model', label: 'runtime_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
 
     try {
       await streamTask(prompt, mode, reviewLevel, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop request accepted.', status: 'running' }),
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime request accepted.', status: 'running' }),
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           syncDag(nextDag);
@@ -463,8 +463,8 @@ export function App() {
           }));
           appendTrace({
             type: 'model',
-            label: 'agent_loop_completed',
-            detail: payload.dag ? 'Top AgentLoop summarized the DAG result.' : 'Top AgentLoop returned a direct answer.',
+            label: 'runtime_completed',
+            detail: payload.dag ? 'HarnessRuntime summarized the DAG result.' : 'ToolAgentLoop completed the request.',
             status: payload.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -506,7 +506,7 @@ export function App() {
 
     try {
       await resumeDag(dag.task_id, dag, reviewLevel, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Top AgentLoop resumed from DAG review.', status: 'running' }),
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
@@ -529,7 +529,7 @@ export function App() {
             content: message.content || payload.message_markdown,
             timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
           }));
-          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the DAG result.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'HarnessRuntime summarized the DAG result.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
@@ -561,7 +561,7 @@ export function App() {
 
     try {
       await resumeToolReview(toolReview.review_id, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'AgentLoop resumed from tool review.', status: 'running' }),
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'ToolAgentLoop resumed from tool review.', status: 'running' }),
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -573,7 +573,7 @@ export function App() {
             content: message.content || payload.message_markdown,
             timeline: ensureTextTimeline(message.timeline, payload.message_markdown),
           }));
-          appendTrace({ type: 'model', label: 'agent_loop_completed', detail: 'Top AgentLoop summarized the result.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'HarnessRuntime summarized the result.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
@@ -602,7 +602,7 @@ export function App() {
     }
     setMessages([{
       role: 'assistant',
-      content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
+      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
     }]);
     setDraft('');
     syncDag(emptyDag);
@@ -625,7 +625,7 @@ export function App() {
         </div>
         <div className="top-actions">
           <div className="mode-switch" aria-label="Runtime mode">
-            {(['auto', 'dag', 'direct'] as RuntimeMode[]).map((item) => (
+            {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
               <button
                 key={item}
                 className={mode === item ? 'active' : ''}

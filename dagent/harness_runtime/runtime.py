@@ -26,7 +26,7 @@ from dagent.harness_runtime.runtime_events import (
     _dag_event_emitter,
     _trace_event_emitter,
 )
-from dagent.harness_runtime.task_record import DirectTaskState, PendingReview
+from dagent.harness_runtime.task_record import ToolTaskState, PendingReview
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG
@@ -34,19 +34,19 @@ from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
 
-RuntimeMode = Literal["auto", "direct", "dag"]
+RuntimeMode = Literal["auto", "tool", "dag"]
 
 _ROUTE_SYSTEM_PROMPT = """\
 You are a routing classifier.  Given the user message and conversation context, \
 decide whether the request needs a multi-step DAG pipeline or can be handled by a \
-single direct agent loop.
+single bounded tool-agent loop.
 
-Respond with exactly one word: "dag" or "direct".
+Respond with exactly one word: "dag" or "tool".
 
 Choose "dag" ONLY when the task clearly benefits from node-level planning, \
 parallelism, human review gates, resumability, or multi-agent coordination.
 
-Choose "direct" for greetings, simple Q&A, single tool calls, ordinary short \
+Choose "tool" for greetings, simple Q&A, single tool calls, ordinary short \
 serial work, or anything that does not need structured orchestration.\
 """
 
@@ -260,7 +260,7 @@ class HarnessRuntime:
 
         def on_gate(loop_result: LoopResult) -> None:
             if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
-                self._store_direct_review_state(message, review_level, loop_result)
+                self._store_tool_review_state(message, review_level, loop_result)
 
         outcome = await self._run_with_review_and_validation(
             message,
@@ -344,7 +344,7 @@ class HarnessRuntime:
     # Route
     # ==================================================================
 
-    async def _route(self, message: str) -> Literal["dag", "direct"]:
+    async def _route(self, message: str) -> Literal["dag", "tool"]:
         """Lightweight LLM classifier."""
         context = self.session.tasks_context()
         user_content = message
@@ -358,11 +358,11 @@ class HarnessRuntime:
         try:
             response = await self.provider.chat(messages)
             decision = response.content.strip().lower()
-            if decision in {"dag", "direct"}:
+            if decision in {"dag", "tool"}:
                 return decision  # type: ignore[return-value]
         except Exception:
             pass
-        return "direct"
+        return "tool"
 
     # ==================================================================
     # Loop execution
@@ -396,11 +396,11 @@ class HarnessRuntime:
                 on_dag=_dag_event_emitter(on_event),
             )
             return dag_result.to_loop_result()
-        else:
-            # Direct mode: only stream <think> blocks from the loop.
+        elif mode == "tool":
+            # Tool mode: only stream <think> blocks from the loop.
             # The actual answer comes from _summarize().
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-            return await self._run_direct(
+            return await self._run_tool(
                 message,
                 review_level=review_level,
                 feedback=feedback,
@@ -408,8 +408,10 @@ class HarnessRuntime:
                 on_token=thinking_only,
                 on_event=on_event,
             )
+        else:
+            raise ValueError(f"Unknown runtime mode: {mode}")
 
-    async def _run_direct(
+    async def _run_tool(
         self,
         message: str,
         *,
@@ -459,24 +461,24 @@ class HarnessRuntime:
             if tool.risk in {"medium", "high"} or tool.risk_fn is not None
         }
 
-    def _store_direct_review_state(
+    def _store_tool_review_state(
         self,
         user_request: str,
         review_level: ReviewLevel,
         loop_result: LoopResult,
     ) -> None:
-        self.session.store_direct_review_state(
+        self.session.store_tool_review_state(
             user_request=user_request,
             review_level=review_level,
             loop_result=loop_result,
             boundary=Boundary(mode="read_only", allowed_paths=["."]),
         )
 
-    async def _continue_direct_messages(
+    async def _continue_tool_messages(
         self,
         messages: list[dict[str, Any]],
         *,
-        state: DirectTaskState,
+        state: ToolTaskState,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> LoopResult:
@@ -497,7 +499,7 @@ class HarnessRuntime:
         )
         return result.to_loop_result()
 
-    async def resume_direct(
+    async def resume_tool(
         self,
         review_id: str,
         approved: bool,
@@ -505,7 +507,7 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult | None:
-        state = self.session.pop_direct_review_state(review_id)
+        state = self.session.pop_tool_review_state(review_id)
         if state is None:
             return None
 
@@ -530,7 +532,7 @@ class HarnessRuntime:
             if feedback:
                 prior_messages = previous_result.messages if previous_result else messages
                 messages = [*prior_messages, {"role": "user", "content": feedback}]
-            return await self._continue_direct_messages(
+            return await self._continue_tool_messages(
                 messages,
                 state=state,
                 on_token=on_token,
@@ -539,7 +541,7 @@ class HarnessRuntime:
 
         def on_gate(loop_result: LoopResult) -> None:
             if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
-                self._store_direct_review_state(state.user_request, state.review_level, loop_result)
+                self._store_tool_review_state(state.user_request, state.review_level, loop_result)
 
         outcome = await self._run_with_review_and_validation(
             state.user_request,

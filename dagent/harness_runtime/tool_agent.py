@@ -43,7 +43,7 @@ class ToolAgentLoopResult:
     def to_loop_result(self) -> LoopResult:
         """Convert to the unified LoopResult contract."""
         return LoopResult(
-            execution_context=_format_direct_execution_context(self.messages),
+            execution_context=_format_tool_execution_context(self.messages),
             final_answer=self.final_response,
             messages=self.messages,
             completed=self.completed,
@@ -354,7 +354,7 @@ class ToolAgentLoop:
         on_event(payload)
 
 
-def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
+def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
     """Summarize ToolAgentLoop tool calls for the validator/summarizer."""
     lines: list[str] = []
     for message in messages:

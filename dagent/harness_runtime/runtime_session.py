@@ -7,7 +7,7 @@ from typing import Any
 
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.harness_runtime.task_record import DirectTaskState, TaskRecord
+from dagent.harness_runtime.task_record import ToolTaskState, TaskRecord
 from dagent.schemas import Boundary
 
 
@@ -20,7 +20,7 @@ class HarnessRuntimeSession:
     def __init__(self, *, tasks: dict[str, TaskRecord]) -> None:
         self.tasks = tasks
         self.conversation_history: list[dict[str, Any]] = []
-        self._direct_task_states: dict[str, DirectTaskState] = {}
+        self._tool_task_states: dict[str, ToolTaskState] = {}
 
     def tasks_context(self) -> str:
         if not self.tasks:
@@ -41,7 +41,7 @@ class HarnessRuntimeSession:
     def record_conversation(self, loop_result: LoopResult) -> None:
         """Record loop messages into conversation history.
 
-        For direct mode the full ToolAgentLoop conversation replaces history.
+        For tool mode the full ToolAgentLoop conversation replaces history.
         For DAG mode there are no conversation messages (DAG has internal state).
         """
         if loop_result.messages:
@@ -67,7 +67,7 @@ class HarnessRuntimeSession:
             self.conversation_history.append({"role": "assistant", "content": assistant_message})
         self.conversation_history = self.conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
 
-    def store_direct_review_state(
+    def store_tool_review_state(
         self,
         user_request: str,
         review_level: ReviewLevel,
@@ -78,7 +78,7 @@ class HarnessRuntimeSession:
         review = loop_result.pending_review
         if review is None or review.kind != "tool_review" or review.tool_call is None:
             return
-        self._direct_task_states[review.review_id] = DirectTaskState(
+        self._tool_task_states[review.review_id] = ToolTaskState(
             review_id=review.review_id,
             user_request=user_request,
             messages=loop_result.messages,
@@ -90,8 +90,8 @@ class HarnessRuntimeSession:
             risk=review.payload.get("risk", "low"),
         )
 
-    def pop_direct_review_state(self, review_id: str) -> DirectTaskState | None:
-        return self._direct_task_states.pop(review_id, None)
+    def pop_tool_review_state(self, review_id: str) -> ToolTaskState | None:
+        return self._tool_task_states.pop(review_id, None)
 
 
 def _task_context_payload(record: TaskRecord) -> dict[str, Any]:

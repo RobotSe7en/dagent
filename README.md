@@ -12,7 +12,7 @@ and immutable.
 
 > **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
 > three-level incremental re-planning, frozen Trace DB as the context boundary, and
-> automatic DAG-vs-direct task routing - was conceived and first implemented by the
+> automatic DAG-vs-tool task routing - was conceived and first implemented by the
 > author of this repository. First committed: **2026-05-01**.
 
 ---
@@ -52,11 +52,11 @@ trigger a second review. The human is never bypassed.
 ```mermaid
 flowchart TD
   U["User"] --> R["HarnessRuntime"]
-  R -->|"auto mode"| ROUTE["Route\ndag or direct"]
-  R -->|"direct mode"| TA["ToolAgentLoop"]
+  R -->|"auto mode"| ROUTE["Route\ndag or tool"]
+  R -->|"tool mode"| TA["ToolAgentLoop"]
   R -->|"dag mode"| DA["DAGAgentLoop"]
 
-  ROUTE -->|"direct"| TA
+  ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
 
   TA -->|"bounded tool calls"| T["ToolExecutor"]
@@ -101,7 +101,7 @@ flowchart TD
 
 `HarnessRuntime` is the top-level control layer. It owns routing, session state,
 human review gates, optional result validation, retry feedback, and final summarization.
-The execution details stay inside `ToolAgentLoop` for direct tool-use work and
+The execution details stay inside `ToolAgentLoop` for tool-use work and
 `DAGAgentLoop` for structured DAG work.
 
 ### Three-Level Re-planning
@@ -123,14 +123,14 @@ Design principles:
 - **Frozen nodes are immutable.** Once written to Trace DB, a node's record cannot be
   modified. Audit integrity is guaranteed.
 
-### When to Use DAG vs. Direct Tool Calls
+### When to Use DAG vs. Tool Mode
 
 | Task shape | Path |
 |------------|------|
 | Subtasks that can run in parallel | DAG |
 | Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory - next action depends on observation | Direct `ToolAgentLoop` tool calls |
-| Dynamic fan-out - node count unknown until runtime | Direct `ToolAgentLoop` tool calls |
+| Exploratory - next action depends on observation | `ToolAgentLoop` |
+| Dynamic fan-out - node count unknown until runtime | `ToolAgentLoop` |
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
@@ -164,7 +164,7 @@ The runtime is intentionally layered:
   risk DAGs until explicitly approved.
 - Each node is a bounded tool call - no nested agent loop inside a node.
 - `ToolExecutor` enforces boundaries before every tool call.
-- Human review can be triggered by direct tool calls, initial DAG creation, and after
+- Human review can be triggered by tool-mode calls, initial DAG creation, and after
   any Level 3 re-plan.
 - Optional result validation uses a separate `result_validator` profile to check the
   final answer against the original user request and execution context. If validation

@@ -10,10 +10,10 @@ from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
-def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
+def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     state.harness_runtime = _runtime(MockProvider([
-        ChatResponse(content="direct"),          # _route()
-        ChatResponse(content="hello there"),     # direct ToolAgentLoop
+        ChatResponse(content="tool"),            # _route()
+        ChatResponse(content="hello there"),     # ToolAgentLoop
         ChatResponse(content="hello summary"),   # _summarize()
     ]))
     client = TestClient(app)

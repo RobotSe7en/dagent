@@ -33,7 +33,7 @@ class LoopResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     """UI-facing events produced by the loop (dag_created, dag_executed, etc.)."""
 
-    # DAG-specific (None for direct mode)
+    # DAG-specific (None for tool mode)
     dag: DAG | None = None
     run_result: RunResult | None = None
     task_id: str | None = None

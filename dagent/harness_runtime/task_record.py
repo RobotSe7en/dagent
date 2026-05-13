@@ -21,7 +21,7 @@ class PendingReview:
 
 
 @dataclass
-class DirectTaskState:
+class ToolTaskState:
     review_id: str
     user_request: str
     messages: list[dict[str, Any]]

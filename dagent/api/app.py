@@ -228,7 +228,7 @@ async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
-            state.get_harness_runtime().resume_direct(
+            state.get_harness_runtime().resume_tool(
                 request.review_id,
                 request.approved,
                 on_token=on_token,
