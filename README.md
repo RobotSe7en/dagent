@@ -60,7 +60,7 @@ flowchart TD
   ROUTE -->|"dag"| DA
 
   TA -->|"bounded tool calls"| T["ToolExecutor"]
-  TA -->|"loop result"| G["Human Review Gate"]
+  TA -->|"LoopOutcome"| G["Human Review Gate"]
 
   DA --> D["Create Initial DAG\ntool nodes + placeholders"]
 
@@ -169,6 +169,9 @@ The runtime is intentionally layered:
 - Optional result validation uses a separate `validator_agent` profile to check the
   final answer against the original user request and execution context. If validation
   finds issues, the runtime retries once with validator feedback.
+- Validation receives a bounded evidence view of tool/node execution results: each
+  result excerpt is capped, the full validation context has an overall budget, and
+  truncated evidence is explicitly marked.
 
 Boundary checks:
 
@@ -187,12 +190,16 @@ dagent/
   harness_runtime/  runtime orchestration, ToolAgentLoop, DAGAgentLoop, validation,
                     session state, event adapters, trace recording, DAG execution
   providers/        OpenAI-compatible and mock chat providers
-  schemas/          DAG, node, edge, trace, feedback models
+  schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   tools/            tool registry, executor, file tools, boundary checks
   state/            prompt assembly and context management
 profiles/           editable agent profiles (dag_agent, validator_agent, feedback_learner)
 tests/              pytest suite
 ```
+
+Key runtime contracts such as `DAGRunResult`, `LoopOutcome`, `RuntimeResponse`,
+`PendingReview`, and validation result types live in `dagent/schemas/results.py`.
+`harness_runtime` owns behavior; `schemas` owns shared data contracts.
 
 ## Configuration
 
