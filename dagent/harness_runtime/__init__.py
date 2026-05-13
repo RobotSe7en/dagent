@@ -4,23 +4,22 @@ from dagent.harness_runtime.tool_agent import ToolAgentLoop, ControlToolResult
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
-    DAGNodeResult,
-    DAGRunResult,
 )
 from dagent.harness_runtime.dag_agent import DAGAgentLoop
 from dagent.harness_runtime.dag_builder import DAGCreationError
-from dagent.harness_runtime.loop_outcome import LoopOutcome
-from dagent.harness_runtime.result_validator import (
-    ResultValidatorAgent,
-    ValidationResult,
-    ValidationIssue,
+from dagent.harness_runtime.validator_agent import (
+    ValidatorAgent,
     format_validation_feedback,
 )
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
-from dagent.harness_runtime.runtime import (
+from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
+from dagent.schemas import (
+    DAGNodeResult,
+    DAGRunResult,
+    LoopOutcome,
     RuntimeResponse,
-    HarnessRuntime,
-    RuntimeMode,
+    ValidationIssue,
+    ValidationResult,
 )
 from dagent.harness_runtime.task_record import (
     DAGTaskState,
@@ -40,7 +39,7 @@ __all__ = [
     "DAGExecutor",
     "DAGAgentLoop",
     "LoopOutcome",
-    "ResultValidatorAgent",
+    "ValidatorAgent",
     "ValidationResult",
     "ValidationIssue",
     "format_validation_feedback",

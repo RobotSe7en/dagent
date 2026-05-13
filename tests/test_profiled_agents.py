@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from dagent.harness_runtime import ResultValidatorAgent, FeedbackLearnerAgent
+from dagent.harness_runtime import ValidatorAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGNode, TraceEvent
@@ -24,7 +24,7 @@ def profile(role: str) -> AgentProfile:
     )
 
 
-def test_result_validator_agent_parses_validation_json() -> None:
+def test_validator_agent_parses_validation_json() -> None:
     provider = MockProvider(
         [
             ChatResponse(
@@ -43,7 +43,7 @@ def test_result_validator_agent_parses_validation_json() -> None:
             )
         ]
     )
-    validator = ResultValidatorAgent(provider=provider, profile=profile("result_validator"))
+    validator = ValidatorAgent(provider=provider, profile=profile("validator_agent"))
 
     result = run(validator.validate(
         user_request="check",

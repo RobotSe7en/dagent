@@ -9,5 +9,5 @@ profiles:
   directory: "profiles"
   conversation: "conversation"
   dag_agent: "dag_agent"
-  result_validator: "result_validator"
+  validator_agent: "validator_agent"
   feedback_learner: "feedback_learner"

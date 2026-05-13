@@ -6,7 +6,6 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from dagent.harness_runtime.loop_outcome import LoopOutcome
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.task_record import (
     ReviewContinuation,
@@ -15,7 +14,7 @@ from dagent.harness_runtime.task_record import (
     pending_review_invocation,
     task_context_payload,
 )
-from dagent.schemas import ToolInvocation
+from dagent.schemas import LoopOutcome, ToolInvocation
 
 
 MAX_CONVERSATION_HISTORY_MESSAGES = 20

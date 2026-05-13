@@ -5,12 +5,12 @@ from dagent.harness_runtime import (
     DAGExecutor,
     HarnessRuntime,
     LoopOutcome,
-    ResultValidatorAgent,
+    ValidatorAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
-from dagent.harness_runtime.result_validator import ValidationIssue, ValidationResult
+from dagent.schemas import ValidationIssue, ValidationResult
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -522,11 +522,11 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
-def test_harness_runtime_skips_invalid_json_result_validator_response() -> None:
+def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),       # DAG agent
         ChatResponse(content="NO_CHANGE"),            # execute observation
-        ChatResponse(content="looks fine to me"),     # result validator, invalid JSON
+        ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
     tool_executor = make_tool_executor()
     runtime = HarnessRuntime(
@@ -534,7 +534,7 @@ def test_harness_runtime_skips_invalid_json_result_validator_response() -> None:
         tool_agent_loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
         dag_agent_loop=DAGAgentLoop(provider, dag_executor=DAGExecutor(tool_executor=tool_executor), profile=_dag_agent_profile()),
         conversation_profile=_conversation_profile(),
-        validator=ResultValidatorAgent(provider=provider, profile=_validator_profile()),
+        validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
     )
 
@@ -649,10 +649,10 @@ def _dag_agent_profile() -> AgentProfile:
 
 def _validator_profile() -> AgentProfile:
     return AgentProfile(
-        name="result_validator",
-        role="result_validator",
+        name="validator_agent",
+        role="validator_agent",
         layers=["soul"],
-        layer_contents={"soul": "You are a result validator."},
+        layer_contents={"soul": "You are a validator agent."},
     )
 
 

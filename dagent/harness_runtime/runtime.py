@@ -7,7 +7,6 @@ It does not know how loops execute internally; it only consumes LoopOutcome.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.harness_runtime.tool_agent import (
@@ -15,10 +14,8 @@ from dagent.harness_runtime.tool_agent import (
     LoopEventHandler,
     TokenHandler,
 )
-from dagent.harness_runtime.dag_executor import DAGRunResult
 from dagent.harness_runtime.dag_agent import DAGAgentLoop
-from dagent.harness_runtime.loop_outcome import LoopOutcome
-from dagent.harness_runtime.result_validator import ResultValidatorAgent, format_validation_feedback
+from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
@@ -26,10 +23,10 @@ from dagent.harness_runtime.runtime_events import (
     _dag_event_emitter,
     _trace_event_emitter,
 )
-from dagent.harness_runtime.task_record import ReviewContinuation, PendingReview
+from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
-from dagent.schemas import Boundary, DAG, ToolInvocation
+from dagent.schemas import Boundary, DAG, LoopOutcome, RuntimeResponse, ToolInvocation
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
@@ -51,17 +48,6 @@ serial work, or anything that does not need structured orchestration.\
 """
 
 
-@dataclass(frozen=True)
-class RuntimeResponse:
-    status: Literal["completed", "awaiting_review", "failed"]
-    final_answer: str
-    dag: DAG | None = None
-    dag_run: DAGRunResult | None = None
-    task_id: str | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
-    pending_review: PendingReview | None = None
-
-
 LoopRunner = Callable[[str | None, LoopOutcome | None], Awaitable[LoopOutcome]]
 
 
@@ -77,7 +63,7 @@ class HarnessRuntime:
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
-        validator: ResultValidatorAgent | None = None,
+        validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_top_steps: int = 8,
         max_validation_retries: int = 1,

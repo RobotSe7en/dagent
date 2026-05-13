@@ -9,7 +9,6 @@ from dagent.tools.registry import Tool
 
 
 ReviewLevel = Literal["fast", "careful"]
-ReviewKind = Literal["initial_dag", "dag_replan", "tool_review"]
 
 
 @dataclass(frozen=True)

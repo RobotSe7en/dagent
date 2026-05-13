@@ -166,7 +166,7 @@ The runtime is intentionally layered:
 - `ToolExecutor` enforces boundaries before every tool call.
 - Human review can be triggered by tool-mode calls, initial DAG creation, and after
   any Level 3 re-plan.
-- Optional result validation uses a separate `result_validator` profile to check the
+- Optional result validation uses a separate `validator_agent` profile to check the
   final answer against the original user request and execution context. If validation
   finds issues, the runtime retries once with validator feedback.
 
@@ -190,7 +190,7 @@ dagent/
   schemas/          DAG, node, edge, trace, feedback models
   tools/            tool registry, executor, file tools, boundary checks
   state/            prompt assembly and context management
-profiles/           editable agent profiles (dag_agent, result_validator, feedback_learner)
+profiles/           editable agent profiles (dag_agent, validator_agent, feedback_learner)
 tests/              pytest suite
 ```
 
@@ -208,7 +208,7 @@ profiles:
   directory: "profiles"
   conversation: "conversation"
   dag_agent: "dag_agent"
-  result_validator: "result_validator"
+  validator_agent: "validator_agent"
   feedback_learner: "feedback_learner"
 ```
 
@@ -232,7 +232,7 @@ Each role has an editable profile directory:
 profiles/
   conversation/       soul.md  guideline.md  agent.md  memory.md  profile.yaml
   dag_agent/          soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  result_validator/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  validator_agent/    soul.md  guideline.md  agent.md  memory.md  profile.yaml
   feedback_learner/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```
 

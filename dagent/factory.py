@@ -9,7 +9,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     DAGAgentLoop,
     DAGExecutor,
-    ResultValidatorAgent,
+    ValidatorAgent,
     FeedbackLearnerAgent,
     HarnessRuntime,
 )
@@ -60,14 +60,14 @@ def create_harness_runtime(
 def create_profile_agents(
     *,
     config: DagentConfig | None = None,
-) -> tuple[ResultValidatorAgent, FeedbackLearnerAgent]:
+) -> tuple[ValidatorAgent, FeedbackLearnerAgent]:
     resolved_config = config or load_config()
     provider = OpenAICompatibleProvider(resolved_config.provider)
     profile_store = ProfileStore(resolved_config.profiles.directory)
     return (
-        ResultValidatorAgent(
+        ValidatorAgent(
             provider=provider,
-            profile=profile_store.load(resolved_config.profiles.result_validator),
+            profile=profile_store.load(resolved_config.profiles.validator_agent),
         ),
         FeedbackLearnerAgent(
             provider=provider,
@@ -80,9 +80,9 @@ def _try_load_validator(
     provider: OpenAICompatibleProvider,
     profile_store: ProfileStore,
     config: DagentConfig,
-) -> ResultValidatorAgent | None:
+) -> ValidatorAgent | None:
     try:
-        profile = profile_store.load(config.profiles.result_validator)
+        profile = profile_store.load(config.profiles.validator_agent)
     except Exception:
         return None
-    return ResultValidatorAgent(provider=provider, profile=profile)
+    return ValidatorAgent(provider=provider, profile=profile)

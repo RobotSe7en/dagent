@@ -6,13 +6,12 @@ import asyncio
 import re
 from collections.abc import Callable
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
 from typing import Any
 
 from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.harness_runtime.runtime_trace import TraceRecorder
 from dagent.harness_runtime.task_record import ToolExecutionStore
-from dagent.schemas import DAG, Boundary, DAGNode, ToolExecutionRecord, TraceEvent
+from dagent.schemas import DAG, DAGNode, DAGNodeResult, DAGRunResult, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
 
@@ -22,24 +21,6 @@ PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response
 
 class DAGExecutionError(RuntimeError):
     """Raised when a DAG cannot be executed safely."""
-
-
-@dataclass(frozen=True)
-class DAGNodeResult:
-    node_id: str
-    final_response: str
-    completed: bool
-    stop_reason: str
-    steps: int
-
-
-@dataclass(frozen=True)
-class DAGRunResult:
-    dag_id: str
-    completed: bool
-    node_results: dict[str, DAGNodeResult]
-    traces: list[TraceEvent] = field(default_factory=list)
-    execution_records: list[ToolExecutionRecord] = field(default_factory=list)
 
 
 class DAGExecutor:

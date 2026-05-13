@@ -1,33 +1,20 @@
-"""LLM-backed result quality validator."""
+"""LLM-backed validation agent."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 import logging
 
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
+from dagent.schemas import ValidationIssue, ValidationResult
 
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ValidationIssue:
-    message: str
-    node_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    passed: bool
-    issues: list[ValidationIssue] = field(default_factory=list)
-    summary: str = ""
-
-
-class ResultValidatorAgent:
+class ValidatorAgent:
     def __init__(self, *, provider: ChatProvider, profile: AgentProfile) -> None:
         self.agent = ProfiledAgent(provider=provider, profile=profile)
 
@@ -67,10 +54,10 @@ class ResultValidatorAgent:
                 ),
             )
         except ValueError as exc:
-            logger.warning("Result validator returned invalid JSON; skipping validation: %s", exc)
+            logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)
             return ValidationResult(
                 passed=True,
-                summary="Automated result validation was skipped because the validator returned invalid JSON.",
+                summary="Automated result validation was skipped because the validator agent returned invalid JSON.",
             )
         issues = [
             ValidationIssue(

@@ -6,27 +6,25 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from dagent.harness_runtime.review_policy import ReviewLevel, ReviewKind
-from dagent.schemas import DAG, DAGNode, Boundary, ToolExecutionRecord, ToolInvocation
+from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.schemas import (
+    DAG,
+    DAGNode,
+    DAGRunResult,
+    Boundary,
+    PendingReview,
+    ReviewKind,
+    ToolExecutionRecord,
+    ToolInvocation,
+)
 from dagent.schemas.trace import ToolExecutionSource, ToolExecutionStatus
 
 if TYPE_CHECKING:
-    from dagent.harness_runtime.dag_executor import DAGRunResult
-    from dagent.harness_runtime.loop_outcome import LoopOutcome
+    from dagent.schemas import LoopOutcome
 
 
 RuntimeTaskMode = Literal["tool", "dag"]
 RuntimeTaskStatus = Literal["running", "awaiting_review", "completed", "failed"]
-
-
-@dataclass
-class PendingReview:
-    review_id: str
-    kind: ReviewKind
-    message: str
-    proposed_dag: DAG | None = None
-    tool_call: dict[str, Any] | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
