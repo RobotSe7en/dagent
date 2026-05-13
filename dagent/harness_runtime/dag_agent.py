@@ -655,7 +655,7 @@ def _dag_created_review_message(record: TaskRecord) -> str:
 
 
 def format_dag_execution_context(dag: DAG | None, run_result: RunResult | None) -> str:
-    """Format DAG execution details for the reviewer and summarizer."""
+    """Format DAG execution details for the validator and summarizer."""
     lines: list[str] = []
     if dag:
         lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")

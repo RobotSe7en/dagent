@@ -4,10 +4,10 @@ provider:
   api_key_env: "MINIMAX_API_KEY"
   timeout_seconds: 60
   strip_thinking: false
-enable_result_reviewer: false
+enable_result_validation: false
 profiles:
   directory: "profiles"
   conversation: "conversation"
   dag_agent: "dag_agent"
-  result_reviewer: "result_reviewer"
+  result_validator: "result_validator"
   feedback_learner: "feedback_learner"

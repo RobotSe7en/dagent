@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import AgentLoop, DAGAgentLoop, DAGExecutor, HarnessRuntime
+from dagent.harness_runtime import ToolAgentLoop, DAGAgentLoop, DAGExecutor, HarnessRuntime
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.tools.executor import ToolExecutor
@@ -13,7 +13,7 @@ from dagent.tools.registry import ToolRegistry
 def test_api_message_stream_can_return_direct_answer_without_dag() -> None:
     state.harness_runtime = _runtime(MockProvider([
         ChatResponse(content="direct"),          # _route()
-        ChatResponse(content="hello there"),     # direct AgentLoop
+        ChatResponse(content="hello there"),     # direct ToolAgentLoop
         ChatResponse(content="hello summary"),   # _summarize()
     ]))
     client = TestClient(app)
@@ -216,7 +216,7 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     return HarnessRuntime(
         provider=provider,
-        agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
+        tool_agent_loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
         dag_agent_loop=DAGAgentLoop(
             provider,
             dag_executor=dag_executor,

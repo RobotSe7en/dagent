@@ -168,22 +168,40 @@ select {
   border-color: var(--accent-blue);
 }
 
-.reviewer-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
+.validation-toggle {
+  height: 34px;
+  border: 1px solid var(--gray-300);
+  background: white;
   color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
-  user-select: none;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
-.reviewer-toggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--accent-blue);
+.validation-toggle:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.validation-toggle.active {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
+  color: var(--accent-blue);
+}
+
+.validation-toggle.error {
+  border-color: #dc2626;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.validation-toggle:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 /* ── Workspace ── */
@@ -1480,33 +1498,33 @@ pre.readonly-field {
   }
 }
 
-/* ── Reviewer Feedback ── */
-.review-feedback {
+/* ── Validation Feedback ── */
+.validation-feedback {
   border-left: 3px solid #f59e0b;
   background: #fffbeb;
 }
 
-.review-feedback .tool-event-head {
+.validation-feedback .tool-event-head {
   color: #92400e;
 }
 
-.review-passed {
+.validation-passed {
   border-left: 3px solid #16a34a;
   background: #f0fdf4;
 }
 
-.review-passed .tool-event-head {
+.validation-passed .tool-event-head {
   color: #166534;
 }
 
-.review-feedback .tool-section p,
-.review-passed .tool-section p {
+.validation-feedback .tool-section p,
+.validation-passed .tool-section p {
   margin: 0;
   line-height: 1.5;
   color: var(--gray-800);
 }
 
-.review-issues {
+.validation-issues {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -1515,7 +1533,7 @@ pre.readonly-field {
   gap: 6px;
 }
 
-.review-issues li {
+.validation-issues li {
   display: flex;
   align-items: flex-start;
   gap: 6px;
@@ -1524,7 +1542,7 @@ pre.readonly-field {
   color: var(--gray-700);
 }
 
-.review-issues li em {
+.validation-issues li em {
   flex-shrink: 0;
   color: var(--gray-500);
   font-style: normal;

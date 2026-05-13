@@ -162,7 +162,7 @@ dagent/
   schemas/          DAG, node, edge, trace, feedback models
   tools/            tool registry, executor, file tools, boundary checks
   state/            prompt assembly and context management
-profiles/           editable agent profiles (dag_agent, dag_reviewer, feedback_learner)
+profiles/           editable agent profiles (dag_agent, result_validator, feedback_learner)
 tests/              pytest suite
 ```
 
@@ -177,7 +177,7 @@ provider:
 profiles:
   directory: "profiles"
   dag_agent: "dag_agent"
-  dag_reviewer: "dag_reviewer"
+  result_validator: "result_validator"
   feedback_learner: "feedback_learner"
 ```
 
@@ -195,12 +195,12 @@ $env:DAGENT_CONFIG="C:\path\to\config.yaml"
 
 ## Agent Profiles
 
-Each role (DAG Agent, reviewer, feedback learner) has an editable profile directory:
+Each role (DAG Agent, result validator, feedback learner) has an editable profile directory:
 
 ```text
 profiles/
   dag_agent/      soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  dag_reviewer/     soul.md  guideline.md  agent.md  memory.md  profile.yaml
+  result_validator/     soul.md  guideline.md  agent.md  memory.md  profile.yaml
   feedback_learner/ soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```
 

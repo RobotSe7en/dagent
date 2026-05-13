@@ -1,16 +1,16 @@
 import asyncio
 from dagent.harness_runtime import (
-    AgentLoop,
-    AgentLoopResult,
+    ToolAgentLoop,
+    ToolAgentLoopResult,
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    ResultReviewerAgent,
+    ResultValidatorAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Boundary
-from dagent.harness_runtime.result_reviewer import ReviewIssue, ReviewResult
+from dagent.harness_runtime.result_validator import ValidationIssue, ValidationResult
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -27,9 +27,9 @@ class CompletingLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
+    ) -> ToolAgentLoopResult:
         self.calls += 1
-        return AgentLoopResult(
+        return ToolAgentLoopResult(
             final_response="node complete",
             messages=[],
             steps=1,
@@ -53,7 +53,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
 def test_harness_runtime_direct_message_does_not_create_dag() -> None:
     provider = MockProvider([
         ChatResponse(content="direct"),       # _route()
-        ChatResponse(content="hello"),        # direct AgentLoop
+        ChatResponse(content="hello"),        # direct ToolAgentLoop
         ChatResponse(content="hello summary"),  # _summarize()
     ])
     runtime = _runtime(provider)
@@ -68,9 +68,9 @@ def test_harness_runtime_direct_message_does_not_create_dag() -> None:
 
 def test_harness_runtime_direct_followup_includes_conversation_history() -> None:
     provider = MockProvider([
-        ChatResponse(content="The project color is blue."),  # direct AgentLoop
+        ChatResponse(content="The project color is blue."),  # direct ToolAgentLoop
         ChatResponse(content="Noted, blue."),                # _summarize()
-        ChatResponse(content="It is blue."),                 # direct AgentLoop
+        ChatResponse(content="It is blue."),                 # direct ToolAgentLoop
         ChatResponse(content="Blue."),                       # _summarize()
     ])
     runtime = _runtime(provider)
@@ -80,8 +80,8 @@ def test_harness_runtime_direct_followup_includes_conversation_history() -> None
 
     assert first.status == "completed"
     assert second.status == "completed"
-    # requests[0] = direct AgentLoop, requests[1] = _summarize(),
-    # requests[2] = direct AgentLoop (with history), requests[3] = _summarize()
+    # requests[0] = direct ToolAgentLoop, requests[1] = _summarize(),
+    # requests[2] = direct ToolAgentLoop (with history), requests[3] = _summarize()
     second_agent_messages = provider.requests[2]["messages"]
     assert [message["role"] for message in second_agent_messages] == [
         "system",
@@ -96,7 +96,7 @@ def test_harness_runtime_direct_followup_includes_conversation_history() -> None
 
 def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     provider = MockProvider([
-        ChatResponse(content="The project color is blue."),  # direct AgentLoop
+        ChatResponse(content="The project color is blue."),  # direct ToolAgentLoop
         ChatResponse(content="Noted, blue."),                # _summarize()
         ChatResponse(content=_dag_agent_dsl()),              # DAG agent
     ])
@@ -357,7 +357,7 @@ def test_harness_runtime_auto_route_defaults_to_direct_on_error() -> None:
     """When the routing LLM call fails, default to direct mode."""
     call_count = [0]
     original_responses = [
-        ChatResponse(content="hello world"),      # direct AgentLoop response
+        ChatResponse(content="hello world"),      # direct ToolAgentLoop response
         ChatResponse(content="hello summarized"),  # _summarize()
     ]
 
@@ -378,7 +378,7 @@ def test_harness_runtime_auto_route_defaults_to_direct_on_error() -> None:
 
 
 def test_think_tag_filter_keep_inside_only_forwards_think_blocks() -> None:
-    from dagent.harness_runtime.runtime import _ThinkTagFilter
+    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
 
     collected: list[str] = []
     filt = _ThinkTagFilter(collected.append, keep="inside")
@@ -395,7 +395,7 @@ def test_think_tag_filter_keep_inside_only_forwards_think_blocks() -> None:
 
 
 def test_think_tag_filter_keep_inside_no_think_emits_nothing() -> None:
-    from dagent.harness_runtime.runtime import _ThinkTagFilter
+    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
 
     collected: list[str] = []
     filt = _ThinkTagFilter(collected.append, keep="inside")
@@ -406,7 +406,7 @@ def test_think_tag_filter_keep_inside_no_think_emits_nothing() -> None:
 
 
 def test_think_tag_filter_keep_outside_strips_thinking() -> None:
-    from dagent.harness_runtime.runtime import _ThinkTagFilter
+    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
 
     collected: list[str] = []
     filt = _ThinkTagFilter(collected.append, keep="outside")
@@ -421,7 +421,7 @@ def test_think_tag_filter_keep_outside_strips_thinking() -> None:
 
 
 def test_think_tag_filter_keep_outside_passes_all_when_no_think() -> None:
-    from dagent.harness_runtime.runtime import _ThinkTagFilter
+    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
 
     collected: list[str] = []
     filt = _ThinkTagFilter(collected.append, keep="outside")
@@ -433,7 +433,7 @@ def test_think_tag_filter_keep_outside_passes_all_when_no_think() -> None:
 
 def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
     provider = MockProvider([
-        ChatResponse(content="<think>reasoning</think>The answer."),  # direct AgentLoop
+        ChatResponse(content="<think>reasoning</think>The answer."),  # direct ToolAgentLoop
         ChatResponse(content="summarized answer"),                   # _summarize()
     ])
     runtime = _runtime(provider)
@@ -450,13 +450,13 @@ def test_harness_runtime_direct_mode_only_streams_thinking_tokens() -> None:
     assert "<think>" in full
     assert "reasoning" in full
     assert "</think>" in full
-    # The answer from AgentLoop should NOT be streamed (only summarize answer)
+    # The answer from ToolAgentLoop should NOT be streamed (only summarize answer)
     # The summarize answer IS streamed (but MockProvider.chat doesn't stream,
     # so we just verify the final result comes from summarize)
     assert result.message_markdown == "summarized answer"
 
 
-def test_resume_direct_retries_when_reviewer_rejects_after_tool_approval() -> None:
+def test_resume_direct_retries_when_validator_rejects_after_tool_approval() -> None:
     tool_executor = make_tool_executor()
     provider = MockProvider([
         ChatResponse(
@@ -472,16 +472,16 @@ def test_resume_direct_retries_when_reviewer_rejects_after_tool_approval() -> No
         ChatResponse(content="good answer"),
         ChatResponse(content="summary"),
     ])
-    agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     runtime = HarnessRuntime(
         provider=provider,
-        agent_loop=agent_loop,
+        tool_agent_loop=tool_agent_loop,
         dag_agent_loop=DAGAgentLoop(provider, dag_executor=dag_executor, profile=_dag_agent_profile()),
         conversation_profile=_conversation_profile(),
         runtime_tools=tool_executor.registry.all_tools(),
-        reviewer=_RejectThenApproveReviewer(),
-        enable_reviewer=True,
+        validator=_RejectThenApproveValidator(),
+        enable_validation=True,
     )
 
     first = run(runtime.handle_message("Write a note", mode="direct", review_level="careful"))
@@ -494,21 +494,21 @@ def test_resume_direct_retries_when_reviewer_rejects_after_tool_approval() -> No
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
-def test_harness_runtime_skips_invalid_json_result_reviewer_response() -> None:
+def test_harness_runtime_skips_invalid_json_result_validator_response() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),       # DAG agent
         ChatResponse(content="NO_CHANGE"),            # execute observation
-        ChatResponse(content="looks fine to me"),     # result reviewer, invalid JSON
+        ChatResponse(content="looks fine to me"),     # result validator, invalid JSON
         ChatResponse(content="summarized answer"),    # _summarize()
     ])
     tool_executor = make_tool_executor()
     runtime = HarnessRuntime(
         provider=provider,
-        agent_loop=AgentLoop(provider=provider, tool_executor=tool_executor),
+        tool_agent_loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
         dag_agent_loop=DAGAgentLoop(provider, dag_executor=DAGExecutor(tool_executor=tool_executor), profile=_dag_agent_profile()),
         conversation_profile=_conversation_profile(),
-        reviewer=ResultReviewerAgent(provider=provider, profile=_reviewer_profile()),
-        enable_reviewer=True,
+        validator=ResultValidatorAgent(provider=provider, profile=_validator_profile()),
+        enable_validation=True,
     )
 
     result = run(runtime.handle_message("Create a safe DAG", mode="dag", review_level="fast"))
@@ -517,19 +517,18 @@ def test_harness_runtime_skips_invalid_json_result_reviewer_response() -> None:
     assert result.message_markdown == "summarized answer"
 
 
-class _RejectThenApproveReviewer:
+class _RejectThenApproveValidator:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def review(self, *, user_request: str, final_answer: str, execution_context: str = "") -> ReviewResult:
+    async def validate(self, *, user_request: str, final_answer: str, execution_context: str = "") -> ValidationResult:
         self.calls += 1
         if self.calls == 1:
-            return ReviewResult(
-                approved=False,
+            return ValidationResult(passed=False,
                 summary="Needs a better answer.",
-                issues=[ReviewIssue(message="Try again.")],
+                issues=[ValidationIssue(message="Try again.")],
             )
-        return ReviewResult(approved=True, summary="ok")
+        return ValidationResult(passed=True, summary="ok")
 
 
 def _runtime(
@@ -538,7 +537,7 @@ def _runtime(
     node_loop: CompletingLoop | None = None,
 ) -> HarnessRuntime:
     tool_executor = make_tool_executor()
-    agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     dag_agent_loop = DAGAgentLoop(
         provider,
@@ -547,7 +546,7 @@ def _runtime(
     )
     return HarnessRuntime(
         provider=provider,
-        agent_loop=agent_loop,
+        tool_agent_loop=tool_agent_loop,
         dag_agent_loop=dag_agent_loop,
         conversation_profile=_conversation_profile(),
         runtime_tools=[],
@@ -621,12 +620,12 @@ def _dag_agent_profile() -> AgentProfile:
     )
 
 
-def _reviewer_profile() -> AgentProfile:
+def _validator_profile() -> AgentProfile:
     return AgentProfile(
-        name="result_reviewer",
-        role="result_reviewer",
+        name="result_validator",
+        role="result_validator",
         layers=["soul"],
-        layer_contents={"soul": "You are a result reviewer."},
+        layer_contents={"soul": "You are a result validator."},
     )
 
 

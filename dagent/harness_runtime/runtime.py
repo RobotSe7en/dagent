@@ -7,30 +7,34 @@ It does not know how loops execute internally; it only consumes LoopResult.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from dagent.harness_runtime.agent_loop import (
-    AgentLoop,
+from dagent.harness_runtime.tool_agent import (
+    ToolAgentLoop,
     LoopEventHandler,
     TokenHandler,
 )
 from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.dag_agent import DAGAgentLoop
 from dagent.harness_runtime.loop_result import LoopResult
-from dagent.harness_runtime.result_reviewer import ResultReviewerAgent, format_review_feedback
+from dagent.harness_runtime.result_validator import ResultValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
+from dagent.harness_runtime.runtime_events import (
+    _ThinkTagFilter,
+    _dag_event_emitter,
+    _trace_event_emitter,
+)
 from dagent.harness_runtime.task_record import DirectTaskState, PendingReview
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
-from dagent.schemas import Boundary, DAG, TraceEvent
+from dagent.schemas import Boundary, DAG
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
 
 RuntimeMode = Literal["auto", "direct", "dag"]
-MAX_CONVERSATION_HISTORY_MESSAGES = 20
 
 _ROUTE_SYSTEM_PROMPT = """\
 You are a routing classifier.  Given the user message and conversation context, \
@@ -59,13 +63,13 @@ class HarnessMessageResult:
 
 
 @dataclass(frozen=True)
-class _ReviewRetryOutcome:
+class _GateFlowOutcome:
     loop_result: LoopResult
     gate: HarnessMessageResult | None = None
 
 
-ReviewableLoop = Callable[[str | None, LoopResult | None], Awaitable[LoopResult]]
-ReviewGateHandler = Callable[[LoopResult], None]
+LoopRunner = Callable[[str | None, LoopResult | None], Awaitable[LoopResult]]
+ReviewGateCallback = Callable[[LoopResult], None]
 
 
 class HarnessRuntime:
@@ -75,29 +79,28 @@ class HarnessRuntime:
         self,
         *,
         provider: ChatProvider,
-        agent_loop: AgentLoop,
+        tool_agent_loop: ToolAgentLoop,
         dag_agent_loop: DAGAgentLoop,
         conversation_profile: AgentProfile,
         runtime_tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
-        reviewer: ResultReviewerAgent | None = None,
-        enable_reviewer: bool = False,
+        validator: ResultValidatorAgent | None = None,
+        enable_validation: bool = False,
         max_top_steps: int = 8,
-        max_review_retries: int = 1,
+        max_validation_retries: int = 1,
     ) -> None:
         self.provider = provider
-        self.agent_loop = agent_loop
+        self.tool_agent_loop = tool_agent_loop
         self.dag_agent_loop = dag_agent_loop
         self.conversation_profile = conversation_profile
         self.runtime_tools = runtime_tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
-        self.reviewer = reviewer
-        self.enable_reviewer = enable_reviewer
+        self.validator = validator
+        self.enable_validation = enable_validation
         self.max_top_steps = max_top_steps
-        self.max_review_retries = max_review_retries
+        self.max_validation_retries = max_validation_retries
         self.tasks = dag_agent_loop.tasks
-        self._conversation_history: list[dict[str, Any]] = []
-        self._direct_task_states: dict[str, DirectTaskState] = {}
+        self.session = HarnessRuntimeSession(tasks=self.tasks)
 
     # ==================================================================
     # Public API
@@ -123,51 +126,51 @@ class HarnessRuntime:
             pending_review=loop_result.pending_review,
         )
 
-    async def _run_review_cycle(
+    async def _validate_loop_result(
         self,
         loop_result: LoopResult,
         user_request: str,
         *,
         on_event: LoopEventHandler | None,
     ) -> tuple[bool, str | None]:
-        approved = True
+        passed = True
         feedback: str | None = None
-        if not self.enable_reviewer or not self.reviewer:
-            return approved, feedback
+        if not self.enable_validation or not self.validator:
+            return passed, feedback
         if not loop_result.execution_context.strip():
-            return approved, feedback
+            return passed, feedback
         if on_event:
-            on_event({"type": "reviewing", "message": "Reviewing result quality..."})
-        review = await self.reviewer.review(
+            on_event({"type": "validating", "message": "Validating result quality..."})
+        validation = await self.validator.validate(
             user_request=user_request,
             final_answer=loop_result.final_answer,
             execution_context=loop_result.execution_context,
         )
-        if review.approved:
+        if validation.passed:
             if on_event:
                 on_event({
-                    "type": "review_passed",
-                    "approved": True,
-                    "summary": review.summary,
+                    "type": "validation_passed",
+                    "passed": True,
+                    "summary": validation.summary,
                     "issues": [
                         {"message": issue.message, "node_id": issue.node_id}
-                        for issue in review.issues
+                        for issue in validation.issues
                     ],
                 })
-            return approved, feedback
-        feedback = format_review_feedback(review)
-        approved = False
+            return passed, feedback
+        feedback = format_validation_feedback(validation)
+        passed = False
         if on_event:
             on_event({
                 "type": "retry",
                 "reason": feedback,
-                "summary": review.summary,
+                "summary": validation.summary,
                 "issues": [
                     {"message": issue.message, "node_id": issue.node_id}
-                    for issue in review.issues
+                    for issue in validation.issues
                 ],
             })
-        return approved, feedback
+        return passed, feedback
 
     async def _build_summary_result(
         self,
@@ -183,7 +186,7 @@ class HarnessRuntime:
             on_token=on_token,
         )
         if not loop_result.messages:
-            self._append_conversation_turn(user_request, summary)
+            self.session.append_conversation_turn(user_request, summary)
         return HarnessMessageResult(
             status="completed" if loop_result.completed else "failed",
             message_markdown=summary,
@@ -194,19 +197,19 @@ class HarnessRuntime:
             pending_review=loop_result.pending_review,
         )
 
-    async def _run_with_review_retries(
+    async def _run_with_review_and_validation(
         self,
         user_request: str,
         *,
-        run_once: ReviewableLoop,
+        run_once: LoopRunner,
         initial_loop_result: LoopResult | None = None,
-        on_gate: ReviewGateHandler | None = None,
+        on_gate: ReviewGateCallback | None = None,
         on_event: LoopEventHandler | None,
-    ) -> _ReviewRetryOutcome:
+    ) -> _GateFlowOutcome:
         feedback: str | None = None
         loop_result: LoopResult | None = initial_loop_result
 
-        for _attempt in range(self.max_review_retries + 1):
+        for _attempt in range(self.max_validation_retries + 1):
             if loop_result is None or feedback is not None:
                 loop_result = await run_once(feedback, loop_result)
 
@@ -214,20 +217,20 @@ class HarnessRuntime:
             if gate is not None:
                 if on_gate is not None:
                     on_gate(loop_result)
-                return _ReviewRetryOutcome(loop_result=loop_result, gate=gate)
+                return _GateFlowOutcome(loop_result=loop_result, gate=gate)
 
-            approved, review_feedback = await self._run_review_cycle(
+            passed, validation_feedback = await self._validate_loop_result(
                 loop_result,
                 user_request,
                 on_event=on_event,
             )
-            if approved:
-                return _ReviewRetryOutcome(loop_result=loop_result)
-            feedback = review_feedback
+            if passed:
+                return _GateFlowOutcome(loop_result=loop_result)
+            feedback = validation_feedback
 
         if loop_result is None:
-            raise RuntimeError("Review retry loop did not execute.")
-        return _ReviewRetryOutcome(loop_result=loop_result)
+            raise RuntimeError("Validation retry loop did not execute.")
+        return _GateFlowOutcome(loop_result=loop_result)
 
     async def handle_message(
         self,
@@ -259,7 +262,7 @@ class HarnessRuntime:
             if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
                 self._store_direct_review_state(message, review_level, loop_result)
 
-        outcome = await self._run_with_review_retries(
+        outcome = await self._run_with_review_and_validation(
             message,
             run_once=run_once,
             on_gate=on_gate,
@@ -268,7 +271,7 @@ class HarnessRuntime:
         if outcome.gate is not None:
             return outcome.gate
 
-        self._record_conversation(outcome.loop_result)
+        self.session.record_conversation(outcome.loop_result)
         return await self._build_summary_result(outcome.loop_result, message, on_token=on_token)
 
     async def resume_dag(
@@ -309,7 +312,7 @@ class HarnessRuntime:
             )
 
         async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
-            planning_context = self._tasks_context()
+            planning_context = self.session.tasks_context()
             if feedback:
                 planning_context = (
                     f"{planning_context}\n\n{feedback}" if planning_context else feedback
@@ -319,14 +322,14 @@ class HarnessRuntime:
                 review_level=review_level or record.review_level,
                 planning_context=planning_context,
                 runtime_mode=record.runtime_mode,
-                conversation_history=self._conversation_history,
+                conversation_history=self.session.conversation_history,
                 on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
             )
             return retry_dag_result.to_loop_result()
 
-        outcome = await self._run_with_review_retries(
+        outcome = await self._run_with_review_and_validation(
             record.user_request,
             run_once=run_once,
             initial_loop_result=loop_result,
@@ -343,7 +346,7 @@ class HarnessRuntime:
 
     async def _route(self, message: str) -> Literal["dag", "direct"]:
         """Lightweight LLM classifier."""
-        context = self._tasks_context()
+        context = self.session.tasks_context()
         user_content = message
         if context:
             user_content = f"Conversation context:\n{context}\n\nUser message:\n{message}"
@@ -378,7 +381,7 @@ class HarnessRuntime:
     ) -> LoopResult:
         """Dispatch to the appropriate loop and return a unified LoopResult."""
         if mode == "dag":
-            planning_context = self._tasks_context()
+            planning_context = self.session.tasks_context()
             if feedback:
                 planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
@@ -387,7 +390,7 @@ class HarnessRuntime:
                 review_level=review_level,
                 planning_context=planning_context,
                 runtime_mode=str(mode),
-                conversation_history=self._conversation_history,
+                conversation_history=self.session.conversation_history,
                 on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
                 on_dag=_dag_event_emitter(on_event),
@@ -416,7 +419,7 @@ class HarnessRuntime:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> LoopResult:
-        """Run AgentLoop and return unified LoopResult."""
+        """Run ToolAgentLoop and return unified LoopResult."""
         if prior_messages and feedback:
             messages = list(prior_messages)
             messages.append({"role": "user", "content": feedback})
@@ -427,23 +430,23 @@ class HarnessRuntime:
                     task_content="{{ user_message }}",
                     tools=self.runtime_tools,
                     memory=self.conversation_profile.memory,
-                    context=self._tasks_context(),
+                    context=self.session.tasks_context(),
                     variables={"user_message": message},
                 )
             )
             system_msg = base_messages[0]
             current_user_msg = base_messages[1]
-            messages = [system_msg, *self._conversation_history, current_user_msg]
+            messages = [system_msg, *self.session.conversation_history, current_user_msg]
 
         boundary = Boundary(mode="read_only", allowed_paths=["."])
         control_tool_names = self._reviewable_tool_names()
-        result = await self.agent_loop.run(
+        result = await self.tool_agent_loop.run(
             "",
             boundary=boundary,
             max_steps=self.max_top_steps,
             messages=messages,
             control_tool_names=control_tool_names,
-            control_tool_handler=self.agent_loop.create_tool_guard(review_level, boundary, self.runtime_tools),
+            control_tool_handler=self.tool_agent_loop.create_tool_guard(review_level, boundary, self.runtime_tools),
             on_token=on_token,
             on_event=on_event,
         )
@@ -462,19 +465,11 @@ class HarnessRuntime:
         review_level: ReviewLevel,
         loop_result: LoopResult,
     ) -> None:
-        review = loop_result.pending_review
-        if review is None or review.kind != "tool_review" or review.tool_call is None:
-            return
-        self._direct_task_states[review.review_id] = DirectTaskState(
-            review_id=review.review_id,
+        self.session.store_direct_review_state(
             user_request=user_request,
-            messages=loop_result.messages,
             review_level=review_level,
+            loop_result=loop_result,
             boundary=Boundary(mode="read_only", allowed_paths=["."]),
-            tool_call_id=review.tool_call["tool_call_id"],
-            tool_name=review.tool_call["name"],
-            tool_args=review.tool_call["arguments"],
-            risk=review.payload.get("risk", "low"),
         )
 
     async def _continue_direct_messages(
@@ -486,13 +481,13 @@ class HarnessRuntime:
         on_event: LoopEventHandler | None,
     ) -> LoopResult:
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        result = await self.agent_loop.run(
+        result = await self.tool_agent_loop.run(
             "",
             boundary=state.boundary,
             max_steps=self.max_top_steps,
             messages=messages,
             control_tool_names=self._reviewable_tool_names(),
-            control_tool_handler=self.agent_loop.create_tool_guard(
+            control_tool_handler=self.tool_agent_loop.create_tool_guard(
                 state.review_level,
                 state.boundary,
                 self.runtime_tools,
@@ -510,14 +505,14 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult | None:
-        state = self._direct_task_states.pop(review_id, None)
+        state = self.session.pop_direct_review_state(review_id)
         if state is None:
             return None
 
         feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=state.tool_name)
         if approved:
             try:
-                feed_content = self.agent_loop.tool_executor.execute(
+                feed_content = self.tool_agent_loop.tool_executor.execute(
                     state.tool_name, state.tool_args, boundary=state.boundary
                 )
             except Exception as exc:
@@ -546,7 +541,7 @@ class HarnessRuntime:
             if loop_result.pending_review and loop_result.pending_review.kind == "tool_review":
                 self._store_direct_review_state(state.user_request, state.review_level, loop_result)
 
-        outcome = await self._run_with_review_retries(
+        outcome = await self._run_with_review_and_validation(
             state.user_request,
             run_once=run_once,
             on_gate=on_gate,
@@ -555,7 +550,7 @@ class HarnessRuntime:
         if outcome.gate is not None:
             return outcome.gate
 
-        self._record_conversation(outcome.loop_result)
+        self.session.record_conversation(outcome.loop_result)
         return await self._build_summary_result(outcome.loop_result, state.user_request, on_token=on_token)
 
     # ==================================================================
@@ -611,199 +606,3 @@ class HarnessRuntime:
         else:
             response = await self.provider.chat(messages)
             return response.content
-
-    def _record_conversation(self, loop_result: LoopResult) -> None:
-        """Record loop messages into conversation history.
-
-        For direct mode the full AgentLoop conversation replaces history.
-        For DAG mode there are no conversation messages (DAG has internal state).
-        """
-        if loop_result.messages:
-            self._remember_conversation_messages(loop_result.messages)
-
-    # ==================================================================
-    # Conversation history
-    # ==================================================================
-
-    def _tasks_context(self) -> str:
-        if not self.tasks:
-            return ""
-        payload = {
-            "recent_dag_tasks": [
-                _task_context_payload(record)
-                for record in list(self.tasks.values())[-3:]
-            ]
-        }
-        return (
-            "Recent DAG execution context is available. Use it to interpret "
-            "follow-up requests and DAG planning requests; do not repeat work "
-            "whose result is already available unless the user asks to rerun it.\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-
-    def _remember_conversation_messages(self, messages: list[dict[str, Any]]) -> None:
-        self._conversation_history = [
-            message
-            for message in (_conversation_message_copy(item) for item in messages)
-            if message is not None
-        ][-MAX_CONVERSATION_HISTORY_MESSAGES:]
-
-    def _append_conversation_turn(self, user_message: str, assistant_message: str) -> None:
-        user_message = user_message.strip()
-        assistant_message = assistant_message.strip()
-        if user_message and not (
-            self._conversation_history
-            and self._conversation_history[-1].get("role") == "user"
-            and self._conversation_history[-1].get("content") == user_message
-        ):
-            self._conversation_history.append({"role": "user", "content": user_message})
-        if assistant_message:
-            self._conversation_history.append({"role": "assistant", "content": assistant_message})
-        self._conversation_history = self._conversation_history[-MAX_CONVERSATION_HISTORY_MESSAGES:]
-
-
-# ------------------------------------------------------------------
-# Module-level helpers
-# ------------------------------------------------------------------
-
-class _ThinkTagFilter:
-    """Streaming filter that selectively forwards tokens based on <think> blocks.
-
-    Two modes (controlled by ``keep``):
-
-    * ``keep="inside"``: forward only tokens inside ``<think>...</think>``
-      (including the tags themselves).  Used during AgentLoop execution so the
-      user sees the model's reasoning but not the answer (which will come from
-      ``_summarize()``).
-
-    * ``keep="outside"``: forward only tokens outside ``<think>...</think>``.
-      Used during ``_summarize()`` so the user sees the final answer but not
-      the summarizer's internal reasoning.
-    """
-
-    _OPEN = "<think>"
-    _CLOSE = "</think>"
-
-    def __init__(self, downstream: TokenHandler, *, keep: str = "inside") -> None:
-        assert keep in {"inside", "outside"}
-        self._downstream = downstream
-        self._keep = keep
-        self._buf = ""
-        self._inside = False
-
-    def _should_emit(self) -> bool:
-        return (self._keep == "inside") == self._inside
-
-    def __call__(self, token: str) -> None:
-        self._buf += token
-        while self._buf:
-            if not self._inside:
-                idx = self._buf.lower().find(self._OPEN)
-                if idx == -1:
-                    # No opening tag.  Keep a small tail in case a tag is
-                    # split across tokens, but only if '<' is present in
-                    # the tail; otherwise the tail cannot start a tag.
-                    keep = len(self._OPEN) - 1
-                    if len(self._buf) > keep and "<" not in self._buf[-keep:]:
-                        # No chance of a partial tag; flush everything.
-                        if self._should_emit():
-                            self._downstream(self._buf)
-                        self._buf = ""
-                    else:
-                        safe = self._buf[:-keep] if len(self._buf) > keep else ""
-                        if safe and self._should_emit():
-                            self._downstream(safe)
-                        self._buf = self._buf[len(safe):]
-                    return
-                # Text before <think>
-                before = self._buf[:idx]
-                if before and self._should_emit():
-                    self._downstream(before)
-                # Emit the tag itself if keeping inside.
-                tag_end = idx + len(self._OPEN)
-                self._inside = True
-                if self._should_emit():
-                    self._downstream(self._buf[idx:tag_end])
-                self._buf = self._buf[tag_end:]
-            else:
-                idx = self._buf.lower().find(self._CLOSE)
-                if idx == -1:
-                    safe_len = len(self._buf) - (len(self._CLOSE) - 1)
-                    if safe_len > 0 and "<" not in self._buf[-max(len(self._CLOSE) - 1, 0):]:
-                        # No partial close tag possible; flush all.
-                        if self._should_emit():
-                            self._downstream(self._buf)
-                        self._buf = ""
-                    elif safe_len > 0:
-                        safe = self._buf[:safe_len]
-                        if self._should_emit():
-                            self._downstream(safe)
-                        self._buf = self._buf[safe_len:]
-                    return
-                # Text inside think + closing tag
-                tag_end = idx + len(self._CLOSE)
-                inside_text = self._buf[:idx]
-                if inside_text and self._should_emit():
-                    self._downstream(inside_text)
-                # Closing tag; about to leave inside.
-                if self._should_emit():
-                    self._downstream(self._buf[idx:tag_end])
-                self._buf = self._buf[tag_end:]
-                self._inside = False
-
-
-def _trace_event_emitter(on_event: LoopEventHandler | None):
-    if on_event is None:
-        return None
-
-    def emit(trace: TraceEvent) -> None:
-        on_event({"type": "trace", "event": trace.model_dump(mode="json")})
-
-    return emit
-
-
-def _dag_event_emitter(on_event: LoopEventHandler | None):
-    if on_event is None:
-        return None
-
-    def emit(dag: DAG) -> None:
-        on_event({"type": "dag", "dag": dag.model_dump(mode="json")})
-
-    return emit
-
-
-def _task_context_payload(record) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "dag_id": record.dag.dag_id,
-        "user_request": record.user_request,
-        "dag_status": record.dag.status,
-        "node_results": {
-            node_id: {
-                "completed": node_result.completed,
-                "stop_reason": node_result.stop_reason,
-                "final_response": node_result.final_response,
-            }
-            for node_id, node_result in record.node_results.items()
-        },
-        "recent_trace_records": [
-            {
-                "node_id": trace.node_id,
-                "tool": trace.tool,
-                "status": trace.status,
-                "output": trace.output,
-                "error": trace.error,
-            }
-            for trace in record.trace_records[-8:]
-        ],
-    }
-
-
-def _conversation_message_copy(message: dict[str, Any]) -> dict[str, Any] | None:
-    role = message.get("role")
-    if role not in {"user", "assistant"}:
-        return None
-    content = message.get("content")
-    if not content:
-        return None
-    return {"role": role, "content": content}

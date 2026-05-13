@@ -6,10 +6,10 @@ from pathlib import Path
 
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
-    AgentLoop,
+    ToolAgentLoop,
     DAGAgentLoop,
     DAGExecutor,
-    ResultReviewerAgent,
+    ResultValidatorAgent,
     FeedbackLearnerAgent,
     HarnessRuntime,
 )
@@ -36,7 +36,7 @@ def create_harness_runtime(
         for name in sorted(tool_executor.registry.names())
         if (tool := tool_executor.registry.get(name)) is not None
     ]
-    agent_loop = AgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     dag_agent_loop = DAGAgentLoop(
         provider,
@@ -45,29 +45,29 @@ def create_harness_runtime(
         profile_name=resolved_config.profiles.dag_agent,
         tools=runtime_tools,
     )
-    reviewer = _try_load_reviewer(provider, profile_store, resolved_config)
+    validator = _try_load_validator(provider, profile_store, resolved_config)
     return HarnessRuntime(
         provider=provider,
-        agent_loop=agent_loop,
+        tool_agent_loop=tool_agent_loop,
         dag_agent_loop=dag_agent_loop,
         conversation_profile=profile_store.load(resolved_config.profiles.conversation),
         runtime_tools=runtime_tools,
-        reviewer=reviewer,
-        enable_reviewer=resolved_config.enable_result_reviewer,
+        validator=validator,
+        enable_validation=resolved_config.enable_result_validation,
     )
 
 
 def create_profile_agents(
     *,
     config: DagentConfig | None = None,
-) -> tuple[ResultReviewerAgent, FeedbackLearnerAgent]:
+) -> tuple[ResultValidatorAgent, FeedbackLearnerAgent]:
     resolved_config = config or load_config()
     provider = OpenAICompatibleProvider(resolved_config.provider)
     profile_store = ProfileStore(resolved_config.profiles.directory)
     return (
-        ResultReviewerAgent(
+        ResultValidatorAgent(
             provider=provider,
-            profile=profile_store.load(resolved_config.profiles.result_reviewer),
+            profile=profile_store.load(resolved_config.profiles.result_validator),
         ),
         FeedbackLearnerAgent(
             provider=provider,
@@ -76,13 +76,13 @@ def create_profile_agents(
     )
 
 
-def _try_load_reviewer(
+def _try_load_validator(
     provider: OpenAICompatibleProvider,
     profile_store: ProfileStore,
     config: DagentConfig,
-) -> ResultReviewerAgent | None:
+) -> ResultValidatorAgent | None:
     try:
-        profile = profile_store.load(config.profiles.result_reviewer)
+        profile = profile_store.load(config.profiles.result_validator)
     except Exception:
         return None
-    return ResultReviewerAgent(provider=provider, profile=profile)
+    return ResultValidatorAgent(provider=provider, profile=profile)

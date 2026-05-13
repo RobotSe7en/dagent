@@ -7,7 +7,7 @@ from dagent.harness_runtime import (
     TaskRecord,
 )
 from dagent.providers import ChatResponse, MockProvider
-from dagent.harness_runtime import AgentLoopResult
+from dagent.harness_runtime import ToolAgentLoopResult
 from dagent.harness_runtime.dag_compiler import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode
@@ -25,8 +25,8 @@ class CompletingLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict] | None = None,
-    ) -> AgentLoopResult:
-        return AgentLoopResult(
+    ) -> ToolAgentLoopResult:
+        return ToolAgentLoopResult(
             final_response="node complete",
             messages=[],
             steps=1,
@@ -43,13 +43,13 @@ def runtime_for(
     *,
     dag_agent_loop: DAGAgentLoop,
     executor: DAGExecutor,
-    agent_loop=None,
+    tool_agent_loop=None,
     max_cycles: int = 6,
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
     return HarnessRuntime(
         provider=dag_agent_loop.provider,
-        agent_loop=agent_loop or CompletingLoop(),
+        tool_agent_loop=tool_agent_loop or CompletingLoop(),
         dag_agent_loop=dag_agent_loop,
         conversation_profile=AgentProfile(
             name="conversation",

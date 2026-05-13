@@ -253,7 +253,7 @@ def test_executor_treats_boundary_violation_as_node_failure() -> None:
     ]
 
 
-def test_executor_runs_tool_node_directly_without_agent_loop() -> None:
+def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
     executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
         dag_id="dag_1",

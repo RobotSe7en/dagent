@@ -1,4 +1,4 @@
-"""LLM-backed result quality reviewer."""
+"""LLM-backed result quality validator."""
 
 from __future__ import annotations
 
@@ -15,29 +15,29 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ReviewIssue:
+class ValidationIssue:
     message: str
     node_id: str | None = None
 
 
 @dataclass(frozen=True)
-class ReviewResult:
-    approved: bool
-    issues: list[ReviewIssue] = field(default_factory=list)
+class ValidationResult:
+    passed: bool
+    issues: list[ValidationIssue] = field(default_factory=list)
     summary: str = ""
 
 
-class ResultReviewerAgent:
+class ResultValidatorAgent:
     def __init__(self, *, provider: ChatProvider, profile: AgentProfile) -> None:
         self.agent = ProfiledAgent(provider=provider, profile=profile)
 
-    async def review(
+    async def validate(
         self,
         *,
         user_request: str,
         final_answer: str,
         execution_context: str = "",
-    ) -> ReviewResult:
+    ) -> ValidationResult:
         try:
             payload = await self.agent.run_json(
                 task_content=(
@@ -46,7 +46,7 @@ class ResultReviewerAgent:
                     "Execution context:\n{{ execution_context }}\n\n"
                     "{% endif %}"
                     "Final answer given to user:\n{{ final_answer }}\n\n"
-                    "Review whether the final answer sufficiently addresses "
+                    "Validate whether the final answer sufficiently addresses "
                     "the user's request.\n\n"
                     "Return ONLY one JSON object with this shape:\n"
                     "{{ response_schema }}\n\n"
@@ -57,9 +57,9 @@ class ResultReviewerAgent:
                 execution_context=execution_context,
                 response_schema=json.dumps(
                     {
-                        "approved": True,
+                        "passed": True,
                         "issues": [
-                            {"message": "specific issue when approved is false", "node_id": None}
+                            {"message": "specific issue when passed is false", "node_id": None}
                         ],
                         "summary": "brief assessment",
                     },
@@ -67,40 +67,40 @@ class ResultReviewerAgent:
                 ),
             )
         except ValueError as exc:
-            logger.warning("Result reviewer returned invalid JSON; skipping review: %s", exc)
-            return ReviewResult(
-                approved=True,
-                summary="Automated result review was skipped because the reviewer returned invalid JSON.",
+            logger.warning("Result validator returned invalid JSON; skipping validation: %s", exc)
+            return ValidationResult(
+                passed=True,
+                summary="Automated result validation was skipped because the validator returned invalid JSON.",
             )
         issues = [
-            ReviewIssue(
+            ValidationIssue(
                 message=str(issue.get("message", "")),
                 node_id=issue.get("node_id"),
             )
             for issue in payload.get("issues", [])
             if isinstance(issue, dict) and issue.get("message")
         ]
-        approved = bool(payload.get("approved", False))
+        passed = bool(payload.get("passed", False))
         # Guard: rejected without issues; supplement a generic issue so the
         # agent has actionable feedback instead of an empty retry reason.
-        if not approved and not issues:
+        if not passed and not issues:
             issues = [
-                ReviewIssue(
+                ValidationIssue(
                     message="The answer does not sufficiently address the user's request.",
                 )
             ]
-        return ReviewResult(
-            approved=approved,
+        return ValidationResult(
+            passed=passed,
             issues=issues,
             summary=str(payload.get("summary", "")),
         )
 
 
-def format_review_feedback(review: ReviewResult) -> str:
-    lines = ["A reviewer assessed the result and found issues:"]
-    if review.summary:
-        lines.append(f"Summary: {review.summary}")
-    for issue in review.issues:
+def format_validation_feedback(validation: ValidationResult) -> str:
+    lines = ["A validator assessed the result and found issues:"]
+    if validation.summary:
+        lines.append(f"Summary: {validation.summary}")
+    for issue in validation.issues:
         node_prefix = f"[{issue.node_id}] " if issue.node_id else ""
         lines.append(f"- {node_prefix}{issue.message}")
     lines.append("\nPlease address these issues.")

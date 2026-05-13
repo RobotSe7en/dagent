@@ -4,23 +4,23 @@ from pathlib import Path
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.harness_runtime import AgentLoop
+from dagent.harness_runtime import ToolAgentLoop
 from dagent.schemas import Boundary
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.file_tools import create_file_tool_registry
 
 
-def make_loop(tmp_path: Path, provider: MockProvider) -> AgentLoop:
+def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
     executor = ToolExecutor(create_file_tool_registry(), workspace_root=tmp_path)
-    return AgentLoop(provider=provider, tool_executor=executor)
+    return ToolAgentLoop(provider=provider, tool_executor=executor)
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def test_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
+def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     provider = MockProvider([ChatResponse(content="Done.")])
     loop = make_loop(tmp_path, provider)
 
@@ -37,7 +37,7 @@ def test_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     assert result.messages[-1] == {"role": "assistant", "content": "Done."}
 
 
-def test_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
+def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>\nDone.")])
     loop = make_loop(tmp_path, provider)
     tokens: list[str] = []
@@ -55,7 +55,7 @@ def test_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
     assert result.final_response == "<think>checking</think>\nDone."
 
 
-def test_agent_loop_executes_tool_call_and_writes_result_to_messages(
+def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "notes.txt").write_text("hello from file", encoding="utf-8")
@@ -99,7 +99,7 @@ def test_agent_loop_executes_tool_call_and_writes_result_to_messages(
     assert provider.requests[1]["messages"][-1]["role"] == "tool"
 
 
-def test_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) -> None:
+def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello from file", encoding="utf-8")
     provider = MockProvider(
         [
@@ -143,7 +143,7 @@ def test_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) -> None
     }
 
 
-def test_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
+def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
     provider = MockProvider(
         [
@@ -176,7 +176,7 @@ def test_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     assert len(provider.requests) == 1
 
 
-def test_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path: Path) -> None:
+def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path: Path) -> None:
     provider = MockProvider(
         [
             ChatResponse(

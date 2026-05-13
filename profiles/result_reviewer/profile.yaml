@@ -1,9 +1,0 @@
-name: result_reviewer
-role: result_reviewer
-description: Reviews whether the final answer sufficiently addresses the user's request.
-layers:
-  - soul.md
-  - guideline.md
-  - agent.md
-memory_file: memory.md
-output_format: json

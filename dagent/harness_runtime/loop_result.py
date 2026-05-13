@@ -12,7 +12,7 @@ from dagent.schemas import DAG
 
 @dataclass(frozen=True)
 class LoopResult:
-    """Common contract between any loop (AgentLoop, DAGAgentLoop) and the runtime.
+    """Common contract between any loop (ToolAgentLoop, DAGAgentLoop) and the runtime.
 
     Every loop is responsible for populating this with its own results.
     The runtime never inspects internal loop state; it only reads LoopResult.
@@ -21,13 +21,13 @@ class LoopResult:
     # What happened
     execution_context: str
     """Human-readable summary of what the loop did (tool calls, node results, etc.).
-    Used by the reviewer and the summarizer.  Each loop formats this itself."""
+    Used by the validator and the summarizer.  Each loop formats this itself."""
 
     messages: list[dict[str, Any]]
     """Conversation messages produced during the loop, for runtime to record."""
 
     final_answer: str = ""
-    """The answer produced by the loop, for the reviewer to assess.
+    """The answer produced by the loop, for the validator to assess.
     This is NOT the user-facing message; _summarize() still produces that."""
 
     events: list[dict[str, Any]] = field(default_factory=list)

@@ -62,17 +62,17 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/settings/reviewer")
-async def get_reviewer_status() -> dict[str, bool]:
+@app.get("/settings/validation")
+async def get_validation_status() -> dict[str, bool]:
     runtime = state.get_harness_runtime()
-    return {"enabled": runtime.enable_reviewer}
+    return {"enabled": runtime.enable_validation}
 
 
-@app.post("/settings/reviewer")
-async def toggle_reviewer(payload: dict[str, bool]) -> dict[str, bool]:
+@app.post("/settings/validation")
+async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
     runtime = state.get_harness_runtime()
-    runtime.enable_reviewer = payload.get("enabled", False)
-    return {"enabled": runtime.enable_reviewer}
+    runtime.enable_validation = payload.get("enabled", False)
+    return {"enabled": runtime.enable_validation}
 
 
 @app.post("/session/reset")
@@ -84,7 +84,7 @@ async def reset_session() -> dict[str, str]:
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "status", "message": "agent_loop_started"})
+        yield _sse({"type": "status", "message": "harness_runtime_started"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         emitted_trace_ids: set[str] = set()
 
@@ -151,7 +151,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 @app.post("/messages/resume")
 async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "status", "message": "agent_loop_resumed"})
+        yield _sse({"type": "status", "message": "harness_runtime_resumed"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         emitted_trace_ids: set[str] = set()
 
@@ -218,7 +218,7 @@ async def resume_message_stream(request: ResumeDagRequest) -> StreamingResponse:
 @app.post("/messages/resume-tool")
 async def resume_tool_stream(request: ResumeToolRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "status", "message": "agent_loop_resumed"})
+        yield _sse({"type": "status", "message": "harness_runtime_resumed"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         def on_token(content: str) -> None:

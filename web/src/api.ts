@@ -1,4 +1,4 @@
-import type { Dag, ReviewLevel, ReviewFeedbackEvent, ReviewEventPayload, ToolStreamEvent, TraceEvent } from './types';
+import type { Dag, ReviewLevel, ReviewEventPayload, ToolStreamEvent, TraceEvent, ValidationFeedbackEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -6,18 +6,20 @@ export async function resetSession(): Promise<void> {
   await fetch(`${API_BASE}/session/reset`, { method: 'POST' });
 }
 
-export async function getReviewerStatus(): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/settings/reviewer`);
+export async function getValidationStatus(): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/settings/validation`);
+  if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return Boolean(data.enabled);
 }
 
-export async function setReviewerEnabled(enabled: boolean): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/settings/reviewer`, {
+export async function setValidationEnabled(enabled: boolean): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/settings/validation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
   });
+  if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return Boolean(data.enabled);
 }
@@ -49,8 +51,8 @@ export async function streamTask(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onRetry?: (event: ReviewFeedbackEvent) => void;
-    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
+    onRetry?: (event: ValidationFeedbackEvent) => void;
+    onValidating?: (event: { type: 'validating'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -85,8 +87,8 @@ export async function streamTask(
         handlers.onTool?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
-      if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
-      if (event.type === 'reviewing') handlers.onReviewing?.(event);
+      if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
+      if (event.type === 'validating') handlers.onValidating?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }
@@ -103,8 +105,8 @@ export async function resumeDag(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onRetry?: (event: ReviewFeedbackEvent) => void;
-    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
+    onRetry?: (event: ValidationFeedbackEvent) => void;
+    onValidating?: (event: { type: 'validating'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -128,8 +130,8 @@ async function readStream(
     onTrace?: (event: TraceEvent) => void;
     onTool?: (event: ToolStreamEvent) => void;
     onToken?: (content: string) => void;
-    onRetry?: (event: ReviewFeedbackEvent) => void;
-    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
+    onRetry?: (event: ValidationFeedbackEvent) => void;
+    onValidating?: (event: { type: 'validating'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
@@ -156,8 +158,8 @@ async function readStream(
         handlers.onTool?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
-      if (event.type === 'retry' || event.type === 'review_passed') handlers.onRetry?.(event);
-      if (event.type === 'reviewing') handlers.onReviewing?.(event);
+      if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
+      if (event.type === 'validating') handlers.onValidating?.(event);
       if (event.type === 'done') handlers.onDone?.(event);
       if (event.type === 'error') handlers.onError?.(event.message);
     }
@@ -225,8 +227,8 @@ export async function resumeToolReview(
   handlers: {
     onStatus?: (status: string) => void;
     onToken?: (content: string) => void;
-    onRetry?: (event: ReviewFeedbackEvent) => void;
-    onReviewing?: (event: { type: 'reviewing'; message: string }) => void;
+    onRetry?: (event: ValidationFeedbackEvent) => void;
+    onValidating?: (event: { type: 'validating'; message: string }) => void;
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },

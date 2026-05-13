@@ -29,8 +29,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { getReviewerStatus, setReviewerEnabled as apiSetReviewer, resetSession, resumeDag, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ReviewFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
+import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDag, resumeToolReview, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -81,8 +81,8 @@ type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
   | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent }
-  | { type: 'review'; event: ReviewFeedbackEvent }
-  | { type: 'reviewing' };
+  | { type: 'validation'; event: ValidationFeedbackEvent }
+  | { type: 'validating' };
 
 type RuntimeMode = 'auto' | 'direct' | 'dag';
 
@@ -147,9 +147,12 @@ export function App() {
   const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewerEnabled, setReviewerEnabled] = useState(false);
+  const [validationEnabled, setValidationEnabled] = useState(false);
+  const [validationPending, setValidationPending] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const validationRequestIdRef = useRef(0);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
@@ -160,7 +163,19 @@ export function App() {
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
 
   useEffect(() => {
-    getReviewerStatus().then(setReviewerEnabled).catch(() => {});
+    const requestId = ++validationRequestIdRef.current;
+    getValidationStatus()
+      .then((enabled) => {
+        if (validationRequestIdRef.current === requestId) {
+          setValidationEnabled(enabled);
+          setValidationError(null);
+        }
+      })
+      .catch((exc) => {
+        if (validationRequestIdRef.current === requestId) {
+          setValidationError(exc instanceof Error ? exc.message : String(exc));
+        }
+      });
   }, []);
 
   useEffect(() => {
@@ -168,6 +183,28 @@ export function App() {
     if (!element) return;
     element.scrollTop = element.scrollHeight;
   }, [messages, streaming]);
+
+  const toggleValidation = async () => {
+    if (validationPending) return;
+    const requestId = ++validationRequestIdRef.current;
+    const next = !validationEnabled;
+    setValidationPending(true);
+    setValidationError(null);
+    try {
+      const actual = await apiSetValidation(next);
+      if (validationRequestIdRef.current === requestId) {
+        setValidationEnabled(actual);
+      }
+    } catch (exc) {
+      if (validationRequestIdRef.current === requestId) {
+        setValidationError(exc instanceof Error ? exc.message : String(exc));
+      }
+    } finally {
+      if (validationRequestIdRef.current === requestId) {
+        setValidationPending(false);
+      }
+    }
+  };
 
   const syncDag = useCallback((nextDag: Dag) => {
     setDag(nextDag);
@@ -292,19 +329,19 @@ export function App() {
     }));
   };
 
-  const appendReviewFeedback = (event: ReviewFeedbackEvent) => {
+  const appendValidationFeedback = (event: ValidationFeedbackEvent) => {
     flushQueuedTokensNow();
     updateLastAssistantText((message) => ({
       ...message,
-      timeline: [...(message.timeline ?? []), { type: 'review', event }],
+      timeline: [...(message.timeline ?? []), { type: 'validation', event }],
     }));
   };
 
-  const appendReviewing = () => {
+  const appendValidating = () => {
     flushQueuedTokensNow();
     updateLastAssistantText((message) => ({
       ...message,
-      timeline: [...(message.timeline ?? []), { type: 'reviewing' }],
+      timeline: [...(message.timeline ?? []), { type: 'validating' }],
     }));
   };
 
@@ -408,8 +445,8 @@ export function App() {
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
-        onRetry: appendReviewFeedback,
-        onReviewing: appendReviewing,
+        onRetry: appendValidationFeedback,
+        onValidating: appendValidating,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -477,8 +514,8 @@ export function App() {
         onTrace: appendRuntimeTrace,
         onTool: appendToolMessage,
         onToken: enqueueAssistantToken,
-        onRetry: appendReviewFeedback,
-        onReviewing: appendReviewing,
+        onRetry: appendValidationFeedback,
+        onValidating: appendValidating,
         onDone: (payload) => {
           flushQueuedTokensNow();
           if (payload.dag) {
@@ -526,8 +563,8 @@ export function App() {
       await resumeToolReview(toolReview.review_id, approved, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'AgentLoop resumed from tool review.', status: 'running' }),
         onToken: enqueueAssistantToken,
-        onRetry: appendReviewFeedback,
-        onReviewing: appendReviewing,
+        onRetry: appendValidationFeedback,
+        onValidating: appendValidating,
         onDone: (payload) => {
           flushQueuedTokensNow();
           handlePendingReview(payload.pending_review);
@@ -553,9 +590,16 @@ export function App() {
     }
   };
 
-  const newChat = () => {
+  const newChat = async () => {
     if (streaming) return;
-    resetSession().catch(() => {});
+    try {
+      await resetSession();
+      const enabled = await getValidationStatus();
+      setValidationEnabled(enabled);
+      setValidationError(null);
+    } catch (exc) {
+      setValidationError(exc instanceof Error ? exc.message : String(exc));
+    }
     setMessages([{
       role: 'assistant',
       content: '输入任务后，我会优先通过顶层 AgentLoop 完成规划、执行、重试和最终回答。Auto 模式会在需要编排时生成并执行 DAG。',
@@ -604,19 +648,16 @@ export function App() {
               </option>
             ))}
           </select>
-          <label className="reviewer-toggle" title="Enable result quality reviewer">
-            <input
-              type="checkbox"
-              checked={reviewerEnabled}
-              onChange={async (e) => {
-                const next = e.target.checked;
-                setReviewerEnabled(next);
-                const actual = await apiSetReviewer(next);
-                setReviewerEnabled(actual);
-              }}
-            />
-            Reviewer
-          </label>
+          <button
+            className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
+            type="button"
+            onClick={toggleValidation}
+            disabled={validationPending}
+            title={validationError ?? 'Validate final answers against the user request'}
+            aria-pressed={validationEnabled}
+          >
+            {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
+          </button>
           {dag.nodes.length ? (
             <>
               <StatusBadge status={dag.status} />
@@ -743,10 +784,10 @@ function MessageTimeline({
             dag={item.dag}
             onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
           />
-        ) : item.type === 'review' ? (
-          <ReviewFeedbackCard key={`review-${index}`} event={item.event} />
-        ) : item.type === 'reviewing' ? (
-          <ReviewingIndicator key={`reviewing-${index}`} />
+        ) : item.type === 'validation' ? (
+          <ValidationFeedbackCard key={`validation-${index}`} event={item.event} />
+        ) : item.type === 'validating' ? (
+          <ValidatingIndicator key={`validating-${index}`} />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
         ) : null,
@@ -900,26 +941,26 @@ function DagSummaryCard({
   );
 }
 
-function ReviewingIndicator() {
+function ValidatingIndicator() {
   return (
     <details className="tool-event-card">
       <summary className="tool-event-head">
         <Loader size={14} />
-        <strong>Reviewing result quality...</strong>
-        <span>reviewing</span>
+        <strong>Validating result quality...</strong>
+        <span>validating</span>
       </summary>
     </details>
   );
 }
 
-function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
-  const approved = event.type === 'review_passed' || event.approved === true;
+function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
+  const passed = event.type === 'validation_passed' || event.passed === true;
   return (
-    <details className={`tool-event-card ${approved ? 'review-passed' : 'review-feedback'}`}>
+    <details className={`tool-event-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
       <summary className="tool-event-head">
-        {approved ? <Check size={14} /> : <AlertTriangle size={14} />}
-        <strong>Reviewer {approved ? 'Approved' : 'Feedback'}</strong>
-        <span>{approved ? 'passed' : 'retry'}</span>
+        {passed ? <Check size={14} /> : <AlertTriangle size={14} />}
+        <strong>Validation {passed ? 'Passed' : 'Feedback'}</strong>
+        <span>{passed ? 'passed' : 'retry'}</span>
       </summary>
       {event.summary ? (
         <div className="tool-section">
@@ -927,10 +968,10 @@ function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
           <p>{event.summary}</p>
         </div>
       ) : null}
-      {!approved && event.issues.length ? (
+      {!passed && event.issues.length ? (
         <div className="tool-section">
           <div className="tool-section-label">Issues</div>
-          <ul className="review-issues">
+          <ul className="validation-issues">
             {event.issues.map((issue, index) => (
               <li key={index}>
                 {issue.node_id ? <em>[{issue.node_id}]</em> : null}
@@ -940,7 +981,7 @@ function ReviewFeedbackCard({ event }: { event: ReviewFeedbackEvent }) {
           </ul>
         </div>
       ) : null}
-      {!approved && event.reason ? (
+      {!passed && event.reason ? (
         <div className="tool-section">
           <div className="tool-section-label">Feedback to Agent</div>
           <p>{event.reason}</p>

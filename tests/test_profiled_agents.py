@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from dagent.harness_runtime import ResultReviewerAgent, FeedbackLearnerAgent
+from dagent.harness_runtime import ResultValidatorAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGNode, TraceEvent
@@ -24,13 +24,13 @@ def profile(role: str) -> AgentProfile:
     )
 
 
-def test_result_reviewer_agent_parses_review_json() -> None:
+def test_result_validator_agent_parses_validation_json() -> None:
     provider = MockProvider(
         [
             ChatResponse(
                 content=json.dumps(
                     {
-                        "approved": False,
+                        "passed": False,
                         "issues": [
                             {
                                 "node_id": "n1",
@@ -43,15 +43,15 @@ def test_result_reviewer_agent_parses_review_json() -> None:
             )
         ]
     )
-    reviewer = ResultReviewerAgent(provider=provider, profile=profile("result_reviewer"))
+    validator = ResultValidatorAgent(provider=provider, profile=profile("result_validator"))
 
-    result = run(reviewer.review(
+    result = run(validator.validate(
         user_request="check",
         final_answer="some answer",
         execution_context="node n1 completed",
     ))
 
-    assert result.approved is False
+    assert result.passed is False
     assert result.issues[0].node_id == "n1"
     assert result.summary == "Result incomplete."
 

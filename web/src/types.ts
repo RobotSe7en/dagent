@@ -111,15 +111,15 @@ export interface RunResult {
   traces: TraceEvent[];
 }
 
-export interface ReviewIssue {
+export interface ValidationIssue {
   message: string;
   node_id?: string | null;
 }
 
-export interface ReviewFeedbackEvent {
-  type: 'retry' | 'review_passed';
-  approved?: boolean;
+export interface ValidationFeedbackEvent {
+  type: 'retry' | 'validation_passed';
+  passed?: boolean;
   reason?: string;
   summary: string;
-  issues: ReviewIssue[];
+  issues: ValidationIssue[];
 }

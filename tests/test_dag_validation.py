@@ -4,7 +4,7 @@ import pytest
 
 from dagent.harness_runtime import DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_validation import DAGValidationError, validate_dag
-from dagent.harness_runtime.agent_loop import AgentLoop
+from dagent.harness_runtime.tool_agent import ToolAgentLoop
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode
 from dagent.tools.executor import ToolExecutor

@@ -1,4 +1,4 @@
-"""Bounded node-level agent loop."""
+"""Bounded tool-using agent loop."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class ControlToolResult:
 
 
 @dataclass(frozen=True)
-class AgentLoopResult:
+class ToolAgentLoopResult:
     final_response: str
     messages: list[dict[str, Any]]
     steps: int
@@ -57,8 +57,8 @@ TokenHandler = Callable[[str], None]
 LoopEventHandler = Callable[[dict[str, Any]], None]
 
 
-class AgentLoop:
-    """Runs one bounded agent loop for a DAG node."""
+class ToolAgentLoop:
+    """Runs one bounded tool-using agent loop."""
 
     def __init__(
         self,
@@ -111,7 +111,7 @@ class AgentLoop:
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> AgentLoopResult:
+    ) -> ToolAgentLoopResult:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
 
@@ -135,7 +135,7 @@ class AgentLoop:
             loop_messages.append(assistant_message)
 
             if not response.tool_calls:
-                return AgentLoopResult(
+                return ToolAgentLoopResult(
                     final_response=response.content,
                     messages=loop_messages,
                     steps=step,
@@ -181,7 +181,7 @@ class AgentLoop:
                             },
                             payload=control_result.review_payload or {},
                         )
-                        return AgentLoopResult(
+                        return ToolAgentLoopResult(
                             final_response="",
                             messages=loop_messages,
                             steps=step,
@@ -192,7 +192,7 @@ class AgentLoop:
                             pending_review=pending_review,
                         )
                     if control_result.stop_reason:
-                        return AgentLoopResult(
+                        return ToolAgentLoopResult(
                             final_response=control_result.content,
                             messages=loop_messages,
                             steps=step,
@@ -259,7 +259,7 @@ class AgentLoop:
                 )
                 self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
 
-        return AgentLoopResult(
+        return ToolAgentLoopResult(
             final_response="",
             messages=loop_messages,
             steps=max_steps,
@@ -355,7 +355,7 @@ class AgentLoop:
 
 
 def _format_direct_execution_context(messages: list[dict[str, Any]]) -> str:
-    """Summarize AgentLoop tool calls for the reviewer/summarizer."""
+    """Summarize ToolAgentLoop tool calls for the validator/summarizer."""
     lines: list[str] = []
     for message in messages:
         if message.get("role") == "tool":
