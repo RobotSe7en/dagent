@@ -103,7 +103,7 @@ User request �?DAGAgentLoop.run()
   └── _finalize_run → DAGAgentLoopResult → return to runtime
 
 Runtime:
-  handle_message / resume_dag → dag_agent_loop.run() / resume() → review/validation/final result adapter
+  handle_message / resume_review(review_id) → tool or DAG resume → review/validation/final result adapter
   (DAG loop self-contained; runtime only adapts review, validation, task state, and final result)
 ```
 

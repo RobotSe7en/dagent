@@ -29,7 +29,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDag, resumeToolReview, streamTask } from './api';
+import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
 import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
@@ -158,6 +158,7 @@ export function App() {
   const [validationEnabled, setValidationEnabled] = useState(false);
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [dagReview, setDagReview] = useState<ReviewEventPayload | null>(null);
   const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
@@ -324,12 +325,13 @@ export function App() {
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
     Boolean(pendingReview) || nextDag.status === 'review_required';
 
-  const handlePendingReview = (pendingReview?: { kind: string } | null) => {
+  const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
     if (pendingReview.kind === 'tool_review') {
       setToolReview(pendingReview as ReviewEventPayload);
       return;
     }
+    setDagReview(pendingReview);
   };
 
   const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
@@ -508,7 +510,7 @@ export function App() {
   };
 
   const confirmDag = async () => {
-    if (!dag.task_id || streaming) return;
+    if (!dagReview || streaming) return;
     setError(null);
     setReviewOpen(false);
     tokenQueueRef.current = [];
@@ -518,10 +520,12 @@ export function App() {
       ...items,
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming task ${dag.task_id}.`, status: 'running' });
+    const reviewId = dagReview.review_id;
+    setDagReview(null);
+    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming review ${reviewId}.`, status: 'running' });
 
     try {
-      await resumeDag(dag.task_id, dag, reviewLevel, {
+      await resumeDagReview(reviewId, dag, reviewLevel, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
@@ -605,6 +609,8 @@ export function App() {
       const enabled = await getValidationStatus();
       setValidationEnabled(enabled);
       setValidationError(null);
+      setDagReview(null);
+      setToolReview(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }

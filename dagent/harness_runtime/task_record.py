@@ -33,7 +33,7 @@ class ReviewContinuation:
     review_level: ReviewLevel
     messages: list[dict[str, Any]] = field(default_factory=list)
     invocations: list[ToolInvocation] = field(default_factory=list)
-    boundary: Boundary = field(default_factory=Boundary)
+    boundary: Boundary | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_args: dict[str, Any] = field(default_factory=dict)

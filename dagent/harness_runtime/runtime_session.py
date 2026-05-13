@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 from dagent.harness_runtime.loop_result import LoopResult
 from dagent.harness_runtime.review_policy import ReviewLevel
@@ -24,10 +25,14 @@ MAX_CONVERSATION_HISTORY_MESSAGES = 20
 class HarnessRuntimeSession:
     """Mutable conversation and review state owned by a harness session."""
 
-    def __init__(self, *, tasks: dict[str, RuntimeTaskRecord]) -> None:
-        self.tasks = tasks
+    def __init__(
+        self,
+        *,
+        initial_tasks: dict[str, RuntimeTaskRecord] | None = None,
+    ) -> None:
+        self.tasks: dict[str, RuntimeTaskRecord] = dict(initial_tasks or {})
         self.conversation_history: list[dict[str, Any]] = []
-        self.runtime_tasks = tasks
+        self.runtime_tasks = self.tasks
         self._review_continuations: dict[str, ReviewContinuation] = {}
 
     def tasks_context(self) -> str:
@@ -83,7 +88,7 @@ class HarnessRuntimeSession:
         user_request: str,
         review_level: ReviewLevel,
         loop_result: LoopResult,
-        boundary: Boundary,
+        boundary: Boundary | None,
     ) -> None:
         review = loop_result.pending_review
         if review is None:
@@ -115,6 +120,42 @@ class HarnessRuntimeSession:
         ]
         for review_id in stale_review_ids:
             self._review_continuations.pop(review_id, None)
+
+    def record_loop_outcome(
+        self,
+        *,
+        task_id: str | None,
+        mode: RuntimeTaskMode,
+        user_request: str,
+        review_level: ReviewLevel,
+        needs_human_review: bool,
+        loop_result: LoopResult,
+        invocations: list[ToolInvocation] | None = None,
+        review_boundary: Boundary | None = None,
+    ) -> RuntimeTaskRecord:
+        resolved_task_id = task_id or loop_result.task_id or f"task_{uuid4().hex}"
+        record = self.record_runtime_task(
+            task_id=resolved_task_id,
+            mode=mode,
+            user_request=user_request,
+            review_level=review_level,
+            status=(
+                "awaiting_review"
+                if needs_human_review
+                else "completed" if loop_result.completed else "failed"
+            ),
+            loop_result=loop_result,
+            invocations=invocations,
+        )
+        if needs_human_review:
+            self.store_review_continuation(
+                task_id=record.task_id,
+                user_request=user_request,
+                review_level=review_level,
+                loop_result=loop_result,
+                boundary=review_boundary,
+            )
+        return record
 
     def record_runtime_task(
         self,

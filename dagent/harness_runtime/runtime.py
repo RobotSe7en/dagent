@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
-from uuid import uuid4
 
 from dagent.harness_runtime.tool_agent import (
     ToolAgentLoop,
@@ -27,7 +26,7 @@ from dagent.harness_runtime.runtime_events import (
     _dag_event_emitter,
     _trace_event_emitter,
 )
-from dagent.harness_runtime.task_record import ReviewContinuation, PendingReview, RuntimeTaskRecord
+from dagent.harness_runtime.task_record import ReviewContinuation, PendingReview
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
 from dagent.schemas import Boundary, DAG, ToolInvocation
@@ -97,8 +96,9 @@ class HarnessRuntime:
         self.enable_validation = enable_validation
         self.max_top_steps = max_top_steps
         self.max_validation_retries = max_validation_retries
-        self.tasks = dag_agent_loop.tasks
-        self.session = HarnessRuntimeSession(tasks=self.tasks)
+        self.session = HarnessRuntimeSession(initial_tasks=dag_agent_loop.tasks)
+        self.tasks = self.session.tasks
+        self.dag_agent_loop.tasks = self.tasks
 
     # ==================================================================
     # Public API
@@ -243,18 +243,48 @@ class HarnessRuntime:
             record_conversation=True,
         )
 
-    async def resume_dag(
+    async def resume_review(
         self,
-        task_id: str,
+        review_id: str,
+        *,
+        dag: DAG | None = None,
+        approved: bool = True,
+        review_level: ReviewLevel | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> HarnessMessageResult | None:
+        state = self.session.pop_review_continuation(review_id)
+        if state is None:
+            return None
+        if state.kind == "tool_review":
+            return await self._resume_tool_review(
+                state,
+                approved=approved,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        if dag is None:
+            return None
+        return await self._resume_dag_review(
+            state,
+            dag,
+            review_level=review_level,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def _resume_dag_review(
+        self,
+        state: ReviewContinuation,
         dag: DAG,
         review_level: ReviewLevel | None = None,
         *,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult:
+        task_id = state.task_id
         record = self.tasks[task_id]
         self.session.discard_review_continuations_for_task(task_id)
-        was_completed = record.dag.status == "completed" and len(record.runs) > 0
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
 
         dag_result = await self.dag_agent_loop.resume(
@@ -275,17 +305,8 @@ class HarnessRuntime:
                 ),
                 record.user_request,
                 "dag",
-                review_level or record.review_level,
-            )
-
-        if was_completed and dag_result.run_result is record.runs[-1]:
-            return HarnessMessageResult(
-                status="completed",
-                final_answer="",
-                dag=loop_result.dag,
-                run_result=loop_result.run_result,
+                review_level or state.review_level,
                 task_id=task_id,
-                events=loop_result.events,
             )
 
         async def run_once(feedback: str | None, previous_result: LoopResult | None) -> LoopResult:
@@ -296,7 +317,7 @@ class HarnessRuntime:
                 )
             retry_dag_result = await self.dag_agent_loop.run(
                 record.user_request,
-                review_level=review_level or record.review_level,
+                review_level=review_level or state.review_level,
                 planning_context=planning_context,
                 runtime_mode=record.runtime_mode,
                 conversation_history=self.session.conversation_history,
@@ -316,7 +337,8 @@ class HarnessRuntime:
             outcome,
             record.user_request,
             "dag",
-            review_level or record.review_level,
+            review_level or state.review_level,
+            task_id=task_id,
         )
 
     # ==================================================================
@@ -465,20 +487,20 @@ class HarnessRuntime:
         )
         return result.to_loop_result()
 
-    async def resume_tool(
+    async def _resume_tool_review(
         self,
-        review_id: str,
-        approved: bool,
+        state: ReviewContinuation,
         *,
+        approved: bool,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult | None:
-        state = self.session.pop_review_continuation(review_id)
-        if state is None:
-            return None
-        if state.kind != "tool_review":
-            return None
-        if state.tool_call_id is None or state.tool_name is None:
+        if (
+            state.kind != "tool_review"
+            or state.tool_call_id is None
+            or state.tool_name is None
+            or state.boundary is None
+        ):
             return None
 
         feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=state.tool_name)
@@ -536,59 +558,30 @@ class HarnessRuntime:
         task_id: str | None = None,
     ) -> HarnessMessageResult:
         if outcome.needs_human_review:
-            record = self._record_runtime_task(
-                user_request,
-                mode,
-                review_level,
-                outcome.loop_result,
-                status="awaiting_review",
-                extra_invocations=extra_invocations,
+            record = self.session.record_loop_outcome(
                 task_id=task_id,
-            )
-            self.session.store_review_continuation(
-                task_id=record.task_id,
+                mode=mode,
                 user_request=user_request,
                 review_level=review_level,
+                needs_human_review=True,
                 loop_result=outcome.loop_result,
-                boundary=_loop_boundary(mode),
+                invocations=[*(extra_invocations or []), *outcome.loop_result.invocations],
+                review_boundary=_review_boundary(outcome.loop_result),
             )
             return _gate_result_for_task(outcome.loop_result, record.task_id)
 
         if record_conversation:
             self.session.record_conversation(outcome.loop_result)
-        record = self._record_runtime_task(
-            user_request,
-            mode,
-            review_level,
-            outcome.loop_result,
-            status="completed" if outcome.loop_result.completed else "failed",
-            extra_invocations=extra_invocations,
+        record = self.session.record_loop_outcome(
             task_id=task_id,
-        )
-        return self._build_final_result(outcome.loop_result, user_request, task_id=record.task_id)
-
-    def _record_runtime_task(
-        self,
-        user_request: str,
-        mode: Literal["tool", "dag"],
-        review_level: ReviewLevel,
-        loop_result: LoopResult,
-        *,
-        status: Literal["running", "awaiting_review", "completed", "failed"],
-        extra_invocations: list[ToolInvocation] | None = None,
-        task_id: str | None = None,
-    ) -> RuntimeTaskRecord:
-        resolved_task_id = task_id or loop_result.task_id or f"task_{uuid4().hex}"
-        invocations = [*(extra_invocations or []), *loop_result.invocations]
-        return self.session.record_runtime_task(
-            task_id=resolved_task_id,
             mode=mode,
             user_request=user_request,
             review_level=review_level,
-            status=status,
-            loop_result=loop_result,
-            invocations=invocations,
+            needs_human_review=False,
+            loop_result=outcome.loop_result,
+            invocations=[*(extra_invocations or []), *outcome.loop_result.invocations],
         )
+        return self._build_final_result(outcome.loop_result, user_request, task_id=record.task_id)
 
 
 def _fallback_final_answer(loop_result: LoopResult) -> str:
@@ -611,7 +604,14 @@ def _gate_result_for_task(loop_result: LoopResult, task_id: str) -> HarnessMessa
     )
 
 
-def _loop_boundary(mode: Literal["tool", "dag"]) -> Boundary:
-    if mode == "tool":
-        return Boundary(mode="read_only", allowed_paths=["."])
-    return Boundary()
+def _review_boundary(loop_result: LoopResult) -> Boundary | None:
+    review = loop_result.pending_review
+    if review is None or review.tool_call is None:
+        return None
+    tool_call_id = review.tool_call.get("tool_call_id")
+    for invocation in reversed(loop_result.invocations):
+        if invocation.invocation_id == tool_call_id:
+            return invocation.boundary
+    if loop_result.invocations:
+        return loop_result.invocations[-1].boundary
+    return None
