@@ -6,7 +6,7 @@ from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.invocation import ToolInvocation
 from dagent.schemas.node import DAGNode
-from dagent.schemas.trace import NodeExecutionRecord, TraceEvent, TraceSpan
+from dagent.schemas.trace import ToolExecutionRecord, TraceEvent, TraceSpan
 
 __all__ = [
     "Boundary",
@@ -18,8 +18,8 @@ __all__ = [
     "ToolInvocation",
     "PlanNodeSpec",
     "PlanSpec",
-    "NodeExecutionRecord",
     "RiskLevel",
+    "ToolExecutionRecord",
     "TraceEvent",
     "TraceSpan",
 ]

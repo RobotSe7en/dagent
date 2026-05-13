@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from dagent.schemas.invocation import ToolInvocation
+
 
 TraceEventType = Literal[
     "dag_started",
@@ -43,24 +45,29 @@ class TraceSpan(BaseModel):
     events: list[TraceEvent] = Field(default_factory=list)
 
 
-NodeExecutionStatus = Literal[
+ToolExecutionStatus = Literal[
     "completed",
     "failed",
 ]
 
+ToolExecutionSource = Literal[
+    "tool_loop",
+    "dag_node",
+]
 
-class NodeExecutionRecord(BaseModel):
+
+class ToolExecutionRecord(BaseModel):
     record_id: str
     task_id: str
-    dag_id: str
-    dag_version: int
-    node_id: str
-    tool: str | None = None
-    args: dict[str, Any] = Field(default_factory=dict)
+    invocation: ToolInvocation
+    source: ToolExecutionSource
     output: str = ""
     error: str | None = None
-    status: NodeExecutionStatus
+    status: ToolExecutionStatus
     stop_reason: str = ""
     steps: int = 0
+    dag_id: str | None = None
+    dag_version: int | None = None
+    node_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

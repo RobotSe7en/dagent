@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dagent.harness_runtime.dag_validation import validate_dag
-from dagent.harness_runtime.trace_recorder import TraceRecorder
-from dagent.harness_runtime.trace_store import TraceStore
-from dagent.schemas import DAG, Boundary, DAGNode, TraceEvent
+from dagent.harness_runtime.runtime_trace import TraceRecorder
+from dagent.harness_runtime.task_record import ToolExecutionStore
+from dagent.schemas import DAG, Boundary, DAGNode, ToolExecutionRecord, TraceEvent
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor, ToolExecutionError
 
@@ -39,6 +39,7 @@ class RunResult:
     completed: bool
     node_results: dict[str, NodeExecutionResult]
     traces: list[TraceEvent] = field(default_factory=list)
+    execution_records: list[ToolExecutionRecord] = field(default_factory=list)
 
 
 class DAGExecutor:
@@ -49,11 +50,11 @@ class DAGExecutor:
         *,
         tool_executor: ToolExecutor,
         trace_recorder: TraceRecorder | None = None,
-        trace_store: TraceStore | None = None,
+        execution_store: ToolExecutionStore | None = None,
     ) -> None:
         self.tool_executor = tool_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
-        self.trace_store = trace_store or TraceStore()
+        self.execution_store = execution_store or ToolExecutionStore()
         self.partial_node_results: dict[str, NodeExecutionResult] = {}
 
     async def execute_next_ready_layer(
@@ -100,6 +101,7 @@ class DAGExecutor:
             completed=completed,
             node_results=node_results,
             traces=list(self.trace_recorder.events),
+            execution_records=self.execution_store.records_for_dag(normalized.dag_id),
         )
 
     async def _execute_next_ready_layer(
@@ -189,13 +191,16 @@ class DAGExecutor:
         except BoundaryViolation as exc:
             _augment_tool_violation(exc, node, self.tool_executor)
             node.status = "failed"
-            self.trace_store.add_node_record(
-                dag=dag,
-                node=node,
+            self.execution_store.add_record(
+                task_id=dag.task_id,
+                invocation=invocation,
+                source="dag_node",
                 error=str(exc),
                 status="failed",
                 stop_reason="boundary_violation",
                 steps=1,
+                dag=dag,
+                node=node,
             )
             self.trace_recorder.record(
                 "tool_failed",
@@ -216,13 +221,16 @@ class DAGExecutor:
             raise
         except Exception as exc:
             node.status = "failed"
-            self.trace_store.add_node_record(
-                dag=dag,
-                node=node,
+            self.execution_store.add_record(
+                task_id=dag.task_id,
+                invocation=invocation,
+                source="dag_node",
                 error=str(exc),
                 status="failed",
                 stop_reason="tool_error",
                 steps=1,
+                dag=dag,
+                node=node,
             )
             self.trace_recorder.record(
                 "tool_failed",
@@ -252,13 +260,16 @@ class DAGExecutor:
                 "content": content,
             },
         )
-        self.trace_store.add_node_record(
-            dag=dag,
-            node=node,
+        self.execution_store.add_record(
+            task_id=dag.task_id,
+            invocation=invocation,
+            source="dag_node",
             output=content,
             status="completed",
             stop_reason="completed",
             steps=1,
+            dag=dag,
+            node=node,
         )
         result = NodeExecutionResult(
             node_id=node.id,

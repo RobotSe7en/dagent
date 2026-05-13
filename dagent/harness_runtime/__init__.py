@@ -17,7 +17,6 @@ from dagent.harness_runtime.result_validator import (
     format_validation_feedback,
 )
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
-from dagent.harness_runtime.trace_store import TraceStore
 from dagent.harness_runtime.runtime import (
     HarnessMessageResult,
     HarnessRuntime,
@@ -29,6 +28,7 @@ from dagent.harness_runtime.task_record import (
     RuntimeTaskMode,
     RuntimeTaskRecord,
     RuntimeTaskStatus,
+    ToolExecutionStore,
     ToolTaskState,
 )
 
@@ -59,5 +59,5 @@ __all__ = [
     "DAGTaskState",
     "ReviewContinuation",
     "ToolTaskState",
-    "TraceStore",
+    "ToolExecutionStore",
 ]

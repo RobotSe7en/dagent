@@ -22,7 +22,7 @@ from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
 from dagent.harness_runtime.task_record import PendingReview, RuntimeTaskRecord
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import ChatProvider, ChatResponse
-from dagent.schemas import DAG, DAGNode, NodeExecutionRecord, TraceEvent
+from dagent.schemas import DAG, DAGNode, ToolExecutionRecord, TraceEvent
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.registry import Tool
 
@@ -288,7 +288,7 @@ class DAGAgentLoop:
                     layer_failed = True
                     self._absorb_partial_results(record, traces, on_dag)
                     failed_node_id = _latest_failed_node_id(
-                        record.trace_records,
+                        record.execution_records,
                         valid_node_ids=_dag_node_ids(record.dag),
                     )
                     layer_error = str(exc)
@@ -297,7 +297,7 @@ class DAGAgentLoop:
                     traces.extend(layer.traces)
                     new_node_ids = set(layer.node_results) - set(record.node_results)
                     record.node_results.update(layer.node_results)
-                    record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+                    record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
                     if new_node_ids and all(nid == "start" for nid in new_node_ids):
                         continue
                     layer_error = ""
@@ -405,8 +405,8 @@ class DAGAgentLoop:
                 _node_by_id(record.dag, node_id).status = (
                     "completed" if node_result.completed else "failed"
                 )
-        record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
-        for failed_id in _failed_node_ids(record.trace_records, valid_node_ids=current_node_ids):
+        record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
+        for failed_id in _failed_node_ids(record.execution_records, valid_node_ids=current_node_ids):
             _node_by_id(record.dag, failed_id).status = "failed"
         record.dag.status = "failed"
         _emit_dag(on_dag, record.dag)
@@ -501,7 +501,7 @@ class DAGAgentLoop:
         traces: list[TraceEvent],
         on_dag: Callable[[DAG], None] | None,
     ) -> RunResult:
-        record.trace_records = self.dag_executor.trace_store.records_for_task(record.task_id)
+        record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
         all_nodes_completed = all(
             nid in record.node_results and record.node_results[nid].completed
             for nid in _dag_node_ids(record.dag)
@@ -514,6 +514,7 @@ class DAGAgentLoop:
             completed=completed,
             node_results=dict(record.node_results),
             traces=traces,
+            execution_records=list(record.execution_records),
         )
         record.runs.append(result)
 
@@ -643,12 +644,12 @@ def _format_dag_observation(
         sections.append(f"Error:\n{last_error}")
 
     recent = [
-        f"- {trace.node_id} ({trace.tool}): {trace.status}"
-        + (f" error={trace.error}" if trace.error else "")
-        for trace in record.trace_records[-6:]
+        f"- {execution.node_id} ({execution.invocation.tool_name}): {execution.status}"
+        + (f" error={execution.error}" if execution.error else "")
+        for execution in record.execution_records[-6:]
     ]
     if recent:
-        sections.append("Recent trace:\n" + "\n".join(recent))
+        sections.append("Recent tool executions:\n" + "\n".join(recent))
 
     return "\n\n".join(sections)
 
@@ -746,7 +747,7 @@ def _dag_completed(record: RuntimeTaskRecord) -> bool:
 
 
 def _latest_failed_node_id(
-    records: list[NodeExecutionRecord],
+    records: list[ToolExecutionRecord],
     *,
     valid_node_ids: set[str] | None = None,
 ) -> str | None:
@@ -757,7 +758,7 @@ def _latest_failed_node_id(
 
 
 def _failed_node_ids(
-    records: list[NodeExecutionRecord],
+    records: list[ToolExecutionRecord],
     *,
     valid_node_ids: set[str] | None = None,
 ) -> set[str]:

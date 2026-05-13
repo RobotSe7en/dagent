@@ -470,16 +470,19 @@ class HarnessRuntime:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> LoopResult:
+        invocation = state.pending_invocation
+        if invocation is None:
+            raise ValueError("Tool review continuation is missing pending invocation.")
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
         result = await self.tool_agent_loop.run(
             "",
-            boundary=state.boundary,
+            boundary=invocation.boundary,
             max_steps=self.max_top_steps,
             messages=messages,
             control_tool_names=self._reviewable_tool_names(),
             control_tool_handler=self.tool_agent_loop.create_tool_guard(
                 state.review_level,
-                state.boundary,
+                invocation.boundary,
                 self.runtime_tools,
             ),
             on_token=thinking_only,
@@ -495,27 +498,26 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> HarnessMessageResult | None:
+        invocation = state.pending_invocation
         if (
             state.kind != "tool_review"
-            or state.tool_call_id is None
-            or state.tool_name is None
-            or state.boundary is None
+            or invocation is None
         ):
             return None
 
-        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=state.tool_name)
+        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
         if approved:
             try:
                 feed_content = self.tool_agent_loop.tool_executor.execute(
-                    state.tool_name, state.tool_args, boundary=state.boundary
+                    invocation.tool_name, invocation.arguments, boundary=invocation.boundary
                 )
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
         state.messages.append({
             "role": "tool",
-            "tool_call_id": state.tool_call_id,
-            "name": state.tool_name,
+            "tool_call_id": invocation.invocation_id,
+            "name": invocation.tool_name,
             "content": feed_content,
         })
 
@@ -566,7 +568,6 @@ class HarnessRuntime:
                 needs_human_review=True,
                 loop_result=outcome.loop_result,
                 invocations=[*(extra_invocations or []), *outcome.loop_result.invocations],
-                review_boundary=_review_boundary(outcome.loop_result),
             )
             return _gate_result_for_task(outcome.loop_result, record.task_id)
 
@@ -603,15 +604,3 @@ def _gate_result_for_task(loop_result: LoopResult, task_id: str) -> HarnessMessa
         pending_review=loop_result.pending_review,
     )
 
-
-def _review_boundary(loop_result: LoopResult) -> Boundary | None:
-    review = loop_result.pending_review
-    if review is None or review.tool_call is None:
-        return None
-    tool_call_id = review.tool_call.get("tool_call_id")
-    for invocation in reversed(loop_result.invocations):
-        if invocation.invocation_id == tool_call_id:
-            return invocation.boundary
-    if loop_result.invocations:
-        return loop_result.invocations[-1].boundary
-    return None

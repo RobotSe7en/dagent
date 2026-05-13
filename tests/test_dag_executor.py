@@ -268,11 +268,11 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
 
     assert result.completed is True
     assert result.node_results["echo"].final_response == "echo:hi"
-    records = executor.trace_store.records_for_task("task_1")
+    records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "echo"
-    assert records[0].tool == "echo"
-    assert records[0].args == {"text": "hi"}
+    assert records[0].invocation.tool_name == "echo"
+    assert records[0].invocation.arguments == {"text": "hi"}
     assert records[0].output == "echo:hi"
     assert records[0].status == "completed"
     assert [event.event_type for event in result.traces] == [
@@ -318,7 +318,7 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
 
     assert second.completed is True
     assert list(second.node_results) == ["a", "b"]
-    assert [record.node_id for record in executor.trace_store.records_for_task("task_1")] == ["a", "b"]
+    assert [record.node_id for record in executor.execution_store.records_for_task("task_1")] == ["a", "b"]
 
 
 def test_executor_injects_completed_node_output_into_downstream_args() -> None:
@@ -339,9 +339,9 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
     assert result.completed is True
     assert result.node_results["source"].final_response == "echo:value"
     assert result.node_results["sink"].final_response == "echo:echo:value"
-    records = executor.trace_store.records_for_task("task_1")
+    records = executor.execution_store.records_for_task("task_1")
     assert records[1].node_id == "sink"
-    assert records[1].args == {"text": "echo:value"}
+    assert records[1].invocation.arguments == {"text": "echo:value"}
 
 
 def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
@@ -376,7 +376,7 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
     with pytest.raises(DAGExecutionError, match="missing"):
         run(executor.execute_next_ready_layer(dag))
 
-    assert executor.trace_store.records_for_task("task_1") == []
+    assert executor.execution_store.records_for_task("task_1") == []
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
@@ -394,7 +394,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
         )
 
     assert failing_node.status == "failed"
-    records = executor.trace_store.records_for_task("task_1")
+    records = executor.execution_store.records_for_task("task_1")
     assert records[-1].node_id == "fragile"
     assert records[-1].status == "failed"
 
@@ -419,11 +419,11 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
     with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
         run(executor.execute_next_ready_layer(dag))
 
-    records = executor.trace_store.records_for_task("task_1")
+    records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "write_note"
-    assert records[0].tool == "write_note"
-    assert records[0].args == {"path": "notes.md", "content": "hi"}
+    assert records[0].invocation.tool_name == "write_note"
+    assert records[0].invocation.arguments == {"path": "notes.md", "content": "hi"}
     assert records[0].status == "failed"
     assert records[0].stop_reason == "boundary_violation"
     assert records[0].error

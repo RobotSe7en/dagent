@@ -43,7 +43,7 @@ Key imports: use `dagent.harness_runtime`, not legacy `dagent/harness/` or `dage
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor` - layer-by-layer DAG execution with placeholder injection |
 | `dagent/harness_runtime/dag_validation.py` | Structural DAG validation (acyclic, no isolated nodes, tool required) |
 | `dagent/harness_runtime/review_policy.py` | `ReviewPolicy` (`fast`/`careful`) + `effective_risk()` |
-| `dagent/harness_runtime/trace_store.py` | Immutable trace storage for completed node records |
+| `dagent/harness_runtime/task_record.py` | Runtime task state and immutable tool execution record storage |
 | `dagent/harness_runtime/loop_result.py` | `LoopResult` - unified contract between loops and the runtime |
 | `dagent/schemas/node.py` | `DAGNode` (`id`, `invocation`, `status`) |
 | `dagent/schemas/invocation.py` | `ToolInvocation` shared by tool mode and DAG nodes |

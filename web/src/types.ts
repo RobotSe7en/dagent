@@ -59,19 +59,19 @@ export interface TraceEvent {
   timestamp: string;
 }
 
-export interface NodeExecutionRecord {
+export interface ToolExecutionRecord {
   record_id: string;
   task_id: string;
-  dag_id: string;
-  dag_version: number;
-  node_id: string;
-  tool: string | null;
-  args: Record<string, unknown>;
+  invocation: ToolInvocation;
+  source: 'tool_loop' | 'dag_node';
   output: string;
   error: string | null;
   status: 'completed' | 'failed';
   stop_reason: string;
   steps: number;
+  dag_id?: string | null;
+  dag_version?: number | null;
+  node_id?: string | null;
   created_at: string;
 }
 
@@ -101,7 +101,7 @@ export interface ReviewEventPayload {
 export interface RunResult {
   dag_id: string;
   completed: boolean;
-  trace_records?: NodeExecutionRecord[];
+  execution_records?: ToolExecutionRecord[];
   node_results: Record<
     string,
     {

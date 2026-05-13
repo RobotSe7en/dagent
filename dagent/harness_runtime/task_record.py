@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
-from dagent.harness_runtime.dag_executor import RunResult
 from dagent.harness_runtime.review_policy import ReviewLevel, ReviewKind
-from dagent.schemas import DAG, Boundary, NodeExecutionRecord, ToolInvocation
+from dagent.schemas import DAG, DAGNode, Boundary, ToolExecutionRecord, ToolInvocation
+from dagent.schemas.trace import ToolExecutionSource, ToolExecutionStatus
+
+if TYPE_CHECKING:
+    from dagent.harness_runtime.dag_executor import RunResult
 
 
 RuntimeTaskMode = Literal["tool", "dag"]
@@ -33,11 +37,7 @@ class ReviewContinuation:
     review_level: ReviewLevel
     messages: list[dict[str, Any]] = field(default_factory=list)
     invocations: list[ToolInvocation] = field(default_factory=list)
-    boundary: Boundary | None = None
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    tool_args: dict[str, Any] = field(default_factory=dict)
-    risk: str = "low"
+    pending_invocation: ToolInvocation | None = None
 
 
 @dataclass
@@ -54,7 +54,6 @@ class DAGTaskState:
     runs: list[RunResult] = field(default_factory=list)
     continuation_count: int = 0
     node_results: dict = field(default_factory=dict)
-    trace_records: list[NodeExecutionRecord] = field(default_factory=list)
     dag_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -68,7 +67,7 @@ class RuntimeTaskRecord:
     pending_review: PendingReview | None = None
     final_response: str = ""
     invocations: dict[str, ToolInvocation] = field(default_factory=dict)
-    execution_records: list[NodeExecutionRecord] = field(default_factory=list)
+    execution_records: list[ToolExecutionRecord] = field(default_factory=list)
     tool_state: ToolTaskState | None = None
     dag_state: DAGTaskState | None = None
 
@@ -149,17 +148,59 @@ class RuntimeTaskRecord:
         self.require_dag_state().node_results = value
 
     @property
-    def trace_records(self) -> list[NodeExecutionRecord]:
-        return self.require_dag_state().trace_records
-
-    @trace_records.setter
-    def trace_records(self, value: list[NodeExecutionRecord]) -> None:
-        self.require_dag_state().trace_records = value
-
-    @property
     def dag_messages(self) -> list[dict[str, Any]]:
         return self.require_dag_state().dag_messages
 
-    @property
-    def node_execution_records(self) -> list[NodeExecutionRecord]:
-        return self.trace_records
+
+class ToolExecutionStore:
+    """Stores raw tool execution records for planning and audit."""
+
+    def __init__(self) -> None:
+        self._records: list[ToolExecutionRecord] = []
+
+    def add_record(
+        self,
+        *,
+        task_id: str,
+        invocation: ToolInvocation,
+        source: ToolExecutionSource,
+        output: str = "",
+        error: str | None = None,
+        status: ToolExecutionStatus,
+        stop_reason: str,
+        steps: int,
+        dag: DAG | None = None,
+        node: DAGNode | None = None,
+    ) -> ToolExecutionRecord:
+        record = ToolExecutionRecord(
+            record_id=f"tool_execution_{uuid4().hex}",
+            task_id=task_id,
+            invocation=invocation.model_copy(deep=True),
+            source=source,
+            output=output,
+            error=error,
+            status=status,
+            stop_reason=stop_reason,
+            steps=steps,
+            dag_id=dag.dag_id if dag else None,
+            dag_version=dag.version if dag else None,
+            node_id=node.id if node else None,
+        )
+        self._records.append(record)
+        return record
+
+    def records_for_task(self, task_id: str) -> list[ToolExecutionRecord]:
+        return [record for record in self._records if record.task_id == task_id]
+
+    def records_for_dag(self, dag_id: str) -> list[ToolExecutionRecord]:
+        return [record for record in self._records if record.dag_id == dag_id]
+
+    def records_for_node(self, task_id: str, node_id: str) -> list[ToolExecutionRecord]:
+        return [
+            record
+            for record in self.records_for_task(task_id)
+            if record.node_id == node_id
+        ]
+
+    def all_records(self) -> list[ToolExecutionRecord]:
+        return list(self._records)

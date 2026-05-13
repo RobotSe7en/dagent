@@ -192,11 +192,15 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert resumed.status == "completed"
     assert resumed.run_result is not None
     assert resumed.run_result.completed is True
+    assert resumed.run_result.execution_records
     assert resumed.final_answer == "Here is the final answer."
     runtime_task = runtime.session.runtime_tasks[result.task_id]
     assert runtime_task.mode == "dag"
     assert runtime_task.dag_state is not None
     assert runtime_task.invocations
+    assert runtime_task.execution_records
+    assert runtime_task.execution_records[0].source == "dag_node"
+    assert runtime_task.execution_records[0].invocation.tool_name == "echo"
 
 
 def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> None:
@@ -513,6 +517,9 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].status == "completed"
     assert tool_tasks[0].tool_state is not None
     assert tool_tasks[0].invocations
+    assert tool_tasks[0].execution_records
+    assert tool_tasks[0].execution_records[0].source == "tool_loop"
+    assert tool_tasks[0].execution_records[0].invocation.tool_name == "write_file"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
