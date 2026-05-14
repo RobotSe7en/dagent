@@ -749,37 +749,14 @@ async def _chat_for_dag(
         return await provider.chat(messages)
 
     content = ""
-    visible = ""
     response: ChatResponse | None = None
     async for event in provider.stream_chat(messages):
         if event.type == "token" and event.content:
             content += event.content
-            next_visible = _visible_thinking_markup(content)
-            if next_visible.startswith(visible):
-                delta = next_visible[len(visible):]
-                if delta:
-                    on_token(delta)
-                visible = next_visible
+            on_token(event.content)
         elif event.type == "done":
             response = event.response
     return response or ChatResponse(content=content)
-
-
-def _visible_thinking_markup(content: str) -> str:
-    """Return visible content from the first <think> block onwards.
-
-    Text before the first <think> block is conversational preamble that is
-    not useful to stream. Suppressing it avoids a burst when the think block
-    finally arrives.
-
-    Everything from the first <think> onwards is included: think blocks +
-    the DAG DSL / answer text between and after them.
-    """
-    lower = content.lower()
-    open_index = lower.find("<think>")
-    if open_index == -1:
-        return ""
-    return content[open_index:]
 
 
 # ------------------------------------------------------------------
