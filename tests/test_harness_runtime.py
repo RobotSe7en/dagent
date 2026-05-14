@@ -88,13 +88,16 @@ def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
     dag_messages = provider.requests[1]["messages"]
-    # Expect: system, conv_user, conv_assistant, active_user, planning_context
+    assert [message["role"] for message in dag_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
     assert dag_messages[0]["role"] == "system"
     assert dag_messages[1]["content"] == "Remember that the project color is blue."
     assert dag_messages[2]["content"] == "The project color is blue."
-    # The active user message and planning_context are both user messages
-    all_content = "\n".join(m.get("content", "") for m in dag_messages)
-    assert "Use that color in a DAG task." in all_content
+    assert "Use that color in a DAG task." in dag_messages[3]["content"]
 
 
 def test_harness_runtime_auto_routes_to_dag() -> None:
@@ -198,7 +201,7 @@ def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> No
     dag_agent_requests = [
         request
         for request in provider.requests
-        if any("DAG observation: planning_context" in message.get("content", "") for message in request["messages"])
+        if any("## Runtime Context" in message.get("content", "") for message in request["messages"])
     ]
     assert dag_agent_requests
     followup_prompt = "\n".join(message.get("content", "") for message in dag_agent_requests[-1]["messages"])

@@ -269,16 +269,16 @@ class HarnessRuntime:
             )
 
         async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
-            planning_context = self.session.tasks_context()
+            context = self.session.tasks_context()
             if feedback:
-                planning_context = (
-                    f"{planning_context}\n\n{feedback}" if planning_context else feedback
+                context = (
+                    f"{context}\n\n{feedback}" if context else feedback
                 )
             return await self.dag_agent.run(
                 record.user_request,
                 task_id=None,
                 review_level=review_level or state.review_level,
-                planning_context=planning_context,
+                context=context,
                 runtime_mode=record.runtime_mode,
                 conversation_history=self.session.conversation_history,
                 on_token=thinking_only,
@@ -341,15 +341,15 @@ class HarnessRuntime:
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
-            planning_context = self.session.tasks_context()
+            context = self.session.tasks_context()
             if feedback:
-                planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
+                context = (context + "\n\n" + feedback) if context else feedback
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self.dag_agent.run(
                 message,
                 task_id=None,
                 review_level=review_level,
-                planning_context=planning_context,
+                context=context,
                 runtime_mode=str(mode),
                 conversation_history=self.session.conversation_history,
                 on_token=thinking_only,

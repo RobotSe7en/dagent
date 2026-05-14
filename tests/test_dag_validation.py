@@ -154,11 +154,13 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     )
 
     requested = asyncio.run(loop._request_dag(
-        "Summarize the repo",
         task_id="task_1",
         dag_messages=[],
+        user_message=agent.build_request_user_message(
+            prompt="Summarize the repo",
+            task_id="task_1",
+        ),
         system_message=agent.system_message,
-        build_user_message=agent.build_request_user_message,
         tools=agent.tools,
         allow_no_change=False,
     ))

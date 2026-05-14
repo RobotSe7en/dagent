@@ -77,7 +77,7 @@ class DAGAgent:
         *,
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
-        planning_context: str = "",
+        context: str = "",
         runtime_mode: str = "auto",
         conversation_history: list[dict[str, Any]] | None = None,
         force_review: bool = False,
@@ -85,25 +85,22 @@ class DAGAgent:
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
-        dag_messages = _build_dag_messages(
-            conversation_history or [],
-            active_user_message=request,
+        resolved_task_id = task_id or f"task_{uuid4().hex}"
+        initial_messages = self.prompt_builder.build_initial_messages(
+            system_message=self.system_message,
+            conversation_history=conversation_history,
+            current_user_message=self.build_request_user_message(
+                prompt=request,
+                task_id=resolved_task_id,
+            ),
+            runtime_context=context,
         )
-        if planning_context.strip():
-            dag_messages.append({
-                "role": "user",
-                "content": _format_dag_observation(
-                    kind="planning_context",
-                    task_id=task_id,
-                    user_request=request,
-                    planning_context=planning_context,
-                ),
-            })
         return await self.loop.run(
             request,
-            task_id=task_id,
+            task_id=resolved_task_id,
             review_level=review_level,
-            dag_messages=dag_messages,
+            dag_messages=initial_messages[1:-1],
+            initial_user_message=initial_messages[-1],
             system_message=self.system_message,
             build_user_message=self.build_request_user_message,
             tools=self.tools,
@@ -181,30 +178,23 @@ class DAGAgentLoop:
 
     async def _request_dag(
         self,
-        prompt: str,
         *,
         task_id: str | None,
         dag_messages: list[dict[str, Any]] | None,
+        user_message: dict[str, str],
         system_message: dict[str, str],
-        build_user_message: Callable[..., dict[str, str]],
         tools: list[Tool],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        user_msg = build_user_message(prompt=prompt, task_id=resolved_task_id)
         if dag_messages is not None:
-            messages = [system_message, *dag_messages, user_msg]
+            messages = [system_message, *dag_messages, user_message]
         else:
-            messages = [system_message, user_msg]
+            messages = [system_message, user_message]
         response = await _chat_for_dag(self.provider, messages, on_token=on_token)
         if dag_messages is not None:
-            if not (
-                dag_messages
-                and dag_messages[-1].get("role") == "user"
-                and dag_messages[-1].get("content") == prompt
-            ):
-                dag_messages.append({"role": "user", "content": prompt})
+            dag_messages.append(dict(user_message))
             dag_messages.append({"role": "assistant", "content": response.content})
         result = dag_from_model_output(
             response.content,
@@ -228,6 +218,7 @@ class DAGAgentLoop:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         dag_messages: list[dict[str, Any]],
+        initial_user_message: dict[str, str],
         system_message: dict[str, str],
         build_user_message: Callable[..., dict[str, str]],
         tools: list[Tool],
@@ -238,17 +229,21 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         response: DAG | str | None = None
+        resolved_task_id = task_id or f"task_{uuid4().hex}"
         planning_prompt = request
         cycles_used = 0
         for _ in range(self.max_cycles):
             cycles_used += 1
             try:
                 response = await self._request_dag(
-                    planning_prompt,
                     task_id=task_id,
                     dag_messages=dag_messages,
+                    user_message=(
+                        initial_user_message
+                        if cycles_used == 1
+                        else build_user_message(prompt=planning_prompt, task_id=resolved_task_id)
+                    ),
                     system_message=system_message,
-                    build_user_message=build_user_message,
                     tools=tools,
                     allow_no_change=False,
                     on_token=on_token,
@@ -259,7 +254,7 @@ class DAGAgentLoop:
             except Exception as exc:
                 planning_prompt = _format_dag_observation(
                     kind="validation_error",
-                    task_id=task_id,
+                    task_id=resolved_task_id,
                     user_request=request,
                     validation_error=str(exc),
                 )
@@ -449,11 +444,13 @@ class DAGAgentLoop:
             # Ask LLM for the next step: continue, replan, or finish.
             try:
                 response = await self._request_dag(
-                    pending_observation,
                     task_id=record.task_id,
                     dag_messages=record.dag_messages,
+                    user_message=build_user_message(
+                        prompt=pending_observation,
+                        task_id=record.task_id,
+                    ),
                     system_message=system_message,
-                    build_user_message=build_user_message,
                     tools=tools,
                     on_token=on_token,
                 )
@@ -710,7 +707,6 @@ def _format_dag_observation(
     task_id: str | None,
     user_request: str,
     record: RuntimeTaskRecord | None = None,
-    planning_context: str = "",
     last_error: str = "",
     failed_node_id: str | None = None,
     validation_error: str = "",
@@ -721,8 +717,6 @@ def _format_dag_observation(
     ]
     if user_request:
         sections.append(f"User request:\n{user_request}")
-    if planning_context:
-        sections.append(f"Planning context:\n{planning_context.strip()}")
     if validation_error:
         sections.append(f"Validation error:\n{validation_error}")
     if record is None:
@@ -966,20 +960,3 @@ def _context_excerpt(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"
-
-
-def _build_dag_messages(conversation_history: list[dict[str, Any]], *, active_user_message: str) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for msg in conversation_history:
-        role = msg.get("role")
-        content = msg.get("content")
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
-    active = active_user_message.strip()
-    if active and not (
-        messages
-        and messages[-1].get("role") == "user"
-        and messages[-1].get("content") == active
-    ):
-        messages.append({"role": "user", "content": active})
-    return messages[-20:]

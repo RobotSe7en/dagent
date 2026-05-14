@@ -36,12 +36,15 @@ class HarnessRuntimeSession:
     def tasks_context(self) -> str:
         if not self.tasks:
             return ""
+        recent_dag_tasks = [
+            task_context_payload(record)
+            for record in list(self.runtime_tasks.values())[-3:]
+            if record.dag_state is not None
+        ]
+        if not recent_dag_tasks:
+            return ""
         payload = {
-            "recent_dag_tasks": [
-                task_context_payload(record)
-                for record in list(self.runtime_tasks.values())[-3:]
-                if record.dag_state is not None
-            ]
+            "recent_dag_tasks": recent_dag_tasks
         }
         return (
             "Recent DAG execution context is available. Use it to interpret "

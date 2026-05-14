@@ -210,11 +210,13 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     dag_agent = dag_agent_for(dag_loop)
     requested = run(dag_loop._request_dag(
-        "What files are here?",
         task_id="task_real",
         dag_messages=[],
+        user_message=dag_agent.build_request_user_message(
+            prompt="What files are here?",
+            task_id="task_real",
+        ),
         system_message=dag_agent.system_message,
-        build_user_message=dag_agent.build_request_user_message,
         tools=dag_agent.tools,
     ))
     dag = dag_loop.prepare_for_review(requested)

@@ -83,14 +83,16 @@ class ToolAgent:
         if prior_messages and feedback:
             messages = [*prior_messages, {"role": "user", "content": feedback}]
         else:
-            system_msg = self.system_message
-            if context:
-                system_msg = _with_system_context(system_msg, context)
             current_user_msg = self.prompt_builder.build_user_message(
                 "{{ user_message }}",
                 {"user_message": message},
             )
-            messages = [system_msg, *(conversation_history or []), current_user_msg]
+            messages = self.prompt_builder.build_initial_messages(
+                system_message=self.system_message,
+                conversation_history=conversation_history,
+                current_user_message=current_user_msg,
+                runtime_context=context,
+            )
         return await self._continue_messages(
             messages,
             review_level=review_level,
@@ -514,15 +516,6 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
     return ""
-
-
-def _with_system_context(system_message: dict[str, str], context: str) -> dict[str, str]:
-    content = system_message["content"]
-    context_section = f"## Context\n{context.strip()}"
-    return {
-        "role": "system",
-        "content": f"{content}\n\n{context_section}" if content else context_section,
-    }
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
