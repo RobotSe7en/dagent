@@ -1,39 +1,18 @@
 import asyncio
 from dagent.harness_runtime import (
+    ToolAgent,
     ToolAgentLoop,
+    DAGAgent,
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    LoopOutcome,
     ValidatorAgent,
 )
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import Boundary
 from dagent.schemas import ValidationIssue, ValidationResult
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
-
-
-class CompletingLoop:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> LoopOutcome:
-        self.calls += 1
-        return LoopOutcome(
-            status="completed",
-            final_answer="node complete",
-            messages=[],
-        )
 
 
 def run(coro):
@@ -44,7 +23,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
-    tool_names = {tool.name for tool in runtime.dag_agent_loop.tools}
+    tool_names = {tool.name for tool in runtime.dag_agent.tools}
     assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
@@ -68,7 +47,7 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert record.final_response == "hello"
 
 
-def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
+def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content="It is blue."),                 # ToolAgentLoop
@@ -93,7 +72,7 @@ def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
     assert second_agent_messages[3]["content"] == "What color did I mention?"
 
 
-def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
+def test_harness_runtime_dag_planning_does_not_import_tool_thread() -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content=_dag_agent_dsl()),              # DAG agent
@@ -108,14 +87,14 @@ def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     assert second.pending_review is not None
     assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
-    dag_messages = provider.requests[1]["messages"]
-    # Expect: system, conv_user, conv_assistant, active_user, planning_context
-    assert dag_messages[0]["role"] == "system"
-    assert dag_messages[1]["content"] == "Remember that the project color is blue."
-    assert dag_messages[2]["content"] == "The project color is blue."
-    # The active user message and planning_context are both user messages
-    all_content = "\n".join(m.get("content", "") for m in dag_messages)
-    assert "Use that color in a DAG task." in all_content
+    planning_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in planning_messages] == [
+        "system",
+        "user",
+    ]
+    assert planning_messages[0]["role"] == "system"
+    assert "Use that color in a DAG task." in planning_messages[1]["content"]
+    assert "Remember that the project color is blue." not in planning_messages[1]["content"]
 
 
 def test_harness_runtime_auto_routes_to_dag() -> None:
@@ -160,8 +139,7 @@ def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
         ChatResponse(content="dag"),           # _route()
         ChatResponse(content=_dag_agent_dsl()),  # DAG agent
     ])
-    node_loop = CompletingLoop()
-    runtime = _runtime(provider, node_loop=node_loop)
+    runtime = _runtime(provider)
 
     result = run(runtime.handle_message("Create a safe DAG", mode="auto", review_level="careful"))
 
@@ -170,7 +148,6 @@ def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
-    assert node_loop.calls == 0
 
 
 def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
@@ -178,8 +155,7 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode, no routing)
         ChatResponse(content="Here is the final answer."),  # execute loop observation
     ])
-    node_loop = CompletingLoop()
-    runtime = _runtime(provider, node_loop=node_loop)
+    runtime = _runtime(provider)
 
     result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
     resumed = run(runtime.resume_review(result.pending_review.review_id, dag=result.dag))
@@ -192,7 +168,7 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert resumed.dag_run.completed is True
     assert resumed.dag_run.execution_records
     assert resumed.final_answer == "Here is the final answer."
-    runtime_task = runtime.session.runtime_tasks[result.task_id]
+    runtime_task = runtime.session.tasks[result.task_id]
     assert runtime_task.mode == "dag"
     assert runtime_task.dag_state is not None
     assert runtime_task.invocations
@@ -201,7 +177,32 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert runtime_task.execution_records[0].invocation.tool_name == "echo"
 
 
-def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> None:
+def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="I will stop instead of applying that DAG."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=False))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "I will stop instead of applying that DAG."
+    assert any(event["kind"] == "review_denied" for event in resumed.events)
+    resume_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in resume_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "DAG observation: review_denied" in resume_messages[-1]["content"]
+
+
+def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode)
         ChatResponse(content="The result was echo:ok."),  # execute loop observation
@@ -219,15 +220,19 @@ def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> No
     assert second.pending_review is not None
     assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
-    dag_agent_requests = [
-        request
-        for request in provider.requests
-        if any("DAG observation: planning_context" in message.get("content", "") for message in request["messages"])
+    followup_messages = provider.requests[3]["messages"]
+    assert [message["role"] for message in followup_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
     ]
-    assert dag_agent_requests
-    followup_prompt = "\n".join(message.get("content", "") for message in dag_agent_requests[-1]["messages"])
+    followup_prompt = "\n".join(message.get("content", "") for message in followup_messages)
     assert "What files are here?" in followup_prompt
-    assert first.task_id in followup_prompt
+    assert "The result was echo:ok." in followup_prompt
+    assert "What about the previous result?" in followup_prompt
 
 
 def test_harness_runtime_dag_mode_forces_reviewable_dag_without_top_tool_call() -> None:
@@ -335,7 +340,9 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
     assert result.dag is not None
     assert [node.id for node in result.dag.nodes] == ["start", "a", "b"]
     assert len(provider.requests) == 2
-    assert "validation error" in provider.requests[1]["messages"][-1]["content"].lower() or "invalid" in provider.requests[1]["messages"][-1]["content"].lower()
+    retry_content = provider.requests[1]["messages"][-1]["content"]
+    assert "validation error" in retry_content.lower() or "invalid" in retry_content.lower()
+    assert "User request:" not in retry_content
 
 
 def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> None:
@@ -367,6 +374,7 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert "Unknown tool(s): get_current_dir" in feedback
     assert "Available tools:" in feedback
     assert "echo" in feedback
+    assert "User request:" not in feedback
 
 
 def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
@@ -487,10 +495,19 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     runtime = HarnessRuntime(
         provider=provider,
-        tool_agent_loop=tool_agent_loop,
-        dag_agent_loop=DAGAgentLoop(provider, dag_executor=dag_executor, profile=_dag_agent_profile()),
-        conversation_profile=_conversation_profile(),
-        runtime_tools=tool_executor.registry.all_tools(),
+        tool_agent=ToolAgent(
+            loop=tool_agent_loop,
+            profile=_conversation_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
+                provider=provider,
+                dag_executor=dag_executor,
+            ),
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
     )
@@ -507,7 +524,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert resumed.final_answer == "good answer"
     tool_tasks = [
         task
-        for task in runtime.session.runtime_tasks.values()
+        for task in runtime.session.tasks.values()
         if task.mode == "tool"
     ]
     assert len(tool_tasks) == 1
@@ -531,9 +548,18 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     tool_executor = make_tool_executor()
     runtime = HarnessRuntime(
         provider=provider,
-        tool_agent_loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
-        dag_agent_loop=DAGAgentLoop(provider, dag_executor=DAGExecutor(tool_executor=tool_executor), profile=_dag_agent_profile()),
-        conversation_profile=_conversation_profile(),
+        tool_agent=ToolAgent(
+            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            profile=_conversation_profile(),
+        ),
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
+                provider=provider,
+                dag_executor=DAGExecutor(tool_executor=tool_executor),
+            ),
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
         validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
     )
@@ -560,23 +586,27 @@ class _RejectThenApproveValidator:
 
 def _runtime(
     provider: MockProvider,
-    *,
-    node_loop: CompletingLoop | None = None,
 ) -> HarnessRuntime:
     tool_executor = make_tool_executor()
     tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent = ToolAgent(
+        loop=tool_agent_loop,
+        profile=_conversation_profile(),
+        tools=[],
+    )
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     dag_agent_loop = DAGAgentLoop(
-        provider,
+        provider=provider,
         dag_executor=dag_executor,
-        profile=_dag_agent_profile(),
     )
     return HarnessRuntime(
         provider=provider,
-        tool_agent_loop=tool_agent_loop,
-        dag_agent_loop=dag_agent_loop,
-        conversation_profile=_conversation_profile(),
-        runtime_tools=[],
+        tool_agent=tool_agent,
+        dag_agent=DAGAgent(
+            loop=dag_agent_loop,
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
     )
 
 

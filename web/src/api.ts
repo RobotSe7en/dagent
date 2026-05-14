@@ -97,8 +97,9 @@ export async function streamTask(
 
 export async function resumeDagReview(
   reviewId: string,
-  dag: Dag,
+  dag: Dag | null,
   reviewLevel: ReviewLevel,
+  approved: boolean,
   handlers: {
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
@@ -114,7 +115,12 @@ export async function resumeDagReview(
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ review_id: reviewId, dag, review_level: reviewLevel }),
+    body: JSON.stringify({
+      review_id: reviewId,
+      dag: approved ? dag : null,
+      approved,
+      review_level: reviewLevel,
+    }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));

@@ -39,3 +39,13 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert "code_review" in messages[0]["content"]
     assert "Remember narrow boundaries." in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
+
+
+def test_prompt_builder_renders_user_message_template() -> None:
+    builder = PromptBuilder()
+    message = builder.build_user_message(
+        "Task {{ task_id }}: {{ user_request }}",
+        {"task_id": "t1", "user_request": "current question"},
+    )
+
+    assert message == {"role": "user", "content": "Task t1: current question"}

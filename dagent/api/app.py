@@ -17,7 +17,7 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.schemas import DAG, TraceEvent
+from dagent.schemas import DAG, ToolExecutionRecord, TraceEvent
 
 
 class MessageRequest(BaseModel):
@@ -223,8 +223,8 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
         return {
             "task_id": task_id,
             "records": [
-                record.model_dump(mode="json")
-                for record in runtime.dag_agent_loop.dag_executor.execution_store.records_for_task(task_id)
+                _execution_record_payload(record)
+                for record in runtime.dag_agent.loop.dag_executor.execution_store.records_for_task(task_id)
             ],
         }
 
@@ -233,6 +233,13 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
 
 def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
     return trace.model_dump(mode="json")
+
+
+def _execution_record_payload(record: ToolExecutionRecord) -> dict[str, Any]:
+    payload = record.model_dump(mode="json")
+    payload["tool"] = record.invocation.tool_name
+    payload["args"] = record.invocation.arguments
+    return payload
 
 
 def _review_payload(review) -> dict[str, Any]:

@@ -9,8 +9,11 @@ from uuid import uuid4
 
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.harness_runtime.task_record import ReviewContinuation
+from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
+from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
@@ -35,6 +38,132 @@ class ControlToolResult:
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
 TokenHandler = Callable[[str], None]
 LoopEventHandler = Callable[[dict[str, Any]], None]
+
+
+class ToolAgent:
+    """Profile-backed tool agent facade used by the runtime."""
+
+    def __init__(
+        self,
+        *,
+        loop: "ToolAgentLoop",
+        profile: AgentProfile,
+        tools: list[Tool] | None = None,
+        prompt_builder: PromptBuilder | None = None,
+        max_steps: int = 8,
+    ) -> None:
+        self.loop = loop
+        self.profile = profile
+        self.tools = tools or []
+        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.max_steps = max_steps
+        self.system_message = self.prompt_builder.build_system_message(
+            PromptRequest(
+                profile=self.profile,
+                task_content="",
+                tools=self.tools,
+                memory=self.profile.memory,
+            )
+        )
+        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+
+    async def run(
+        self,
+        message: str,
+        *,
+        review_level: "_rp.ReviewLevel" = "fast",
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Append a user turn to the tool-agent thread and run the bounded loop."""
+        boundary = Boundary(mode="read_only", allowed_paths=["."])
+        self.messages.append(
+            self.prompt_builder.build_user_message(
+                "{{ user_message }}",
+                {"user_message": message},
+            )
+        )
+        return await self._continue_messages(
+            self.messages,
+            review_level=review_level,
+            boundary=boundary,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def resume_review(
+        self,
+        state: ReviewContinuation,
+        *,
+        approved: bool,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome | None:
+        """Resume a reviewed tool call and continue the tool-agent loop."""
+        invocation = state.pending_invocation
+        if state.kind != "tool_review" or invocation is None:
+            return None
+
+        feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
+        if approved:
+            try:
+                feed_content = self.loop.tool_executor.execute(
+                    invocation.tool_name,
+                    invocation.arguments,
+                    boundary=invocation.boundary,
+                )
+            except Exception as exc:
+                feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+
+        _replace_tool_result(
+            self.messages,
+            tool_call_id=invocation.invocation_id,
+            tool_name=invocation.tool_name,
+            content=feed_content,
+        )
+        return await self._continue_messages(
+            self.messages,
+            review_level=state.review_level,
+            boundary=invocation.boundary,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def _continue_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        review_level: "_rp.ReviewLevel",
+        boundary: Boundary,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Resume a tool-agent conversation from already-built messages."""
+        control_tool_names = self.reviewable_tool_names()
+        control_tool_handler = (
+            self.loop.create_tool_guard(review_level, boundary, self.tools)
+            if control_tool_names
+            else None
+        )
+        outcome = await self.loop.run(
+            "",
+            boundary=boundary,
+            max_steps=self.max_steps,
+            messages=messages,
+            control_tool_names=control_tool_names,
+            control_tool_handler=control_tool_handler,
+            on_token=on_token,
+            on_event=on_event,
+        )
+        self.messages = list(outcome.messages)
+        return outcome
+
+    def reviewable_tool_names(self) -> set[str]:
+        return {
+            tool.name
+            for tool in self.tools
+            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
+        }
 
 
 class ToolAgentLoop:
@@ -366,6 +495,27 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
     return ""
+
+
+def _replace_tool_result(
+    messages: list[dict[str, Any]],
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    content: str,
+) -> None:
+    replacement = {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "name": tool_name,
+        "content": content,
+    }
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") == "tool" and message.get("tool_call_id") == tool_call_id:
+            messages[index] = replacement
+            return
+    messages.append(replacement)
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:

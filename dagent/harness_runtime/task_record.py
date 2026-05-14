@@ -34,14 +34,12 @@ class ReviewContinuation:
     kind: ReviewKind
     user_request: str
     review_level: ReviewLevel
-    messages: list[dict[str, Any]] = field(default_factory=list)
     invocations: list[ToolInvocation] = field(default_factory=list)
     pending_invocation: ToolInvocation | None = None
 
 
 @dataclass
 class ToolTaskState:
-    messages: list[dict[str, Any]] = field(default_factory=list)
     boundary: Boundary = field(default_factory=Boundary)
     steps: int = 0
 
@@ -53,7 +51,6 @@ class DAGTaskState:
     runs: list[DAGRunResult] = field(default_factory=list)
     continuation_count: int = 0
     node_results: dict = field(default_factory=dict)
-    dag_messages: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -79,7 +76,6 @@ class RuntimeTaskRecord:
         dag: DAG,
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
-        dag_messages: list[dict[str, Any]] | None = None,
     ) -> "RuntimeTaskRecord":
         return cls(
             task_id=task_id,
@@ -89,7 +85,6 @@ class RuntimeTaskRecord:
             dag_state=DAGTaskState(
                 dag=dag,
                 runtime_mode=runtime_mode,
-                dag_messages=list(dag_messages or []),
             ),
         )
 
@@ -146,10 +141,6 @@ class RuntimeTaskRecord:
     def node_results(self, value: dict) -> None:
         self.require_dag_state().node_results = value
 
-    @property
-    def dag_messages(self) -> list[dict[str, Any]]:
-        return self.require_dag_state().dag_messages
-
     def apply_outcome(
         self,
         loop_outcome: "LoopOutcome",
@@ -185,7 +176,6 @@ class RuntimeTaskRecord:
                 else Boundary(mode="read_only", allowed_paths=["."])
             )
             self.tool_state = ToolTaskState(
-                messages=loop_outcome.messages,
                 boundary=previous_boundary,
                 steps=len(task_invocations),
             )
@@ -248,33 +238,6 @@ class ToolExecutionStore:
 
     def all_records(self) -> list[ToolExecutionRecord]:
         return list(self._records)
-
-
-def task_context_payload(record: RuntimeTaskRecord) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "dag_id": record.dag.dag_id,
-        "user_request": record.user_request,
-        "dag_status": record.dag.status,
-        "node_results": {
-            node_id: {
-                "completed": node_result.completed,
-                "stop_reason": node_result.stop_reason,
-                "final_response": node_result.final_response,
-            }
-            for node_id, node_result in record.node_results.items()
-        },
-        "recent_execution_records": [
-            {
-                "node_id": record_item.node_id,
-                "tool": record_item.invocation.tool_name,
-                "status": record_item.status,
-                "output": record_item.output,
-                "error": record_item.error,
-            }
-            for record_item in record.execution_records[-8:]
-        ],
-    }
 
 
 def pending_review_invocation(loop_outcome: "LoopOutcome") -> ToolInvocation | None:

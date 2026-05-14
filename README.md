@@ -2,44 +2,54 @@
 
 > **Plan globally. Re-plan locally.**
 
-**dagent** is a *Dynamic DAG Agent* framework. Given a goal, it generates an executable DAG and runs it layer by layer. After each layer completes, it applies the lightest re-planning strategy that suffices - from zero-LLM placeholder substitution, to local parameter reasoning, to full downstream re-generation - updating only what needs to change, freezing everything already done.
+**dagent** is a *Dynamic DAG Agent* framework. It can run a request through a
+bounded tool-using agent, or through a planner that creates and executes a
+reviewable tool-node DAG. The runtime keeps those modes separate: each agent owns
+its own message thread, while the harness stores structured task, review, and
+execution state.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
-task gets a reviewable, auditable plan up front. That plan evolves as execution proceeds -
-only the parts that need changing are changed, and everything already executed is frozen
-and immutable.
+task that needs orchestration gets a reviewable, auditable plan up front. That plan
+can evolve from DAG observations as execution proceeds, while completed tool results
+remain structured execution records.
 
 > **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
-> three-level incremental re-planning, frozen Trace DB as the context boundary, and
-> automatic DAG-vs-tool task routing - was conceived and first implemented by the
-> author of this repository. First committed: **2026-05-01**.
+> three-level incremental re-planning, Trace DB as the long-term context boundary,
+> human review checkpoints, DAG-vs-tool task routing, and resumable execution - was
+> conceived and first implemented by the author of this repository. First committed:
+> **2026-05-01**.
 
 ---
 
 ## Core Ideas
 
 **1. Self-planning DAG, not a static pipeline.**
-The agent generates the initial DAG from the goal. After each node executes, it observes
-the output and decides whether to inject values, re-reason locally, or re-generate the
-downstream subgraph. The plan is always the latest best understanding of how to reach
-the goal.
+The DAG agent generates an initial tool-node plan from the goal. After each executable
+layer, the planner receives a DAG observation and can return `NO_CHANGE`, a revised
+DAG, or the final answer.
 
 **2. Tool nodes, not agent nodes.**
 Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
 nodes, not inside them. Nodes are cheap, testable, and auditable.
 
-**3. Three-level re-planning with minimal context.**
-After each node completes, the executor picks the lightest strategy that suffices -
-from zero-LLM placeholder substitution up to full downstream re-generation. Each level
-receives only the context it actually needs.
+**3. Three-level re-planning.**
+The current implementation covers three levels in one execution path: placeholder
+injection before a tool call, `NO_CHANGE`/parameter-level continuation after an
+observation, and DAG revision when the pending graph must change.
 
-**4. Frozen trace as the context boundary.**
-Completed nodes are immediately written to an immutable Trace DB and dropped from the
-active LLM context. The re-planner reads goal-aligned summaries, never raw history.
-Context stays bounded regardless of task length.
+**4. Agent-owned message threads.**
+`ToolAgent` and `DAGAgent` each own one persistent message thread for the session.
+The runtime does not merge global conversation history or inject prior task context.
+A follow-up such as "continue" is just the next user message in the active agent's
+thread.
 
-**5. Human review as a first-class checkpoint.**
+**5. Structured task state, not transcript state.**
+DAG tasks store the current DAG, node results, execution records, runs, and pending
+review state. They do not store planner messages. Tool tasks similarly derive audit
+records from tool messages without owning the agent transcript.
+
+**6. Human review as a first-class checkpoint.**
 Medium/high-risk DAGs require explicit approval before execution. Re-planned DAGs can
 trigger a second review. The human is never bypassed.
 
@@ -53,102 +63,134 @@ trigger a second review. The human is never bypassed.
 flowchart TD
   U["User"] --> R["HarnessRuntime"]
   R -->|"auto mode"| ROUTE["Route\ndag or tool"]
-  R -->|"tool mode"| TA["ToolAgentLoop"]
-  R -->|"dag mode"| DA["DAGAgentLoop"]
+  R -->|"tool mode"| TA["ToolAgent"]
+  R -->|"dag mode"| DA["DAGAgent"]
 
   ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
 
-  TA -->|"bounded tool calls"| T["ToolExecutor"]
-  TA -->|"LoopOutcome"| G["Human Review Gate"]
+  TA --> TM[("ToolAgent.messages\nsystem + user + assistant/tool")]
+  TA --> TAL["ToolAgentLoop"]
+  TAL -->|"bounded tool calls"| T["ToolExecutor"]
+  TAL -->|"tool review needed"| TRV["Human Tool Review"]
+  TRV -->|"approve"| TEX["Execute reviewed tool"]
+  TRV -->|"reject"| TDENY["Append denied tool result"]
+  TEX --> TM
+  TDENY --> TM
+  TAL -->|"LoopOutcome"| R
 
-  DA --> D["Create Initial DAG\ntool nodes + placeholders"]
+  DA --> DM[("DAGAgent.messages\nsystem + user + DAG DSL + observations")]
+  DA --> DAL["DAGAgentLoop"]
+  DAL --> D["Plan DAG\nPlanSpec DSL -> DAG"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
-  UI -->|"approve"| E
-  UI -->|"reject / modify"| D
+  UI -->|"approve / edit"| E
+  UI -->|"reject"| DENY["Append DAG observation:\nreview_denied"]
+  DENY --> DAL
 
-  E --> N["Execute Node"]
+  E --> N["Execute Ready Layer"]
   N --> T
-  N --> OBS["Observe Output"]
-  N -->|"node complete"| TR[("Trace DB\nfrozen node + I/O")]
+  N --> ER[("RuntimeTaskRecord\nDAG + node_results + execution_records")]
+  N --> TR[("Trace DB\nplanned persistent run memory")]
+  N --> OBS["DAG observation"]
+  OBS --> DM
+  DM --> DAL
+  DAL -->|"Level 1\nplaceholder injection"| E
+  DAL -->|"Level 2\nNO_CHANGE / param adjustment"| E
+  DAL -->|"Level 3\nrevised DAG"| UI2["Human Review\nif policy requires"]
+  UI2 -->|"approve / edit"| E
+  UI2 -->|"reject"| DENY
+  DAL -->|"final answer"| DR["LoopOutcome"]
+  DR --> R
 
-  OBS -->|"Level 1\ndata contract known"| INJ["Placeholder Injection\nno LLM"]
-  OBS -->|"Level 2\ntool/params need reasoning"| RP["Light Re-planner\ncontext = current node output"]
-  OBS -->|"Level 3\nstructure must change"| RG["DAG Re-generator\ncontext = goal + summaries"]
-
-  INJ --> NXT["Update pending_nodes"]
-  RP --> NXT
-  RG --> NXT
-
-  NXT -->|"has next node"| E
-  NXT -->|"review required"| UI2["Human Review\nre-planned DAG"]
-  UI2 -->|"approve"| E
-
-  NXT -->|"DAG complete"| DR["DAGAgentLoop Result"]
-  DR --> G
-
-  G -->|"approval needed"| UI3["Human Review"]
-  UI3 -->|"approve / reject"| R
-  G -->|"no human gate"| V["Result Validation\noptional LLM validator"]
+  R -->|"awaiting_review"| UIWAIT["Return pending_review"]
+  R -->|"done"| V["Result Validation\noptional LLM validator"]
   V -->|"issues found"| RTRY["Retry with validation feedback"]
   RTRY --> TA
   RTRY --> DA
   V -->|"passed / disabled"| O["Return final_answer\nto user"]
 ```
 
-`HarnessRuntime` is the top-level control layer. It owns routing, session state,
-human review gates, optional result validation, retry feedback, and final result delivery.
-The execution details stay inside `ToolAgentLoop` for tool-use work and
-`DAGAgentLoop` for structured DAG work. Once review and validation pass, the runtime
-returns the loop's `final_answer` directly without a separate summarization step.
+`HarnessRuntime` is the top-level control layer. It owns routing, session task state,
+review continuation lookup, optional result validation, retry feedback, and final result
+delivery. It does not own the model transcript.
+
+`ToolAgent` owns the tool-agent system prompt and persistent tool-call message thread,
+then delegates bounded execution to `ToolAgentLoop`. Tool review approval replaces the
+pending tool marker with the real tool result; rejection replaces it with a denied tool
+result and lets the loop continue.
+
+`DAGAgent` owns the DAG planner system prompt and persistent DAG message thread, then
+delegates planning, review, execution, observations, and replanning to `DAGAgentLoop`.
+`RuntimeTaskRecord` stores structured execution state only: DAG, node results, execution
+records, runs, and pending review. It does not store `dag_messages`.
+
+Once review and validation pass, the runtime returns the loop's `final_answer` directly
+without a separate summarization step.
 
 ### Three-Level Re-planning
 
-After every node completes, the DAGExecutor selects the minimum re-planning strategy:
+After each ready layer executes, `DAGAgentLoop` formats a DAG observation and appends it
+to `DAGAgent.messages`. Re-planning is implemented as three levels:
 
-| Level | Trigger | Context passed to LLM | Cost |
-|-------|---------|----------------------|------|
-| **1 - Placeholder Injection** | Data contract defined at creation; only values unknown | Predecessor output -> direct substitution | No LLM call |
-| **2 - Light Re-planner** | Next node's tool or params require runtime reasoning | Current node output + next node definition | Lightweight |
-| **3 - DAG Re-generator** | Downstream structure must change | Original goal + per-node result summaries | Full re-plan |
+| Level | Current implementation | Meaning |
+|-------|------------------------|---------|
+| **1 - Placeholder injection** | `DAGExecutor` resolves `{{node.output}}`-style placeholders from completed node results before each tool call. | Runtime values flow into downstream tool arguments without an LLM call. |
+| **2 - Local continuation / parameter reasoning** | The DAG LLM receives the latest observation and can return `NO_CHANGE` or a revised PlanSpec with changed arguments. | Keep the current DAG structure, or adjust pending node parameters based on observed results. |
+| **3 - DAG revision** | The DAG LLM returns a revised PlanSpec DSL; `_apply_replan()` invalidates changed/deleted nodes and downstream results, then review policy decides whether to pause. | Change pending graph structure when the original plan no longer fits. |
 
-Design principles:
+In concrete response terms, the DAG LLM can return:
 
-- **Minimal context by design.** Each level receives only what it needs. Completed nodes
-  live in Trace DB and are never re-injected into LLM context.
-- **Incremental re-planning.** Level 3 re-generates only the pending subgraph.
-  Completed nodes are preserved as-is.
-- **Frozen nodes are immutable.** Once written to Trace DB, a node's record cannot be
-  modified. Audit integrity is guaranteed.
+| Response | Meaning |
+|----------|---------|
+| `NO_CHANGE` | Continue executing the current DAG. |
+| PlanSpec DSL | Replace or revise pending DAG work, subject to review policy. |
+| Natural-language answer | Finish the task and return `final_answer`. |
+
+The executor also resolves placeholders from completed node outputs before a tool call.
+Unresolved placeholders fail closed before execution.
 
 ### When to Use DAG vs. Tool Mode
 
 | Task shape | Path |
 |------------|------|
 | Subtasks that can run in parallel | DAG |
-| Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory - next action depends on observation | `ToolAgentLoop` |
-| Dynamic fan-out - node count unknown until runtime | `ToolAgentLoop` |
+| Sequential steps with known structure, runtime values only | DAG |
+| Exploratory - next action depends on observation | `ToolAgent` |
+| Dynamic fan-out - node count unknown until runtime | `ToolAgent` |
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
-before dispatching to `ToolAgentLoop` or `DAGAgentLoop`.
+before dispatching to `ToolAgent` or `DAGAgent`.
 
-### Trace DB
+### Trace DB And Execution Records
 
-Every completed node is written immediately on completion:
+Every completed tool call is recorded as a `ToolExecutionRecord`:
 
 ```
-{ node_id, tool, params, output, summary, timestamp, status }
+{ task_id, source, node_id, tool, args, output, error, status, stop_reason, timestamp }
 ```
 
-Trace DB serves three purposes:
+Current implementation:
+
+- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/tool lifecycle events.
+- `ToolExecutionStore` keeps in-memory `ToolExecutionRecord` entries for tool-mode calls
+  and DAG node execution.
+- The API and Web UI surface these traces and records during the current process lifetime.
+
+Target architecture:
+
+- Persist trace events, tool executions, node outputs, and compact result summaries into
+  a Trace DB.
+- Use Trace DB as the long-term audit store and context boundary for future replanning,
+  instead of relying only on in-memory task state.
+
+Trace DB / execution records serve three purposes:
 
 1. **Audit log** - immutable record of what ran, with what inputs, and what it returned.
-2. **Re-planning source** - Level 3 re-planner reads summaries, not raw outputs, keeping
-   context bounded regardless of how many nodes have executed.
+2. **DAG observation source** - DAG observations include completed node outputs and recent
+   execution records so the planner can continue or repair the DAG.
 3. **Human review** - the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ---
@@ -164,8 +206,8 @@ The runtime is intentionally layered:
   risk DAGs until explicitly approved.
 - Each node is a bounded tool call - no nested agent loop inside a node.
 - `ToolExecutor` enforces boundaries before every tool call.
-- Human review can be triggered by tool-mode calls, initial DAG creation, and after
-  any Level 3 re-plan.
+- Human review can be triggered by tool-mode calls, initial DAG creation, and DAG
+  revisions.
 - Optional result validation uses a separate `validator_agent` profile to check the
   final answer against the original user request and execution context. If validation
   finds issues, the runtime retries once with validator feedback.
@@ -187,13 +229,15 @@ Boundary checks:
 ```text
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
-  harness_runtime/  runtime orchestration, ToolAgentLoop, DAGAgentLoop, validation,
+  harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
+                    DAGAgentLoop, validation,
                     session state, event adapters, trace recording, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   tools/            tool registry, executor, file tools, boundary checks
-  state/            prompt assembly and context management
-profiles/           editable agent profiles (dag_agent, validator_agent, feedback_learner)
+  state/            prompt assembly
+profiles/           editable agent profiles (conversation, dag_agent, validator_agent, feedback_learner)
+web/                React + Vite frontend
 tests/              pytest suite
 ```
 
@@ -243,8 +287,9 @@ profiles/
   feedback_learner/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
 ```
 
-`profile.yaml` defines ordered prompt layers. Dynamic content (tools, task context,
-trace data) is injected at runtime and never stored in profile files.
+`profile.yaml` defines ordered prompt layers. Dynamic content such as tools, skills,
+memory, and per-request user messages is injected at runtime and never stored in
+profile files.
 
 ---
 
