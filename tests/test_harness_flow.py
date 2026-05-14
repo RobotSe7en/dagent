@@ -12,7 +12,7 @@ from dagent.harness_runtime import (
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, ToolInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, ToolInvocation
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
@@ -704,6 +704,60 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
 
     assert result.completed is True
     assert result.node_results["fragile"].final_response == "fixed-ok"
+
+
+def test_harness_runtime_edge_only_replan_invalidates_downstream_results() -> None:
+    initial = DAG(
+        dag_id="dag_edge_only_replan",
+        task_id="task_edge_only_replan",
+        status="approved",
+        nodes=[
+            _tool_node("source", "echo", {"text": "source"}),
+            _tool_node("sink", "echo", {"text": "same"}),
+        ],
+        edges=[DAGEdge(source="source", target="sink")],
+    )
+    replacement = DAG(
+        dag_id="replacement",
+        task_id="task_edge_only_replan",
+        nodes=[
+            _tool_node("source", "echo", {"text": "source"}),
+            _tool_node("middle", "echo", {"text": "middle"}),
+            _tool_node("sink", "echo", {"text": "same"}),
+        ],
+        edges=[
+            DAGEdge(source="source", target="middle"),
+            DAGEdge(source="middle", target="sink"),
+        ],
+    )
+    loop = dag_loop_for(MockProvider([]))
+    prepared = loop.prepare_for_review(initial)
+    record = RuntimeTaskRecord.dag_task(
+        task_id="task_edge_only_replan",
+        user_request="Change dependencies only",
+        dag=prepared,
+        review_level="fast",
+    )
+    record.node_results = {
+        "source": DAGNodeResult(
+            node_id="source",
+            final_response="echo:source",
+            completed=True,
+            stop_reason="completed",
+            steps=1,
+        ),
+        "sink": DAGNodeResult(
+            node_id="sink",
+            final_response="echo:same",
+            completed=True,
+            stop_reason="completed",
+            steps=1,
+        ),
+    }
+
+    loop._apply_replan(record, replacement)
+
+    assert "sink" not in record.node_results
 
 
 def test_harness_runtime_pauses_for_permission_and_resumes_after_approval() -> None:

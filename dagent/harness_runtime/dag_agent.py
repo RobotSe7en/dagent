@@ -644,21 +644,13 @@ class DAGAgentLoop:
         else:
             prepared.status = "approved"
 
-        # Remove stale results for changed/deleted nodes and their downstream
-        new_nodes = {node.id: node for node in prepared.nodes}
-        old_nodes = {node.id: node for node in record.dag.nodes}
-        for nid in list(record.node_results):
-            new_node = new_nodes.get(nid)
-            if new_node is None:
-                _invalidate_patch_results(record, nid)
-                continue
-            old_node = old_nodes.get(nid)
-            if (
-                old_node is None
-                or old_node.invocation.tool_name != new_node.invocation.tool_name
-                or old_node.invocation.arguments != new_node.invocation.arguments
-            ):
-                _invalidate_patch_results(record, nid)
+        # Remove stale results for changed/deleted nodes and their downstream.
+        # This must use the old DAG before replacement so downstream invalidation
+        # follows the graph that produced the cached results.
+        old_node_ids = {node.id for node in record.dag.nodes}
+        for node_id in changed:
+            if node_id in old_node_ids:
+                _invalidate_patch_results(record, node_id)
 
         record.dag = prepared
         if needs_review:
