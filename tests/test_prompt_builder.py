@@ -41,27 +41,11 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
 
 
-def test_prompt_builder_assembles_initial_agent_messages_with_runtime_context() -> None:
+def test_prompt_builder_renders_user_message_template() -> None:
     builder = PromptBuilder()
-    messages = builder.build_initial_messages(
-        system_message={"role": "system", "content": "System prompt."},
-        conversation_history=[
-            {"role": "system", "content": "ignored"},
-            {"role": "user", "content": "previous question"},
-            {"role": "assistant", "content": "previous answer"},
-            {"role": "tool", "content": "ignored"},
-        ],
-        current_user_message={"role": "user", "content": "current question"},
-        runtime_context="Use prior DAG result.",
+    message = builder.build_user_message(
+        "Task {{ task_id }}: {{ user_request }}",
+        {"task_id": "t1", "user_request": "current question"},
     )
 
-    assert [message["role"] for message in messages] == [
-        "system",
-        "user",
-        "assistant",
-        "user",
-    ]
-    assert messages[0]["content"] == "System prompt."
-    assert messages[1]["content"] == "previous question"
-    assert messages[2]["content"] == "previous answer"
-    assert messages[3]["content"] == "current question\n\n## Runtime Context\nUse prior DAG result."
+    assert message == {"role": "user", "content": "Task t1: current question"}

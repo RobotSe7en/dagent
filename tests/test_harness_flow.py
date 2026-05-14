@@ -209,14 +209,14 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
     dag_loop = dag_loop_for(provider)
 
     dag_agent = dag_agent_for(dag_loop)
+    messages = [dag_agent.system_message]
     requested = run(dag_loop._request_dag(
         task_id="task_real",
-        dag_messages=[],
+        messages=messages,
         user_message=dag_agent.build_request_user_message(
             prompt="What files are here?",
             task_id="task_real",
         ),
-        system_message=dag_agent.system_message,
         tools=dag_agent.tools,
     ))
     dag = dag_loop.prepare_for_review(requested)
@@ -455,8 +455,8 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
-def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
-    """Replan LLM call includes the initial planning exchange in its context."""
+def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
+    """Replan LLM call includes the initial planning exchange in the agent thread."""
     initial_dsl = (
         'task: initial\n'
         'start = dag_start()\n'
@@ -481,10 +481,15 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
 
     result = run(runtime.dag_agent.run("Do two steps", task_id="task_dm", review_level="fast"))
     record = runtime.tasks["task_dm"]
-    assert record.dag_messages is not None
-    assert record.dag_messages[0]["role"] == "user"
-    assert record.dag_messages[1]["role"] == "assistant"
-    assert initial_dsl in record.dag_messages[1]["content"]
+    replan_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in replan_messages[:4]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert initial_dsl in replan_messages[2]["content"]
+    assert "DAG observation" in replan_messages[3]["content"]
     assert result.dag_run is not None
     assert result.dag_run.completed is True
     assert record.dag.status == "completed"

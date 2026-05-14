@@ -47,7 +47,7 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert record.final_response == "hello"
 
 
-def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
+def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content="It is blue."),                 # ToolAgentLoop
@@ -72,7 +72,7 @@ def test_harness_runtime_tool_followup_includes_conversation_history() -> None:
     assert second_agent_messages[3]["content"] == "What color did I mention?"
 
 
-def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
+def test_harness_runtime_dag_planning_does_not_import_tool_thread() -> None:
     provider = MockProvider([
         ChatResponse(content="The project color is blue."),  # ToolAgentLoop
         ChatResponse(content=_dag_agent_dsl()),              # DAG agent
@@ -87,17 +87,14 @@ def test_harness_runtime_dag_planning_includes_conversation_history() -> None:
     assert second.pending_review is not None
     assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
-    dag_messages = provider.requests[1]["messages"]
-    assert [message["role"] for message in dag_messages] == [
+    planning_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in planning_messages] == [
         "system",
         "user",
-        "assistant",
-        "user",
     ]
-    assert dag_messages[0]["role"] == "system"
-    assert dag_messages[1]["content"] == "Remember that the project color is blue."
-    assert dag_messages[2]["content"] == "The project color is blue."
-    assert "Use that color in a DAG task." in dag_messages[3]["content"]
+    assert planning_messages[0]["role"] == "system"
+    assert "Use that color in a DAG task." in planning_messages[1]["content"]
+    assert "Remember that the project color is blue." not in planning_messages[1]["content"]
 
 
 def test_harness_runtime_auto_routes_to_dag() -> None:
@@ -180,7 +177,7 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert runtime_task.execution_records[0].invocation.tool_name == "echo"
 
 
-def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> None:
+def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode)
         ChatResponse(content="The result was echo:ok."),  # execute loop observation
@@ -198,15 +195,19 @@ def test_harness_runtime_dag_agent_gets_previous_dag_context_on_followup() -> No
     assert second.pending_review is not None
     assert second.pending_review.kind == "initial_dag"
     assert second.final_answer == ""
-    dag_agent_requests = [
-        request
-        for request in provider.requests
-        if any("## Runtime Context" in message.get("content", "") for message in request["messages"])
+    followup_messages = provider.requests[3]["messages"]
+    assert [message["role"] for message in followup_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
     ]
-    assert dag_agent_requests
-    followup_prompt = "\n".join(message.get("content", "") for message in dag_agent_requests[-1]["messages"])
+    followup_prompt = "\n".join(message.get("content", "") for message in followup_messages)
     assert "What files are here?" in followup_prompt
-    assert first.task_id in followup_prompt
+    assert "The result was echo:ok." in followup_prompt
+    assert "What about the previous result?" in followup_prompt
 
 
 def test_harness_runtime_dag_mode_forces_reviewable_dag_without_top_tool_call() -> None:

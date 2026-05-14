@@ -50,26 +50,6 @@ class PromptBuilder:
     ) -> dict[str, str]:
         return {"role": "user", "content": _render_template(task_content, variables or {})}
 
-    def build_initial_messages(
-        self,
-        *,
-        system_message: dict[str, str],
-        conversation_history: list[dict[str, Any]] | None,
-        current_user_message: dict[str, str],
-        runtime_context: str = "",
-    ) -> list[dict[str, Any]]:
-        user_message = dict(current_user_message)
-        if runtime_context.strip():
-            user_message["content"] = _append_runtime_context(
-                user_message.get("content", ""),
-                runtime_context,
-            )
-        return [
-            dict(system_message),
-            *_conversation_messages(conversation_history or []),
-            user_message,
-        ]
-
 
 def _tools_section(tools: list[Tool]) -> str:
     lines = ["## Available Tools"]
@@ -92,20 +72,3 @@ def _render_template(template: str, values: dict[str, Any]) -> str:
         rendered = rendered.replace("{{ " + key + " }}", str(value))
         rendered = rendered.replace("{{" + key + "}}", str(value))
     return rendered
-
-
-def _conversation_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    history: list[dict[str, Any]] = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content")
-        if role in {"user", "assistant"} and content:
-            history.append({"role": role, "content": content})
-    return history[-20:]
-
-
-def _append_runtime_context(content: str, runtime_context: str) -> str:
-    context = runtime_context.strip()
-    if not context:
-        return content
-    return f"{content.strip()}\n\n## Runtime Context\n{context}" if content.strip() else f"## Runtime Context\n{context}"

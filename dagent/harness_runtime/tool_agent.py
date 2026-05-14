@@ -65,36 +65,26 @@ class ToolAgent:
                 memory=self.profile.memory,
             )
         )
+        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
 
     async def run(
         self,
         message: str,
         *,
         review_level: "_rp.ReviewLevel" = "fast",
-        feedback: str | None = None,
-        prior_messages: list[dict[str, Any]] | None = None,
-        conversation_history: list[dict[str, Any]] | None = None,
-        context: str = "",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
-        """Build the tool-agent prompt and run the bounded loop."""
+        """Append a user turn to the tool-agent thread and run the bounded loop."""
         boundary = Boundary(mode="read_only", allowed_paths=["."])
-        if prior_messages and feedback:
-            messages = [*prior_messages, {"role": "user", "content": feedback}]
-        else:
-            current_user_msg = self.prompt_builder.build_user_message(
+        self.messages.append(
+            self.prompt_builder.build_user_message(
                 "{{ user_message }}",
                 {"user_message": message},
             )
-            messages = self.prompt_builder.build_initial_messages(
-                system_message=self.system_message,
-                conversation_history=conversation_history,
-                current_user_message=current_user_msg,
-                runtime_context=context,
-            )
+        )
         return await self._continue_messages(
-            messages,
+            self.messages,
             review_level=review_level,
             boundary=boundary,
             on_token=on_token,
@@ -106,8 +96,6 @@ class ToolAgent:
         state: ReviewContinuation,
         *,
         approved: bool,
-        feedback: str | None = None,
-        previous_result: LoopOutcome | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome | None:
@@ -116,18 +104,7 @@ class ToolAgent:
         if state.kind != "tool_review" or invocation is None:
             return None
 
-        if feedback:
-            prior_messages = previous_result.messages if previous_result else state.messages
-            messages = [*prior_messages, {"role": "user", "content": feedback}]
-            return await self._continue_messages(
-                messages,
-                review_level=state.review_level,
-                boundary=invocation.boundary,
-                on_token=on_token,
-                on_event=on_event,
-            )
-
-        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
+        feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         if approved:
             try:
                 feed_content = self.loop.tool_executor.execute(
@@ -138,14 +115,14 @@ class ToolAgent:
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
-        state.messages.append({
-            "role": "tool",
-            "tool_call_id": invocation.invocation_id,
-            "name": invocation.tool_name,
-            "content": feed_content,
-        })
+        _replace_tool_result(
+            self.messages,
+            tool_call_id=invocation.invocation_id,
+            tool_name=invocation.tool_name,
+            content=feed_content,
+        )
         return await self._continue_messages(
-            state.messages,
+            self.messages,
             review_level=state.review_level,
             boundary=invocation.boundary,
             on_token=on_token,
@@ -168,7 +145,7 @@ class ToolAgent:
             if control_tool_names
             else None
         )
-        return await self.loop.run(
+        outcome = await self.loop.run(
             "",
             boundary=boundary,
             max_steps=self.max_steps,
@@ -178,6 +155,8 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
+        self.messages = list(outcome.messages)
+        return outcome
 
     def reviewable_tool_names(self) -> set[str]:
         return {
@@ -516,6 +495,27 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
     return ""
+
+
+def _replace_tool_result(
+    messages: list[dict[str, Any]],
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    content: str,
+) -> None:
+    replacement = {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "name": tool_name,
+        "content": content,
+    }
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") == "tool" and message.get("tool_call_id") == tool_call_id:
+            messages[index] = replacement
+            return
+    messages.append(replacement)
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
