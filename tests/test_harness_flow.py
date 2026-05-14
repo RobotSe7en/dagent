@@ -4,8 +4,9 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    LoopOutcome,
     RuntimeTaskRecord,
+    ToolAgent,
+    ToolAgentLoop,
 )
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
@@ -16,23 +17,6 @@ from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
-class CompletingLoop:
-    async def run(
-        self,
-        user_message: str,
-        *,
-        boundary: Boundary,
-        max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
-        messages: list[dict] | None = None,
-    ) -> LoopOutcome:
-        return LoopOutcome(
-            status="completed",
-            final_answer="node complete",
-            messages=[],
-        )
-
-
 def run(coro):
     return asyncio.run(coro)
 
@@ -41,20 +25,24 @@ def runtime_for(
     *,
     dag_agent_loop: DAGAgentLoop,
     executor: DAGExecutor,
-    tool_agent_loop=None,
     max_cycles: int = 6,
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
     return HarnessRuntime(
         provider=dag_agent_loop.provider,
-        tool_agent_loop=tool_agent_loop or CompletingLoop(),
-        dag_agent_loop=dag_agent_loop,
-        conversation_profile=AgentProfile(
-            name="conversation",
-            role="conversation",
-            layers=["soul"],
-            layer_contents={"soul": "You are a conversation agent."},
+        tool_agent=ToolAgent(
+            loop=ToolAgentLoop(
+                provider=dag_agent_loop.provider,
+                tool_executor=executor.tool_executor,
+            ),
+            profile=AgentProfile(
+                name="conversation",
+                role="conversation",
+                layers=["soul"],
+                layer_contents={"soul": "You are a conversation agent."},
+            ),
         ),
+        dag_agent_loop=dag_agent_loop,
     )
 
 

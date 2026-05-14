@@ -53,7 +53,7 @@ class HarnessRuntimeSession:
     def record_conversation(self, loop_outcome: LoopOutcome) -> None:
         """Record loop messages into conversation history.
 
-        For tool mode the full ToolAgentLoop conversation replaces history.
+        For tool mode the full ToolAgent conversation replaces history.
         For DAG mode there are no conversation messages (DAG has internal state).
         """
         if loop_outcome.messages:

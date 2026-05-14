@@ -40,7 +40,7 @@ or compatibility shim modules.
 | File | Responsibility |
 |------|----------------|
 | `dagent/harness_runtime/runtime.py` | `HarnessRuntime`: auto/tool/dag routing, review gates, validation retries, final response |
-| `dagent/harness_runtime/tool_agent.py` | `ToolAgentLoop`: bounded tool-use loop with tool review gates |
+| `dagent/harness_runtime/tool_agent.py` | `ToolAgent`: profile-backed tool agent prompt assembly and review policy; `ToolAgentLoop`: bounded tool-use loop |
 | `dagent/harness_runtime/dag_agent.py` | `DAGAgentLoop`: DAG planning, review checkpoints, layer execution, observation, replanning |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: layer-by-layer DAG execution and placeholder injection |
 | `dagent/harness_runtime/dag_builder.py` | PlanSpec DSL parsing, DAG construction, DAG structural validation |
@@ -72,7 +72,7 @@ ValidationIssue
 ValidationResult
 ```
 
-`LoopOutcome` is the single loop-to-runtime contract. `ToolAgentLoop.run()` and
+`LoopOutcome` is the single loop-to-runtime contract. `ToolAgent.run()` and
 `DAGAgentLoop.run()/resume()` return it directly. Runtime converts that to
 `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
 `LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
@@ -83,7 +83,7 @@ ValidationResult
 User request
   -> HarnessRuntime.handle_message()
      -> route: auto/tool/dag
-     -> ToolAgentLoop or DAGAgentLoop returns LoopOutcome
+     -> ToolAgent or DAGAgentLoop returns LoopOutcome
      -> review gate if LoopOutcome.status == "awaiting_review"
      -> optional ValidatorAgent check
      -> retry once with validation feedback if needed
@@ -107,7 +107,9 @@ DAGAgentLoop.run()
 Tool mode:
 
 ```text
-ToolAgentLoop.run()
+ToolAgent.run()
+  -> builds profile-backed system prompt + conversation history
+  -> ToolAgentLoop.run()
   -> bounded chat/tool loop
   -> tool review gate for medium/high risk tools in careful mode
   -> LoopOutcome

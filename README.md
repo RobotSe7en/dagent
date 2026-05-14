@@ -53,13 +53,14 @@ trigger a second review. The human is never bypassed.
 flowchart TD
   U["User"] --> R["HarnessRuntime"]
   R -->|"auto mode"| ROUTE["Route\ndag or tool"]
-  R -->|"tool mode"| TA["ToolAgentLoop"]
+  R -->|"tool mode"| TA["ToolAgent"]
   R -->|"dag mode"| DA["DAGAgentLoop"]
 
   ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
 
-  TA -->|"bounded tool calls"| T["ToolExecutor"]
+  TA --> TAL["ToolAgentLoop"]
+  TAL -->|"bounded tool calls"| T["ToolExecutor"]
   TA -->|"LoopOutcome"| G["Human Review Gate"]
 
   DA --> D["Create Initial DAG\ntool nodes + placeholders"]
@@ -101,7 +102,9 @@ flowchart TD
 `HarnessRuntime` is the top-level control layer. It owns routing, session state,
 human review gates, optional result validation, retry feedback, and final result delivery.
 The execution details stay inside `ToolAgentLoop` for tool-use work and
-`DAGAgentLoop` for structured DAG work. Once review and validation pass, the runtime
+`DAGAgentLoop` for structured DAG work. `ToolAgent` owns the conversation profile,
+prompt assembly, history, and tool review policy before delegating to the loop.
+Once review and validation pass, the runtime
 returns the loop's `final_answer` directly without a separate summarization step.
 
 ### Three-Level Re-planning
@@ -129,12 +132,12 @@ Design principles:
 |------------|------|
 | Subtasks that can run in parallel | DAG |
 | Sequential steps with known structure, runtime values only | DAG + placeholder injection |
-| Exploratory - next action depends on observation | `ToolAgentLoop` |
-| Dynamic fan-out - node count unknown until runtime | `ToolAgentLoop` |
+| Exploratory - next action depends on observation | `ToolAgent` |
+| Dynamic fan-out - node count unknown until runtime | `ToolAgent` |
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
-before dispatching to `ToolAgentLoop` or `DAGAgentLoop`.
+before dispatching to `ToolAgent` or `DAGAgentLoop`.
 
 ### Trace DB
 
@@ -187,7 +190,7 @@ Boundary checks:
 ```text
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
-  harness_runtime/  runtime orchestration, ToolAgentLoop, DAGAgentLoop, validation,
+  harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgentLoop, validation,
                     session state, event adapters, trace recording, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts

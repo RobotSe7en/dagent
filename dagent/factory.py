@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
+    ToolAgent,
     ToolAgentLoop,
     DAGAgentLoop,
     DAGExecutor,
@@ -36,7 +37,13 @@ def create_harness_runtime(
         for name in sorted(tool_executor.registry.names())
         if (tool := tool_executor.registry.get(name)) is not None
     ]
+    conversation_profile = profile_store.load(resolved_config.profiles.conversation)
     tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent = ToolAgent(
+        loop=tool_agent_loop,
+        profile=conversation_profile,
+        tools=runtime_tools,
+    )
     dag_executor = DAGExecutor(tool_executor=tool_executor)
     dag_agent_loop = DAGAgentLoop(
         provider,
@@ -48,10 +55,8 @@ def create_harness_runtime(
     validator = _try_load_validator(provider, profile_store, resolved_config)
     return HarnessRuntime(
         provider=provider,
-        tool_agent_loop=tool_agent_loop,
+        tool_agent=tool_agent,
         dag_agent_loop=dag_agent_loop,
-        conversation_profile=profile_store.load(resolved_config.profiles.conversation),
-        runtime_tools=runtime_tools,
         validator=validator,
         enable_validation=resolved_config.enable_result_validation,
     )

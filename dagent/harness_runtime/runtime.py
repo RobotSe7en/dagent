@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from dagent.harness_runtime.tool_agent import (
-    ToolAgentLoop,
+    ToolAgent,
     LoopEventHandler,
     TokenHandler,
 )
@@ -24,11 +24,8 @@ from dagent.harness_runtime.runtime_events import (
     _trace_event_emitter,
 )
 from dagent.harness_runtime.task_record import ReviewContinuation
-from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
-from dagent.schemas import Boundary, DAG, LoopOutcome, RuntimeResponse, ToolInvocation
-from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.registry import Tool
+from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, ToolInvocation
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
@@ -58,25 +55,17 @@ class HarnessRuntime:
         self,
         *,
         provider: ChatProvider,
-        tool_agent_loop: ToolAgentLoop,
+        tool_agent: ToolAgent,
         dag_agent_loop: DAGAgentLoop,
-        conversation_profile: AgentProfile,
-        runtime_tools: list[Tool] | None = None,
-        prompt_builder: PromptBuilder | None = None,
         validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
-        max_top_steps: int = 8,
         max_validation_retries: int = 1,
     ) -> None:
         self.provider = provider
-        self.tool_agent_loop = tool_agent_loop
+        self.tool_agent = tool_agent
         self.dag_agent_loop = dag_agent_loop
-        self.conversation_profile = conversation_profile
-        self.runtime_tools = runtime_tools or []
-        self.prompt_builder = prompt_builder or PromptBuilder()
         self.validator = validator
         self.enable_validation = enable_validation
-        self.max_top_steps = max_top_steps
         self.max_validation_retries = max_validation_retries
         self.session = HarnessRuntimeSession(initial_tasks=dag_agent_loop.tasks)
         self.tasks = self.session.tasks
@@ -375,44 +364,17 @@ class HarnessRuntime:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> LoopOutcome:
-        """Run ToolAgentLoop and return unified LoopOutcome."""
-        if prior_messages and feedback:
-            messages = list(prior_messages)
-            messages.append({"role": "user", "content": feedback})
-        else:
-            base_messages = self.prompt_builder.build(
-                PromptRequest(
-                    profile=self.conversation_profile,
-                    task_content="{{ user_message }}",
-                    tools=self.runtime_tools,
-                    memory=self.conversation_profile.memory,
-                    context=self.session.tasks_context(),
-                    variables={"user_message": message},
-                )
-            )
-            system_msg = base_messages[0]
-            current_user_msg = base_messages[1]
-            messages = [system_msg, *self.session.conversation_history, current_user_msg]
-
-        boundary = Boundary(mode="read_only", allowed_paths=["."])
-        control_tool_names = self._reviewable_tool_names()
-        return await self.tool_agent_loop.run(
-            "",
-            boundary=boundary,
-            max_steps=self.max_top_steps,
-            messages=messages,
-            control_tool_names=control_tool_names,
-            control_tool_handler=self.tool_agent_loop.create_tool_guard(review_level, boundary, self.runtime_tools),
+        """Run ToolAgent and return unified LoopOutcome."""
+        return await self.tool_agent.run(
+            message,
+            review_level=review_level,
+            feedback=feedback,
+            prior_messages=prior_messages,
+            conversation_history=self.session.conversation_history,
+            context=self.session.tasks_context(),
             on_token=on_token,
             on_event=on_event,
         )
-
-    def _reviewable_tool_names(self) -> set[str]:
-        return {
-            tool.name
-            for tool in self.runtime_tools
-            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
-        }
 
     async def _continue_tool_messages(
         self,
@@ -426,17 +388,10 @@ class HarnessRuntime:
         if invocation is None:
             raise ValueError("Tool review continuation is missing pending invocation.")
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        return await self.tool_agent_loop.run(
-            "",
-            boundary=invocation.boundary,
-            max_steps=self.max_top_steps,
+        return await self.tool_agent.continue_messages(
             messages=messages,
-            control_tool_names=self._reviewable_tool_names(),
-            control_tool_handler=self.tool_agent_loop.create_tool_guard(
-                state.review_level,
-                invocation.boundary,
-                self.runtime_tools,
-            ),
+            review_level=state.review_level,
+            boundary=invocation.boundary,
             on_token=thinking_only,
             on_event=on_event,
         )
@@ -459,7 +414,7 @@ class HarnessRuntime:
         feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
         if approved:
             try:
-                feed_content = self.tool_agent_loop.tool_executor.execute(
+                feed_content = self.tool_agent.execute_tool(
                     invocation.tool_name, invocation.arguments, boundary=invocation.boundary
                 )
             except Exception as exc:

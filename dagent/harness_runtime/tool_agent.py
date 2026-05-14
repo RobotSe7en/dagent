@@ -9,8 +9,10 @@ from uuid import uuid4
 
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
+from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import Tool
@@ -35,6 +37,107 @@ class ControlToolResult:
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
 TokenHandler = Callable[[str], None]
 LoopEventHandler = Callable[[dict[str, Any]], None]
+
+
+class ToolAgent:
+    """Profile-backed tool agent facade used by the runtime."""
+
+    def __init__(
+        self,
+        *,
+        loop: "ToolAgentLoop",
+        profile: AgentProfile,
+        tools: list[Tool] | None = None,
+        prompt_builder: PromptBuilder | None = None,
+        max_steps: int = 8,
+    ) -> None:
+        self.loop = loop
+        self.profile = profile
+        self.tools = tools or []
+        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.max_steps = max_steps
+
+    async def run(
+        self,
+        message: str,
+        *,
+        review_level: "_rp.ReviewLevel" = "fast",
+        feedback: str | None = None,
+        prior_messages: list[dict[str, Any]] | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
+        context: str = "",
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Build the tool-agent prompt and run the bounded loop."""
+        boundary = Boundary(mode="read_only", allowed_paths=["."])
+        if prior_messages and feedback:
+            messages = [*prior_messages, {"role": "user", "content": feedback}]
+        else:
+            base_messages = self.prompt_builder.build(
+                PromptRequest(
+                    profile=self.profile,
+                    task_content="{{ user_message }}",
+                    tools=self.tools,
+                    memory=self.profile.memory,
+                    context=context,
+                    variables={"user_message": message},
+                )
+            )
+            system_msg = base_messages[0]
+            current_user_msg = base_messages[1]
+            messages = [system_msg, *(conversation_history or []), current_user_msg]
+        return await self.continue_messages(
+            messages,
+            review_level=review_level,
+            boundary=boundary,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def continue_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        review_level: "_rp.ReviewLevel",
+        boundary: Boundary,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Resume a tool-agent conversation from already-built messages."""
+        control_tool_names = self.reviewable_tool_names()
+        control_tool_handler = (
+            self.loop.create_tool_guard(review_level, boundary, self.tools)
+            if control_tool_names
+            else None
+        )
+        return await self.loop.run(
+            "",
+            boundary=boundary,
+            max_steps=self.max_steps,
+            messages=messages,
+            control_tool_names=control_tool_names,
+            control_tool_handler=control_tool_handler,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    def execute_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        boundary: Boundary,
+    ) -> str:
+        """Execute an approved reviewed tool call."""
+        return self.loop.tool_executor.execute(tool_name, arguments, boundary=boundary)
+
+    def reviewable_tool_names(self) -> set[str]:
+        return {
+            tool.name
+            for tool in self.tools
+            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
+        }
 
 
 class ToolAgentLoop:
