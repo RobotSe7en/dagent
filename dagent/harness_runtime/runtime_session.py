@@ -23,7 +23,6 @@ class HarnessRuntimeSession:
         initial_tasks: dict[str, RuntimeTaskRecord] | None = None,
     ) -> None:
         self.tasks: dict[str, RuntimeTaskRecord] = dict(initial_tasks or {})
-        self.runtime_tasks = self.tasks
         self._review_continuations: dict[str, ReviewContinuation] = {}
 
     def store_review_continuation(
@@ -70,7 +69,7 @@ class HarnessRuntimeSession:
         invocations: list[ToolInvocation] | None = None,
     ) -> RuntimeTaskRecord:
         resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
-        record = self.runtime_tasks.get(resolved_task_id)
+        record = self.tasks.get(resolved_task_id)
         if record is None:
             if mode == "dag" and loop_outcome.dag is not None:
                 record = RuntimeTaskRecord.dag_task(
@@ -91,7 +90,7 @@ class HarnessRuntimeSession:
             review_level=review_level,
             invocations=invocations,
         )
-        self.runtime_tasks[resolved_task_id] = record
+        self.tasks[resolved_task_id] = record
         if loop_outcome.status == "awaiting_review":
             self.store_review_continuation(
                 task_id=record.task_id,

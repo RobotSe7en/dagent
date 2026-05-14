@@ -168,13 +168,38 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert resumed.dag_run.completed is True
     assert resumed.dag_run.execution_records
     assert resumed.final_answer == "Here is the final answer."
-    runtime_task = runtime.session.runtime_tasks[result.task_id]
+    runtime_task = runtime.session.tasks[result.task_id]
     assert runtime_task.mode == "dag"
     assert runtime_task.dag_state is not None
     assert runtime_task.invocations
     assert runtime_task.execution_records
     assert runtime_task.execution_records[0].source == "dag_node"
     assert runtime_task.execution_records[0].invocation.tool_name == "echo"
+
+
+def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="I will stop instead of applying that DAG."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=False))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "I will stop instead of applying that DAG."
+    assert any(event["kind"] == "review_denied" for event in resumed.events)
+    resume_messages = provider.requests[1]["messages"]
+    assert [message["role"] for message in resume_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "DAG observation: review_denied" in resume_messages[-1]["content"]
 
 
 def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
@@ -499,7 +524,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert resumed.final_answer == "good answer"
     tool_tasks = [
         task
-        for task in runtime.session.runtime_tasks.values()
+        for task in runtime.session.tasks.values()
         if task.mode == "tool"
     ]
     assert len(tool_tasks) == 1

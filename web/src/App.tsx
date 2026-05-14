@@ -509,7 +509,7 @@ export function App() {
     appendTrace({ type: 'model', label: 'interrupted', detail: 'The current UI stream was interrupted.', status: 'failed' });
   };
 
-  const confirmDag = async () => {
+  const resumeDag = async (approved: boolean) => {
     if (!dagReview || streaming) return;
     setError(null);
     setReviewOpen(false);
@@ -522,10 +522,15 @@ export function App() {
     ]);
     const reviewId = dagReview.review_id;
     setDagReview(null);
-    appendTrace({ type: 'dag', label: 'dag_confirmed', detail: `Resuming review ${reviewId}.`, status: 'running' });
+    appendTrace({
+      type: 'dag',
+      label: approved ? 'dag_confirmed' : 'dag_rejected',
+      detail: `${approved ? 'Approving' : 'Rejecting'} review ${reviewId}.`,
+      status: 'running',
+    });
 
     try {
-      await resumeDagReview(reviewId, dag, reviewLevel, {
+      await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
@@ -560,6 +565,14 @@ export function App() {
       await waitForTokenQueue();
       setStreaming(false);
     }
+  };
+
+  const confirmDag = () => {
+    void resumeDag(true);
+  };
+
+  const rejectDag = () => {
+    void resumeDag(false);
   };
 
   const confirmToolReview = async (approved: boolean) => {
@@ -744,6 +757,7 @@ export function App() {
           selectedNode={selectedNode}
           onClose={() => setReviewOpen(false)}
           onConfirm={confirmDag}
+          onReject={rejectDag}
           onPatchNode={patchSelected}
           onAddNode={addNode}
           onDeleteNode={deleteSelected}
@@ -1140,6 +1154,7 @@ function DagReviewDialog({
   selectedNode,
   onClose,
   onConfirm,
+  onReject,
   onPatchNode,
   onAddNode,
   onDeleteNode,
@@ -1154,6 +1169,7 @@ function DagReviewDialog({
   selectedNode?: DagNode;
   onClose: () => void;
   onConfirm: () => void;
+  onReject: () => void;
   onPatchNode: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onAddNode: () => void;
   onDeleteNode: () => void;
@@ -1181,6 +1197,10 @@ function DagReviewDialog({
             <button className="secondary-button compact-button" onClick={onAddNode} type="button">
               <Plus size={16} />
               Add Node
+            </button>
+            <button className="secondary-button compact-button" onClick={onReject} disabled={!canConfirm} type="button">
+              <X size={16} />
+              Reject
             </button>
             <button className="primary-button" onClick={onConfirm} disabled={!canConfirm} type="button">
               <Check size={17} />
