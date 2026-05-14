@@ -66,9 +66,8 @@ class HarnessRuntime:
         self.validator = validator
         self.enable_validation = enable_validation
         self.max_validation_retries = max_validation_retries
-        self.session = HarnessRuntimeSession(initial_tasks=dag_agent.tasks)
+        self.session = HarnessRuntimeSession()
         self.tasks = self.session.tasks
-        self.dag_agent.tasks = self.tasks
 
     # ==================================================================
     # Public API
@@ -184,6 +183,7 @@ class HarnessRuntime:
             message,
             resolved_mode,
             review_level,
+            runtime_mode=resolved_mode,
         )
 
     async def resume_review(
@@ -243,6 +243,7 @@ class HarnessRuntime:
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
         initial_outcome = await self.dag_agent.resume_review(
             state,
+            record=record,
             dag=dag,
             approved=approved,
             review_level=review_level,
@@ -259,6 +260,7 @@ class HarnessRuntime:
                 "dag",
                 review_level or state.review_level,
                 task_id=task_id,
+                runtime_mode=record.runtime_mode,
             )
 
         async def run_once(feedback: str | None) -> LoopOutcome:
@@ -286,6 +288,7 @@ class HarnessRuntime:
             "dag",
             review_level or state.review_level,
             task_id=task_id,
+            runtime_mode=record.runtime_mode,
         )
 
     # ==================================================================
@@ -354,6 +357,7 @@ class HarnessRuntime:
         *,
         extra_invocations: list[ToolInvocation] | None = None,
         task_id: str | None = None,
+        runtime_mode: str | None = None,
     ) -> RuntimeResponse:
         invocations = [*(extra_invocations or []), *outcome.invocations]
         if outcome.status == "awaiting_review":
@@ -364,6 +368,7 @@ class HarnessRuntime:
                 review_level=review_level,
                 loop_outcome=outcome,
                 invocations=invocations,
+                runtime_mode=runtime_mode,
             )
             return _gate_result_for_task(outcome, record.task_id)
 
@@ -374,6 +379,7 @@ class HarnessRuntime:
             review_level=review_level,
             loop_outcome=outcome,
             invocations=invocations,
+            runtime_mode=runtime_mode,
         )
         final_answer = outcome.final_answer.strip() or _fallback_final_answer(outcome)
         return RuntimeResponse(

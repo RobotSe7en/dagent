@@ -27,6 +27,15 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
+def test_harness_runtime_session_owns_dag_task_store() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    runtime = _runtime(provider)
+
+    assert not hasattr(runtime.dag_agent, "tasks")
+    assert not hasattr(runtime.dag_agent.loop, "tasks")
+    assert runtime.tasks is runtime.session.tasks
+
+
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     provider = MockProvider([
         ChatResponse(content="tool"),         # _route()
@@ -132,6 +141,7 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     assert result.dag.status == "review_required"
     assert result.dag.nodes[0].invocation.risk == "medium"
     assert result.task_id in runtime.tasks
+    assert runtime.tasks[result.task_id].runtime_mode == "dag"
 
 
 def test_harness_runtime_dag_agent_waits_for_human_review() -> None:

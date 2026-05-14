@@ -64,14 +64,6 @@ class DAGAgent:
         )
         self.messages: list[dict[str, Any]] = [dict(self.system_message)]
 
-    @property
-    def tasks(self) -> dict[str, RuntimeTaskRecord]:
-        return self.loop.tasks
-
-    @tasks.setter
-    def tasks(self, value: dict[str, RuntimeTaskRecord]) -> None:
-        self.loop.tasks = value
-
     async def run(
         self,
         request: str,
@@ -107,6 +99,7 @@ class DAGAgent:
         self,
         state: ReviewContinuation,
         *,
+        record: RuntimeTaskRecord,
         dag: DAG | None = None,
         approved: bool = True,
         review_level: ReviewLevel | None = None,
@@ -116,6 +109,7 @@ class DAGAgent:
     ) -> LoopOutcome | None:
         return await self.loop.resume_review(
             state,
+            record,
             dag,
             approved=approved,
             review_level=review_level,
@@ -129,7 +123,7 @@ class DAGAgent:
 
     async def execute(
         self,
-        task_id: str,
+        record: RuntimeTaskRecord,
         *,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
@@ -137,7 +131,7 @@ class DAGAgent:
         max_cycles: int | None = None,
     ) -> DAGRunResult:
         return await self.loop.execute(
-            task_id,
+            record,
             messages=self.messages,
             build_user_message=self.build_request_user_message,
             tools=self.tools,
@@ -167,7 +161,6 @@ class DAGAgentLoop:
         self.provider = provider
         self.dag_executor = dag_executor
         self.max_cycles = max_cycles
-        self.tasks: dict[str, RuntimeTaskRecord] = {}
 
     async def _request_dag(
         self,
@@ -261,7 +254,6 @@ class DAGAgentLoop:
             review_level=review_level,
             runtime_mode=runtime_mode,
         )
-        self.tasks[record.task_id] = record
 
         if self._needs_review(record, force=force_review):
             record.dag.status = "review_required"
@@ -284,7 +276,7 @@ class DAGAgentLoop:
         record.dag.status = "approved"
         _emit_dag(on_dag, record.dag)
         result = await self.execute(
-            record.task_id,
+            record,
             messages=messages,
             build_user_message=build_user_message,
             tools=tools,
@@ -298,6 +290,7 @@ class DAGAgentLoop:
     async def resume_review(
         self,
         state: ReviewContinuation,
+        record: RuntimeTaskRecord,
         dag: DAG | None,
         *,
         approved: bool,
@@ -312,10 +305,10 @@ class DAGAgentLoop:
         if state.kind not in {"initial_dag", "dag_replan"}:
             return None
         task_id = state.task_id
-        if task_id not in self.tasks:
-            raise KeyError(f"Unknown task '{task_id}'.")
-
-        record = self.tasks[task_id]
+        if record.task_id != task_id:
+            raise ValueError(
+                f"Review state for task '{task_id}' cannot resume task '{record.task_id}'."
+            )
         if (
             record.dag.status == "completed"
             and record.runs
@@ -379,7 +372,7 @@ class DAGAgentLoop:
         _emit_dag(on_dag, record.dag)
 
         result = await self.execute(
-            task_id,
+            record,
             messages=messages,
             build_user_message=build_user_message,
             tools=tools,
@@ -395,7 +388,7 @@ class DAGAgentLoop:
 
     async def execute(
         self,
-        task_id: str,
+        record: RuntimeTaskRecord,
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
@@ -405,7 +398,6 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
     ) -> DAGRunResult:
-        record = self.tasks[task_id]
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
 
@@ -564,7 +556,7 @@ class DAGAgentLoop:
             )
 
         result = await self.execute(
-            record.task_id,
+            record,
             messages=messages,
             build_user_message=build_user_message,
             tools=tools,
