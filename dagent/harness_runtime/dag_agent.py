@@ -46,8 +46,22 @@ class DAGAgent:
         self,
         *,
         loop: "DAGAgentLoop",
+        profile: AgentProfile,
+        tools: list[Tool] | None = None,
+        prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.loop = loop
+        self.profile = profile
+        self.tools = tools or []
+        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.system_message = self.prompt_builder.build_system_message(
+            PromptRequest(
+                profile=self.profile,
+                task_content="",
+                tools=self.tools,
+                memory=self.profile.memory,
+            )
+        )
 
     @property
     def tasks(self) -> dict[str, RuntimeTaskRecord]:
@@ -90,6 +104,9 @@ class DAGAgent:
             task_id=task_id,
             review_level=review_level,
             dag_messages=dag_messages,
+            system_message=self.system_message,
+            build_user_message=self.build_request_user_message,
+            tools=self.tools,
             runtime_mode=runtime_mode,
             force_review=force_review,
             on_token=on_token,
@@ -111,9 +128,38 @@ class DAGAgent:
             state,
             dag,
             review_level=review_level,
+            system_message=self.system_message,
+            build_user_message=self.build_request_user_message,
+            tools=self.tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
+        )
+
+    async def execute(
+        self,
+        task_id: str,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+        max_cycles: int | None = None,
+    ) -> DAGRunResult:
+        return await self.loop.execute(
+            task_id,
+            system_message=self.system_message,
+            build_user_message=self.build_request_user_message,
+            tools=self.tools,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
+            max_cycles=max_cycles,
+        )
+
+    def build_request_user_message(self, *, prompt: str, task_id: str) -> dict[str, str]:
+        return self.prompt_builder.build_user_message(
+            "Task id: {{ task_id }}\n{{ user_request }}",
+            {"user_request": prompt, "task_id": task_id},
         )
 
 
@@ -125,20 +171,10 @@ class DAGAgentLoop:
         *,
         provider: ChatProvider,
         dag_executor: DAGExecutor,
-        profile: AgentProfile,
-        tools: list[Tool] | None = None,
-        prompt_builder: PromptBuilder | None = None,
         max_cycles: int = 6,
     ) -> None:
         self.provider = provider
         self.dag_executor = dag_executor
-        self.profile = profile
-        self.prompt_builder = prompt_builder or PromptBuilder()
-        self.tools = tools or (
-            dag_executor.tool_executor.registry.all_tools()
-            if dag_executor.tool_executor is not None
-            else []
-        )
         self.max_cycles = max_cycles
         self.tasks: dict[str, RuntimeTaskRecord] = {}
         self.runs: dict[str, DAGRunResult] = {}
@@ -149,23 +185,18 @@ class DAGAgentLoop:
         *,
         task_id: str | None,
         dag_messages: list[dict[str, Any]] | None,
+        system_message: dict[str, str],
+        build_user_message: Callable[..., dict[str, str]],
+        tools: list[Tool],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        messages = self.prompt_builder.build(
-            PromptRequest(
-                profile=self.profile,
-                task_content="Task id: {{ task_id }}\n{{ user_request }}",
-                tools=self.tools,
-                memory=self.profile.memory,
-                variables={"user_request": prompt, "task_id": resolved_task_id},
-            )
-        )
-        system_msg = messages[0]
-        user_msg = messages[1]
+        user_msg = build_user_message(prompt=prompt, task_id=resolved_task_id)
         if dag_messages is not None:
-            messages = [system_msg, *dag_messages, user_msg]
+            messages = [system_message, *dag_messages, user_msg]
+        else:
+            messages = [system_message, user_msg]
         response = await _chat_for_dag(self.provider, messages, on_token=on_token)
         if dag_messages is not None:
             if not (
@@ -178,7 +209,7 @@ class DAGAgentLoop:
         result = dag_from_model_output(
             response.content,
             task_id=resolved_task_id,
-            tools=self.tools,
+            tools=tools,
         )
         if result is None:
             if not allow_no_change:
@@ -197,6 +228,9 @@ class DAGAgentLoop:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         dag_messages: list[dict[str, Any]],
+        system_message: dict[str, str],
+        build_user_message: Callable[..., dict[str, str]],
+        tools: list[Tool],
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
@@ -213,6 +247,9 @@ class DAGAgentLoop:
                     planning_prompt,
                     task_id=task_id,
                     dag_messages=dag_messages,
+                    system_message=system_message,
+                    build_user_message=build_user_message,
+                    tools=tools,
                     allow_no_change=False,
                     on_token=on_token,
                 )
@@ -270,6 +307,9 @@ class DAGAgentLoop:
         _emit_dag(on_dag, record.dag)
         result = await self.execute(
             record.task_id,
+            system_message=system_message,
+            build_user_message=build_user_message,
+            tools=tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -283,6 +323,9 @@ class DAGAgentLoop:
         dag: DAG,
         *,
         review_level: ReviewLevel | None = None,
+        system_message: dict[str, str],
+        build_user_message: Callable[..., dict[str, str]],
+        tools: list[Tool],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -326,7 +369,15 @@ class DAGAgentLoop:
         record.pending_review = None
         _emit_dag(on_dag, record.dag)
 
-        result = await self.execute(task_id, on_token=on_token, on_trace=on_trace, on_dag=on_dag)
+        result = await self.execute(
+            task_id,
+            system_message=system_message,
+            build_user_message=build_user_message,
+            tools=tools,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
+        )
         return self._finalize_run(record, result)
 
     # ------------------------------------------------------------------
@@ -337,6 +388,9 @@ class DAGAgentLoop:
         self,
         task_id: str,
         *,
+        system_message: dict[str, str],
+        build_user_message: Callable[..., dict[str, str]],
+        tools: list[Tool],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -398,6 +452,9 @@ class DAGAgentLoop:
                     pending_observation,
                     task_id=record.task_id,
                     dag_messages=record.dag_messages,
+                    system_message=system_message,
+                    build_user_message=build_user_message,
+                    tools=tools,
                     on_token=on_token,
                 )
             except Exception as exc:

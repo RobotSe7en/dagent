@@ -23,7 +23,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
-    tool_names = {tool.name for tool in runtime.dag_agent.loop.tools}
+    tool_names = {tool.name for tool in runtime.dag_agent.tools}
     assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
 
 
@@ -472,9 +472,9 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
             loop=DAGAgentLoop(
                 provider=provider,
                 dag_executor=dag_executor,
-                profile=_dag_agent_profile(),
-                tools=tool_executor.registry.all_tools(),
             ),
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -524,9 +524,9 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
             loop=DAGAgentLoop(
                 provider=provider,
                 dag_executor=DAGExecutor(tool_executor=tool_executor),
-                profile=_dag_agent_profile(),
-                tools=tool_executor.registry.all_tools(),
             ),
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
         ),
         validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
@@ -566,13 +566,15 @@ def _runtime(
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
-        profile=_dag_agent_profile(),
-        tools=tool_executor.registry.all_tools(),
     )
     return HarnessRuntime(
         provider=provider,
         tool_agent=tool_agent,
-        dag_agent=DAGAgent(loop=dag_agent_loop),
+        dag_agent=DAGAgent(
+            loop=dag_agent_loop,
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
     )
 
 

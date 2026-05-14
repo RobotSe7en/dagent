@@ -43,23 +43,37 @@ def runtime_for(
                 layer_contents={"soul": "You are a conversation agent."},
             ),
         ),
-        dag_agent=DAGAgent(loop=dag_agent_loop),
+        dag_agent=DAGAgent(
+            loop=dag_agent_loop,
+            profile=AgentProfile(
+                name="dag_agent",
+                role="dag_agent",
+                layers=["soul"],
+                layer_contents={"soul": "You are a DAG creator."},
+            ),
+            tools=dag_agent_loop.dag_executor.tool_executor.registry.all_tools(),
+        ),
     )
 
 
-def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None, *, tools=None) -> DAGAgentLoop:
+def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None) -> DAGAgentLoop:
     dag_executor = executor or DAGExecutor(tool_executor=make_tool_executor())
-    dag_tools = tools or dag_executor.tool_executor.registry.all_tools()
     return DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
+    )
+
+
+def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
+    return DAGAgent(
+        loop=dag_loop,
         profile=AgentProfile(
             name="dag_agent",
             role="dag_agent",
             layers=["soul"],
             layer_contents={"soul": "You are a DAG creator."},
         ),
-        tools=dag_tools,
+        tools=dag_loop.dag_executor.tool_executor.registry.all_tools(),
     )
 
 
@@ -192,9 +206,17 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
             )
         )
     ])
-    dag_loop = dag_loop_for(provider, tools=make_tool_executor().registry.all_tools())
+    dag_loop = dag_loop_for(provider)
 
-    requested = run(dag_loop._request_dag("What files are here?", task_id="task_real", dag_messages=[]))
+    dag_agent = dag_agent_for(dag_loop)
+    requested = run(dag_loop._request_dag(
+        "What files are here?",
+        task_id="task_real",
+        dag_messages=[],
+        system_message=dag_agent.system_message,
+        build_user_message=dag_agent.build_request_user_message,
+        tools=dag_agent.tools,
+    ))
     dag = dag_loop.prepare_for_review(requested)
 
     assert dag.task_id == "task_real"
@@ -300,7 +322,7 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_replan"))
+    result = run(runtime.dag_agent.execute("task_replan"))
 
     assert result.completed is True
     assert result.node_results["inspect"].final_response == "echo:observed"
@@ -341,7 +363,7 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_l2"))
+    result = run(runtime.dag_agent.execute("task_l2"))
 
     assert result.completed is True
     assert result.node_results["answer"].final_response == "echo:adjusted_value"
@@ -377,7 +399,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
         review_level="careful",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_l2_review"))
+    result = run(runtime.dag_agent.execute("task_l2_review"))
     record = runtime.tasks["task_l2_review"]
 
     assert result.completed is False
@@ -420,7 +442,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_failure_replan"))
+    result = run(runtime.dag_agent.execute("task_failure_replan"))
 
     assert result.completed is True
     assert result.node_results["fallback"].final_response == "echo:recovered"
@@ -487,7 +509,7 @@ def test_replan_sees_prior_planning_output_in_dag_messages() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_failure_needs_review"))
+    result = run(runtime.dag_agent.execute("task_failure_needs_review"))
 
     record = runtime.tasks["task_failure_needs_review"]
     assert result.completed is False
@@ -525,7 +547,7 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_parallel_failure"))
+    result = run(runtime.dag_agent.execute("task_parallel_failure"))
     record = runtime.tasks["task_parallel_failure"]
 
     assert result.completed is False
@@ -560,7 +582,7 @@ def test_harness_runtime_fails_when_replan_is_unavailable() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_failure_requires_edit"))
+    result = run(runtime.dag_agent.execute("task_failure_requires_edit"))
     record = runtime.tasks["task_failure_requires_edit"]
     assert result.completed is False
     assert record.pending_review is None
@@ -589,7 +611,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_dag_agent_failure_review"))
+    result = run(runtime.dag_agent.execute("task_dag_agent_failure_review"))
 
     record = runtime.tasks["task_dag_agent_failure_review"]
     assert result.completed is False
@@ -627,7 +649,7 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_stale_trace"))
+    result = run(runtime.dag_agent.execute("task_stale_trace"))
 
     record = runtime.tasks["task_stale_trace"]
     assert result.completed is False
@@ -670,7 +692,7 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
         review_level="fast",
     )
 
-    result = run(runtime.dag_agent.loop.execute("task_patch_retry"))
+    result = run(runtime.dag_agent.execute("task_patch_retry"))
 
     assert result.completed is True
     assert result.node_results["fragile"].final_response == "fixed-ok"

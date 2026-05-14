@@ -57,6 +57,14 @@ class ToolAgent:
         self.tools = tools or []
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
+        self.system_message = self.prompt_builder.build_system_message(
+            PromptRequest(
+                profile=self.profile,
+                task_content="",
+                tools=self.tools,
+                memory=self.profile.memory,
+            )
+        )
 
     async def run(
         self,
@@ -75,18 +83,13 @@ class ToolAgent:
         if prior_messages and feedback:
             messages = [*prior_messages, {"role": "user", "content": feedback}]
         else:
-            base_messages = self.prompt_builder.build(
-                PromptRequest(
-                    profile=self.profile,
-                    task_content="{{ user_message }}",
-                    tools=self.tools,
-                    memory=self.profile.memory,
-                    context=context,
-                    variables={"user_message": message},
-                )
+            system_msg = self.system_message
+            if context:
+                system_msg = _with_system_context(system_msg, context)
+            current_user_msg = self.prompt_builder.build_user_message(
+                "{{ user_message }}",
+                {"user_message": message},
             )
-            system_msg = base_messages[0]
-            current_user_msg = base_messages[1]
             messages = [system_msg, *(conversation_history or []), current_user_msg]
         return await self._continue_messages(
             messages,
@@ -511,6 +514,15 @@ def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
     return ""
+
+
+def _with_system_context(system_message: dict[str, str], context: str) -> dict[str, str]:
+    content = system_message["content"]
+    context_section = f"## Context\n{context.strip()}"
+    return {
+        "role": "system",
+        "content": f"{content}\n\n{context_section}" if content else context_section,
+    }
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:

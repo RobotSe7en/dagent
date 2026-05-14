@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from dagent.harness_runtime import DAGAgentLoop, DAGExecutor
+from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
@@ -146,11 +146,22 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     loop = DAGAgentLoop(
         provider=provider,
         dag_executor=DAGExecutor(tool_executor=tool_executor),
+    )
+    agent = DAGAgent(
+        loop=loop,
         profile=_dag_agent_profile(),
         tools=tool_executor.registry.all_tools(),
     )
 
-    requested = asyncio.run(loop._request_dag("Summarize the repo", task_id="task_1", dag_messages=[], allow_no_change=False))
+    requested = asyncio.run(loop._request_dag(
+        "Summarize the repo",
+        task_id="task_1",
+        dag_messages=[],
+        system_message=agent.system_message,
+        build_user_message=agent.build_request_user_message,
+        tools=agent.tools,
+        allow_no_change=False,
+    ))
     dag = loop.prepare_for_review(requested)
 
     validate_dag(dag)
