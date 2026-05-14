@@ -435,6 +435,8 @@ class DAGAgentLoop:
                     record.node_results.update(layer.node_results)
                     record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
                     if new_node_ids and all(nid == "start" for nid in new_node_ids):
+                        # Synthetic start nodes are bookkeeping, not an execution/replan turn.
+                        cycle -= 1
                         continue
                     layer_error = ""
 

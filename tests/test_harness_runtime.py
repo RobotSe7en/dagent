@@ -387,6 +387,35 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert "User request:" not in feedback
 
 
+def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None:
+    provider = MockProvider([
+        ChatResponse(
+            content=(
+                "task: inspect current directory\n"
+                "get_current_dir = get_current_dir()\n"
+            )
+        ),
+        ChatResponse(
+            content=(
+                "task: inspect current directory\n"
+                "start = dag_start()\n"
+                "inspect = echo(text=\"ok\") after start\n"
+            )
+        ),
+        ChatResponse(content="The DAG completed after inspection."),
+    ])
+    runtime = _runtime(provider)
+    runtime.dag_agent.loop.max_cycles = 3
+
+    result = run(runtime.handle_message("Where am I?", mode="dag", review_level="fast"))
+
+    assert result.status == "completed"
+    assert result.final_answer == "The DAG completed after inspection."
+    assert result.dag_run is not None
+    assert result.dag_run.completed is True
+    assert result.dag_run.node_results["inspect"].final_response == "echo:ok"
+
+
 def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
     """When the routing LLM call fails, default to tool mode."""
     call_count = [0]
