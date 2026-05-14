@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from dagent.harness_runtime import DAGAgentLoop, DAGExecutor
+from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
-from dagent.harness_runtime.tool_agent import ToolAgentLoop
+from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode, ToolInvocation
 from dagent.tools.executor import ToolExecutor
@@ -143,14 +143,28 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
         parameters={"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}},
     )
     tool_executor = ToolExecutor(registry)
-    agent = DAGAgentLoop(
-        provider,
+    loop = DAGAgentLoop(
+        dag_agent=DAGAgent(
+            provider=provider,
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
         dag_executor=DAGExecutor(tool_executor=tool_executor),
     )
 
-    dag = asyncio.run(agent._request_dag("Summarize the repo", task_id="task_1", dag_messages=[], allow_no_change=False))
+    requested = asyncio.run(loop.dag_agent.request_dag("Summarize the repo", task_id="task_1", dag_messages=[], allow_no_change=False))
+    dag = loop.prepare_for_review(requested)
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
     assert [node.invocation.tool_name for node in dag.nodes] == ["run_command"]
     assert [node.invocation.risk for node in dag.nodes] == ["low"]
+
+
+def _dag_agent_profile() -> AgentProfile:
+    return AgentProfile(
+        name="dag_agent",
+        role="dag_agent",
+        layers=["soul"],
+        layer_contents={"soul": "You are a DAG creator."},
+    )

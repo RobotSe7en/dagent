@@ -3,7 +3,14 @@ import json
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import ToolAgent, ToolAgentLoop, DAGAgentLoop, DAGExecutor, HarnessRuntime
+from dagent.harness_runtime import (
+    ToolAgent,
+    ToolAgentLoop,
+    DAGAgent,
+    DAGAgentLoop,
+    DAGExecutor,
+    HarnessRuntime,
+)
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.tools.executor import ToolExecutor
@@ -218,9 +225,12 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
             tools=tool_executor.registry.all_tools(),
         ),
         dag_agent_loop=DAGAgentLoop(
-            provider,
+            dag_agent=DAGAgent(
+                provider=provider,
+                profile=_profile("dag_agent"),
+                tools=tool_executor.registry.all_tools(),
+            ),
             dag_executor=dag_executor,
-            profile=_profile("dag_agent"),
         ),
     )
 

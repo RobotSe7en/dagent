@@ -23,7 +23,6 @@ from dagent.harness_runtime.runtime_events import (
     _dag_event_emitter,
     _trace_event_emitter,
 )
-from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.providers import ChatProvider
 from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, ToolInvocation
 
@@ -205,48 +204,64 @@ class HarnessRuntime:
         if state is None:
             return None
         if state.kind == "tool_review":
-            return await self._resume_tool_review(
+            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            initial_outcome = await self.tool_agent.resume_review(
                 state,
                 approved=approved,
-                on_token=on_token,
+                on_token=thinking_only,
                 on_event=on_event,
             )
+            if initial_outcome is None:
+                return None
+
+            async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
+                result = await self.tool_agent.resume_review(
+                    state,
+                    approved=approved,
+                    feedback=feedback,
+                    previous_result=previous_result,
+                    on_token=thinking_only,
+                    on_event=on_event,
+                )
+                if result is None:
+                    raise RuntimeError("Tool review continuation could not be resumed.")
+                return result
+
+            outcome = await self._run_with_review_and_validation(
+                state.user_request,
+                run_once=run_once,
+                initial_loop_outcome=initial_outcome,
+                on_event=on_event,
+            )
+            return self._finish_loop_outcome(
+                outcome,
+                state.user_request,
+                "tool",
+                state.review_level,
+                record_conversation=True,
+                extra_invocations=state.invocations,
+                task_id=state.task_id,
+            )
+
         if dag is None:
             return None
-        return await self._resume_dag_review(
-            state,
-            dag,
-            review_level=review_level,
-            on_token=on_token,
-            on_event=on_event,
-        )
-
-    async def _resume_dag_review(
-        self,
-        state: ReviewContinuation,
-        dag: DAG,
-        review_level: ReviewLevel | None = None,
-        *,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> RuntimeResponse:
         task_id = state.task_id
         record = self.tasks[task_id]
         self.session.discard_review_continuations_for_task(task_id)
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-
-        loop_outcome = await self.dag_agent_loop.resume(
-            task_id,
+        initial_outcome = await self.dag_agent_loop.resume_review(
+            state,
             dag,
             review_level=review_level,
             on_token=thinking_only,
             on_trace=_trace_event_emitter(on_event),
             on_dag=_dag_event_emitter(on_event),
         )
-
-        if loop_outcome.status == "awaiting_review":
+        if initial_outcome is None:
+            return None
+        if initial_outcome.status == "awaiting_review":
             return self._finish_loop_outcome(
-                loop_outcome,
+                initial_outcome,
                 record.user_request,
                 "dag",
                 review_level or state.review_level,
@@ -273,7 +288,7 @@ class HarnessRuntime:
         outcome = await self._run_with_review_and_validation(
             record.user_request,
             run_once=run_once,
-            initial_loop_outcome=loop_outcome,
+            initial_loop_outcome=initial_outcome,
             on_event=on_event,
         )
         return self._finish_loop_outcome(
@@ -374,84 +389,6 @@ class HarnessRuntime:
             context=self.session.tasks_context(),
             on_token=on_token,
             on_event=on_event,
-        )
-
-    async def _continue_tool_messages(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        state: ReviewContinuation,
-        on_token: TokenHandler | None,
-        on_event: LoopEventHandler | None,
-    ) -> LoopOutcome:
-        invocation = state.pending_invocation
-        if invocation is None:
-            raise ValueError("Tool review continuation is missing pending invocation.")
-        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        return await self.tool_agent.continue_messages(
-            messages=messages,
-            review_level=state.review_level,
-            boundary=invocation.boundary,
-            on_token=thinking_only,
-            on_event=on_event,
-        )
-
-    async def _resume_tool_review(
-        self,
-        state: ReviewContinuation,
-        *,
-        approved: bool,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> RuntimeResponse | None:
-        invocation = state.pending_invocation
-        if (
-            state.kind != "tool_review"
-            or invocation is None
-        ):
-            return None
-
-        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
-        if approved:
-            try:
-                feed_content = self.tool_agent.execute_tool(
-                    invocation.tool_name, invocation.arguments, boundary=invocation.boundary
-                )
-            except Exception as exc:
-                feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
-
-        state.messages.append({
-            "role": "tool",
-            "tool_call_id": invocation.invocation_id,
-            "name": invocation.tool_name,
-            "content": feed_content,
-        })
-
-        async def run_once(feedback: str | None, previous_result: LoopOutcome | None) -> LoopOutcome:
-            messages = state.messages
-            if feedback:
-                prior_messages = previous_result.messages if previous_result else messages
-                messages = [*prior_messages, {"role": "user", "content": feedback}]
-            return await self._continue_tool_messages(
-                messages,
-                state=state,
-                on_token=on_token,
-                on_event=on_event,
-            )
-
-        outcome = await self._run_with_review_and_validation(
-            state.user_request,
-            run_once=run_once,
-            on_event=on_event,
-        )
-        return self._finish_loop_outcome(
-            outcome,
-            state.user_request,
-            "tool",
-            state.review_level,
-            record_conversation=True,
-            extra_invocations=state.invocations,
-            task_id=state.task_id,
         )
 
     def _finish_loop_outcome(

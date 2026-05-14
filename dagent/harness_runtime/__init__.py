@@ -5,7 +5,7 @@ from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
 )
-from dagent.harness_runtime.dag_agent import DAGAgentLoop
+from dagent.harness_runtime.dag_agent import DAGAgent, DAGAgentLoop
 from dagent.harness_runtime.dag_builder import DAGCreationError
 from dagent.harness_runtime.validator_agent import (
     ValidatorAgent,
@@ -38,6 +38,7 @@ __all__ = [
     "DAGCreationError",
     "DAGExecutionError",
     "DAGExecutor",
+    "DAGAgent",
     "DAGAgentLoop",
     "LoopOutcome",
     "ValidatorAgent",

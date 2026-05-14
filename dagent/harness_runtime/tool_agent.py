@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
@@ -87,7 +88,7 @@ class ToolAgent:
             system_msg = base_messages[0]
             current_user_msg = base_messages[1]
             messages = [system_msg, *(conversation_history or []), current_user_msg]
-        return await self.continue_messages(
+        return await self._continue_messages(
             messages,
             review_level=review_level,
             boundary=boundary,
@@ -95,7 +96,58 @@ class ToolAgent:
             on_event=on_event,
         )
 
-    async def continue_messages(
+    async def resume_review(
+        self,
+        state: ReviewContinuation,
+        *,
+        approved: bool,
+        feedback: str | None = None,
+        previous_result: LoopOutcome | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome | None:
+        """Resume a reviewed tool call and continue the tool-agent loop."""
+        invocation = state.pending_invocation
+        if state.kind != "tool_review" or invocation is None:
+            return None
+
+        if feedback:
+            prior_messages = previous_result.messages if previous_result else state.messages
+            messages = [*prior_messages, {"role": "user", "content": feedback}]
+            return await self._continue_messages(
+                messages,
+                review_level=state.review_level,
+                boundary=invocation.boundary,
+                on_token=on_token,
+                on_event=on_event,
+            )
+
+        feed_content = "[DENIED] Tool '{name}' was rejected by the user. Do not retry this exact tool call.".format(name=invocation.tool_name)
+        if approved:
+            try:
+                feed_content = self.loop.tool_executor.execute(
+                    invocation.tool_name,
+                    invocation.arguments,
+                    boundary=invocation.boundary,
+                )
+            except Exception as exc:
+                feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+
+        state.messages.append({
+            "role": "tool",
+            "tool_call_id": invocation.invocation_id,
+            "name": invocation.tool_name,
+            "content": feed_content,
+        })
+        return await self._continue_messages(
+            state.messages,
+            review_level=state.review_level,
+            boundary=invocation.boundary,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def _continue_messages(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -121,16 +173,6 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
-
-    def execute_tool(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        *,
-        boundary: Boundary,
-    ) -> str:
-        """Execute an approved reviewed tool call."""
-        return self.loop.tool_executor.execute(tool_name, arguments, boundary=boundary)
 
     def reviewable_tool_names(self) -> set[str]:
         return {

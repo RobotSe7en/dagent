@@ -1,6 +1,7 @@
 import asyncio
 
 from dagent.harness_runtime import (
+    DAGAgent,
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
@@ -29,10 +30,10 @@ def runtime_for(
 ) -> HarnessRuntime:
     dag_agent_loop.max_cycles = max_cycles
     return HarnessRuntime(
-        provider=dag_agent_loop.provider,
+        provider=dag_agent_loop.dag_agent.provider,
         tool_agent=ToolAgent(
             loop=ToolAgentLoop(
-                provider=dag_agent_loop.provider,
+                provider=dag_agent_loop.dag_agent.provider,
                 tool_executor=executor.tool_executor,
             ),
             profile=AgentProfile(
@@ -48,7 +49,20 @@ def runtime_for(
 
 def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None, *, tools=None) -> DAGAgentLoop:
     dag_executor = executor or DAGExecutor(tool_executor=make_tool_executor())
-    return DAGAgentLoop(provider, dag_executor=dag_executor, tools=tools)
+    dag_tools = tools or dag_executor.tool_executor.registry.all_tools()
+    return DAGAgentLoop(
+        dag_agent=DAGAgent(
+            provider=provider,
+            profile=AgentProfile(
+                name="dag_agent",
+                role="dag_agent",
+                layers=["soul"],
+                layer_contents={"soul": "You are a DAG creator."},
+            ),
+            tools=dag_tools,
+        ),
+        dag_executor=dag_executor,
+    )
 
 
 def dag_dsl_from_dag(dag: DAG) -> str:
@@ -180,9 +194,10 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
             )
         )
     ])
-    dag_agent = dag_loop_for(provider, tools=make_tool_executor().registry.all_tools())
+    dag_loop = dag_loop_for(provider, tools=make_tool_executor().registry.all_tools())
 
-    dag = run(dag_agent._request_dag("What files are here?", task_id="task_real", dag_messages=[]))
+    requested = run(dag_loop.dag_agent.request_dag("What files are here?", task_id="task_real", dag_messages=[]))
+    dag = dag_loop.prepare_for_review(requested)
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
@@ -411,7 +426,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
 
     assert result.completed is True
     assert result.node_results["fallback"].final_response == "echo:recovered"
-    request = runtime.dag_agent_loop.provider.requests[0]["messages"][-1]["content"]
+    request = runtime.dag_agent_loop.dag_agent.provider.requests[0]["messages"][-1]["content"]
     assert "try_bad_tool" in request
     assert "failed:boom" in request
     assert "dag_replanned" in [event.event_type for event in result.traces]

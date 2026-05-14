@@ -38,7 +38,13 @@ async def test_minimax_harness_executes_safe_dag() -> None:
     )
     if result.dag_run is None:
         assert result.dag is not None
-        resumed = await runtime.dag_agent_loop.resume(result.task_id, result.dag, review_level="fast")
+        assert result.pending_review is not None
+        resumed = await runtime.resume_review(
+            result.pending_review.review_id,
+            dag=result.dag,
+            review_level="fast",
+        )
+        assert resumed is not None
         assert resumed.dag_run is not None
         dag_run = resumed.dag_run
     else:

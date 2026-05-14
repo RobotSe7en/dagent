@@ -63,7 +63,8 @@ flowchart TD
   TAL -->|"bounded tool calls"| T["ToolExecutor"]
   TA -->|"LoopOutcome"| G["Human Review Gate"]
 
-  DA --> D["Create Initial DAG\ntool nodes + placeholders"]
+  DA --> DAA["DAGAgent"]
+  DAA --> D["Create Initial DAG\ntool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -104,6 +105,8 @@ human review gates, optional result validation, retry feedback, and final result
 The execution details stay inside `ToolAgentLoop` for tool-use work and
 `DAGAgentLoop` for structured DAG work. `ToolAgent` owns the conversation profile,
 prompt assembly, history, and tool review policy before delegating to the loop.
+`DAGAgent` owns DAG prompt assembly and model parsing; `DAGAgentLoop` owns DAG review,
+execution, observation, and replanning.
 Once review and validation pass, the runtime
 returns the loop's `final_answer` directly without a separate summarization step.
 
@@ -190,7 +193,8 @@ Boundary checks:
 ```text
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
-  harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgentLoop, validation,
+  harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
+                    DAGAgentLoop, validation,
                     session state, event adapters, trace recording, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts

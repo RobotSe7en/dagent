@@ -8,6 +8,7 @@ from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
     ToolAgent,
     ToolAgentLoop,
+    DAGAgent,
     DAGAgentLoop,
     DAGExecutor,
     ValidatorAgent,
@@ -45,12 +46,14 @@ def create_harness_runtime(
         tools=runtime_tools,
     )
     dag_executor = DAGExecutor(tool_executor=tool_executor)
-    dag_agent_loop = DAGAgentLoop(
-        provider,
-        dag_executor=dag_executor,
-        profile_store=profile_store,
-        profile_name=resolved_config.profiles.dag_agent,
+    dag_agent = DAGAgent(
+        provider=provider,
+        profile=profile_store.load(resolved_config.profiles.dag_agent),
         tools=runtime_tools,
+    )
+    dag_agent_loop = DAGAgentLoop(
+        dag_agent=dag_agent,
+        dag_executor=dag_executor,
     )
     validator = _try_load_validator(provider, profile_store, resolved_config)
     return HarnessRuntime(
