@@ -168,7 +168,6 @@ class DAGAgentLoop:
         self.dag_executor = dag_executor
         self.max_cycles = max_cycles
         self.tasks: dict[str, RuntimeTaskRecord] = {}
-        self.runs: dict[str, DAGRunResult] = {}
 
     async def _request_dag(
         self,
@@ -407,7 +406,7 @@ class DAGAgentLoop:
         max_cycles: int | None = None,
     ) -> DAGRunResult:
         record = self.tasks[task_id]
-        if record.dag.status == "review_required":
+        if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
 
         traces: list[TraceEvent] = []
@@ -504,7 +503,7 @@ class DAGAgentLoop:
             pending_observation = None
 
             # Review gate
-            if record.dag.status == "review_required":
+            if record.pending_review is not None:
                 break
 
         return self._finalize(record, traces, on_dag)
@@ -709,7 +708,6 @@ class DAGAgentLoop:
                     continue
 
         _emit_dag(on_dag, record.dag)
-        self.runs[f"run_{uuid4().hex}"] = result
         return result
 
     def prepare_for_review(self, dag: DAG) -> DAG:
