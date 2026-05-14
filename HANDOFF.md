@@ -6,13 +6,15 @@ This file is for continuing work from another session or machine.
 
 - GitHub: https://github.com/RobotSe7en/dagent.git
 - Base branch: `main`
-- Active branch: `codex/unify-review-status`
-- Latest notable code commit before this documentation refresh: `22ac311 Expand validation execution context budget`
+- Active branch: `codex/agent-resume-boundaries`
+- Latest notable code commits before this documentation refresh:
+  - `9635ea9 Wire DAG review rejection in web`
+  - `861f080 Unify agent-owned message threads`
 
 If GitHub access is unstable, use the local Clash proxy:
 
 ```powershell
-git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin codex/unify-review-status
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin codex/agent-resume-boundaries
 ```
 
 ## Current Architecture
@@ -39,10 +41,10 @@ or compatibility shim modules.
 
 | File | Responsibility |
 |------|----------------|
-| `dagent/harness_runtime/runtime.py` | `HarnessRuntime`: auto/tool/dag routing, review gates, validation retries, final response |
-| `dagent/harness_runtime/tool_agent.py` | `ToolAgent`: profile-backed tool agent prompt assembly and review policy; `ToolAgentLoop`: bounded tool-use loop |
-| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: runtime-facing DAG context and review-resume entrypoint; `DAGAgentLoop`: DAG prompt/model parsing, review checkpoints, layer execution, observation, replanning |
-| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: layer-by-layer DAG execution and placeholder injection |
+| `dagent/harness_runtime/runtime.py` | `HarnessRuntime`: auto/tool/dag routing, review continuation lookup, validation retries, final response |
+| `dagent/harness_runtime/tool_agent.py` | `ToolAgent`: profile-backed system prompt and persistent tool-agent message thread; `ToolAgentLoop`: bounded tool-use loop |
+| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: profile-backed system prompt and persistent DAG planner message thread; `DAGAgentLoop`: DAG prompt/model parsing, review checkpoints, layer execution, observation, replanning |
+| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: ready-layer DAG execution, placeholder injection, execution records |
 | `dagent/harness_runtime/dag_builder.py` | PlanSpec DSL parsing, DAG construction, DAG structural validation |
 | `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `ToolExecutionStore` |
 | `dagent/harness_runtime/runtime_trace.py` | Trace event recording |
@@ -77,6 +79,17 @@ and `DAGAgent.run()/resume_review()` return it directly. Runtime converts that t
 `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
 `LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
 
+## Message Ownership
+
+- `ToolAgent.messages` is the persistent tool-agent thread:
+  `system -> user -> assistant(tool_calls) -> tool(result/denied) -> assistant -> ...`
+- `DAGAgent.messages` is the persistent DAG planner thread:
+  `system -> user -> assistant(DAG DSL) -> user(DAG observation) -> assistant(...) -> ...`
+- `HarnessRuntimeSession` owns task/review state only. It does not store global
+  conversation history, `runtime_context`, `runtime_tasks`, or `dag_messages`.
+- `RuntimeTaskRecord` stores structured execution state: current DAG, node results,
+  execution records, runs, final response, invocations, and pending review.
+
 ## Runtime Flow
 
 ```text
@@ -94,14 +107,14 @@ DAG mode:
 
 ```text
 DAGAgent.run()
-  -> builds DAG conversation context
+  -> appends user request to DAGAgent.messages
   -> DAGAgentLoop.run()
-  -> _request_dag() builds the profile prompt and parses PlanSpec DSL via dag_builder.py
+  -> _request_dag() sends DAGAgent.messages and parses PlanSpec DSL via dag_builder.py
   -> prepare_for_review(): normalize + validate_dag + tool registry check
   -> optional human review
   -> execute() loop
      -> DAGExecutor.execute_next_ready_layer()
-     -> observation to DAG LLM
+     -> append DAG observation to DAGAgent.messages
      -> DAG, NO_CHANGE, or final answer
   -> LoopOutcome
 ```
@@ -110,11 +123,20 @@ Tool mode:
 
 ```text
 ToolAgent.run()
-  -> builds profile-backed system prompt + conversation history
+  -> appends user request to ToolAgent.messages
   -> ToolAgentLoop.run()
   -> bounded chat/tool loop
   -> tool review gate for medium/high risk tools in careful mode
   -> LoopOutcome
+```
+
+Review resume:
+
+```text
+Tool review approve -> execute original tool -> replace pending tool marker -> continue ToolAgentLoop
+Tool review reject  -> replace pending tool marker with [DENIED] -> continue ToolAgentLoop
+DAG review approve/edit -> apply submitted DAG -> execute next layer
+DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgentLoop
 ```
 
 ## Key Design Decisions
@@ -130,6 +152,9 @@ ToolAgent.run()
   `dagent.schemas`, while `harness_runtime` owns behavior and mutable session state.
 - **Validator naming**: `validator_agent.py` exposes `ValidatorAgent`; profile and
   config key are `validator_agent`.
+- **Agent-owned transcripts**: the runtime does not merge cross-mode history. A session
+  is expected to use one active mode; follow-up context lives in the active agent's
+  own message thread.
 - **Validation evidence budget**: validation context uses larger evidence excerpts
   than display summaries. Tool and node result excerpts are capped at 4000 chars, the
   overall execution context at 16000 chars, and truncation is marked.
@@ -178,16 +203,17 @@ Tests used on this branch:
 
 ```powershell
 python -m compileall dagent
-pytest tests --ignore=tests/test_api.py --ignore=tests/test_openai_compatible_provider.py --basetemp=.pytest_tmp
+uv run pytest -q
 cd web
 npm run build
 ```
 
-`tests/test_api.py` requires `fastapi`. `tests/test_openai_compatible_provider.py`
-requires provider-specific dependencies/config.
-
 ## Recent Commits On This Branch
 
+- `9635ea9 Wire DAG review rejection in web`
+- `861f080 Unify agent-owned message threads`
+- `bf24d3b Unify agent message envelopes`
+- `f9e1f5b Trim DAG observations`
 - `22ac311 Expand validation execution context budget`
 - `eecb2fc Move runtime result contracts to schemas`
 - `44790b2 Merge DAG build and validation helpers`
