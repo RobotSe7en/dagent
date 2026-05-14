@@ -255,7 +255,6 @@ class DAGAgentLoop:
                 planning_prompt = _format_dag_observation(
                     kind="validation_error",
                     task_id=resolved_task_id,
-                    user_request=request,
                     validation_error=str(exc),
                 )
         else:
@@ -435,7 +434,6 @@ class DAGAgentLoop:
                 pending_observation = _format_dag_observation(
                     kind="layer_failed" if layer_failed else ("dag_executed" if layer.completed else "layer_completed"),
                     task_id=record.task_id,
-                    user_request=record.user_request,
                     record=record,
                     last_error=layer_error if layer_failed else "",
                     failed_node_id=failed_node_id if layer_failed else None,
@@ -459,7 +457,6 @@ class DAGAgentLoop:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
                     task_id=record.task_id,
-                    user_request=record.user_request,
                     record=record,
                     validation_error=str(exc),
                 )
@@ -483,7 +480,6 @@ class DAGAgentLoop:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
                     task_id=record.task_id,
-                    user_request=record.user_request,
                     record=record,
                     validation_error=str(exc),
                 )
@@ -705,7 +701,6 @@ def _format_dag_observation(
     *,
     kind: str,
     task_id: str | None,
-    user_request: str,
     record: RuntimeTaskRecord | None = None,
     last_error: str = "",
     failed_node_id: str | None = None,
@@ -715,8 +710,6 @@ def _format_dag_observation(
         f"DAG observation: {kind}",
         f"Task id: {task_id or (record.task_id if record else '<new>')}",
     ]
-    if user_request:
-        sections.append(f"User request:\n{user_request}")
     if validation_error:
         sections.append(f"Validation error:\n{validation_error}")
     if record is None:

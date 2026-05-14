@@ -314,7 +314,9 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
     assert result.dag is not None
     assert [node.id for node in result.dag.nodes] == ["start", "a", "b"]
     assert len(provider.requests) == 2
-    assert "validation error" in provider.requests[1]["messages"][-1]["content"].lower() or "invalid" in provider.requests[1]["messages"][-1]["content"].lower()
+    retry_content = provider.requests[1]["messages"][-1]["content"]
+    assert "validation error" in retry_content.lower() or "invalid" in retry_content.lower()
+    assert "User request:" not in retry_content
 
 
 def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> None:
@@ -346,6 +348,7 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert "Unknown tool(s): get_current_dir" in feedback
     assert "Available tools:" in feedback
     assert "echo" in feedback
+    assert "User request:" not in feedback
 
 
 def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:

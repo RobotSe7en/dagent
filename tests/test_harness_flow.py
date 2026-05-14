@@ -451,6 +451,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
     assert "try_bad_tool" in request
     assert "failed:boom" in request
+    assert "User request:" not in request
     assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
