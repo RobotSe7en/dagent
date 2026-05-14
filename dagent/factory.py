@@ -46,20 +46,18 @@ def create_harness_runtime(
         tools=runtime_tools,
     )
     dag_executor = DAGExecutor(tool_executor=tool_executor)
-    dag_agent = DAGAgent(
+    dag_agent_loop = DAGAgentLoop(
         provider=provider,
+        dag_executor=dag_executor,
         profile=profile_store.load(resolved_config.profiles.dag_agent),
         tools=runtime_tools,
     )
-    dag_agent_loop = DAGAgentLoop(
-        dag_agent=dag_agent,
-        dag_executor=dag_executor,
-    )
+    dag_agent = DAGAgent(loop=dag_agent_loop)
     validator = _try_load_validator(provider, profile_store, resolved_config)
     return HarnessRuntime(
         provider=provider,
         tool_agent=tool_agent,
-        dag_agent_loop=dag_agent_loop,
+        dag_agent=dag_agent,
         validator=validator,
         enable_validation=resolved_config.enable_result_validation,
     )

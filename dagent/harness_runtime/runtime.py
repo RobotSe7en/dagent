@@ -14,7 +14,7 @@ from dagent.harness_runtime.tool_agent import (
     LoopEventHandler,
     TokenHandler,
 )
-from dagent.harness_runtime.dag_agent import DAGAgentLoop
+from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
@@ -55,20 +55,20 @@ class HarnessRuntime:
         *,
         provider: ChatProvider,
         tool_agent: ToolAgent,
-        dag_agent_loop: DAGAgentLoop,
+        dag_agent: DAGAgent,
         validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_validation_retries: int = 1,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
-        self.dag_agent_loop = dag_agent_loop
+        self.dag_agent = dag_agent
         self.validator = validator
         self.enable_validation = enable_validation
         self.max_validation_retries = max_validation_retries
-        self.session = HarnessRuntimeSession(initial_tasks=dag_agent_loop.tasks)
+        self.session = HarnessRuntimeSession(initial_tasks=dag_agent.tasks)
         self.tasks = self.session.tasks
-        self.dag_agent_loop.tasks = self.tasks
+        self.dag_agent.tasks = self.tasks
 
     # ==================================================================
     # Public API
@@ -249,7 +249,7 @@ class HarnessRuntime:
         record = self.tasks[task_id]
         self.session.discard_review_continuations_for_task(task_id)
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-        initial_outcome = await self.dag_agent_loop.resume_review(
+        initial_outcome = await self.dag_agent.resume_review(
             state,
             dag,
             review_level=review_level,
@@ -274,8 +274,9 @@ class HarnessRuntime:
                 planning_context = (
                     f"{planning_context}\n\n{feedback}" if planning_context else feedback
                 )
-            return await self.dag_agent_loop.run(
+            return await self.dag_agent.run(
                 record.user_request,
+                task_id=None,
                 review_level=review_level or state.review_level,
                 planning_context=planning_context,
                 runtime_mode=record.runtime_mode,
@@ -344,8 +345,9 @@ class HarnessRuntime:
             if feedback:
                 planning_context = (planning_context + "\n\n" + feedback) if planning_context else feedback
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-            return await self.dag_agent_loop.run(
+            return await self.dag_agent.run(
                 message,
+                task_id=None,
                 review_level=review_level,
                 planning_context=planning_context,
                 runtime_mode=str(mode),
@@ -358,38 +360,18 @@ class HarnessRuntime:
             # Tool mode: only stream <think> blocks from the loop.
             # The final answer is returned in the done payload.
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-            return await self._run_tool(
+            return await self.tool_agent.run(
                 message,
                 review_level=review_level,
                 feedback=feedback,
                 prior_messages=prior_messages,
+                conversation_history=self.session.conversation_history,
+                context=self.session.tasks_context(),
                 on_token=thinking_only,
                 on_event=on_event,
             )
         else:
             raise ValueError(f"Unknown runtime mode: {mode}")
-
-    async def _run_tool(
-        self,
-        message: str,
-        *,
-        review_level: ReviewLevel = "fast",
-        feedback: str | None = None,
-        prior_messages: list[dict[str, Any]] | None = None,
-        on_token: TokenHandler | None,
-        on_event: LoopEventHandler | None,
-    ) -> LoopOutcome:
-        """Run ToolAgent and return unified LoopOutcome."""
-        return await self.tool_agent.run(
-            message,
-            review_level=review_level,
-            feedback=feedback,
-            prior_messages=prior_messages,
-            conversation_history=self.session.conversation_history,
-            context=self.session.tasks_context(),
-            on_token=on_token,
-            on_event=on_event,
-        )
 
     def _finish_loop_outcome(
         self,

@@ -224,7 +224,7 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
             "task_id": task_id,
             "records": [
                 _execution_record_payload(record)
-                for record in runtime.dag_agent_loop.dag_executor.execution_store.records_for_task(task_id)
+                for record in runtime.dag_agent.loop.dag_executor.execution_store.records_for_task(task_id)
             ],
         }
 

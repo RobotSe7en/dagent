@@ -41,7 +41,7 @@ or compatibility shim modules.
 |------|----------------|
 | `dagent/harness_runtime/runtime.py` | `HarnessRuntime`: auto/tool/dag routing, review gates, validation retries, final response |
 | `dagent/harness_runtime/tool_agent.py` | `ToolAgent`: profile-backed tool agent prompt assembly and review policy; `ToolAgentLoop`: bounded tool-use loop |
-| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: profile-backed DAG prompt assembly and model parsing; `DAGAgentLoop`: DAG review checkpoints, layer execution, observation, replanning |
+| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: runtime-facing DAG context and review-resume entrypoint; `DAGAgentLoop`: DAG prompt/model parsing, review checkpoints, layer execution, observation, replanning |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: layer-by-layer DAG execution and placeholder injection |
 | `dagent/harness_runtime/dag_builder.py` | PlanSpec DSL parsing, DAG construction, DAG structural validation |
 | `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `ToolExecutionStore` |
@@ -73,7 +73,7 @@ ValidationResult
 ```
 
 `LoopOutcome` is the single loop-to-runtime contract. `ToolAgent.run()/resume_review()`
-and `DAGAgentLoop.run()/resume_review()` return it directly. Runtime converts that to
+and `DAGAgent.run()/resume_review()` return it directly. Runtime converts that to
 `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
 `LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
 
@@ -83,7 +83,7 @@ and `DAGAgentLoop.run()/resume_review()` return it directly. Runtime converts th
 User request
   -> HarnessRuntime.handle_message()
      -> route: auto/tool/dag
-     -> ToolAgent or DAGAgentLoop returns LoopOutcome
+     -> ToolAgent or DAGAgent returns LoopOutcome
      -> review gate if LoopOutcome.status == "awaiting_review"
      -> optional ValidatorAgent check
      -> retry once with validation feedback if needed
@@ -93,8 +93,10 @@ User request
 DAG mode:
 
 ```text
-DAGAgentLoop.run()
-  -> DAGAgent.request_dag() builds the profile prompt and parses PlanSpec DSL via dag_builder.py
+DAGAgent.run()
+  -> builds DAG conversation context
+  -> DAGAgentLoop.run()
+  -> _request_dag() builds the profile prompt and parses PlanSpec DSL via dag_builder.py
   -> prepare_for_review(): normalize + validate_dag + tool registry check
   -> optional human review
   -> execute() loop

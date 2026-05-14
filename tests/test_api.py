@@ -224,13 +224,13 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
             profile=_profile("conversation"),
             tools=tool_executor.registry.all_tools(),
         ),
-        dag_agent_loop=DAGAgentLoop(
-            dag_agent=DAGAgent(
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
                 provider=provider,
+                dag_executor=dag_executor,
                 profile=_profile("dag_agent"),
                 tools=tool_executor.registry.all_tools(),
             ),
-            dag_executor=dag_executor,
         ),
     )
 

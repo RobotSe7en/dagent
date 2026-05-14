@@ -40,33 +40,110 @@ MAX_NODE_RESULT_CONTEXT_CHARS = 4000
 
 
 class DAGAgent:
-    """Profile-backed DAG planner and replanner."""
+    """Runtime-facing DAG agent facade."""
+
+    def __init__(
+        self,
+        *,
+        loop: "DAGAgentLoop",
+    ) -> None:
+        self.loop = loop
+
+    @property
+    def tasks(self) -> dict[str, RuntimeTaskRecord]:
+        return self.loop.tasks
+
+    @tasks.setter
+    def tasks(self, value: dict[str, RuntimeTaskRecord]) -> None:
+        self.loop.tasks = value
+
+    async def run(
+        self,
+        request: str,
+        *,
+        task_id: str | None = None,
+        review_level: ReviewLevel = "fast",
+        planning_context: str = "",
+        runtime_mode: str = "auto",
+        conversation_history: list[dict[str, Any]] | None = None,
+        force_review: bool = False,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome:
+        dag_messages = _build_dag_messages(
+            conversation_history or [],
+            active_user_message=request,
+        )
+        if planning_context.strip():
+            dag_messages.append({
+                "role": "user",
+                "content": _format_dag_observation(
+                    kind="planning_context",
+                    task_id=task_id,
+                    user_request=request,
+                    planning_context=planning_context,
+                ),
+            })
+        return await self.loop.run(
+            request,
+            task_id=task_id,
+            review_level=review_level,
+            dag_messages=dag_messages,
+            runtime_mode=runtime_mode,
+            force_review=force_review,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
+        )
+
+    async def resume_review(
+        self,
+        state: ReviewContinuation,
+        dag: DAG,
+        *,
+        review_level: ReviewLevel | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome | None:
+        return await self.loop.resume_review(
+            state,
+            dag,
+            review_level=review_level,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
+        )
+
+
+class DAGAgentLoop:
+    """Owns DAG planning, reviews, execution, and replanning."""
 
     def __init__(
         self,
         *,
         provider: ChatProvider,
+        dag_executor: DAGExecutor,
         profile: AgentProfile,
         tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
+        max_cycles: int = 6,
     ) -> None:
         self.provider = provider
+        self.dag_executor = dag_executor
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
-        self.tools = tools or []
-
-    def build_dag_messages(
-        self,
-        conversation_history: list[dict[str, Any]],
-        *,
-        active_user_message: str,
-    ) -> list[dict[str, Any]]:
-        return _build_dag_messages(
-            conversation_history,
-            active_user_message=active_user_message,
+        self.tools = tools or (
+            dag_executor.tool_executor.registry.all_tools()
+            if dag_executor.tool_executor is not None
+            else []
         )
+        self.max_cycles = max_cycles
+        self.tasks: dict[str, RuntimeTaskRecord] = {}
+        self.runs: dict[str, DAGRunResult] = {}
 
-    async def request_dag(
+    async def _request_dag(
         self,
         prompt: str,
         *,
@@ -75,7 +152,6 @@ class DAGAgent:
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
-        """Call the DAG LLM, returning a DAG, final answer string, or NO_CHANGE."""
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages = self.prompt_builder.build(
             PromptRequest(
@@ -110,23 +186,6 @@ class DAGAgent:
             return None
         return result
 
-
-class DAGAgentLoop:
-    """Owns DAG reviews, execution, and replanning."""
-
-    def __init__(
-        self,
-        *,
-        dag_agent: DAGAgent,
-        dag_executor: DAGExecutor,
-        max_cycles: int = 6,
-    ) -> None:
-        self.dag_agent = dag_agent
-        self.dag_executor = dag_executor
-        self.max_cycles = max_cycles
-        self.tasks: dict[str, RuntimeTaskRecord] = {}
-        self.runs: dict[str, DAGRunResult] = {}
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -137,36 +196,20 @@ class DAGAgentLoop:
         *,
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
-        planning_context: str = "",
+        dag_messages: list[dict[str, Any]],
         runtime_mode: str = "auto",
-        conversation_history: list[dict[str, Any]] | None = None,
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
-        dag_messages = self.dag_agent.build_dag_messages(
-            conversation_history or [],
-            active_user_message=request,
-        )
-        if planning_context.strip():
-            dag_messages.append({
-                "role": "user",
-                "content": _format_dag_observation(
-                    kind="planning_context",
-                    task_id=task_id,
-                    user_request=request,
-                    planning_context=planning_context,
-                ),
-            })
-
         response: DAG | str | None = None
         planning_prompt = request
         cycles_used = 0
         for _ in range(self.max_cycles):
             cycles_used += 1
             try:
-                response = await self.dag_agent.request_dag(
+                response = await self._request_dag(
                     planning_prompt,
                     task_id=task_id,
                     dag_messages=dag_messages,
@@ -181,7 +224,6 @@ class DAGAgentLoop:
                     kind="validation_error",
                     task_id=task_id,
                     user_request=request,
-                    planning_context=planning_context,
                     validation_error=str(exc),
                 )
         else:
@@ -352,7 +394,7 @@ class DAGAgentLoop:
 
             # Ask LLM for the next step: continue, replan, or finish.
             try:
-                response = await self.dag_agent.request_dag(
+                response = await self._request_dag(
                     pending_observation,
                     task_id=record.task_id,
                     dag_messages=record.dag_messages,

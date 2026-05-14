@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 async def test_minimax_dag_agent_generates_valid_dag() -> None:
     runtime = create_harness_runtime(workspace_root=".")
 
-    result = await runtime.dag_agent_loop.run(
+    result = await runtime.dag_agent.run(
         "Create a low-risk plan that directly answers what dagent is without reading files.",
         task_id="minimax_dag_agent_test",
         force_review=True,
@@ -31,7 +31,7 @@ async def test_minimax_dag_agent_generates_valid_dag() -> None:
 async def test_minimax_harness_executes_safe_dag() -> None:
     runtime = create_harness_runtime(workspace_root=".")
 
-    result = await runtime.dag_agent_loop.run(
+    result = await runtime.dag_agent.run(
         "Create and execute a safe plan that answers in one sentence: dagent is a human-reviewed DAG agent framework.",
         task_id="minimax_execute_test",
         review_level="fast",

@@ -54,7 +54,7 @@ flowchart TD
   U["User"] --> R["HarnessRuntime"]
   R -->|"auto mode"| ROUTE["Route\ndag or tool"]
   R -->|"tool mode"| TA["ToolAgent"]
-  R -->|"dag mode"| DA["DAGAgentLoop"]
+  R -->|"dag mode"| DA["DAGAgent"]
 
   ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
@@ -63,8 +63,8 @@ flowchart TD
   TAL -->|"bounded tool calls"| T["ToolExecutor"]
   TA -->|"LoopOutcome"| G["Human Review Gate"]
 
-  DA --> DAA["DAGAgent"]
-  DAA --> D["Create Initial DAG\ntool nodes + placeholders"]
+  DA --> DAL["DAGAgentLoop"]
+  DAL --> D["Create Initial DAG\ntool nodes + placeholders"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
@@ -105,8 +105,9 @@ human review gates, optional result validation, retry feedback, and final result
 The execution details stay inside `ToolAgentLoop` for tool-use work and
 `DAGAgentLoop` for structured DAG work. `ToolAgent` owns the conversation profile,
 prompt assembly, history, and tool review policy before delegating to the loop.
-`DAGAgent` owns DAG prompt assembly and model parsing; `DAGAgentLoop` owns DAG review,
-execution, observation, and replanning.
+`DAGAgent` owns DAG conversation context and review-resume entrypoints before delegating
+to `DAGAgentLoop`, which owns DAG prompt/model parsing, review, execution, observation,
+and replanning.
 Once review and validation pass, the runtime
 returns the loop's `final_answer` directly without a separate summarization step.
 
@@ -140,7 +141,7 @@ Design principles:
 
 Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
-before dispatching to `ToolAgent` or `DAGAgentLoop`.
+before dispatching to `ToolAgent` or `DAGAgent`.
 
 ### Trace DB
 
