@@ -14,7 +14,8 @@ task that needs orchestration gets a reviewable, auditable plan up front. That p
 can evolve from DAG observations as execution proceeds, while completed tool results
 remain structured execution records.
 
-> **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG,
+> **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
+> three-level incremental re-planning, Trace DB as the long-term context boundary,
 > human review checkpoints, DAG-vs-tool task routing, and resumable execution - was
 > conceived and first implemented by the author of this repository. First committed:
 > **2026-05-01**.
@@ -32,18 +33,23 @@ DAG, or the final answer.
 Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
 nodes, not inside them. Nodes are cheap, testable, and auditable.
 
-**3. Agent-owned message threads.**
+**3. Three-level re-planning.**
+The current implementation covers three levels in one execution path: placeholder
+injection before a tool call, `NO_CHANGE`/parameter-level continuation after an
+observation, and DAG revision when the pending graph must change.
+
+**4. Agent-owned message threads.**
 `ToolAgent` and `DAGAgent` each own one persistent message thread for the session.
 The runtime does not merge global conversation history or inject prior task context.
 A follow-up such as "continue" is just the next user message in the active agent's
 thread.
 
-**4. Structured task state, not transcript state.**
+**5. Structured task state, not transcript state.**
 DAG tasks store the current DAG, node results, execution records, runs, and pending
 review state. They do not store planner messages. Tool tasks similarly derive audit
 records from tool messages without owning the agent transcript.
 
-**5. Human review as a first-class checkpoint.**
+**6. Human review as a first-class checkpoint.**
 Medium/high-risk DAGs require explicit approval before execution. Re-planned DAGs can
 trigger a second review. The human is never bypassed.
 
@@ -86,11 +92,13 @@ flowchart TD
   E --> N["Execute Ready Layer"]
   N --> T
   N --> ER[("RuntimeTaskRecord\nDAG + node_results + execution_records")]
+  N --> TR[("Trace DB\nplanned persistent run memory")]
   N --> OBS["DAG observation"]
   OBS --> DM
   DM --> DAL
-  DAL -->|"NO_CHANGE"| E
-  DAL -->|"revised DAG"| UI2["Human Review\nif policy requires"]
+  DAL -->|"Level 1\nplaceholder injection"| E
+  DAL -->|"Level 2\nNO_CHANGE / param adjustment"| E
+  DAL -->|"Level 3\nrevised DAG"| UI2["Human Review\nif policy requires"]
   UI2 -->|"approve / edit"| E
   UI2 -->|"reject"| DENY
   DAL -->|"final answer"| DR["LoopOutcome"]
@@ -121,10 +129,18 @@ records, runs, and pending review. It does not store `dag_messages`.
 Once review and validation pass, the runtime returns the loop's `final_answer` directly
 without a separate summarization step.
 
-### DAG Replanning
+### Three-Level Re-planning
 
 After each ready layer executes, `DAGAgentLoop` formats a DAG observation and appends it
-to `DAGAgent.messages`. The DAG LLM can respond with:
+to `DAGAgent.messages`. Re-planning is implemented as three levels:
+
+| Level | Current implementation | Meaning |
+|-------|------------------------|---------|
+| **1 - Placeholder injection** | `DAGExecutor` resolves `{{node.output}}`-style placeholders from completed node results before each tool call. | Runtime values flow into downstream tool arguments without an LLM call. |
+| **2 - Local continuation / parameter reasoning** | The DAG LLM receives the latest observation and can return `NO_CHANGE` or a revised PlanSpec with changed arguments. | Keep the current DAG structure, or adjust pending node parameters based on observed results. |
+| **3 - DAG revision** | The DAG LLM returns a revised PlanSpec DSL; `_apply_replan()` invalidates changed/deleted nodes and downstream results, then review policy decides whether to pause. | Change pending graph structure when the original plan no longer fits. |
+
+In concrete response terms, the DAG LLM can return:
 
 | Response | Meaning |
 |----------|---------|
@@ -148,7 +164,7 @@ Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
 before dispatching to `ToolAgent` or `DAGAgent`.
 
-### Execution Records
+### Trace DB And Execution Records
 
 Every completed tool call is recorded as a `ToolExecutionRecord`:
 
@@ -156,7 +172,21 @@ Every completed tool call is recorded as a `ToolExecutionRecord`:
 { task_id, source, node_id, tool, args, output, error, status, stop_reason, timestamp }
 ```
 
-Execution records serve three purposes:
+Current implementation:
+
+- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/tool lifecycle events.
+- `ToolExecutionStore` keeps in-memory `ToolExecutionRecord` entries for tool-mode calls
+  and DAG node execution.
+- The API and Web UI surface these traces and records during the current process lifetime.
+
+Target architecture:
+
+- Persist trace events, tool executions, node outputs, and compact result summaries into
+  a Trace DB.
+- Use Trace DB as the long-term audit store and context boundary for future replanning,
+  instead of relying only on in-memory task state.
+
+Trace DB / execution records serve three purposes:
 
 1. **Audit log** - immutable record of what ran, with what inputs, and what it returned.
 2. **DAG observation source** - DAG observations include completed node outputs and recent

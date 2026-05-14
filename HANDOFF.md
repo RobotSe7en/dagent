@@ -90,6 +90,25 @@ and `DAGAgent.run()/resume_review()` return it directly. Runtime converts that t
 - `RuntimeTaskRecord` stores structured execution state: current DAG, node results,
   execution records, runs, final response, invocations, and pending review.
 
+## Re-planning And Trace State
+
+Three-level replanning is still part of the current architecture:
+
+- **Level 1 - placeholder injection** lives in `DAGExecutor._inject_placeholders()`.
+  Completed node results can fill `{{node.output}}`-style arguments before a tool call,
+  without an LLM call.
+- **Level 2 - local continuation / parameter reasoning** happens after a DAG observation.
+  The DAG LLM can return `NO_CHANGE` or a revised PlanSpec that keeps structure mostly
+  intact while changing pending arguments.
+- **Level 3 - DAG revision** happens when the DAG LLM returns a revised PlanSpec whose
+  nodes or edges changed. `_apply_replan()` invalidates changed/deleted nodes and
+  downstream results, then applies review policy.
+
+Trace DB is a target architecture component and should stay in architecture diagrams.
+Current code has in-memory `TraceRecorder` and `ToolExecutionStore`; future work should
+persist trace events, execution records, node outputs, and compact summaries into a
+Trace DB for long-term audit and context-boundary use.
+
 ## Runtime Flow
 
 ```text
@@ -143,6 +162,8 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 
 - **Tool-node-only DAG**: every DAG node is a direct tool call. Intelligence lives in
   the planner/replanner, not inside node agents.
+- **Three-level replanning**: placeholder injection, local observation-driven
+  continuation/parameter adjustment, and DAG revision are all active design concepts.
 - **PlanSpec DSL only**: the DAG agent emits compact DSL, compiled by `dag_builder.py`.
 - **DAG build + validation together**: `dag_builder.py` owns model output parsing,
   PlanSpec compilation, and structural DAG validation.
