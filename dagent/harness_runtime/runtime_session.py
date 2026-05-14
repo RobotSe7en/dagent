@@ -17,12 +17,8 @@ from dagent.schemas import LoopOutcome, ToolInvocation
 class HarnessRuntimeSession:
     """Mutable task and review state owned by a harness session."""
 
-    def __init__(
-        self,
-        *,
-        initial_tasks: dict[str, RuntimeTaskRecord] | None = None,
-    ) -> None:
-        self.tasks: dict[str, RuntimeTaskRecord] = dict(initial_tasks or {})
+    def __init__(self) -> None:
+        self.tasks: dict[str, RuntimeTaskRecord] = {}
         self._review_continuations: dict[str, ReviewContinuation] = {}
 
     def store_review_continuation(
@@ -67,6 +63,7 @@ class HarnessRuntimeSession:
         review_level: ReviewLevel,
         loop_outcome: LoopOutcome,
         invocations: list[ToolInvocation] | None = None,
+        runtime_mode: str | None = None,
     ) -> RuntimeTaskRecord:
         resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
         record = self.tasks.get(resolved_task_id)
@@ -77,6 +74,7 @@ class HarnessRuntimeSession:
                     user_request=user_request,
                     dag=loop_outcome.dag,
                     review_level=review_level,
+                    runtime_mode=runtime_mode or "auto",
                 )
             else:
                 record = RuntimeTaskRecord(

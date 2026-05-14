@@ -15,25 +15,25 @@ pytestmark = pytest.mark.skipif(
 async def test_minimax_dag_agent_generates_valid_dag() -> None:
     runtime = create_harness_runtime(workspace_root=".")
 
-    result = await runtime.dag_agent.run(
+    result = await runtime.handle_message(
         "Create a low-risk plan that directly answers what dagent is without reading files.",
-        task_id="minimax_dag_agent_test",
-        force_review=True,
+        mode="dag",
+        review_level="careful",
     )
     record = runtime.tasks[result.task_id]
 
-    assert record.dag.task_id == "minimax_dag_agent_test"
+    assert record.dag.task_id == result.task_id
     assert record.dag.nodes
-    assert record.dag.status in {"approved", "review_required"}
+    assert record.dag.status == "review_required"
 
 
 @pytest.mark.asyncio
 async def test_minimax_harness_executes_safe_dag() -> None:
     runtime = create_harness_runtime(workspace_root=".")
 
-    result = await runtime.dag_agent.run(
+    result = await runtime.handle_message(
         "Create and execute a safe plan that answers in one sentence: dagent is a human-reviewed DAG agent framework.",
-        task_id="minimax_execute_test",
+        mode="dag",
         review_level="fast",
     )
     if result.dag_run is None:
