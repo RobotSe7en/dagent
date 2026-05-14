@@ -498,7 +498,7 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
     assert result.dag.status == "completed"
 
 
-
+def test_harness_runtime_marks_dag_failed_when_replan_is_unavailable_after_tool_error() -> None:
     initial = DAG(
         dag_id="dag_failure_needs_review",
         task_id="task_failure_needs_review",

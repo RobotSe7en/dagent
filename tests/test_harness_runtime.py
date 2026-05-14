@@ -549,6 +549,53 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
+def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
+    tool_executor = make_tool_executor()
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),        # initial DAG review
+        ChatResponse(content="bad answer"),            # approved DAG execution
+        ChatResponse(content=_dag_agent_dsl(text="retry")),  # validation retry DAG
+        ChatResponse(content="good answer"),           # retry DAG execution
+    ])
+    runtime = HarnessRuntime(
+        provider=provider,
+        tool_agent=ToolAgent(
+            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            profile=_conversation_profile(),
+            tools=[],
+        ),
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
+                provider=provider,
+                dag_executor=DAGExecutor(tool_executor=tool_executor),
+            ),
+            profile=_dag_agent_profile(),
+            tools=tool_executor.registry.all_tools(),
+        ),
+        validator=_RejectThenApproveValidator(),
+        enable_validation=True,
+    )
+
+    first = run(runtime.handle_message("Create a reviewed DAG", mode="dag", review_level="careful"))
+    resumed = run(runtime.resume_review(
+        first.pending_review.review_id,
+        dag=first.dag,
+        review_level="fast",
+    ))
+
+    assert resumed.status == "completed"
+    assert resumed.task_id == first.task_id
+    assert resumed.dag is not None
+    assert resumed.dag.task_id == first.task_id
+    record = runtime.tasks[first.task_id]
+    assert record.dag.task_id == first.task_id
+    assert record.execution_records
+    assert all(
+        execution.task_id == first.task_id
+        for execution in record.execution_records
+    )
+
+
 def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),       # DAG agent

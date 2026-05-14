@@ -268,7 +268,7 @@ class HarnessRuntime:
                 raise RuntimeError("DAG review validation retry requires feedback.")
             return await self.dag_agent.run(
                 feedback,
-                task_id=None,
+                task_id=record.task_id,
                 review_level=review_level or state.review_level,
                 runtime_mode=record.runtime_mode,
                 on_token=thinking_only,
