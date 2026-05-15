@@ -9,11 +9,10 @@ from collections import defaultdict, deque
 from typing import Any
 
 from dagent.harness_runtime.dag_builder import validate_dag
+from dagent.harness_runtime.runnable_executor import RunnableExecutionError, RunnableExecutor
 from dagent.harness_runtime.runtime_trace import TraceRecorder
 from dagent.harness_runtime.task_record import ToolExecutionStore
 from dagent.schemas import DAG, DAGNode, DAGNodeResult, DAGRunResult, TraceEvent
-from dagent.tools.boundary import BoundaryViolation
-from dagent.tools.executor import ToolExecutor, ToolExecutionError
 
 
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response|status|stop_reason|steps)\s*}}")
@@ -24,16 +23,16 @@ class DAGExecutionError(RuntimeError):
 
 
 class DAGExecutor:
-    """Executes approved DAGs as direct bounded tool-node calls."""
+    """Schedules approved DAG nodes and executes them through RunnableExecutor."""
 
     def __init__(
         self,
         *,
-        tool_executor: ToolExecutor,
+        runnable_executor: RunnableExecutor,
         trace_recorder: TraceRecorder | None = None,
         execution_store: ToolExecutionStore | None = None,
     ) -> None:
-        self.tool_executor = tool_executor
+        self.runnable_executor = runnable_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
         self.execution_store = execution_store or ToolExecutionStore()
         self.partial_node_results: dict[str, DAGNodeResult] = {}
@@ -127,7 +126,7 @@ class DAGExecutor:
         dag: DAG,
         completed_results: dict[str, DAGNodeResult],
     ) -> DAGNodeResult:
-        if _tool_name_from_runnable(node.invocation.runnable_id) == "dag_start":
+        if node.invocation.runnable_id == "tool.dag_start":
             node.status = "completed"
             return DAGNodeResult(
                 node_id=node.id,
@@ -137,70 +136,30 @@ class DAGExecutor:
                 steps=0,
             )
         self.trace_recorder.record("node_started", dag_id=dag.dag_id, node_id=node.id)
-        return self.execute_tool_node(node, dag)
+        return self.execute_runnable_node(node, dag)
 
-    def execute_tool_node(
+    def execute_runnable_node(
         self,
         node: DAGNode,
         dag: DAG,
     ) -> DAGNodeResult:
-        if self.tool_executor is None:
-            raise ToolExecutionError(
-                "DAGExecutor cannot execute tool nodes without a ToolExecutor."
-            )
         invocation = node.invocation
-        tool_name = _tool_name_from_runnable(invocation.runnable_id)
-        if not tool_name:
-            raise ToolExecutionError(f"Node '{node.id}' has no runnable id.")
+        if not invocation.runnable_id:
+            raise RunnableExecutionError(f"Node '{node.id}' has no runnable id.")
 
-        tool_call_id = invocation.invocation_id
+        call_id = invocation.invocation_id
         self.trace_recorder.record(
             "tool_called",
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
-                "tool_call_id": tool_call_id,
+                "tool_call_id": call_id,
                 "name": invocation.runnable_id,
                 "arguments": invocation.arguments,
             },
         )
         try:
-            content = self.tool_executor.execute(
-                tool_name,
-                invocation.arguments,
-                boundary=invocation.boundary,
-            )
-        except BoundaryViolation as exc:
-            _augment_tool_violation(exc, node, self.tool_executor)
-            node.status = "failed"
-            self.execution_store.add_record(
-                task_id=dag.task_id,
-                invocation=invocation,
-                source="dag_node",
-                error=str(exc),
-                status="failed",
-                stop_reason="boundary_violation",
-                steps=1,
-                dag=dag,
-                node=node,
-            )
-            self.trace_recorder.record(
-                "tool_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={
-                    "tool_call_id": tool_call_id,
-                    "name": invocation.runnable_id,
-                    "error": str(exc),
-                },
-            )
-            self.trace_recorder.record(
-                "node_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={"error": str(exc)},
-            )
-            raise
+            runnable_result = self.runnable_executor.execute(invocation)
         except Exception as exc:
             node.status = "failed"
             self.execution_store.add_record(
@@ -209,7 +168,7 @@ class DAGExecutor:
                 source="dag_node",
                 error=str(exc),
                 status="failed",
-                stop_reason="tool_error",
+                stop_reason="runnable_error",
                 steps=1,
                 dag=dag,
                 node=node,
@@ -219,7 +178,7 @@ class DAGExecutor:
                 dag_id=dag.dag_id,
                 node_id=node.id,
                 payload={
-                    "tool_call_id": tool_call_id,
+                    "tool_call_id": call_id,
                     "name": invocation.runnable_id,
                     "error": str(exc),
                 },
@@ -232,12 +191,51 @@ class DAGExecutor:
             )
             raise
 
+        if runnable_result.status == "failed":
+            error = runnable_result.error or runnable_result.content
+            stop_reason = (
+                "boundary_violation"
+                if runnable_result.stop_reason == "BoundaryViolation"
+                else "runnable_error"
+            )
+            node.status = "failed"
+            self.execution_store.add_record(
+                task_id=dag.task_id,
+                invocation=invocation,
+                source="dag_node",
+                error=error,
+                status="failed",
+                stop_reason=stop_reason,
+                steps=1,
+                dag=dag,
+                node=node,
+            )
+            self.trace_recorder.record(
+                "tool_failed",
+                dag_id=dag.dag_id,
+                node_id=node.id,
+                payload={
+                    "tool_call_id": call_id,
+                    "name": invocation.runnable_id,
+                    "error": error,
+                },
+            )
+            self.trace_recorder.record(
+                "node_failed",
+                dag_id=dag.dag_id,
+                node_id=node.id,
+                payload={"error": error},
+            )
+            raise DAGExecutionError(error)
+
+        content = runnable_result.content
+
         self.trace_recorder.record(
             "tool_completed",
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
-                "tool_call_id": tool_call_id,
+                "tool_call_id": call_id,
                 "name": invocation.runnable_id,
                 "content": content,
             },
@@ -406,37 +404,5 @@ def _find_unresolved_placeholders(value: Any) -> set[str]:
     if isinstance(value, str):
         return set(re.findall(r"{{[^{}]+}}", value))
     return set()
-
-
-def _augment_tool_violation(
-    violation: BoundaryViolation,
-    node: DAGNode,
-    tool_executor: ToolExecutor,
-) -> None:
-    invocation = node.invocation
-    tool_name = _tool_name_from_runnable(invocation.runnable_id)
-    if tool_name and not violation.tool_name:
-        violation.tool_name = tool_name
-    tool = tool_executor.registry.get(tool_name) if tool_name else None
-    if tool is None:
-        return
-    if not violation.action:
-        violation.action = tool.action
-
-
-def _tool_name_from_runnable(runnable_id: str) -> str:
-    return runnable_id.removeprefix("tool.")
-    if not violation.path:
-        for arg_name in tool.path_args:
-            value = invocation.arguments.get(arg_name)
-            if value is not None:
-                violation.path = str(value)
-                break
-    if not violation.command:
-        for arg_name in tool.command_args:
-            value = invocation.arguments.get(arg_name)
-            if value is not None:
-                violation.command = str(value)
-                break
 
 

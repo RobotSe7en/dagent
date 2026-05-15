@@ -8,10 +8,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from dagent.harness_runtime.review_policy import effective_risk
-from dagent.runnables import RunnableInvocation
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec
-from dagent.tools.registry import Tool
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, RunnableDefinition, RunnableInvocation
 
 
 class DAGCreationError(ValueError):
@@ -33,7 +30,7 @@ def dag_from_model_output(
     content: str,
     *,
     task_id: str,
-    tools: list[Tool] | None = None,
+    tools: list[RunnableDefinition] | None = None,
 ) -> DAG | str | None:
     """Parse LLM output into a DAG, a final answer string, or None."""
     if _is_no_change(content):
@@ -75,7 +72,7 @@ def compile_plan_spec(
     plan: PlanSpec,
     *,
     task_id: str,
-    tools: list[Tool] | None = None,
+    tools: list[RunnableDefinition] | None = None,
 ) -> DAG:
     tool_index = {tool.name: tool for tool in (tools or [])}
     nodes = [_compile_plan_node(node, tool_index=tool_index) for node in plan.nodes]
@@ -214,7 +211,7 @@ def _parse_depends_on(deps_text: str | None) -> list[str]:
 def _compile_plan_node(
     node,
     *,
-    tool_index: dict[str, Tool] | None = None,
+    tool_index: dict[str, RunnableDefinition] | None = None,
 ) -> DAGNode:
     if not node.tool:
         raise DAGCreationError(f"PlanSpec node '{node.id}' must declare one concrete tool.")
@@ -227,7 +224,7 @@ def _compile_plan_node(
             kind="tool",
             arguments=args,
             boundary=_infer_boundary(registered, args),
-            risk=effective_risk(registered, args),
+            risk=registered.policy.risk if registered is not None else "low",
         ),
     )
 
@@ -299,13 +296,13 @@ def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:
         raise DAGValidationError("DAG must be acyclic.")
 
 
-def _infer_boundary(tool_obj: Tool | None, args: dict[str, Any]) -> Boundary:
-    if tool_obj is not None and tool_obj.boundary_fn is not None:
-        return tool_obj.boundary_fn(args)
+def _infer_boundary(tool_obj: RunnableDefinition | None, args: dict[str, Any]) -> Boundary:
     if tool_obj is None:
         return Boundary(mode="read_only")
-    paths = [str(args.get(path_arg) or ".") for path_arg in tool_obj.path_args] or ["."]
-    if tool_obj.action == "write":
+    path_args = tuple(tool_obj.config.get("path_args") or ())
+    action = str(tool_obj.config.get("action") or "read")
+    paths = [str(args.get(path_arg) or ".") for path_arg in path_args] or ["."]
+    if action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
 

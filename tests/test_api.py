@@ -10,10 +10,12 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
+    RunnableExecutor,
 )
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import ToolRunnableProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
@@ -273,14 +275,14 @@ def test_api_capability_status_endpoints() -> None:
 
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:
-    tool_executor = _tool_executor()
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    runnable_executor = _runnable_executor()
+    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
     return HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
             profile=_profile("conversation"),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
@@ -288,12 +290,14 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
                 dag_executor=dag_executor,
             ),
             profile=_profile("dag_agent"),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
+        runnable_registry=runnable_executor.registry,
+        runnable_executor=runnable_executor,
     )
 
 
-def _tool_executor() -> ToolExecutor:
+def _runnable_executor() -> RunnableExecutor:
     registry = ToolRegistry()
     registry.register(
         name="dag_start",
@@ -324,7 +328,10 @@ def _tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    return ToolExecutor(registry)
+    runnable_registry = RunnableRegistry()
+    runnable_executor = RunnableExecutor(runnable_registry)
+    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
+    return runnable_executor
 
 
 def _dag_agent_dsl() -> str:

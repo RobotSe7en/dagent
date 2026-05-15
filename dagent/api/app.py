@@ -17,8 +17,8 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.runnables import RunnableDefinition, RunnableInvocation, RunnableResult
 from dagent.schemas import DAG, ToolExecutionRecord, TraceEvent
+from dagent.schemas import RunnableDefinition, RunnableInvocation, RunnableResult
 
 
 class MessageRequest(BaseModel):

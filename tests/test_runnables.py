@@ -1,10 +1,5 @@
-from dagent.runnables import (
-    RunnableDefinition,
-    RunnableExecutor,
-    RunnableInvocation,
-    RunnableRegistry,
-)
-from dagent.runnables.providers import (
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import (
     AgentRunnableProvider,
     CustomToolRunnableProvider,
     FileRunnableProvider,
@@ -14,8 +9,9 @@ from dagent.runnables.providers import (
     ShellRunnableProvider,
     ToolRunnableProvider,
 )
+from dagent.harness_runtime import RunnableExecutor
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import Boundary
+from dagent.schemas import Boundary, RunnableDefinition, RunnableInvocation
 from dagent.tools.registry import ToolRegistry
 
 

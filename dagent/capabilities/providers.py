@@ -1,25 +1,24 @@
-"""Built-in runnable providers."""
+"""Built-in capability providers."""
 
 from __future__ import annotations
 
-import subprocess
 import asyncio
+import subprocess
 import threading
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from dagent.capabilities.registry import RunnableRegistry
 from dagent.providers import ChatProvider
-from dagent.runnables.executor import RunnableExecutor
-from dagent.runnables.registry import RunnableRegistry
-from dagent.runnables.schemas import (
+from dagent.schemas import (
+    Boundary,
     RunnableDefinition,
     RunnableInvocation,
     RunnablePolicy,
     RunnableResult,
 )
-from dagent.schemas import Boundary
 from dagent.tools.boundary import (
     enforce_action_allowed,
     enforce_command_allowed,
@@ -27,9 +26,12 @@ from dagent.tools.boundary import (
 )
 from dagent.tools.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from dagent.harness_runtime.runnable_executor import RunnableExecutor
+
 
 class ToolRunnableProvider:
-    """Exposes existing ToolRegistry entries as tool runnables."""
+    """Exposes ToolRegistry entries as tool runnables."""
 
     def __init__(self, tools: ToolRegistry) -> None:
         self.tools = tools
@@ -39,7 +41,7 @@ class ToolRunnableProvider:
             tool = self.tools.get(name)
             if tool is None:
                 continue
-            runnable_id = f"tool.{name}"
+            runnable_id = _tool_runnable_id(name)
             registry.register(
                 RunnableDefinition(
                     id=runnable_id,
@@ -47,8 +49,13 @@ class ToolRunnableProvider:
                     kind="tool",
                     description=tool.description,
                     parameters=tool.parameters or {"type": "object"},
-                    policy=RunnablePolicy(risk=tool.risk),
-                    config={"tool_name": name},
+                    policy=RunnablePolicy(risk="medium" if tool.risk_fn is not None else tool.risk),
+                    config={
+                        "tool_name": name,
+                        "action": tool.action,
+                        "path_args": list(tool.path_args),
+                        "command_args": list(tool.command_args),
+                    },
                 )
             )
 
@@ -151,7 +158,14 @@ class FileRunnableProvider:
 
     def register_into(self, registry: RunnableRegistry, executor: RunnableExecutor) -> None:
         registry.register(RunnableDefinition(id="file.read", name="file_read", kind="file"))
-        registry.register(RunnableDefinition(id="file.write", name="file_write", kind="file", policy=RunnablePolicy(risk="medium")))
+        registry.register(
+            RunnableDefinition(
+                id="file.write",
+                name="file_write",
+                kind="file",
+                policy=RunnablePolicy(risk="medium"),
+            )
+        )
 
         def read(invocation: RunnableInvocation) -> RunnableResult:
             try:
@@ -175,11 +189,7 @@ class FileRunnableProvider:
 
 
 class MCPRunnableProvider:
-    """Registers configured MCP-like tools as runnable capabilities.
-
-    The first implementation accepts already-discovered tool handlers. Real
-    stdio/http discovery can populate the same shape before registration.
-    """
+    """Registers configured MCP-like tools as runnable capabilities."""
 
     def __init__(self, servers: dict[str, dict[str, Any]]) -> None:
         self.servers = servers
@@ -352,6 +362,10 @@ def _execute_tool(
     for arg_name in tool.command_args:
         enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
     return tool.handler(**checked_args)
+
+
+def _tool_runnable_id(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
 def _read_skill(path: Path) -> tuple[dict[str, Any], str]:

@@ -3,8 +3,10 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
+from dagent.harness_runtime import RunnableExecutor
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import ToolRunnableProvider
 from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, RunnableInvocation
-from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
@@ -34,7 +36,7 @@ def node(
 
 
 def test_executor_runs_ordered_dag_and_records_trace() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -70,7 +72,7 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
 
 
 def test_risk_override_promotes_write_file_to_medium() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -94,7 +96,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
 
 def test_medium_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -107,7 +109,7 @@ def test_medium_risk_dag_requires_approval() -> None:
 
 
 def test_high_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -120,7 +122,7 @@ def test_high_risk_dag_requires_approval() -> None:
 
 
 def test_read_only_broad_paths_does_not_require_approval() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -159,7 +161,7 @@ def tool_node(
     )
 
 
-def tool_executor() -> ToolExecutor:
+def make_runnable_executor() -> RunnableExecutor:
     registry = ToolRegistry()
     registry.register(
         name="dag_start",
@@ -219,7 +221,10 @@ def tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    return ToolExecutor(registry)
+    runnable_registry = RunnableRegistry()
+    runnable_executor = RunnableExecutor(runnable_registry)
+    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
+    return runnable_executor
 
 
 def _tool_runnable_id(tool_name: str) -> str:
@@ -227,7 +232,7 @@ def _tool_runnable_id(tool_name: str) -> str:
 
 
 def test_executor_treats_boundary_violation_as_node_failure() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -257,7 +262,7 @@ def test_executor_treats_boundary_violation_as_node_failure() -> None:
 
 
 def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -292,7 +297,7 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -328,7 +333,7 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
 
 
 def test_executor_injects_completed_node_output_into_downstream_args() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -351,7 +356,7 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
 
 
 def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -370,7 +375,7 @@ def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
 
 
 def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -386,15 +391,15 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     failing_node = tool_node(
         "fragile",
         tool="fail_tool",
         args={"text": "boom"},
     )
 
-    with pytest.raises(RuntimeError, match="failed:boom"):
-        executor.execute_tool_node(
+    with pytest.raises(DAGExecutionError, match="failed:boom"):
+        executor.execute_runnable_node(
             failing_node,
             DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
         )
@@ -406,7 +411,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
 
 
 def test_tool_node_boundary_violation_records_failed_node() -> None:
-    executor = DAGExecutor(tool_executor=tool_executor())
+    executor = DAGExecutor(runnable_executor=make_runnable_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",

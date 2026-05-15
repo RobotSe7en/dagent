@@ -1,12 +1,12 @@
-"""Runnable execution dispatcher."""
+"""Unified runnable execution dispatcher for harness runtime."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
 
-from dagent.runnables.registry import RunnableRegistry
-from dagent.runnables.schemas import RunnableInvocation, RunnableResult
+from dagent.capabilities.registry import RunnableRegistry
+from dagent.schemas import RunnableInvocation, RunnableResult
 
 
 RunnableHandler = Callable[[RunnableInvocation], RunnableResult]

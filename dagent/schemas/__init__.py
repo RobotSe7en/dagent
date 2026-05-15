@@ -5,7 +5,7 @@ from dagent.schemas.dag import DAG, PlanNodeSpec, PlanSpec
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import DAGNode
-from dagent.runnables import (
+from dagent.schemas.runnable import (
     RunnableDefinition,
     RunnableInvocation,
     RunnableKind,

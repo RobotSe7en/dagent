@@ -13,6 +13,7 @@ from dagent.harness_runtime.validator_agent import (
 )
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
+from dagent.harness_runtime.runnable_executor import RunnableExecutionError, RunnableExecutor
 from dagent.schemas import (
     DAGNodeResult,
     DAGRunResult,
@@ -49,6 +50,8 @@ __all__ = [
     "FeedbackLearning",
     "RuntimeResponse",
     "HarnessRuntime",
+    "RunnableExecutionError",
+    "RunnableExecutor",
     "DAGNodeResult",
     "DAGRunResult",
     "RuntimeMode",

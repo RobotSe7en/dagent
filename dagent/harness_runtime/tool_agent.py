@@ -8,15 +8,13 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
-from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.harness_runtime.review_policy import review_policy
+from dagent.harness_runtime.runnable_executor import RunnableExecutor
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary, LoopOutcome, PendingReview, RunnableInvocation
+from dagent.schemas import Boundary, LoopOutcome, PendingReview, RunnableDefinition, RunnableInvocation, RunnableResult
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.boundary import BoundaryViolation
-from dagent.tools.executor import ToolExecutor
-from dagent.tools.registry import Tool
 import dagent.harness_runtime.review_policy as _rp
 
 
@@ -48,7 +46,7 @@ class ToolAgent:
         *,
         loop: "ToolAgentLoop",
         profile: AgentProfile,
-        tools: list[Tool] | None = None,
+        tools: list[RunnableDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
     ) -> None:
@@ -107,11 +105,8 @@ class ToolAgent:
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         if approved:
             try:
-                feed_content = self.loop.tool_executor.execute(
-                    _tool_name_from_runnable(invocation.runnable_id),
-                    invocation.arguments,
-                    boundary=invocation.boundary,
-                )
+                result = self.loop.runnable_executor.execute(invocation)
+                feed_content = _tool_content(result)
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
@@ -162,7 +157,7 @@ class ToolAgent:
         return {
             tool.name
             for tool in self.tools
-            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
+            if tool.policy.risk in {"medium", "high"} or tool.policy.requires_review
         }
 
 
@@ -173,27 +168,26 @@ class ToolAgentLoop:
         self,
         *,
         provider: ChatProvider,
-        tool_executor: ToolExecutor,
+        runnable_executor: RunnableExecutor,
     ) -> None:
         self.provider = provider
-        self.tool_executor = tool_executor
+        self.runnable_executor = runnable_executor
 
     def create_tool_guard(
         self,
         review_level: "_rp.ReviewLevel",
         boundary: Boundary,
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
     ) -> ControlToolHandler:
         policy = review_policy(review_level)
 
         async def guard(tool_call: ToolCall) -> ControlToolResult:
-            tool_obj = next((t for t in tools if t.name == tool_call.name), None)
-            risk = effective_risk(tool_obj, tool_call.arguments)
+            definition = next((t for t in tools if t.name == tool_call.name), None)
+            risk = definition.policy.risk if definition is not None else "low"
+            invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
             if not policy.reviews_tool(risk):
                 try:
-                    result_content = self.tool_executor.execute(
-                        tool_call.name, tool_call.arguments, boundary=boundary
-                    )
+                    result_content = _tool_content(self.runnable_executor.execute(invocation))
                 except Exception as exc:
                     return ControlToolResult(
                         content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
@@ -255,15 +249,8 @@ class ToolAgentLoop:
                 )
 
             for tool_call in response.tool_calls:
-                tool_obj = self.tool_executor.registry.get(tool_call.name)
-                invocation = RunnableInvocation(
-                    invocation_id=tool_call.id,
-                    runnable_id=_tool_runnable_id(tool_call.name),
-                    kind="tool",
-                    arguments=tool_call.arguments,
-                    boundary=boundary,
-                    risk=effective_risk(tool_obj, tool_call.arguments),
-                )
+                definition = self.runnable_executor.registry.get_by_name(tool_call.name, kind="tool")
+                invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
                 invocations.append(invocation)
                 self._emit_tool_event(on_event, tool_call, "tool_call")
                 if control_tool_names and tool_call.name in control_tool_names:
@@ -333,28 +320,7 @@ class ToolAgentLoop:
                     )
                     continue
                 try:
-                    tool_result = self.tool_executor.execute(
-                        tool_call.name,
-                        tool_call.arguments,
-                        boundary=boundary,
-                    )
-                except BoundaryViolation as exc:
-                    error_content = (
-                        f"[BOUNDARY_VIOLATION] {exc}\n"
-                        f"Tool '{tool_call.name}' exceeded the current boundary. "
-                        "Adjust your arguments to stay within allowed paths/commands, "
-                        "or use an alternative approach."
-                    )
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": error_content,
-                        }
-                    )
-                    continue
+                    tool_result = _tool_content(self.runnable_executor.execute(invocation))
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                     self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
@@ -391,21 +357,17 @@ class ToolAgentLoop:
         allowed_tools: list[str] | None,
     ) -> list[dict[str, Any]]:
         allowed = set(allowed_tools) if allowed_tools is not None else None
-        tool_names = sorted(self.tool_executor.registry.names())
         definitions: list[dict[str, Any]] = []
-        for name in tool_names:
-            if allowed is not None and name not in allowed:
-                continue
-            tool = self.tool_executor.registry.get(name)
-            if tool is None:
+        for runnable in self.runnable_executor.registry.list(kind="tool", enabled_only=True):
+            if allowed is not None and runnable.name not in allowed:
                 continue
             definitions.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters or {"type": "object"},
+                        "name": runnable.name,
+                        "description": runnable.description,
+                        "parameters": runnable.parameters or {"type": "object"},
                     },
                 }
             )
@@ -525,6 +487,29 @@ def _tool_runnable_id(tool_name: str) -> str:
 
 def _tool_name_from_runnable(runnable_id: str) -> str:
     return runnable_id.removeprefix("tool.")
+
+
+def _invocation_from_tool_call(
+    tool_call: ToolCall,
+    boundary: Boundary,
+    *,
+    definition: RunnableDefinition | None,
+) -> RunnableInvocation:
+    return RunnableInvocation(
+        invocation_id=tool_call.id,
+        runnable_id=definition.id if definition is not None else _tool_runnable_id(tool_call.name),
+        kind="tool",
+        arguments=tool_call.arguments,
+        boundary=boundary,
+        risk=definition.policy.risk if definition is not None else "low",
+    )
+
+
+def _tool_content(result: RunnableResult) -> str:
+    if result.status == "completed":
+        return result.content
+    prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
+    return f"{prefix} {result.error or result.content}"
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:

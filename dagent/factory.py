@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import ToolRunnableProvider
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
     ToolAgent,
@@ -15,9 +17,9 @@ from dagent.harness_runtime import (
     FeedbackLearnerAgent,
     HarnessRuntime,
 )
+from dagent.harness_runtime import RunnableExecutor
 from dagent.profiles import ProfileStore
 from dagent.providers import OpenAICompatibleProvider
-from dagent.tools.executor import ToolExecutor
 from dagent.tools.file_tools import create_file_tool_registry
 
 
@@ -29,23 +31,18 @@ def create_harness_runtime(
     resolved_config = config or load_config()
     profile_store = ProfileStore(resolved_config.profiles.directory)
     provider = OpenAICompatibleProvider(resolved_config.provider)
-    tool_executor = ToolExecutor(
-        create_file_tool_registry(),
-        workspace_root=workspace_root,
-    )
-    runtime_tools = [
-        tool
-        for name in sorted(tool_executor.registry.names())
-        if (tool := tool_executor.registry.get(name)) is not None
-    ]
+    runnable_registry = RunnableRegistry()
+    runnable_executor = RunnableExecutor(runnable_registry, workspace_root=workspace_root)
+    ToolRunnableProvider(create_file_tool_registry()).register_into(runnable_registry, runnable_executor)
+    runtime_tools = runnable_registry.list(kind="tool", enabled_only=True)
     conversation_profile = profile_store.load(resolved_config.profiles.conversation)
-    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
     tool_agent = ToolAgent(
         loop=tool_agent_loop,
         profile=conversation_profile,
         tools=runtime_tools,
     )
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
@@ -62,6 +59,8 @@ def create_harness_runtime(
         dag_agent=dag_agent,
         validator=validator,
         enable_validation=resolved_config.enable_result_validation,
+        runnable_registry=runnable_registry,
+        runnable_executor=runnable_executor,
     )
 
 

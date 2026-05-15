@@ -9,11 +9,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import FileRunnableProvider, MemoryRunnableProvider
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
     TokenHandler,
 )
+from dagent.harness_runtime.runnable_executor import RunnableExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
@@ -24,8 +27,6 @@ from dagent.harness_runtime.runtime_events import (
     _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
-from dagent.runnables import RunnableExecutor, RunnableRegistry
-from dagent.runnables.providers import FileRunnableProvider, MemoryRunnableProvider, ToolRunnableProvider
 from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, RunnableInvocation
 
 
@@ -77,16 +78,11 @@ class HarnessRuntime:
         self._register_default_runnables()
 
     def _register_default_runnables(self) -> None:
-        if self.runnable_registry.ids():
-            return
-        tool_executor = getattr(getattr(self.tool_agent, "loop", None), "tool_executor", None)
-        if tool_executor is not None:
-            ToolRunnableProvider(tool_executor.registry).register_into(
-                self.runnable_registry,
-                self.runnable_executor,
-            )
-        MemoryRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
-        FileRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
+        registered = set(self.runnable_registry.ids())
+        if not {"memory.write", "memory.search"} & registered:
+            MemoryRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
+        if not {"file.read", "file.write"} & registered:
+            FileRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
 
     # ==================================================================
     # Public API

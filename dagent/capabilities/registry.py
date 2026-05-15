@@ -1,8 +1,8 @@
-"""Registry for runnable capabilities."""
+"""Registry for executable capabilities."""
 
 from __future__ import annotations
 
-from dagent.runnables.schemas import RunnableDefinition, RunnableKind
+from dagent.schemas import RunnableDefinition, RunnableKind
 
 
 class RunnableRegistry:
@@ -25,6 +25,12 @@ class RunnableRegistry:
     def get(self, runnable_id: str) -> RunnableDefinition | None:
         return self._definitions.get(runnable_id)
 
+    def get_by_name(self, name: str, *, kind: RunnableKind | None = None) -> RunnableDefinition | None:
+        for definition in self._definitions.values():
+            if definition.name == name and (kind is None or definition.kind == kind):
+                return definition
+        return None
+
     def list(self, *, kind: RunnableKind | None = None, enabled_only: bool = False) -> list[RunnableDefinition]:
         definitions = list(self._definitions.values())
         if kind is not None:
@@ -33,8 +39,8 @@ class RunnableRegistry:
             definitions = [definition for definition in definitions if definition.enabled]
         return sorted(definitions, key=lambda definition: definition.id)
 
-    def names(self) -> set[str]:
-        return {definition.name for definition in self._definitions.values()}
+    def names(self, *, kind: RunnableKind | None = None) -> set[str]:
+        return {definition.name for definition in self.list(kind=kind)}
 
     def ids(self) -> set[str]:
         return set(self._definitions)

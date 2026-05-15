@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.schemas.dag import DAG
-from dagent.runnables import RunnableInvocation
+from dagent.schemas.runnable import RunnableInvocation
 from dagent.schemas.trace import ToolExecutionRecord, TraceEvent
 
 

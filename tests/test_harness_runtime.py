@@ -7,11 +7,13 @@ from dagent.harness_runtime import (
     DAGExecutor,
     HarnessRuntime,
     ValidatorAgent,
+    RunnableExecutor,
 )
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import ToolRunnableProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import ValidationIssue, ValidationResult
-from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
@@ -381,8 +383,8 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.dag.nodes[0].invocation.runnable_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown tool(s): get_current_dir" in feedback
-    assert "Available tools:" in feedback
+    assert "Unknown runnable(s): tool.get_current_dir" in feedback
+    assert "Available runnables:" in feedback
     assert "echo" in feedback
     assert "User request:" not in feedback
 
@@ -516,7 +518,7 @@ def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
 
 
 def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> None:
-    tool_executor = make_tool_executor()
+    runnable_executor = make_runnable_executor()
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
@@ -530,14 +532,14 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
         ChatResponse(content="bad answer"),
         ChatResponse(content="good answer"),
     ])
-    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
+    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
             loop=tool_agent_loop,
             profile=_conversation_profile(),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
@@ -545,7 +547,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
                 dag_executor=dag_executor,
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -579,7 +581,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
 
 
 def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
-    tool_executor = make_tool_executor()
+    runnable_executor = make_runnable_executor()
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),        # initial DAG review
         ChatResponse(content="bad answer"),            # approved DAG execution
@@ -589,17 +591,17 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
             profile=_conversation_profile(),
             tools=[],
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(tool_executor=tool_executor),
+                dag_executor=DAGExecutor(runnable_executor=runnable_executor),
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -631,20 +633,20 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
         ChatResponse(content="NO_CHANGE"),            # execute observation
         ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
-    tool_executor = make_tool_executor()
+    runnable_executor = make_runnable_executor()
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
             profile=_conversation_profile(),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(tool_executor=tool_executor),
+                dag_executor=DAGExecutor(runnable_executor=runnable_executor),
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
         validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
@@ -673,14 +675,14 @@ class _RejectThenApproveValidator:
 def _runtime(
     provider: MockProvider,
 ) -> HarnessRuntime:
-    tool_executor = make_tool_executor()
-    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
+    runnable_executor = make_runnable_executor()
+    tool_agent_loop = ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
     tool_agent = ToolAgent(
         loop=tool_agent_loop,
         profile=_conversation_profile(),
         tools=[],
     )
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
@@ -691,14 +693,16 @@ def _runtime(
         dag_agent=DAGAgent(
             loop=dag_agent_loop,
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
+            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
         ),
+        runnable_registry=runnable_executor.registry,
+        runnable_executor=runnable_executor,
     )
 
 
-def make_tool_executor() -> ToolExecutor:
-    registry = ToolRegistry()
-    registry.register(
+def make_runnable_executor() -> RunnableExecutor:
+    tool_registry = ToolRegistry()
+    tool_registry.register(
         name="dag_start",
         handler=lambda: "started",
         action="read",
@@ -707,7 +711,7 @@ def make_tool_executor() -> ToolExecutor:
             "properties": {},
         },
     )
-    registry.register(
+    tool_registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",
         action="read",
@@ -717,7 +721,7 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    registry.register(
+    tool_registry.register(
         name="write_file",
         handler=lambda path, content="": f"wrote:{path}:{content}",
         action="write",
@@ -732,7 +736,7 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["path"],
         },
     )
-    registry.register(
+    tool_registry.register(
         name="fail_tool",
         handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
         action="read",
@@ -742,7 +746,10 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    return ToolExecutor(registry)
+    runnable_registry = RunnableRegistry()
+    runnable_executor = RunnableExecutor(runnable_registry)
+    ToolRunnableProvider(tool_registry).register_into(runnable_registry, runnable_executor)
+    return runnable_executor
 
 
 def _conversation_profile() -> AgentProfile:

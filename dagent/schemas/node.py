@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel
-from dagent.runnables import RunnableInvocation
+from dagent.schemas.runnable import RunnableInvocation
 
 NodeStatus = Literal[
     "planned",

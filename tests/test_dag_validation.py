@@ -3,11 +3,13 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
+from dagent.harness_runtime import RunnableExecutor
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
+from dagent.capabilities import RunnableRegistry
+from dagent.capabilities.providers import ToolRunnableProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode, RunnableInvocation
-from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
 
@@ -146,15 +148,17 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
         action="read",
         parameters={"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}},
     )
-    tool_executor = ToolExecutor(registry)
+    runnable_registry = RunnableRegistry()
+    runnable_executor = RunnableExecutor(runnable_registry)
+    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(tool_executor=tool_executor),
+        dag_executor=DAGExecutor(runnable_executor=runnable_executor),
     )
     agent = DAGAgent(
         loop=loop,
         profile=_dag_agent_profile(),
-        tools=tool_executor.registry.all_tools(),
+        tools=runnable_registry.list(kind="tool", enabled_only=True),
     )
 
     messages = [agent.system_message]

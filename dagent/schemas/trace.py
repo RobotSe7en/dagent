@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from dagent.runnables import RunnableInvocation
+from dagent.schemas.runnable import RunnableInvocation
 
 
 TraceEventType = Literal[

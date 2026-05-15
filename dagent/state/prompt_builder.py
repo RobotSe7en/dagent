@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dagent.profiles import AgentProfile
-from dagent.tools.registry import Tool
+from dagent.schemas import RunnableDefinition
 
 
 @dataclass(frozen=True)
 class PromptRequest:
     profile: AgentProfile
     task_content: str
-    tools: list[Tool] = field(default_factory=list)
+    tools: list[RunnableDefinition] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     memory: str = ""
     context: str = ""
@@ -51,7 +51,7 @@ class PromptBuilder:
         return {"role": "user", "content": _render_template(task_content, variables or {})}
 
 
-def _tools_section(tools: list[Tool]) -> str:
+def _tools_section(tools: list[RunnableDefinition]) -> str:
     lines = ["## Available Tools"]
     for tool in tools:
         lines.append(f"- {tool.name}: {tool.description or 'No description.'}")

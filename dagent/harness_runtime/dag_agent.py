@@ -27,12 +27,12 @@ from dagent.schemas import (
     LoopOutcome,
     LoopStatus,
     PendingReview,
+    RunnableDefinition,
     RunnableInvocation,
     ToolExecutionRecord,
     TraceEvent,
 )
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.registry import Tool
 
 
 MAX_EXECUTION_CONTEXT_CHARS = 16000
@@ -47,7 +47,7 @@ class DAGAgent:
         *,
         loop: "DAGAgentLoop",
         profile: AgentProfile,
-        tools: list[Tool] | None = None,
+        tools: list[RunnableDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.loop = loop
@@ -168,7 +168,7 @@ class DAGAgentLoop:
         task_id: str | None,
         messages: list[dict[str, Any]],
         user_message: dict[str, str],
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
@@ -200,7 +200,7 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         initial_user_message: dict[str, str],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
@@ -297,7 +297,7 @@ class DAGAgentLoop:
         review_level: ReviewLevel | None = None,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -392,7 +392,7 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -509,7 +509,7 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[Tool],
+        tools: list[RunnableDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -703,21 +703,18 @@ class DAGAgentLoop:
         return prepared
 
     def _validate_dag_tools(self, dag: DAG) -> None:
-        if self.dag_executor.tool_executor is None:
-            return
-        available_tools = self.dag_executor.tool_executor.registry.names()
+        available_runnables = self.dag_executor.runnable_executor.registry.ids()
         unknown_tools = sorted({
-            _tool_name_from_runnable(node.invocation.runnable_id)
+            node.invocation.runnable_id
             for node in dag.nodes
-            if _tool_name_from_runnable(node.invocation.runnable_id)
-            and _tool_name_from_runnable(node.invocation.runnable_id) not in available_tools
+            if node.invocation.runnable_id and node.invocation.runnable_id not in available_runnables
         })
         if unknown_tools:
             raise DAGValidationError(
-                "Unknown tool(s): "
+                "Unknown runnable(s): "
                 f"{', '.join(unknown_tools)}. "
-                "Available tools: "
-                f"{', '.join(sorted(available_tools))}."
+                "Available runnables: "
+                f"{', '.join(sorted(available_runnables))}."
             )
 
 # ------------------------------------------------------------------
