@@ -14,10 +14,10 @@ from dagent.schemas import (
     Boundary,
     PendingReview,
     ReviewKind,
-    ToolExecutionRecord,
-    RunnableInvocation,
+    CapabilityExecutionRecord,
+    CapabilityInvocation,
 )
-from dagent.schemas.trace import ToolExecutionSource, ToolExecutionStatus
+from dagent.schemas.trace import CapabilityExecutionSource, CapabilityExecutionStatus
 
 if TYPE_CHECKING:
     from dagent.schemas import LoopOutcome
@@ -34,8 +34,8 @@ class ReviewContinuation:
     kind: ReviewKind
     user_request: str
     review_level: ReviewLevel
-    invocations: list[RunnableInvocation] = field(default_factory=list)
-    pending_invocation: RunnableInvocation | None = None
+    invocations: list[CapabilityInvocation] = field(default_factory=list)
+    pending_invocation: CapabilityInvocation | None = None
 
 
 @dataclass
@@ -62,8 +62,8 @@ class RuntimeTaskRecord:
     review_level: ReviewLevel = "fast"
     pending_review: PendingReview | None = None
     final_response: str = ""
-    invocations: dict[str, RunnableInvocation] = field(default_factory=dict)
-    execution_records: list[ToolExecutionRecord] = field(default_factory=list)
+    invocations: dict[str, CapabilityInvocation] = field(default_factory=dict)
+    execution_records: list[CapabilityExecutionRecord] = field(default_factory=list)
     tool_state: ToolTaskState | None = None
     dag_state: DAGTaskState | None = None
 
@@ -146,7 +146,7 @@ class RuntimeTaskRecord:
         loop_outcome: "LoopOutcome",
         *,
         review_level: ReviewLevel,
-        invocations: list[RunnableInvocation] | None = None,
+        invocations: list[CapabilityInvocation] | None = None,
     ) -> None:
         task_invocations = invocations if invocations is not None else loop_outcome.invocations
         self.status = loop_outcome.status
@@ -186,28 +186,28 @@ class RuntimeTaskRecord:
             )
 
 
-class ToolExecutionStore:
-    """Stores raw tool execution records for planning and audit."""
+class CapabilityExecutionStore:
+    """Stores raw capability execution records for planning and audit."""
 
     def __init__(self) -> None:
-        self._records: list[ToolExecutionRecord] = []
+        self._records: list[CapabilityExecutionRecord] = []
 
     def add_record(
         self,
         *,
         task_id: str,
-        invocation: RunnableInvocation,
-        source: ToolExecutionSource,
+        invocation: CapabilityInvocation,
+        source: CapabilityExecutionSource,
         output: str = "",
         error: str | None = None,
-        status: ToolExecutionStatus,
+        status: CapabilityExecutionStatus,
         stop_reason: str,
         steps: int,
         dag: DAG | None = None,
         node: DAGNode | None = None,
-    ) -> ToolExecutionRecord:
-        record = ToolExecutionRecord(
-            record_id=f"tool_execution_{uuid4().hex}",
+    ) -> CapabilityExecutionRecord:
+        record = CapabilityExecutionRecord(
+            record_id=f"capability_execution_{uuid4().hex}",
             task_id=task_id,
             invocation=invocation.model_copy(deep=True),
             source=source,
@@ -223,24 +223,24 @@ class ToolExecutionStore:
         self._records.append(record)
         return record
 
-    def records_for_task(self, task_id: str) -> list[ToolExecutionRecord]:
+    def records_for_task(self, task_id: str) -> list[CapabilityExecutionRecord]:
         return [record for record in self._records if record.task_id == task_id]
 
-    def records_for_dag(self, dag_id: str) -> list[ToolExecutionRecord]:
+    def records_for_dag(self, dag_id: str) -> list[CapabilityExecutionRecord]:
         return [record for record in self._records if record.dag_id == dag_id]
 
-    def records_for_node(self, task_id: str, node_id: str) -> list[ToolExecutionRecord]:
+    def records_for_node(self, task_id: str, node_id: str) -> list[CapabilityExecutionRecord]:
         return [
             record
             for record in self.records_for_task(task_id)
             if record.node_id == node_id
         ]
 
-    def all_records(self) -> list[ToolExecutionRecord]:
+    def all_records(self) -> list[CapabilityExecutionRecord]:
         return list(self._records)
 
 
-def pending_review_invocation(loop_outcome: "LoopOutcome") -> RunnableInvocation | None:
+def pending_review_invocation(loop_outcome: "LoopOutcome") -> CapabilityInvocation | None:
     review = loop_outcome.pending_review
     if review is None or review.kind != "tool_review":
         return None
@@ -256,8 +256,8 @@ def tool_loop_execution_records(
     *,
     task_id: str,
     messages: list[dict[str, Any]],
-    invocations: list[RunnableInvocation],
-) -> list[ToolExecutionRecord]:
+    invocations: list[CapabilityInvocation],
+) -> list[CapabilityExecutionRecord]:
     invocations_by_id = {
         invocation.invocation_id: invocation
         for invocation in invocations
@@ -274,13 +274,13 @@ def tool_loop_execution_records(
             continue
         tool_messages[tool_call_id] = message
 
-    records: list[ToolExecutionRecord] = []
+    records: list[CapabilityExecutionRecord] = []
     for tool_call_id, message in tool_messages.items():
         content = str(message.get("content", ""))
         failed = content.startswith(("[TOOL_ERROR]", "[BOUNDARY_VIOLATION]", "[ERROR]"))
         records.append(
-            ToolExecutionRecord(
-                record_id=f"tool_execution_{uuid4().hex}",
+            CapabilityExecutionRecord(
+                record_id=f"capability_execution_{uuid4().hex}",
                 task_id=task_id,
                 invocation=invocations_by_id[tool_call_id].model_copy(deep=True),
                 source="tool_loop",

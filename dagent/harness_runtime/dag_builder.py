@@ -8,7 +8,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, RunnableDefinition, RunnableInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, CapabilityDefinition, CapabilityInvocation
 
 
 class DAGCreationError(ValueError):
@@ -30,7 +30,7 @@ def dag_from_model_output(
     content: str,
     *,
     task_id: str,
-    tools: list[RunnableDefinition] | None = None,
+    tools: list[CapabilityDefinition] | None = None,
 ) -> DAG | str | None:
     """Parse LLM output into a DAG, a final answer string, or None."""
     if _is_no_change(content):
@@ -72,7 +72,7 @@ def compile_plan_spec(
     plan: PlanSpec,
     *,
     task_id: str,
-    tools: list[RunnableDefinition] | None = None,
+    tools: list[CapabilityDefinition] | None = None,
 ) -> DAG:
     tool_index = {tool.name: tool for tool in (tools or [])}
     nodes = [_compile_plan_node(node, tool_index=tool_index) for node in plan.nodes]
@@ -113,8 +113,8 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
-        if not node.invocation.runnable_id:
-            raise DAGValidationError(f"Node '{node.id}' must declare a runnable.")
+        if not node.invocation.capability_id:
+            raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
     node_id_set = set(node_ids)
     connected_ids: set[str] = set()
@@ -211,7 +211,7 @@ def _parse_depends_on(deps_text: str | None) -> list[str]:
 def _compile_plan_node(
     node,
     *,
-    tool_index: dict[str, RunnableDefinition] | None = None,
+    tool_index: dict[str, CapabilityDefinition] | None = None,
 ) -> DAGNode:
     if not node.tool:
         raise DAGCreationError(f"PlanSpec node '{node.id}' must declare one concrete tool.")
@@ -219,8 +219,8 @@ def _compile_plan_node(
     registered = (tool_index or {}).get(node.tool)
     return DAGNode(
         id=node.id,
-        invocation=RunnableInvocation(
-            runnable_id=_tool_runnable_id(node.tool),
+        invocation=CapabilityInvocation(
+            capability_id=_tool_capability_id(node.tool),
             kind="tool",
             arguments=args,
             boundary=_infer_boundary(registered, args),
@@ -249,8 +249,8 @@ def _ensure_start_node(
         next_nodes = [
             DAGNode(
                 id=start_id,
-                invocation=RunnableInvocation(
-                    runnable_id="tool.dag_start",
+                invocation=CapabilityInvocation(
+                    capability_id="tool.dag_start",
                     kind="tool",
                     arguments={},
                     boundary=Boundary(mode="read_only"),
@@ -296,7 +296,7 @@ def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:
         raise DAGValidationError("DAG must be acyclic.")
 
 
-def _infer_boundary(tool_obj: RunnableDefinition | None, args: dict[str, Any]) -> Boundary:
+def _infer_boundary(tool_obj: CapabilityDefinition | None, args: dict[str, Any]) -> Boundary:
     if tool_obj is None:
         return Boundary(mode="read_only")
     path_args = tuple(tool_obj.config.get("path_args") or ())
@@ -307,5 +307,5 @@ def _infer_boundary(tool_obj: RunnableDefinition | None, args: dict[str, Any]) -
     return Boundary(mode="read_only", allowed_paths=paths)
 
 
-def _tool_runnable_id(tool_name: str) -> str:
+def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"

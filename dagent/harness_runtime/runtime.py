@@ -9,14 +9,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import FileRunnableProvider, MemoryRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import FileCapabilityProvider, MemoryCapabilityProvider
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
     TokenHandler,
 )
-from dagent.harness_runtime.runnable_executor import RunnableExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
@@ -27,7 +27,7 @@ from dagent.harness_runtime.runtime_events import (
     _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
-from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, RunnableInvocation
+from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, CapabilityInvocation
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
@@ -62,8 +62,8 @@ class HarnessRuntime:
         validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_validation_retries: int = 1,
-        runnable_registry: RunnableRegistry | None = None,
-        runnable_executor: RunnableExecutor | None = None,
+        capability_catalog: CapabilityCatalog | None = None,
+        capability_executor: CapabilityExecutor | None = None,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
@@ -73,16 +73,24 @@ class HarnessRuntime:
         self.max_validation_retries = max_validation_retries
         self.session = HarnessRuntimeSession()
         self.tasks = self.session.tasks
-        self.runnable_registry = runnable_registry or RunnableRegistry()
-        self.runnable_executor = runnable_executor or RunnableExecutor(self.runnable_registry)
-        self._register_default_runnables()
+        if capability_catalog is None and capability_executor is not None:
+            capability_catalog = capability_executor.catalog
+        self.capability_catalog = capability_catalog or CapabilityCatalog()
+        if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
+            raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
+        self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
+        self._register_default_capabilities()
 
-    def _register_default_runnables(self) -> None:
-        registered = set(self.runnable_registry.ids())
-        if not {"memory.write", "memory.search"} & registered:
-            MemoryRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
-        if not {"file.read", "file.write"} & registered:
-            FileRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
+    def _register_default_capabilities(self) -> None:
+        registered = set(self.capability_catalog.ids())
+        if not {"memory.write", "memory.search"}.issubset(registered):
+            for capability_id in {"memory.write", "memory.search"} & registered:
+                self.capability_catalog.delete(capability_id)
+            MemoryCapabilityProvider().register_into(self.capability_catalog)
+        if not {"file.read", "file.write"}.issubset(registered):
+            for capability_id in {"file.read", "file.write"} & registered:
+                self.capability_catalog.delete(capability_id)
+            FileCapabilityProvider().register_into(self.capability_catalog)
 
     # ==================================================================
     # Public API
@@ -370,7 +378,7 @@ class HarnessRuntime:
         mode: Literal["tool", "dag"],
         review_level: ReviewLevel,
         *,
-        extra_invocations: list[RunnableInvocation] | None = None,
+        extra_invocations: list[CapabilityInvocation] | None = None,
         task_id: str | None = None,
         runtime_mode: str | None = None,
     ) -> RuntimeResponse:

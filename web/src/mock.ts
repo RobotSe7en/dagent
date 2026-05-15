@@ -9,7 +9,7 @@ export const initialDag: Dag = {
     {
       id: 'plan_request',
       invocation: {
-        runnable_id: 'tool.dag_start',
+        capability_id: 'tool.dag_start',
         kind: 'tool',
         arguments: {},
         boundary: {
@@ -23,7 +23,7 @@ export const initialDag: Dag = {
     {
       id: 'inspect_project',
       invocation: {
-        runnable_id: 'tool.grep',
+        capability_id: 'tool.grep',
         kind: 'tool',
         arguments: { pattern: 'DAG', path: '.' },
         boundary: {
@@ -37,7 +37,7 @@ export const initialDag: Dag = {
     {
       id: 'summarize_result',
       invocation: {
-        runnable_id: 'tool.read_file',
+        capability_id: 'tool.read_file',
         kind: 'tool',
         arguments: { path: 'README.md' },
         boundary: {

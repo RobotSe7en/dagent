@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from dagent.schemas.runnable import RunnableInvocation
+from dagent.schemas.capability import CapabilityInvocation
 
 
 TraceEventType = Literal[
@@ -21,9 +21,9 @@ TraceEventType = Literal[
     "node_started",
     "node_completed",
     "node_failed",
-    "tool_called",
-    "tool_completed",
-    "tool_failed",
+    "capability_called",
+    "capability_completed",
+    "capability_failed",
 ]
 
 
@@ -45,25 +45,25 @@ class TraceSpan(BaseModel):
     events: list[TraceEvent] = Field(default_factory=list)
 
 
-ToolExecutionStatus = Literal[
+CapabilityExecutionStatus = Literal[
     "completed",
     "failed",
 ]
 
-ToolExecutionSource = Literal[
+CapabilityExecutionSource = Literal[
     "tool_loop",
     "dag_node",
 ]
 
 
-class ToolExecutionRecord(BaseModel):
+class CapabilityExecutionRecord(BaseModel):
     record_id: str
     task_id: str
-    invocation: RunnableInvocation
-    source: ToolExecutionSource
+    invocation: CapabilityInvocation
+    source: CapabilityExecutionSource
     output: str = ""
     error: str | None = None
-    status: ToolExecutionStatus
+    status: CapabilityExecutionStatus
     stop_reason: str = ""
     steps: int = 0
     dag_id: str | None = None

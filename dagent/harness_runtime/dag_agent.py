@@ -27,9 +27,9 @@ from dagent.schemas import (
     LoopOutcome,
     LoopStatus,
     PendingReview,
-    RunnableDefinition,
-    RunnableInvocation,
-    ToolExecutionRecord,
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityExecutionRecord,
     TraceEvent,
 )
 from dagent.state import PromptBuilder, PromptRequest
@@ -47,7 +47,7 @@ class DAGAgent:
         *,
         loop: "DAGAgentLoop",
         profile: AgentProfile,
-        tools: list[RunnableDefinition] | None = None,
+        tools: list[CapabilityDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.loop = loop
@@ -168,7 +168,7 @@ class DAGAgentLoop:
         task_id: str | None,
         messages: list[dict[str, Any]],
         user_message: dict[str, str],
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
@@ -200,7 +200,7 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         initial_user_message: dict[str, str],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
@@ -297,7 +297,7 @@ class DAGAgentLoop:
         review_level: ReviewLevel | None = None,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -392,7 +392,7 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -509,7 +509,7 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -703,18 +703,18 @@ class DAGAgentLoop:
         return prepared
 
     def _validate_dag_tools(self, dag: DAG) -> None:
-        available_runnables = self.dag_executor.runnable_executor.registry.ids()
+        available_capabilities = self.dag_executor.capability_executor.catalog.ids()
         unknown_tools = sorted({
-            node.invocation.runnable_id
+            node.invocation.capability_id
             for node in dag.nodes
-            if node.invocation.runnable_id and node.invocation.runnable_id not in available_runnables
+            if node.invocation.capability_id and node.invocation.capability_id not in available_capabilities
         })
         if unknown_tools:
             raise DAGValidationError(
-                "Unknown runnable(s): "
+                "Unknown capability(s): "
                 f"{', '.join(unknown_tools)}. "
-                "Available runnables: "
-                f"{', '.join(sorted(available_runnables))}."
+                "Available capabilities: "
+                f"{', '.join(sorted(available_capabilities))}."
             )
 
 # ------------------------------------------------------------------
@@ -778,12 +778,12 @@ def _format_dag_observation(
         sections.append(f"Error:\n{last_error}")
 
     recent = [
-        f"- {execution.node_id} ({execution.invocation.runnable_id}): {execution.status}"
+        f"- {execution.node_id} ({execution.invocation.capability_id}): {execution.status}"
         + (f" error={execution.error}" if execution.error else "")
         for execution in record.execution_records[-6:]
     ]
     if recent:
-        sections.append("Recent tool executions:\n" + "\n".join(recent))
+        sections.append("Recent capability executions:\n" + "\n".join(recent))
 
     return "\n\n".join(sections)
 
@@ -810,7 +810,7 @@ def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) 
         for node in dag.nodes:
             lines.append(
                 f"  - {node.id}: "
-                f"{node.invocation.runnable_id}({node.invocation.arguments})"
+                f"{node.invocation.capability_id}({node.invocation.arguments})"
             )
     if dag_run and dag_run.node_results:
         lines.append("Node execution results:")
@@ -862,7 +862,7 @@ def _dag_loop_outcome(
     extra_events: list[dict[str, Any]] | None = None,
 ) -> LoopOutcome:
     events: list[dict[str, Any]] = list(extra_events or [])
-    invocations: list[RunnableInvocation] = []
+    invocations: list[CapabilityInvocation] = []
     if dag is not None:
         invocations = [node.invocation for node in dag.nodes]
     if task_id and dag:
@@ -893,8 +893,8 @@ def _dag_loop_outcome(
     )
 
 
-def _tool_name_from_runnable(runnable_id: str) -> str:
-    return runnable_id.removeprefix("tool.")
+def _tool_name_from_capability(capability_id: str) -> str:
+    return capability_id.removeprefix("tool.")
 
 
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:
@@ -938,7 +938,7 @@ def _dag_completed(record: RuntimeTaskRecord) -> bool:
 
 
 def _latest_failed_node_id(
-    records: list[ToolExecutionRecord],
+    records: list[CapabilityExecutionRecord],
     *,
     valid_node_ids: set[str] | None = None,
 ) -> str | None:
@@ -949,7 +949,7 @@ def _latest_failed_node_id(
 
 
 def _failed_node_ids(
-    records: list[ToolExecutionRecord],
+    records: list[CapabilityExecutionRecord],
     *,
     valid_node_ids: set[str] | None = None,
 ) -> set[str]:

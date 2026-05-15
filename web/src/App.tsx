@@ -30,7 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, RunnableKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, CapabilityKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -41,7 +41,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
-const runnableKinds: RunnableKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
+const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -57,7 +57,7 @@ function normalizeNode(node: DagNode): DagNode {
     ...node,
     invocation: {
       ...invocation,
-      runnable_id: invocation.runnable_id ?? '',
+      capability_id: invocation.capability_id ?? '',
       kind: invocation.kind ?? 'tool',
       arguments: invocation.arguments ?? {},
       boundary: {
@@ -114,11 +114,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.invocation.runnable_id ? JSON.stringify(item.invocation.arguments) : ''}
+              title={item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
             >
-              {item.invocation.runnable_id
-                ? `${item.invocation.runnable_id} ${JSON.stringify(item.invocation.arguments)}`
-                : 'runnable not set'}
+              {item.invocation.capability_id
+                ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
+                : 'capability not set'}
             </div>
           </div>
         ),
@@ -415,7 +415,7 @@ export function App() {
         normalizeNode({
           id,
           invocation: {
-            runnable_id: current.nodes[0]?.invocation.runnable_id ?? '',
+            capability_id: current.nodes[0]?.invocation.capability_id ?? '',
             kind: current.nodes[0]?.invocation.kind ?? 'tool',
             arguments: {},
             boundary: {
@@ -1298,19 +1298,19 @@ function NodeEditor({
         </label>
       </div>
       <label>
-        Runnable
+        Capability
         <input
-          value={invocation.runnable_id}
-          onChange={(event) => patchInvocation({ runnable_id: event.target.value })}
+          value={invocation.capability_id}
+          onChange={(event) => patchInvocation({ capability_id: event.target.value })}
         />
       </label>
       <label>
         Type
         <select
           value={invocation.kind ?? 'tool'}
-          onChange={(event) => patchInvocation({ kind: event.target.value as RunnableKind })}
+          onChange={(event) => patchInvocation({ kind: event.target.value as CapabilityKind })}
         >
-          {runnableKinds.map((kind) => (
+          {capabilityKinds.map((kind) => (
             <option key={kind} value={kind}>
               {kind}
             </option>

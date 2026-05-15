@@ -3,21 +3,21 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
-from dagent.harness_runtime import RunnableExecutor
+from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGEdge, DAGNode, RunnableInvocation
+from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityInvocation
 from dagent.tools.registry import ToolRegistry
 
 
 def make_node(node_id: str) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=RunnableInvocation(
-            runnable_id="tool.echo",
+        invocation=CapabilityInvocation(
+            capability_id="tool.echo",
             kind="tool",
             arguments={"text": node_id},
         ),
@@ -60,12 +60,12 @@ def test_agent_nodes_are_rejected_for_executable_dags() -> None:
         nodes=[
             DAGNode(
                 id="reason",
-                invocation=RunnableInvocation(runnable_id="", kind="tool"),
+                invocation=CapabilityInvocation(capability_id="", kind="tool"),
             )
         ],
     )
 
-    with pytest.raises(DAGValidationError, match="must declare a runnable"):
+    with pytest.raises(DAGValidationError, match="must declare a capability"):
         validate_dag(dag)
 
 
@@ -148,17 +148,17 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
         action="read",
         parameters={"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}},
     )
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry)
-    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
     loop = DAGAgentLoop(
         provider=provider,
-        dag_executor=DAGExecutor(runnable_executor=runnable_executor),
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
     )
     agent = DAGAgent(
         loop=loop,
         profile=_dag_agent_profile(),
-        tools=runnable_registry.list(kind="tool", enabled_only=True),
+        tools=capability_catalog.list(kind="tool", enabled_only=True),
     )
 
     messages = [agent.system_message]
@@ -176,7 +176,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.invocation.runnable_id for node in dag.nodes] == ["tool.run_command"]
+    assert [node.invocation.capability_id for node in dag.nodes] == ["tool.run_command"]
     assert [node.invocation.risk for node in dag.nodes] == ["low"]
 
 

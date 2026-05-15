@@ -1,38 +1,38 @@
-from dagent.capabilities import RunnableRegistry
+from dagent.capabilities import CapabilityCatalog
 from dagent.capabilities.providers import (
-    AgentRunnableProvider,
-    CustomToolRunnableProvider,
-    FileRunnableProvider,
-    MCPRunnableProvider,
-    MemoryRunnableProvider,
-    SkillRunnableProvider,
-    ShellRunnableProvider,
-    ToolRunnableProvider,
+    AgentCapabilityProvider,
+    CustomToolCapabilityProvider,
+    FileCapabilityProvider,
+    MCPCapabilityProvider,
+    MemoryCapabilityProvider,
+    SkillCapabilityProvider,
+    ShellCapabilityProvider,
+    ToolCapabilityProvider,
 )
-from dagent.harness_runtime import RunnableExecutor
+from dagent.harness_runtime import CapabilityExecutor
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import Boundary, RunnableDefinition, RunnableInvocation
+from dagent.schemas import Boundary, CapabilityDefinition, CapabilityInvocation
 from dagent.tools.registry import ToolRegistry
 
 
-def test_runnable_registry_rejects_duplicate_ids() -> None:
-    registry = RunnableRegistry()
-    definition = RunnableDefinition(
+def test_capability_catalog_rejects_duplicate_ids() -> None:
+    registry = CapabilityCatalog()
+    definition = CapabilityDefinition(
         id="tool.echo",
         name="echo",
         kind="tool",
         parameters={"type": "object"},
     )
 
-    registry.register(definition)
+    registry.register(definition, lambda invocation: None)
 
     assert registry.get("tool.echo") == definition
     try:
-        registry.register(definition)
+        registry.register(definition, lambda invocation: None)
     except ValueError as exc:
         assert "already registered" in str(exc)
     else:
-        raise AssertionError("duplicate runnable id should fail")
+        raise AssertionError("duplicate capability id should fail")
 
 
 def test_tool_provider_exposes_and_executes_existing_tools() -> None:
@@ -47,13 +47,13 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
             "required": ["text"],
         },
     )
-    registry = RunnableRegistry()
-    executor = RunnableExecutor(registry)
-    ToolRunnableProvider(tools).register_into(registry, executor)
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    ToolCapabilityProvider(tools).register_into(registry)
 
     result = executor.execute(
-        RunnableInvocation(
-            runnable_id="tool.echo",
+        CapabilityInvocation(
+            capability_id="tool.echo",
             kind="tool",
             arguments={"text": "ok"},
             boundary=Boundary(mode="read_only", allowed_paths=["."]),
@@ -68,20 +68,20 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
 
 
 def test_shell_provider_executes_allowlisted_command() -> None:
-    registry = RunnableRegistry()
-    executor = RunnableExecutor(registry)
-    ShellRunnableProvider(
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    ShellCapabilityProvider(
         commands={
             "say_hello": {
                 "command": "python -c \"print('hello')\"",
                 "description": "Print hello.",
             }
         }
-    ).register_into(registry, executor)
+    ).register_into(registry)
 
     result = executor.execute(
-        RunnableInvocation(
-            runnable_id="shell.say_hello",
+        CapabilityInvocation(
+            capability_id="shell.say_hello",
             kind="shell",
             arguments={},
             boundary=Boundary(mode="read_only", allowed_commands=["python"]),
@@ -93,29 +93,29 @@ def test_shell_provider_executes_allowlisted_command() -> None:
     assert result.content.strip() == "hello"
 
 
-def test_memory_and_file_providers_are_explicit_runnables(tmp_path) -> None:
-    registry = RunnableRegistry()
-    executor = RunnableExecutor(registry, workspace_root=tmp_path)
-    MemoryRunnableProvider().register_into(registry, executor)
-    FileRunnableProvider().register_into(registry, executor)
+def test_memory_and_file_providers_are_explicit_capabilities(tmp_path) -> None:
+    registry = CapabilityCatalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(registry)
+    MemoryCapabilityProvider().register_into(registry)
+    FileCapabilityProvider().register_into(registry)
 
     write_memory = executor.execute(
-        RunnableInvocation(
-            runnable_id="memory.write",
+        CapabilityInvocation(
+            capability_id="memory.write",
             kind="memory",
             arguments={"scope": "session", "key": "color", "value": "blue"},
         )
     )
     search_memory = executor.execute(
-        RunnableInvocation(
-            runnable_id="memory.search",
+        CapabilityInvocation(
+            capability_id="memory.search",
             kind="memory",
             arguments={"scope": "session", "query": "color"},
         )
     )
     write_file = executor.execute(
-        RunnableInvocation(
-            runnable_id="file.write",
+        CapabilityInvocation(
+            capability_id="file.write",
             kind="file",
             arguments={"path": "notes.txt", "content": "hello"},
             boundary=Boundary(mode="write_limited", allowed_paths=["."]),
@@ -136,9 +136,9 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
         encoding="utf-8",
     )
     provider = MockProvider([ChatResponse(content="agent:done")])
-    registry = RunnableRegistry()
-    executor = RunnableExecutor(registry, workspace_root=tmp_path)
-    MCPRunnableProvider(
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    MCPCapabilityProvider(
         servers={
             "mock": {
                 "tools": {
@@ -149,36 +149,36 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
                 }
             }
         }
-    ).register_into(registry, executor)
-    SkillRunnableProvider(skill_roots=[tmp_path / "skills"]).register_into(registry, executor)
-    CustomToolRunnableProvider(
+    ).register_into(registry)
+    SkillCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
+    CustomToolCapabilityProvider(
         tools={
             "upper": {
                 "description": "Uppercase text.",
                 "handler": lambda text: str(text).upper(),
             }
         }
-    ).register_into(registry, executor)
-    AgentRunnableProvider(
+    ).register_into(registry)
+    AgentCapabilityProvider(
         agents={
             "helper": {
                 "system": "You are a helper.",
                 "provider": provider,
             }
         }
-    ).register_into(registry, executor)
+    ).register_into(registry)
 
     mcp_result = executor.execute(
-        RunnableInvocation(runnable_id="mcp.mock.lookup", kind="mcp", arguments={"query": "x"})
+        CapabilityInvocation(capability_id="mcp.mock.lookup", kind="mcp", arguments={"query": "x"})
     )
     skill_result = executor.execute(
-        RunnableInvocation(runnable_id="skill.summarize", kind="skill", arguments={"input": "long text"})
+        CapabilityInvocation(capability_id="skill.summarize", kind="skill", arguments={"input": "long text"})
     )
     custom_result = executor.execute(
-        RunnableInvocation(runnable_id="custom_tool.upper", kind="custom_tool", arguments={"text": "hi"})
+        CapabilityInvocation(capability_id="custom_tool.upper", kind="custom_tool", arguments={"text": "hi"})
     )
     agent_result = executor.execute(
-        RunnableInvocation(runnable_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
+        CapabilityInvocation(capability_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
     )
 
     assert mcp_result.content == "mcp:x"

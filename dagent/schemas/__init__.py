@@ -5,14 +5,14 @@ from dagent.schemas.dag import DAG, PlanNodeSpec, PlanSpec
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import DAGNode
-from dagent.schemas.runnable import (
-    RunnableDefinition,
-    RunnableInvocation,
-    RunnableKind,
-    RunnablePolicy,
-    RunnableResult,
-    RunnableRuntime,
-    RunnableStatus,
+from dagent.schemas.capability import (
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityKind,
+    CapabilityPolicy,
+    CapabilityResult,
+    CapabilityRuntime,
+    CapabilityStatus,
 )
 from dagent.schemas.results import (
     DAGNodeResult,
@@ -25,7 +25,7 @@ from dagent.schemas.results import (
     ValidationIssue,
     ValidationResult,
 )
-from dagent.schemas.trace import ToolExecutionRecord, TraceEvent, TraceSpan
+from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent, TraceSpan
 
 __all__ = [
     "Boundary",
@@ -44,14 +44,14 @@ __all__ = [
     "RiskLevel",
     "ReviewKind",
     "RuntimeResponse",
-    "RunnableDefinition",
-    "RunnableInvocation",
-    "RunnableKind",
-    "RunnablePolicy",
-    "RunnableResult",
-    "RunnableRuntime",
-    "RunnableStatus",
-    "ToolExecutionRecord",
+    "CapabilityDefinition",
+    "CapabilityInvocation",
+    "CapabilityKind",
+    "CapabilityPolicy",
+    "CapabilityResult",
+    "CapabilityRuntime",
+    "CapabilityStatus",
+    "CapabilityExecutionRecord",
     "TraceEvent",
     "TraceSpan",
     "ValidationIssue",

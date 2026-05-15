@@ -8,14 +8,14 @@ from dagent.harness_runtime import (
     RuntimeTaskRecord,
     ToolAgent,
     ToolAgentLoop,
-    RunnableExecutor,
+    CapabilityExecutor,
 )
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, RunnableInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, CapabilityInvocation
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.registry import ToolRegistry
 
@@ -36,7 +36,7 @@ def runtime_for(
         tool_agent=ToolAgent(
             loop=ToolAgentLoop(
                 provider=dag_agent_loop.provider,
-                runnable_executor=executor.runnable_executor,
+                capability_executor=executor.capability_executor,
             ),
             profile=AgentProfile(
                 name="conversation",
@@ -53,13 +53,13 @@ def runtime_for(
                 layers=["soul"],
                 layer_contents={"soul": "You are a DAG creator."},
             ),
-            tools=dag_agent_loop.dag_executor.runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=dag_agent_loop.dag_executor.capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
     )
 
 
 def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None) -> DAGAgentLoop:
-    dag_executor = executor or DAGExecutor(runnable_executor=make_runnable_executor())
+    dag_executor = executor or DAGExecutor(capability_executor=make_capability_executor())
     return DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
@@ -75,7 +75,7 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
             layers=["soul"],
             layer_contents={"soul": "You are a DAG creator."},
         ),
-        tools=dag_loop.dag_executor.runnable_executor.registry.list(kind="tool", enabled_only=True),
+        tools=dag_loop.dag_executor.capability_executor.catalog.list(kind="tool", enabled_only=True),
     )
 
 
@@ -85,11 +85,11 @@ def dag_dsl_from_dag(dag: DAG) -> str:
         deps = [e.source for e in dag.edges if e.target == node.id]
         deps_str = f" after {', '.join(deps)}" if deps else ""
         args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
-        lines.append(f'{node.id} = {_tool_name_from_runnable(node.invocation.runnable_id)}({args}){deps_str}')
+        lines.append(f'{node.id} = {_tool_name_from_capability(node.invocation.capability_id)}({args}){deps_str}')
     return "\n".join(lines)
 
 
-def make_runnable_executor() -> RunnableExecutor:
+def make_capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
     registry.register(
         name="dag_start",
@@ -181,17 +181,17 @@ def make_runnable_executor() -> RunnableExecutor:
             "required": ["text"],
         },
     )
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry)
-    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
-    return runnable_executor
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    return capability_executor
 
 
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=RunnableInvocation(
-            runnable_id=_tool_runnable_id(tool),
+        invocation=CapabilityInvocation(
+            capability_id=_tool_capability_id(tool),
             kind="tool",
             arguments=args,
             boundary=Boundary(mode="read_only"),
@@ -199,12 +199,12 @@ def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     )
 
 
-def _tool_runnable_id(tool_name: str) -> str:
+def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def _tool_name_from_runnable(runnable_id: str) -> str:
-    return runnable_id.removeprefix("tool.")
+def _tool_name_from_capability(capability_id: str) -> str:
+    return capability_id.removeprefix("tool.")
 
 
 
@@ -237,7 +237,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
-    assert dag.nodes[1].invocation.runnable_id == "tool.run_command"
+    assert dag.nodes[1].invocation.capability_id == "tool.run_command"
     assert dag.nodes[1].invocation.arguments == {"command": "dir", "cwd": "."}
     assert [(edge.source, edge.target) for edge in dag.edges] == [
         ("start", "list_files"),
@@ -281,7 +281,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
         ChatResponse(content="NO_CHANGE"),
     ])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     loop_outcome = run(runtime.dag_agent.run("Do a safe task", task_id="task_1", review_level="fast"))
@@ -298,7 +298,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
 def test_harness_runtime_careful_reviews_initial_dag() -> None:
     provider = MockProvider([ChatResponse(content='inspect = echo(text="ok")')])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     loop_outcome = run(runtime.dag_agent.run("Do a reviewed task", task_id="task_1", review_level="careful"))
@@ -328,7 +328,7 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
             ChatResponse(content="NO_CHANGE"),
             ChatResponse(content="Both nodes completed."),
         ])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -370,7 +370,7 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
             ChatResponse(content="NO_CHANGE"),
             ChatResponse(content="Adjusted and completed."),
         ])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -407,7 +407,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=adjusted_dsl)])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -450,7 +450,7 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
             ChatResponse(content=dag_dsl_from_dag(replacement)),
             ChatResponse(content="Recovery complete."),
         ])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -493,7 +493,7 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
         ChatResponse(content="All steps completed."),
     ])
     dag_agent = dag_loop_for(provider)
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     result = run(runtime.dag_agent.run("Do two steps", task_id="task_dm", review_level="fast"))
@@ -524,7 +524,7 @@ def test_harness_runtime_marks_dag_failed_when_replan_is_unavailable_after_tool_
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -562,7 +562,7 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -597,7 +597,7 @@ def test_harness_runtime_fails_when_replan_is_unavailable() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -626,7 +626,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -664,7 +664,7 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement))])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -707,7 +707,7 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
             ChatResponse(content=dag_dsl_from_dag(replacement)),
             ChatResponse(content="Patched and completed."),
         ])),
-        executor=DAGExecutor(runnable_executor=make_runnable_executor()),
+        executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(

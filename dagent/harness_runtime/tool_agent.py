@@ -9,11 +9,11 @@ from uuid import uuid4
 
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import review_policy
-from dagent.harness_runtime.runnable_executor import RunnableExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary, LoopOutcome, PendingReview, RunnableDefinition, RunnableInvocation, RunnableResult
+from dagent.schemas import Boundary, LoopOutcome, PendingReview, CapabilityDefinition, CapabilityInvocation, CapabilityResult
 from dagent.state import PromptBuilder, PromptRequest
 import dagent.harness_runtime.review_policy as _rp
 
@@ -46,7 +46,7 @@ class ToolAgent:
         *,
         loop: "ToolAgentLoop",
         profile: AgentProfile,
-        tools: list[RunnableDefinition] | None = None,
+        tools: list[CapabilityDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
     ) -> None:
@@ -105,7 +105,7 @@ class ToolAgent:
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         if approved:
             try:
-                result = self.loop.runnable_executor.execute(invocation)
+                result = self.loop.capability_executor.execute(invocation)
                 feed_content = _tool_content(result)
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
@@ -113,7 +113,7 @@ class ToolAgent:
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=_tool_name_from_runnable(invocation.runnable_id),
+            tool_name=_tool_name_from_capability(invocation.capability_id),
             content=feed_content,
         )
         return await self._continue_messages(
@@ -168,16 +168,16 @@ class ToolAgentLoop:
         self,
         *,
         provider: ChatProvider,
-        runnable_executor: RunnableExecutor,
+        capability_executor: CapabilityExecutor,
     ) -> None:
         self.provider = provider
-        self.runnable_executor = runnable_executor
+        self.capability_executor = capability_executor
 
     def create_tool_guard(
         self,
         review_level: "_rp.ReviewLevel",
         boundary: Boundary,
-        tools: list[RunnableDefinition],
+        tools: list[CapabilityDefinition],
     ) -> ControlToolHandler:
         policy = review_policy(review_level)
 
@@ -187,7 +187,7 @@ class ToolAgentLoop:
             invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
             if not policy.reviews_tool(risk):
                 try:
-                    result_content = _tool_content(self.runnable_executor.execute(invocation))
+                    result_content = _tool_content(self.capability_executor.execute(invocation))
                 except Exception as exc:
                     return ControlToolResult(
                         content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
@@ -222,7 +222,7 @@ class ToolAgentLoop:
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
         control_events: list[dict[str, Any]] = []
-        invocations: list[RunnableInvocation] = []
+        invocations: list[CapabilityInvocation] = []
 
         for step in range(1, max_steps + 1):
             tool_definitions = [
@@ -241,7 +241,7 @@ class ToolAgentLoop:
             if not response.tool_calls:
                 return LoopOutcome(
                     status="completed",
-                    execution_context=_format_tool_execution_context(loop_messages),
+                    execution_context=_format_capability_execution_context(loop_messages),
                     final_answer=strip_thinking_blocks(response.content).strip(),
                     messages=loop_messages,
                     events=control_events,
@@ -249,7 +249,7 @@ class ToolAgentLoop:
                 )
 
             for tool_call in response.tool_calls:
-                definition = self.runnable_executor.registry.get_by_name(tool_call.name, kind="tool")
+                definition = self.capability_executor.catalog.get_by_name(tool_call.name, kind="tool")
                 invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
                 invocations.append(invocation)
                 self._emit_tool_event(on_event, tool_call, "tool_call")
@@ -290,7 +290,7 @@ class ToolAgentLoop:
                         )
                         return LoopOutcome(
                             status="awaiting_review",
-                            execution_context=_format_tool_execution_context(loop_messages),
+                            execution_context=_format_capability_execution_context(loop_messages),
                             messages=loop_messages,
                             events=control_events,
                             invocations=invocations,
@@ -299,7 +299,7 @@ class ToolAgentLoop:
                     if control_result.stop_reason:
                         return LoopOutcome(
                             status="failed",
-                            execution_context=_format_tool_execution_context(loop_messages),
+                            execution_context=_format_capability_execution_context(loop_messages),
                             final_answer=control_result.content,
                             messages=loop_messages,
                             events=control_events,
@@ -320,7 +320,7 @@ class ToolAgentLoop:
                     )
                     continue
                 try:
-                    tool_result = _tool_content(self.runnable_executor.execute(invocation))
+                    tool_result = _tool_content(self.capability_executor.execute(invocation))
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                     self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
@@ -345,7 +345,7 @@ class ToolAgentLoop:
 
         return LoopOutcome(
             status="failed",
-            execution_context=_format_tool_execution_context(loop_messages),
+            execution_context=_format_capability_execution_context(loop_messages),
             messages=loop_messages,
             events=control_events,
             invocations=invocations,
@@ -358,16 +358,16 @@ class ToolAgentLoop:
     ) -> list[dict[str, Any]]:
         allowed = set(allowed_tools) if allowed_tools is not None else None
         definitions: list[dict[str, Any]] = []
-        for runnable in self.runnable_executor.registry.list(kind="tool", enabled_only=True):
-            if allowed is not None and runnable.name not in allowed:
+        for capability in self.capability_executor.catalog.list(kind="tool", enabled_only=True):
+            if allowed is not None and capability.name not in allowed:
                 continue
             definitions.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": runnable.name,
-                        "description": runnable.description,
-                        "parameters": runnable.parameters or {"type": "object"},
+                        "name": capability.name,
+                        "description": capability.description,
+                        "parameters": capability.parameters or {"type": "object"},
                     },
                 }
             )
@@ -433,7 +433,7 @@ class ToolAgentLoop:
         on_event(payload)
 
 
-def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
+def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
     """Format ToolAgentLoop tool calls for validation and fallback output."""
     lines: list[str] = []
     for message in messages:
@@ -481,23 +481,23 @@ def _replace_tool_result(
     messages.append(replacement)
 
 
-def _tool_runnable_id(tool_name: str) -> str:
+def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def _tool_name_from_runnable(runnable_id: str) -> str:
-    return runnable_id.removeprefix("tool.")
+def _tool_name_from_capability(capability_id: str) -> str:
+    return capability_id.removeprefix("tool.")
 
 
 def _invocation_from_tool_call(
     tool_call: ToolCall,
     boundary: Boundary,
     *,
-    definition: RunnableDefinition | None,
-) -> RunnableInvocation:
-    return RunnableInvocation(
+    definition: CapabilityDefinition | None,
+) -> CapabilityInvocation:
+    return CapabilityInvocation(
         invocation_id=tool_call.id,
-        runnable_id=definition.id if definition is not None else _tool_runnable_id(tool_call.name),
+        capability_id=definition.id if definition is not None else _tool_capability_id(tool_call.name),
         kind="tool",
         arguments=tool_call.arguments,
         boundary=boundary,
@@ -505,7 +505,7 @@ def _invocation_from_tool_call(
     )
 
 
-def _tool_content(result: RunnableResult) -> str:
+def _tool_content(result: CapabilityResult) -> str:
     if result.status == "completed":
         return result.content
     prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"

@@ -71,7 +71,7 @@ flowchart TD
 
   TA --> TM[("ToolAgent.messages\nsystem + user + assistant/tool")]
   TA --> TAL["ToolAgentLoop"]
-  TAL -->|"bounded tool calls"| T["ToolExecutor"]
+  TAL -->|"capability invocations"| T["CapabilityExecutor"]
   TAL -->|"tool review needed"| TRV["Human Tool Review"]
   TRV -->|"approve"| TEX["Execute reviewed tool"]
   TRV -->|"reject"| TDENY["Append denied tool result"]
@@ -166,22 +166,22 @@ before dispatching to `ToolAgent` or `DAGAgent`.
 
 ### Trace DB And Execution Records
 
-Every completed tool call is recorded as a `ToolExecutionRecord`:
+Every completed capability invocation is recorded as a `CapabilityExecutionRecord`:
 
 ```
-{ task_id, source, node_id, tool, args, output, error, status, stop_reason, timestamp }
+{ task_id, source, node_id, capability, args, output, error, status, stop_reason, timestamp }
 ```
 
 Current implementation:
 
-- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/tool lifecycle events.
-- `ToolExecutionStore` keeps in-memory `ToolExecutionRecord` entries for tool-mode calls
+- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/capability lifecycle events.
+- `CapabilityExecutionStore` keeps in-memory `CapabilityExecutionRecord` entries for tool-mode capability calls
   and DAG node execution.
 - The API and Web UI surface these traces and records during the current process lifetime.
 
 Target architecture:
 
-- Persist trace events, tool executions, node outputs, and compact result summaries into
+- Persist trace events, capability executions, node outputs, and compact result summaries into
   a Trace DB.
 - Use Trace DB as the long-term audit store and context boundary for future replanning,
   instead of relying only on in-memory task state.
@@ -204,9 +204,9 @@ The runtime is intentionally layered:
 - DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
-- Each node is a bounded tool call - no nested agent loop inside a node.
-- `ToolExecutor` enforces boundaries before every tool call.
-- Human review can be triggered by tool-mode calls, initial DAG creation, and DAG
+- Each node is a bounded capability invocation - no nested agent loop inside a node unless an agent capability is explicitly configured.
+- `CapabilityExecutor` dispatches approved invocations, and capability handlers enforce boundaries before side effects.
+- Human review can be triggered by tool-mode capability calls, initial DAG creation, and DAG
   revisions.
 - Optional result validation uses a separate `validator_agent` profile to check the
   final answer against the original user request and execution context. If validation

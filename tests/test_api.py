@@ -10,10 +10,10 @@ from dagent.harness_runtime import (
     DAGAgentLoop,
     DAGExecutor,
     HarnessRuntime,
-    RunnableExecutor,
+    CapabilityExecutor,
 )
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.tools.registry import ToolRegistry
@@ -162,14 +162,14 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     resume_events = _sse_events(resume_response.text)
     assert resume_events[-1]["status"] == "completed"
     assert resume_events[-1]["dag"]["status"] == "completed"
-    assert any(event.get("event", {}).get("event_type") == "tool_completed" for event in resume_events)
+    assert any(event.get("event", {}).get("event_type") == "capability_completed" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
     assert trace_response.status_code == 200
     records = trace_response.json()["records"]
     assert len(records) == 1
     assert records[0]["node_id"] == "answer"
-    assert records[0]["tool"] == "tool.echo"
+    assert records[0]["capability"] == "tool.echo"
     assert records[0]["args"] == {"text": "reviewed"}
     assert records[0]["output"] == "echo:reviewed"
     assert records[0]["status"] == "completed"
@@ -216,18 +216,18 @@ def test_api_old_dag_lifecycle_routes_are_removed() -> None:
     assert client.put("/dags/task_api", json={"dag": {}}).status_code == 404
 
 
-def test_api_runnable_list_create_and_test() -> None:
+def test_api_capability_list_create_and_test() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
-    list_response = client.get("/runnables")
+    list_response = client.get("/capabilities")
 
     assert list_response.status_code == 200
-    runnable_ids = {item["id"] for item in list_response.json()["runnables"]}
-    assert {"tool.echo", "memory.write", "file.write"}.issubset(runnable_ids)
+    capability_ids = {item["id"] for item in list_response.json()["capabilities"]}
+    assert {"tool.echo", "memory.write", "file.write"}.issubset(capability_ids)
 
     create_response = client.post(
-        "/runnables",
+        "/capabilities",
         json={
             "id": "custom_tool.upper",
             "name": "upper",
@@ -239,25 +239,25 @@ def test_api_runnable_list_create_and_test() -> None:
     assert create_response.status_code == 200
 
     test_response = client.post(
-        "/runnables/custom_tool.upper/test",
+        "/capabilities/custom_tool.upper/test",
         json={"arguments": {"text": "ok"}},
     )
 
     assert test_response.status_code == 200
     assert test_response.json()["result"]["content"] == "upper:ok"
 
-    disable_response = client.post("/runnables/custom_tool.upper/disable")
+    disable_response = client.post("/capabilities/custom_tool.upper/disable")
     assert disable_response.status_code == 200
-    assert disable_response.json()["runnable"]["enabled"] is False
+    assert disable_response.json()["capability"]["enabled"] is False
 
-    enable_response = client.post("/runnables/custom_tool.upper/enable")
+    enable_response = client.post("/capabilities/custom_tool.upper/enable")
     assert enable_response.status_code == 200
-    assert enable_response.json()["runnable"]["enabled"] is True
+    assert enable_response.json()["capability"]["enabled"] is True
 
-    delete_response = client.delete("/runnables/custom_tool.upper")
+    delete_response = client.delete("/capabilities/custom_tool.upper")
     assert delete_response.status_code == 200
     assert client.post(
-        "/runnables/custom_tool.upper/test",
+        "/capabilities/custom_tool.upper/test",
         json={"arguments": {"text": "ok"}},
     ).status_code == 404
 
@@ -275,14 +275,14 @@ def test_api_capability_status_endpoints() -> None:
 
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:
-    runnable_executor = _runnable_executor()
-    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
+    capability_executor = _capability_executor()
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
     return HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
+            loop=ToolAgentLoop(provider=provider, capability_executor=capability_executor),
             profile=_profile("conversation"),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
@@ -290,14 +290,14 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
                 dag_executor=dag_executor,
             ),
             profile=_profile("dag_agent"),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
-        runnable_registry=runnable_executor.registry,
-        runnable_executor=runnable_executor,
+        capability_catalog=capability_executor.catalog,
+        capability_executor=capability_executor,
     )
 
 
-def _runnable_executor() -> RunnableExecutor:
+def _capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
     registry.register(
         name="dag_start",
@@ -328,10 +328,10 @@ def _runnable_executor() -> RunnableExecutor:
             "required": ["text"],
         },
     )
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry)
-    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
-    return runnable_executor
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    return capability_executor
 
 
 def _dag_agent_dsl() -> str:

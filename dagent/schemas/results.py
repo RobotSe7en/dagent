@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.schemas.dag import DAG
-from dagent.schemas.runnable import RunnableInvocation
-from dagent.schemas.trace import ToolExecutionRecord, TraceEvent
+from dagent.schemas.capability import CapabilityInvocation
+from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "tool_review"]
@@ -29,7 +29,7 @@ class DAGRunResult:
     completed: bool
     node_results: dict[str, DAGNodeResult]
     traces: list[TraceEvent] = field(default_factory=list)
-    execution_records: list[ToolExecutionRecord] = field(default_factory=list)
+    execution_records: list[CapabilityExecutionRecord] = field(default_factory=list)
 
 
 @dataclass
@@ -51,7 +51,7 @@ class LoopOutcome:
     messages: list[dict[str, Any]] = field(default_factory=list)
     final_answer: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
-    invocations: list[RunnableInvocation] = field(default_factory=list)
+    invocations: list[CapabilityInvocation] = field(default_factory=list)
     dag: DAG | None = None
     dag_run: DAGRunResult | None = None
     task_id: str | None = None

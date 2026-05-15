@@ -8,12 +8,12 @@ export interface Boundary {
   allowed_commands?: string[];
 }
 
-export type RunnableKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'custom_tool' | 'agent' | 'memory' | 'file';
+export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'custom_tool' | 'agent' | 'memory' | 'file';
 
-export interface RunnableInvocation {
+export interface CapabilityInvocation {
   invocation_id?: string;
-  runnable_id: string;
-  kind: RunnableKind;
+  capability_id: string;
+  kind: CapabilityKind;
   arguments: Record<string, unknown>;
   boundary?: Boundary;
   risk?: RiskLevel;
@@ -21,7 +21,7 @@ export interface RunnableInvocation {
 
 export interface DagNode {
   id: string;
-  invocation: RunnableInvocation;
+  invocation: CapabilityInvocation;
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
 }
 
@@ -62,10 +62,10 @@ export interface TraceEvent {
   timestamp: string;
 }
 
-export interface ToolExecutionRecord {
+export interface CapabilityExecutionRecord {
   record_id: string;
   task_id: string;
-  invocation: RunnableInvocation;
+  invocation: CapabilityInvocation;
   source: 'tool_loop' | 'dag_node';
   output: string;
   error: string | null;
@@ -104,7 +104,7 @@ export interface ReviewEventPayload {
 export interface DagRunResult {
   dag_id: string;
   completed: boolean;
-  execution_records?: ToolExecutionRecord[];
+  execution_records?: CapabilityExecutionRecord[];
   node_results: Record<
     string,
     {

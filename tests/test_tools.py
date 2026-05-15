@@ -3,32 +3,32 @@ import sys
 
 import pytest
 
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
-from dagent.harness_runtime import RunnableExecutionError, RunnableExecutor
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
+from dagent.harness_runtime import CapabilityExecutionError, CapabilityExecutor
 from dagent.schemas import Boundary
-from dagent.schemas import RunnableInvocation, RunnableResult
+from dagent.schemas import CapabilityInvocation, CapabilityResult
 from dagent.tools.command_tools import CommandExecutionError, run_command
 from dagent.tools.file_tools import create_file_tool_registry
 
 
-def make_executor(tmp_path: Path) -> RunnableExecutor:
-    registry = RunnableRegistry()
-    executor = RunnableExecutor(registry, workspace_root=tmp_path)
-    ToolRunnableProvider(create_file_tool_registry()).register_into(registry, executor)
+def make_executor(tmp_path: Path) -> CapabilityExecutor:
+    registry = CapabilityCatalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(registry)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(registry)
     return executor
 
 
 def execute(
-    executor: RunnableExecutor,
+    executor: CapabilityExecutor,
     tool_name: str,
     args: dict,
     *,
     boundary: Boundary,
-) -> RunnableResult:
+) -> CapabilityResult:
     return executor.execute(
-        RunnableInvocation(
-            runnable_id=f"tool.{tool_name}",
+        CapabilityInvocation(
+            capability_id=f"tool.{tool_name}",
             kind="tool",
             arguments=args,
             boundary=boundary,
@@ -142,7 +142,7 @@ def test_absolute_path_cannot_escape_allowed_path(tmp_path: Path) -> None:
 def test_unregistered_tool_reports_error(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
-    with pytest.raises(RunnableExecutionError, match="not registered"):
+    with pytest.raises(CapabilityExecutionError, match="not registered"):
         execute(
             executor,
             "missing_tool",

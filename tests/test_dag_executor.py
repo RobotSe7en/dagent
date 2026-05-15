@@ -3,10 +3,10 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
-from dagent.harness_runtime import RunnableExecutor
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, RunnableInvocation
+from dagent.harness_runtime import CapabilityExecutor
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation
 from dagent.tools.registry import ToolRegistry
 
 
@@ -25,8 +25,8 @@ def node(
     tool = (tools or ["echo"])[0]
     return DAGNode(
         id=node_id,
-        invocation=RunnableInvocation(
-            runnable_id=_tool_runnable_id(tool),
+        invocation=CapabilityInvocation(
+            capability_id=_tool_capability_id(tool),
             kind="tool",
             arguments=args or {"text": node_id},
             boundary=boundary or Boundary(),
@@ -36,7 +36,7 @@ def node(
 
 
 def test_executor_runs_ordered_dag_and_records_trace() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -60,19 +60,19 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
     assert [event.event_type for event in [*first.traces, *result.traces]] == [
         "dag_started",
         "node_started",
-        "tool_called",
-        "tool_completed",
+        "capability_called",
+        "capability_completed",
         "node_completed",
         "node_started",
-        "tool_called",
-        "tool_completed",
+        "capability_called",
+        "capability_completed",
         "node_completed",
         "dag_completed",
     ]
 
 
 def test_risk_override_promotes_write_file_to_medium() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -96,7 +96,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
 
 def test_medium_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -109,7 +109,7 @@ def test_medium_risk_dag_requires_approval() -> None:
 
 
 def test_high_risk_dag_requires_approval() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -122,7 +122,7 @@ def test_high_risk_dag_requires_approval() -> None:
 
 
 def test_read_only_broad_paths_does_not_require_approval() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -151,8 +151,8 @@ def tool_node(
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=RunnableInvocation(
-            runnable_id=_tool_runnable_id(tool),
+        invocation=CapabilityInvocation(
+            capability_id=_tool_capability_id(tool),
             kind="tool",
             arguments=args,
             boundary=boundary or Boundary(),
@@ -161,7 +161,7 @@ def tool_node(
     )
 
 
-def make_runnable_executor() -> RunnableExecutor:
+def make_capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
     registry.register(
         name="dag_start",
@@ -221,18 +221,18 @@ def make_runnable_executor() -> RunnableExecutor:
             "required": ["text"],
         },
     )
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry)
-    ToolRunnableProvider(registry).register_into(runnable_registry, runnable_executor)
-    return runnable_executor
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    return capability_executor
 
 
-def _tool_runnable_id(tool_name: str) -> str:
+def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
 def test_executor_treats_boundary_violation_as_node_failure() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -254,15 +254,15 @@ def test_executor_treats_boundary_violation_as_node_failure() -> None:
     assert [event.event_type for event in executor.trace_recorder.events] == [
         "dag_started",
         "node_started",
-        "tool_called",
-        "tool_failed",
+        "capability_called",
+        "capability_failed",
         "node_failed",
         "dag_failed",
     ]
 
 
 def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -282,22 +282,22 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
     records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "echo"
-    assert records[0].invocation.runnable_id == "tool.echo"
+    assert records[0].invocation.capability_id == "tool.echo"
     assert records[0].invocation.arguments == {"text": "hi"}
     assert records[0].output == "echo:hi"
     assert records[0].status == "completed"
     assert [event.event_type for event in result.traces] == [
         "dag_started",
         "node_started",
-        "tool_called",
-        "tool_completed",
+        "capability_called",
+        "capability_completed",
         "node_completed",
         "dag_completed",
     ]
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -315,8 +315,8 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
     assert [event.event_type for event in first.traces] == [
         "dag_started",
         "node_started",
-        "tool_called",
-        "tool_completed",
+        "capability_called",
+        "capability_completed",
         "node_completed",
     ]
 
@@ -333,7 +333,7 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
 
 
 def test_executor_injects_completed_node_output_into_downstream_args() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -356,7 +356,7 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
 
 
 def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -375,7 +375,7 @@ def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
 
 
 def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -391,7 +391,7 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     failing_node = tool_node(
         "fragile",
         tool="fail_tool",
@@ -399,7 +399,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
     )
 
     with pytest.raises(DAGExecutionError, match="failed:boom"):
-        executor.execute_runnable_node(
+        executor.execute_capability_node(
             failing_node,
             DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
         )
@@ -411,7 +411,7 @@ def test_tool_node_failure_marks_node_failed() -> None:
 
 
 def test_tool_node_boundary_violation_records_failed_node() -> None:
-    executor = DAGExecutor(runnable_executor=make_runnable_executor())
+    executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
@@ -433,7 +433,7 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
     records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "write_note"
-    assert records[0].invocation.runnable_id == "tool.write_note"
+    assert records[0].invocation.capability_id == "tool.write_note"
     assert records[0].invocation.arguments == {"path": "notes.md", "content": "hi"}
     assert records[0].status == "failed"
     assert records[0].stop_reason == "boundary_violation"

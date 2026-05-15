@@ -13,7 +13,7 @@ from dagent.harness_runtime.validator_agent import (
 )
 from dagent.harness_runtime.feedback_learner import FeedbackLearnerAgent, FeedbackLearning
 from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
-from dagent.harness_runtime.runnable_executor import RunnableExecutionError, RunnableExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
 from dagent.schemas import (
     DAGNodeResult,
     DAGRunResult,
@@ -28,7 +28,7 @@ from dagent.harness_runtime.task_record import (
     RuntimeTaskMode,
     RuntimeTaskRecord,
     RuntimeTaskStatus,
-    ToolExecutionStore,
+    CapabilityExecutionStore,
     ToolTaskState,
 )
 
@@ -50,8 +50,8 @@ __all__ = [
     "FeedbackLearning",
     "RuntimeResponse",
     "HarnessRuntime",
-    "RunnableExecutionError",
-    "RunnableExecutor",
+    "CapabilityExecutionError",
+    "CapabilityExecutor",
     "DAGNodeResult",
     "DAGRunResult",
     "RuntimeMode",
@@ -61,5 +61,5 @@ __all__ = [
     "DAGTaskState",
     "ReviewContinuation",
     "ToolTaskState",
-    "ToolExecutionStore",
+    "CapabilityExecutionStore",
 ]

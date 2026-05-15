@@ -7,13 +7,13 @@ from dagent.harness_runtime import (
     DAGExecutor,
     HarnessRuntime,
     ValidatorAgent,
-    RunnableExecutor,
+    CapabilityExecutor,
 )
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import ValidationIssue, ValidationResult
+from dagent.schemas import CapabilityInvocation, ValidationIssue, ValidationResult
 from dagent.tools.registry import ToolRegistry
 
 
@@ -36,6 +36,37 @@ def test_harness_runtime_session_owns_dag_task_store() -> None:
     assert not hasattr(runtime.dag_agent, "tasks")
     assert not hasattr(runtime.dag_agent.loop, "tasks")
     assert runtime.tasks is runtime.session.tasks
+
+
+def test_harness_runtime_reuses_executor_catalog_when_catalog_is_implicit() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    capability_executor = make_capability_executor()
+    tool_agent = ToolAgent(
+        loop=ToolAgentLoop(provider=provider, capability_executor=capability_executor),
+        profile=_conversation_profile(),
+        tools=[],
+    )
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
+    runtime = HarnessRuntime(
+        provider=provider,
+        tool_agent=tool_agent,
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(provider=provider, dag_executor=dag_executor),
+            profile=_dag_agent_profile(),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
+        ),
+        capability_executor=capability_executor,
+    )
+
+    assert runtime.capability_catalog is capability_executor.catalog
+    result = runtime.capability_executor.execute(
+        CapabilityInvocation(
+            capability_id="memory.write",
+            kind="memory",
+            arguments={"key": "color", "value": "blue"},
+        )
+    )
+    assert result.status == "completed"
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
@@ -186,7 +217,7 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert runtime_task.invocations
     assert runtime_task.execution_records
     assert runtime_task.execution_records[0].source == "dag_node"
-    assert runtime_task.execution_records[0].invocation.runnable_id == "tool.echo"
+    assert runtime_task.execution_records[0].invocation.capability_id == "tool.echo"
 
 
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
@@ -380,11 +411,11 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].invocation.runnable_id == "tool.echo"
+    assert result.dag.nodes[0].invocation.capability_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown runnable(s): tool.get_current_dir" in feedback
-    assert "Available runnables:" in feedback
+    assert "Unknown capability(s): tool.get_current_dir" in feedback
+    assert "Available capabilities:" in feedback
     assert "echo" in feedback
     assert "User request:" not in feedback
 
@@ -518,7 +549,7 @@ def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
 
 
 def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> None:
-    runnable_executor = make_runnable_executor()
+    capability_executor = make_capability_executor()
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
@@ -532,14 +563,14 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
         ChatResponse(content="bad answer"),
         ChatResponse(content="good answer"),
     ])
-    tool_agent_loop = ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
-    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
+    tool_agent_loop = ToolAgentLoop(provider=provider, capability_executor=capability_executor)
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
             loop=tool_agent_loop,
             profile=_conversation_profile(),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
@@ -547,7 +578,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
                 dag_executor=dag_executor,
             ),
             profile=_dag_agent_profile(),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -575,13 +606,13 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].invocations
     assert tool_tasks[0].execution_records
     assert tool_tasks[0].execution_records[0].source == "tool_loop"
-    assert tool_tasks[0].execution_records[0].invocation.runnable_id == "tool.write_file"
+    assert tool_tasks[0].execution_records[0].invocation.capability_id == "tool.write_file"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
 def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
-    runnable_executor = make_runnable_executor()
+    capability_executor = make_capability_executor()
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),        # initial DAG review
         ChatResponse(content="bad answer"),            # approved DAG execution
@@ -591,17 +622,17 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
+            loop=ToolAgentLoop(provider=provider, capability_executor=capability_executor),
             profile=_conversation_profile(),
             tools=[],
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(runnable_executor=runnable_executor),
+                dag_executor=DAGExecutor(capability_executor=capability_executor),
             ),
             profile=_dag_agent_profile(),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -633,20 +664,20 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
         ChatResponse(content="NO_CHANGE"),            # execute observation
         ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
-    runnable_executor = make_runnable_executor()
+    capability_executor = make_capability_executor()
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, runnable_executor=runnable_executor),
+            loop=ToolAgentLoop(provider=provider, capability_executor=capability_executor),
             profile=_conversation_profile(),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(runnable_executor=runnable_executor),
+                dag_executor=DAGExecutor(capability_executor=capability_executor),
             ),
             profile=_dag_agent_profile(),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
@@ -675,14 +706,14 @@ class _RejectThenApproveValidator:
 def _runtime(
     provider: MockProvider,
 ) -> HarnessRuntime:
-    runnable_executor = make_runnable_executor()
-    tool_agent_loop = ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
+    capability_executor = make_capability_executor()
+    tool_agent_loop = ToolAgentLoop(provider=provider, capability_executor=capability_executor)
     tool_agent = ToolAgent(
         loop=tool_agent_loop,
         profile=_conversation_profile(),
         tools=[],
     )
-    dag_executor = DAGExecutor(runnable_executor=runnable_executor)
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
@@ -693,14 +724,14 @@ def _runtime(
         dag_agent=DAGAgent(
             loop=dag_agent_loop,
             profile=_dag_agent_profile(),
-            tools=runnable_executor.registry.list(kind="tool", enabled_only=True),
+            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
-        runnable_registry=runnable_executor.registry,
-        runnable_executor=runnable_executor,
+        capability_catalog=capability_executor.catalog,
+        capability_executor=capability_executor,
     )
 
 
-def make_runnable_executor() -> RunnableExecutor:
+def make_capability_executor() -> CapabilityExecutor:
     tool_registry = ToolRegistry()
     tool_registry.register(
         name="dag_start",
@@ -746,10 +777,10 @@ def make_runnable_executor() -> RunnableExecutor:
             "required": ["text"],
         },
     )
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry)
-    ToolRunnableProvider(tool_registry).register_into(runnable_registry, runnable_executor)
-    return runnable_executor
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(tool_registry).register_into(capability_catalog)
+    return capability_executor
 
 
 def _conversation_profile() -> AgentProfile:

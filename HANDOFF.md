@@ -46,11 +46,11 @@ or compatibility shim modules.
 | `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: profile-backed system prompt and persistent DAG planner message thread; `DAGAgentLoop`: DAG prompt/model parsing, review checkpoints, layer execution, observation, replanning |
 | `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: ready-layer DAG execution, placeholder injection, execution records |
 | `dagent/harness_runtime/dag_builder.py` | PlanSpec DSL parsing, DAG construction, DAG structural validation |
-| `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `ToolExecutionStore` |
+| `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `CapabilityExecutionStore` |
 | `dagent/harness_runtime/runtime_trace.py` | Trace event recording |
 | `dagent/harness_runtime/validator_agent.py` | LLM-backed `ValidatorAgent` and validation feedback formatting |
 | `dagent/schemas/results.py` | `DAGNodeResult`, `DAGRunResult`, `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
-| `dagent/schemas/invocation.py` | `ToolInvocation` shared by tool mode and DAG nodes |
+| `dagent/schemas/capability.py` | `CapabilityInvocation` shared by tool mode and DAG nodes |
 | `dagent/schemas/common.py` | `Boundary`, boundary modes, risk levels |
 | `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
 | `dagent/tools/registry.py` | Tool registration, including `boundary_fn` and `risk_fn` callbacks |
@@ -105,7 +105,7 @@ Three-level replanning is still part of the current architecture:
   downstream results, then applies review policy.
 
 Trace DB is a target architecture component and should stay in architecture diagrams.
-Current code has in-memory `TraceRecorder` and `ToolExecutionStore`; future work should
+Current code has in-memory `TraceRecorder` and `CapabilityExecutionStore`; future work should
 persist trace events, execution records, node outputs, and compact summaries into a
 Trace DB for long-term audit and context-boundary use.
 
@@ -167,7 +167,7 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 - **PlanSpec DSL only**: the DAG agent emits compact DSL, compiled by `dag_builder.py`.
 - **DAG build + validation together**: `dag_builder.py` owns model output parsing,
   PlanSpec compilation, and structural DAG validation.
-- **Unified execution records**: `ToolExecutionRecord` covers both top-level tool loop
+- **Unified execution records**: `CapabilityExecutionRecord` covers both top-level tool loop
   calls and DAG node execution; `source` distinguishes `tool_loop` and `dag_node`.
 - **Schemas as data contract layer**: shared result/outcome/review contracts are in
   `dagent.schemas`, while `harness_runtime` owns behavior and mutable session state.

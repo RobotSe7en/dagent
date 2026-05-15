@@ -1,4 +1,4 @@
-"""Runnable capability schemas."""
+"""Capability schemas."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from dagent.schemas.common import Boundary, RiskLevel
 
 
-RunnableKind = Literal[
+CapabilityKind = Literal[
     "tool",
     "mcp",
     "skill",
@@ -20,10 +20,10 @@ RunnableKind = Literal[
     "memory",
     "file",
 ]
-RunnableStatus = Literal["completed", "failed"]
+CapabilityStatus = Literal["completed", "failed"]
 
 
-class RunnablePolicy(BaseModel):
+class CapabilityPolicy(BaseModel):
     risk: RiskLevel = "low"
     requires_review: bool = False
     sandbox_required: bool = False
@@ -31,31 +31,31 @@ class RunnablePolicy(BaseModel):
     secrets: list[str] = Field(default_factory=list)
 
 
-class RunnableDefinition(BaseModel):
+class CapabilityDefinition(BaseModel):
     id: str
     name: str
-    kind: RunnableKind
+    kind: CapabilityKind
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
-    policy: RunnablePolicy = Field(default_factory=RunnablePolicy)
+    policy: CapabilityPolicy = Field(default_factory=CapabilityPolicy)
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
 
-class RunnableInvocation(BaseModel):
+class CapabilityInvocation(BaseModel):
     invocation_id: str = Field(default_factory=lambda: f"run_inv_{uuid4().hex}")
-    runnable_id: str
-    kind: RunnableKind
+    capability_id: str
+    kind: CapabilityKind
     arguments: dict[str, Any] = Field(default_factory=dict)
     boundary: Boundary = Field(default_factory=Boundary)
     risk: RiskLevel = "low"
 
 
-class RunnableResult(BaseModel):
+class CapabilityResult(BaseModel):
     invocation_id: str
-    runnable_id: str
-    kind: RunnableKind
-    status: RunnableStatus
+    capability_id: str
+    kind: CapabilityKind
+    status: CapabilityStatus
     content: str = ""
     error: str | None = None
     stop_reason: str = "completed"
@@ -66,7 +66,7 @@ class RunnableResult(BaseModel):
     trace_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class RunnableRuntime(BaseModel):
+class CapabilityRuntime(BaseModel):
     sandbox: str = "local"
     workspace_id: str | None = None
     session_id: str | None = None

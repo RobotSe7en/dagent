@@ -17,8 +17,9 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.schemas import DAG, ToolExecutionRecord, TraceEvent
-from dagent.schemas import RunnableDefinition, RunnableInvocation, RunnableResult
+from dagent.capabilities.providers import template_capability_handler
+from dagent.schemas import DAG, CapabilityExecutionRecord, TraceEvent
+from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
 
 class MessageRequest(BaseModel):
@@ -34,7 +35,7 @@ class ResumeReviewRequest(BaseModel):
     review_level: ReviewLevel | None = None
 
 
-class RunnableTestRequest(BaseModel):
+class CapabilityTestRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     boundary: dict[str, Any] | None = None
 
@@ -83,52 +84,52 @@ async def reset_session() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/runnables")
-async def list_runnables(kind: str | None = None) -> dict[str, Any]:
+@app.get("/capabilities")
+async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     runtime = state.get_harness_runtime()
     return {
-        "runnables": [
+        "capabilities": [
             definition.model_dump(mode="json")
-            for definition in runtime.runnable_registry.list(kind=kind)  # type: ignore[arg-type]
+            for definition in runtime.capability_catalog.list(kind=kind)  # type: ignore[arg-type]
         ]
     }
 
 
-@app.post("/runnables")
-async def create_runnable(definition: RunnableDefinition) -> dict[str, Any]:
+@app.post("/capabilities")
+async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     runtime = state.get_harness_runtime()
-    _install_runnable(runtime, definition)
-    return {"runnable": definition.model_dump(mode="json")}
+    _install_capability(runtime, definition)
+    return {"capability": definition.model_dump(mode="json")}
 
 
-@app.put("/runnables/{runnable_id}")
-async def update_runnable(runnable_id: str, definition: RunnableDefinition) -> dict[str, Any]:
+@app.put("/capabilities/{capability_id}")
+async def update_capability(capability_id: str, definition: CapabilityDefinition) -> dict[str, Any]:
     runtime = state.get_harness_runtime()
-    if runnable_id != definition.id:
-        raise HTTPException(status_code=400, detail="Runnable id mismatch.")
-    if runtime.runnable_registry.get(runnable_id) is None:
-        raise HTTPException(status_code=404, detail="Runnable not found.")
-    runtime.runnable_registry.update(definition)
-    return {"runnable": definition.model_dump(mode="json")}
+    if capability_id != definition.id:
+        raise HTTPException(status_code=400, detail="Capability id mismatch.")
+    if runtime.capability_catalog.get(capability_id) is None:
+        raise HTTPException(status_code=404, detail="Capability not found.")
+    _replace_capability(runtime, definition)
+    return {"capability": definition.model_dump(mode="json")}
 
 
-@app.delete("/runnables/{runnable_id}")
-async def delete_runnable(runnable_id: str) -> dict[str, str]:
+@app.delete("/capabilities/{capability_id}")
+async def delete_capability(capability_id: str) -> dict[str, str]:
     runtime = state.get_harness_runtime()
-    if runtime.runnable_registry.get(runnable_id) is None:
-        raise HTTPException(status_code=404, detail="Runnable not found.")
-    runtime.runnable_registry.delete(runnable_id)
+    if runtime.capability_catalog.get(capability_id) is None:
+        raise HTTPException(status_code=404, detail="Capability not found.")
+    runtime.capability_catalog.delete(capability_id)
     return {"status": "deleted"}
 
 
-@app.post("/runnables/{runnable_id}/enable")
-async def enable_runnable(runnable_id: str) -> dict[str, Any]:
-    return _set_runnable_enabled(runnable_id, True)
+@app.post("/capabilities/{capability_id}/enable")
+async def enable_capability(capability_id: str) -> dict[str, Any]:
+    return _set_capability_enabled(capability_id, True)
 
 
-@app.post("/runnables/{runnable_id}/disable")
-async def disable_runnable(runnable_id: str) -> dict[str, Any]:
-    return _set_runnable_enabled(runnable_id, False)
+@app.post("/capabilities/{capability_id}/disable")
+async def disable_capability(capability_id: str) -> dict[str, Any]:
+    return _set_capability_enabled(capability_id, False)
 
 
 @app.get("/mcp/servers")
@@ -136,7 +137,7 @@ async def list_mcp_servers() -> dict[str, Any]:
     runtime = state.get_harness_runtime()
     servers = sorted({
         definition.config.get("server")
-        for definition in runtime.runnable_registry.list(kind="mcp")  # type: ignore[arg-type]
+        for definition in runtime.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
         if definition.config.get("server")
     })
     return {"servers": servers}
@@ -148,7 +149,7 @@ async def list_skills() -> dict[str, Any]:
     return {
         "skills": [
             definition.model_dump(mode="json")
-            for definition in runtime.runnable_registry.list(kind="skill")  # type: ignore[arg-type]
+            for definition in runtime.capability_catalog.list(kind="skill")  # type: ignore[arg-type]
         ]
     }
 
@@ -158,57 +159,45 @@ async def sandbox_status() -> dict[str, Any]:
     runtime = state.get_harness_runtime()
     return {
         "runner": "local-dev",
-        "workspace_root": str(runtime.runnable_executor.workspace_root),
+        "workspace_root": str(runtime.capability_executor.workspace_root),
         "container_ready": False,
     }
 
 
-def _install_runnable(runtime: HarnessRuntime, definition: RunnableDefinition) -> None:
-    runtime.runnable_registry.register(definition)
-    if definition.kind == "custom_tool":
-        template = str(definition.config.get("template", ""))
-
-        def handler(invocation: RunnableInvocation) -> RunnableResult:
-            try:
-                content = template.format(**invocation.arguments) if template else ""
-            except Exception as exc:
-                return RunnableResult(
-                    invocation_id=invocation.invocation_id,
-                    runnable_id=invocation.runnable_id,
-                    kind=invocation.kind,
-                    status="failed",
-                    error=str(exc),
-                    stop_reason=type(exc).__name__,
-                )
-            return RunnableResult(
-                invocation_id=invocation.invocation_id,
-                runnable_id=invocation.runnable_id,
-                kind=invocation.kind,
-                status="completed",
-                content=content,
-            )
-
-        runtime.runnable_executor.register_handler(definition.id, handler)
+def _install_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
+    runtime.capability_catalog.register(definition, _handler_for_definition(definition))
 
 
-def _set_runnable_enabled(runnable_id: str, enabled: bool) -> dict[str, Any]:
+def _replace_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
+    runtime.capability_catalog.replace(definition, _handler_for_definition(definition))
+
+
+def _handler_for_definition(definition: CapabilityDefinition):
+    if definition.kind != "custom_tool":
+        raise HTTPException(
+            status_code=400,
+            detail="Only custom_tool capabilities can be created through this endpoint.",
+        )
+    return template_capability_handler(str(definition.config.get("template", "")))
+
+
+def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]:
     runtime = state.get_harness_runtime()
-    definition = runtime.runnable_registry.get(runnable_id)
+    definition = runtime.capability_catalog.get(capability_id)
     if definition is None:
-        raise HTTPException(status_code=404, detail="Runnable not found.")
-    updated = definition.model_copy(update={"enabled": enabled})
-    runtime.runnable_registry.update(updated)
-    return {"runnable": updated.model_dump(mode="json")}
+        raise HTTPException(status_code=404, detail="Capability not found.")
+    updated = runtime.capability_catalog.set_enabled(capability_id, enabled)
+    return {"capability": updated.model_dump(mode="json")}
 
 
-@app.post("/runnables/{runnable_id}/test")
-async def test_runnable(runnable_id: str, request: RunnableTestRequest) -> dict[str, Any]:
+@app.post("/capabilities/{capability_id}/test")
+async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
     runtime = state.get_harness_runtime()
-    definition = runtime.runnable_registry.get(runnable_id)
+    definition = runtime.capability_catalog.get(capability_id)
     if definition is None:
-        raise HTTPException(status_code=404, detail="Runnable not found.")
-    invocation = RunnableInvocation(
-        runnable_id=runnable_id,
+        raise HTTPException(status_code=404, detail="Capability not found.")
+    invocation = CapabilityInvocation(
+        capability_id=capability_id,
         kind=definition.kind,
         arguments=request.arguments,
     )
@@ -216,7 +205,7 @@ async def test_runnable(runnable_id: str, request: RunnableTestRequest) -> dict[
         from dagent.schemas import Boundary
 
         invocation.boundary = Boundary.model_validate(request.boundary)
-    result = runtime.runnable_executor.execute(invocation)
+    result = runtime.capability_executor.execute(invocation)
     return {"result": result.model_dump(mode="json")}
 
 
@@ -378,9 +367,9 @@ def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
     return trace.model_dump(mode="json")
 
 
-def _execution_record_payload(record: ToolExecutionRecord) -> dict[str, Any]:
+def _execution_record_payload(record: CapabilityExecutionRecord) -> dict[str, Any]:
     payload = record.model_dump(mode="json")
-    payload["tool"] = record.invocation.runnable_id
+    payload["capability"] = record.invocation.capability_id
     payload["args"] = record.invocation.arguments
     return payload
 

@@ -1,5 +1,5 @@
 """Capability registration and providers."""
 
-from dagent.capabilities.registry import RunnableRegistry
+from dagent.capabilities.catalog import CapabilityCatalog
 
-__all__ = ["RunnableRegistry"]
+__all__ = ["CapabilityCatalog"]

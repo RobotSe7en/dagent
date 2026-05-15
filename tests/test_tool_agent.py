@@ -4,22 +4,19 @@ from pathlib import Path
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.capabilities import RunnableRegistry
-from dagent.capabilities.providers import ToolRunnableProvider
+from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import ToolAgentLoop
-from dagent.harness_runtime import RunnableExecutor
+from dagent.harness_runtime import CapabilityExecutor
 from dagent.schemas import Boundary
 from dagent.tools.file_tools import create_file_tool_registry
 
 
 def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
-    runnable_registry = RunnableRegistry()
-    runnable_executor = RunnableExecutor(runnable_registry, workspace_root=tmp_path)
-    ToolRunnableProvider(create_file_tool_registry()).register_into(
-        runnable_registry,
-        runnable_executor,
-    )
-    return ToolAgentLoop(provider=provider, runnable_executor=runnable_executor)
+    capability_catalog = CapabilityCatalog(workspace_root=tmp_path)
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(capability_catalog)
+    return ToolAgentLoop(provider=provider, capability_executor=capability_executor)
 
 
 def run(coro):

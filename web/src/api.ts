@@ -189,7 +189,7 @@ export function mapTrace(event: BackendTrace): TraceEvent {
     ...event,
     id: event.event_id,
     type,
-    label: event.node_id ? `${event.event_type} · ${event.node_id}` : event.event_type,
+    label: event.node_id ? `${event.event_type} 路 ${event.node_id}` : event.event_type,
     detail: traceDetail(event),
     status,
     timestamp: new Date(event.created_at).toLocaleTimeString([], {
