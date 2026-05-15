@@ -1,4 +1,4 @@
-import type { Dag, ReviewLevel, ReviewEventPayload, ToolStreamEvent, TraceEvent, ValidationFeedbackEvent } from './types';
+import type { Dag, ReviewLevel, ReviewEventPayload, CapabilityStreamEvent, TraceEvent, ValidationFeedbackEvent } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -49,7 +49,7 @@ export async function streamTask(
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
-    onTool?: (event: ToolStreamEvent) => void;
+    onCapability?: (event: CapabilityStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ValidationFeedbackEvent) => void;
     onValidating?: (event: { type: 'validating'; message: string }) => void;
@@ -83,8 +83,8 @@ export async function streamTask(
       if (event.type === 'status') handlers.onStatus?.(event.message);
       if (event.type === 'dag') handlers.onDag?.(event.dag);
       if (event.type === 'trace') handlers.onTrace?.(mapTrace(event.event));
-      if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
-        handlers.onTool?.(event);
+      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
+        handlers.onCapability?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
@@ -104,7 +104,7 @@ export async function resumeDagReview(
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
-    onTool?: (event: ToolStreamEvent) => void;
+    onCapability?: (event: CapabilityStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ValidationFeedbackEvent) => void;
     onValidating?: (event: { type: 'validating'; message: string }) => void;
@@ -134,7 +134,7 @@ async function readStream(
     onStatus?: (status: string) => void;
     onDag?: (dag: Dag) => void;
     onTrace?: (event: TraceEvent) => void;
-    onTool?: (event: ToolStreamEvent) => void;
+    onCapability?: (event: CapabilityStreamEvent) => void;
     onToken?: (content: string) => void;
     onRetry?: (event: ValidationFeedbackEvent) => void;
     onValidating?: (event: { type: 'validating'; message: string }) => void;
@@ -160,8 +160,8 @@ async function readStream(
       if (event.type === 'status') handlers.onStatus?.(event.message);
       if (event.type === 'dag') handlers.onDag?.(event.dag);
       if (event.type === 'trace') handlers.onTrace?.(mapTrace(event.event));
-      if (event.type === 'tool_call' || event.type === 'tool_result' || event.type === 'tool_error') {
-        handlers.onTool?.(event);
+      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
+        handlers.onCapability?.(event);
       }
       if (event.type === 'token') handlers.onToken?.(event.content);
       if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
@@ -182,14 +182,14 @@ export function mapTrace(event: BackendTrace): TraceEvent {
     ? 'dag'
     : event.event_type.startsWith('node')
       ? 'node'
-      : event.event_type.startsWith('tool')
-        ? 'tool'
+      : event.event_type.startsWith('capability')
+        ? 'capability'
         : 'model';
   return {
     ...event,
     id: event.event_id,
     type,
-    label: event.node_id ? `${event.event_type} 路 ${event.node_id}` : event.event_type,
+    label: event.node_id ? `${event.event_type} - ${event.node_id}` : event.event_type,
     detail: traceDetail(event),
     status,
     timestamp: new Date(event.created_at).toLocaleTimeString([], {
@@ -212,6 +212,10 @@ async function errorMessage(response: Response): Promise<string> {
 function traceDetail(event: BackendTrace): string {
   const payload = event.payload ?? {};
   if (typeof payload.error === 'string') return payload.error;
+  if (typeof payload.capability_id === 'string') {
+    const suffix = typeof payload.content === 'string' ? `: ${clip(payload.content)}` : '';
+    return `${payload.capability_id}${suffix}`;
+  }
   if (typeof payload.name === 'string') {
     const suffix = typeof payload.content === 'string' ? `: ${clip(payload.content)}` : '';
     return `${payload.name}${suffix}`;
@@ -227,7 +231,7 @@ function clip(value: string): string {
   return value.length > 180 ? `${value.slice(0, 177)}...` : value;
 }
 
-export async function resumeToolReview(
+export async function resumeCapabilityReview(
   reviewId: string,
   approved: boolean,
   handlers: {
@@ -251,6 +255,6 @@ export async function resumeToolReview(
     ...handlers,
     onDag: undefined,
     onTrace: undefined,
-    onTool: undefined,
+    onCapability: undefined,
   });
 }

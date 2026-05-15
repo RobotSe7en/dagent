@@ -12,7 +12,7 @@ from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, Capability
 
 
 class DAGCreationError(ValueError):
-    """Raised when a proposed DAG cannot become an executable tool DAG."""
+    """Raised when a proposed DAG cannot become an executable DAG."""
 
 
 class DAGValidationError(ValueError):
@@ -113,6 +113,10 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
+        if node.node_type == "start":
+            if node.id != "start":
+                raise DAGValidationError("Start node must use id 'start'.")
+            continue
         if not node.invocation.capability_id:
             raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
@@ -215,6 +219,8 @@ def _compile_plan_node(
 ) -> DAGNode:
     if not node.tool:
         raise DAGCreationError(f"PlanSpec node '{node.id}' must declare one concrete tool.")
+    if node.tool == "dag_start":
+        raise DAGCreationError("dag_start is reserved for the internal start node.")
     args = dict(node.args)
     registered = (tool_index or {}).get(node.tool)
     return DAGNode(
@@ -247,16 +253,7 @@ def _ensure_start_node(
 
     if start_id not in node_ids:
         next_nodes = [
-            DAGNode(
-                id=start_id,
-                invocation=CapabilityInvocation(
-                    capability_id="tool.dag_start",
-                    kind="tool",
-                    arguments={},
-                    boundary=Boundary(mode="read_only"),
-                    risk="low",
-                ),
-            ),
+            _start_node(),
             *next_nodes,
         ]
     elif not root_ids:
@@ -271,6 +268,20 @@ def _ensure_start_node(
         for node_id in root_ids
     )
     return next_nodes, next_edges
+
+
+def _start_node() -> DAGNode:
+    return DAGNode(
+        id="start",
+        node_type="start",
+        invocation=CapabilityInvocation(
+            capability_id="",
+            kind="tool",
+            arguments={},
+            boundary=Boundary(mode="read_only"),
+            risk="low",
+        ),
+    )
 
 
 def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:

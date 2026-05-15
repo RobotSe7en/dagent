@@ -164,15 +164,6 @@ def tool_node(
 def make_capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
     registry.register(
-        name="dag_start",
-        handler=lambda: "started",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
-    registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",
         action="read",
@@ -294,6 +285,13 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
         "node_completed",
         "dag_completed",
     ]
+    capability_events = [
+        event for event in result.traces
+        if event.event_type in {"capability_called", "capability_completed"}
+    ]
+    assert capability_events[0].payload["invocation_id"] == records[0].invocation.invocation_id
+    assert capability_events[0].payload["capability_id"] == "tool.echo"
+    assert "tool_call_id" not in capability_events[0].payload
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:

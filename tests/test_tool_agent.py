@@ -188,17 +188,17 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     )
 
     assert result.status == "completed"
-    assert [event["type"] for event in events] == ["tool_call", "tool_result"]
+    assert [event["type"] for event in events] == ["capability_call", "capability_result"]
     assert events[0] == {
-        "type": "tool_call",
-        "tool_call_id": "call_1",
-        "name": "read_file",
+        "type": "capability_call",
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
     }
     assert events[1] == {
-        "type": "tool_result",
-        "tool_call_id": "call_1",
-        "name": "read_file",
+        "type": "capability_result",
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
         "content": "hello from file",
     }

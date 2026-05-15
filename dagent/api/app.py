@@ -352,11 +352,12 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
 async def get_task_trace(task_id: str) -> dict[str, Any]:
     if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
         runtime = state.harness_runtime
+        task = runtime.tasks[task_id]
         return {
             "task_id": task_id,
             "records": [
                 _execution_record_payload(record)
-                for record in runtime.dag_agent.loop.dag_executor.execution_store.records_for_task(task_id)
+                for record in task.execution_records
             ],
         }
 
@@ -383,11 +384,11 @@ def _review_payload(review) -> dict[str, Any]:
     }
     if review.proposed_dag is not None:
         payload["dag"] = review.proposed_dag.model_dump(mode="json")
-    if review.tool_call is not None:
-        payload["tool_call"] = {
-            "tool_call_id": review.tool_call["tool_call_id"],
-            "name": review.tool_call["name"],
-            "arguments": review.tool_call["arguments"],
+    if review.capability_call is not None:
+        payload["capability_call"] = {
+            "invocation_id": review.capability_call["invocation_id"],
+            "capability_id": review.capability_call["capability_id"],
+            "arguments": review.capability_call["arguments"],
         }
     return payload
 

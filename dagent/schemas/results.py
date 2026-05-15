@@ -10,7 +10,7 @@ from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent
 
 
-ReviewKind = Literal["initial_dag", "dag_replan", "tool_review"]
+ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
 LoopStatus = Literal["completed", "awaiting_review", "failed"]
 
 
@@ -38,7 +38,7 @@ class PendingReview:
     kind: ReviewKind
     message: str
     proposed_dag: DAG | None = None
-    tool_call: dict[str, Any] | None = None
+    capability_call: dict[str, Any] | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 

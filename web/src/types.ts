@@ -22,6 +22,7 @@ export interface CapabilityInvocation {
 export interface DagNode {
   id: string;
   invocation: CapabilityInvocation;
+  node_type?: 'capability' | 'start';
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
 }
 
@@ -55,7 +56,7 @@ export interface TraceEvent {
   payload?: Record<string, unknown>;
   created_at?: string;
   id: string;
-  type: 'dag' | 'node' | 'tool' | 'model';
+  type: 'dag' | 'node' | 'capability' | 'model';
   label: string;
   detail: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
@@ -66,7 +67,7 @@ export interface CapabilityExecutionRecord {
   record_id: string;
   task_id: string;
   invocation: CapabilityInvocation;
-  source: 'tool_loop' | 'dag_node';
+  source: 'capability_loop' | 'dag_node';
   output: string;
   error: string | null;
   status: 'completed' | 'failed';
@@ -78,26 +79,26 @@ export interface CapabilityExecutionRecord {
   created_at: string;
 }
 
-export interface ToolStreamEvent {
-  type: 'tool_call' | 'tool_result' | 'tool_error';
-  tool_call_id: string;
-  name: string;
+export interface CapabilityStreamEvent {
+  type: 'capability_call' | 'capability_result' | 'capability_error';
+  invocation_id: string;
+  capability_id: string;
   arguments: Record<string, unknown>;
   content?: string;
 }
 
-export interface ToolCallPayload {
-  tool_call_id: string;
-  name: string;
+export interface CapabilityCallPayload {
+  invocation_id: string;
+  capability_id: string;
   arguments: Record<string, unknown>;
 }
 
 export interface ReviewEventPayload {
   review_id: string;
-  kind: 'initial_dag' | 'dag_replan' | 'tool_review';
+  kind: 'initial_dag' | 'dag_replan' | 'capability_review';
   message: string;
   dag?: Dag;
-  tool_call?: ToolCallPayload;
+  capability_call?: CapabilityCallPayload;
   payload?: Record<string, unknown>;
 }
 

@@ -808,6 +808,9 @@ def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) 
     if dag:
         lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
         for node in dag.nodes:
+            if node.node_type == "start":
+                lines.append(f"  - {node.id}: internal start")
+                continue
             lines.append(
                 f"  - {node.id}: "
                 f"{node.invocation.capability_id}({node.invocation.arguments})"

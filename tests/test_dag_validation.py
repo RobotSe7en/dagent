@@ -4,7 +4,13 @@ import pytest
 
 from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime import CapabilityExecutor
-from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
+from dagent.harness_runtime.dag_builder import (
+    DAGCreationError,
+    DAGValidationError,
+    compile_plan_spec,
+    parse_plan_spec_dsl,
+    validate_dag,
+)
 from dagent.capabilities import CapabilityCatalog
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
@@ -115,6 +121,35 @@ def test_multi_node_dag_without_edges_is_rejected() -> None:
 
     with pytest.raises(DAGValidationError, match="Isolated node IDs: a, b"):
         validate_dag(dag)
+
+
+def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: parallel\n'
+        'a = echo(text="a")\n'
+        'b = echo(text="b")\n'
+    )
+
+    dag = compile_plan_spec(plan, task_id="task_1")
+
+    start = dag.nodes[0]
+    assert start.id == "start"
+    assert start.node_type == "start"
+    assert start.invocation.capability_id == ""
+    assert {edge.source for edge in dag.edges} == {"start"}
+    assert {edge.target for edge in dag.edges} == {"a", "b"}
+    validate_dag(dag)
+
+
+def test_explicit_dag_start_is_rejected_as_reserved_internal_node() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: explicit start\n'
+        'start = dag_start()\n'
+        'a = echo(text="a") after start\n'
+    )
+
+    with pytest.raises(DAGCreationError, match="reserved"):
+        compile_plan_spec(plan, task_id="task_1")
 
 
 def test_dag_must_be_acyclic() -> None:

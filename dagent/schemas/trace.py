@@ -51,7 +51,7 @@ CapabilityExecutionStatus = Literal[
 ]
 
 CapabilityExecutionSource = Literal[
-    "tool_loop",
+    "capability_loop",
     "dag_node",
 ]
 

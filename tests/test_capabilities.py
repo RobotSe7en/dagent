@@ -1,4 +1,4 @@
-﻿from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
 
@@ -44,19 +44,3 @@ def test_capability_catalog_delete_removes_definition_and_handler() -> None:
     )
 
     assert result.content == "new"
-
-
-def test_session_capability_snapshot_is_fixed_after_catalog_changes() -> None:
-    catalog = CapabilityCatalog()
-    definition = CapabilityDefinition(id="custom_tool.echo", name="echo", kind="custom_tool")
-    catalog.register(definition, lambda invocation: _result(invocation, "session"))
-    session_capabilities = catalog.snapshot()
-    executor = CapabilityExecutor(session_capabilities)
-
-    catalog.replace(definition, lambda invocation: _result(invocation, "global"))
-
-    result = executor.execute(
-        CapabilityInvocation(capability_id="custom_tool.echo", kind="custom_tool")
-    )
-
-    assert result.content == "session"

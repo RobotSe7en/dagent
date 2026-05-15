@@ -16,9 +16,15 @@ NodeStatus = Literal[
     "skipped",
 ]
 
+NodeType = Literal[
+    "capability",
+    "start",
+]
+
 
 class DAGNode(BaseModel):
     id: str
     invocation: CapabilityInvocation
+    node_type: NodeType = "capability"
     status: NodeStatus = "planned"
 

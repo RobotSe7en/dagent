@@ -99,7 +99,7 @@ class ToolAgent:
     ) -> LoopOutcome | None:
         """Resume a reviewed tool call and continue the tool-agent loop."""
         invocation = state.pending_invocation
-        if state.kind != "tool_review" or invocation is None:
+        if state.kind != "capability_review" or invocation is None:
             return None
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
@@ -194,9 +194,9 @@ class ToolAgentLoop:
                     )
                 return ControlToolResult(content=result_content)
             return ControlToolResult(
-                content=f"[PENDING_REVIEW] Tool '{tool_call.name}' requires human review (risk={risk}).",
+                content=f"[PENDING_REVIEW] Capability '{invocation.capability_id}' requires human review (risk={risk}).",
                 needs_review=True,
-                review_payload={"tool_name": tool_call.name, "risk": risk},
+                review_payload={"capability_id": invocation.capability_id, "risk": risk},
             )
 
         return guard
@@ -252,14 +252,14 @@ class ToolAgentLoop:
                 definition = self.capability_executor.catalog.get_by_name(tool_call.name, kind="tool")
                 invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
                 invocations.append(invocation)
-                self._emit_tool_event(on_event, tool_call, "tool_call")
+                self._emit_capability_event(on_event, invocation, "capability_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
                         raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
                     try:
                         control_result = await control_tool_handler(tool_call)
                     except Exception as exc:
-                        self._emit_tool_event(on_event, tool_call, "tool_error", content=str(exc))
+                        self._emit_capability_event(on_event, invocation, "capability_error", content=str(exc))
                         raise
                     control_events.extend(control_result.events)
                     loop_messages.append(
@@ -270,21 +270,21 @@ class ToolAgentLoop:
                             "content": control_result.content,
                         }
                     )
-                    self._emit_tool_event(
+                    self._emit_capability_event(
                         on_event,
-                        tool_call,
-                        "tool_result",
+                        invocation,
+                        "capability_result",
                         content=control_result.content,
                     )
                     if control_result.needs_review:
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
-                            kind="tool_review",
-                            message=f"Review tool call: {tool_call.name}",
-                            tool_call={
-                                "tool_call_id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": tool_call.arguments,
+                            kind="capability_review",
+                            message=f"Review capability call: {invocation.capability_id}",
+                            capability_call={
+                                "invocation_id": invocation.invocation_id,
+                                "capability_id": invocation.capability_id,
+                                "arguments": invocation.arguments,
                             },
                             payload=control_result.review_payload or {},
                         )
@@ -309,7 +309,7 @@ class ToolAgentLoop:
 
                 if allowed_tools is not None and tool_call.name not in allowed_tools:
                     error_content = f"[ERROR] Tool '{tool_call.name}' is not allowed. Available tools: {', '.join(allowed_tools)}."
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -323,7 +323,7 @@ class ToolAgentLoop:
                     tool_result = _tool_content(self.capability_executor.execute(invocation))
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -341,7 +341,7 @@ class ToolAgentLoop:
                         "content": tool_result,
                     }
                 )
-                self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
+                self._emit_capability_event(on_event, invocation, "capability_result", content=tool_result)
 
         return LoopOutcome(
             status="failed",
@@ -412,10 +412,10 @@ class ToolAgentLoop:
             },
         }
 
-    def _emit_tool_event(
+    def _emit_capability_event(
         self,
         on_event: LoopEventHandler | None,
-        tool_call: ToolCall,
+        invocation: CapabilityInvocation,
         event_type: str,
         *,
         content: str | None = None,
@@ -424,9 +424,9 @@ class ToolAgentLoop:
             return
         payload: dict[str, Any] = {
             "type": event_type,
-            "tool_call_id": tool_call.id,
-            "name": tool_call.name,
-            "arguments": tool_call.arguments,
+            "invocation_id": invocation.invocation_id,
+            "capability_id": invocation.capability_id,
+            "arguments": invocation.arguments,
         }
         if content is not None:
             payload["content"] = content

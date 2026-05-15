@@ -10,7 +10,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from dagent.capabilities import CapabilityCatalog
-from dagent.capabilities.providers import FileCapabilityProvider, MemoryCapabilityProvider
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
@@ -79,18 +78,6 @@ class HarnessRuntime:
         if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
             raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
         self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
-        self._register_default_capabilities()
-
-    def _register_default_capabilities(self) -> None:
-        registered = set(self.capability_catalog.ids())
-        if not {"memory.write", "memory.search"}.issubset(registered):
-            for capability_id in {"memory.write", "memory.search"} & registered:
-                self.capability_catalog.delete(capability_id)
-            MemoryCapabilityProvider().register_into(self.capability_catalog)
-        if not {"file.read", "file.write"}.issubset(registered):
-            for capability_id in {"file.read", "file.write"} & registered:
-                self.capability_catalog.delete(capability_id)
-            FileCapabilityProvider().register_into(self.capability_catalog)
 
     # ==================================================================
     # Public API
@@ -222,7 +209,7 @@ class HarnessRuntime:
         state = self.session.pop_review_continuation(review_id)
         if state is None:
             return None
-        if state.kind == "tool_review":
+        if state.kind == "capability_review":
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             initial_outcome = await self.tool_agent.resume_review(
                 state,

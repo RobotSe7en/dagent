@@ -29,8 +29,8 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, CapabilityKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
+import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeCapabilityReview, streamTask } from './api';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, CapabilityKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, CapabilityStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -55,6 +55,7 @@ function normalizeNode(node: DagNode): DagNode {
   const invocation = node.invocation;
   return {
     ...node,
+    node_type: node.node_type ?? 'capability',
     invocation: {
       ...invocation,
       capability_id: invocation.capability_id ?? '',
@@ -74,9 +75,8 @@ function normalizeNode(node: DagNode): DagNode {
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  kind?: 'text' | 'tool';
-  toolEvent?: ToolStreamEvent;
-  toolEvents?: ToolStreamEvent[];
+  kind?: 'text';
+  capabilityEvents?: CapabilityStreamEvent[];
   timeline?: MessageTimelineItem[];
   dagSnapshot?: Dag;
   traceSnapshot?: TraceEvent[];
@@ -85,7 +85,7 @@ interface ChatMessage {
 type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
-  | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent }
+  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
@@ -100,6 +100,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
+    const detail = item.node_type === 'start'
+      ? 'internal start'
+      : item.invocation.capability_id
+        ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
+        : 'capability not set';
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -114,11 +119,9 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
+              title={item.node_type === 'start' ? 'Internal DAG start node' : item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
             >
-              {item.invocation.capability_id
-                ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
-                : 'capability not set'}
+              {detail}
             </div>
           </div>
         ),
@@ -161,7 +164,7 @@ export function App() {
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dagReview, setDagReview] = useState<ReviewEventPayload | null>(null);
-  const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
+  const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
   const tokenQueueRef = useRef<string[]>([]);
@@ -329,8 +332,8 @@ export function App() {
 
   const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
-    if (pendingReview.kind === 'tool_review') {
-      setToolReview(pendingReview as ReviewEventPayload);
+    if (pendingReview.kind === 'capability_review') {
+      setCapabilityReview(pendingReview as ReviewEventPayload);
       return;
     }
     setDagReview(pendingReview);
@@ -367,22 +370,22 @@ export function App() {
     }));
   };
 
-  const appendToolMessage = (event: ToolStreamEvent) => {
-    if (event.type === 'tool_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
+  const appendCapabilityMessage = (event: CapabilityStreamEvent) => {
+    if (event.type === 'capability_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
     updateLastAssistantText((message) => {
-      const toolEvents = [...(message.toolEvents ?? []), event];
+      const capabilityEvents = [...(message.capabilityEvents ?? []), event];
       const timeline = [...(message.timeline ?? [])];
-      if (event.type === 'tool_result' || event.type === 'tool_error') {
-        const idx = findMatchingToolCall(timeline, event.tool_call_id);
+      if (event.type === 'capability_result' || event.type === 'capability_error') {
+        const idx = findMatchingCapabilityCall(timeline, event.invocation_id);
         if (idx !== -1) {
-          const item = timeline[idx] as { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent };
+          const item = timeline[idx] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
           timeline[idx] = { ...item, result: event };
-          return { ...message, toolEvents, timeline };
+          return { ...message, capabilityEvents, timeline };
         }
       }
-      timeline.push({ type: 'tool', event });
-      return { ...message, toolEvents, timeline };
+      timeline.push({ type: 'capability', event });
+      return { ...message, capabilityEvents, timeline };
     });
   };
 
@@ -468,7 +471,7 @@ export function App() {
           if (shouldOpenDagReview(nextDag)) setReviewOpen(true);
         },
         onTrace: appendRuntimeTrace,
-        onTool: appendToolMessage,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -485,7 +488,7 @@ export function App() {
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: payload.dag ? 'DAGAgentLoop completed the request.' : 'ToolAgentLoop completed the request.',
+            detail: payload.dag ? 'DAGAgentLoop completed the request.' : 'Capability loop completed the request.',
             status: payload.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -540,7 +543,7 @@ export function App() {
           attachDagToLastAssistant(nextDag);
         },
         onTrace: appendRuntimeTrace,
-        onTool: appendToolMessage,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -578,9 +581,9 @@ export function App() {
     void resumeDag(false);
   };
 
-  const confirmToolReview = async (approved: boolean) => {
-    if (!toolReview || streaming) return;
-    setToolReview(null);
+  const confirmCapabilityReview = async (approved: boolean) => {
+    if (!capabilityReview || streaming) return;
+    setCapabilityReview(null);
     setError(null);
     tokenQueueRef.current = [];
     stopTokenTimer();
@@ -589,11 +592,11 @@ export function App() {
       ...items,
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'model', label: 'tool_review_resumed', detail: `Tool review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
+    appendTrace({ type: 'model', label: 'capability_review_resumed', detail: `Capability review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
 
     try {
-      await resumeToolReview(toolReview.review_id, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'ToolAgentLoop resumed from tool review.', status: 'running' }),
+      await resumeCapabilityReview(capabilityReview.review_id, approved, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -601,17 +604,17 @@ export function App() {
           flushQueuedTokensNow();
           handlePendingReview(payload.pending_review);
           enqueueFinalAnswer(payload.final_answer);
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'ToolAgentLoop completed the request.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
-          appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+          appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
       });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+      appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
     } finally {
       await waitForTokenQueue();
       setStreaming(false);
@@ -626,7 +629,7 @@ export function App() {
       setValidationEnabled(enabled);
       setValidationError(null);
       setDagReview(null);
-      setToolReview(null);
+      setCapabilityReview(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -707,20 +710,16 @@ export function App() {
           <div className="message-list" ref={messageListRef}>
             {messages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={`message ${message.role} ${message.kind ?? 'text'}`}>
-                <span>{message.kind === 'tool' ? 'tool' : message.role}</span>
-                {message.kind === 'tool' && message.toolEvent ? (
-                  <ToolEventCard event={message.toolEvent} />
-                ) : (
-                  <MessageTimeline
-                    message={message}
-                    loading={streaming}
-                    onOpenDag={(snapshot, snapshotTrace) => {
-                      syncDag(snapshot);
-                      if (snapshotTrace) setTrace(snapshotTrace);
-                      setReviewOpen(true);
-                    }}
-                  />
-                )}
+                <span>{message.role}</span>
+                <MessageTimeline
+                  message={message}
+                  loading={streaming}
+                  onOpenDag={(snapshot, snapshotTrace) => {
+                    syncDag(snapshot);
+                    if (snapshotTrace) setTrace(snapshotTrace);
+                    setReviewOpen(true);
+                  }}
+                />
               </div>
             ))}
           </div>
@@ -770,12 +769,12 @@ export function App() {
         />
       ) : null}
 
-      {toolReview ? (
-        <ToolReviewDialog
-          review={toolReview}
-          onApprove={() => confirmToolReview(true)}
-          onReject={() => confirmToolReview(false)}
-          onClose={() => setToolReview(null)}
+      {capabilityReview ? (
+        <CapabilityReviewDialog
+          review={capabilityReview}
+          onApprove={() => confirmCapabilityReview(true)}
+          onReject={() => confirmCapabilityReview(false)}
+          onClose={() => setCapabilityReview(null)}
         />
       ) : null}
     </div>
@@ -807,8 +806,8 @@ function MessageTimeline({
   return (
     <div className="message-timeline">
       {message.timeline.map((item, index) =>
-        item.type === 'tool' ? (
-          <ToolEventCard key={`${item.event.tool_call_id}-${index}`} event={item.event} result={item.result} />
+        item.type === 'capability' ? (
+          <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />
         ) : item.type === 'dag' ? (
           <DagSummaryCard
             key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
@@ -974,8 +973,8 @@ function DagSummaryCard({
 
 function ValidatingIndicator() {
   return (
-    <details className="tool-event-card">
-      <summary className="tool-event-head">
+    <details className="timeline-card">
+      <summary className="timeline-card-head">
         <Loader size={14} />
         <strong>Validating result quality...</strong>
         <span>validating</span>
@@ -987,21 +986,21 @@ function ValidatingIndicator() {
 function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
   const passed = event.type === 'validation_passed' || event.passed === true;
   return (
-    <details className={`tool-event-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
-      <summary className="tool-event-head">
+    <details className={`timeline-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
+      <summary className="timeline-card-head">
         {passed ? <Check size={14} /> : <AlertTriangle size={14} />}
         <strong>Validation {passed ? 'Passed' : 'Feedback'}</strong>
         <span>{passed ? 'passed' : 'retry'}</span>
       </summary>
       {event.summary ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Summary</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Summary</div>
           <p>{event.summary}</p>
         </div>
       ) : null}
       {!passed && event.issues.length ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Issues</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Issues</div>
           <ul className="validation-issues">
             {event.issues.map((issue, index) => (
               <li key={index}>
@@ -1013,8 +1012,8 @@ function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
         </div>
       ) : null}
       {!passed && event.reason ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Feedback to Agent</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Feedback to Agent</div>
           <p>{event.reason}</p>
         </div>
       ) : null}
@@ -1028,31 +1027,31 @@ function hasNonZeroExitCode(content?: string): boolean {
   return match !== null && match[1] !== '0';
 }
 
-function ToolEventCard({ event, result }: { event: ToolStreamEvent; result?: ToolStreamEvent }) {
-  const resultContent = result?.content || (event.type !== 'tool_call' ? event.content || '' : '');
-  const isError = result?.type === 'tool_error' || event.type === 'tool_error';
+function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
+  const resultContent = result?.content || (event.type !== 'capability_call' ? event.content || '' : '');
+  const isError = result?.type === 'capability_error' || event.type === 'capability_error';
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const statusLabel = result
     ? (isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'tool_call' ? 'running' : event.type === 'tool_error' ? 'failed' : 'done');
-  const argsText = formatToolArguments(event.arguments);
+    : (event.type === 'capability_call' ? 'running' : event.type === 'capability_error' ? 'failed' : 'done');
+  const argsText = formatCapabilityArguments(event.arguments);
   return (
-    <details className={`tool-event-card ${showError ? 'tool_error' : event.type}`}>
-      <summary className="tool-event-head">
+    <details className={`capability-event-card ${showError ? 'capability_error' : event.type}`}>
+      <summary className="capability-event-head">
         <Wrench size={14} />
-        <strong>{event.name}</strong>
+        <strong>{event.capability_id}</strong>
         <span>{statusLabel}</span>
       </summary>
       {argsText ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Args</div>
+        <div className="capability-section">
+          <div className="capability-section-label">Args</div>
           <pre>{clipText(argsText, 800)}</pre>
         </div>
       ) : null}
       {resultContent ? (
-        <div className="tool-section">
-          <div className="tool-section-label">{showError ? 'Error' : 'Result'}</div>
+        <div className="capability-section">
+          <div className="capability-section-label">{showError ? 'Error' : 'Result'}</div>
           <pre>{clipText(resultContent, 1200)}</pre>
         </div>
       ) : null}
@@ -1060,17 +1059,17 @@ function ToolEventCard({ event, result }: { event: ToolStreamEvent; result?: Too
   );
 }
 
-function findMatchingToolCall(timeline: MessageTimelineItem[], toolCallId: string): number {
+function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationId: string): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item.type === 'tool' && item.event.tool_call_id === toolCallId && item.event.type === 'tool_call') {
+    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability_call') {
       return i;
     }
   }
   return -1;
 }
 
-function formatToolArguments(value: Record<string, unknown>) {
+function formatCapabilityArguments(value: Record<string, unknown>) {
   if (!Object.keys(value).length) return '';
   return JSON.stringify(value, null, 2);
 }
@@ -1090,7 +1089,7 @@ function uniqueNodeId(dag: Dag) {
   return id;
 }
 
-function ToolReviewDialog({
+function CapabilityReviewDialog({
   review,
   onApprove,
   onReject,
@@ -1101,20 +1100,20 @@ function ToolReviewDialog({
   onReject: () => void;
   onClose: () => void;
 }) {
-  const toolCall = review.tool_call;
-  const argsText = toolCall ? JSON.stringify(toolCall.arguments, null, 2) : '';
+  const capabilityCall = review.capability_call;
+  const argsText = capabilityCall ? JSON.stringify(capabilityCall.arguments, null, 2) : '';
   const risk = (review.payload?.risk as string) || 'low';
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Tool review">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Capability review">
       <div className="dag-modal">
         <header className="modal-header">
           <div>
             <div className="modal-title">
               <AlertTriangle size={20} />
-              <span>Tool Review</span>
+              <span>Capability Review</span>
               <span className={`risk-badge risk-${risk}`}>{risk.toUpperCase()}</span>
             </div>
-            <p>{toolCall?.name || review.message}</p>
+            <p>{capabilityCall?.capability_id || review.message}</p>
           </div>
           <div className="modal-actions">
             <button className="secondary-button compact-button" onClick={onReject} type="button">
@@ -1131,15 +1130,15 @@ function ToolReviewDialog({
           </div>
         </header>
         <div className="modal-body">
-          {toolCall ? (
-            <div className="tool-section">
-              <div className="tool-section-label">Tool</div>
-              <p><strong>{toolCall.name}</strong></p>
+          {capabilityCall ? (
+            <div className="capability-section">
+              <div className="capability-section-label">Capability</div>
+              <p><strong>{capabilityCall.capability_id}</strong></p>
             </div>
           ) : null}
           {argsText ? (
-            <div className="tool-section">
-              <div className="tool-section-label">Arguments</div>
+            <div className="capability-section">
+              <div className="capability-section-label">Arguments</div>
               <pre>{clipText(argsText, 1200)}</pre>
             </div>
           ) : null}

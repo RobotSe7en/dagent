@@ -126,7 +126,7 @@ class DAGExecutor:
         dag: DAG,
         completed_results: dict[str, DAGNodeResult],
     ) -> DAGNodeResult:
-        if node.invocation.capability_id == "tool.dag_start":
+        if node.node_type == "start":
             node.status = "completed"
             return DAGNodeResult(
                 node_id=node.id,
@@ -153,8 +153,8 @@ class DAGExecutor:
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
-                "tool_call_id": call_id,
-                "name": invocation.capability_id,
+                "invocation_id": call_id,
+                "capability_id": invocation.capability_id,
                 "arguments": invocation.arguments,
             },
         )
@@ -178,8 +178,8 @@ class DAGExecutor:
                 dag_id=dag.dag_id,
                 node_id=node.id,
                 payload={
-                    "tool_call_id": call_id,
-                    "name": invocation.capability_id,
+                    "invocation_id": call_id,
+                    "capability_id": invocation.capability_id,
                     "error": str(exc),
                 },
             )
@@ -215,8 +215,8 @@ class DAGExecutor:
                 dag_id=dag.dag_id,
                 node_id=node.id,
                 payload={
-                    "tool_call_id": call_id,
-                    "name": invocation.capability_id,
+                    "invocation_id": call_id,
+                    "capability_id": invocation.capability_id,
                     "error": error,
                 },
             )
@@ -235,8 +235,8 @@ class DAGExecutor:
             dag_id=dag.dag_id,
             node_id=node.id,
             payload={
-                "tool_call_id": call_id,
-                "name": invocation.capability_id,
+                "invocation_id": call_id,
+                "capability_id": invocation.capability_id,
                 "content": content,
             },
         )

@@ -26,7 +26,7 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     runtime = _runtime(provider)
 
     tool_names = {tool.name for tool in runtime.dag_agent.tools}
-    assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
+    assert tool_names == {"echo", "fail_tool", "write_file"}
 
 
 def test_harness_runtime_session_owns_dag_task_store() -> None:
@@ -38,7 +38,7 @@ def test_harness_runtime_session_owns_dag_task_store() -> None:
     assert runtime.tasks is runtime.session.tasks
 
 
-def test_harness_runtime_reuses_executor_catalog_when_catalog_is_implicit() -> None:
+def test_harness_runtime_reuses_executor_catalog_without_assembling_capabilities() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     capability_executor = make_capability_executor()
     tool_agent = ToolAgent(
@@ -59,14 +59,7 @@ def test_harness_runtime_reuses_executor_catalog_when_catalog_is_implicit() -> N
     )
 
     assert runtime.capability_catalog is capability_executor.catalog
-    result = runtime.capability_executor.execute(
-        CapabilityInvocation(
-            capability_id="memory.write",
-            kind="memory",
-            arguments={"key": "color", "value": "blue"},
-        )
-    )
-    assert result.status == "completed"
+    assert "memory.write" not in runtime.capability_catalog.ids()
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
@@ -370,7 +363,7 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
             content='a = echo(text="a")\nb = echo(text="b") after nonexistent'
         ),
         ChatResponse(
-            content='start = dag_start()\na = echo(text="a") after start\nb = echo(text="b") after a'
+            content='a = echo(text="a")\nb = echo(text="b") after a'
         ),
     ])
     runtime = _runtime(provider)
@@ -431,8 +424,7 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
         ChatResponse(
             content=(
                 "task: inspect current directory\n"
-                "start = dag_start()\n"
-                "inspect = echo(text=\"ok\") after start\n"
+                "inspect = echo(text=\"ok\")\n"
             )
         ),
         ChatResponse(content="The DAG completed after inspection."),
@@ -590,7 +582,12 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert first.status == "awaiting_review"
     assert first.task_id is not None
     assert first.pending_review is not None
-    assert first.pending_review.kind == "tool_review"
+    assert first.pending_review.kind == "capability_review"
+    assert first.pending_review.capability_call == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.write_file",
+        "arguments": {"path": "notes.md", "content": "hi"},
+    }
     assert resumed.status == "completed"
     assert resumed.task_id == first.task_id
     assert resumed.final_answer == "good answer"
@@ -605,7 +602,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].tool_state is not None
     assert tool_tasks[0].invocations
     assert tool_tasks[0].execution_records
-    assert tool_tasks[0].execution_records[0].source == "tool_loop"
+    assert tool_tasks[0].execution_records[0].source == "capability_loop"
     assert tool_tasks[0].execution_records[0].invocation.capability_id == "tool.write_file"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
@@ -733,15 +730,6 @@ def _runtime(
 
 def make_capability_executor() -> CapabilityExecutor:
     tool_registry = ToolRegistry()
-    tool_registry.register(
-        name="dag_start",
-        handler=lambda: "started",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
     tool_registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",

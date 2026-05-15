@@ -12,7 +12,7 @@ from dagent.harness_runtime import (
     HarnessRuntime,
     CapabilityExecutor,
 )
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import create_default_capability_catalog
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -36,6 +36,34 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert events[-1]["type"] == "done"
     assert events[-1]["dag"] is None
     assert events[-1]["final_answer"] == "hello there"
+
+
+def test_api_trace_endpoint_reads_tool_mode_execution_records() -> None:
+    state.harness_runtime = _runtime(MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+        ),
+        ChatResponse(content="done"),
+    ]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "echo hello", "mode": "tool"},
+    )
+    events = _sse_events(response.text)
+    task_id = events[-1]["task_id"]
+
+    trace_response = client.get(f"/tasks/{task_id}/trace")
+
+    assert trace_response.status_code == 200
+    records = trace_response.json()["records"]
+    assert len(records) == 1
+    assert records[0]["source"] == "capability_loop"
+    assert records[0]["capability"] == "tool.echo"
+    assert records[0]["args"] == {"text": "hello"}
+    assert records[0]["output"] == "echo:hello"
 
 
 def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
@@ -300,15 +328,6 @@ def _runtime(provider: MockProvider) -> HarnessRuntime:
 def _capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
     registry.register(
-        name="dag_start",
-        handler=lambda: "started",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
-    registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",
         action="read",
@@ -328,7 +347,7 @@ def _capability_executor() -> CapabilityExecutor:
             "required": ["text"],
         },
     )
-    capability_catalog = CapabilityCatalog()
+    capability_catalog = create_default_capability_catalog()
     capability_executor = CapabilityExecutor(capability_catalog)
     ToolCapabilityProvider(registry).register_into(capability_catalog)
     return capability_executor

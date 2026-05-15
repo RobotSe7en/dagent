@@ -91,14 +91,3 @@ class CapabilityCatalog:
 
     def ids(self) -> set[str]:
         return set(self._entries)
-
-    def snapshot(self) -> "CapabilityCatalog":
-        snapshot = CapabilityCatalog(workspace_root=self.workspace_root)
-        snapshot._entries = {
-            capability_id: CapabilityEntry(
-                definition=entry.definition.model_copy(deep=True),
-                handler=entry.handler,
-            )
-            for capability_id, entry in self._entries.items()
-        }
-        return snapshot

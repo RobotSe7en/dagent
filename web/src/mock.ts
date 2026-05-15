@@ -7,9 +7,10 @@ export const initialDag: Dag = {
   status: 'review_required',
   nodes: [
     {
-      id: 'plan_request',
+      id: 'start',
+      node_type: 'start',
       invocation: {
-        capability_id: 'tool.dag_start',
+        capability_id: '',
         kind: 'tool',
         arguments: {},
         boundary: {
@@ -50,7 +51,7 @@ export const initialDag: Dag = {
     },
   ],
   edges: [
-    { source: 'plan_request', target: 'inspect_project', reason: 'Need plan before inspection.' },
+    { source: 'start', target: 'inspect_project', reason: 'Need plan before inspection.' },
     { source: 'inspect_project', target: 'summarize_result', reason: 'Need facts before summary.' },
   ],
 };
@@ -74,7 +75,7 @@ export const initialTrace: TraceEvent[] = [
   },
   {
     id: 't3',
-    type: 'tool',
+    type: 'capability',
     label: 'read_file',
     detail: 'README.md returned 5.8 KB.',
     status: 'completed',

@@ -506,8 +506,9 @@ select {
   font-weight: 700;
 }
 
-/* ── Tool event card ── */
-.tool-event-card {
+/* Execution cards */
+.timeline-card,
+.capability-event-card {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg-surface);
@@ -518,25 +519,29 @@ select {
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.tool-event-card:hover {
+.timeline-card:hover,
+.capability-event-card:hover {
   border-color: #cdd0d8;
   box-shadow: var(--shadow-md);
 }
 
-.tool-event-card summary {
+.timeline-card summary,
+.capability-event-card summary {
   list-style: none;
 }
 
-.tool-event-card summary::-webkit-details-marker {
+.timeline-card summary::-webkit-details-marker,
+.capability-event-card summary::-webkit-details-marker {
   display: none;
 }
 
-.tool-event-card.tool_error {
+.capability-event-card.capability_error {
   border-color: #fca5a5;
   background: #fef2f2;
 }
 
-.tool-event-head {
+.timeline-card-head,
+.capability-event-head {
   min-height: 38px;
   display: flex;
   align-items: center;
@@ -547,16 +552,19 @@ select {
   font-size: 12px;
 }
 
-.tool-event-head svg {
+.timeline-card-head svg,
+.capability-event-head svg {
   color: var(--accent-teal);
   flex-shrink: 0;
 }
 
-.tool-event-card[open] .tool-event-head {
+.timeline-card[open] .timeline-card-head,
+.capability-event-card[open] .capability-event-head {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.tool-event-head strong {
+.timeline-card-head strong,
+.capability-event-head strong {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -567,7 +575,8 @@ select {
   font-weight: 650;
 }
 
-.tool-event-head span {
+.timeline-card-head span,
+.capability-event-head span {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 8px;
@@ -579,17 +588,19 @@ select {
   letter-spacing: 0.04em;
 }
 
-.tool-event-card.tool_error .tool-event-head span {
+.capability-event-card.capability_error .capability-event-head span {
   border-color: #fca5a5;
   color: var(--accent-red);
   background: #fef2f2;
 }
 
-.tool-section {
+.timeline-section,
+.capability-section {
   border-top: 1px solid var(--border-subtle);
 }
 
-.tool-section-label {
+.timeline-section-label,
+.capability-section-label {
   padding: 6px 14px 0;
   color: var(--text-muted);
   font-size: 10px;
@@ -598,7 +609,8 @@ select {
   letter-spacing: 0.04em;
 }
 
-.tool-event-card pre {
+.timeline-card pre,
+.capability-event-card pre {
   max-height: 200px;
   max-width: 100%;
   margin: 0;
@@ -1504,7 +1516,7 @@ pre.readonly-field {
   background: #fffbeb;
 }
 
-.validation-feedback .tool-event-head {
+.validation-feedback .timeline-card-head {
   color: #92400e;
 }
 
@@ -1513,12 +1525,12 @@ pre.readonly-field {
   background: #f0fdf4;
 }
 
-.validation-passed .tool-event-head {
+.validation-passed .timeline-card-head {
   color: #166534;
 }
 
-.validation-feedback .tool-section p,
-.validation-passed .tool-section p {
+.validation-feedback .timeline-section p,
+.validation-passed .timeline-section p {
   margin: 0;
   line-height: 1.5;
   color: var(--gray-800);
@@ -1577,7 +1589,7 @@ pre.readonly-field {
   color: #16a34a;
 }
 
-/* ── Tool Review Risk Badge ── */
+/* Capability review risk badge */
 .risk-badge {
   border: 1px solid var(--border);
   border-radius: 999px;

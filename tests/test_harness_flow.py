@@ -82,7 +82,9 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
 def dag_dsl_from_dag(dag: DAG) -> str:
     lines = []
     for node in dag.nodes:
-        deps = [e.source for e in dag.edges if e.target == node.id]
+        if node.node_type == "start":
+            continue
+        deps = [e.source for e in dag.edges if e.target == node.id and e.source != "start"]
         deps_str = f" after {', '.join(deps)}" if deps else ""
         args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
         lines.append(f'{node.id} = {_tool_name_from_capability(node.invocation.capability_id)}({args}){deps_str}')
@@ -91,15 +93,6 @@ def dag_dsl_from_dag(dag: DAG) -> str:
 
 def make_capability_executor() -> CapabilityExecutor:
     registry = ToolRegistry()
-    registry.register(
-        name="dag_start",
-        handler=lambda: "started",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
     registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",
@@ -203,6 +196,14 @@ def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
+def _start_node() -> DAGNode:
+    return DAGNode(
+        id="start",
+        node_type="start",
+        invocation=CapabilityInvocation(capability_id="", kind="tool"),
+    )
+
+
 def _tool_name_from_capability(capability_id: str) -> str:
     return capability_id.removeprefix("tool.")
 
@@ -214,8 +215,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
         ChatResponse(
             content=(
                 "task: inspect project\n"
-                "start = dag_start()\n"
-                "list_files = run_command(command=\"dir\", cwd=\".\") after start\n"
+                "list_files = run_command(command=\"dir\", cwd=\".\")\n"
                 "show_result = echo(text=\"done\") after list_files\n"
             )
         )
@@ -239,10 +239,10 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
     assert dag.nodes[1].invocation.capability_id == "tool.run_command"
     assert dag.nodes[1].invocation.arguments == {"command": "dir", "cwd": "."}
-    assert [(edge.source, edge.target) for edge in dag.edges] == [
+    assert {(edge.source, edge.target) for edge in dag.edges} == {
         ("start", "list_files"),
         ("list_files", "show_result"),
-    ]
+    }
 
 
 def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
@@ -360,8 +360,7 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'start = dag_start()\n'
-        'inspect = echo(text="discovered_path") after start\n'
+        'inspect = echo(text="discovered_path")\n'
         'answer = echo(text="adjusted_value") after inspect\n'
     )
     runtime = runtime_for(
@@ -401,8 +400,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'start = dag_start()\n'
-        'inspect = echo(text="discovered_path") after start\n'
+        'inspect = echo(text="discovered_path")\n'
         'answer = echo(text="adjusted_value") after inspect\n'
     )
     runtime = runtime_for(
@@ -476,14 +474,12 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
     """Replan LLM call includes the initial planning exchange in the agent thread."""
     initial_dsl = (
         'task: initial\n'
-        'start = dag_start()\n'
-        'inspect = echo(text="hello") after start\n'
+        'inspect = echo(text="hello")\n'
         'answer = echo(text="placeholder") after inspect\n'
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'start = dag_start()\n'
-        'inspect = echo(text="hello") after start\n'
+        'inspect = echo(text="hello")\n'
         'answer = echo(text="fixed") after inspect\n'
     )
     provider = MockProvider([
@@ -549,7 +545,7 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
         task_id="task_parallel_failure",
         status="approved",
         nodes=[
-            _tool_node("start", "dag_start", {}),
+            _start_node(),
             _tool_node("ok", "echo", {"text": "kept"}),
             _tool_node("bad_a", "fail_tool", {"text": "a"}),
             _tool_node("bad_b", "fail_tool", {"text": "b"}),

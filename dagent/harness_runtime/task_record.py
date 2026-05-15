@@ -179,7 +179,7 @@ class RuntimeTaskRecord:
                 boundary=previous_boundary,
                 steps=len(task_invocations),
             )
-            self.execution_records = tool_loop_execution_records(
+            self.execution_records = capability_loop_execution_records(
                 task_id=self.task_id,
                 messages=loop_outcome.messages,
                 invocations=task_invocations,
@@ -242,17 +242,17 @@ class CapabilityExecutionStore:
 
 def pending_review_invocation(loop_outcome: "LoopOutcome") -> CapabilityInvocation | None:
     review = loop_outcome.pending_review
-    if review is None or review.kind != "tool_review":
+    if review is None or review.kind != "capability_review":
         return None
-    tool_call_id = (review.tool_call or {}).get("tool_call_id")
-    if tool_call_id:
+    invocation_id = (review.capability_call or {}).get("invocation_id")
+    if invocation_id:
         for invocation in reversed(loop_outcome.invocations):
-            if invocation.invocation_id == tool_call_id:
+            if invocation.invocation_id == invocation_id:
                 return invocation
     return loop_outcome.invocations[-1] if loop_outcome.invocations else None
 
 
-def tool_loop_execution_records(
+def capability_loop_execution_records(
     *,
     task_id: str,
     messages: list[dict[str, Any]],
@@ -283,7 +283,7 @@ def tool_loop_execution_records(
                 record_id=f"capability_execution_{uuid4().hex}",
                 task_id=task_id,
                 invocation=invocations_by_id[tool_call_id].model_copy(deep=True),
-                source="tool_loop",
+                source="capability_loop",
                 output="" if failed else content,
                 error=content if failed else None,
                 status="failed" if failed else "completed",

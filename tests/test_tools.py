@@ -19,6 +19,12 @@ def make_executor(tmp_path: Path) -> CapabilityExecutor:
     return executor
 
 
+def test_file_tool_registry_does_not_expose_internal_dag_start() -> None:
+    registry = create_file_tool_registry()
+
+    assert "dag_start" not in registry.names()
+
+
 def execute(
     executor: CapabilityExecutor,
     tool_name: str,
