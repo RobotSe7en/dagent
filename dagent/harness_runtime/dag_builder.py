@@ -223,14 +223,20 @@ def _compile_plan_node(
         raise DAGCreationError("dag_start is reserved for the internal start node.")
     args = dict(node.args)
     registered = (tool_index or {}).get(node.tool)
+    if registered is None:
+        available = ", ".join(sorted(tool_index or {})) or "(none)"
+        raise DAGCreationError(
+            f"Unknown capability function '{node.tool}'. "
+            f"Available functions: {available}."
+        )
     return DAGNode(
         id=node.id,
         invocation=CapabilityInvocation(
-            capability_id=registered.id if registered is not None else _tool_capability_id(node.tool),
-            kind=registered.kind if registered is not None else "tool",
+            capability_id=registered.id,
+            kind=registered.kind,
             arguments=args,
             boundary=_infer_boundary(registered, args),
-            risk=registered.policy.risk if registered is not None else "low",
+            risk=registered.policy.risk,
         ),
     )
 
@@ -316,7 +322,3 @@ def _infer_boundary(tool_obj: CapabilityDefinition | None, args: dict[str, Any])
     if action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
-
-
-def _tool_capability_id(tool_name: str) -> str:
-    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"

@@ -414,8 +414,8 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.dag.nodes[0].invocation.capability_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown capability(s): tool.get_current_dir" in feedback
-    assert "Available capabilities:" in feedback
+    assert "Unknown capability function 'get_current_dir'" in feedback
+    assert "Available functions:" in feedback
     assert "echo" in feedback
     assert "User request:" not in feedback
 

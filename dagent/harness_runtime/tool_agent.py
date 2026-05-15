@@ -113,7 +113,10 @@ class ToolAgent:
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=_tool_name_from_capability(invocation.capability_id),
+            tool_name=self.loop.tool_adapter.function_name_for_capability(
+                invocation.capability_id,
+                enabled_toolsets=self.loop.enabled_toolsets,
+            ),
             content=feed_content,
         )
         return await self._continue_messages(
@@ -221,7 +224,6 @@ class ToolAgentLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
-        extra_tools: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
@@ -237,10 +239,7 @@ class ToolAgentLoop:
         invocations: list[CapabilityInvocation] = []
 
         for step in range(1, max_steps + 1):
-            tool_definitions = [
-                *self._llm_tool_definitions(allowed_tools),
-                *(extra_tools or []),
-            ]
+            tool_definitions = self._llm_tool_definitions(allowed_tools)
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
@@ -486,10 +485,6 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
-
-
-def _tool_name_from_capability(capability_id: str) -> str:
-    return capability_id.removeprefix("tool.")
 
 
 def _tool_content(result: CapabilityResult) -> str:

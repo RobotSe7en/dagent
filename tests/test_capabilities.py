@@ -136,6 +136,13 @@ def test_capability_tool_adapter_rejects_unknown_toolset() -> None:
         adapter.definitions(("missing",))
 
 
+def test_capability_tool_adapter_keeps_explicit_empty_toolsets_empty() -> None:
+    adapter = CapabilityToolAdapter(create_default_capability_catalog(), toolsets=[])
+
+    with pytest.raises(KeyError, match="Capability toolset 'builtin' is not registered"):
+        adapter.definitions(("builtin",))
+
+
 def test_default_builtin_toolset_exposes_read_write_search_and_command() -> None:
     adapter = CapabilityToolAdapter(create_default_capability_catalog())
 

@@ -56,6 +56,13 @@ def test_tool_and_dag_agents_get_visible_capabilities_from_tool_adapter() -> Non
     assert "tool_adapter.definitions" in tool_agent
 
 
+def test_tool_agent_has_no_secondary_llm_tool_injection_path() -> None:
+    root = Path(__file__).resolve().parents[1]
+    tool_agent = (root / "dagent" / "harness_runtime" / "tool_agent.py").read_text(encoding="utf-8")
+
+    assert "extra_tools" not in tool_agent
+
+
 def test_runtime_code_has_no_runnable_or_tool_execution_history_names() -> None:
     root = Path(__file__).resolve().parents[1]
     paths = [

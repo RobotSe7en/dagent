@@ -36,7 +36,11 @@ class CapabilityToolAdapter:
         toolsets: Sequence[CapabilityToolset] | None = None,
     ) -> None:
         self.catalog = catalog
-        resolved_toolsets = toolsets or [CapabilityToolset("builtin", BUILTIN_CAPABILITY_IDS)]
+        resolved_toolsets = (
+            [CapabilityToolset("builtin", BUILTIN_CAPABILITY_IDS)]
+            if toolsets is None
+            else toolsets
+        )
         self._toolsets = {toolset.name: toolset for toolset in resolved_toolsets}
 
     def capabilities(self, enabled_toolsets: Sequence[str]) -> list[CapabilityDefinition]:
@@ -119,6 +123,18 @@ class CapabilityToolAdapter:
             for definition in self._definitions(enabled_toolsets)
             if definition.policy.risk in {"medium", "high"} or definition.policy.requires_review
         }
+
+    def function_name_for_capability(
+        self,
+        capability_id: str,
+        *,
+        enabled_toolsets: Sequence[str],
+    ) -> str:
+        definition = self.ensure_allowed(
+            capability_id,
+            enabled_toolsets=enabled_toolsets,
+        )
+        return self.function_name(definition)
 
     def function_name(self, definition: CapabilityDefinition) -> str:
         if _FUNCTION_NAME_RE.match(definition.name):

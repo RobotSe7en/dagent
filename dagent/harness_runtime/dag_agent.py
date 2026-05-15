@@ -396,6 +396,7 @@ class DAGAgentLoop:
     ) -> DAGRunResult:
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
+        self._validate_dag_tools(record.dag)
 
         traces: list[TraceEvent] = []
         cycle = 0

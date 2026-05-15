@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
+from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor, RuntimeTaskRecord
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
@@ -15,7 +15,7 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityInvocation
+from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation
 from dagent.tools.registry import ToolRegistry
 
 
@@ -130,7 +130,7 @@ def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
         'b = echo(text="b")\n'
     )
 
-    dag = compile_plan_spec(plan, task_id="task_1")
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
 
     start = dag.nodes[0]
     assert start.id == "start"
@@ -150,6 +150,36 @@ def test_explicit_dag_start_is_rejected_as_reserved_internal_node() -> None:
 
     with pytest.raises(DAGCreationError, match="reserved"):
         compile_plan_spec(plan, task_id="task_1")
+
+
+def test_compile_rejects_unknown_capability_function_name() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: unknown\n'
+        'missing = missing_tool(text="a")\n'
+    )
+
+    with pytest.raises(
+        DAGCreationError,
+        match="Unknown capability function 'missing_tool'. Available functions: echo.",
+    ):
+        compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+
+
+def test_compile_uses_registered_non_tool_capability_mapping() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: file read\n'
+        'read = file_read(path="notes.txt")\n'
+    )
+
+    dag = compile_plan_spec(
+        plan,
+        task_id="task_1",
+        tools=[_capability("file_read", "file.read", kind="file")],
+    )
+
+    node = dag.nodes[0]
+    assert node.invocation.capability_id == "file.read"
+    assert node.invocation.kind == "file"
 
 
 def test_dag_must_be_acyclic() -> None:
@@ -253,6 +283,53 @@ def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
         loop.prepare_for_review(dag)
 
 
+def test_dag_agent_execute_rejects_capability_outside_enabled_toolset() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    registry = ToolRegistry()
+    registry.register(name="echo", handler=lambda text: text, action="read")
+    registry.register(name="write_file", handler=lambda path, content="": content, action="write")
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    loop = DAGAgentLoop(
+        provider=provider,
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=CapabilityToolAdapter(
+            capability_catalog,
+            toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
+        ),
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            DAGNode(
+                id="write",
+                invocation=CapabilityInvocation(
+                    capability_id="tool.write_file",
+                    kind="tool",
+                    arguments={"path": "notes.txt", "content": "hi"},
+                ),
+            )
+        ],
+    )
+    record = RuntimeTaskRecord.dag_task(
+        task_id="task_1",
+        user_request="write",
+        dag=dag,
+    )
+
+    with pytest.raises(DAGValidationError, match="Unknown capability\\(s\\): tool.write_file"):
+        asyncio.run(
+            loop.execute(
+                record,
+                messages=[],
+                build_user_message=lambda **_: {"role": "user", "content": ""},
+            )
+        )
+
+
 def _dag_agent_profile() -> AgentProfile:
     return AgentProfile(
         name="dag_agent",
@@ -260,3 +337,7 @@ def _dag_agent_profile() -> AgentProfile:
         layers=["soul"],
         layer_contents={"soul": "You are a DAG creator."},
     )
+
+
+def _capability(name: str, capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
+    return CapabilityDefinition(id=capability_id, name=name, kind=kind)
