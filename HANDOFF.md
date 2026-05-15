@@ -265,6 +265,53 @@ npm run build
 - `7273bae fix: preserve DAG task id during review validation retry`
 - `a3d5e1c refactor: make runtime session own DAG task records`
 
+## Capability Platform Roadmap
+
+This roadmap follows the original full-platform `Runnable` plan, but uses the
+current `Capability` / `Toolset` naming and module structure.
+
+1. **Close the capability core**
+   Finish the remaining boundary cleanup so tool mode, DAG mode, review, trace,
+   and execution records all flow through capability definitions/invocations/results.
+   Remove old tool-only assumptions instead of adding compatibility shims.
+
+2. **Wire first-stage capability providers**
+   Connect MCP, skill, shell, custom tool, memory, file, and agent template as
+   capability providers. Keep the first pass minimal but complete: discovery/list,
+   schema, execute, policy, execution record, and failure audit.
+
+3. **Add toolset and session capability configuration**
+   Model workspace/session enabled toolsets explicitly. A session gets a fixed
+   capability set at startup; system prompts, tool mode, and DAG planning all use
+   the same toolset snapshot. Do not rely on dynamic update/delete inside a live
+   session.
+
+4. **Platformize the API**
+   Add capability APIs for list/test/enable/disable, MCP server configuration,
+   skill scanning, sandbox status, execution records, trace lookup, artifacts, and
+   logs. Runtime should keep consuming outcomes/records and should not assemble
+   providers directly.
+
+5. **Build the web DAG capability panel**
+   Move DAG node configuration from free-typed tool names to selectable capability
+   functions. Render parameter-schema forms, permission/risk metadata, review
+   details, execution trace, artifacts, stdout/stderr, and clear error states.
+
+6. **Introduce sandbox runners**
+   Route shell, skill, custom tool, local MCP servers, and agent nodes through a
+   sandbox runner interface. A dev-only local runner is acceptable, but the code
+   path should remain the same as the target sandbox runner path.
+
+7. **Persist execution and audit state**
+   Add durable session/run/task/execution/trace storage. Persist capability inputs,
+   outputs, policy decisions, artifacts, stdout/stderr, errors, retries, and DAG
+   node state for audit and resumability.
+
+8. **Deepen agent, memory, and file capabilities**
+   Agent capabilities should own independent threads, budgets, and trace output.
+   Memory and file capabilities should stay explicit through capability calls or
+   agent policy, not hidden context injection.
+
 ## Suggested Next Work
 
 - Fix unknown/hallucinated tool calls in `ToolAgentLoop`: now that `extra_tools` is
