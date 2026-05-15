@@ -12,7 +12,7 @@ from dagent.harness_runtime import (
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, ToolInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, RunnableInvocation
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
@@ -83,7 +83,7 @@ def dag_dsl_from_dag(dag: DAG) -> str:
         deps = [e.source for e in dag.edges if e.target == node.id]
         deps_str = f" after {', '.join(deps)}" if deps else ""
         args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
-        lines.append(f'{node.id} = {node.invocation.tool_name}({args}){deps_str}')
+        lines.append(f'{node.id} = {_tool_name_from_runnable(node.invocation.runnable_id)}({args}){deps_str}')
     return "\n".join(lines)
 
 
@@ -185,12 +185,21 @@ def make_tool_executor() -> ToolExecutor:
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=ToolInvocation(
-            tool_name=tool,
+        invocation=RunnableInvocation(
+            runnable_id=_tool_runnable_id(tool),
+            kind="tool",
             arguments=args,
             boundary=Boundary(mode="read_only"),
         ),
     )
+
+
+def _tool_runnable_id(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
+
+
+def _tool_name_from_runnable(runnable_id: str) -> str:
+    return runnable_id.removeprefix("tool.")
 
 
 
@@ -223,7 +232,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
-    assert dag.nodes[1].invocation.tool_name == "run_command"
+    assert dag.nodes[1].invocation.runnable_id == "tool.run_command"
     assert dag.nodes[1].invocation.arguments == {"command": "dir", "cwd": "."}
     assert [(edge.source, edge.target) for edge in dag.edges] == [
         ("start", "list_files"),

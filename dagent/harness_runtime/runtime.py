@@ -24,7 +24,9 @@ from dagent.harness_runtime.runtime_events import (
     _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
-from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, ToolInvocation
+from dagent.runnables import RunnableExecutor, RunnableRegistry
+from dagent.runnables.providers import FileRunnableProvider, MemoryRunnableProvider, ToolRunnableProvider
+from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, RunnableInvocation
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
@@ -59,6 +61,8 @@ class HarnessRuntime:
         validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_validation_retries: int = 1,
+        runnable_registry: RunnableRegistry | None = None,
+        runnable_executor: RunnableExecutor | None = None,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
@@ -68,6 +72,21 @@ class HarnessRuntime:
         self.max_validation_retries = max_validation_retries
         self.session = HarnessRuntimeSession()
         self.tasks = self.session.tasks
+        self.runnable_registry = runnable_registry or RunnableRegistry()
+        self.runnable_executor = runnable_executor or RunnableExecutor(self.runnable_registry)
+        self._register_default_runnables()
+
+    def _register_default_runnables(self) -> None:
+        if self.runnable_registry.ids():
+            return
+        tool_executor = getattr(getattr(self.tool_agent, "loop", None), "tool_executor", None)
+        if tool_executor is not None:
+            ToolRunnableProvider(tool_executor.registry).register_into(
+                self.runnable_registry,
+                self.runnable_executor,
+            )
+        MemoryRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
+        FileRunnableProvider().register_into(self.runnable_registry, self.runnable_executor)
 
     # ==================================================================
     # Public API
@@ -355,7 +374,7 @@ class HarnessRuntime:
         mode: Literal["tool", "dag"],
         review_level: ReviewLevel,
         *,
-        extra_invocations: list[ToolInvocation] | None = None,
+        extra_invocations: list[RunnableInvocation] | None = None,
         task_id: str | None = None,
         runtime_mode: str | None = None,
     ) -> RuntimeResponse:

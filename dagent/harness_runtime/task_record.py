@@ -15,7 +15,7 @@ from dagent.schemas import (
     PendingReview,
     ReviewKind,
     ToolExecutionRecord,
-    ToolInvocation,
+    RunnableInvocation,
 )
 from dagent.schemas.trace import ToolExecutionSource, ToolExecutionStatus
 
@@ -34,8 +34,8 @@ class ReviewContinuation:
     kind: ReviewKind
     user_request: str
     review_level: ReviewLevel
-    invocations: list[ToolInvocation] = field(default_factory=list)
-    pending_invocation: ToolInvocation | None = None
+    invocations: list[RunnableInvocation] = field(default_factory=list)
+    pending_invocation: RunnableInvocation | None = None
 
 
 @dataclass
@@ -62,7 +62,7 @@ class RuntimeTaskRecord:
     review_level: ReviewLevel = "fast"
     pending_review: PendingReview | None = None
     final_response: str = ""
-    invocations: dict[str, ToolInvocation] = field(default_factory=dict)
+    invocations: dict[str, RunnableInvocation] = field(default_factory=dict)
     execution_records: list[ToolExecutionRecord] = field(default_factory=list)
     tool_state: ToolTaskState | None = None
     dag_state: DAGTaskState | None = None
@@ -146,7 +146,7 @@ class RuntimeTaskRecord:
         loop_outcome: "LoopOutcome",
         *,
         review_level: ReviewLevel,
-        invocations: list[ToolInvocation] | None = None,
+        invocations: list[RunnableInvocation] | None = None,
     ) -> None:
         task_invocations = invocations if invocations is not None else loop_outcome.invocations
         self.status = loop_outcome.status
@@ -196,7 +196,7 @@ class ToolExecutionStore:
         self,
         *,
         task_id: str,
-        invocation: ToolInvocation,
+        invocation: RunnableInvocation,
         source: ToolExecutionSource,
         output: str = "",
         error: str | None = None,
@@ -240,7 +240,7 @@ class ToolExecutionStore:
         return list(self._records)
 
 
-def pending_review_invocation(loop_outcome: "LoopOutcome") -> ToolInvocation | None:
+def pending_review_invocation(loop_outcome: "LoopOutcome") -> RunnableInvocation | None:
     review = loop_outcome.pending_review
     if review is None or review.kind != "tool_review":
         return None
@@ -256,7 +256,7 @@ def tool_loop_execution_records(
     *,
     task_id: str,
     messages: list[dict[str, Any]],
-    invocations: list[ToolInvocation],
+    invocations: list[RunnableInvocation],
 ) -> list[ToolExecutionRecord]:
     invocations_by_id = {
         invocation.invocation_id: invocation

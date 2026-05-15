@@ -30,7 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, RunnableKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -41,6 +41,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
+const runnableKinds: RunnableKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -56,7 +57,8 @@ function normalizeNode(node: DagNode): DagNode {
     ...node,
     invocation: {
       ...invocation,
-      tool_name: invocation.tool_name ?? '',
+      runnable_id: invocation.runnable_id ?? '',
+      kind: invocation.kind ?? 'tool',
       arguments: invocation.arguments ?? {},
       boundary: {
         mode: invocation.boundary?.mode ?? 'read_only',
@@ -112,11 +114,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.invocation.tool_name ? JSON.stringify(item.invocation.arguments) : ''}
+              title={item.invocation.runnable_id ? JSON.stringify(item.invocation.arguments) : ''}
             >
-              {item.invocation.tool_name
-                ? `${item.invocation.tool_name} ${JSON.stringify(item.invocation.arguments)}`
-                : 'tool not set'}
+              {item.invocation.runnable_id
+                ? `${item.invocation.runnable_id} ${JSON.stringify(item.invocation.arguments)}`
+                : 'runnable not set'}
             </div>
           </div>
         ),
@@ -413,7 +415,8 @@ export function App() {
         normalizeNode({
           id,
           invocation: {
-            tool_name: current.nodes[0]?.invocation.tool_name ?? '',
+            runnable_id: current.nodes[0]?.invocation.runnable_id ?? '',
+            kind: current.nodes[0]?.invocation.kind ?? 'tool',
             arguments: {},
             boundary: {
               mode: 'read_only',
@@ -1295,11 +1298,24 @@ function NodeEditor({
         </label>
       </div>
       <label>
-        Tool
+        Runnable
         <input
-          value={invocation.tool_name}
-          onChange={(event) => patchInvocation({ tool_name: event.target.value })}
+          value={invocation.runnable_id}
+          onChange={(event) => patchInvocation({ runnable_id: event.target.value })}
         />
+      </label>
+      <label>
+        Type
+        <select
+          value={invocation.kind ?? 'tool'}
+          onChange={(event) => patchInvocation({ kind: event.target.value as RunnableKind })}
+        >
+          {runnableKinds.map((kind) => (
+            <option key={kind} value={kind}>
+              {kind}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         Args JSON

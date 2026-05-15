@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.schemas.dag import DAG
-from dagent.schemas.invocation import ToolInvocation
+from dagent.runnables import RunnableInvocation
 from dagent.schemas.trace import ToolExecutionRecord, TraceEvent
 
 
@@ -51,7 +51,7 @@ class LoopOutcome:
     messages: list[dict[str, Any]] = field(default_factory=list)
     final_answer: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
-    invocations: list[ToolInvocation] = field(default_factory=list)
+    invocations: list[RunnableInvocation] = field(default_factory=list)
     dag: DAG | None = None
     dag_run: DAGRunResult | None = None
     task_id: str | None = None

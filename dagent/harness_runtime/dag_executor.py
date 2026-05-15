@@ -127,7 +127,7 @@ class DAGExecutor:
         dag: DAG,
         completed_results: dict[str, DAGNodeResult],
     ) -> DAGNodeResult:
-        if node.invocation.tool_name == "dag_start":
+        if _tool_name_from_runnable(node.invocation.runnable_id) == "dag_start":
             node.status = "completed"
             return DAGNodeResult(
                 node_id=node.id,
@@ -149,8 +149,9 @@ class DAGExecutor:
                 "DAGExecutor cannot execute tool nodes without a ToolExecutor."
             )
         invocation = node.invocation
-        if not invocation.tool_name:
-            raise ToolExecutionError(f"Tool node '{node.id}' has no tool name.")
+        tool_name = _tool_name_from_runnable(invocation.runnable_id)
+        if not tool_name:
+            raise ToolExecutionError(f"Node '{node.id}' has no runnable id.")
 
         tool_call_id = invocation.invocation_id
         self.trace_recorder.record(
@@ -159,13 +160,13 @@ class DAGExecutor:
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": invocation.tool_name,
+                "name": invocation.runnable_id,
                 "arguments": invocation.arguments,
             },
         )
         try:
             content = self.tool_executor.execute(
-                invocation.tool_name,
+                tool_name,
                 invocation.arguments,
                 boundary=invocation.boundary,
             )
@@ -189,7 +190,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": invocation.tool_name,
+                    "name": invocation.runnable_id,
                     "error": str(exc),
                 },
             )
@@ -219,7 +220,7 @@ class DAGExecutor:
                 node_id=node.id,
                 payload={
                     "tool_call_id": tool_call_id,
-                    "name": invocation.tool_name,
+                    "name": invocation.runnable_id,
                     "error": str(exc),
                 },
             )
@@ -237,7 +238,7 @@ class DAGExecutor:
             node_id=node.id,
             payload={
                 "tool_call_id": tool_call_id,
-                "name": invocation.tool_name,
+                "name": invocation.runnable_id,
                 "content": content,
             },
         )
@@ -413,13 +414,18 @@ def _augment_tool_violation(
     tool_executor: ToolExecutor,
 ) -> None:
     invocation = node.invocation
-    if invocation.tool_name and not violation.tool_name:
-        violation.tool_name = invocation.tool_name
-    tool = tool_executor.registry.get(invocation.tool_name) if invocation.tool_name else None
+    tool_name = _tool_name_from_runnable(invocation.runnable_id)
+    if tool_name and not violation.tool_name:
+        violation.tool_name = tool_name
+    tool = tool_executor.registry.get(tool_name) if tool_name else None
     if tool is None:
         return
     if not violation.action:
         violation.action = tool.action
+
+
+def _tool_name_from_runnable(runnable_id: str) -> str:
+    return runnable_id.removeprefix("tool.")
     if not violation.path:
         for arg_name in tool.path_args:
             value = invocation.arguments.get(arg_name)

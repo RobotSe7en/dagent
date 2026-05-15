@@ -11,7 +11,7 @@ from dagent.harness_runtime.task_record import (
     RuntimeTaskRecord,
     pending_review_invocation,
 )
-from dagent.schemas import LoopOutcome, ToolInvocation
+from dagent.schemas import LoopOutcome, RunnableInvocation
 
 
 class HarnessRuntimeSession:
@@ -62,7 +62,7 @@ class HarnessRuntimeSession:
         user_request: str,
         review_level: ReviewLevel,
         loop_outcome: LoopOutcome,
-        invocations: list[ToolInvocation] | None = None,
+        invocations: list[RunnableInvocation] | None = None,
         runtime_mode: str | None = None,
     ) -> RuntimeTaskRecord:
         resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"

@@ -17,6 +17,7 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.runnables import RunnableDefinition, RunnableInvocation, RunnableResult
 from dagent.schemas import DAG, ToolExecutionRecord, TraceEvent
 
 
@@ -31,6 +32,11 @@ class ResumeReviewRequest(BaseModel):
     dag: DAG | None = None
     approved: bool = True
     review_level: ReviewLevel | None = None
+
+
+class RunnableTestRequest(BaseModel):
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    boundary: dict[str, Any] | None = None
 
 
 class ApiState:
@@ -75,6 +81,143 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 async def reset_session() -> dict[str, str]:
     state.harness_runtime = None
     return {"status": "ok"}
+
+
+@app.get("/runnables")
+async def list_runnables(kind: str | None = None) -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    return {
+        "runnables": [
+            definition.model_dump(mode="json")
+            for definition in runtime.runnable_registry.list(kind=kind)  # type: ignore[arg-type]
+        ]
+    }
+
+
+@app.post("/runnables")
+async def create_runnable(definition: RunnableDefinition) -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    _install_runnable(runtime, definition)
+    return {"runnable": definition.model_dump(mode="json")}
+
+
+@app.put("/runnables/{runnable_id}")
+async def update_runnable(runnable_id: str, definition: RunnableDefinition) -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    if runnable_id != definition.id:
+        raise HTTPException(status_code=400, detail="Runnable id mismatch.")
+    if runtime.runnable_registry.get(runnable_id) is None:
+        raise HTTPException(status_code=404, detail="Runnable not found.")
+    runtime.runnable_registry.update(definition)
+    return {"runnable": definition.model_dump(mode="json")}
+
+
+@app.delete("/runnables/{runnable_id}")
+async def delete_runnable(runnable_id: str) -> dict[str, str]:
+    runtime = state.get_harness_runtime()
+    if runtime.runnable_registry.get(runnable_id) is None:
+        raise HTTPException(status_code=404, detail="Runnable not found.")
+    runtime.runnable_registry.delete(runnable_id)
+    return {"status": "deleted"}
+
+
+@app.post("/runnables/{runnable_id}/enable")
+async def enable_runnable(runnable_id: str) -> dict[str, Any]:
+    return _set_runnable_enabled(runnable_id, True)
+
+
+@app.post("/runnables/{runnable_id}/disable")
+async def disable_runnable(runnable_id: str) -> dict[str, Any]:
+    return _set_runnable_enabled(runnable_id, False)
+
+
+@app.get("/mcp/servers")
+async def list_mcp_servers() -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    servers = sorted({
+        definition.config.get("server")
+        for definition in runtime.runnable_registry.list(kind="mcp")  # type: ignore[arg-type]
+        if definition.config.get("server")
+    })
+    return {"servers": servers}
+
+
+@app.get("/skills")
+async def list_skills() -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    return {
+        "skills": [
+            definition.model_dump(mode="json")
+            for definition in runtime.runnable_registry.list(kind="skill")  # type: ignore[arg-type]
+        ]
+    }
+
+
+@app.get("/sandbox/status")
+async def sandbox_status() -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    return {
+        "runner": "local-dev",
+        "workspace_root": str(runtime.runnable_executor.workspace_root),
+        "container_ready": False,
+    }
+
+
+def _install_runnable(runtime: HarnessRuntime, definition: RunnableDefinition) -> None:
+    runtime.runnable_registry.register(definition)
+    if definition.kind == "custom_tool":
+        template = str(definition.config.get("template", ""))
+
+        def handler(invocation: RunnableInvocation) -> RunnableResult:
+            try:
+                content = template.format(**invocation.arguments) if template else ""
+            except Exception as exc:
+                return RunnableResult(
+                    invocation_id=invocation.invocation_id,
+                    runnable_id=invocation.runnable_id,
+                    kind=invocation.kind,
+                    status="failed",
+                    error=str(exc),
+                    stop_reason=type(exc).__name__,
+                )
+            return RunnableResult(
+                invocation_id=invocation.invocation_id,
+                runnable_id=invocation.runnable_id,
+                kind=invocation.kind,
+                status="completed",
+                content=content,
+            )
+
+        runtime.runnable_executor.register_handler(definition.id, handler)
+
+
+def _set_runnable_enabled(runnable_id: str, enabled: bool) -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    definition = runtime.runnable_registry.get(runnable_id)
+    if definition is None:
+        raise HTTPException(status_code=404, detail="Runnable not found.")
+    updated = definition.model_copy(update={"enabled": enabled})
+    runtime.runnable_registry.update(updated)
+    return {"runnable": updated.model_dump(mode="json")}
+
+
+@app.post("/runnables/{runnable_id}/test")
+async def test_runnable(runnable_id: str, request: RunnableTestRequest) -> dict[str, Any]:
+    runtime = state.get_harness_runtime()
+    definition = runtime.runnable_registry.get(runnable_id)
+    if definition is None:
+        raise HTTPException(status_code=404, detail="Runnable not found.")
+    invocation = RunnableInvocation(
+        runnable_id=runnable_id,
+        kind=definition.kind,
+        arguments=request.arguments,
+    )
+    if request.boundary is not None:
+        from dagent.schemas import Boundary
+
+        invocation.boundary = Boundary.model_validate(request.boundary)
+    result = runtime.runnable_executor.execute(invocation)
+    return {"result": result.model_dump(mode="json")}
 
 
 @app.post("/messages/stream")
@@ -237,7 +380,7 @@ def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
 
 def _execution_record_payload(record: ToolExecutionRecord) -> dict[str, Any]:
     payload = record.model_dump(mode="json")
-    payload["tool"] = record.invocation.tool_name
+    payload["tool"] = record.invocation.runnable_id
     payload["args"] = record.invocation.arguments
     return payload
 

@@ -9,7 +9,8 @@ from typing import Any
 from uuid import uuid4
 
 from dagent.harness_runtime.review_policy import effective_risk
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, ToolInvocation
+from dagent.runnables import RunnableInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec
 from dagent.tools.registry import Tool
 
 
@@ -115,8 +116,8 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
-        if not node.invocation.tool_name:
-            raise DAGValidationError(f"Node '{node.id}' must declare a tool.")
+        if not node.invocation.runnable_id:
+            raise DAGValidationError(f"Node '{node.id}' must declare a runnable.")
 
     node_id_set = set(node_ids)
     connected_ids: set[str] = set()
@@ -221,8 +222,9 @@ def _compile_plan_node(
     registered = (tool_index or {}).get(node.tool)
     return DAGNode(
         id=node.id,
-        invocation=ToolInvocation(
-            tool_name=node.tool,
+        invocation=RunnableInvocation(
+            runnable_id=_tool_runnable_id(node.tool),
+            kind="tool",
             arguments=args,
             boundary=_infer_boundary(registered, args),
             risk=effective_risk(registered, args),
@@ -250,8 +252,9 @@ def _ensure_start_node(
         next_nodes = [
             DAGNode(
                 id=start_id,
-                invocation=ToolInvocation(
-                    tool_name="dag_start",
+                invocation=RunnableInvocation(
+                    runnable_id="tool.dag_start",
+                    kind="tool",
                     arguments={},
                     boundary=Boundary(mode="read_only"),
                     risk="low",
@@ -305,3 +308,7 @@ def _infer_boundary(tool_obj: Tool | None, args: dict[str, Any]) -> Boundary:
     if tool_obj.action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
+
+
+def _tool_runnable_id(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"

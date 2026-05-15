@@ -167,7 +167,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     records = trace_response.json()["records"]
     assert len(records) == 1
     assert records[0]["node_id"] == "answer"
-    assert records[0]["tool"] == "echo"
+    assert records[0]["tool"] == "tool.echo"
     assert records[0]["args"] == {"text": "reviewed"}
     assert records[0]["output"] == "echo:reviewed"
     assert records[0]["status"] == "completed"
@@ -212,6 +212,64 @@ def test_api_old_dag_lifecycle_routes_are_removed() -> None:
     assert client.post("/dags/task_api/approve").status_code == 404
     assert client.post("/dags/task_api/execute").status_code == 404
     assert client.put("/dags/task_api", json={"dag": {}}).status_code == 404
+
+
+def test_api_runnable_list_create_and_test() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    list_response = client.get("/runnables")
+
+    assert list_response.status_code == 200
+    runnable_ids = {item["id"] for item in list_response.json()["runnables"]}
+    assert {"tool.echo", "memory.write", "file.write"}.issubset(runnable_ids)
+
+    create_response = client.post(
+        "/runnables",
+        json={
+            "id": "custom_tool.upper",
+            "name": "upper",
+            "kind": "custom_tool",
+            "description": "Uppercase text.",
+            "config": {"template": "upper:{text}"},
+        },
+    )
+    assert create_response.status_code == 200
+
+    test_response = client.post(
+        "/runnables/custom_tool.upper/test",
+        json={"arguments": {"text": "ok"}},
+    )
+
+    assert test_response.status_code == 200
+    assert test_response.json()["result"]["content"] == "upper:ok"
+
+    disable_response = client.post("/runnables/custom_tool.upper/disable")
+    assert disable_response.status_code == 200
+    assert disable_response.json()["runnable"]["enabled"] is False
+
+    enable_response = client.post("/runnables/custom_tool.upper/enable")
+    assert enable_response.status_code == 200
+    assert enable_response.json()["runnable"]["enabled"] is True
+
+    delete_response = client.delete("/runnables/custom_tool.upper")
+    assert delete_response.status_code == 200
+    assert client.post(
+        "/runnables/custom_tool.upper/test",
+        json={"arguments": {"text": "ok"}},
+    ).status_code == 404
+
+
+def test_api_capability_status_endpoints() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    assert client.get("/mcp/servers").status_code == 200
+    assert client.get("/skills").status_code == 200
+    sandbox = client.get("/sandbox/status")
+
+    assert sandbox.status_code == 200
+    assert sandbox.json()["runner"] in {"local-dev", "container"}
 
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:

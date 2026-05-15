@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, ToolInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, RunnableInvocation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -23,8 +23,9 @@ def node(
     tool = (tools or ["echo"])[0]
     return DAGNode(
         id=node_id,
-        invocation=ToolInvocation(
-            tool_name=tool,
+        invocation=RunnableInvocation(
+            runnable_id=_tool_runnable_id(tool),
+            kind="tool",
             arguments=args or {"text": node_id},
             boundary=boundary or Boundary(),
             risk=risk,
@@ -148,8 +149,9 @@ def tool_node(
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=ToolInvocation(
-            tool_name=tool,
+        invocation=RunnableInvocation(
+            runnable_id=_tool_runnable_id(tool),
+            kind="tool",
             arguments=args,
             boundary=boundary or Boundary(),
             risk=risk,
@@ -220,6 +222,10 @@ def tool_executor() -> ToolExecutor:
     return ToolExecutor(registry)
 
 
+def _tool_runnable_id(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
+
+
 def test_executor_treats_boundary_violation_as_node_failure() -> None:
     executor = DAGExecutor(tool_executor=tool_executor())
     dag = DAG(
@@ -271,7 +277,7 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
     records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "echo"
-    assert records[0].invocation.tool_name == "echo"
+    assert records[0].invocation.runnable_id == "tool.echo"
     assert records[0].invocation.arguments == {"text": "hi"}
     assert records[0].output == "echo:hi"
     assert records[0].status == "completed"
@@ -422,7 +428,7 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
     records = executor.execution_store.records_for_task("task_1")
     assert len(records) == 1
     assert records[0].node_id == "write_note"
-    assert records[0].invocation.tool_name == "write_note"
+    assert records[0].invocation.runnable_id == "tool.write_note"
     assert records[0].invocation.arguments == {"path": "notes.md", "content": "hi"}
     assert records[0].status == "failed"
     assert records[0].stop_reason == "boundary_violation"

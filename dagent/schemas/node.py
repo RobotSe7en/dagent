@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel
-from dagent.schemas.invocation import ToolInvocation
+from dagent.runnables import RunnableInvocation
 
 NodeStatus = Literal[
     "planned",
@@ -19,6 +19,6 @@ NodeStatus = Literal[
 
 class DAGNode(BaseModel):
     id: str
-    invocation: ToolInvocation
+    invocation: RunnableInvocation
     status: NodeStatus = "planned"
 

@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from dagent.schemas.invocation import ToolInvocation
+from dagent.runnables import RunnableInvocation
 
 
 TraceEventType = Literal[
@@ -59,7 +59,7 @@ ToolExecutionSource = Literal[
 class ToolExecutionRecord(BaseModel):
     record_id: str
     task_id: str
-    invocation: ToolInvocation
+    invocation: RunnableInvocation
     source: ToolExecutionSource
     output: str = ""
     error: str | None = None

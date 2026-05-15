@@ -27,8 +27,8 @@ from dagent.schemas import (
     LoopOutcome,
     LoopStatus,
     PendingReview,
+    RunnableInvocation,
     ToolExecutionRecord,
-    ToolInvocation,
     TraceEvent,
 )
 from dagent.state import PromptBuilder, PromptRequest
@@ -707,9 +707,10 @@ class DAGAgentLoop:
             return
         available_tools = self.dag_executor.tool_executor.registry.names()
         unknown_tools = sorted({
-            node.invocation.tool_name
+            _tool_name_from_runnable(node.invocation.runnable_id)
             for node in dag.nodes
-            if node.invocation.tool_name and node.invocation.tool_name not in available_tools
+            if _tool_name_from_runnable(node.invocation.runnable_id)
+            and _tool_name_from_runnable(node.invocation.runnable_id) not in available_tools
         })
         if unknown_tools:
             raise DAGValidationError(
@@ -780,7 +781,7 @@ def _format_dag_observation(
         sections.append(f"Error:\n{last_error}")
 
     recent = [
-        f"- {execution.node_id} ({execution.invocation.tool_name}): {execution.status}"
+        f"- {execution.node_id} ({execution.invocation.runnable_id}): {execution.status}"
         + (f" error={execution.error}" if execution.error else "")
         for execution in record.execution_records[-6:]
     ]
@@ -812,7 +813,7 @@ def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) 
         for node in dag.nodes:
             lines.append(
                 f"  - {node.id}: "
-                f"{node.invocation.tool_name}({node.invocation.arguments})"
+                f"{node.invocation.runnable_id}({node.invocation.arguments})"
             )
     if dag_run and dag_run.node_results:
         lines.append("Node execution results:")
@@ -864,7 +865,7 @@ def _dag_loop_outcome(
     extra_events: list[dict[str, Any]] | None = None,
 ) -> LoopOutcome:
     events: list[dict[str, Any]] = list(extra_events or [])
-    invocations: list[ToolInvocation] = []
+    invocations: list[RunnableInvocation] = []
     if dag is not None:
         invocations = [node.invocation for node in dag.nodes]
     if task_id and dag:
@@ -893,6 +894,10 @@ def _dag_loop_outcome(
         task_id=task_id,
         pending_review=pending_review,
     )
+
+
+def _tool_name_from_runnable(runnable_id: str) -> str:
+    return runnable_id.removeprefix("tool.")
 
 
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:

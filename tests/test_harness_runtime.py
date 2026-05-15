@@ -184,7 +184,7 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert runtime_task.invocations
     assert runtime_task.execution_records
     assert runtime_task.execution_records[0].source == "dag_node"
-    assert runtime_task.execution_records[0].invocation.tool_name == "echo"
+    assert runtime_task.execution_records[0].invocation.runnable_id == "tool.echo"
 
 
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
@@ -378,7 +378,7 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].invocation.tool_name == "echo"
+    assert result.dag.nodes[0].invocation.runnable_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
     assert "Unknown tool(s): get_current_dir" in feedback
@@ -573,7 +573,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].invocations
     assert tool_tasks[0].execution_records
     assert tool_tasks[0].execution_records[0].source == "tool_loop"
-    assert tool_tasks[0].execution_records[0].invocation.tool_name == "write_file"
+    assert tool_tasks[0].execution_records[0].invocation.runnable_id == "tool.write_file"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 

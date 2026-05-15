@@ -6,7 +6,7 @@ from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGEdge, DAGNode, ToolInvocation
+from dagent.schemas import DAG, DAGEdge, DAGNode, RunnableInvocation
 from dagent.tools.executor import ToolExecutor
 from dagent.tools.registry import ToolRegistry
 
@@ -14,7 +14,11 @@ from dagent.tools.registry import ToolRegistry
 def make_node(node_id: str) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=ToolInvocation(tool_name="echo", arguments={"text": node_id}),
+        invocation=RunnableInvocation(
+            runnable_id="tool.echo",
+            kind="tool",
+            arguments={"text": node_id},
+        ),
     )
 
 
@@ -54,12 +58,12 @@ def test_agent_nodes_are_rejected_for_executable_dags() -> None:
         nodes=[
             DAGNode(
                 id="reason",
-                invocation=ToolInvocation(tool_name=""),
+                invocation=RunnableInvocation(runnable_id="", kind="tool"),
             )
         ],
     )
 
-    with pytest.raises(DAGValidationError, match="must declare a tool"):
+    with pytest.raises(DAGValidationError, match="must declare a runnable"):
         validate_dag(dag)
 
 
@@ -168,7 +172,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.invocation.tool_name for node in dag.nodes] == ["run_command"]
+    assert [node.invocation.runnable_id for node in dag.nodes] == ["tool.run_command"]
     assert [node.invocation.risk for node in dag.nodes] == ["low"]
 
 

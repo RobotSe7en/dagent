@@ -12,7 +12,7 @@ from dagent.harness_runtime.review_policy import effective_risk, review_policy
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
+from dagent.schemas import Boundary, LoopOutcome, PendingReview, RunnableInvocation
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.tools.boundary import BoundaryViolation
 from dagent.tools.executor import ToolExecutor
@@ -108,7 +108,7 @@ class ToolAgent:
         if approved:
             try:
                 feed_content = self.loop.tool_executor.execute(
-                    invocation.tool_name,
+                    _tool_name_from_runnable(invocation.runnable_id),
                     invocation.arguments,
                     boundary=invocation.boundary,
                 )
@@ -118,7 +118,7 @@ class ToolAgent:
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=invocation.tool_name,
+            tool_name=_tool_name_from_runnable(invocation.runnable_id),
             content=feed_content,
         )
         return await self._continue_messages(
@@ -228,7 +228,7 @@ class ToolAgentLoop:
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
         control_events: list[dict[str, Any]] = []
-        invocations: list[ToolInvocation] = []
+        invocations: list[RunnableInvocation] = []
 
         for step in range(1, max_steps + 1):
             tool_definitions = [
@@ -256,9 +256,10 @@ class ToolAgentLoop:
 
             for tool_call in response.tool_calls:
                 tool_obj = self.tool_executor.registry.get(tool_call.name)
-                invocation = ToolInvocation(
+                invocation = RunnableInvocation(
                     invocation_id=tool_call.id,
-                    tool_name=tool_call.name,
+                    runnable_id=_tool_runnable_id(tool_call.name),
+                    kind="tool",
                     arguments=tool_call.arguments,
                     boundary=boundary,
                     risk=effective_risk(tool_obj, tool_call.arguments),
@@ -516,6 +517,14 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
+
+
+def _tool_runnable_id(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
+
+
+def _tool_name_from_runnable(runnable_id: str) -> str:
+    return runnable_id.removeprefix("tool.")
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
