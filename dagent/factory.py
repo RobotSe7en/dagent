@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dagent.capabilities import create_default_capability_catalog
+from dagent.capabilities import CapabilityToolAdapter, create_default_capability_catalog
 from dagent.config import DagentConfig, load_config
 from dagent.harness_runtime import (
     ToolAgent,
@@ -31,23 +31,26 @@ def create_harness_runtime(
     provider = OpenAICompatibleProvider(resolved_config.provider)
     session_capabilities = create_default_capability_catalog(workspace_root=workspace_root)
     capability_executor = CapabilityExecutor(session_capabilities)
-    runtime_tools = session_capabilities.list(kind="tool", enabled_only=True)
+    tool_adapter = CapabilityToolAdapter(session_capabilities)
     conversation_profile = profile_store.load(resolved_config.profiles.conversation)
-    tool_agent_loop = ToolAgentLoop(provider=provider, capability_executor=capability_executor)
+    tool_agent_loop = ToolAgentLoop(
+        provider=provider,
+        capability_executor=capability_executor,
+        tool_adapter=tool_adapter,
+    )
     tool_agent = ToolAgent(
         loop=tool_agent_loop,
         profile=conversation_profile,
-        tools=runtime_tools,
     )
     dag_executor = DAGExecutor(capability_executor=capability_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
+        tool_adapter=tool_adapter,
     )
     dag_agent = DAGAgent(
         loop=dag_agent_loop,
         profile=profile_store.load(resolved_config.profiles.dag_agent),
-        tools=runtime_tools,
     )
     validator = _try_load_validator(provider, profile_store, resolved_config)
     return HarnessRuntime(

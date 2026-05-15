@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
+from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.review_policy import review_policy
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
@@ -46,13 +47,12 @@ class ToolAgent:
         *,
         loop: "ToolAgentLoop",
         profile: AgentProfile,
-        tools: list[CapabilityDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
     ) -> None:
         self.loop = loop
         self.profile = profile
-        self.tools = tools or []
+        self.tools = self.loop.available_capabilities()
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
         self.system_message = self.prompt_builder.build_system_message(
@@ -136,7 +136,7 @@ class ToolAgent:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names()
         control_tool_handler = (
-            self.loop.create_tool_guard(review_level, boundary, self.tools)
+            self.loop.create_tool_guard(review_level, boundary)
             if control_tool_names
             else None
         )
@@ -154,11 +154,7 @@ class ToolAgent:
         return outcome
 
     def reviewable_tool_names(self) -> set[str]:
-        return {
-            tool.name
-            for tool in self.tools
-            if tool.policy.risk in {"medium", "high"} or tool.policy.requires_review
-        }
+        return self.loop.reviewable_tool_names()
 
 
 class ToolAgentLoop:
@@ -169,22 +165,38 @@ class ToolAgentLoop:
         *,
         provider: ChatProvider,
         capability_executor: CapabilityExecutor,
+        tool_adapter: CapabilityToolAdapter,
+        enabled_toolsets: Sequence[str] = ("builtin",),
     ) -> None:
         self.provider = provider
         self.capability_executor = capability_executor
+        self.tool_adapter = tool_adapter
+        self.enabled_toolsets = tuple(enabled_toolsets)
+
+    def available_capabilities(self) -> list[CapabilityDefinition]:
+        return self.tool_adapter.capabilities(self.enabled_toolsets)
+
+    def reviewable_tool_names(self) -> set[str]:
+        return self.tool_adapter.reviewable_names(self.enabled_toolsets)
 
     def create_tool_guard(
         self,
         review_level: "_rp.ReviewLevel",
         boundary: Boundary,
-        tools: list[CapabilityDefinition],
     ) -> ControlToolHandler:
         policy = review_policy(review_level)
 
         async def guard(tool_call: ToolCall) -> ControlToolResult:
-            definition = next((t for t in tools if t.name == tool_call.name), None)
-            risk = definition.policy.risk if definition is not None else "low"
-            invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
+            definition = self.tool_adapter.definition_from_tool_call(
+                tool_call,
+                enabled_toolsets=self.enabled_toolsets,
+            )
+            risk = definition.policy.risk
+            invocation = self.tool_adapter.invocation_from_tool_call(
+                tool_call,
+                boundary,
+                enabled_toolsets=self.enabled_toolsets,
+            )
             if not policy.reviews_tool(risk):
                 try:
                     result_content = _tool_content(self.capability_executor.execute(invocation))
@@ -226,7 +238,7 @@ class ToolAgentLoop:
 
         for step in range(1, max_steps + 1):
             tool_definitions = [
-                *self._tool_definitions_for_boundary(boundary, allowed_tools),
+                *self._llm_tool_definitions(allowed_tools),
                 *(extra_tools or []),
             ]
             response = await self._chat(
@@ -249,8 +261,11 @@ class ToolAgentLoop:
                 )
 
             for tool_call in response.tool_calls:
-                definition = self.capability_executor.catalog.get_by_name(tool_call.name, kind="tool")
-                invocation = _invocation_from_tool_call(tool_call, boundary, definition=definition)
+                invocation = self.tool_adapter.invocation_from_tool_call(
+                    tool_call,
+                    boundary,
+                    enabled_toolsets=self.enabled_toolsets,
+                )
                 invocations.append(invocation)
                 self._emit_capability_event(on_event, invocation, "capability_call")
                 if control_tool_names and tool_call.name in control_tool_names:
@@ -351,27 +366,19 @@ class ToolAgentLoop:
             invocations=invocations,
         )
 
-    def _tool_definitions_for_boundary(
+    def _llm_tool_definitions(
         self,
-        boundary: Boundary,
         allowed_tools: list[str] | None,
     ) -> list[dict[str, Any]]:
         allowed = set(allowed_tools) if allowed_tools is not None else None
-        definitions: list[dict[str, Any]] = []
-        for capability in self.capability_executor.catalog.list(kind="tool", enabled_only=True):
-            if allowed is not None and capability.name not in allowed:
-                continue
-            definitions.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": capability.name,
-                        "description": capability.description,
-                        "parameters": capability.parameters or {"type": "object"},
-                    },
-                }
-            )
-        return definitions
+        definitions = self.tool_adapter.definitions(self.enabled_toolsets)
+        if allowed is None:
+            return definitions
+        return [
+            definition
+            for definition in definitions
+            if definition["function"]["name"] in allowed
+        ]
 
     async def _chat(
         self,
@@ -481,28 +488,8 @@ def _replace_tool_result(
     messages.append(replacement)
 
 
-def _tool_capability_id(tool_name: str) -> str:
-    return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
-
-
 def _tool_name_from_capability(capability_id: str) -> str:
     return capability_id.removeprefix("tool.")
-
-
-def _invocation_from_tool_call(
-    tool_call: ToolCall,
-    boundary: Boundary,
-    *,
-    definition: CapabilityDefinition | None,
-) -> CapabilityInvocation:
-    return CapabilityInvocation(
-        invocation_id=tool_call.id,
-        capability_id=definition.id if definition is not None else _tool_capability_id(tool_call.name),
-        kind="tool",
-        arguments=tool_call.arguments,
-        boundary=boundary,
-        risk=definition.policy.risk if definition is not None else "low",
-    )
 
 
 def _tool_content(result: CapabilityResult) -> str:

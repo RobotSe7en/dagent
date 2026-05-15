@@ -11,7 +11,7 @@ from dagent.harness_runtime.dag_builder import (
     parse_plan_spec_dsl,
     validate_dag,
 )
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
@@ -186,14 +186,18 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     capability_catalog = CapabilityCatalog()
     capability_executor = CapabilityExecutor(capability_catalog)
     ToolCapabilityProvider(registry).register_into(capability_catalog)
+    tool_adapter = CapabilityToolAdapter(
+        capability_catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(capability_catalog.ids())))],
+    )
     loop = DAGAgentLoop(
         provider=provider,
         dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=tool_adapter,
     )
     agent = DAGAgent(
         loop=loop,
         profile=_dag_agent_profile(),
-        tools=capability_catalog.list(kind="tool", enabled_only=True),
     )
 
     messages = [agent.system_message]
@@ -204,7 +208,6 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
             prompt="Summarize the repo",
             task_id="task_1",
         ),
-        tools=agent.tools,
         allow_no_change=False,
     ))
     dag = loop.prepare_for_review(requested)
@@ -213,6 +216,41 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     assert dag.task_id == "task_1"
     assert [node.invocation.capability_id for node in dag.nodes] == ["tool.run_command"]
     assert [node.invocation.risk for node in dag.nodes] == ["low"]
+
+
+def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    registry = ToolRegistry()
+    registry.register(name="echo", handler=lambda text: text, action="read")
+    registry.register(name="write_file", handler=lambda path, content="": content, action="write")
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    loop = DAGAgentLoop(
+        provider=provider,
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=CapabilityToolAdapter(
+            capability_catalog,
+            toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
+        ),
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            DAGNode(
+                id="write",
+                invocation=CapabilityInvocation(
+                    capability_id="tool.write_file",
+                    kind="tool",
+                    arguments={"path": "notes.txt", "content": "hi"},
+                ),
+            )
+        ],
+    )
+
+    with pytest.raises(DAGValidationError, match="Unknown capability\\(s\\): tool.write_file"):
+        loop.prepare_for_review(dag)
 
 
 def _dag_agent_profile() -> AgentProfile:

@@ -12,7 +12,7 @@ from dagent.harness_runtime import (
     HarnessRuntime,
     CapabilityExecutor,
 )
-from dagent.capabilities import create_default_capability_catalog
+from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -304,21 +304,28 @@ def test_api_capability_status_endpoints() -> None:
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:
     capability_executor = _capability_executor()
+    tool_adapter = CapabilityToolAdapter(
+        capability_executor.catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(capability_executor.catalog.ids())))],
+    )
     dag_executor = DAGExecutor(capability_executor=capability_executor)
     return HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, capability_executor=capability_executor),
+            loop=ToolAgentLoop(
+                provider=provider,
+                capability_executor=capability_executor,
+                tool_adapter=tool_adapter,
+            ),
             profile=_profile("conversation"),
-            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
                 dag_executor=dag_executor,
+                tool_adapter=tool_adapter,
             ),
             profile=_profile("dag_agent"),
-            tools=capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
         capability_catalog=capability_executor.catalog,
         capability_executor=capability_executor,

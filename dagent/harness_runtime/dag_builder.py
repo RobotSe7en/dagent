@@ -226,8 +226,8 @@ def _compile_plan_node(
     return DAGNode(
         id=node.id,
         invocation=CapabilityInvocation(
-            capability_id=_tool_capability_id(node.tool),
-            kind="tool",
+            capability_id=registered.id if registered is not None else _tool_capability_id(node.tool),
+            kind=registered.kind if registered is not None else "tool",
             arguments=args,
             boundary=_infer_boundary(registered, args),
             risk=registered.policy.risk if registered is not None else "low",

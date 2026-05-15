@@ -12,6 +12,7 @@ def test_capability_boundaries_are_not_split_into_top_level_runtime_package() ->
     assert (root / "dagent" / "capabilities" / "catalog.py").exists()
     assert (root / "dagent" / "capabilities" / "bootstrap.py").exists()
     assert (root / "dagent" / "capabilities" / "providers.py").exists()
+    assert (root / "dagent" / "capabilities" / "toolsets.py").exists()
 
 
 def test_harness_runtime_executors_do_not_depend_on_tool_executor() -> None:
@@ -42,6 +43,17 @@ def test_capability_catalog_does_not_expose_handler_reusing_snapshot_api() -> No
     text = (root / "dagent" / "capabilities" / "catalog.py").read_text(encoding="utf-8")
 
     assert "def snapshot" not in text
+
+
+def test_tool_and_dag_agents_get_visible_capabilities_from_tool_adapter() -> None:
+    root = Path(__file__).resolve().parents[1]
+    tool_agent = (root / "dagent" / "harness_runtime" / "tool_agent.py").read_text(encoding="utf-8")
+    dag_agent = (root / "dagent" / "harness_runtime" / "dag_agent.py").read_text(encoding="utf-8")
+
+    assert "catalog.list(kind=\"tool\"" not in tool_agent
+    assert "catalog.list(kind=\"tool\"" not in dag_agent
+    assert "tool_adapter.capabilities" in dag_agent
+    assert "tool_adapter.definitions" in tool_agent
 
 
 def test_runtime_code_has_no_runnable_or_tool_execution_history_names() -> None:

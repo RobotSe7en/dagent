@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 
+from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -47,12 +48,11 @@ class DAGAgent:
         *,
         loop: "DAGAgentLoop",
         profile: AgentProfile,
-        tools: list[CapabilityDefinition] | None = None,
         prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self.loop = loop
         self.profile = profile
-        self.tools = tools or []
+        self.tools = self.loop.available_capabilities()
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.system_message = self.prompt_builder.build_system_message(
             PromptRequest(
@@ -87,7 +87,6 @@ class DAGAgent:
                 task_id=resolved_task_id,
             ),
             build_user_message=self.build_request_user_message,
-            tools=self.tools,
             runtime_mode=runtime_mode,
             force_review=force_review,
             on_token=on_token,
@@ -115,7 +114,6 @@ class DAGAgent:
             review_level=review_level,
             messages=self.messages,
             build_user_message=self.build_request_user_message,
-            tools=self.tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -134,7 +132,6 @@ class DAGAgent:
             record,
             messages=self.messages,
             build_user_message=self.build_request_user_message,
-            tools=self.tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -156,11 +153,18 @@ class DAGAgentLoop:
         *,
         provider: ChatProvider,
         dag_executor: DAGExecutor,
+        tool_adapter: CapabilityToolAdapter,
+        enabled_toolsets: Sequence[str] = ("builtin",),
         max_cycles: int = 6,
     ) -> None:
         self.provider = provider
         self.dag_executor = dag_executor
+        self.tool_adapter = tool_adapter
+        self.enabled_toolsets = tuple(enabled_toolsets)
         self.max_cycles = max_cycles
+
+    def available_capabilities(self) -> list[CapabilityDefinition]:
+        return self.tool_adapter.capabilities(self.enabled_toolsets)
 
     async def _request_dag(
         self,
@@ -168,7 +172,6 @@ class DAGAgentLoop:
         task_id: str | None,
         messages: list[dict[str, Any]],
         user_message: dict[str, str],
-        tools: list[CapabilityDefinition],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
     ) -> DAG | str | None:
@@ -179,7 +182,7 @@ class DAGAgentLoop:
         result = dag_from_model_output(
             response.content,
             task_id=resolved_task_id,
-            tools=tools,
+            tools=self.tool_adapter.capabilities(self.enabled_toolsets),
         )
         if result is None:
             if not allow_no_change:
@@ -200,7 +203,6 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         initial_user_message: dict[str, str],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[CapabilityDefinition],
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
@@ -222,7 +224,6 @@ class DAGAgentLoop:
                         if cycles_used == 1
                         else build_user_message(prompt=planning_prompt, task_id=resolved_task_id)
                     ),
-                    tools=tools,
                     allow_no_change=False,
                     on_token=on_token,
                 )
@@ -279,7 +280,6 @@ class DAGAgentLoop:
             record,
             messages=messages,
             build_user_message=build_user_message,
-            tools=tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -297,7 +297,6 @@ class DAGAgentLoop:
         review_level: ReviewLevel | None = None,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -338,7 +337,6 @@ class DAGAgentLoop:
                 observation,
                 messages=messages,
                 build_user_message=build_user_message,
-                tools=tools,
                 on_token=on_token,
                 on_trace=on_trace,
                 on_dag=on_dag,
@@ -375,7 +373,6 @@ class DAGAgentLoop:
             record,
             messages=messages,
             build_user_message=build_user_message,
-            tools=tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -392,7 +389,6 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -457,7 +453,6 @@ class DAGAgentLoop:
                         task_id=record.task_id,
                     ),
                     messages=messages,
-                    tools=tools,
                     on_token=on_token,
                 )
             except Exception as exc:
@@ -509,7 +504,6 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
-        tools: list[CapabilityDefinition],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -523,7 +517,6 @@ class DAGAgentLoop:
                     prompt=observation,
                     task_id=record.task_id,
                 ),
-                tools=tools,
                 on_token=on_token,
             )
         except Exception as exc:
@@ -561,7 +554,6 @@ class DAGAgentLoop:
             record,
             messages=messages,
             build_user_message=build_user_message,
-            tools=tools,
             on_token=on_token,
             on_trace=on_trace,
             on_dag=on_dag,
@@ -703,19 +695,33 @@ class DAGAgentLoop:
         return prepared
 
     def _validate_dag_tools(self, dag: DAG) -> None:
-        available_capabilities = self.dag_executor.capability_executor.catalog.ids()
         unknown_tools = sorted({
             node.invocation.capability_id
             for node in dag.nodes
-            if node.invocation.capability_id and node.invocation.capability_id not in available_capabilities
+            if node.invocation.capability_id
+            and not self._is_enabled_capability(node.invocation.capability_id)
         })
         if unknown_tools:
+            available_capabilities = [
+                definition.id
+                for definition in self.tool_adapter.capabilities(self.enabled_toolsets)
+            ]
             raise DAGValidationError(
                 "Unknown capability(s): "
                 f"{', '.join(unknown_tools)}. "
                 "Available capabilities: "
                 f"{', '.join(sorted(available_capabilities))}."
             )
+
+    def _is_enabled_capability(self, capability_id: str) -> bool:
+        try:
+            self.tool_adapter.ensure_allowed(
+                capability_id,
+                enabled_toolsets=self.enabled_toolsets,
+            )
+            return True
+        except KeyError:
+            return False
 
 # ------------------------------------------------------------------
 # LLM communication

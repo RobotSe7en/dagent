@@ -10,7 +10,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     CapabilityExecutor,
 )
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
@@ -37,6 +37,7 @@ def runtime_for(
             loop=ToolAgentLoop(
                 provider=dag_agent_loop.provider,
                 capability_executor=executor.capability_executor,
+                tool_adapter=_tool_adapter(executor.capability_executor.catalog),
             ),
             profile=AgentProfile(
                 name="conversation",
@@ -53,7 +54,6 @@ def runtime_for(
                 layers=["soul"],
                 layer_contents={"soul": "You are a DAG creator."},
             ),
-            tools=dag_agent_loop.dag_executor.capability_executor.catalog.list(kind="tool", enabled_only=True),
         ),
     )
 
@@ -63,6 +63,7 @@ def dag_loop_for(provider: MockProvider, executor: DAGExecutor | None = None) ->
     return DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
+        tool_adapter=_tool_adapter(dag_executor.capability_executor.catalog),
     )
 
 
@@ -75,7 +76,6 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
             layers=["soul"],
             layer_contents={"soul": "You are a DAG creator."},
         ),
-        tools=dag_loop.dag_executor.capability_executor.catalog.list(kind="tool", enabled_only=True),
     )
 
 
@@ -180,6 +180,13 @@ def make_capability_executor() -> CapabilityExecutor:
     return capability_executor
 
 
+def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
+    return CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))],
+    )
+
+
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
@@ -231,7 +238,6 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
             prompt="What files are here?",
             task_id="task_real",
         ),
-        tools=dag_agent.tools,
     ))
     dag = dag_loop.prepare_for_review(requested)
 

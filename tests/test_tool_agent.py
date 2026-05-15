@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import ToolAgentLoop
 from dagent.harness_runtime import CapabilityExecutor
@@ -16,11 +16,22 @@ def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
     capability_catalog = CapabilityCatalog(workspace_root=tmp_path)
     capability_executor = CapabilityExecutor(capability_catalog)
     ToolCapabilityProvider(create_file_tool_registry()).register_into(capability_catalog)
-    return ToolAgentLoop(provider=provider, capability_executor=capability_executor)
+    return ToolAgentLoop(
+        provider=provider,
+        capability_executor=capability_executor,
+        tool_adapter=_tool_adapter(capability_catalog),
+    )
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
+    return CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))],
+    )
 
 
 def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
