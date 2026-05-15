@@ -6,15 +6,17 @@ This file is for continuing work from another session or machine.
 
 - GitHub: https://github.com/RobotSe7en/dagent.git
 - Base branch: `main`
-- Active branch: `codex/agent-resume-boundaries`
+- Active branch: `codex/runnable-platform`
 - Latest notable code commits before this documentation refresh:
-  - `9635ea9 Wire DAG review rejection in web`
-  - `861f080 Unify agent-owned message threads`
+  - `02b2db6 Tighten capability toolset boundaries`
+  - `376eb0c Add capability toolset adapter`
+  - `b97d041 Refine capability runtime architecture`
+  - `cb567f7 refactor: rename runnable platform to capabilities`
 
 If GitHub access is unstable, use the local Clash proxy:
 
 ```powershell
-git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin codex/agent-resume-boundaries
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin codex/runnable-platform
 ```
 
 ## Current Architecture
@@ -22,12 +24,14 @@ git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 pus
 ```text
 dagent/
   api/              FastAPI API (SSE streaming)
+  capabilities/     capability catalog, provider bootstrap, provider adapters,
+                    LLM-visible capability toolsets
   harness_runtime/  runtime orchestration, tool/DAG loops, review, validation,
                     session state, trace recording, DAG execution
   providers/        OpenAI-compatible and mock providers
   schemas/          public data contracts: DAG, invocation, trace, results/outcomes
   state/            prompt assembly (PromptBuilder)
-  tools/            registry, executor, file tools, boundary enforcement
+  tools/            legacy/builtin tool registry used by ToolCapabilityProvider
 profiles/           editable agent profiles (conversation, dag_agent, validator_agent, feedback_learner)
 web/                React + Vite frontend
 tests/              pytest suite
@@ -49,11 +53,15 @@ or compatibility shim modules.
 | `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `CapabilityExecutionStore` |
 | `dagent/harness_runtime/runtime_trace.py` | Trace event recording |
 | `dagent/harness_runtime/validator_agent.py` | LLM-backed `ValidatorAgent` and validation feedback formatting |
+| `dagent/capabilities/catalog.py` | Session-owned `CapabilityCatalog`: definitions plus handlers |
+| `dagent/capabilities/bootstrap.py` | Default session capability assembly |
+| `dagent/capabilities/providers.py` | Providers for builtin tools, MCP, skill, shell, custom tool, agent, memory, file |
+| `dagent/capabilities/toolsets.py` | `CapabilityToolAdapter` and `CapabilityToolset`: LLM function schemas and tool-call-to-capability mapping |
 | `dagent/schemas/results.py` | `DAGNodeResult`, `DAGRunResult`, `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
 | `dagent/schemas/capability.py` | `CapabilityInvocation` shared by tool mode and DAG nodes |
 | `dagent/schemas/common.py` | `Boundary`, boundary modes, risk levels |
 | `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
-| `dagent/tools/registry.py` | Tool registration, including `boundary_fn` and `risk_fn` callbacks |
+| `dagent/tools/registry.py` | Builtin tool registration source consumed by `ToolCapabilityProvider` |
 | `dagent/tools/boundary.py` | Boundary enforcement |
 | `dagent/api/app.py` | FastAPI app: `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
 | `web/src/App.tsx` | Web UI for modes, review dialogs, DAG view, validation controls |
@@ -78,6 +86,11 @@ ValidationResult
 and `DAGAgent.run()/resume_review()` return it directly. Runtime converts that to
 `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
 `LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
+
+`CapabilityInvocation`, `CapabilityDefinition`, `CapabilityPolicy`, and
+`CapabilityResult` are shared by tool mode, DAG nodes, and future capability
+providers. LLM-visible OpenAI tool schemas are produced by `CapabilityToolAdapter`
+from enabled toolsets, not directly from `ToolRegistry`.
 
 ## Message Ownership
 
@@ -129,7 +142,8 @@ DAGAgent.run()
   -> appends user request to DAGAgent.messages
   -> DAGAgentLoop.run()
   -> _request_dag() sends DAGAgent.messages and parses PlanSpec DSL via dag_builder.py
-  -> prepare_for_review(): normalize + validate_dag + tool registry check
+     using CapabilityToolAdapter-provided function names
+  -> prepare_for_review(): normalize + validate_dag + enabled capability/toolset check
   -> optional human review
   -> execute() loop
      -> DAGExecutor.execute_next_ready_layer()
@@ -144,15 +158,16 @@ Tool mode:
 ToolAgent.run()
   -> appends user request to ToolAgent.messages
   -> ToolAgentLoop.run()
-  -> bounded chat/tool loop
-  -> tool review gate for medium/high risk tools in careful mode
+  -> bounded chat/tool loop with tools from CapabilityToolAdapter.definitions()
+  -> capability review gate for medium/high risk capabilities in careful mode
   -> LoopOutcome
 ```
 
 Review resume:
 
 ```text
-Tool review approve -> execute original tool -> replace pending tool marker -> continue ToolAgentLoop
+Tool review approve -> execute original capability -> replace pending tool marker with
+                       the adapter-derived LLM function name -> continue ToolAgentLoop
 Tool review reject  -> replace pending tool marker with [DENIED] -> continue ToolAgentLoop
 DAG review approve/edit -> apply submitted DAG -> execute next layer
 DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgentLoop
@@ -160,15 +175,24 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 
 ## Key Design Decisions
 
-- **Tool-node-only DAG**: every DAG node is a direct tool call. Intelligence lives in
-  the planner/replanner, not inside node agents.
+- **Capability-node DAG**: every DAG node is a direct capability invocation.
+  Intelligence lives in the planner/replanner, not inside node agents.
+- **Toolset adapter is the only LLM tool schema path**: tool mode and DAG mode both
+  use `CapabilityToolAdapter`; there is no `extra_tools` side channel.
+- **No capability id guessing in DAG builder**: PlanSpec functions must match the
+  adapter-provided visible function names. Unknown functions raise `DAGCreationError`
+  and include available function names.
+- **Direct DAG execution validates enabled toolsets**: `DAGAgentLoop.execute()`
+  rejects records whose nodes reference capabilities outside the current enabled
+  toolsets.
 - **Three-level replanning**: placeholder injection, local observation-driven
   continuation/parameter adjustment, and DAG revision are all active design concepts.
 - **PlanSpec DSL only**: the DAG agent emits compact DSL, compiled by `dag_builder.py`.
 - **DAG build + validation together**: `dag_builder.py` owns model output parsing,
   PlanSpec compilation, and structural DAG validation.
-- **Unified execution records**: `CapabilityExecutionRecord` covers both top-level tool loop
-  calls and DAG node execution; `source` distinguishes `tool_loop` and `dag_node`.
+- **Unified execution records**: `CapabilityExecutionRecord` covers both top-level
+  tool/capability loop calls and DAG node execution; `source` distinguishes
+  `tool_loop` and `dag_node`.
 - **Schemas as data contract layer**: shared result/outcome/review contracts are in
   `dagent.schemas`, while `harness_runtime` owns behavior and mutable session state.
 - **Validator naming**: `validator_agent.py` exposes `ValidatorAgent`; profile and
@@ -224,27 +248,41 @@ Tests used on this branch:
 
 ```powershell
 python -m compileall dagent
-uv run pytest -q
+uv run pytest -q --basetemp .pytest-tmp-full
 cd web
 npm run build
 ```
 
 ## Recent Commits On This Branch
 
-- `9635ea9 Wire DAG review rejection in web`
-- `861f080 Unify agent-owned message threads`
-- `bf24d3b Unify agent message envelopes`
-- `f9e1f5b Trim DAG observations`
-- `22ac311 Expand validation execution context budget`
-- `eecb2fc Move runtime result contracts to schemas`
-- `44790b2 Merge DAG build and validation helpers`
-- `f578001 Simplify loop outcome contract`
-- `cca4014 Unify tool execution records`
+- `02b2db6 Tighten capability toolset boundaries`
+- `376eb0c Add capability toolset adapter`
+- `b97d041 Refine capability runtime architecture`
+- `cb567f7 refactor: rename runnable platform to capabilities`
+- `896908d refactor: unify runnable execution boundaries`
+- `563ab02 feat: introduce runnable capability platform`
+- `3cd6753 fix: avoid stopping DAG execution after start node`
+- `7273bae fix: preserve DAG task id during review validation retry`
+- `a3d5e1c refactor: make runtime session own DAG task records`
 
 ## Suggested Next Work
 
+- Fix unknown/hallucinated tool calls in `ToolAgentLoop`: now that `extra_tools` is
+  removed, adapter-owned calls are the only valid path, but an unexpected provider
+  tool call can still surface as a `KeyError`. Prefer appending a protocol-correct
+  `role="tool"` error message for that `tool_call_id` so the loop can recover.
+- Decide whether `ToolCall` should move out of `dagent.providers` into `dagent.schemas`
+  or a tiny protocol type. `dagent/capabilities/toolsets.py` currently imports the
+  provider DTO, which is workable but still a mild boundary smell.
+- Review DAG replanning DSL serialization helpers that still assume `tool.*` names.
+  They are not the same bug as tool review resume, but future non-tool DAG capabilities
+  may need adapter-based name rendering there too.
+- Start wiring first real non-tool capability providers end-to-end: MCP discovery/call,
+  skill execution, shell command templates, memory/file operations, and agent templates.
+- Add API/web surfaces for capability/toolset listing, enabled toolsets, and node
+  configuration so frontend DAG nodes select from capability functions rather than
+  free-typing names.
 - Add a dedicated validation evidence formatter if simple context budgets are still
   insufficient for long command/file outputs.
 - Add persistent session/run storage; current runtime state is in-memory.
-- Add a proper `list_files` / `list_directory` tool instead of relying on shell commands.
 - Continue improving Web UI node execution status and trace display.
