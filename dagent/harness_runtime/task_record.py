@@ -184,6 +184,10 @@ class RuntimeTaskRecord:
             if self.dag_state is None:
                 self.dag_state = DAGTaskState(dag=loop_outcome.dag)
             self.dag_state.dag = loop_outcome.dag
+            if loop_outcome.spec_id is not None:
+                self.dag_state.spec_id = loop_outcome.spec_id
+            if loop_outcome.workspace_path is not None:
+                self.dag_state.workspace_path = loop_outcome.workspace_path
             if loop_outcome.dag_run is not None:
                 if loop_outcome.dag_run not in self.dag_state.runs:
                     self.dag_state.runs.append(loop_outcome.dag_run)

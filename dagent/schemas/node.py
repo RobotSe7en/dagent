@@ -25,6 +25,8 @@ NodeType = Literal[
 class DAGNode(BaseModel):
     id: str
     title: str = ""
+    goal: str | None = None
+    instructions: str | None = None
     invocation: CapabilityInvocation
     node_type: NodeType = "capability"
     status: NodeStatus = "planned"

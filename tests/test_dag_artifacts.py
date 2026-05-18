@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.harness_runtime import CapabilityExecutor, DAGExecutor
+from dagent.harness_runtime import CapabilityExecutor, DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime.artifacts import (
     ArtifactPathError,
     init_artifact_states,
@@ -26,8 +26,11 @@ from dagent.schemas import (
     CapabilityInvocation,
     DAGNode,
     DAGSpec,
+    LoopOutcome,
 )
 from dagent.schemas.results import DAGStepResult
+from dagent.profiles import AgentProfile
+from dagent.providers import ChatResponse, MockProvider
 from dagent.tools.registry import ToolRegistry
 
 
@@ -56,8 +59,21 @@ def test_dag_node_binds_artifact_ids_as_inputs_and_outputs() -> None:
     )
 
     assert node.title == "Write requirement"
+    assert node.goal is None
+    assert node.instructions is None
     assert node.inputs == ["raw_requirement"]
     assert node.outputs == ["requirement_package"]
+
+
+def test_dag_node_supports_agent_goal_and_instructions() -> None:
+    node = _node(
+        "write_requirement",
+        goal="Write a complete requirement specification.",
+        instructions="Use clear acceptance criteria.",
+    )
+
+    assert node.goal == "Write a complete requirement specification."
+    assert node.instructions == "Use clear acceptance criteria."
 
 
 def test_validate_dag_spec_rejects_unknown_node_artifact() -> None:
@@ -137,6 +153,26 @@ def test_compile_dag_spec_preserves_artifacts_on_nodes() -> None:
     assert dag.task_id == "task_1"
     assert dag.nodes[0].inputs == ["raw_requirement"]
     assert dag.nodes[0].outputs == ["requirement_package"]
+
+
+def test_compile_dag_spec_preserves_node_goal_and_instructions() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={},
+        nodes=[
+            _node(
+                "write_requirement",
+                goal="Write the requirement spec.",
+                instructions="Use numbered acceptance criteria.",
+            )
+        ],
+    )
+
+    dag = compile_dag_spec(spec, task_id="task_1")
+
+    assert dag.nodes[0].goal == "Write the requirement spec."
+    assert dag.nodes[0].instructions == "Use numbered acceptance criteria."
 
 
 def test_compile_dag_spec_copies_capability_policy_risk() -> None:
@@ -265,18 +301,58 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
     assert (workspace_b / "notes" / "output.txt").read_text(encoding="utf-8") == "from-b"
 
 
+def test_dag_agent_runs_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
+    capability_executor = _write_capability_executor(tmp_path)
+    agent = _dag_agent_for_executor(capability_executor)
+    spec = DAGSpec(
+        id="write_note",
+        name="Write note",
+        artifacts={
+            "note": Artifact(id="note", paths=["notes/output.txt"]),
+        },
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={"path": "notes/output.txt", "content": "hi"},
+                boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                outputs=["note"],
+            )
+        ],
+    )
+
+    outcome = run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+
+    assert isinstance(outcome, LoopOutcome)
+    assert outcome.status == "completed"
+    assert outcome.task_id is not None
+    assert outcome.spec_id == "write_note"
+    assert outcome.workspace_path is not None
+    workspace_path = Path(outcome.workspace_path)
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
+    assert outcome.dag is not None
+    assert outcome.dag.status == "completed"
+    assert outcome.artifact_states["note"].status == "created"
+    assert outcome.dag_run is not None
+    assert outcome.dag_run.execution_records[0].node_id == "write"
+
+
 def _node(
     node_id: str,
     *,
     tool: str = "echo",
     args: dict | None = None,
     boundary: Boundary | None = None,
+    goal: str | None = None,
+    instructions: str | None = None,
     inputs: list[str] | None = None,
     outputs: list[str] | None = None,
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
         title=node_id.replace("_", " ").capitalize(),
+        goal=goal,
+        instructions=instructions,
         invocation=CapabilityInvocation(
             capability_id=f"tool.{tool}",
             kind="tool",
@@ -326,6 +402,26 @@ def _write_note_dag(task_id: str, content: str):
             ],
         ),
         task_id=task_id,
+    )
+
+
+def _dag_agent_for_executor(capability_executor: CapabilityExecutor) -> DAGAgent:
+    tool_adapter = CapabilityToolAdapter(
+        capability_executor.catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(capability_executor.catalog.ids())))],
+    )
+    return DAGAgent(
+        loop=DAGAgentLoop(
+            provider=MockProvider([ChatResponse(content="unused")]),
+            dag_executor=DAGExecutor(capability_executor=capability_executor),
+            tool_adapter=tool_adapter,
+        ),
+        profile=AgentProfile(
+            name="dag_agent",
+            role="dag_agent",
+            layers=["soul"],
+            layer_contents={"soul": "You are a DAG agent."},
+        ),
     )
 
 

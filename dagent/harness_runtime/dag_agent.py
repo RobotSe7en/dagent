@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
+from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -14,6 +16,7 @@ from dagent.harness_runtime.dag_executor import (
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
     DAGValidationError,
+    compile_dag_spec,
     dag_from_model_output,
     validate_dag,
 )
@@ -22,8 +25,11 @@ from dagent.harness_runtime.task_record import ReviewContinuation, RuntimeTaskRe
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
+    Artifact,
+    ArtifactState,
     DAG,
     DAGNode,
+    DAGSpec,
     DAGStepResult,
     LoopOutcome,
     LoopStatus,
@@ -136,6 +142,23 @@ class DAGAgent:
             on_trace=on_trace,
             on_dag=on_dag,
             max_cycles=max_cycles,
+        )
+
+    async def run_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        workspace_root: str | Path = ".dagent-runs",
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome:
+        return await self.loop.run_spec(
+            spec,
+            workspace_root=workspace_root,
+            on_token=on_token,
+            on_trace=on_trace,
+            on_dag=on_dag,
         )
 
     def build_request_user_message(self, *, prompt: str, task_id: str) -> dict[str, str]:
@@ -286,6 +309,99 @@ class DAGAgentLoop:
             max_cycles=max(0, self.max_cycles - cycles_used),
         )
         return self._finalize_run(record, result)
+
+    async def run_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        workspace_root: str | Path = ".dagent-runs",
+        on_token: Callable[[str], None] | None = None,
+        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome:
+        run_id = f"dag_run_{uuid4().hex}"
+        workspace = create_run_workspace(workspace_root)
+        artifact_states = init_artifact_states(spec.artifacts)
+        dag = compile_dag_spec(
+            spec,
+            task_id=run_id,
+            capabilities=self.dag_executor.capability_executor.catalog.list(),
+        )
+        dag.status = "approved"
+        record = RuntimeTaskRecord.dag_task(
+            task_id=run_id,
+            user_request=f"Run DAGSpec {spec.id}",
+            dag=dag,
+            review_level="fast",
+            runtime_mode="dag_spec",
+            spec_id=spec.id,
+            workspace_path=str(workspace),
+            artifact_states=artifact_states,
+        )
+        _emit_dag(on_dag, dag)
+        dag_executor = DAGExecutor(
+            capability_executor=self.dag_executor.capability_executor,
+            workspace_path=workspace,
+            artifacts=spec.artifacts,
+            artifact_states=artifact_states,
+        )
+
+        status = "running"
+        node_results = {}
+        traces: list[TraceEvent] = []
+        try:
+            while True:
+                step = await dag_executor.execute_next_ready_layer(
+                    dag,
+                    initial_results=node_results,
+                    record_dag_start=not node_results,
+                    on_trace=on_trace,
+                )
+                traces.extend(step.traces)
+                node_results = step.node_results
+                record.node_results = dict(step.node_results)
+                record.execution_records = list(step.execution_records)
+                record.require_dag_state().artifact_states = dict(step.artifact_states)
+                _apply_step_result_to_dag(dag, step)
+                if step.completed:
+                    status = (
+                        "failed"
+                        if _has_required_artifact_failure(spec.artifacts, step.artifact_states)
+                        else "completed"
+                    )
+                    dag.status = status
+                    break
+                if not step.node_results:
+                    status = "failed"
+                    dag.status = "failed"
+                    break
+        except Exception as exc:
+            status = "failed"
+            dag.status = "failed"
+            traces.extend(dag_executor.trace_recorder.events)
+            _mark_planned_artifacts_failed(dag_executor.artifact_states, str(exc))
+            record.require_dag_state().artifact_states = dict(dag_executor.artifact_states)
+
+        record.status = status
+        record.dag = dag
+        result = DAGStepResult(
+            dag_id=dag.dag_id,
+            completed=status == "completed",
+            node_results=dict(record.node_results),
+            traces=traces,
+            execution_records=list(record.execution_records),
+            artifact_states=dict(record.artifact_states),
+        )
+        _emit_dag(on_dag, dag)
+        return _dag_loop_outcome(
+            status=status,  # type: ignore[arg-type]
+            final_response=dag_run_fallback_message(record, result),
+            dag=dag,
+            dag_run=result,
+            task_id=run_id,
+            spec_id=spec.id,
+            workspace_path=str(workspace),
+        )
 
     async def resume_review(
         self,
@@ -870,6 +986,8 @@ def _dag_loop_outcome(
     dag: DAG | None = None,
     dag_run: DAGStepResult | None = None,
     task_id: str | None = None,
+    spec_id: str | None = None,
+    workspace_path: str | None = None,
     pending_review: PendingReview | None = None,
     extra_events: list[dict[str, Any]] | None = None,
 ) -> LoopOutcome:
@@ -901,6 +1019,8 @@ def _dag_loop_outcome(
         dag=dag,
         dag_run=dag_run,
         task_id=task_id,
+        spec_id=spec_id,
+        workspace_path=workspace_path,
         pending_review=pending_review,
         artifact_states=dict(dag_run.artifact_states) if dag_run is not None else {},
     )
@@ -913,6 +1033,39 @@ def _tool_name_from_capability(capability_id: str) -> str:
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:
     if on_dag is not None:
         on_dag(dag.model_copy(deep=True))
+
+
+def _apply_step_result_to_dag(dag: DAG, step: DAGStepResult) -> None:
+    nodes_by_id = {node.id: node for node in dag.nodes}
+    for node_id, node_result in step.node_results.items():
+        node = nodes_by_id.get(node_id)
+        if node is not None:
+            node.status = "completed" if node_result.completed else "failed"
+    dag.status = "completed" if step.completed else "running"
+
+
+def _has_required_artifact_failure(
+    artifacts: dict[str, Artifact],
+    states: dict[str, ArtifactState],
+) -> bool:
+    for artifact_id, artifact in artifacts.items():
+        if not artifact.required:
+            continue
+        state = states.get(artifact_id)
+        if state is None or state.status in {"missing", "failed"}:
+            return True
+    return False
+
+
+def _mark_planned_artifacts_failed(
+    states: dict[str, ArtifactState],
+    error: str,
+) -> None:
+    for artifact_id, state in list(states.items()):
+        if state.status == "planned":
+            states[artifact_id] = state.model_copy(
+                update={"status": "failed", "error": error}
+            )
 
 
 def _dag_revision_trace_event(*, dag_id: str) -> TraceEvent:

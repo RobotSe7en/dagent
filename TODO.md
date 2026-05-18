@@ -4,7 +4,7 @@
 
 - [x] Keep the existing local thread message flow unchanged for `ToolAgent` and `DAGAgent`.
 - [x] Add public DAG platform models: `Artifact`, `ArtifactState`, `DAGSpec`, `DAGRun`.
-- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, and `outputs`.
+- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, and `outputs`; add optional `goal` and `instructions` on `DAGNode`.
 - [x] Rename the internal per-step DAG execution DTO to `DAGStepResult`.
 - [x] Keep a compatibility alias for older `DAGRunResult` imports while removing it from the public barrel export.
 - [x] Add run workspace and artifact state helpers.
@@ -85,13 +85,13 @@
 
 ### Refactor Order
 
-- [ ] Add `DAGAgent.run_spec(spec, workspace_root=...)`.
-- [ ] Move the main `HarnessRuntime.run_dag_spec()` orchestration into `DAGAgent.run_spec()`: run id creation, workspace creation, artifact state initialization, `DAGSpec -> DAG` compilation, executor loop, required artifact failure handling, and `DAGRun` snapshot creation.
-- [ ] Keep `HarnessRuntime.run_dag_spec()` as a thin wrapper that calls `self.dag_agent.run_spec(...)`, records the returned run in `self.tasks`, and preserves API compatibility.
-- [ ] Keep `dag_executor.py` free of `DAGSpec` and `DAGRun`. Add only generic executor helpers if they are useful for both dynamic DAG and static DAGSpec flows.
-- [ ] Leave `runtime_events.py` and `runtime_trace.py` unchanged unless they become materially larger.
+- [x] Add `DAGAgent.run_spec(spec, workspace_root=...)` returning `LoopOutcome`.
+- [x] Move the main `HarnessRuntime.run_dag_spec()` orchestration into `DAGAgent.run_spec()`: run id creation, workspace creation, artifact state initialization, `DAGSpec -> DAG` compilation, executor loop, and required artifact failure handling.
+- [x] Integrate `DAGSpec` execution into `HarnessRuntime._execute_loop(..., mode="dag_spec")` as an internal loop mode, then record the returned `LoopOutcome` and expose `DAGRun` for API compatibility.
+- [x] Keep `dag_executor.py` free of `DAGSpec` and `DAGRun`. Add only generic executor helpers if they are useful for both dynamic DAG and static DAGSpec flows.
+- [x] Leave `runtime_events.py` and `runtime_trace.py` unchanged unless they become materially larger.
 - [ ] Revisit `task_record.py` only after the `DAGSpec` move; if it still feels heavy, extract execution audit helpers in a separate small refactor.
-- [ ] Add regression tests proving `/messages/stream`, `/messages/resume`, `/dag-specs/{id}/run`, task trace lookup, and DAG review resume still behave the same.
+- [x] Add regression tests proving `/messages/stream`, `/messages/resume`, `/dag-specs/{id}/run`, task trace lookup, and DAG review resume still behave the same.
 
 ### Naming Rules
 

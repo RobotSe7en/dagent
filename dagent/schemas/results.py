@@ -60,6 +60,8 @@ class LoopOutcome:
     dag: DAG | None = None
     dag_run: DAGStepResult | None = None
     task_id: str | None = None
+    spec_id: str | None = None
+    workspace_path: str | None = None
     pending_review: PendingReview | None = None
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
 

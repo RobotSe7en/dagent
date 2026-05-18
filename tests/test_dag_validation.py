@@ -16,6 +16,7 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation
+from dagent.schemas.dag import PlanSpec
 from dagent.tools.registry import ToolRegistry
 
 
@@ -180,6 +181,26 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     node = dag.nodes[0]
     assert node.invocation.capability_id == "file.read"
     assert node.invocation.kind == "file"
+
+
+def test_compile_plan_spec_preserves_node_goal_and_instructions() -> None:
+    plan = PlanSpec.model_validate({
+        "task": "requirements",
+        "nodes": [
+            {
+                "id": "write_requirements",
+                "tool": "echo",
+                "args": {"text": "ok"},
+                "goal": "Write a requirement specification.",
+                "instructions": "Use acceptance criteria.",
+            }
+        ],
+    })
+
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+
+    assert dag.nodes[0].goal == "Write a requirement specification."
+    assert dag.nodes[0].instructions == "Use acceptance criteria."
 
 
 def test_dag_must_be_acyclic() -> None:

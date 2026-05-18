@@ -75,6 +75,9 @@ class HarnessRuntimeSession:
                     dag=loop_outcome.dag,
                     review_level=review_level,
                     runtime_mode=runtime_mode or "auto",
+                    spec_id=loop_outcome.spec_id,
+                    workspace_path=loop_outcome.workspace_path,
+                    artifact_states=loop_outcome.artifact_states,
                 )
             else:
                 record = RuntimeTaskRecord(
