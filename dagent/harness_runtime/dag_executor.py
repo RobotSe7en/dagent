@@ -69,21 +69,13 @@ class DAGExecutor:
             self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
         node_results: dict[str, DAGNodeResult] = dict(initial_results or {})
 
-        old_catalog_root = self.capability_executor.catalog.workspace_root
-        old_executor_root = self.capability_executor.workspace_root
-        if self.workspace_path is not None:
-            self.capability_executor.catalog.workspace_root = self.workspace_path
-            self.capability_executor.workspace_root = self.workspace_path
-        try:
+        with self.capability_executor.workspace_context(self.workspace_path):
             permission_result = await self._execute_next_ready_layer(
                 normalized,
                 node_results,
             )
             if permission_result is not None:
                 return permission_result
-        finally:
-            self.capability_executor.catalog.workspace_root = old_catalog_root
-            self.capability_executor.workspace_root = old_executor_root
 
         completed = _all_nodes_completed(normalized, node_results)
         if completed:

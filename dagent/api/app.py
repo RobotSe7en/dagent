@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,10 +12,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dagent.factory import create_harness_runtime
-from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
-from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag_spec
+from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime import (
-    DAGExecutor,
     HarnessRuntime,
     RuntimeMode,
 )
@@ -126,52 +123,8 @@ async def run_dag_spec(spec_id: str) -> dict[str, Any]:
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
 
-    runtime = state.get_harness_runtime()
-    run_id = f"dag_run_{uuid4().hex}"
-    workspace = create_run_workspace()
-    artifact_states = init_artifact_states(spec.artifacts)
-    dag = compile_dag_spec(spec, task_id=run_id)
-    executor = DAGExecutor(
-        capability_executor=runtime.capability_executor,
-        workspace_path=workspace,
-        artifacts=spec.artifacts,
-        artifact_states=artifact_states,
-    )
-    status = "running"
-    node_results = {}
-    try:
-        while True:
-            step = await executor.execute_next_ready_layer(
-                dag,
-                initial_results=node_results,
-                record_dag_start=not node_results,
-            )
-            node_results = step.node_results
-            artifact_states = step.artifact_states
-            if step.completed:
-                status = "completed"
-                break
-            if not step.node_results:
-                status = "failed"
-                break
-    except Exception as exc:
-        status = "failed"
-        for artifact_id, artifact_state in executor.artifact_states.items():
-            if artifact_state.status == "planned":
-                executor.artifact_states[artifact_id] = artifact_state.model_copy(
-                    update={"status": "failed", "error": str(exc)}
-                )
-        artifact_states = dict(executor.artifact_states)
-
-    dag_run = DAGRun(
-        run_id=run_id,
-        spec_id=spec.id,
-        workspace_path=str(workspace),
-        dag=dag,
-        artifact_states=artifact_states,
-        status=status,  # type: ignore[arg-type]
-    )
-    state.dag_runs[run_id] = dag_run
+    dag_run = await state.get_harness_runtime().run_dag_spec(spec)
+    state.dag_runs[dag_run.run_id] = dag_run
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 

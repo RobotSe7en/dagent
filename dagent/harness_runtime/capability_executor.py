@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.workspace import workspace_context
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
 
@@ -18,6 +19,9 @@ class CapabilityExecutor:
     def __init__(self, catalog: CapabilityCatalog, workspace_root: str | Path | None = None) -> None:
         self.catalog = catalog
         self.workspace_root = Path(workspace_root).resolve() if workspace_root is not None else catalog.workspace_root
+
+    def workspace_context(self, workspace_root: str | Path | None):
+        return workspace_context(workspace_root)
 
     def execute(self, invocation: CapabilityInvocation) -> CapabilityResult:
         entry = self.catalog.get_entry(invocation.capability_id)

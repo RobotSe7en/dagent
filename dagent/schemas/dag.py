@@ -49,7 +49,6 @@ class PlanSpec(BaseModel):
 DAGRunStatus = Literal[
     "planned",
     "running",
-    "awaiting_review",
     "completed",
     "failed",
 ]

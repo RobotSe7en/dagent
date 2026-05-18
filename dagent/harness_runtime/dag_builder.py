@@ -9,13 +9,13 @@ from typing import Any
 from uuid import uuid4
 
 from dagent.harness_runtime.artifacts import validate_artifact_paths
+from dagent.schemas.dag import PlanSpec
 from dagent.schemas import (
     Boundary,
     DAG,
     DAGEdge,
     DAGNode,
     DAGSpec,
-    PlanSpec,
     CapabilityDefinition,
     CapabilityInvocation,
 )
@@ -106,9 +106,21 @@ def compile_plan_spec(
     )
 
 
-def compile_dag_spec(spec: DAGSpec, *, task_id: str) -> DAG:
+def compile_dag_spec(
+    spec: DAGSpec,
+    *,
+    task_id: str,
+    capabilities: list[CapabilityDefinition] | None = None,
+) -> DAG:
     validate_dag_spec(spec)
-    nodes = [node.model_copy(deep=True) for node in spec.nodes]
+    definitions_by_id = {
+        definition.id: definition
+        for definition in (capabilities or [])
+    }
+    nodes = [
+        _normalize_dag_spec_node(node, definitions_by_id)
+        for node in spec.nodes
+    ]
     edges = [edge.model_copy(deep=True) for edge in spec.edges]
     return DAG(
         dag_id=f"dag_{uuid4().hex}",
@@ -148,6 +160,25 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             edges=[edge.model_copy(deep=True) for edge in spec.edges],
         )
     )
+
+
+def _normalize_dag_spec_node(
+    node: DAGNode,
+    definitions_by_id: dict[str, CapabilityDefinition],
+) -> DAGNode:
+    normalized = node.model_copy(deep=True)
+    if not definitions_by_id or not normalized.invocation.capability_id:
+        return normalized
+    definition = definitions_by_id.get(normalized.invocation.capability_id)
+    if definition is None:
+        available = ", ".join(sorted(definitions_by_id)) or "(none)"
+        raise DAGValidationError(
+            f"Unknown capability '{normalized.invocation.capability_id}'. "
+            f"Available capabilities: {available}."
+        )
+    normalized.invocation.kind = definition.kind
+    normalized.invocation.risk = definition.policy.risk
+    return normalized
 
 
 def validate_dag(dag: DAG) -> None:

@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.workspace import current_workspace_root
 from dagent.providers import ChatProvider
 from dagent.schemas import (
     Boundary,
@@ -56,7 +57,12 @@ class ToolCapabilityProvider:
 
             def handler(invocation: CapabilityInvocation, *, tool_name: str = name) -> CapabilityResult:
                 try:
-                    content = _execute_tool(self.tools, catalog.workspace_root, tool_name, invocation)
+                    content = _execute_tool(
+                        self.tools,
+                        current_workspace_root(catalog.workspace_root),
+                        tool_name,
+                        invocation,
+                    )
                     return _completed(invocation, content)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
@@ -88,7 +94,7 @@ class ShellCapabilityProvider:
                     enforce_command_allowed(command_template, invocation.boundary)
                     completed = subprocess.run(
                         command_template,
-                        cwd=catalog.workspace_root,
+                        cwd=current_workspace_root(catalog.workspace_root),
                         capture_output=True,
                         text=True,
                         shell=True,
@@ -158,7 +164,7 @@ class FileCapabilityProvider:
                 path = enforce_path_allowed(
                     str(invocation.arguments["path"]),
                     invocation.boundary,
-                    catalog.workspace_root,
+                    current_workspace_root(catalog.workspace_root),
                 )
                 return _completed(invocation, path.read_text(encoding="utf-8"))
             except Exception as exc:
@@ -170,7 +176,7 @@ class FileCapabilityProvider:
                 path = enforce_path_allowed(
                     str(invocation.arguments["path"]),
                     invocation.boundary,
-                    catalog.workspace_root,
+                    current_workspace_root(catalog.workspace_root),
                 )
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(str(invocation.arguments.get("content", "")), encoding="utf-8")

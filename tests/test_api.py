@@ -341,6 +341,10 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     )
     assert create_response.status_code == 200
 
+    get_spec_response = client.get("/dag-specs/write_note")
+    assert get_spec_response.status_code == 200
+    assert get_spec_response.json()["dag_spec"]["id"] == "write_note"
+
     list_response = client.get("/dag-specs")
     assert list_response.status_code == 200
     assert [item["id"] for item in list_response.json()["dag_specs"]] == ["write_note"]
@@ -350,11 +354,87 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     run_payload = run_response.json()["dag_run"]
     assert run_payload["spec_id"] == "write_note"
     assert run_payload["status"] == "completed"
+    assert run_payload["dag"]["status"] == "completed"
+    assert run_payload["dag"]["nodes"][0]["status"] == "completed"
     assert run_payload["artifact_states"]["note"]["status"] == "created"
+
+    get_run_response = client.get(f"/dag-runs/{run_payload['run_id']}")
+    assert get_run_response.status_code == 200
+    assert get_run_response.json()["dag_run"]["run_id"] == run_payload["run_id"]
 
     artifacts_response = client.get(f"/dag-runs/{run_payload['run_id']}/artifacts")
     assert artifacts_response.status_code == 200
     assert artifacts_response.json()["artifact_states"]["note"]["paths"] == ["notes/output.txt"]
+
+
+def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "missing_output",
+            "name": "Missing output",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/missing.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "answer",
+                    "invocation": {
+                        "capability_id": "tool.echo",
+                        "kind": "tool",
+                        "arguments": {"text": "ok"},
+                    },
+                    "outputs": ["note"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    run_response = client.post("/dag-specs/missing_output/run")
+
+    assert run_response.status_code == 200
+    payload = run_response.json()["dag_run"]
+    assert payload["status"] == "failed"
+    assert payload["artifact_states"]["note"]["status"] == "missing"
+    assert payload["dag"]["status"] == "failed"
+
+
+def test_api_dag_spec_validation_and_missing_resources() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    invalid_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "invalid",
+            "name": "Invalid",
+            "artifacts": {},
+            "nodes": [
+                {
+                    "id": "answer",
+                    "invocation": {
+                        "capability_id": "tool.echo",
+                        "kind": "tool",
+                        "arguments": {"text": "ok"},
+                    },
+                    "inputs": ["missing"],
+                }
+            ],
+        },
+    )
+
+    assert invalid_response.status_code == 400
+    assert client.get("/dag-specs/missing").status_code == 404
+    assert client.post("/dag-specs/missing/run").status_code == 404
+    assert client.get("/dag-runs/missing").status_code == 404
+    assert client.get("/dag-runs/missing/artifacts").status_code == 404
 
 
 def _runtime(provider: MockProvider) -> HarnessRuntime:

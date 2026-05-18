@@ -57,10 +57,10 @@ or compatibility shim modules.
 | `dagent/capabilities/bootstrap.py` | Default session capability assembly |
 | `dagent/capabilities/providers.py` | Providers for builtin tools, MCP, skill, shell, custom tool, agent, memory, file |
 | `dagent/capabilities/toolsets.py` | `CapabilityToolAdapter` and `CapabilityToolset`: LLM function schemas and tool-call-to-capability mapping |
-| `dagent/schemas/results.py` | `DAGNodeResult`, `DAGRunResult`, `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
+| `dagent/schemas/results.py` | `DAGNodeResult`, `DAGStepResult`, `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
 | `dagent/schemas/capability.py` | `CapabilityInvocation` shared by tool mode and DAG nodes |
 | `dagent/schemas/common.py` | `Boundary`, boundary modes, risk levels |
-| `dagent/schemas/dag.py` | `DAG`, `PlanSpec`, `PlanNodeSpec` |
+| `dagent/schemas/dag.py` | `DAG`, `DAGSpec`, `DAGRun`; internal `PlanSpec` / `PlanNodeSpec` for LLM DSL compilation |
 | `dagent/tools/registry.py` | Builtin tool registration source consumed by `ToolCapabilityProvider` |
 | `dagent/tools/boundary.py` | Boundary enforcement |
 | `dagent/api/app.py` | FastAPI app: `/messages/stream`, `/messages/resume`, `/tasks/{id}/trace` |
@@ -72,7 +72,7 @@ Runtime result/data contracts live in `dagent/schemas/results.py`:
 
 ```python
 DAGNodeResult
-DAGRunResult
+DAGStepResult
 ReviewKind
 PendingReview
 LoopStatus
@@ -82,9 +82,10 @@ ValidationIssue
 ValidationResult
 ```
 
-`LoopOutcome` is the single loop-to-runtime contract. `ToolAgent.run()/resume_review()`
-and `DAGAgent.run()/resume_review()` return it directly. Runtime converts that to
-`RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
+`DAGStepResult` is the executor step result; `DAGRun` is the public runtime snapshot for
+custom DAGSpec runs. `LoopOutcome` is the single loop-to-runtime contract.
+`ToolAgent.run()/resume_review()` and `DAGAgent.run()/resume_review()` return it directly.
+Runtime converts that to `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
 `LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
 
 `CapabilityInvocation`, `CapabilityDefinition`, `CapabilityPolicy`, and

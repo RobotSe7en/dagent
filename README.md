@@ -241,7 +241,7 @@ web/                React + Vite frontend
 tests/              pytest suite
 ```
 
-Key runtime contracts such as `DAGRunResult`, `LoopOutcome`, `RuntimeResponse`,
+Key runtime contracts such as `DAGStepResult`, `LoopOutcome`, `RuntimeResponse`,
 `PendingReview`, and validation result types live in `dagent/schemas/results.py`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 

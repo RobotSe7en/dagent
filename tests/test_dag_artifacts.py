@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,7 @@ from dagent.harness_runtime.dag_builder import (
     compile_dag_spec,
     validate_dag_spec,
 )
+from dagent.schemas import CapabilityDefinition, CapabilityPolicy
 from dagent.schemas import (
     Artifact,
     ArtifactState,
@@ -84,6 +86,32 @@ def test_validate_artifact_paths_rejects_absolute_or_escaping_paths(bad_path: st
         validate_artifact_paths([bad_path])
 
 
+@pytest.mark.parametrize("bad_path", ["C:outside/file.md", "D:/outside/file.md", "\\\\server\\share\\file.md"])
+def test_validate_artifact_paths_rejects_windows_absolute_or_drive_paths(bad_path: str) -> None:
+    with pytest.raises(ArtifactPathError):
+        validate_artifact_paths([bad_path])
+
+
+def test_resolve_artifact_paths_rejects_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    link = workspace / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlink creation is not available in this environment.")
+
+    with pytest.raises(ArtifactPathError):
+        update_node_output_artifacts(
+            _node("write", outputs=["escaped"]),
+            artifacts={"escaped": Artifact(id="escaped", paths=["linked/file.txt"])},
+            states=init_artifact_states({"escaped": Artifact(id="escaped", paths=["linked/file.txt"])}),
+            workspace_path=workspace,
+        )
+
+
 def test_compile_dag_spec_preserves_artifacts_on_nodes() -> None:
     spec = DAGSpec(
         id="requirements",
@@ -109,6 +137,37 @@ def test_compile_dag_spec_preserves_artifacts_on_nodes() -> None:
     assert dag.task_id == "task_1"
     assert dag.nodes[0].inputs == ["raw_requirement"]
     assert dag.nodes[0].outputs == ["requirement_package"]
+
+
+def test_compile_dag_spec_copies_capability_policy_risk() -> None:
+    spec = DAGSpec(
+        id="write_note",
+        name="Write note",
+        artifacts={},
+        nodes=[
+            _node(
+                "write",
+                tool="write_file",
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="write_limited", allowed_paths=["notes.md"]),
+            )
+        ],
+    )
+
+    dag = compile_dag_spec(
+        spec,
+        task_id="task_1",
+        capabilities=[
+            CapabilityDefinition(
+                id="tool.write_file",
+                name="write_file",
+                kind="tool",
+                policy=CapabilityPolicy(risk="medium"),
+            )
+        ],
+    )
+
+    assert dag.nodes[0].invocation.risk == "medium"
 
 
 def test_artifact_states_mark_created_and_missing_outputs(tmp_path: Path) -> None:
@@ -171,6 +230,41 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
 
+def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) -> None:
+    capability_executor = _write_capability_executor(tmp_path)
+    workspace_a = tmp_path / "run_a"
+    workspace_b = tmp_path / "run_b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+    release = asyncio.Event()
+    executor_a = _DelayedDAGExecutor(
+        release,
+        capability_executor=capability_executor,
+        workspace_path=workspace_a,
+        artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
+    )
+    executor_b = _DelayedDAGExecutor(
+        release,
+        capability_executor=capability_executor,
+        workspace_path=workspace_b,
+        artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
+    )
+    dag_a = _write_note_dag("task_a", "from-a")
+    dag_b = _write_note_dag("task_b", "from-b")
+
+    async def execute_both() -> None:
+        task_a = asyncio.create_task(executor_a.execute_next_ready_layer(dag_a))
+        task_b = asyncio.create_task(executor_b.execute_next_ready_layer(dag_b))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(task_a, task_b)
+
+    run(execute_both())
+
+    assert (workspace_a / "notes" / "output.txt").read_text(encoding="utf-8") == "from-a"
+    assert (workspace_b / "notes" / "output.txt").read_text(encoding="utf-8") == "from-b"
+
+
 def _node(
     node_id: str,
     *,
@@ -213,6 +307,36 @@ def _write_capability_executor(workspace_root: Path) -> CapabilityExecutor:
     capability_catalog = CapabilityCatalog(workspace_root=workspace_root)
     ToolCapabilityProvider(registry).register_into(capability_catalog)
     return CapabilityExecutor(capability_catalog)
+
+
+def _write_note_dag(task_id: str, content: str):
+    return compile_dag_spec(
+        DAGSpec(
+            id=task_id,
+            name=task_id,
+            artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
+            nodes=[
+                _node(
+                    "write",
+                    tool="write_note",
+                    args={"path": "notes/output.txt", "content": content},
+                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                    outputs=["note"],
+                )
+            ],
+        ),
+        task_id=task_id,
+    )
+
+
+class _DelayedDAGExecutor(DAGExecutor):
+    def __init__(self, release: asyncio.Event, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._release = release
+
+    async def execute_node(self, node, dag, completed_results):
+        await self._release.wait()
+        return await super().execute_node(node, dag, completed_results)
 
 
 def _write_note(path: str | Path, content: str) -> str:

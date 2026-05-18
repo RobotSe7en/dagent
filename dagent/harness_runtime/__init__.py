@@ -16,7 +16,6 @@ from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
 from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
 from dagent.schemas import (
     DAGNodeResult,
-    DAGRunResult,
     DAGStepResult,
     LoopOutcome,
     RuntimeResponse,
@@ -54,7 +53,6 @@ __all__ = [
     "CapabilityExecutionError",
     "CapabilityExecutor",
     "DAGNodeResult",
-    "DAGRunResult",
     "DAGStepResult",
     "RuntimeMode",
     "RuntimeTaskRecord",

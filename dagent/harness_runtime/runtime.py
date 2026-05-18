@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
+from pathlib import Path
+from uuid import uuid4
 
+from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
+from dagent.harness_runtime.dag_builder import compile_dag_spec
 from dagent.capabilities import CapabilityCatalog
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
@@ -26,7 +30,17 @@ from dagent.harness_runtime.runtime_events import (
     _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
-from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, CapabilityInvocation
+from dagent.schemas import (
+    Artifact,
+    ArtifactState,
+    DAG,
+    DAGRun,
+    DAGSpec,
+    DAGStepResult,
+    LoopOutcome,
+    RuntimeResponse,
+    CapabilityInvocation,
+)
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
@@ -403,6 +417,116 @@ class HarnessRuntime:
             artifact_states=dict(outcome.artifact_states),
         )
 
+    async def run_dag_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        workspace_root: str | Path = ".dagent-runs",
+    ) -> DAGRun:
+        run_id = f"dag_run_{uuid4().hex}"
+        workspace = create_run_workspace(workspace_root)
+        artifact_states = init_artifact_states(spec.artifacts)
+        dag = compile_dag_spec(
+            spec,
+            task_id=run_id,
+            capabilities=self.capability_catalog.list(),
+        )
+        dag.status = "approved"
+        record = self._create_dag_spec_task_record(
+            run_id=run_id,
+            spec=spec,
+            dag=dag,
+            workspace=workspace,
+            artifact_states=artifact_states,
+        )
+        dag_executor = self._dag_spec_executor(
+            workspace=workspace,
+            artifacts=spec.artifacts,
+            artifact_states=artifact_states,
+        )
+
+        status = "running"
+        node_results = {}
+        try:
+            while True:
+                step = await dag_executor.execute_next_ready_layer(
+                    dag,
+                    initial_results=node_results,
+                    record_dag_start=not node_results,
+                )
+                node_results = step.node_results
+                record.node_results = dict(step.node_results)
+                record.execution_records = list(step.execution_records)
+                record.require_dag_state().artifact_states = dict(step.artifact_states)
+                _apply_step_result_to_dag(dag, step)
+                if step.completed:
+                    status = (
+                        "failed"
+                        if _has_required_artifact_failure(spec.artifacts, step.artifact_states)
+                        else "completed"
+                    )
+                    dag.status = status
+                    break
+                if not step.node_results:
+                    status = "failed"
+                    dag.status = "failed"
+                    break
+        except Exception as exc:
+            status = "failed"
+            dag.status = "failed"
+            _mark_planned_artifacts_failed(dag_executor.artifact_states, str(exc))
+            record.require_dag_state().artifact_states = dict(dag_executor.artifact_states)
+
+        record.status = status
+        record.dag = dag
+        self.tasks[run_id] = record
+        return DAGRun(
+            run_id=run_id,
+            spec_id=spec.id,
+            workspace_path=str(workspace),
+            dag=dag,
+            artifact_states=dict(record.artifact_states),
+            status=status,  # type: ignore[arg-type]
+        )
+
+    def _create_dag_spec_task_record(
+        self,
+        *,
+        run_id: str,
+        spec: DAGSpec,
+        dag: DAG,
+        workspace: Path,
+        artifact_states: dict[str, ArtifactState],
+    ):
+        from dagent.harness_runtime.task_record import RuntimeTaskRecord
+
+        return RuntimeTaskRecord.dag_task(
+            task_id=run_id,
+            user_request=f"Run DAGSpec {spec.id}",
+            dag=dag,
+            review_level="fast",
+            runtime_mode="dag_spec",
+            spec_id=spec.id,
+            workspace_path=str(workspace),
+            artifact_states=artifact_states,
+        )
+
+    def _dag_spec_executor(
+        self,
+        *,
+        workspace: Path,
+        artifacts: dict[str, Artifact],
+        artifact_states: dict[str, ArtifactState],
+    ):
+        from dagent.harness_runtime.dag_executor import DAGExecutor
+
+        return DAGExecutor(
+            capability_executor=self.capability_executor,
+            workspace_path=workspace,
+            artifacts=artifacts,
+            artifact_states=artifact_states,
+        )
+
 
 def _fallback_final_answer(loop_outcome: LoopOutcome) -> str:
     if loop_outcome.execution_context.strip():
@@ -423,4 +547,37 @@ def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeRes
         pending_review=loop_outcome.pending_review,
         artifact_states=dict(loop_outcome.artifact_states),
     )
+
+
+def _apply_step_result_to_dag(dag: DAG, step: DAGStepResult) -> None:
+    nodes_by_id = {node.id: node for node in dag.nodes}
+    for node_id, node_result in step.node_results.items():
+        node = nodes_by_id.get(node_id)
+        if node is not None:
+            node.status = "completed" if node_result.completed else "failed"
+    dag.status = "completed" if step.completed else "running"
+
+
+def _has_required_artifact_failure(
+    artifacts: dict[str, Artifact],
+    states: dict[str, ArtifactState],
+) -> bool:
+    for artifact_id, artifact in artifacts.items():
+        if not artifact.required:
+            continue
+        state = states.get(artifact_id)
+        if state is None or state.status in {"missing", "failed"}:
+            return True
+    return False
+
+
+def _mark_planned_artifacts_failed(
+    states: dict[str, ArtifactState],
+    error: str,
+) -> None:
+    for artifact_id, state in list(states.items()):
+        if state.status == "planned":
+            states[artifact_id] = state.model_copy(
+                update={"status": "failed", "error": error}
+            )
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
 from dagent.schemas import Artifact, ArtifactState, DAGNode
@@ -35,7 +35,15 @@ def validate_artifact_paths(paths: list[str]) -> None:
 def resolve_artifact_paths(artifact: Artifact, workspace_path: str | Path) -> list[Path]:
     validate_artifact_paths(artifact.paths)
     workspace = Path(workspace_path).resolve()
-    return [(workspace / path).resolve() for path in artifact.paths]
+    resolved_paths = [(workspace / path).resolve() for path in artifact.paths]
+    for path in resolved_paths:
+        try:
+            path.relative_to(workspace)
+        except ValueError as exc:
+            raise ArtifactPathError(
+                f"Artifact path '{path}' escapes workspace '{workspace}'."
+            ) from exc
+    return resolved_paths
 
 
 def update_node_output_artifacts(
@@ -62,7 +70,8 @@ def update_node_output_artifacts(
 
 def _validate_artifact_path(path: str) -> None:
     candidate = Path(path)
-    if candidate.is_absolute():
+    windows_candidate = PureWindowsPath(path)
+    if candidate.is_absolute() or windows_candidate.is_absolute() or windows_candidate.drive:
         raise ArtifactPathError(f"Artifact path '{path}' must be relative.")
     if not path.strip():
         raise ArtifactPathError("Artifact path cannot be empty.")
