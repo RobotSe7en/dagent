@@ -19,7 +19,7 @@ from dagent.harness_runtime import (
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.capabilities.providers import template_capability_handler
-from dagent.schemas import DAG, DAGRun, DAGSpec, CapabilityExecutionRecord, TraceEvent
+from dagent.schemas import DAG, DAGRun, DAGSpec
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
 
@@ -194,9 +194,9 @@ async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="DAGRun not found.")
     return {
         "run_id": run_id,
-        "artifact_states": {
+        "artifacts": {
             artifact_id: artifact_state.model_dump(mode="json")
-            for artifact_id, artifact_state in dag_run.artifact_states.items()
+            for artifact_id, artifact_state in dag_run.trace.artifacts.items()
         },
     }
 
@@ -331,16 +331,11 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_started"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        emitted_trace_ids: set[str] = set()
 
         def on_token(content: str) -> None:
             event_queue.put_nowait({"type": "token", "content": content})
 
         def on_event(event: dict[str, Any]) -> None:
-            if event.get("type") == "trace":
-                event_id = event.get("event", {}).get("event_id")
-                if isinstance(event_id, str):
-                    emitted_trace_ids.add(event_id)
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
@@ -372,13 +367,6 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.dag_run is not None:
-            for trace in result.dag_run.traces:
-                if trace.event_id in emitted_trace_ids:
-                    continue
-                emitted_trace_ids.add(trace.event_id)
-                yield _sse({"type": "trace", "event": _trace_payload(trace)})
-
         yield _sse(
             {
                 "type": "done",
@@ -387,10 +375,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "final_answer": result.final_answer,
-                "artifact_states": {
-                    artifact_id: artifact_state.model_dump(mode="json")
-                    for artifact_id, artifact_state in result.artifact_states.items()
-                },
+                "trace": result.trace.model_dump(mode="json") if result.trace else None,
             }
         )
 
@@ -402,16 +387,11 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_resumed"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        emitted_trace_ids: set[str] = set()
 
         def on_token(content: str) -> None:
             event_queue.put_nowait({"type": "token", "content": content})
 
         def on_event(event: dict[str, Any]) -> None:
-            if event.get("type") == "trace":
-                event_id = event.get("event", {}).get("event_id")
-                if isinstance(event_id, str):
-                    emitted_trace_ids.add(event_id)
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
@@ -448,13 +428,6 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
         if result.pending_review is not None:
             yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        if result.dag_run is not None:
-            for trace in result.dag_run.traces:
-                if trace.event_id in emitted_trace_ids:
-                    continue
-                emitted_trace_ids.add(trace.event_id)
-                yield _sse({"type": "trace", "event": _trace_payload(trace)})
-
         yield _sse(
             {
                 "type": "done",
@@ -463,10 +436,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "final_answer": result.final_answer,
-                "artifact_states": {
-                    artifact_id: artifact_state.model_dump(mode="json")
-                    for artifact_id, artifact_state in result.artifact_states.items()
-                },
+                "trace": result.trace.model_dump(mode="json") if result.trace else None,
             }
         )
 
@@ -480,24 +450,10 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
         task = runtime.tasks[task_id]
         return {
             "task_id": task_id,
-            "records": [
-                _execution_record_payload(record)
-                for record in task.execution_records
-            ],
+            "trace": task.trace.model_dump(mode="json") if task.trace else None,
         }
 
     raise HTTPException(status_code=404, detail="Task not found.")
-
-
-def _trace_payload(trace: TraceEvent) -> dict[str, Any]:
-    return trace.model_dump(mode="json")
-
-
-def _execution_record_payload(record: CapabilityExecutionRecord) -> dict[str, Any]:
-    payload = record.model_dump(mode="json")
-    payload["capability"] = record.invocation.capability_id
-    payload["args"] = record.invocation.arguments
-    return payload
 
 
 def _review_payload(review) -> dict[str, Any]:

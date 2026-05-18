@@ -16,8 +16,6 @@ from dagent.schemas.capability import (
     CapabilityStatus,
 )
 from dagent.schemas.results import (
-    DAGNodeResult,
-    DAGStepResult,
     LoopOutcome,
     LoopStatus,
     PendingReview,
@@ -26,7 +24,14 @@ from dagent.schemas.results import (
     ValidationIssue,
     ValidationResult,
 )
-from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent, TraceSpan
+from dagent.schemas.run_trace import (
+    CapabilityExecution,
+    RunTrace,
+    RunTraceError,
+    RunTraceNode,
+    RunTraceNodeKind,
+    RunTraceStatus,
+)
 
 __all__ = [
     "Boundary",
@@ -39,9 +44,7 @@ __all__ = [
     "DAGRunStatus",
     "DAGEdge",
     "DAGNode",
-    "DAGNodeResult",
     "DAGSpec",
-    "DAGStepResult",
     "Feedback",
     "LoopOutcome",
     "LoopStatus",
@@ -56,9 +59,12 @@ __all__ = [
     "CapabilityResult",
     "CapabilityRuntime",
     "CapabilityStatus",
-    "CapabilityExecutionRecord",
-    "TraceEvent",
-    "TraceSpan",
+    "CapabilityExecution",
+    "RunTrace",
+    "RunTraceError",
+    "RunTraceNode",
+    "RunTraceNodeKind",
+    "RunTraceStatus",
     "ValidationIssue",
     "ValidationResult",
 ]

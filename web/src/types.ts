@@ -48,7 +48,7 @@ export interface Dag {
   edges: DagEdge[];
 }
 
-export interface TraceEvent {
+export interface TraceLogEvent {
   event_id?: string;
   event_type?: string;
   dag_id?: string;
@@ -63,20 +63,70 @@ export interface TraceEvent {
   timestamp: string;
 }
 
-export interface CapabilityExecutionRecord {
-  record_id: string;
-  task_id: string;
+export type CapabilityResultStatus = 'completed' | 'failed';
+
+export interface CapabilityResult {
+  invocation_id: string;
+  capability_id: string;
+  kind: CapabilityKind;
+  status: CapabilityResultStatus;
+  content?: string;
+  error?: string | null;
+  stop_reason?: string;
+  steps?: number;
+  trace?: RunTrace | null;
+}
+
+export type RunTraceStatus =
+  | 'planned'
+  | 'running'
+  | 'awaiting_review'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export type RunTraceNodeKind =
+  | 'run'
+  | 'dag_node'
+  | 'agent_loop'
+  | 'agent_step'
+  | 'model_call'
+  | 'capability_call'
+  | 'review'
+  | 'artifact';
+
+export interface RunTraceError {
+  message: string;
+  code?: string;
+}
+
+export interface CapabilityExecution {
   invocation: CapabilityInvocation;
-  source: 'capability_loop' | 'dag_node';
-  output: string;
-  error: string | null;
-  status: 'completed' | 'failed';
-  stop_reason: string;
-  steps: number;
-  dag_id?: string | null;
-  dag_version?: number | null;
-  node_id?: string | null;
-  created_at: string;
+  result?: CapabilityResult | null;
+}
+
+export interface RunTraceNode {
+  id: string;
+  parent_id?: string | null;
+  kind: RunTraceNodeKind;
+  status: RunTraceStatus;
+  label: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  step_count: number;
+  ref: Record<string, string>;
+  input: Record<string, unknown>;
+  output?: unknown;
+  error?: RunTraceError | null;
+  capability_execution?: CapabilityExecution | null;
+  children: RunTraceNode[];
+}
+
+export interface RunTrace {
+  run_id: string;
+  root: RunTraceNode;
+  artifacts: Record<string, unknown>;
 }
 
 export interface CapabilityStreamEvent {
@@ -100,23 +150,6 @@ export interface ReviewEventPayload {
   dag?: Dag;
   capability_call?: CapabilityCallPayload;
   payload?: Record<string, unknown>;
-}
-
-export interface DagRunResult {
-  dag_id: string;
-  completed: boolean;
-  execution_records?: CapabilityExecutionRecord[];
-  node_results: Record<
-    string,
-    {
-      node_id: string;
-      final_response: string;
-      completed: boolean;
-      stop_reason: string;
-      steps: number;
-    }
-  >;
-  traces: TraceEvent[];
 }
 
 export interface ValidationIssue {

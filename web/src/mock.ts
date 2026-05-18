@@ -1,4 +1,4 @@
-import type { Dag, TraceEvent } from './types';
+import type { Dag, TraceLogEvent } from './types';
 
 export const initialDag: Dag = {
   dag_id: 'dag_review_001',
@@ -56,7 +56,7 @@ export const initialDag: Dag = {
   ],
 };
 
-export const initialTrace: TraceEvent[] = [
+export const initialTrace: TraceLogEvent[] = [
   {
     id: 't1',
     type: 'dag',

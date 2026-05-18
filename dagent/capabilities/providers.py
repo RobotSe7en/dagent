@@ -404,12 +404,18 @@ class AgentCapabilityProvider:
                 messages=outcome.messages,
             )
         if outcome.status == "completed":
-            return _agent_result(invocation, status="completed", content=outcome.final_answer)
+            return _agent_result(
+                invocation,
+                status="completed",
+                content=outcome.final_answer,
+                trace=outcome.trace.model_dump(mode="json") if outcome.trace is not None else None,
+            )
         return _agent_result(
             invocation,
             status="failed",
             error=outcome.final_answer or outcome.execution_context or outcome.status,
             stop_reason=outcome.status,
+            trace=outcome.trace.model_dump(mode="json") if outcome.trace is not None else None,
         )
 
     def _messages_for_invocation(
@@ -548,6 +554,7 @@ def _agent_result(
     content: str = "",
     error: str | None = None,
     stop_reason: str = "completed",
+    trace: dict[str, Any] | None = None,
 ) -> CapabilityResult:
     return CapabilityResult(
         invocation_id=invocation.invocation_id,
@@ -557,6 +564,7 @@ def _agent_result(
         content=content,
         error=error,
         stop_reason=stop_reason,
+        trace=trace,
         policy_decision=_policy_decision(invocation.boundary),
     )
 

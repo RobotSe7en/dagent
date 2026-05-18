@@ -15,13 +15,35 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, DAGNodeResult, CapabilityInvocation
+from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation, RunTrace, RunTraceNode
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.registry import ToolRegistry
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def dag_node_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    for child in trace.root.children:
+        if child.kind == "dag_node" and child.ref.get("node_id") == node_id:
+            return child
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
+
+
+def trace_with_completed_nodes(task_id: str, outputs: dict[str, str]) -> RunTrace:
+    root = RunTraceNode.run(run_id=task_id, status="completed")
+    root.children = [
+        RunTraceNode.dag_node(
+            parent_id=root.id,
+            node_id=node_id,
+            status="completed",
+        )
+        for node_id in outputs
+    ]
+    for child in root.children:
+        child.output = outputs[child.ref["node_id"]]
+    return RunTrace(run_id=task_id, root=root)
 
 
 def runtime_for(
@@ -291,14 +313,14 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
 
     loop_outcome = run(runtime.dag_agent.run("Do a safe task", task_id="task_1", review_level="fast"))
-    result = loop_outcome.dag_run
+    result = loop_outcome.trace
     assert result is not None
 
     assert loop_outcome.status == "completed"
-    assert result.completed is True
+    assert result.status == "completed"
     assert loop_outcome.dag is not None
     assert loop_outcome.dag.status == "completed"
-    assert result.node_results["inspect"].final_response == "echo:ok"
+    assert dag_node_trace(result, "inspect").output == "echo:ok"
 
 
 def test_harness_runtime_careful_reviews_initial_dag() -> None:
@@ -310,7 +332,7 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
     loop_outcome = run(runtime.dag_agent.run("Do a reviewed task", task_id="task_1", review_level="careful"))
 
     assert loop_outcome.status == "awaiting_review"
-    assert loop_outcome.dag_run is None
+    assert loop_outcome.trace is None
     assert loop_outcome.dag is not None
     assert loop_outcome.dag.status == "review_required"
     assert loop_outcome.pending_review is not None
@@ -347,9 +369,9 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is True
-    assert result.node_results["inspect"].final_response == "echo:observed"
-    assert result.node_results["answer"].final_response == "echo:old"
+    assert result.status == "completed"
+    assert dag_node_trace(result, "inspect").output == "echo:observed"
+    assert dag_node_trace(result, "answer").output == "echo:old"
 
 
 def test_harness_runtime_replan_adjusts_params_after_success() -> None:
@@ -388,9 +410,8 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is True
-    assert result.node_results["answer"].final_response == "echo:adjusted_value"
-    assert "dag_replanned" in [event.event_type for event in result.traces]
+    assert result.status == "completed"
+    assert dag_node_trace(result, "answer").output == "echo:adjusted_value"
 
 
 def test_harness_runtime_careful_reviews_replan_changes() -> None:
@@ -424,7 +445,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is False
+    assert result.status != "completed"
     assert record.dag.status == "review_required"
     assert record.pending_review is not None
     assert record.pending_review.kind == "dag_replan"
@@ -467,13 +488,12 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is True
-    assert result.node_results["fallback"].final_response == "echo:recovered"
+    assert result.status == "completed"
+    assert dag_node_trace(result, "fallback").output == "echo:recovered"
     request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
     assert "try_bad_tool" in request
     assert "failed:boom" in request
     assert "User request:" not in request
-    assert "dag_replanned" in [event.event_type for event in result.traces]
 
 
 def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
@@ -508,8 +528,8 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
     ]
     assert initial_dsl in replan_messages[2]["content"]
     assert "DAG observation" in replan_messages[3]["content"]
-    assert result.dag_run is not None
-    assert result.dag_run.completed is True
+    assert result.trace is not None
+    assert result.trace.status == "completed"
     assert result.dag is not None
     assert result.dag.status == "completed"
 
@@ -539,7 +559,7 @@ def test_harness_runtime_marks_dag_failed_when_replan_is_unavailable_after_tool_
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is False
+    assert result.status != "completed"
     assert record.dag.status == "failed"
     assert record.dag.nodes[0].status == "failed"
     assert record.pending_review is None
@@ -577,9 +597,9 @@ def test_harness_runtime_preserves_parallel_successes_when_sibling_fails() -> No
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is False
-    assert result.node_results["ok"].final_response == "echo:kept"
-    assert record.node_results["ok"].final_response == "echo:kept"
+    assert result.status != "completed"
+    assert dag_node_trace(result, "ok").output == "echo:kept"
+    assert dag_node_trace(record.trace, "ok").output == "echo:kept"
     node_statuses = {node.id: node.status for node in record.dag.nodes}
     assert node_statuses["ok"] == "completed"
     assert node_statuses["bad_a"] == "failed"
@@ -611,7 +631,7 @@ def test_harness_runtime_fails_when_replan_is_unavailable() -> None:
     runtime.tasks[record.task_id] = record
 
     result = run(runtime.dag_agent.execute(record))
-    assert result.completed is False
+    assert result.status != "completed"
     assert record.pending_review is None
     assert record.dag.status == "failed"
 
@@ -641,7 +661,7 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is False
+    assert result.status != "completed"
     assert record.pending_review is None
     assert record.dag.status == "failed"
 
@@ -679,7 +699,7 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is False
+    assert result.status != "completed"
     assert record.pending_review is None
     assert "search_config" not in {node.id for node in record.dag.nodes}
     assert {node.id: node.status for node in record.dag.nodes}["current_failure"] == "failed"
@@ -722,8 +742,8 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
 
     result = run(runtime.dag_agent.execute(record))
 
-    assert result.completed is True
-    assert result.node_results["fragile"].final_response == "fixed-ok"
+    assert result.status == "completed"
+    assert dag_node_trace(result, "fragile").output == "fixed-ok"
 
 
 def test_harness_runtime_edge_only_replan_invalidates_downstream_results() -> None:
@@ -758,26 +778,19 @@ def test_harness_runtime_edge_only_replan_invalidates_downstream_results() -> No
         dag=prepared,
         review_level="fast",
     )
-    record.node_results = {
-        "source": DAGNodeResult(
-            node_id="source",
-            final_response="echo:source",
-            completed=True,
-            stop_reason="completed",
-            steps=1,
-        ),
-        "sink": DAGNodeResult(
-            node_id="sink",
-            final_response="echo:same",
-            completed=True,
-            stop_reason="completed",
-            steps=1,
-        ),
-    }
+    record.trace = trace_with_completed_nodes(
+        "task_edge_only_replan",
+        {"source": "echo:source", "sink": "echo:same"},
+    )
 
     loop._apply_replan(record, replacement)
 
-    assert "sink" not in record.node_results
+    assert record.trace is not None
+    assert "sink" not in {
+        child.ref.get("node_id")
+        for child in record.trace.root.children
+        if child.kind == "dag_node"
+    }
 
 
 def test_harness_runtime_pauses_for_permission_and_resumes_after_approval() -> None:

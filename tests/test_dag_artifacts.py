@@ -7,7 +7,8 @@ import pytest
 import dagent.schemas.results as results_schema
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.harness_runtime import CapabilityExecutor, DAGAgent, DAGAgentLoop, DAGExecutor
+from dagent.harness_runtime import CapabilityExecutor, DAGAgentLoop, DAGExecutor
+from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.artifacts import (
     ArtifactPathError,
     init_artifact_states,
@@ -29,15 +30,21 @@ from dagent.schemas import (
     DAGNode,
     DAGSpec,
     LoopOutcome,
+    RunTrace,
+    RunTraceNode,
 )
-from dagent.schemas.results import DAGStepResult
-from dagent.profiles import AgentProfile
-from dagent.providers import ChatResponse, MockProvider
 from dagent.tools.registry import ToolRegistry
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def dag_node_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    for child in trace.root.children:
+        if child.kind == "dag_node" and child.ref.get("node_id") == node_id:
+            return child
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
 
 
 def test_artifact_supports_multiple_relative_paths() -> None:
@@ -284,8 +291,8 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
 
     result = run(executor.execute_next_ready_layer(dag))
 
-    assert isinstance(result, DAGStepResult)
-    assert result.artifact_states["note"].status == "created"
+    assert isinstance(result, RunTrace)
+    assert result.artifacts["note"].status == "created"
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
 
@@ -324,9 +331,9 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
     assert (workspace_b / "notes" / "output.txt").read_text(encoding="utf-8") == "from-b"
 
 
-def test_dag_agent_runs_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
+def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
     capability_executor = _write_capability_executor(tmp_path)
-    agent = _dag_agent_for_executor(capability_executor)
+    loop = _dag_agent_loop_for_executor(capability_executor)
     spec = DAGSpec(
         id="write_note",
         name="Write note",
@@ -344,7 +351,7 @@ def test_dag_agent_runs_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
         ],
     )
 
-    outcome = run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+    outcome = run(loop.run_static(spec, workspace_root=tmp_path / "runs"))
 
     assert isinstance(outcome, LoopOutcome)
     assert outcome.status == "completed"
@@ -355,14 +362,14 @@ def test_dag_agent_runs_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
     assert outcome.dag is not None
     assert outcome.dag.status == "completed"
-    assert outcome.artifact_states["note"].status == "created"
-    assert outcome.dag_run is not None
-    assert outcome.dag_run.execution_records[0].node_id == "write"
+    assert outcome.trace is not None
+    assert outcome.trace.artifacts["note"].status == "created"
+    assert dag_node_trace(outcome.trace, "write").children[0].capability_execution.result.content.startswith("wrote:")
 
 
-def test_dag_agent_run_spec_respects_enabled_toolsets(tmp_path: Path) -> None:
+def test_dag_agent_loop_run_static_respects_enabled_toolsets(tmp_path: Path) -> None:
     capability_executor = _write_capability_executor(tmp_path)
-    agent = _dag_agent_for_executor(
+    loop = _dag_agent_loop_for_executor(
         capability_executor,
         enabled_capability_ids=(),
     )
@@ -379,12 +386,12 @@ def test_dag_agent_run_spec_respects_enabled_toolsets(tmp_path: Path) -> None:
     )
 
     with pytest.raises(DAGValidationError, match="Unknown capability"):
-        run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+        run(loop.run_static(spec, workspace_root=tmp_path / "runs"))
 
 
-def test_dag_agent_run_spec_preserves_partial_state_on_failure(tmp_path: Path) -> None:
+def test_dag_agent_loop_run_static_preserves_partial_state_on_failure(tmp_path: Path) -> None:
     capability_executor = _write_and_fail_capability_executor(tmp_path)
-    agent = _dag_agent_for_executor(capability_executor)
+    loop = _dag_agent_loop_for_executor(capability_executor)
     spec = DAGSpec(
         id="partial_failure",
         name="Partial failure",
@@ -406,13 +413,12 @@ def test_dag_agent_run_spec_preserves_partial_state_on_failure(tmp_path: Path) -
         edges=[DAGEdge(source="write", target="fail")],
     )
 
-    outcome = run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+    outcome = run(loop.run_static(spec, workspace_root=tmp_path / "runs"))
 
     assert outcome.status == "failed"
-    assert outcome.dag_run is not None
-    assert "write" in outcome.dag_run.node_results
-    assert outcome.dag_run.node_results["write"].completed is True
-    assert any(record.node_id == "fail" and record.status == "failed" for record in outcome.dag_run.execution_records)
+    assert outcome.trace is not None
+    assert dag_node_trace(outcome.trace, "write").status == "completed"
+    assert dag_node_trace(outcome.trace, "fail").status == "failed"
     assert outcome.dag is not None
     statuses = {node.id: node.status for node in outcome.dag.nodes}
     assert statuses["write"] == "completed"
@@ -487,28 +493,20 @@ def _write_note_dag(task_id: str, content: str):
     )
 
 
-def _dag_agent_for_executor(
+def _dag_agent_loop_for_executor(
     capability_executor: CapabilityExecutor,
     *,
     enabled_capability_ids: tuple[str, ...] | None = None,
-) -> DAGAgent:
+) -> DAGAgentLoop:
     capability_ids = tuple(sorted(capability_executor.catalog.ids())) if enabled_capability_ids is None else enabled_capability_ids
     tool_adapter = CapabilityToolAdapter(
         capability_executor.catalog,
         toolsets=[CapabilityToolset("builtin", capability_ids)],
     )
-    return DAGAgent(
-        loop=DAGAgentLoop(
-            provider=MockProvider([ChatResponse(content="unused")]),
-            dag_executor=DAGExecutor(capability_executor=capability_executor),
-            tool_adapter=tool_adapter,
-        ),
-        profile=AgentProfile(
-            name="dag_agent",
-            role="dag_agent",
-            layers=["soul"],
-            layer_contents={"soul": "You are a DAG agent."},
-        ),
+    return DAGAgentLoop(
+        provider=MockProvider([ChatResponse(content="unused")]),
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=tool_adapter,
     )
 
 

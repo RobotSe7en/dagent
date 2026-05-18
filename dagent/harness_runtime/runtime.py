@@ -24,7 +24,6 @@ from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
     _ThinkTagFilter,
     _dag_event_emitter,
-    _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
 from dagent.schemas import (
@@ -267,7 +266,6 @@ class HarnessRuntime:
             approved=approved,
             review_level=review_level,
             on_token=thinking_only,
-            on_trace=_trace_event_emitter(on_event),
             on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
         )
@@ -292,7 +290,6 @@ class HarnessRuntime:
                 review_level=review_level or state.review_level,
                 runtime_mode=record.runtime_mode,
                 on_token=thinking_only,
-                on_trace=_trace_event_emitter(on_event),
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -356,7 +353,6 @@ class HarnessRuntime:
                 review_level=review_level,
                 runtime_mode=str(mode),
                 on_token=thinking_only,
-                on_trace=_trace_event_emitter(on_event),
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -376,11 +372,10 @@ class HarnessRuntime:
             if not isinstance(request, DAGSpec):
                 raise TypeError("DAGSpec execution requires a DAGSpec request.")
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
-            return await self.dag_agent.run_spec(
+            return await self.dag_agent.loop.run_static(
                 request,
                 workspace_root=workspace_root,
                 on_token=thinking_only,
-                on_trace=_trace_event_emitter(on_event),
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -400,7 +395,7 @@ class HarnessRuntime:
     ) -> RuntimeResponse:
         invocations = [*(extra_invocations or []), *outcome.invocations]
         if outcome.status == "awaiting_review":
-            record = self.session.record_outcome(
+            record = self.session.save_loop_outcome(
                 task_id=task_id,
                 mode=mode,
                 user_request=user_request,
@@ -411,7 +406,7 @@ class HarnessRuntime:
             )
             return _gate_result_for_task(outcome, record.task_id)
 
-        record = self.session.record_outcome(
+        record = self.session.save_loop_outcome(
             task_id=task_id,
             mode=mode,
             user_request=user_request,
@@ -425,11 +420,10 @@ class HarnessRuntime:
             status=outcome.status,
             final_answer=final_answer,
             dag=outcome.dag,
-            dag_run=outcome.dag_run,
+            trace=record.trace or outcome.trace,
             task_id=record.task_id,
             events=outcome.events,
             pending_review=outcome.pending_review,
-            artifact_states=dict(outcome.artifact_states),
         )
 
     async def run_dag_spec(
@@ -448,7 +442,7 @@ class HarnessRuntime:
             on_event=on_event,
             workspace_root=workspace_root,
         )
-        record = self.session.record_outcome(
+        record = self.session.save_loop_outcome(
             task_id=outcome.task_id,
             mode="dag",
             user_request=f"Run DAGSpec {spec.id}",
@@ -456,13 +450,15 @@ class HarnessRuntime:
             loop_outcome=outcome,
             runtime_mode="dag_spec",
         )
+        trace = record.trace or outcome.trace
+        if trace is None:
+            raise RuntimeError(f"DAGSpec run '{record.task_id}' completed without a run trace.")
         return DAGRun(
             run_id=record.task_id,
             spec_id=record.spec_id or spec.id,
             workspace_path=record.workspace_path or "",
             dag=record.dag,
-            artifact_states=dict(record.artifact_states),
-            status=record.status,  # type: ignore[arg-type]
+            trace=trace,
         )
 
 
@@ -479,10 +475,9 @@ def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeRes
         status="awaiting_review",
         final_answer="",
         dag=loop_outcome.dag,
-        dag_run=loop_outcome.dag_run,
+        trace=loop_outcome.trace,
         task_id=task_id,
         events=loop_outcome.events,
         pending_review=loop_outcome.pending_review,
-        artifact_states=dict(loop_outcome.artifact_states),
     )
 

@@ -50,7 +50,7 @@ def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
     assert response.status_code == 422
 
 
-def test_api_trace_endpoint_reads_tool_mode_execution_records() -> None:
+def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
     state.harness_runtime = _runtime(MockProvider([
         ChatResponse(
             content="",
@@ -70,12 +70,11 @@ def test_api_trace_endpoint_reads_tool_mode_execution_records() -> None:
     trace_response = client.get(f"/tasks/{task_id}/trace")
 
     assert trace_response.status_code == 200
-    records = trace_response.json()["records"]
-    assert len(records) == 1
-    assert records[0]["source"] == "capability_loop"
-    assert records[0]["capability"] == "tool.echo"
-    assert records[0]["args"] == {"text": "hello"}
-    assert records[0]["output"] == "echo:hello"
+    trace = trace_response.json()["trace"]
+    capability = _capability_trace(trace, "tool.echo")
+    assert capability["input"] == {"text": "hello"}
+    assert capability["output"] == "echo:hello"
+    assert capability["capability_execution"]["result"]["status"] == "completed"
 
 
 def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
@@ -173,7 +172,7 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     assert events[-1]["dag"]["status"] == "failed"
 
 
-def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> None:
+def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
     state.harness_runtime = _runtime(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
@@ -202,17 +201,16 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_records() -> 
     resume_events = _sse_events(resume_response.text)
     assert resume_events[-1]["status"] == "completed"
     assert resume_events[-1]["dag"]["status"] == "completed"
-    assert any(event.get("event", {}).get("event_type") == "capability_completed" for event in resume_events)
+    assert any(event.get("type") == "trace" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
     assert trace_response.status_code == 200
-    records = trace_response.json()["records"]
-    assert len(records) == 1
-    assert records[0]["node_id"] == "answer"
-    assert records[0]["capability"] == "tool.echo"
-    assert records[0]["args"] == {"text": "reviewed"}
-    assert records[0]["output"] == "echo:reviewed"
-    assert records[0]["status"] == "completed"
+    trace = trace_response.json()["trace"]
+    answer = _dag_node_trace(trace, "answer")
+    capability = _capability_trace(answer, "tool.echo")
+    assert capability["input"] == {"text": "reviewed"}
+    assert capability["output"] == "echo:reviewed"
+    assert capability["status"] == "completed"
 
 
 def test_api_resume_review_returns_final_answer_without_streaming_answer_text() -> None:
@@ -368,7 +366,7 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     assert run_payload["status"] == "completed"
     assert run_payload["dag"]["status"] == "completed"
     assert run_payload["dag"]["nodes"][0]["status"] == "completed"
-    assert run_payload["artifact_states"]["note"]["status"] == "created"
+    assert run_payload["trace"]["artifacts"]["note"]["status"] == "created"
 
     get_run_response = client.get(f"/dag-runs/{run_payload['run_id']}")
     assert get_run_response.status_code == 200
@@ -376,7 +374,7 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
 
     artifacts_response = client.get(f"/dag-runs/{run_payload['run_id']}/artifacts")
     assert artifacts_response.status_code == 200
-    assert artifacts_response.json()["artifact_states"]["note"]["paths"] == ["notes/output.txt"]
+    assert artifacts_response.json()["artifacts"]["note"]["paths"] == ["notes/output.txt"]
 
 
 def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
@@ -462,7 +460,7 @@ def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
     assert run_response.status_code == 200
     payload = run_response.json()["dag_run"]
     assert payload["status"] == "failed"
-    assert payload["artifact_states"]["note"]["status"] == "missing"
+    assert payload["trace"]["artifacts"]["note"]["status"] == "missing"
     assert payload["dag"]["status"] == "failed"
 
 
@@ -574,3 +572,26 @@ def _sse_events(text: str) -> list[dict]:
         for line in text.splitlines()
         if line.startswith("data: ")
     ]
+
+
+def _dag_node_trace(trace: dict, node_id: str) -> dict:
+    for node in _walk_trace(trace):
+        if node.get("kind") == "dag_node" and node.get("ref", {}).get("node_id") == node_id:
+            return node
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
+
+
+def _capability_trace(trace_or_node: dict, capability_id: str) -> dict:
+    for node in _walk_trace(trace_or_node):
+        if node.get("kind") == "capability_call" and node.get("ref", {}).get("capability_id") == capability_id:
+            return node
+    raise AssertionError(f"Missing capability_call trace for {capability_id}")
+
+
+def _walk_trace(trace_or_node: dict):
+    root = trace_or_node.get("root", trace_or_node)
+    stack = [root]
+    while stack:
+        node = stack.pop(0)
+        yield node
+        stack[0:0] = node.get("children", [])

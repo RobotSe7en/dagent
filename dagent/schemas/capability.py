@@ -63,7 +63,7 @@ class CapabilityResult(BaseModel):
     stderr: str = ""
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     policy_decision: dict[str, Any] = Field(default_factory=dict)
-    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    trace: dict[str, Any] | None = None
 
 
 class CapabilityRuntime(BaseModel):

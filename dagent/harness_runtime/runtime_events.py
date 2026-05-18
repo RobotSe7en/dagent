@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
-from dagent.schemas import DAG, TraceEvent
+from dagent.schemas import DAG
 
 
 class _ThinkTagFilter:
@@ -88,16 +88,6 @@ class _ThinkTagFilter:
                     self._downstream(self._buf[idx:tag_end])
                 self._buf = self._buf[tag_end:]
                 self._inside = False
-
-
-def _trace_event_emitter(on_event: LoopEventHandler | None):
-    if on_event is None:
-        return None
-
-    def emit(trace: TraceEvent) -> None:
-        on_event({"type": "trace", "event": trace.model_dump(mode="json")})
-
-    return emit
 
 
 def _dag_event_emitter(on_event: LoopEventHandler | None):

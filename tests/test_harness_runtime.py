@@ -19,6 +19,8 @@ from dagent.schemas import (
     CapabilityInvocation,
     DAGNode,
     DAGSpec,
+    RunTrace,
+    RunTraceNode,
     ValidationIssue,
     ValidationResult,
 )
@@ -27,6 +29,23 @@ from dagent.tools.registry import ToolRegistry
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def dag_node_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    for child in trace.root.children:
+        if child.kind == "dag_node" and child.ref.get("node_id") == node_id:
+            return child
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
+
+
+def capability_trace(trace: RunTrace, capability_id: str) -> RunTraceNode:
+    stack = [trace.root]
+    while stack:
+        node = stack.pop(0)
+        if node.kind == "capability_call" and node.ref.get("capability_id") == capability_id:
+            return node
+        stack[0:0] = node.children
+    raise AssertionError(f"Missing capability_call trace for {capability_id}")
 
 
 def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
@@ -93,8 +112,9 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert len(runtime.tasks) == 1
     record = runtime.tasks[result.task_id]
     assert record.mode == "tool"
-    assert record.status == "completed"
-    assert record.final_response == "hello"
+    assert record.trace is not None
+    assert record.trace.status == "completed"
+    assert record.trace.root.output == "hello"
 
 
 def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
@@ -215,17 +235,13 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert resumed.status == "completed"
-    assert resumed.dag_run is not None
-    assert resumed.dag_run.completed is True
-    assert resumed.dag_run.execution_records
+    assert resumed.trace is not None
+    assert resumed.trace.status == "completed"
     assert resumed.final_answer == "Here is the final answer."
     runtime_task = runtime.session.tasks[result.task_id]
     assert runtime_task.mode == "dag"
-    assert runtime_task.dag_state is not None
-    assert runtime_task.invocations
-    assert runtime_task.execution_records
-    assert runtime_task.execution_records[0].source == "dag_node"
-    assert runtime_task.execution_records[0].invocation.capability_id == "tool.echo"
+    assert runtime_task.dag is not None
+    assert capability_trace(runtime_task.trace, "tool.echo").status == "completed"
 
 
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
@@ -313,8 +329,8 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
 
     assert resumed.status == "completed"
     assert resumed.final_answer == "final dag-mode answer"
-    assert resumed.dag_run is not None
-    assert resumed.dag_run.node_results["node_1"].final_response == "echo:ok"
+    assert resumed.trace is not None
+    assert dag_node_trace(resumed.trace, "node_1").output == "echo:ok"
 
 
 def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
@@ -329,7 +345,7 @@ def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
     repeated = run(runtime.resume_review(first.pending_review.review_id, dag=resumed.dag))
 
     assert repeated is None
-    assert len(runtime.tasks[first.task_id].runs) == 1
+    assert runtime.tasks[first.task_id].trace is not None
     assert len(provider.requests) == 2  # dag_agent + execute observation
 
 
@@ -451,9 +467,9 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
 
     assert result.status == "completed"
     assert result.final_answer == "The DAG completed after inspection."
-    assert result.dag_run is not None
-    assert result.dag_run.completed is True
-    assert result.dag_run.node_results["inspect"].final_response == "echo:ok"
+    assert result.trace is not None
+    assert result.trace.status == "completed"
+    assert dag_node_trace(result.trace, "inspect").output == "echo:ok"
 
 
 def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
@@ -617,12 +633,9 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     ]
     assert len(tool_tasks) == 1
     assert tool_tasks[0].task_id == first.task_id
-    assert tool_tasks[0].status == "completed"
-    assert tool_tasks[0].tool_state is not None
-    assert tool_tasks[0].invocations
-    assert tool_tasks[0].execution_records
-    assert tool_tasks[0].execution_records[0].source == "capability_loop"
-    assert tool_tasks[0].execution_records[0].invocation.capability_id == "tool.write_file"
+    assert tool_tasks[0].trace is not None
+    assert tool_tasks[0].trace.status == "completed"
+    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "completed"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
@@ -671,11 +684,8 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
     assert resumed.dag.task_id == first.task_id
     record = runtime.tasks[first.task_id]
     assert record.dag.task_id == first.task_id
-    assert record.execution_records
-    assert all(
-        execution.task_id == first.task_id
-        for execution in record.execution_records
-    )
+    assert record.trace is not None
+    assert record.trace.run_id == first.task_id
 
 
 def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
@@ -740,7 +750,8 @@ def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) ->
     assert record.runtime_mode == "dag_spec"
     assert record.spec_id == "write_note"
     assert record.workspace_path == dag_run.workspace_path
-    assert record.execution_records[0].node_id == "write"
+    assert record.trace is not None
+    assert dag_node_trace(record.trace, "write").status == "completed"
 
 
 class _RejectThenApproveValidator:

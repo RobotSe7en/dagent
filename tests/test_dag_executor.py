@@ -8,12 +8,35 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.providers import AgentCapabilityProvider, ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation
+from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation, RunTrace, RunTraceNode
 from dagent.tools.registry import ToolRegistry
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def dag_node_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    for child in trace.root.children:
+        if child.kind == "dag_node" and child.ref.get("node_id") == node_id:
+            return child
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
+
+
+def capability_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    node_trace = dag_node_trace(trace, node_id)
+    for child in node_trace.children:
+        if child.kind == "capability_call":
+            return child
+    raise AssertionError(f"Missing capability_call trace for {node_id}")
+
+
+def node_outputs(trace: RunTrace) -> dict[str, str]:
+    return {
+        child.ref["node_id"]: str(child.output)
+        for child in trace.root.children
+        if child.kind == "dag_node" and child.ref.get("node_id")
+    }
 
 
 def node(
@@ -50,27 +73,15 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
     result = run(
         executor.execute_next_ready_layer(
             dag,
-            initial_results=first.node_results,
+            initial_trace=first,
             record_dag_start=False,
         )
     )
 
-    assert result.completed is True
-    assert list(result.node_results) == ["a", "b"]
-    assert result.node_results["a"].final_response == "echo:a"
-    assert result.node_results["b"].final_response == "echo:b"
-    assert [event.event_type for event in [*first.traces, *result.traces]] == [
-        "dag_started",
-        "node_started",
-        "capability_called",
-        "capability_completed",
-        "node_completed",
-        "node_started",
-        "capability_called",
-        "capability_completed",
-        "node_completed",
-        "dag_completed",
-    ]
+    assert result.status == "completed"
+    assert node_outputs(result) == {"a": "echo:a", "b": "echo:b"}
+    assert capability_trace(result, "a").capability_execution.result.content == "echo:a"
+    assert capability_trace(result, "b").capability_execution.result.content == "echo:b"
 
 
 def test_risk_override_promotes_write_file_to_medium() -> None:
@@ -92,8 +103,8 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
     result = run(executor.execute_next_ready_layer(dag))
 
-    assert result.completed is True
-    assert result.node_results["write"].final_response.endswith("notes.md:hi")
+    assert result.status == "completed"
+    assert str(dag_node_trace(result, "write").output).endswith("notes.md:hi")
     assert dag.nodes[0].invocation.risk == "low"
 
 
@@ -140,7 +151,7 @@ def test_read_only_broad_paths_does_not_require_approval() -> None:
 
     result = run(executor.execute_next_ready_layer(dag))
 
-    assert result.completed is True
+    assert result.status == "completed"
 
 
 def tool_node(
@@ -244,14 +255,10 @@ def test_executor_treats_boundary_violation_as_node_failure() -> None:
     with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
         run(executor.execute_next_ready_layer(dag))
 
-    assert [event.event_type for event in executor.trace_recorder.events] == [
-        "dag_started",
-        "node_started",
-        "capability_called",
-        "capability_failed",
-        "node_failed",
-        "dag_failed",
-    ]
+    failed = executor.partial_node_traces["write"]
+    assert failed.status == "failed"
+    assert failed.children[0].kind == "capability_call"
+    assert failed.children[0].status == "failed"
 
 
 def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
@@ -270,30 +277,15 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
 
     result = run(executor.execute_next_ready_layer(dag))
 
-    assert result.completed is True
-    assert result.node_results["echo"].final_response == "echo:hi"
-    records = executor.execution_store.records_for_task("task_1")
-    assert len(records) == 1
-    assert records[0].node_id == "echo"
-    assert records[0].invocation.capability_id == "tool.echo"
-    assert records[0].invocation.arguments == {"text": "hi"}
-    assert records[0].output == "echo:hi"
-    assert records[0].status == "completed"
-    assert [event.event_type for event in result.traces] == [
-        "dag_started",
-        "node_started",
-        "capability_called",
-        "capability_completed",
-        "node_completed",
-        "dag_completed",
-    ]
-    capability_events = [
-        event for event in result.traces
-        if event.event_type in {"capability_called", "capability_completed"}
-    ]
-    assert capability_events[0].payload["invocation_id"] == records[0].invocation.invocation_id
-    assert capability_events[0].payload["capability_id"] == "tool.echo"
-    assert "tool_call_id" not in capability_events[0].payload
+    assert result.status == "completed"
+    assert dag_node_trace(result, "echo").output == "echo:hi"
+    capability = capability_trace(result, "echo")
+    assert capability.capability_execution.invocation.capability_id == "tool.echo"
+    assert capability.capability_execution.invocation.arguments == {"text": "hi"}
+    assert capability.capability_execution.result.content == "echo:hi"
+    assert capability.capability_execution.result.status == "completed"
+    assert capability.ref["invocation_id"] == capability.capability_execution.invocation.invocation_id
+    assert capability.ref["capability_id"] == "tool.echo"
 
 
 def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
@@ -348,7 +340,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
 
     result = run(executor.execute_next_ready_layer(dag))
 
-    assert result.node_results["agent_node"].final_response == "agent done"
+    assert dag_node_trace(result, "agent_node").output == "agent done"
     messages = provider.requests[0]["messages"]
     system = messages[0]["content"]
     user = messages[1]["content"]
@@ -421,7 +413,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
 
     result = run(executor.execute_next_ready_layer(dag, on_event=events.append))
 
-    assert result.node_results["agent_node"].final_response == "done"
+    assert dag_node_trace(result, "agent_node").output == "done"
     assert events[0]["type"] == "capability_call"
     assert events[0]["capability_id"] == "tool.echo"
     assert events[0]["parent_capability_id"] == "agent.helper"
@@ -446,26 +438,23 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
 
     first = run(executor.execute_next_ready_layer(dag))
 
-    assert first.completed is False
-    assert list(first.node_results) == ["a"]
-    assert [event.event_type for event in first.traces] == [
-        "dag_started",
-        "node_started",
-        "capability_called",
-        "capability_completed",
-        "node_completed",
-    ]
+    assert first.status == "running"
+    assert node_outputs(first) == {"a": "echo:a"}
 
     second = run(
         executor.execute_next_ready_layer(
             dag,
-            initial_results=first.node_results,
+            initial_trace=first,
         )
     )
 
-    assert second.completed is True
-    assert list(second.node_results) == ["a", "b"]
-    assert [record.node_id for record in executor.execution_store.records_for_task("task_1")] == ["a", "b"]
+    assert second.status == "completed"
+    assert node_outputs(second) == {"a": "echo:a", "b": "echo:b"}
+    assert [
+        child.ref["node_id"]
+        for child in second.root.children
+        if child.kind == "dag_node"
+    ] == ["a", "b"]
 
 
 def test_executor_injects_completed_node_output_into_downstream_args() -> None:
@@ -481,14 +470,12 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
     )
 
     first = run(executor.execute_next_ready_layer(dag))
-    result = run(executor.execute_next_ready_layer(dag, initial_results=first.node_results))
+    result = run(executor.execute_next_ready_layer(dag, initial_trace=first))
 
-    assert result.completed is True
-    assert result.node_results["source"].final_response == "echo:value"
-    assert result.node_results["sink"].final_response == "echo:echo:value"
-    records = executor.execution_store.records_for_task("task_1")
-    assert records[1].node_id == "sink"
-    assert records[1].invocation.arguments == {"text": "echo:value"}
+    assert result.status == "completed"
+    assert dag_node_trace(result, "source").output == "echo:value"
+    assert dag_node_trace(result, "sink").output == "echo:echo:value"
+    assert capability_trace(result, "sink").capability_execution.invocation.arguments == {"text": "echo:value"}
 
 
 def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
@@ -504,10 +491,10 @@ def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
     )
 
     first = run(executor.execute_next_ready_layer(dag))
-    second = run(executor.execute_next_ready_layer(dag, initial_results=first.node_results))
+    second = run(executor.execute_next_ready_layer(dag, initial_trace=first))
 
-    assert second.completed is True
-    assert second.node_results["sink"].final_response == "echo:echo:value"
+    assert second.status == "completed"
+    assert dag_node_trace(second, "sink").output == "echo:echo:value"
 
 
 def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
@@ -523,7 +510,7 @@ def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
     with pytest.raises(DAGExecutionError, match="missing"):
         run(executor.execute_next_ready_layer(dag))
 
-    assert executor.execution_store.records_for_task("task_1") == []
+    assert executor.partial_node_traces == {}
 
 
 def test_tool_node_failure_marks_node_failed() -> None:
@@ -536,16 +523,13 @@ def test_tool_node_failure_marks_node_failed() -> None:
 
     with pytest.raises(DAGExecutionError, match="failed:boom"):
         run(
-            executor.execute_capability_node(
-                failing_node,
+            executor.execute_next_ready_layer(
                 DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
             )
         )
 
-    assert failing_node.status == "failed"
-    records = executor.execution_store.records_for_task("task_1")
-    assert records[-1].node_id == "fragile"
-    assert records[-1].status == "failed"
+    assert executor.partial_node_traces["fragile"].status == "failed"
+    assert executor.partial_node_traces["fragile"].children[0].status == "failed"
 
 
 def test_tool_node_boundary_violation_records_failed_node() -> None:
@@ -568,11 +552,9 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
     with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
         run(executor.execute_next_ready_layer(dag))
 
-    records = executor.execution_store.records_for_task("task_1")
-    assert len(records) == 1
-    assert records[0].node_id == "write_note"
-    assert records[0].invocation.capability_id == "tool.write_note"
-    assert records[0].invocation.arguments == {"path": "notes.md", "content": "hi"}
-    assert records[0].status == "failed"
-    assert records[0].stop_reason == "boundary_violation"
-    assert records[0].error
+    failed = executor.partial_node_traces["write_note"]
+    capability = failed.children[0]
+    assert capability.capability_execution.invocation.capability_id == "tool.write_note"
+    assert capability.capability_execution.invocation.arguments == {"path": "notes.md", "content": "hi"}
+    assert capability.status == "failed"
+    assert capability.error.message

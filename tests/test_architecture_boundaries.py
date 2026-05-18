@@ -1,6 +1,19 @@
 from pathlib import Path
 
 
+def test_dag_loop_public_names_use_one_loop_with_explicit_static_and_dynamic_entries() -> None:
+    import dagent.harness_runtime as runtime
+    from dagent.harness_runtime.dag_agent import DAGAgent, DAGAgentLoop
+
+    assert hasattr(runtime, "DAGAgentLoop")
+    assert not hasattr(runtime, "DynamicDAGLoop")
+    assert not hasattr(runtime, "StaticDAGLoop")
+    assert hasattr(DAGAgentLoop, "run_dynamic")
+    assert hasattr(DAGAgentLoop, "run_static")
+    assert hasattr(DAGAgentLoop, "execute")
+    assert "run_spec" not in DAGAgent.__dict__
+
+
 def test_capability_boundaries_are_not_split_into_top_level_runtime_package() -> None:
     root = Path(__file__).resolve().parents[1]
 

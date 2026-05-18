@@ -47,17 +47,17 @@ or compatibility shim modules.
 |------|----------------|
 | `dagent/harness_runtime/runtime.py` | `HarnessRuntime`: auto/tool/dag routing, review continuation lookup, validation retries, final response |
 | `dagent/harness_runtime/tool_agent.py` | `ToolAgent`: profile-backed system prompt and persistent tool-agent message thread; `ToolAgentLoop`: bounded tool-use loop |
-| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: profile-backed system prompt and persistent DAG planner message thread; `DAGAgentLoop`: DAG prompt/model parsing, review checkpoints, layer execution, observation, replanning |
-| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: ready-layer DAG execution, placeholder injection, execution records |
+| `dagent/harness_runtime/dag_agent.py` | `DAGAgent`: profile-backed system prompt and persistent DAG planner message thread; `DAGAgentLoop`: `run_dynamic(...)`, `run_static(...)`, review checkpoints, shared `execute(record, ...)`, observation, replanning |
+| `dagent/harness_runtime/dag_executor.py` | `DAGExecutor`: ready-layer DAG execution, placeholder injection, run trace construction |
 | `dagent/harness_runtime/dag_builder.py` | PlanSpec DSL parsing, DAG construction, DAG structural validation |
-| `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state and `CapabilityExecutionStore` |
-| `dagent/harness_runtime/runtime_trace.py` | Trace event recording |
+| `dagent/harness_runtime/task_record.py` | Mutable runtime task/session state |
 | `dagent/harness_runtime/validator_agent.py` | LLM-backed `ValidatorAgent` and validation feedback formatting |
 | `dagent/capabilities/catalog.py` | Session-owned `CapabilityCatalog`: definitions plus handlers |
 | `dagent/capabilities/bootstrap.py` | Default session capability assembly |
 | `dagent/capabilities/providers.py` | Providers for builtin tools, MCP, skill, shell, custom tool, agent, memory, file |
 | `dagent/capabilities/toolsets.py` | `CapabilityToolAdapter` and `CapabilityToolset`: LLM function schemas and tool-call-to-capability mapping |
-| `dagent/schemas/results.py` | `DAGNodeResult`, `DAGStepResult`, `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
+| `dagent/schemas/results.py` | `PendingReview`, `LoopOutcome`, `RuntimeResponse`, validation results |
+| `dagent/schemas/run_trace.py` | `RunTrace`, `RunTraceNode`, capability execution leaves, unified process/result tree |
 | `dagent/schemas/capability.py` | `CapabilityInvocation` shared by tool mode and DAG nodes |
 | `dagent/schemas/common.py` | `Boundary`, boundary modes, risk levels |
 | `dagent/schemas/dag.py` | `DAG`, `DAGSpec`, `DAGRun`; internal `PlanSpec` / `PlanNodeSpec` for LLM DSL compilation |
@@ -71,8 +71,6 @@ or compatibility shim modules.
 Runtime result/data contracts live in `dagent/schemas/results.py`:
 
 ```python
-DAGNodeResult
-DAGStepResult
 ReviewKind
 PendingReview
 LoopStatus
@@ -82,11 +80,12 @@ ValidationIssue
 ValidationResult
 ```
 
-`DAGStepResult` is the executor step result; `DAGRun` is the public runtime snapshot for
-custom DAGSpec runs. `LoopOutcome` is the single loop-to-runtime contract.
+`RunTrace` is the unified execution/result tree. `DAGRun` is the public runtime snapshot for
+custom DAGSpec runs and exposes a computed `status` from `trace.status`. `LoopOutcome` is the single loop-to-runtime contract.
 `ToolAgent.run()/resume_review()` and `DAGAgent.run()/resume_review()` return it directly.
 Runtime converts that to `RuntimeResponse` for API/UI consumption. There are no compatibility shims for older
-`LoopResult`, `ToolAgentLoopResult`, `DAGAgentLoopResult`, or `run_result` names.
+`LoopResult`, `ToolAgentLoopResult`, loop-specific result dataclasses, `run_result`, `DAGNodeResult`, or
+`DAGStepResult` names.
 
 `CapabilityInvocation`, `CapabilityDefinition`, `CapabilityPolicy`, and
 `CapabilityResult` are shared by tool mode, DAG nodes, and future capability
@@ -101,8 +100,8 @@ from enabled toolsets, not directly from `ToolRegistry`.
   `system -> user -> assistant(DAG DSL) -> user(DAG observation) -> assistant(...) -> ...`
 - `HarnessRuntimeSession` owns task/review state only. It does not store global
   conversation history, `runtime_context`, `runtime_tasks`, or `dag_messages`.
-- `RuntimeTaskRecord` stores structured execution state: current DAG, node results,
-  execution records, runs, final response, invocations, and pending review.
+- `RuntimeTaskRecord` stores resume/session state only: current DAG, latest trace,
+  pending review, review level, runtime mode, spec id, and workspace path.
 
 ## Re-planning And Trace State
 
@@ -119,9 +118,9 @@ Three-level replanning is still part of the current architecture:
   downstream results, then applies review policy.
 
 Trace DB is a target architecture component and should stay in architecture diagrams.
-Current code has in-memory `TraceRecorder` and `CapabilityExecutionStore`; future work should
-persist trace events, execution records, node outputs, and compact summaries into a
-Trace DB for long-term audit and context-boundary use.
+Current code builds in-memory `RunTrace` trees; future work should persist run traces,
+node outputs, artifact states, and compact summaries into a Trace DB for long-term
+audit and context-boundary use.
 
 ## Runtime Flow
 
@@ -141,7 +140,7 @@ DAG mode:
 ```text
 DAGAgent.run()
   -> appends user request to DAGAgent.messages
-  -> DAGAgentLoop.run()
+  -> DAGAgentLoop.run_dynamic()
   -> _request_dag() sends DAGAgent.messages and parses PlanSpec DSL via dag_builder.py
      using CapabilityToolAdapter-provided function names
   -> prepare_for_review(): normalize + validate_dag + enabled capability/toolset check
@@ -191,9 +190,9 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 - **PlanSpec DSL only**: the DAG agent emits compact DSL, compiled by `dag_builder.py`.
 - **DAG build + validation together**: `dag_builder.py` owns model output parsing,
   PlanSpec compilation, and structural DAG validation.
-- **Unified execution records**: `CapabilityExecutionRecord` covers both top-level
-  tool/capability loop calls and DAG node execution; `source` distinguishes
-  `tool_loop` and `dag_node`.
+- **Unified run trace**: every DAG node, agent loop, model call, and capability call
+  is represented as a `RunTraceNode`; capability leaves carry the shared
+  `{ invocation, result }` record.
 - **Schemas as data contract layer**: shared result/outcome/review contracts are in
   `dagent.schemas`, while `harness_runtime` owns behavior and mutable session state.
 - **Validator naming**: `validator_agent.py` exposes `ValidatorAgent`; profile and

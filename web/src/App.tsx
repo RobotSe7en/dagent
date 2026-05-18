@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -30,7 +30,7 @@ import {
   X,
 } from 'lucide-react';
 import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeCapabilityReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, CapabilityKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, CapabilityStreamEvent, TraceEvent } from './types';
+import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, CapabilityKind, ValidationFeedbackEvent, ReviewLevel, RiskLevel, CapabilityStreamEvent, TraceLogEvent } from './types';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -79,7 +79,7 @@ interface ChatMessage {
   capabilityEvents?: CapabilityStreamEvent[];
   timeline?: MessageTimelineItem[];
   dagSnapshot?: Dag;
-  traceSnapshot?: TraceEvent[];
+  traceSnapshot?: TraceLogEvent[];
 }
 
 type MessageTimelineItem =
@@ -150,14 +150,14 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
     },
   ]);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<RuntimeMode>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
   const [streaming, setStreaming] = useState(false);
-  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [validationEnabled, setValidationEnabled] = useState(false);
@@ -339,14 +339,14 @@ export function App() {
     setDagReview(pendingReview);
   };
 
-  const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
+  const appendTrace = (event: Omit<TraceLogEvent, 'id' | 'timestamp'>): TraceLogEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
     setTrace((items) => [...items, nextEvent]);
     return nextEvent;
   };
 
-  const appendRuntimeTrace = (event: TraceEvent) => {
+  const appendRuntimeTrace = (event: TraceLogEvent) => {
     setTrace((items) => [...items, event]);
     updateLastAssistantText((message) => ({
       ...message,
@@ -488,7 +488,7 @@ export function App() {
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: payload.dag ? 'DAGAgentLoop completed the request.' : 'Capability loop completed the request.',
+            detail: payload.dag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
             status: payload.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -556,7 +556,7 @@ export function App() {
           }
           handlePendingReview(payload.pending_review);
           enqueueFinalAnswer(payload.final_answer);
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAGAgentLoop completed the request.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAG loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
@@ -635,7 +635,7 @@ export function App() {
     }
     setMessages([{
       role: 'assistant',
-      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
     }]);
     setDraft('');
     syncDag(emptyDag);
@@ -797,7 +797,7 @@ function MessageTimeline({
 }: {
   message: ChatMessage;
   loading: boolean;
-  onOpenDag: (dag: Dag, trace?: TraceEvent[]) => void;
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
 }) {
   if (!message.timeline?.length) {
     return <MessageContent content={message.content || (loading ? '...' : '')} />;
@@ -1167,7 +1167,7 @@ function DagReviewDialog({
   dag: Dag;
   nodes: Node[];
   edges: Edge[];
-  trace: TraceEvent[];
+  trace: TraceLogEvent[];
   selectedNode?: DagNode;
   onClose: () => void;
   onConfirm: () => void;
@@ -1258,7 +1258,7 @@ function NodeEditor({
 }: {
   node: DagNode;
   dag: Dag;
-  logs: TraceEvent[];
+  logs: TraceLogEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
@@ -1387,7 +1387,7 @@ function NodeEditor({
   );
 }
 
-function NodeExecutionLog({ logs }: { logs: TraceEvent[] }) {
+function NodeExecutionLog({ logs }: { logs: TraceLogEvent[] }) {
   return (
     <section className="node-log-panel">
       <div className="node-log-title">

@@ -1,11 +1,11 @@
-"""DAG executor with validation, scheduling, and trace."""
+"""DAG executor with validation, scheduling, and run trace output."""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable
 from collections import defaultdict, deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,16 +14,23 @@ from dagent.harness_runtime.artifacts import (
     resolve_node_artifacts,
     update_node_output_artifacts,
 )
-from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionCallbacks,
     CapabilityExecutionContext,
     CapabilityExecutionError,
     CapabilityExecutor,
 )
-from dagent.harness_runtime.runtime_trace import TraceRecorder
-from dagent.harness_runtime.task_record import CapabilityExecutionStore
-from dagent.schemas import Artifact, ArtifactState, DAG, DAGNode, DAGNodeResult, DAGStepResult, TraceEvent
+from dagent.harness_runtime.dag_builder import validate_dag
+from dagent.schemas import (
+    Artifact,
+    ArtifactState,
+    CapabilityInvocation,
+    CapabilityResult,
+    DAG,
+    DAGNode,
+    RunTrace,
+    RunTraceNode,
+)
 
 
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response|status|stop_reason|steps)\s*}}")
@@ -34,23 +41,19 @@ class DAGExecutionError(RuntimeError):
 
 
 class DAGExecutor:
-    """Schedules approved DAG nodes and executes them through CapabilityExecutor."""
+    """Schedules approved DAG nodes and records execution as a tree."""
 
     def __init__(
         self,
         *,
         capability_executor: CapabilityExecutor,
-        trace_recorder: TraceRecorder | None = None,
-        execution_store: CapabilityExecutionStore | None = None,
         workspace_path: str | Path | None = None,
         artifacts: dict[str, Artifact] | None = None,
         artifact_states: dict[str, ArtifactState] | None = None,
         spec_id: str | None = None,
     ) -> None:
         self.capability_executor = capability_executor
-        self.trace_recorder = trace_recorder or TraceRecorder()
-        self.execution_store = execution_store or CapabilityExecutionStore()
-        self.partial_node_results: dict[str, DAGNodeResult] = {}
+        self.partial_node_traces: dict[str, RunTraceNode] = {}
         self.workspace_path = Path(workspace_path).resolve() if workspace_path is not None else None
         self.artifacts = artifacts or {}
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
@@ -60,70 +63,61 @@ class DAGExecutor:
         self,
         dag: DAG,
         *,
-        initial_results: dict[str, DAGNodeResult] | None = None,
+        initial_trace: RunTrace | None = None,
         record_dag_start: bool = True,
-        on_trace: Callable[[TraceEvent], None] | None = None,
+        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
-    ) -> DAGStepResult:
-        """Execute only the next currently-ready DAG layer.
-
-        This is the step-wise execution entrypoint for the dynamic DAG loop.
-        It deliberately does not replan yet; later phases can observe the
-        returned node records and patch the pending DAG before the next call.
-        """
-        self.trace_recorder = TraceRecorder(on_record=on_trace)
-        self.partial_node_results = {}
+    ) -> RunTrace:
+        """Execute the next currently-ready DAG layer and return cumulative run trace."""
+        del record_dag_start, on_trace
+        self.partial_node_traces = {}
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self._enforce_review_gate(normalized)
         normalized.status = "running"
-        if record_dag_start:
-            self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
-        node_results: dict[str, DAGNodeResult] = dict(initial_results or {})
+        trace = _copy_or_create_trace(initial_trace, normalized)
+        node_traces = _node_traces_by_id(trace)
 
-        with self.capability_executor.workspace_context(self.workspace_path):
-            permission_result = await self._execute_next_ready_layer(
-                normalized,
-                node_results,
-                on_token=on_token,
-                on_event=on_event,
-            )
-            if permission_result is not None:
-                return permission_result
+        try:
+            with self.capability_executor.workspace_context(self.workspace_path):
+                await self._execute_next_ready_layer(
+                    normalized,
+                    trace,
+                    node_traces,
+                    on_token=on_token,
+                    on_event=on_event,
+                )
+        except Exception:
+            trace.artifacts = dict(self.artifact_states)
+            _emit_trace_snapshot(on_event, trace)
+            raise
 
-        completed = _all_nodes_completed(normalized, node_results)
+        completed = _all_nodes_completed(normalized, _node_traces_by_id(trace))
+        trace.root.status = "completed" if completed else "running"
         if completed:
+            trace.root.ended_at = _now()
             normalized.status = "completed"
-            self.trace_recorder.record(
-                "dag_completed",
-                dag_id=normalized.dag_id,
-                payload={"completed": True},
-            )
-        return DAGStepResult(
-            dag_id=normalized.dag_id,
-            completed=completed,
-            node_results=node_results,
-            traces=list(self.trace_recorder.events),
-            execution_records=self.execution_store.records_for_dag(normalized.dag_id),
-            artifact_states=dict(self.artifact_states),
-        )
+        trace.artifacts = dict(self.artifact_states)
+        _emit_trace_snapshot(on_event, trace)
+        return trace
 
     async def _execute_next_ready_layer(
         self,
         dag: DAG,
-        node_results: dict[str, DAGNodeResult],
+        trace: RunTrace,
+        node_traces: dict[str, RunTraceNode],
         *,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
-    ) -> DAGStepResult | None:
-        pending_nodes = _next_ready_nodes(dag, node_results)
+    ) -> None:
+        pending_nodes = _next_ready_nodes(dag, node_traces)
         if not pending_nodes:
-            return None
+            return
         for node in pending_nodes:
             node.invocation.arguments = _inject_placeholders(
                 node.invocation.arguments,
-                node_results,
+                node_traces,
             )
             _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
@@ -131,7 +125,8 @@ class DAGExecutor:
                 self.execute_node(
                     node,
                     dag,
-                    node_results,
+                    node_traces,
+                    parent_id=trace.root.id,
                     on_token=on_token,
                     on_event=on_event,
                 )
@@ -140,16 +135,24 @@ class DAGExecutor:
             return_exceptions=True,
         )
         for result in batch_results:
-            if isinstance(result, DAGNodeResult):
-                node_results[result.node_id] = result
+            if isinstance(result, RunTraceNode):
+                _replace_or_append_child(trace.root, result)
+                node_id = result.ref.get("node_id")
+                if node_id:
+                    node_traces[node_id] = result
+
+        for node_id, partial in self.partial_node_traces.items():
+            if node_id not in node_traces:
+                _replace_or_append_child(trace.root, partial)
+                node_traces[node_id] = partial
 
         for result in batch_results:
             if isinstance(result, Exception):
                 dag.status = "failed"
-                self.trace_recorder.record("dag_failed", dag_id=dag.dag_id)
-                self.partial_node_results = dict(node_results)
+                trace.root.status = "failed"
+                trace.root.error = _error(str(result), type(result).__name__)
+                trace.root.ended_at = _now()
                 raise result
-        return None
 
     def normalize(self, dag: DAG) -> DAG:
         return dag.model_copy(deep=True)
@@ -158,24 +161,29 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-        completed_results: dict[str, DAGNodeResult],
+        completed_traces: dict[str, RunTraceNode],
         *,
+        parent_id: str,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
-    ) -> DAGNodeResult:
+    ) -> RunTraceNode:
+        del completed_traces
+        dag_node = RunTraceNode.dag_node(
+            parent_id=parent_id,
+            node_id=node.id,
+            label=node.title or node.id,
+        )
         if node.node_type == "start":
             node.status = "completed"
-            return DAGNodeResult(
-                node_id=node.id,
-                final_response="started",
-                completed=True,
-                stop_reason="completed",
-                steps=0,
-            )
-        self.trace_recorder.record("node_started", dag_id=dag.dag_id, node_id=node.id)
+            dag_node.status = "completed"
+            dag_node.output = "started"
+            dag_node.ended_at = _now()
+            return dag_node
+        node.status = "running"
         return await self.execute_capability_node(
             node,
             dag,
+            dag_node=dag_node,
             on_token=on_token,
             on_event=on_event,
         )
@@ -185,24 +193,14 @@ class DAGExecutor:
         node: DAGNode,
         dag: DAG,
         *,
+        dag_node: RunTraceNode,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
-    ) -> DAGNodeResult:
+    ) -> RunTraceNode:
         invocation = node.invocation
         if not invocation.capability_id:
             raise CapabilityExecutionError(f"Node '{node.id}' has no capability id.")
 
-        call_id = invocation.invocation_id
-        self.trace_recorder.record(
-            "capability_called",
-            dag_id=dag.dag_id,
-            node_id=node.id,
-            payload={
-                "invocation_id": call_id,
-                "capability_id": invocation.capability_id,
-                "arguments": invocation.arguments,
-            },
-        )
         try:
             capability_result = await self.capability_executor.execute(
                 invocation,
@@ -214,34 +212,30 @@ class DAGExecutor:
             )
         except Exception as exc:
             node.status = "failed"
-            self.execution_store.add_record(
-                task_id=dag.task_id,
+            failed_result = _failed_capability_result(invocation, str(exc), type(exc).__name__)
+            capability_node = RunTraceNode.capability_call(
+                parent_id=dag_node.id,
                 invocation=invocation,
-                source="dag_node",
+                result=failed_result,
+                output="",
                 error=str(exc),
-                status="failed",
-                stop_reason="capability_error",
-                steps=1,
-                dag=dag,
-                node=node,
             )
-            self.trace_recorder.record(
-                "capability_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={
-                    "invocation_id": call_id,
-                    "capability_id": invocation.capability_id,
-                    "error": str(exc),
-                },
-            )
-            self.trace_recorder.record(
-                "node_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={"error": str(exc)},
-            )
+            dag_node.children.append(capability_node)
+            dag_node.status = "failed"
+            dag_node.error = _error(str(exc), type(exc).__name__)
+            dag_node.ended_at = _now()
+            self.partial_node_traces[node.id] = dag_node
             raise
+
+        capability_node = RunTraceNode.capability_call(
+            parent_id=dag_node.id,
+            invocation=invocation,
+            result=capability_result,
+            output=capability_result.content,
+            error=capability_result.error,
+        )
+        _attach_child_trace(capability_node, capability_result)
+        dag_node.children.append(capability_node)
 
         if capability_result.status == "failed":
             error = capability_result.error or capability_result.content
@@ -251,65 +245,12 @@ class DAGExecutor:
                 else "capability_error"
             )
             node.status = "failed"
-            self.execution_store.add_record(
-                task_id=dag.task_id,
-                invocation=invocation,
-                source="dag_node",
-                error=error,
-                status="failed",
-                stop_reason=stop_reason,
-                steps=1,
-                dag=dag,
-                node=node,
-            )
-            self.trace_recorder.record(
-                "capability_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={
-                    "invocation_id": call_id,
-                    "capability_id": invocation.capability_id,
-                    "error": error,
-                },
-            )
-            self.trace_recorder.record(
-                "node_failed",
-                dag_id=dag.dag_id,
-                node_id=node.id,
-                payload={"error": error},
-            )
+            dag_node.status = "failed"
+            dag_node.error = _error(error, stop_reason)
+            dag_node.ended_at = _now()
+            self.partial_node_traces[node.id] = dag_node
             raise DAGExecutionError(error)
 
-        content = capability_result.content
-
-        self.trace_recorder.record(
-            "capability_completed",
-            dag_id=dag.dag_id,
-            node_id=node.id,
-            payload={
-                "invocation_id": call_id,
-                "capability_id": invocation.capability_id,
-                "content": content,
-            },
-        )
-        self.execution_store.add_record(
-            task_id=dag.task_id,
-            invocation=invocation,
-            source="dag_node",
-            output=content,
-            status="completed",
-            stop_reason="completed",
-            steps=1,
-            dag=dag,
-            node=node,
-        )
-        result = DAGNodeResult(
-            node_id=node.id,
-            final_response=content,
-            completed=True,
-            stop_reason="completed",
-            steps=1,
-        )
         if self.workspace_path is not None and self.artifacts:
             update_node_output_artifacts(
                 node,
@@ -318,17 +259,11 @@ class DAGExecutor:
                 workspace_path=self.workspace_path,
             )
         node.status = "completed"
-        self.trace_recorder.record(
-            "node_completed",
-            dag_id=dag.dag_id,
-            node_id=node.id,
-            payload={
-                "completed": True,
-                "stop_reason": result.stop_reason,
-                "steps": result.steps,
-            },
-        )
-        return result
+        dag_node.status = "completed"
+        dag_node.output = capability_result.content
+        dag_node.step_count = 1
+        dag_node.ended_at = _now()
+        return dag_node
 
     def _execution_context(self, dag: DAG, node: DAGNode) -> CapabilityExecutionContext:
         input_artifacts: dict[str, list[Path]] = {}
@@ -376,6 +311,14 @@ def _node_event_emitter(
     return emit
 
 
+def _emit_trace_snapshot(
+    on_event: Callable[[dict[str, Any]], None] | None,
+    trace: RunTrace,
+) -> None:
+    if on_event is not None:
+        on_event({"type": "trace", "trace": trace.model_dump(mode="json")})
+
+
 def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
     nodes_by_id = {node.id: node for node in dag.nodes}
     outgoing: dict[str, list[str]] = defaultdict(list)
@@ -404,15 +347,15 @@ def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
 
 def _next_ready_nodes(
     dag: DAG,
-    node_results: dict[str, DAGNodeResult],
+    node_traces: dict[str, RunTraceNode],
 ) -> list[DAGNode]:
     completed_ids = {
         node_id
-        for node_id, result in node_results.items()
-        if result.completed
+        for node_id, trace in node_traces.items()
+        if trace.status == "completed"
     }
     for batch in _topo_batches(dag):
-        pending_nodes = [node for node in batch if node.id not in node_results]
+        pending_nodes = [node for node in batch if node.id not in node_traces]
         if not pending_nodes:
             continue
         ready = [
@@ -430,54 +373,58 @@ def _next_ready_nodes(
 
 def _all_nodes_completed(
     dag: DAG,
-    node_results: dict[str, DAGNodeResult],
+    node_traces: dict[str, RunTraceNode],
 ) -> bool:
     return all(
-        node.id in node_results and node_results[node.id].completed
+        node.id in node_traces and node_traces[node.id].status == "completed"
         for node in dag.nodes
     )
 
 
 def _inject_placeholders(
     value: Any,
-    node_results: dict[str, DAGNodeResult],
+    node_traces: dict[str, RunTraceNode],
 ) -> Any:
     if isinstance(value, dict):
         return {
-            key: _inject_placeholders(item, node_results)
+            key: _inject_placeholders(item, node_traces)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_inject_placeholders(item, node_results) for item in value]
+        return [_inject_placeholders(item, node_traces) for item in value]
     if not isinstance(value, str):
         return value
 
     exact = PLACEHOLDER_PATTERN.fullmatch(value)
     if exact:
-        return _placeholder_value(exact, node_results)
+        return _placeholder_value(exact, node_traces)
 
     def replace(match: re.Match[str]) -> str:
-        return str(_placeholder_value(match, node_results))
+        return str(_placeholder_value(match, node_traces))
 
     return PLACEHOLDER_PATTERN.sub(replace, value)
 
 
 def _placeholder_value(
     match: re.Match[str],
-    node_results: dict[str, DAGNodeResult],
+    node_traces: dict[str, RunTraceNode],
 ) -> Any:
     node_id = match.group(1)
     field = match.group(2)
-    result = node_results.get(node_id)
-    if result is None or not result.completed:
+    trace = node_traces.get(node_id)
+    if trace is None or trace.status != "completed":
         raise DAGExecutionError(
             f"Cannot resolve placeholder for node '{node_id}' before it completes."
         )
     if field in {"output", "final_response"}:
-        return result.final_response
+        return trace.output
     if field == "status":
-        return "completed" if result.completed else "failed"
-    return getattr(result, field)
+        return trace.status
+    if field == "stop_reason":
+        return "completed" if trace.status == "completed" else "failed"
+    if field == "steps":
+        return trace.step_count
+    raise DAGExecutionError(f"Unknown placeholder field '{field}'.")
 
 
 def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
@@ -505,3 +452,78 @@ def _find_unresolved_placeholders(value: Any) -> set[str]:
     return set()
 
 
+def _copy_or_create_trace(trace: RunTrace | None, dag: DAG) -> RunTrace:
+    if trace is not None:
+        return trace.model_copy(deep=True)
+    root = RunTraceNode.run(run_id=dag.task_id, status="running")
+    root.ref["dag_id"] = dag.dag_id
+    return RunTrace(run_id=dag.task_id, root=root)
+
+
+def _node_traces_by_id(trace: RunTrace) -> dict[str, RunTraceNode]:
+    return {
+        node.ref["node_id"]: node
+        for node in trace.root.children
+        if node.kind == "dag_node" and node.ref.get("node_id")
+    }
+
+
+def _replace_or_append_child(parent: RunTraceNode, child: RunTraceNode) -> None:
+    child_ref = child.ref
+    for index, existing in enumerate(parent.children):
+        if existing.kind == child.kind and existing.ref == child_ref:
+            parent.children[index] = child
+            return
+    parent.children.append(child)
+
+
+def _failed_capability_result(
+    invocation: CapabilityInvocation,
+    error: str,
+    stop_reason: str,
+) -> CapabilityResult:
+    return CapabilityResult(
+        invocation_id=invocation.invocation_id,
+        capability_id=invocation.capability_id,
+        kind=invocation.kind,
+        status="failed",
+        error=error,
+        stop_reason=stop_reason,
+    )
+
+
+def _attach_child_trace(
+    capability_node: RunTraceNode,
+    capability_result: CapabilityResult,
+) -> None:
+    if not capability_result.trace:
+        return
+    child_trace = RunTrace.model_validate(capability_result.trace)
+    agent_loop = RunTraceNode(
+        parent_id=capability_node.id,
+        kind="agent_loop",
+        status=child_trace.root.status,
+        label="agent_loop",
+        output=child_trace.root.output,
+        children=child_trace.root.children,
+    )
+    _reparent(agent_loop)
+    capability_node.children.append(agent_loop)
+
+
+def _reparent(parent: RunTraceNode) -> None:
+    for child in parent.children:
+        child.parent_id = parent.id
+        _reparent(child)
+
+
+def _error(message: str, code: str):
+    from dagent.schemas import RunTraceError
+
+    return RunTraceError(message=message, code=code)
+
+
+def _now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)

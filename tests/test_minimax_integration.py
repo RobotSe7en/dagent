@@ -36,7 +36,7 @@ async def test_minimax_harness_executes_safe_dag() -> None:
         mode="dag",
         review_level="fast",
     )
-    if result.dag_run is None:
+    if result.trace is None:
         assert result.dag is not None
         assert result.pending_review is not None
         resumed = await runtime.resume_review(
@@ -45,12 +45,10 @@ async def test_minimax_harness_executes_safe_dag() -> None:
             review_level="fast",
         )
         assert resumed is not None
-        assert resumed.dag_run is not None
-        dag_run = resumed.dag_run
+        assert resumed.trace is not None
+        trace = resumed.trace
     else:
-        dag_run = result.dag_run
+        trace = result.trace
 
-    assert dag_run.completed is True
-    assert dag_run.node_results
-    assert dag_run.traces[0].event_type == "dag_started"
-    assert dag_run.traces[-1].event_type == "dag_completed"
+    assert trace.status == "completed"
+    assert any(child.kind == "dag_node" for child in trace.root.children)

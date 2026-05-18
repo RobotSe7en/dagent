@@ -65,6 +65,7 @@ flowchart TD
   R -->|"auto mode"| ROUTE["Route\ndag or tool"]
   R -->|"tool mode"| TA["ToolAgent"]
   R -->|"dag mode"| DA["DAGAgent"]
+  R -->|"dag_spec mode"| DA
 
   ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
@@ -81,17 +82,19 @@ flowchart TD
 
   DA --> DM[("DAGAgent.messages\nsystem + user + DAG DSL + observations")]
   DA --> DAL["DAGAgentLoop"]
-  DAL --> D["Plan DAG\nPlanSpec DSL -> DAG"]
+  DAL -->|"run_dynamic"| D["Plan DAG\nPlanSpec DSL -> DAG"]
+  DAL -->|"run_static"| SD["Compile DAGSpec -> DAG"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
+  SD --> E
   UI -->|"approve / edit"| E
   UI -->|"reject"| DENY["Append DAG observation:\nreview_denied"]
   DENY --> DAL
 
   E --> N["Execute Ready Layer"]
   N --> T
-  N --> ER[("RuntimeTaskRecord\nDAG + node_results + execution_records")]
+  N --> ER[("RuntimeTaskRecord\nDAG + RunTrace")]
   N --> TR[("Trace DB\nplanned persistent run memory")]
   N --> OBS["DAG observation"]
   OBS --> DM
@@ -122,9 +125,11 @@ pending tool marker with the real tool result; rejection replaces it with a deni
 result and lets the loop continue.
 
 `DAGAgent` owns the DAG planner system prompt and persistent DAG message thread, then
-delegates planning, review, execution, observations, and replanning to `DAGAgentLoop`.
-`RuntimeTaskRecord` stores structured execution state only: DAG, node results, execution
-records, runs, and pending review. It does not store `dag_messages`.
+delegates DAG work to `DAGAgentLoop`. Dynamic DAG requests enter through `run_dynamic(...)`;
+fixed `DAGSpec` requests enter through `run_static(...)`. Both share `execute(record, ...)`,
+which drives `DAGExecutor` layer execution. `RuntimeTaskRecord` stores structured resume
+state only: DAG, the latest `RunTrace`, and pending review. It does not store
+`dag_messages`.
 
 Once review and validation pass, the runtime returns the loop's `final_answer` directly
 without a separate summarization step.
@@ -164,25 +169,24 @@ Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
 before dispatching to `ToolAgent` or `DAGAgent`.
 
-### Trace DB And Execution Records
+### Run Trace
 
-Every completed capability invocation is recorded as a `CapabilityExecutionRecord`:
-
-```
-{ task_id, source, node_id, capability, args, output, error, status, stop_reason, timestamp }
-```
+Runtime execution is represented as one `RunTrace` tree. The root is the run; DAG work
+is represented by `dag_node` children; leaf capability calls are `capability_call`
+nodes with `{ invocation, result }`. Agent capabilities attach their inner loop as
+children, so DAG, agent, tool, skill, and MCP execution share the same shape.
 
 Current implementation:
 
-- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/capability lifecycle events.
-- `CapabilityExecutionStore` keeps in-memory `CapabilityExecutionRecord` entries for tool-mode capability calls
-  and DAG node execution.
-- The API and Web UI surface these traces and records during the current process lifetime.
+- `DAGExecutor.execute_next_ready_layer()` returns a cumulative `RunTrace`.
+- `ToolAgentLoop` and `AgentCapabilityProvider` also return `RunTrace`.
+- `DAGRun`, `LoopOutcome`, and `RuntimeResponse` expose `trace`; artifact state lives at
+  `trace.artifacts`.
+- The API and Web UI surface trace snapshots during the current process lifetime.
 
 Target architecture:
 
-- Persist trace events, capability executions, node outputs, and compact result summaries into
-  a Trace DB.
+- Persist run traces and compact result summaries into a Trace DB.
 - Use Trace DB as the long-term audit store and context boundary for future replanning,
   instead of relying only on in-memory task state.
 
@@ -190,7 +194,7 @@ Trace DB / execution records serve three purposes:
 
 1. **Audit log** - immutable record of what ran, with what inputs, and what it returned.
 2. **DAG observation source** - DAG observations include completed node outputs and recent
-   execution records so the planner can continue or repair the DAG.
+   capability leaves so the planner can continue or repair the DAG.
 3. **Human review** - the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ---
@@ -231,7 +235,7 @@ dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
   harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
                     DAGAgentLoop, validation,
-                    session state, event adapters, trace recording, DAG execution
+                    session state, event adapters, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   tools/            tool registry, executor, file tools, boundary checks
@@ -241,8 +245,8 @@ web/                React + Vite frontend
 tests/              pytest suite
 ```
 
-Key runtime contracts such as `DAGStepResult`, `LoopOutcome`, `RuntimeResponse`,
-`PendingReview`, and validation result types live in `dagent/schemas/results.py`.
+Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
+`PendingReview`, and validation result types live in `dagent/schemas`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 
 ## Configuration

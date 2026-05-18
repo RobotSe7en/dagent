@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
-from dagent.schemas.artifact import Artifact, ArtifactState
+from dagent.schemas.artifact import Artifact
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.node import DAGNode
+from dagent.schemas.run_trace import RunTrace
 
 
 DAGStatus = Literal[
@@ -73,5 +74,15 @@ class DAGRun(BaseModel):
     spec_id: str | None = None
     workspace_path: str
     dag: DAG
-    artifact_states: dict[str, ArtifactState] = Field(default_factory=dict)
-    status: DAGRunStatus = "planned"
+    trace: RunTrace
+
+    @computed_field
+    @property
+    def status(self) -> DAGRunStatus:
+        if self.trace.status == "completed":
+            return "completed"
+        if self.trace.status == "failed":
+            return "failed"
+        if self.trace.status == "running":
+            return "running"
+        return "planned"
