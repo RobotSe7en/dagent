@@ -38,6 +38,18 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert events[-1]["final_answer"] == "hello there"
 
 
+def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "hello", "mode": "dag_spec"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_api_trace_endpoint_reads_tool_mode_execution_records() -> None:
     state.harness_runtime = _runtime(MockProvider([
         ChatResponse(

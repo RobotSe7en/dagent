@@ -4,9 +4,9 @@
 
 - [x] Keep the existing local thread message flow unchanged for `ToolAgent` and `DAGAgent`.
 - [x] Add public DAG platform models: `Artifact`, `ArtifactState`, `DAGSpec`, `DAGRun`.
-- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, and `outputs`; add optional `goal` and `instructions` on `DAGNode`.
+- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, `outputs`, `goal`, and `instructions`.
 - [x] Rename the internal per-step DAG execution DTO to `DAGStepResult`.
-- [x] Keep a compatibility alias for older `DAGRunResult` imports while removing it from the public barrel export.
+- [x] Remove the old `DAGRunResult` alias so `DAGStepResult` is the only internal per-step result name.
 - [x] Add run workspace and artifact state helpers.
 - [x] Compile and validate `DAGSpec` into executable `DAG`.
 - [x] Run `DAGSpec` through the existing runtime task path instead of bypassing runtime state.

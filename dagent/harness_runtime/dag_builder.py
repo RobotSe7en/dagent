@@ -113,10 +113,14 @@ def compile_dag_spec(
     capabilities: list[CapabilityDefinition] | None = None,
 ) -> DAG:
     validate_dag_spec(spec)
-    definitions_by_id = {
-        definition.id: definition
-        for definition in (capabilities or [])
-    }
+    definitions_by_id = (
+        None
+        if capabilities is None
+        else {
+            definition.id: definition
+            for definition in capabilities
+        }
+    )
     nodes = [
         _normalize_dag_spec_node(node, definitions_by_id)
         for node in spec.nodes
@@ -164,10 +168,10 @@ def validate_dag_spec(spec: DAGSpec) -> None:
 
 def _normalize_dag_spec_node(
     node: DAGNode,
-    definitions_by_id: dict[str, CapabilityDefinition],
+    definitions_by_id: dict[str, CapabilityDefinition] | None,
 ) -> DAGNode:
     normalized = node.model_copy(deep=True)
-    if not definitions_by_id or not normalized.invocation.capability_id:
+    if definitions_by_id is None or not normalized.invocation.capability_id:
         return normalized
     definition = definitions_by_id.get(normalized.invocation.capability_id)
     if definition is None:

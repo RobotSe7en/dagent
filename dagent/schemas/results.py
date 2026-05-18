@@ -33,10 +33,6 @@ class DAGStepResult:
     execution_records: list[CapabilityExecutionRecord] = field(default_factory=list)
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
 
-
-DAGRunResult = DAGStepResult
-
-
 @dataclass
 class PendingReview:
     review_id: str

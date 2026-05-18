@@ -38,7 +38,7 @@ from dagent.schemas import (
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
-LoopExecutionMode = Literal["tool", "dag", "dag_spec"]
+_LoopExecutionMode = Literal["tool", "dag", "dag_spec"]
 
 _ROUTE_SYSTEM_PROMPT = """\
 You are a routing classifier. Given the user message, \
@@ -337,7 +337,7 @@ class HarnessRuntime:
         self,
         request: str | DAGSpec,
         *,
-        mode: LoopExecutionMode,
+        mode: _LoopExecutionMode,
         review_level: ReviewLevel,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,

@@ -714,43 +714,6 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     assert result.final_answer.startswith("DAG execution completed.")
 
 
-def test_harness_runtime_execute_loop_supports_dag_spec_mode(tmp_path) -> None:
-    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
-    spec = DAGSpec(
-        id="write_note",
-        name="Write note",
-        artifacts={},
-        nodes=[
-            DAGNode(
-                id="write",
-                invocation=CapabilityInvocation(
-                    capability_id="tool.write_file",
-                    kind="tool",
-                    arguments={"path": "notes/output.txt", "content": "hi"},
-                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
-                    ),
-            )
-        ],
-    )
-
-    outcome = run(runtime._execute_loop(
-        spec,
-        mode="dag_spec",
-        review_level="fast",
-        on_token=None,
-        on_event=None,
-        workspace_root=tmp_path / "runs",
-    ))
-
-    assert outcome.status == "completed"
-    assert outcome.spec_id == "write_note"
-    assert outcome.workspace_path is not None
-    assert outcome.dag is not None
-    assert outcome.dag.status == "completed"
-    assert outcome.dag_run is not None
-    assert outcome.dag_run.execution_records[0].node_id == "write"
-
-
 def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) -> None:
     runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     spec = DAGSpec(

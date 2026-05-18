@@ -320,13 +320,14 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         run_id = f"dag_run_{uuid4().hex}"
-        workspace = create_run_workspace(workspace_root)
-        artifact_states = init_artifact_states(spec.artifacts)
         dag = compile_dag_spec(
             spec,
             task_id=run_id,
-            capabilities=self.dag_executor.capability_executor.catalog.list(),
+            capabilities=self.tool_adapter.capabilities(self.enabled_toolsets),
         )
+        dag = self.prepare_for_review(dag)
+        workspace = create_run_workspace(workspace_root)
+        artifact_states = init_artifact_states(spec.artifacts)
         dag.status = "approved"
         record = RuntimeTaskRecord.dag_task(
             task_id=run_id,
@@ -379,6 +380,7 @@ class DAGAgentLoop:
             status = "failed"
             dag.status = "failed"
             traces.extend(dag_executor.trace_recorder.events)
+            _absorb_spec_partial_results(record, dag_executor)
             _mark_planned_artifacts_failed(dag_executor.artifact_states, str(exc))
             record.require_dag_state().artifact_states = dict(dag_executor.artifact_states)
 
@@ -1066,6 +1068,22 @@ def _mark_planned_artifacts_failed(
             states[artifact_id] = state.model_copy(
                 update={"status": "failed", "error": error}
             )
+
+
+def _absorb_spec_partial_results(
+    record: RuntimeTaskRecord,
+    dag_executor: DAGExecutor,
+) -> None:
+    current_node_ids = _dag_node_ids(record.dag)
+    for node_id, node_result in dag_executor.partial_node_results.items():
+        if node_id in current_node_ids:
+            record.node_results[node_id] = node_result
+            _node_by_id(record.dag, node_id).status = (
+                "completed" if node_result.completed else "failed"
+            )
+    record.execution_records = dag_executor.execution_store.records_for_task(record.task_id)
+    for failed_id in _failed_node_ids(record.execution_records, valid_node_ids=current_node_ids):
+        _node_by_id(record.dag, failed_id).status = "failed"
 
 
 def _dag_revision_trace_event(*, dag_id: str) -> TraceEvent:

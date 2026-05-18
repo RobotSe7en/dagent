@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+import dagent.schemas.results as results_schema
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import CapabilityExecutor, DAGAgent, DAGAgentLoop, DAGExecutor
@@ -24,6 +25,7 @@ from dagent.schemas import (
     ArtifactState,
     Boundary,
     CapabilityInvocation,
+    DAGEdge,
     DAGNode,
     DAGSpec,
     LoopOutcome,
@@ -65,6 +67,23 @@ def test_dag_node_binds_artifact_ids_as_inputs_and_outputs() -> None:
     assert node.outputs == ["requirement_package"]
 
 
+def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
+    node = DAGNode.model_validate({
+        "id": "read",
+        "invocation": {
+            "capability_id": "tool.echo",
+            "kind": "tool",
+            "arguments": {"text": "ok"},
+        },
+    })
+
+    assert node.goal is None
+    assert node.instructions is None
+    dumped = node.model_dump(mode="json")
+    assert dumped["goal"] is None
+    assert dumped["instructions"] is None
+
+
 def test_dag_node_supports_agent_goal_and_instructions() -> None:
     node = _node(
         "write_requirement",
@@ -74,6 +93,10 @@ def test_dag_node_supports_agent_goal_and_instructions() -> None:
 
     assert node.goal == "Write a complete requirement specification."
     assert node.instructions == "Use clear acceptance criteria."
+
+
+def test_dag_run_result_alias_is_removed_from_results_schema() -> None:
+    assert not hasattr(results_schema, "DAGRunResult")
 
 
 def test_validate_dag_spec_rejects_unknown_node_artifact() -> None:
@@ -337,6 +360,65 @@ def test_dag_agent_runs_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
     assert outcome.dag_run.execution_records[0].node_id == "write"
 
 
+def test_dag_agent_run_spec_respects_enabled_toolsets(tmp_path: Path) -> None:
+    capability_executor = _write_capability_executor(tmp_path)
+    agent = _dag_agent_for_executor(
+        capability_executor,
+        enabled_capability_ids=(),
+    )
+    spec = DAGSpec(
+        id="write_note",
+        name="Write note",
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={"path": "notes/output.txt", "content": "hi"},
+            )
+        ],
+    )
+
+    with pytest.raises(DAGValidationError, match="Unknown capability"):
+        run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+
+
+def test_dag_agent_run_spec_preserves_partial_state_on_failure(tmp_path: Path) -> None:
+    capability_executor = _write_and_fail_capability_executor(tmp_path)
+    agent = _dag_agent_for_executor(capability_executor)
+    spec = DAGSpec(
+        id="partial_failure",
+        name="Partial failure",
+        artifacts={"note": Artifact(id="note", paths=["notes/output.txt"], required=False)},
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={"path": "notes/output.txt", "content": "hi"},
+                boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                outputs=["note"],
+            ),
+            _node(
+                "fail",
+                tool="fail_tool",
+                args={"text": "boom"},
+            ),
+        ],
+        edges=[DAGEdge(source="write", target="fail")],
+    )
+
+    outcome = run(agent.run_spec(spec, workspace_root=tmp_path / "runs"))
+
+    assert outcome.status == "failed"
+    assert outcome.dag_run is not None
+    assert "write" in outcome.dag_run.node_results
+    assert outcome.dag_run.node_results["write"].completed is True
+    assert any(record.node_id == "fail" and record.status == "failed" for record in outcome.dag_run.execution_records)
+    assert outcome.dag is not None
+    statuses = {node.id: node.status for node in outcome.dag.nodes}
+    assert statuses["write"] == "completed"
+    assert statuses["fail"] == "failed"
+
+
 def _node(
     node_id: str,
     *,
@@ -405,10 +487,15 @@ def _write_note_dag(task_id: str, content: str):
     )
 
 
-def _dag_agent_for_executor(capability_executor: CapabilityExecutor) -> DAGAgent:
+def _dag_agent_for_executor(
+    capability_executor: CapabilityExecutor,
+    *,
+    enabled_capability_ids: tuple[str, ...] | None = None,
+) -> DAGAgent:
+    capability_ids = tuple(sorted(capability_executor.catalog.ids())) if enabled_capability_ids is None else enabled_capability_ids
     tool_adapter = CapabilityToolAdapter(
         capability_executor.catalog,
-        toolsets=[CapabilityToolset("builtin", tuple(sorted(capability_executor.catalog.ids())))],
+        toolsets=[CapabilityToolset("builtin", capability_ids)],
     )
     return DAGAgent(
         loop=DAGAgentLoop(
@@ -423,6 +510,37 @@ def _dag_agent_for_executor(capability_executor: CapabilityExecutor) -> DAGAgent
             layer_contents={"soul": "You are a DAG agent."},
         ),
     )
+
+
+def _write_and_fail_capability_executor(workspace_root: Path) -> CapabilityExecutor:
+    registry = ToolRegistry()
+    registry.register(
+        name="write_note",
+        handler=_write_note,
+        action="write",
+        path_args=("path",),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+    )
+    registry.register(
+        name="fail_tool",
+        handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    capability_catalog = CapabilityCatalog(workspace_root=workspace_root)
+    ToolCapabilityProvider(registry).register_into(capability_catalog)
+    return CapabilityExecutor(capability_catalog)
 
 
 class _DelayedDAGExecutor(DAGExecutor):
