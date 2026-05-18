@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,13 +13,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dagent.factory import create_harness_runtime
+from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
+from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag_spec
 from dagent.harness_runtime import (
+    DAGExecutor,
     HarnessRuntime,
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.capabilities.providers import template_capability_handler
-from dagent.schemas import DAG, CapabilityExecutionRecord, TraceEvent
+from dagent.schemas import DAG, DAGRun, DAGSpec, CapabilityExecutionRecord, TraceEvent
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
 
@@ -43,6 +47,8 @@ class CapabilityTestRequest(BaseModel):
 class ApiState:
     def __init__(self) -> None:
         self.harness_runtime: HarnessRuntime | None = None
+        self.dag_specs: dict[str, DAGSpec] = {}
+        self.dag_runs: dict[str, DAGRun] = {}
 
     def get_harness_runtime(self) -> HarnessRuntime:
         if self.harness_runtime is None:
@@ -81,7 +87,114 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
     state.harness_runtime = None
+    state.dag_specs.clear()
+    state.dag_runs.clear()
     return {"status": "ok"}
+
+
+@app.get("/dag-specs")
+async def list_dag_specs() -> dict[str, Any]:
+    return {
+        "dag_specs": [
+            spec.model_dump(mode="json")
+            for spec in sorted(state.dag_specs.values(), key=lambda item: item.id)
+        ]
+    }
+
+
+@app.post("/dag-specs")
+async def create_dag_spec(spec: DAGSpec) -> dict[str, Any]:
+    try:
+        validate_dag_spec(spec)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.dag_specs[spec.id] = spec.model_copy(deep=True)
+    return {"dag_spec": spec.model_dump(mode="json")}
+
+
+@app.get("/dag-specs/{spec_id}")
+async def get_dag_spec(spec_id: str) -> dict[str, Any]:
+    spec = state.dag_specs.get(spec_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+    return {"dag_spec": spec.model_dump(mode="json")}
+
+
+@app.post("/dag-specs/{spec_id}/run")
+async def run_dag_spec(spec_id: str) -> dict[str, Any]:
+    spec = state.dag_specs.get(spec_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+
+    runtime = state.get_harness_runtime()
+    run_id = f"dag_run_{uuid4().hex}"
+    workspace = create_run_workspace()
+    artifact_states = init_artifact_states(spec.artifacts)
+    dag = compile_dag_spec(spec, task_id=run_id)
+    executor = DAGExecutor(
+        capability_executor=runtime.capability_executor,
+        workspace_path=workspace,
+        artifacts=spec.artifacts,
+        artifact_states=artifact_states,
+    )
+    status = "running"
+    node_results = {}
+    try:
+        while True:
+            step = await executor.execute_next_ready_layer(
+                dag,
+                initial_results=node_results,
+                record_dag_start=not node_results,
+            )
+            node_results = step.node_results
+            artifact_states = step.artifact_states
+            if step.completed:
+                status = "completed"
+                break
+            if not step.node_results:
+                status = "failed"
+                break
+    except Exception as exc:
+        status = "failed"
+        for artifact_id, artifact_state in executor.artifact_states.items():
+            if artifact_state.status == "planned":
+                executor.artifact_states[artifact_id] = artifact_state.model_copy(
+                    update={"status": "failed", "error": str(exc)}
+                )
+        artifact_states = dict(executor.artifact_states)
+
+    dag_run = DAGRun(
+        run_id=run_id,
+        spec_id=spec.id,
+        workspace_path=str(workspace),
+        dag=dag,
+        artifact_states=artifact_states,
+        status=status,  # type: ignore[arg-type]
+    )
+    state.dag_runs[run_id] = dag_run
+    return {"dag_run": dag_run.model_dump(mode="json")}
+
+
+@app.get("/dag-runs/{run_id}")
+async def get_dag_run(run_id: str) -> dict[str, Any]:
+    dag_run = state.dag_runs.get(run_id)
+    if dag_run is None:
+        raise HTTPException(status_code=404, detail="DAGRun not found.")
+    return {"dag_run": dag_run.model_dump(mode="json")}
+
+
+@app.get("/dag-runs/{run_id}/artifacts")
+async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
+    dag_run = state.dag_runs.get(run_id)
+    if dag_run is None:
+        raise HTTPException(status_code=404, detail="DAGRun not found.")
+    return {
+        "run_id": run_id,
+        "artifact_states": {
+            artifact_id: artifact_state.model_dump(mode="json")
+            for artifact_id, artifact_state in dag_run.artifact_states.items()
+        },
+    }
 
 
 @app.get("/capabilities")
@@ -270,6 +383,10 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "final_answer": result.final_answer,
+                "artifact_states": {
+                    artifact_id: artifact_state.model_dump(mode="json")
+                    for artifact_id, artifact_state in result.artifact_states.items()
+                },
             }
         )
 
@@ -342,6 +459,10 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
                 "dag": result.dag.model_dump(mode="json") if result.dag else None,
                 "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
                 "final_answer": result.final_answer,
+                "artifact_states": {
+                    artifact_id: artifact_state.model_dump(mode="json")
+                    for artifact_id, artifact_state in result.artifact_states.items()
+                },
             }
         )
 

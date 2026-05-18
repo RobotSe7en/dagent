@@ -6,13 +6,15 @@ import asyncio
 import re
 from collections.abc import Callable
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any
 
+from dagent.harness_runtime.artifacts import init_artifact_states, update_node_output_artifacts
 from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
 from dagent.harness_runtime.runtime_trace import TraceRecorder
 from dagent.harness_runtime.task_record import CapabilityExecutionStore
-from dagent.schemas import DAG, DAGNode, DAGNodeResult, DAGRunResult, TraceEvent
+from dagent.schemas import Artifact, ArtifactState, DAG, DAGNode, DAGNodeResult, DAGStepResult, TraceEvent
 
 
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response|status|stop_reason|steps)\s*}}")
@@ -31,11 +33,17 @@ class DAGExecutor:
         capability_executor: CapabilityExecutor,
         trace_recorder: TraceRecorder | None = None,
         execution_store: CapabilityExecutionStore | None = None,
+        workspace_path: str | Path | None = None,
+        artifacts: dict[str, Artifact] | None = None,
+        artifact_states: dict[str, ArtifactState] | None = None,
     ) -> None:
         self.capability_executor = capability_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
         self.execution_store = execution_store or CapabilityExecutionStore()
         self.partial_node_results: dict[str, DAGNodeResult] = {}
+        self.workspace_path = Path(workspace_path).resolve() if workspace_path is not None else None
+        self.artifacts = artifacts or {}
+        self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
 
     async def execute_next_ready_layer(
         self,
@@ -44,7 +52,7 @@ class DAGExecutor:
         initial_results: dict[str, DAGNodeResult] | None = None,
         record_dag_start: bool = True,
         on_trace: Callable[[TraceEvent], None] | None = None,
-    ) -> DAGRunResult:
+    ) -> DAGStepResult:
         """Execute only the next currently-ready DAG layer.
 
         This is the step-wise execution entrypoint for the dynamic DAG loop.
@@ -61,12 +69,21 @@ class DAGExecutor:
             self.trace_recorder.record("dag_started", dag_id=normalized.dag_id)
         node_results: dict[str, DAGNodeResult] = dict(initial_results or {})
 
-        permission_result = await self._execute_next_ready_layer(
-            normalized,
-            node_results,
-        )
-        if permission_result is not None:
-            return permission_result
+        old_catalog_root = self.capability_executor.catalog.workspace_root
+        old_executor_root = self.capability_executor.workspace_root
+        if self.workspace_path is not None:
+            self.capability_executor.catalog.workspace_root = self.workspace_path
+            self.capability_executor.workspace_root = self.workspace_path
+        try:
+            permission_result = await self._execute_next_ready_layer(
+                normalized,
+                node_results,
+            )
+            if permission_result is not None:
+                return permission_result
+        finally:
+            self.capability_executor.catalog.workspace_root = old_catalog_root
+            self.capability_executor.workspace_root = old_executor_root
 
         completed = _all_nodes_completed(normalized, node_results)
         if completed:
@@ -76,19 +93,20 @@ class DAGExecutor:
                 dag_id=normalized.dag_id,
                 payload={"completed": True},
             )
-        return DAGRunResult(
+        return DAGStepResult(
             dag_id=normalized.dag_id,
             completed=completed,
             node_results=node_results,
             traces=list(self.trace_recorder.events),
             execution_records=self.execution_store.records_for_dag(normalized.dag_id),
+            artifact_states=dict(self.artifact_states),
         )
 
     async def _execute_next_ready_layer(
         self,
         dag: DAG,
         node_results: dict[str, DAGNodeResult],
-    ) -> DAGRunResult | None:
+    ) -> DAGStepResult | None:
         pending_nodes = _next_ready_nodes(dag, node_results)
         if not pending_nodes:
             return None
@@ -258,6 +276,13 @@ class DAGExecutor:
             stop_reason="completed",
             steps=1,
         )
+        if self.workspace_path is not None and self.artifacts:
+            update_node_output_artifacts(
+                node,
+                artifacts=self.artifacts,
+                states=self.artifact_states,
+                workspace_path=self.workspace_path,
+            )
         node.status = "completed"
         self.trace_recorder.record(
             "node_completed",

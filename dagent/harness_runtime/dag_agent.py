@@ -24,7 +24,7 @@ from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
     DAG,
     DAGNode,
-    DAGRunResult,
+    DAGStepResult,
     LoopOutcome,
     LoopStatus,
     PendingReview,
@@ -127,7 +127,7 @@ class DAGAgent:
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
-    ) -> DAGRunResult:
+    ) -> DAGStepResult:
         return await self.loop.execute(
             record,
             messages=self.messages,
@@ -393,7 +393,7 @@ class DAGAgentLoop:
         on_trace: Callable[[TraceEvent], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
-    ) -> DAGRunResult:
+    ) -> DAGStepResult:
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
         self._validate_dag_tools(record.dag)
@@ -430,6 +430,7 @@ class DAGAgentLoop:
                     traces.extend(layer.traces)
                     new_node_ids = set(layer.node_results) - set(record.node_results)
                     record.node_results.update(layer.node_results)
+                    record.require_dag_state().artifact_states = dict(layer.artifact_states)
                     record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
                     if new_node_ids and all(nid == "start" for nid in new_node_ids):
                         # Synthetic start nodes are bookkeeping, not an execution/replan turn.
@@ -542,7 +543,7 @@ class DAGAgentLoop:
         if record.pending_review is not None:
             return self._finalize_run(
                 record,
-                DAGRunResult(
+                DAGStepResult(
                     dag_id=record.dag.dag_id,
                     completed=False,
                     node_results=dict(record.node_results),
@@ -573,7 +574,7 @@ class DAGAgentLoop:
     def _finalize_run(
         self,
         record: RuntimeTaskRecord,
-        result: DAGRunResult,
+        result: DAGStepResult,
         *,
         extra_events: list[dict[str, Any]] | None = None,
     ) -> LoopOutcome:
@@ -656,7 +657,7 @@ class DAGAgentLoop:
         record: RuntimeTaskRecord,
         traces: list[TraceEvent],
         on_dag: Callable[[DAG], None] | None,
-    ) -> DAGRunResult:
+    ) -> DAGStepResult:
         record.execution_records = self.dag_executor.execution_store.records_for_task(record.task_id)
         all_nodes_completed = all(
             nid in record.node_results and record.node_results[nid].completed
@@ -665,12 +666,13 @@ class DAGAgentLoop:
         completed = record.dag.status != "failed" and (
             bool(record.final_response) or all_nodes_completed
         )
-        result = DAGRunResult(
+        result = DAGStepResult(
             dag_id=record.dag.dag_id,
             completed=completed,
             node_results=dict(record.node_results),
             traces=traces,
             execution_records=list(record.execution_records),
+            artifact_states=dict(record.artifact_states),
         )
         record.runs.append(result)
 
@@ -809,7 +811,7 @@ def _dag_created_review_message(record: RuntimeTaskRecord) -> str:
     ])
 
 
-def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) -> str:
+def format_dag_execution_context(dag: DAG | None, dag_run: DAGStepResult | None) -> str:
     """Format DAG execution details for validation and fallback output."""
     lines: list[str] = []
     if dag:
@@ -842,7 +844,7 @@ def format_dag_execution_context(dag: DAG | None, dag_run: DAGRunResult | None) 
     )
 
 
-def dag_run_fallback_message(record: RuntimeTaskRecord, result: DAGRunResult) -> str:
+def dag_run_fallback_message(record: RuntimeTaskRecord, result: DAGStepResult) -> str:
     lines = [
         "DAG execution completed." if result.completed else "DAG execution stopped before completion.",
         "",
@@ -866,7 +868,7 @@ def _dag_loop_outcome(
     status: LoopStatus,
     final_response: str,
     dag: DAG | None = None,
-    dag_run: DAGRunResult | None = None,
+    dag_run: DAGStepResult | None = None,
     task_id: str | None = None,
     pending_review: PendingReview | None = None,
     extra_events: list[dict[str, Any]] | None = None,
@@ -900,6 +902,7 @@ def _dag_loop_outcome(
         dag_run=dag_run,
         task_id=task_id,
         pending_review=pending_review,
+        artifact_states=dict(dag_run.artifact_states) if dag_run is not None else {},
     )
 
 

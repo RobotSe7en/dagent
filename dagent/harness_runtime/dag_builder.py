@@ -8,7 +8,17 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, CapabilityDefinition, CapabilityInvocation
+from dagent.harness_runtime.artifacts import validate_artifact_paths
+from dagent.schemas import (
+    Boundary,
+    DAG,
+    DAGEdge,
+    DAGNode,
+    DAGSpec,
+    PlanSpec,
+    CapabilityDefinition,
+    CapabilityInvocation,
+)
 
 
 class DAGCreationError(ValueError):
@@ -93,6 +103,50 @@ def compile_plan_spec(
         status="draft",
         nodes=nodes,
         edges=edges,
+    )
+
+
+def compile_dag_spec(spec: DAGSpec, *, task_id: str) -> DAG:
+    validate_dag_spec(spec)
+    nodes = [node.model_copy(deep=True) for node in spec.nodes]
+    edges = [edge.model_copy(deep=True) for edge in spec.edges]
+    return DAG(
+        dag_id=f"dag_{uuid4().hex}",
+        task_id=task_id,
+        status="draft",
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+def validate_dag_spec(spec: DAGSpec) -> None:
+    for artifact_id, artifact in spec.artifacts.items():
+        if artifact.id != artifact_id:
+            raise DAGValidationError(
+                f"Artifact key '{artifact_id}' must match artifact id '{artifact.id}'."
+            )
+        try:
+            validate_artifact_paths(artifact.paths)
+        except ValueError as exc:
+            raise DAGValidationError(str(exc)) from exc
+
+    artifact_ids = set(spec.artifacts)
+    for node in spec.nodes:
+        references = [*node.inputs, *node.outputs]
+        unknown = sorted(set(references) - artifact_ids)
+        if unknown:
+            joined = ", ".join(unknown)
+            raise DAGValidationError(
+                f"Node '{node.id}' references unknown artifact(s): {joined}."
+            )
+
+    validate_dag(
+        DAG(
+            dag_id=f"dag_spec_{spec.id}",
+            task_id=spec.id,
+            nodes=[node.model_copy(deep=True) for node in spec.nodes],
+            edges=[edge.model_copy(deep=True) for edge in spec.edges],
+        )
     )
 
 
@@ -231,6 +285,7 @@ def _compile_plan_node(
         )
     return DAGNode(
         id=node.id,
+        title=node.title,
         invocation=CapabilityInvocation(
             capability_id=registered.id,
             kind=registered.kind,
@@ -238,6 +293,8 @@ def _compile_plan_node(
             boundary=_infer_boundary(registered, args),
             risk=registered.policy.risk,
         ),
+        inputs=list(node.inputs),
+        outputs=list(node.outputs),
     )
 
 

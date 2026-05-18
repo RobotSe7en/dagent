@@ -10,7 +10,8 @@ from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.schemas import (
     DAG,
     DAGNode,
-    DAGRunResult,
+    DAGStepResult,
+    ArtifactState,
     Boundary,
     PendingReview,
     ReviewKind,
@@ -48,9 +49,12 @@ class ToolTaskState:
 class DAGTaskState:
     dag: DAG
     runtime_mode: str = "auto"
-    runs: list[DAGRunResult] = field(default_factory=list)
+    runs: list[DAGStepResult] = field(default_factory=list)
     continuation_count: int = 0
     node_results: dict = field(default_factory=dict)
+    spec_id: str | None = None
+    workspace_path: str | None = None
+    artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
 
 
 @dataclass
@@ -76,6 +80,9 @@ class RuntimeTaskRecord:
         dag: DAG,
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
+        spec_id: str | None = None,
+        workspace_path: str | None = None,
+        artifact_states: dict[str, ArtifactState] | None = None,
     ) -> "RuntimeTaskRecord":
         return cls(
             task_id=task_id,
@@ -85,6 +92,9 @@ class RuntimeTaskRecord:
             dag_state=DAGTaskState(
                 dag=dag,
                 runtime_mode=runtime_mode,
+                spec_id=spec_id,
+                workspace_path=workspace_path,
+                artifact_states=dict(artifact_states or {}),
             ),
         )
 
@@ -118,8 +128,20 @@ class RuntimeTaskRecord:
         self.require_dag_state().dag = value
 
     @property
-    def runs(self) -> list[DAGRunResult]:
+    def runs(self) -> list[DAGStepResult]:
         return self.require_dag_state().runs
+
+    @property
+    def artifact_states(self) -> dict[str, ArtifactState]:
+        return self.require_dag_state().artifact_states
+
+    @property
+    def spec_id(self) -> str | None:
+        return self.require_dag_state().spec_id
+
+    @property
+    def workspace_path(self) -> str | None:
+        return self.require_dag_state().workspace_path
 
     @property
     def runtime_mode(self) -> str:
@@ -166,7 +188,10 @@ class RuntimeTaskRecord:
                 if loop_outcome.dag_run not in self.dag_state.runs:
                     self.dag_state.runs.append(loop_outcome.dag_run)
                 self.dag_state.node_results = loop_outcome.dag_run.node_results
+                self.dag_state.artifact_states = dict(loop_outcome.dag_run.artifact_states)
                 self.execution_records = list(loop_outcome.dag_run.execution_records)
+            elif loop_outcome.artifact_states:
+                self.dag_state.artifact_states = dict(loop_outcome.artifact_states)
             return
 
         if self.mode == "tool":

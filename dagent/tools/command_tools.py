@@ -25,6 +25,7 @@ def run_command(
         shell=True,
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=timeout_seconds,
     )
     output = "\n".join(

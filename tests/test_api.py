@@ -302,6 +302,61 @@ def test_api_capability_status_endpoints() -> None:
     assert sandbox.json()["runner"] in {"local-dev", "container"}
 
 
+def test_api_dag_spec_create_run_and_artifacts() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "write_note",
+            "name": "Write note",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/output.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "write",
+                    "title": "Write output note",
+                    "invocation": {
+                        "capability_id": "tool.write_file",
+                        "kind": "tool",
+                        "arguments": {
+                            "path": "notes/output.txt",
+                            "content": "hello",
+                        },
+                        "boundary": {
+                            "mode": "write_limited",
+                            "allowed_paths": ["notes/output.txt"],
+                        },
+                    },
+                    "outputs": ["note"],
+                }
+            ],
+            "edges": [],
+        },
+    )
+    assert create_response.status_code == 200
+
+    list_response = client.get("/dag-specs")
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()["dag_specs"]] == ["write_note"]
+
+    run_response = client.post("/dag-specs/write_note/run")
+    assert run_response.status_code == 200
+    run_payload = run_response.json()["dag_run"]
+    assert run_payload["spec_id"] == "write_note"
+    assert run_payload["status"] == "completed"
+    assert run_payload["artifact_states"]["note"]["status"] == "created"
+
+    artifacts_response = client.get(f"/dag-runs/{run_payload['run_id']}/artifacts")
+    assert artifacts_response.status_code == 200
+    assert artifacts_response.json()["artifact_states"]["note"]["paths"] == ["notes/output.txt"]
+
+
 def _runtime(provider: MockProvider) -> HarnessRuntime:
     capability_executor = _capability_executor()
     tool_adapter = CapabilityToolAdapter(

@@ -1,7 +1,8 @@
 """Public schema exports."""
 
 from dagent.schemas.common import Boundary, BoundaryMode, RiskLevel
-from dagent.schemas.dag import DAG, PlanNodeSpec, PlanSpec
+from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
+from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, PlanNodeSpec, PlanSpec
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
 from dagent.schemas.node import DAGNode
@@ -17,6 +18,7 @@ from dagent.schemas.capability import (
 from dagent.schemas.results import (
     DAGNodeResult,
     DAGRunResult,
+    DAGStepResult,
     LoopOutcome,
     LoopStatus,
     PendingReview,
@@ -30,11 +32,18 @@ from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent, TraceSpa
 __all__ = [
     "Boundary",
     "BoundaryMode",
+    "Artifact",
+    "ArtifactState",
+    "ArtifactStatus",
     "DAG",
+    "DAGRun",
+    "DAGRunStatus",
     "DAGEdge",
     "DAGNode",
     "DAGNodeResult",
     "DAGRunResult",
+    "DAGSpec",
+    "DAGStepResult",
     "Feedback",
     "LoopOutcome",
     "LoopStatus",

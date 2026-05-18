@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from dagent.schemas.dag import DAG
+from dagent.schemas.artifact import ArtifactState
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.trace import CapabilityExecutionRecord, TraceEvent
 
@@ -24,12 +25,16 @@ class DAGNodeResult:
 
 
 @dataclass(frozen=True)
-class DAGRunResult:
+class DAGStepResult:
     dag_id: str
     completed: bool
     node_results: dict[str, DAGNodeResult]
     traces: list[TraceEvent] = field(default_factory=list)
     execution_records: list[CapabilityExecutionRecord] = field(default_factory=list)
+    artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
+
+
+DAGRunResult = DAGStepResult
 
 
 @dataclass
@@ -53,9 +58,10 @@ class LoopOutcome:
     events: list[dict[str, Any]] = field(default_factory=list)
     invocations: list[CapabilityInvocation] = field(default_factory=list)
     dag: DAG | None = None
-    dag_run: DAGRunResult | None = None
+    dag_run: DAGStepResult | None = None
     task_id: str | None = None
     pending_review: PendingReview | None = None
+    artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -63,10 +69,11 @@ class RuntimeResponse:
     status: LoopStatus
     final_answer: str
     dag: DAG | None = None
-    dag_run: DAGRunResult | None = None
+    dag_run: DAGStepResult | None = None
     task_id: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     pending_review: PendingReview | None = None
+    artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

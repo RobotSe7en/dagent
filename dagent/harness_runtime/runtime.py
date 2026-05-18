@@ -400,6 +400,7 @@ class HarnessRuntime:
             task_id=record.task_id,
             events=outcome.events,
             pending_review=outcome.pending_review,
+            artifact_states=dict(outcome.artifact_states),
         )
 
 
@@ -420,5 +421,6 @@ def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeRes
         task_id=task_id,
         events=loop_outcome.events,
         pending_review=loop_outcome.pending_review,
+        artifact_states=dict(loop_outcome.artifact_states),
     )
 
