@@ -80,6 +80,7 @@ class DAGAgent:
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
@@ -97,6 +98,7 @@ class DAGAgent:
             force_review=force_review,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
         )
 
@@ -110,6 +112,7 @@ class DAGAgent:
         review_level: ReviewLevel | None = None,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
         return await self.loop.resume_review(
@@ -122,6 +125,7 @@ class DAGAgent:
             build_user_message=self.build_request_user_message,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
         )
 
@@ -131,6 +135,7 @@ class DAGAgent:
         *,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
     ) -> DAGStepResult:
@@ -140,6 +145,7 @@ class DAGAgent:
             build_user_message=self.build_request_user_message,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
             max_cycles=max_cycles,
         )
@@ -151,6 +157,7 @@ class DAGAgent:
         workspace_root: str | Path = ".dagent-runs",
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         return await self.loop.run_spec(
@@ -158,6 +165,7 @@ class DAGAgent:
             workspace_root=workspace_root,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
         )
 
@@ -230,6 +238,7 @@ class DAGAgentLoop:
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         response: DAG | str | None = None
@@ -305,6 +314,7 @@ class DAGAgentLoop:
             build_user_message=build_user_message,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
             max_cycles=max(0, self.max_cycles - cycles_used),
         )
@@ -317,6 +327,7 @@ class DAGAgentLoop:
         workspace_root: str | Path = ".dagent-runs",
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         run_id = f"dag_run_{uuid4().hex}"
@@ -345,6 +356,7 @@ class DAGAgentLoop:
             workspace_path=workspace,
             artifacts=spec.artifacts,
             artifact_states=artifact_states,
+            spec_id=spec.id,
         )
 
         status = "running"
@@ -357,6 +369,8 @@ class DAGAgentLoop:
                     initial_results=node_results,
                     record_dag_start=not node_results,
                     on_trace=on_trace,
+                    on_token=on_token,
+                    on_event=on_event,
                 )
                 traces.extend(step.traces)
                 node_results = step.node_results
@@ -417,6 +431,7 @@ class DAGAgentLoop:
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
         if state.kind not in {"initial_dag", "dag_replan"}:
@@ -457,6 +472,7 @@ class DAGAgentLoop:
                 build_user_message=build_user_message,
                 on_token=on_token,
                 on_trace=on_trace,
+                on_event=on_event,
                 on_dag=on_dag,
                 extra_events=[
                     {
@@ -493,6 +509,7 @@ class DAGAgentLoop:
             build_user_message=build_user_message,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
         )
         return self._finalize_run(record, result)
@@ -509,6 +526,7 @@ class DAGAgentLoop:
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
     ) -> DAGStepResult:
@@ -534,6 +552,8 @@ class DAGAgentLoop:
                         initial_results=_completed_results(record.node_results),
                         record_dag_start=not traces,
                         on_trace=on_trace,
+                        on_token=on_token,
+                        on_event=on_event,
                     )
                 except Exception as exc:
                     layer_failed = True
@@ -626,6 +646,7 @@ class DAGAgentLoop:
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         extra_events: list[dict[str, Any]] | None = None,
     ) -> LoopOutcome:
@@ -676,6 +697,7 @@ class DAGAgentLoop:
             build_user_message=build_user_message,
             on_token=on_token,
             on_trace=on_trace,
+            on_event=on_event,
             on_dag=on_dag,
         )
         return self._finalize_run(record, result, extra_events=extra_events)

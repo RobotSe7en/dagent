@@ -128,6 +128,57 @@ async def run_dag_spec(spec_id: str) -> dict[str, Any]:
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 
+@app.post("/dag-specs/{spec_id}/run/stream")
+async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
+    spec = state.dag_specs.get(spec_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+
+    async def events():
+        yield _sse({"type": "status", "message": "dag_spec_run_started"})
+        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def on_token(content: str) -> None:
+            event_queue.put_nowait({"type": "token", "content": content})
+
+        def on_event(event: dict[str, Any]) -> None:
+            event_queue.put_nowait(event)
+
+        task = asyncio.create_task(
+            state.get_harness_runtime().run_dag_spec(
+                spec,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        )
+        try:
+            while not task.done():
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                yield _sse(event)
+            while not event_queue.empty():
+                yield _sse(event_queue.get_nowait())
+            dag_run = await task
+        except Exception as exc:
+            if not task.done():
+                task.cancel()
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+
+        state.dag_runs[dag_run.run_id] = dag_run
+        yield _sse(
+            {
+                "type": "done",
+                "status": dag_run.status,
+                "dag_run": dag_run.model_dump(mode="json"),
+            }
+        )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @app.get("/dag-runs/{run_id}")
 async def get_dag_run(run_id: str) -> dict[str, Any]:
     dag_run = state.dag_runs.get(run_id)
@@ -271,7 +322,7 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
         from dagent.schemas import Boundary
 
         invocation.boundary = Boundary.model_validate(request.boundary)
-    result = runtime.capability_executor.execute(invocation)
+    result = await runtime.capability_executor.execute(invocation)
     return {"result": result.model_dump(mode="json")}
 
 

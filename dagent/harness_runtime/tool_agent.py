@@ -105,7 +105,7 @@ class ToolAgent:
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         if approved:
             try:
-                result = self.loop.capability_executor.execute(invocation)
+                result = await self.loop.capability_executor.execute(invocation)
                 feed_content = _tool_content(result)
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
@@ -202,7 +202,9 @@ class ToolAgentLoop:
             )
             if not policy.reviews_tool(risk):
                 try:
-                    result_content = _tool_content(self.capability_executor.execute(invocation))
+                    result_content = _tool_content(
+                        await self.capability_executor.execute(invocation)
+                    )
                 except Exception as exc:
                     return ControlToolResult(
                         content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
@@ -334,7 +336,9 @@ class ToolAgentLoop:
                     )
                     continue
                 try:
-                    tool_result = _tool_content(self.capability_executor.execute(invocation))
+                    tool_result = _tool_content(
+                        await self.capability_executor.execute(invocation)
+                    )
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                     self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)

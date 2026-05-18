@@ -4,9 +4,11 @@ import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
 from dagent.harness_runtime import CapabilityExecutor
-from dagent.capabilities import CapabilityCatalog
-from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.providers import AgentCapabilityProvider, ToolCapabilityProvider
+from dagent.profiles import AgentProfile
+from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation
 from dagent.tools.registry import ToolRegistry
 
 
@@ -294,6 +296,142 @@ def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
     assert "tool_call_id" not in capability_events[0].payload
 
 
+def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="agent done")])
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    capability_executor = CapabilityExecutor(catalog)
+    tool_adapter = CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", ())],
+    )
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(
+                    name="helper",
+                    role="agent",
+                    layers=["agent.md"],
+                    layer_contents={"agent.md": "You are a DAG node agent."},
+                ),
+                "capability_executor": capability_executor,
+                "tool_adapter": tool_adapter,
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(catalog)
+    workspace = tmp_path / "run"
+    workspace.mkdir()
+    executor = DAGExecutor(
+        capability_executor=capability_executor,
+        workspace_path=workspace,
+        artifacts={
+            "source_doc": Artifact(id="source_doc", paths=["inputs/source.md"]),
+            "requirements_doc": Artifact(id="requirements_doc", paths=["outputs/requirements.md"]),
+        },
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="run_1",
+        nodes=[
+            DAGNode(
+                id="agent_node",
+                title="Write requirements",
+                goal="Draft requirements.",
+                instructions="Keep it concise.",
+                invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                inputs=["source_doc"],
+                outputs=["requirements_doc"],
+            )
+        ],
+    )
+
+    result = run(executor.execute_next_ready_layer(dag))
+
+    assert result.node_results["agent_node"].final_response == "agent done"
+    messages = provider.requests[0]["messages"]
+    system = messages[0]["content"]
+    user = messages[1]["content"]
+    assert "You are a DAG node agent." in system
+    assert str(workspace) in system
+    assert str(workspace / "inputs" / "source.md") in system
+    assert str(workspace / "outputs" / "requirements.md") in system
+    assert "Write requirements" in user
+    assert "Draft requirements." in user
+    assert "Keep it concise." in user
+    assert "source_doc" not in user
+
+
+def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+        ChatResponse(content="done"),
+    ])
+    registry = ToolRegistry()
+    registry.register(
+        name="echo",
+        handler=lambda text: f"echo:{text}",
+        action="read",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    ToolCapabilityProvider(registry).register_into(catalog)
+    capability_executor = CapabilityExecutor(catalog)
+    tool_adapter = CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
+    )
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(
+                    name="helper",
+                    role="agent",
+                    layers=["agent.md"],
+                    layer_contents={"agent.md": "You are a DAG node agent."},
+                ),
+                "capability_executor": capability_executor,
+                "tool_adapter": tool_adapter,
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(catalog)
+    executor = DAGExecutor(
+        capability_executor=capability_executor,
+        workspace_path=tmp_path,
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="run_1",
+        nodes=[
+            DAGNode(
+                id="agent_node",
+                title="Call echo",
+                goal="Use echo.",
+                invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+            )
+        ],
+    )
+    events: list[dict] = []
+
+    result = run(executor.execute_next_ready_layer(dag, on_event=events.append))
+
+    assert result.node_results["agent_node"].final_response == "done"
+    assert events[0]["type"] == "capability_call"
+    assert events[0]["capability_id"] == "tool.echo"
+    assert events[0]["parent_capability_id"] == "agent.helper"
+    assert events[0]["task_id"] == "run_1"
+    assert events[0]["dag_id"] == "dag_1"
+    assert events[0]["node_id"] == "agent_node"
+    assert events[1]["type"] == "capability_result"
+    assert events[1]["content"] == "echo:hi"
+
+
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
@@ -397,9 +535,11 @@ def test_tool_node_failure_marks_node_failed() -> None:
     )
 
     with pytest.raises(DAGExecutionError, match="failed:boom"):
-        executor.execute_capability_node(
-            failing_node,
-            DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
+        run(
+            executor.execute_capability_node(
+                failing_node,
+                DAG(dag_id="dag_1", task_id="task_1", nodes=[failing_node]),
+            )
         )
 
     assert failing_node.status == "failed"

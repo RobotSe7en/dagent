@@ -15,12 +15,13 @@
 
 ## Phase 2: Agent Node Runtime
 
-- [ ] Enhance `AgentCapabilityProvider` so `agent.*` capabilities call `ToolAgentLoop` internally.
-- [ ] Support agent capability profiles through capability config.
-- [ ] Support enabled capability scopes for agent nodes.
-- [ ] Support `max_steps`, workspace boundary, and artifact input/output awareness for agent nodes.
-- [ ] Keep node typing unchanged; distinguish execution behavior through `CapabilityInvocation.kind` and `capability_id`.
-- [ ] Add tests proving a DAG node can invoke an agent capability without changing the `DAGNode` schema.
+- [x] Enhance `AgentCapabilityProvider` so `agent.*` capabilities call `ToolAgentLoop` internally.
+- [x] Support agent capability profiles through capability config.
+- [x] Support enabled capability scopes for agent nodes.
+- [x] Support `max_steps`, workspace boundary, and artifact input/output awareness for agent nodes.
+- [x] Keep node typing unchanged; distinguish execution behavior through `CapabilityInvocation.kind` and `capability_id`.
+- [x] Add tests proving a DAG node can invoke an agent capability without changing the `DAGNode` schema.
+- [x] Add `/dag-specs/{id}/run/stream` so DAGSpec runs can emit live trace and node-scoped agent events.
 
 ## Phase 3: Persistent Platform APIs
 

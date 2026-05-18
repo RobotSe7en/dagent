@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import sys
 
@@ -10,6 +11,10 @@ from dagent.schemas import Boundary
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 from dagent.tools.command_tools import CommandExecutionError, run_command
 from dagent.tools.file_tools import create_file_tool_registry
+
+
+def run(coro):
+    return asyncio.run(coro)
 
 
 def make_executor(tmp_path: Path) -> CapabilityExecutor:
@@ -32,14 +37,14 @@ def execute(
     *,
     boundary: Boundary,
 ) -> CapabilityResult:
-    return executor.execute(
+    return run(executor.execute(
         CapabilityInvocation(
             capability_id=f"tool.{tool_name}",
             kind="tool",
             arguments=args,
             boundary=boundary,
         )
-    )
+    ))
 
 
 def test_read_file_reads_allowed_path(tmp_path: Path) -> None:

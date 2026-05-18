@@ -268,6 +268,7 @@ class HarnessRuntime:
             review_level=review_level,
             on_token=thinking_only,
             on_trace=_trace_event_emitter(on_event),
+            on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
         )
         if initial_outcome is None:
@@ -292,6 +293,7 @@ class HarnessRuntime:
                 runtime_mode=record.runtime_mode,
                 on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
+                on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
 
@@ -355,6 +357,7 @@ class HarnessRuntime:
                 runtime_mode=str(mode),
                 on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
+                on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
         elif mode == "tool":
@@ -378,6 +381,7 @@ class HarnessRuntime:
                 workspace_root=workspace_root,
                 on_token=thinking_only,
                 on_trace=_trace_event_emitter(on_event),
+                on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
         else:
@@ -433,13 +437,15 @@ class HarnessRuntime:
         spec: DAGSpec,
         *,
         workspace_root: str | Path = ".dagent-runs",
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
     ) -> DAGRun:
         outcome = await self._execute_loop(
             spec,
             mode="dag_spec",
             review_level="fast",
-            on_token=None,
-            on_event=None,
+            on_token=on_token,
+            on_event=on_event,
             workspace_root=workspace_root,
         )
         record = self.session.record_outcome(

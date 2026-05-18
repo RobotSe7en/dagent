@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,13 +14,15 @@ from dagent.schemas import (
 )
 
 
-CapabilityHandler = Callable[[CapabilityInvocation], CapabilityResult]
+CapabilityHandlerResult = CapabilityResult | Awaitable[CapabilityResult]
+CapabilityHandler = Callable[..., CapabilityHandlerResult]
 
 
 @dataclass(frozen=True)
 class CapabilityEntry:
     definition: CapabilityDefinition
     handler: CapabilityHandler
+    supports_context: bool = False
 
 
 class CapabilityCatalog:
@@ -30,20 +32,34 @@ class CapabilityCatalog:
         self.workspace_root = Path(workspace_root).resolve()
         self._entries: dict[str, CapabilityEntry] = {}
 
-    def register(self, definition: CapabilityDefinition, handler: CapabilityHandler) -> None:
+    def register(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> None:
         if definition.id in self._entries:
             raise ValueError(f"Capability '{definition.id}' is already registered.")
         self._entries[definition.id] = CapabilityEntry(
             definition=definition.model_copy(deep=True),
             handler=handler,
+            supports_context=supports_context,
         )
 
-    def replace(self, definition: CapabilityDefinition, handler: CapabilityHandler) -> None:
+    def replace(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> None:
         if definition.id not in self._entries:
             raise KeyError(f"Capability '{definition.id}' is not registered.")
         self._entries[definition.id] = CapabilityEntry(
             definition=definition.model_copy(deep=True),
             handler=handler,
+            supports_context=supports_context,
         )
 
     def set_enabled(self, capability_id: str, enabled: bool) -> CapabilityDefinition:
@@ -51,7 +67,11 @@ class CapabilityCatalog:
         if entry is None:
             raise KeyError(f"Capability '{capability_id}' is not registered.")
         updated = entry.definition.model_copy(update={"enabled": enabled}, deep=True)
-        self._entries[capability_id] = CapabilityEntry(definition=updated, handler=entry.handler)
+        self._entries[capability_id] = CapabilityEntry(
+            definition=updated,
+            handler=entry.handler,
+            supports_context=entry.supports_context,
+        )
         return updated
 
     def delete(self, capability_id: str) -> None:

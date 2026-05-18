@@ -548,9 +548,9 @@ class _DelayedDAGExecutor(DAGExecutor):
         super().__init__(**kwargs)
         self._release = release
 
-    async def execute_node(self, node, dag, completed_results):
+    async def execute_node(self, node, dag, completed_results, **kwargs):
         await self._release.wait()
-        return await super().execute_node(node, dag, completed_results)
+        return await super().execute_node(node, dag, completed_results, **kwargs)
 
 
 def _write_note(path: str | Path, content: str) -> str:

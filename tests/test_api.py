@@ -379,6 +379,54 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     assert artifacts_response.json()["artifact_states"]["note"]["paths"] == ["notes/output.txt"]
 
 
+def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "stream_note",
+            "name": "Stream note",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/output.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "write",
+                    "invocation": {
+                        "capability_id": "tool.write_file",
+                        "kind": "tool",
+                        "arguments": {
+                            "path": "notes/output.txt",
+                            "content": "hello",
+                        },
+                        "boundary": {
+                            "mode": "write_limited",
+                            "allowed_paths": ["notes/output.txt"],
+                        },
+                    },
+                    "outputs": ["note"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    response = client.post("/dag-specs/stream_note/run/stream")
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert events[0]["type"] == "status"
+    assert any(event["type"] == "trace" for event in events)
+    assert events[-1]["type"] == "done"
+    assert events[-1]["dag_run"]["status"] == "completed"
+    run_id = events[-1]["dag_run"]["run_id"]
+    assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
+
+
 def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

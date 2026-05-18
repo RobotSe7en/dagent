@@ -46,6 +46,20 @@ def resolve_artifact_paths(artifact: Artifact, workspace_path: str | Path) -> li
     return resolved_paths
 
 
+def resolve_node_artifacts(
+    node: DAGNode,
+    *,
+    artifacts: dict[str, Artifact],
+    workspace_path: str | Path,
+) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
+    """Resolve a node's input and output artifact ids to workspace paths."""
+
+    return (
+        _resolve_artifact_ids(node.inputs, artifacts=artifacts, workspace_path=workspace_path),
+        _resolve_artifact_ids(node.outputs, artifacts=artifacts, workspace_path=workspace_path),
+    )
+
+
 def update_node_output_artifacts(
     node: DAGNode,
     *,
@@ -66,6 +80,21 @@ def update_node_output_artifacts(
             producer_node_id=node.id,
             error=None if exists else "One or more artifact paths were not created.",
         )
+
+
+def _resolve_artifact_ids(
+    artifact_ids: list[str],
+    *,
+    artifacts: dict[str, Artifact],
+    workspace_path: str | Path,
+) -> dict[str, list[Path]]:
+    resolved: dict[str, list[Path]] = {}
+    for artifact_id in artifact_ids:
+        artifact = artifacts.get(artifact_id)
+        if artifact is None:
+            continue
+        resolved[artifact_id] = resolve_artifact_paths(artifact, workspace_path)
+    return resolved
 
 
 def _validate_artifact_path(path: str) -> None:

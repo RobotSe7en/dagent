@@ -9,9 +9,18 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from dagent.harness_runtime.artifacts import init_artifact_states, update_node_output_artifacts
+from dagent.harness_runtime.artifacts import (
+    init_artifact_states,
+    resolve_node_artifacts,
+    update_node_output_artifacts,
+)
 from dagent.harness_runtime.dag_builder import validate_dag
-from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
+from dagent.harness_runtime.capability_executor import (
+    CapabilityExecutionCallbacks,
+    CapabilityExecutionContext,
+    CapabilityExecutionError,
+    CapabilityExecutor,
+)
 from dagent.harness_runtime.runtime_trace import TraceRecorder
 from dagent.harness_runtime.task_record import CapabilityExecutionStore
 from dagent.schemas import Artifact, ArtifactState, DAG, DAGNode, DAGNodeResult, DAGStepResult, TraceEvent
@@ -36,6 +45,7 @@ class DAGExecutor:
         workspace_path: str | Path | None = None,
         artifacts: dict[str, Artifact] | None = None,
         artifact_states: dict[str, ArtifactState] | None = None,
+        spec_id: str | None = None,
     ) -> None:
         self.capability_executor = capability_executor
         self.trace_recorder = trace_recorder or TraceRecorder()
@@ -44,6 +54,7 @@ class DAGExecutor:
         self.workspace_path = Path(workspace_path).resolve() if workspace_path is not None else None
         self.artifacts = artifacts or {}
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
+        self.spec_id = spec_id
 
     async def execute_next_ready_layer(
         self,
@@ -52,6 +63,8 @@ class DAGExecutor:
         initial_results: dict[str, DAGNodeResult] | None = None,
         record_dag_start: bool = True,
         on_trace: Callable[[TraceEvent], None] | None = None,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> DAGStepResult:
         """Execute only the next currently-ready DAG layer.
 
@@ -73,6 +86,8 @@ class DAGExecutor:
             permission_result = await self._execute_next_ready_layer(
                 normalized,
                 node_results,
+                on_token=on_token,
+                on_event=on_event,
             )
             if permission_result is not None:
                 return permission_result
@@ -98,6 +113,9 @@ class DAGExecutor:
         self,
         dag: DAG,
         node_results: dict[str, DAGNodeResult],
+        *,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> DAGStepResult | None:
         pending_nodes = _next_ready_nodes(dag, node_results)
         if not pending_nodes:
@@ -110,7 +128,13 @@ class DAGExecutor:
             _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
             *[
-                self.execute_node(node, dag, node_results)
+                self.execute_node(
+                    node,
+                    dag,
+                    node_results,
+                    on_token=on_token,
+                    on_event=on_event,
+                )
                 for node in pending_nodes
             ],
             return_exceptions=True,
@@ -135,6 +159,9 @@ class DAGExecutor:
         node: DAGNode,
         dag: DAG,
         completed_results: dict[str, DAGNodeResult],
+        *,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> DAGNodeResult:
         if node.node_type == "start":
             node.status = "completed"
@@ -146,12 +173,20 @@ class DAGExecutor:
                 steps=0,
             )
         self.trace_recorder.record("node_started", dag_id=dag.dag_id, node_id=node.id)
-        return self.execute_capability_node(node, dag)
+        return await self.execute_capability_node(
+            node,
+            dag,
+            on_token=on_token,
+            on_event=on_event,
+        )
 
-    def execute_capability_node(
+    async def execute_capability_node(
         self,
         node: DAGNode,
         dag: DAG,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> DAGNodeResult:
         invocation = node.invocation
         if not invocation.capability_id:
@@ -169,7 +204,14 @@ class DAGExecutor:
             },
         )
         try:
-            capability_result = self.capability_executor.execute(invocation)
+            capability_result = await self.capability_executor.execute(
+                invocation,
+                context=self._execution_context(dag, node),
+                callbacks=CapabilityExecutionCallbacks(
+                    on_token=on_token,
+                    on_event=_node_event_emitter(on_event, dag=dag, node=node),
+                ),
+            )
         except Exception as exc:
             node.status = "failed"
             self.execution_store.add_record(
@@ -288,10 +330,50 @@ class DAGExecutor:
         )
         return result
 
+    def _execution_context(self, dag: DAG, node: DAGNode) -> CapabilityExecutionContext:
+        input_artifacts: dict[str, list[Path]] = {}
+        output_artifacts: dict[str, list[Path]] = {}
+        if self.workspace_path is not None and self.artifacts:
+            input_artifacts, output_artifacts = resolve_node_artifacts(
+                node,
+                artifacts=self.artifacts,
+                workspace_path=self.workspace_path,
+            )
+        return CapabilityExecutionContext(
+            task_id=dag.task_id,
+            dag_id=dag.dag_id,
+            spec_id=self.spec_id,
+            node=node.model_copy(deep=True),
+            workspace_path=self.workspace_path,
+            input_artifacts=input_artifacts,
+            output_artifacts=output_artifacts,
+            artifact_states=dict(self.artifact_states),
+        )
+
     def _enforce_review_gate(self, dag: DAG) -> None:
         needs_approval = any(node.invocation.risk in {"medium", "high"} for node in dag.nodes)
         if needs_approval and dag.status != "approved":
             raise DAGExecutionError("DAG is not approved for execution.")
+
+
+def _node_event_emitter(
+    on_event: Callable[[dict[str, Any]], None] | None,
+    *,
+    dag: DAG,
+    node: DAGNode,
+) -> Callable[[dict[str, Any]], None] | None:
+    if on_event is None:
+        return None
+
+    def emit(event: dict[str, Any]) -> None:
+        payload = dict(event)
+        payload.setdefault("task_id", dag.task_id)
+        payload.setdefault("dag_id", dag.dag_id)
+        payload.setdefault("node_id", node.id)
+        payload.setdefault("parent_capability_id", node.invocation.capability_id)
+        on_event(payload)
+
+    return emit
 
 
 def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
