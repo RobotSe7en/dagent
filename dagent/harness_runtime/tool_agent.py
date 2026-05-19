@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityResult,
     RunTrace,
+    RunTraceError,
     RunTraceNode,
 )
 from dagent.state import PromptBuilder, PromptRequest
@@ -73,6 +75,7 @@ class ToolAgent:
             )
         )
         self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.trace: RunTrace | None = None
 
     async def run(
         self,
@@ -112,6 +115,7 @@ class ToolAgent:
             return None
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
+        result: CapabilityResult | None = None
         if approved:
             try:
                 result = await self.loop.capability_executor.execute(invocation)
@@ -119,6 +123,13 @@ class ToolAgent:
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
+        _reconcile_reviewed_trace_node(
+            self.trace,
+            invocation,
+            approved=approved,
+            result=result,
+            content=feed_content,
+        )
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
@@ -163,6 +174,7 @@ class ToolAgent:
             on_event=on_event,
         )
         self.messages = list(outcome.messages)
+        self.trace = outcome.trace
         return outcome
 
     def reviewable_tool_names(self) -> set[str]:
@@ -324,15 +336,21 @@ class ToolAgentLoop:
                         "capability_result",
                         content=control_result.content,
                     )
+                    review_pending = control_result.needs_review
                     trace.root.children.append(
                         RunTraceNode.capability_call(
                             parent_id=trace.root.id,
                             invocation=invocation,
-                            result=_completed_capability_result(invocation, control_result.content),
+                            result=(
+                                None
+                                if review_pending
+                                else _completed_capability_result(invocation, control_result.content)
+                            ),
+                            status="awaiting_review" if review_pending else None,
                             output=control_result.content,
                         )
                     )
-                    if control_result.needs_review:
+                    if review_pending:
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
                             kind="capability_review",
@@ -566,6 +584,48 @@ def _tool_content(result: CapabilityResult) -> str:
         return result.content
     prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
     return f"{prefix} {result.error or result.content}"
+
+
+def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:
+    if node.kind == "capability_call" and node.ref.get("invocation_id") == invocation_id:
+        return node
+    for child in node.children:
+        found = _find_capability_node(child, invocation_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _reconcile_reviewed_trace_node(
+    trace: RunTrace | None,
+    invocation: CapabilityInvocation,
+    *,
+    approved: bool,
+    result: CapabilityResult | None,
+    content: str,
+) -> None:
+    """Settle an awaiting-review capability node once its review is resolved."""
+    if trace is None:
+        return
+    node = _find_capability_node(trace.root, invocation.invocation_id)
+    if node is None:
+        return
+    node.output = content
+    node.ended_at = datetime.now(timezone.utc)
+    if node.capability_execution is not None:
+        node.capability_execution.result = result
+    if not approved:
+        node.status = "failed"
+        node.error = RunTraceError(
+            message="Human reviewer denied this capability call.",
+            code="review_denied",
+        )
+    elif result is not None and result.status == "completed":
+        node.status = "completed"
+    else:
+        node.status = "failed"
+        if result is not None and result.error:
+            node.error = RunTraceError(message=result.error, code=result.stop_reason)
 
 
 def _completed_capability_result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:

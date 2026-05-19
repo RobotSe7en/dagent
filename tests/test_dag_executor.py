@@ -74,7 +74,6 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
         executor.execute_next_ready_layer(
             dag,
             initial_trace=first,
-            record_dag_start=False,
         )
     )
 

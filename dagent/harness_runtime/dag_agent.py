@@ -37,7 +37,9 @@ from dagent.schemas import (
     CapabilityInvocation,
     RunTrace,
     RunTraceNode,
+    RunTraceStatus,
 )
+from dagent.schemas.node import NodeStatus
 from dagent.state import PromptBuilder, PromptRequest
 
 
@@ -78,7 +80,6 @@ class DAGAgent:
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
@@ -96,7 +97,6 @@ class DAGAgent:
             runtime_mode=runtime_mode,
             force_review=force_review,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
         )
@@ -110,7 +110,6 @@ class DAGAgent:
         approved: bool = True,
         review_level: ReviewLevel | None = None,
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
@@ -123,7 +122,6 @@ class DAGAgent:
             messages=self.messages,
             build_user_message=self.build_request_user_message,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
         )
@@ -133,7 +131,6 @@ class DAGAgent:
         record: RuntimeTaskRecord,
         *,
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
@@ -143,7 +140,6 @@ class DAGAgent:
             messages=self.messages,
             build_user_message=self.build_request_user_message,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
             max_cycles=max_cycles,
@@ -217,7 +213,6 @@ class DAGAgentLoop:
         runtime_mode: str = "auto",
         force_review: bool = False,
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
@@ -293,7 +288,6 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
             max_cycles=max(0, self.max_cycles - cycles_used),
@@ -306,7 +300,6 @@ class DAGAgentLoop:
         *,
         workspace_root: str | Path = ".dagent-runs",
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
@@ -343,7 +336,6 @@ class DAGAgentLoop:
             replan=False,
             dag_executor=dag_executor,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
         )
@@ -381,7 +373,6 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
@@ -422,7 +413,6 @@ class DAGAgentLoop:
                 messages=messages,
                 build_user_message=build_user_message,
                 on_token=on_token,
-                on_trace=on_trace,
                 on_event=on_event,
                 on_dag=on_dag,
                 extra_events=[
@@ -448,7 +438,7 @@ class DAGAgentLoop:
         changed_node_ids = _changed_node_ids(record.dag, prepared)
         for node_id in changed_node_ids:
             if node_id in existing_node_ids:
-                _invalidate_patch_results(record, node_id)
+                _invalidate_node_results(record, node_id)
         record.dag = prepared
         record.dag.status = "approved"
         record.pending_review = None
@@ -459,7 +449,6 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
         )
@@ -476,7 +465,6 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]] | None = None,
         build_user_message: Callable[..., dict[str, str]] | None = None,
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         max_cycles: int | None = None,
@@ -508,8 +496,6 @@ class DAGAgentLoop:
                     layer = await active_executor.execute_next_ready_layer(
                         record.dag,
                         initial_trace=trace,
-                        record_dag_start=trace is None,
-                        on_trace=on_trace,
                         on_token=on_token,
                         on_event=on_event,
                     )
@@ -531,7 +517,10 @@ class DAGAgentLoop:
                     trace = layer
                     new_node_ids = set(_node_traces_by_id(layer)) - previous_node_ids
                     record.trace = layer
-                    if new_node_ids and all(nid == "start" for nid in new_node_ids):
+                    if new_node_ids and all(
+                        _node_by_id(record.dag, nid).node_type == "start"
+                        for nid in new_node_ids
+                    ):
                         # Synthetic start nodes are bookkeeping, not an execution/replan turn.
                         cycle -= 1
                         continue
@@ -615,7 +604,6 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
         extra_events: list[dict[str, Any]] | None = None,
@@ -663,7 +651,6 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             on_token=on_token,
-            on_trace=on_trace,
             on_event=on_event,
             on_dag=on_dag,
         )
@@ -720,7 +707,7 @@ class DAGAgentLoop:
         for node_id, node_trace in active_executor.partial_node_traces.items():
             if node_id in current_node_ids:
                 _replace_or_append_trace_child(trace.root, node_trace)
-                _node_by_id(record.dag, node_id).status = node_trace.status  # type: ignore[assignment]
+                _node_by_id(record.dag, node_id).status = _node_status_from_trace(node_trace.status)
         for failed_id in _failed_node_ids_from_trace(trace, valid_node_ids=current_node_ids):
             _node_by_id(record.dag, failed_id).status = "failed"
         record.dag.status = "failed"
@@ -749,7 +736,7 @@ class DAGAgentLoop:
         old_node_ids = {node.id for node in record.dag.nodes}
         for node_id in changed:
             if node_id in old_node_ids:
-                _invalidate_patch_results(record, node_id)
+                _invalidate_node_results(record, node_id)
 
         record.dag = prepared
         if needs_review:
@@ -771,9 +758,10 @@ class DAGAgentLoop:
     ) -> RunTrace:
         trace = trace or record.trace or _empty_run_trace(run_id=record.task_id, dag=record.dag)
         node_traces = _node_traces_by_id(trace)
-        all_nodes_completed = all(
+        dag_node_ids = _dag_node_ids(record.dag)
+        all_nodes_completed = bool(dag_node_ids) and all(
             nid in node_traces and node_traces[nid].status == "completed"
-            for nid in _dag_node_ids(record.dag)
+            for nid in dag_node_ids
         )
         completed = record.dag.status != "failed" and (
             bool(_trace_output(trace)) or all_nodes_completed
@@ -785,11 +773,7 @@ class DAGAgentLoop:
             record.dag.status = "review_required"
         elif record.dag.status != "aborted":
             record.dag.status = "completed" if completed else "failed"
-            for node_id, node_trace in node_traces.items():
-                try:
-                    _node_by_id(record.dag, node_id).status = node_trace.status  # type: ignore[assignment]
-                except KeyError:
-                    continue
+            _sync_dag_node_statuses(record.dag, node_traces)
 
         _emit_dag(on_dag, record.dag)
         return trace
@@ -1015,22 +999,9 @@ def _dag_loop_outcome(
     )
 
 
-def _tool_name_from_capability(capability_id: str) -> str:
-    return capability_id.removeprefix("tool.")
-
-
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:
     if on_dag is not None:
         on_dag(dag.model_copy(deep=True))
-
-
-def _apply_trace_to_dag(dag: DAG, trace: RunTrace) -> None:
-    nodes_by_id = {node.id: node for node in dag.nodes}
-    for node_id, node_trace in _node_traces_by_id(trace).items():
-        node = nodes_by_id.get(node_id)
-        if node is not None:
-            node.status = node_trace.status  # type: ignore[assignment]
-    dag.status = "completed" if trace.status == "completed" else "running"
 
 
 def _has_required_artifact_failure(
@@ -1073,6 +1044,32 @@ def _node_by_id(dag: DAG, node_id: str):
         if node.id == node_id:
             return node
     raise KeyError(node_id)
+
+
+_TRACE_TO_NODE_STATUS: dict[RunTraceStatus, NodeStatus] = {
+    "planned": "planned",
+    "running": "running",
+    "completed": "completed",
+    "failed": "failed",
+    "skipped": "skipped",
+    "awaiting_review": "running",
+    "cancelled": "skipped",
+}
+
+
+def _node_status_from_trace(status: RunTraceStatus) -> NodeStatus:
+    """Map a run-trace status onto the narrower DAG node status enum."""
+    return _TRACE_TO_NODE_STATUS.get(status, "planned")
+
+
+def _sync_dag_node_statuses(dag: DAG, node_traces: dict[str, RunTraceNode]) -> None:
+    """Write each trace node's resolved status back onto its DAG node."""
+    for node_id, node_trace in node_traces.items():
+        try:
+            node = _node_by_id(dag, node_id)
+        except KeyError:
+            continue
+        node.status = _node_status_from_trace(node_trace.status)
 
 
 def _empty_run_trace(*, run_id: str, dag: DAG) -> RunTrace:
@@ -1172,9 +1169,9 @@ def _recent_capability_summaries(trace: RunTrace | None, *, limit: int) -> list[
     return summaries[-limit:]
 
 
-def _invalidate_patch_results(record: RuntimeTaskRecord, node_id: str) -> None:
+def _invalidate_node_results(record: RuntimeTaskRecord, node_id: str) -> None:
     trace = record.trace
-    for affected_id in affected_node_ids_for_patch(record.dag, node_id):
+    for affected_id in _downstream_node_ids(record.dag, node_id):
         if trace is not None:
             trace.root.children = [
                 child
@@ -1187,7 +1184,7 @@ def _invalidate_patch_results(record: RuntimeTaskRecord, node_id: str) -> None:
             continue
 
 
-def affected_node_ids_for_patch(dag: DAG, node_id: str) -> set[str]:
+def _downstream_node_ids(dag: DAG, node_id: str) -> set[str]:
     _node_by_id(dag, node_id)
     affected = {node_id}
     changed = True

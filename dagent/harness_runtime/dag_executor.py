@@ -64,13 +64,10 @@ class DAGExecutor:
         dag: DAG,
         *,
         initial_trace: RunTrace | None = None,
-        record_dag_start: bool = True,
-        on_trace: Callable[[dict[str, Any]], None] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTrace:
         """Execute the next currently-ready DAG layer and return cumulative run trace."""
-        del record_dag_start, on_trace
         self.partial_node_traces = {}
         normalized = self.normalize(dag)
         validate_dag(normalized)
@@ -125,7 +122,6 @@ class DAGExecutor:
                 self.execute_node(
                     node,
                     dag,
-                    node_traces,
                     parent_id=trace.root.id,
                     on_token=on_token,
                     on_event=on_event,
@@ -161,13 +157,11 @@ class DAGExecutor:
         self,
         node: DAGNode,
         dag: DAG,
-        completed_traces: dict[str, RunTraceNode],
         *,
         parent_id: str,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTraceNode:
-        del completed_traces
         dag_node = RunTraceNode.dag_node(
             parent_id=parent_id,
             node_id=node.id,

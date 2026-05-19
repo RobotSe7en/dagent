@@ -635,7 +635,9 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].task_id == first.task_id
     assert tool_tasks[0].trace is not None
     assert tool_tasks[0].trace.status == "completed"
-    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "completed"
+    # write_file runs under the conversation's read_only boundary, so the approved
+    # call settles as a boundary failure instead of a stale awaiting_review node.
+    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "failed"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
