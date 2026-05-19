@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from dagent.config import load_config
 from dagent.factory import create_harness_runtime
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime import (
@@ -18,7 +20,9 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import template_capability_handler
+from dagent.profiles import ProfileStore
 from dagent.schemas import DAG, DAGRun, DAGSpec
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
@@ -46,11 +50,20 @@ class ApiState:
         self.harness_runtime: HarnessRuntime | None = None
         self.dag_specs: dict[str, DAGSpec] = {}
         self.dag_runs: dict[str, DAGRun] = {}
+        self.profile_directory: str | None = None
 
     def get_harness_runtime(self) -> HarnessRuntime:
         if self.harness_runtime is None:
             self.harness_runtime = create_harness_runtime(workspace_root=".")
         return self.harness_runtime
+
+    def get_profile_directory(self) -> str:
+        if self.profile_directory is not None:
+            return self.profile_directory
+        try:
+            return load_config().profiles.directory
+        except Exception:
+            return "profiles"
 
 
 state = ApiState()
@@ -236,6 +249,7 @@ async def delete_capability(capability_id: str) -> dict[str, str]:
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     runtime.capability_catalog.delete(capability_id)
+    _sync_runtime_toolsets(runtime)
     return {"status": "deleted"}
 
 
@@ -271,6 +285,24 @@ async def list_skills() -> dict[str, Any]:
     }
 
 
+@app.get("/profiles")
+async def list_profiles() -> dict[str, Any]:
+    directory = Path(state.get_profile_directory())
+    store = ProfileStore(directory)
+    profiles: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
+    if not directory.exists():
+        return {"profiles": [], "warnings": [{"name": str(directory), "error": "Profiles directory not found."}]}
+    for profile_dir in sorted((path for path in directory.iterdir() if path.is_dir()), key=lambda path: path.name):
+        if not (profile_dir / "profile.yaml").exists():
+            continue
+        try:
+            profiles.append(store.load(profile_dir.name).model_dump(mode="json"))
+        except Exception as exc:
+            warnings.append({"name": profile_dir.name, "error": str(exc)})
+    return {"profiles": profiles, "warnings": warnings}
+
+
 @app.get("/sandbox/status")
 async def sandbox_status() -> dict[str, Any]:
     runtime = state.get_harness_runtime()
@@ -283,10 +315,12 @@ async def sandbox_status() -> dict[str, Any]:
 
 def _install_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
     runtime.capability_catalog.register(definition, _handler_for_definition(definition))
+    _sync_runtime_toolsets(runtime)
 
 
 def _replace_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
     runtime.capability_catalog.replace(definition, _handler_for_definition(definition))
+    _sync_runtime_toolsets(runtime)
 
 
 def _handler_for_definition(definition: CapabilityDefinition):
@@ -305,6 +339,15 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
         raise HTTPException(status_code=404, detail="Capability not found.")
     updated = runtime.capability_catalog.set_enabled(capability_id, enabled)
     return {"capability": updated.model_dump(mode="json")}
+
+
+def _sync_runtime_toolsets(runtime: HarnessRuntime) -> None:
+    tool_adapter = CapabilityToolAdapter(
+        runtime.capability_catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(runtime.capability_catalog.ids())))],
+    )
+    runtime.tool_agent.loop.tool_adapter = tool_adapter
+    runtime.dag_agent.loop.tool_adapter = tool_adapter
 
 
 @app.post("/capabilities/{capability_id}/test")

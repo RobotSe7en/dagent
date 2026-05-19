@@ -19,11 +19,35 @@ export interface CapabilityInvocation {
   risk?: RiskLevel;
 }
 
+export interface CapabilityPolicy {
+  risk: RiskLevel;
+  requires_review: boolean;
+  sandbox_required: boolean;
+  network: boolean;
+  secrets: string[];
+}
+
+export interface CapabilityDefinition {
+  id: string;
+  name: string;
+  kind: CapabilityKind;
+  description: string;
+  parameters: Record<string, unknown>;
+  policy: CapabilityPolicy;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
 export interface DagNode {
   id: string;
+  title?: string;
+  goal?: string | null;
+  instructions?: string | null;
   invocation: CapabilityInvocation;
   node_type?: 'capability' | 'start';
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
+  inputs?: string[];
+  outputs?: string[];
 }
 
 export interface DagEdge {
@@ -46,6 +70,27 @@ export interface Dag {
     | 'aborted';
   nodes: DagNode[];
   edges: DagEdge[];
+}
+
+export interface DagSpec {
+  id: string;
+  name: string;
+  version?: number;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>;
+  nodes: DagNode[];
+  edges: DagEdge[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface DagRun {
+  run_id: string;
+  spec_id?: string | null;
+  workspace_path: string;
+  dag: Dag;
+  trace: RunTrace;
+  status: 'planned' | 'running' | 'completed' | 'failed';
 }
 
 export interface TraceLogEvent {
@@ -164,3 +209,21 @@ export interface ValidationFeedbackEvent {
   summary: string;
   issues: ValidationIssue[];
 }
+
+export interface AgentProfile {
+  name: string;
+  role: string;
+  description: string;
+  layers: string[];
+  layer_contents: Record<string, string>;
+  memory_file?: string | null;
+  memory: string;
+  output_format: string;
+}
+
+export interface ProfileWarning {
+  name: string;
+  error: string;
+}
+
+export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents';

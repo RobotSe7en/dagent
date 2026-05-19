@@ -312,6 +312,67 @@ def test_api_capability_status_endpoints() -> None:
     assert sandbox.json()["runner"] in {"local-dev", "container"}
 
 
+def test_api_profiles_lists_loaded_profile_layers(tmp_path, monkeypatch) -> None:
+    profile_dir = tmp_path / "profiles"
+    assistant_dir = profile_dir / "assistant"
+    assistant_dir.mkdir(parents=True)
+    (assistant_dir / "profile.yaml").write_text(
+        "name: assistant\n"
+        "role: helper\n"
+        "description: Helpful profile.\n"
+        "layers:\n"
+        "  - soul.md\n"
+        "memory_file: memory.md\n"
+        "output_format: text\n",
+        encoding="utf-8",
+    )
+    (assistant_dir / "soul.md").write_text("You are helpful.", encoding="utf-8")
+    (assistant_dir / "memory.md").write_text("Remember scope.", encoding="utf-8")
+    monkeypatch.setattr(state, "profile_directory", str(profile_dir))
+    client = TestClient(app)
+
+    response = client.get("/profiles")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["warnings"] == []
+    assert payload["profiles"] == [
+        {
+            "name": "assistant",
+            "role": "helper",
+            "description": "Helpful profile.",
+            "layers": ["soul.md"],
+            "layer_contents": {"soul.md": "You are helpful."},
+            "memory_file": "memory.md",
+            "memory": "Remember scope.",
+            "output_format": "text",
+        }
+    ]
+
+
+def test_api_profiles_skips_invalid_profile_with_warning(tmp_path, monkeypatch) -> None:
+    profile_dir = tmp_path / "profiles"
+    good_dir = profile_dir / "good"
+    bad_dir = profile_dir / "bad"
+    good_dir.mkdir(parents=True)
+    bad_dir.mkdir()
+    (good_dir / "profile.yaml").write_text(
+        "name: good\nrole: helper\nlayers: []\n",
+        encoding="utf-8",
+    )
+    (bad_dir / "profile.yaml").write_text("[not valid for a profile", encoding="utf-8")
+    monkeypatch.setattr(state, "profile_directory", str(profile_dir))
+    client = TestClient(app)
+
+    response = client.get("/profiles")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [profile["name"] for profile in payload["profiles"]] == ["good"]
+    assert len(payload["warnings"]) == 1
+    assert payload["warnings"][0]["name"] == "bad"
+
+
 def test_api_dag_spec_create_run_and_artifacts() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
@@ -375,6 +436,50 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     artifacts_response = client.get(f"/dag-runs/{run_payload['run_id']}/artifacts")
     assert artifacts_response.status_code == 200
     assert artifacts_response.json()["artifacts"]["note"]["paths"] == ["notes/output.txt"]
+
+
+def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_capability_response = client.post(
+        "/capabilities",
+        json={
+            "id": "custom_tool.upper",
+            "name": "upper",
+            "kind": "custom_tool",
+            "description": "Uppercase-ish text.",
+            "config": {"template": "upper:{text}"},
+        },
+    )
+    assert create_capability_response.status_code == 200
+
+    create_spec_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "custom_tool_dag",
+            "name": "Custom tool DAG",
+            "nodes": [
+                {
+                    "id": "call_custom",
+                    "invocation": {
+                        "capability_id": "custom_tool.upper",
+                        "kind": "custom_tool",
+                        "arguments": {"text": "ok"},
+                    },
+                }
+            ],
+            "edges": [],
+        },
+    )
+    assert create_spec_response.status_code == 200
+
+    run_response = client.post("/dag-specs/custom_tool_dag/run")
+
+    assert run_response.status_code == 200
+    payload = run_response.json()["dag_run"]
+    assert payload["status"] == "completed"
+    assert payload["trace"]["root"]["children"][0]["output"] == "upper:ok"
 
 
 def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:

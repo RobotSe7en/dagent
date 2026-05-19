@@ -1,4 +1,21 @@
-import type { Dag, ReviewLevel, ReviewEventPayload, CapabilityStreamEvent, TraceLogEvent, ValidationFeedbackEvent, RunTrace, RunTraceNode, RunTraceStatus } from './types';
+import type {
+  AgentProfile,
+  CapabilityDefinition,
+  CapabilityKind,
+  CapabilityResult,
+  DagRun,
+  DagSpec,
+  ProfileWarning,
+  Dag,
+  ReviewLevel,
+  ReviewEventPayload,
+  CapabilityStreamEvent,
+  TraceLogEvent,
+  ValidationFeedbackEvent,
+  RunTrace,
+  RunTraceNode,
+  RunTraceStatus,
+} from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -24,6 +41,83 @@ export async function setValidationEnabled(enabled: boolean): Promise<boolean> {
   return Boolean(data.enabled);
 }
 
+export async function listCapabilities(kind?: CapabilityKind): Promise<CapabilityDefinition[]> {
+  const suffix = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+  const res = await fetch(`${API_BASE}/capabilities${suffix}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.capabilities ?? [];
+}
+
+export async function createCapability(definition: CapabilityDefinition): Promise<CapabilityDefinition> {
+  const res = await fetch(`${API_BASE}/capabilities`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(definition),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.capability;
+}
+
+export async function setCapabilityEnabled(capabilityId: string, enabled: boolean): Promise<CapabilityDefinition> {
+  const res = await fetch(`${API_BASE}/capabilities/${encodeURIComponent(capabilityId)}/${enabled ? 'enable' : 'disable'}`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.capability;
+}
+
+export async function deleteCapability(capabilityId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/capabilities/${encodeURIComponent(capabilityId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function testCapability(
+  capabilityId: string,
+  argumentsValue: Record<string, unknown>,
+): Promise<CapabilityResult> {
+  const res = await fetch(`${API_BASE}/capabilities/${encodeURIComponent(capabilityId)}/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ arguments: argumentsValue }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.result;
+}
+
+export async function listDagSpecs(): Promise<DagSpec[]> {
+  const res = await fetch(`${API_BASE}/dag-specs`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.dag_specs ?? [];
+}
+
+export async function saveDagSpec(spec: DagSpec): Promise<DagSpec> {
+  const res = await fetch(`${API_BASE}/dag-specs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.dag_spec;
+}
+
+export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnings: ProfileWarning[] }> {
+  const res = await fetch(`${API_BASE}/profiles`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    profiles: data.profiles ?? [],
+    warnings: data.warnings ?? [],
+  };
+}
+
 interface DonePayload {
   status?: string;
   task_id: string | null;
@@ -31,6 +125,11 @@ interface DonePayload {
   pending_review?: ReviewEventPayload | null;
   final_answer: string;
   trace?: RunTrace | null;
+}
+
+interface DagRunDonePayload {
+  status?: string;
+  dag_run: DagRun;
 }
 
 export async function streamTask(
@@ -119,6 +218,53 @@ export async function resumeDagReview(
     throw new Error(await errorMessage(response));
   }
   await readStream(response, handlers);
+}
+
+export async function runDagSpecStream(
+  specId: string,
+  handlers: {
+    onStatus?: (status: string) => void;
+    onTrace?: (event: TraceLogEvent) => void;
+    onCapability?: (event: CapabilityStreamEvent) => void;
+    onToken?: (content: string) => void;
+    onDone?: (payload: DagRunDonePayload) => void;
+    onError?: (message: string) => void;
+  },
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/dag-specs/${encodeURIComponent(specId)}/run/stream`, {
+    method: 'POST',
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage(response));
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const seenTraceIds = new Set<string>();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() ?? '';
+    for (const frame of frames) {
+      const line = frame.split('\n').find((item) => item.startsWith('data: '));
+      if (!line) continue;
+      const event = JSON.parse(line.slice(6));
+      if (event.type === 'status') handlers.onStatus?.(event.message);
+      if (event.type === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
+      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
+        handlers.onCapability?.(event);
+      }
+      if (event.type === 'token') handlers.onToken?.(event.content);
+      if (event.type === 'done') {
+        if (event.dag_run?.trace) emitTraceSnapshot(event.dag_run.trace, handlers.onTrace, seenTraceIds);
+        handlers.onDone?.(event);
+      }
+      if (event.type === 'error') handlers.onError?.(event.message);
+    }
+  }
 }
 
 async function readStream(
