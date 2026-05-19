@@ -351,6 +351,45 @@ def test_dag_agent_execute_rejects_capability_outside_enabled_toolset() -> None:
         )
 
 
+def test_dag_agent_execute_rejects_entry_observation_without_replanning() -> None:
+    provider = MockProvider([])
+    capability_executor = CapabilityExecutor(CapabilityCatalog())
+    loop = DAGAgentLoop(
+        provider=provider,
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=CapabilityToolAdapter(
+            capability_executor.catalog,
+            toolsets=[CapabilityToolset("builtin", ())],
+        ),
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            DAGNode(
+                id="start",
+                node_type="start",
+                invocation=CapabilityInvocation(capability_id="", kind="tool"),
+            )
+        ],
+    )
+    record = RuntimeTaskRecord.dag_task(
+        task_id="task_1",
+        user_request="plan",
+        dag=dag,
+    )
+
+    with pytest.raises(TypeError, match="entry_observation requires replan=True"):
+        asyncio.run(
+            loop.execute(
+                record,
+                replan=False,
+                entry_observation="plan this",
+            )
+        )
+
+
 def _dag_agent_profile() -> AgentProfile:
     return AgentProfile(
         name="dag_agent",

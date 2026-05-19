@@ -205,6 +205,18 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     assert runtime.tasks[result.task_id].runtime_mode == "dag"
 
 
+def test_harness_runtime_dag_mode_direct_answer_does_not_expose_seed_dag() -> None:
+    provider = MockProvider([ChatResponse(content="A direct answer.")])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Answer directly if no DAG is needed.", mode="dag"))
+
+    assert result.status == "completed"
+    assert result.final_answer == "A direct answer."
+    assert result.dag is None
+    assert result.events == []
+
+
 def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
     provider = MockProvider([
         ChatResponse(content="dag"),           # _route()
@@ -267,6 +279,26 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
         "user",
     ]
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
+
+
+def test_harness_runtime_retries_denied_dag_review_continuation_with_validation_feedback() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="inspect = missing_tool()"),
+        ChatResponse(content="I will stop instead of applying that DAG."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=False))
+
+    assert result.status == "awaiting_review"
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "I will stop instead of applying that DAG."
+    assert len(provider.requests) == 3
+    retry_content = provider.requests[2]["messages"][-1]["content"]
+    assert "DAG observation: validation_error" in retry_content
+    assert "Unknown capability function 'missing_tool'" in retry_content
 
 
 def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
