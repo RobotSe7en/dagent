@@ -4,9 +4,9 @@
 
 **dagent** is a *Dynamic DAG Agent* framework. It can run a request through a
 bounded tool-using agent, or through a planner that creates and executes a
-reviewable tool-node DAG. The runtime keeps those modes separate: each agent owns
-its own message thread, while the harness stores structured task, review, and
-execution state.
+reviewable capability-node DAG. The runtime keeps those modes separate: each
+agent owns its own message thread, while the harness stores structured task,
+review, and execution state.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
@@ -14,7 +14,7 @@ task that needs orchestration gets a reviewable, auditable plan up front. That p
 can evolve from DAG observations as execution proceeds, while completed tool results
 remain structured execution records.
 
-> **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
+> **Design origin:** The self-planning dynamic DAG agent loop - capability-node DAG with
 > three-level incremental re-planning, Trace DB as the long-term context boundary,
 > human review checkpoints, DAG-vs-tool task routing, and resumable execution - was
 > conceived and first implemented by the author of this repository. First committed:
@@ -25,13 +25,15 @@ remain structured execution records.
 ## Core Ideas
 
 **1. Self-planning DAG, not a static pipeline.**
-The DAG agent generates an initial tool-node plan from the goal. After each executable
-layer, the planner receives a DAG observation and can return `NO_CHANGE`, a revised
-DAG, or the final answer.
+The DAG agent generates an initial capability-node plan from the goal. After each
+executable layer, the planner receives a DAG observation and can return `NO_CHANGE`,
+a revised DAG, or the final answer.
 
-**2. Tool nodes, not agent nodes.**
-Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
-nodes, not inside them. Nodes are cheap, testable, and auditable.
+**2. Capability nodes, direct planner nodes.**
+Every DAG node is a `CapabilityInvocation` executed by `CapabilityExecutor`. The
+dynamic DAG planner currently emits direct, non-agent capability calls from enabled
+toolsets; `DAGSpec` runtime can execute agent capabilities, but the planner does not
+generate agent nodes yet.
 
 **3. Three-level re-planning.**
 The current implementation covers three levels in one execution path: placeholder
@@ -137,7 +139,10 @@ without a separate summarization step.
 ### Three-Level Re-planning
 
 After each ready layer executes, `DAGAgentLoop` formats a DAG observation and appends it
-to `DAGAgent.messages`. Re-planning is implemented as three levels:
+to `DAGAgent.messages`. The observation includes each recent node's id, capability
+function, arguments, status, and result/error content so the planner does not need to
+recover execution facts from transcript history. Re-planning is implemented as three
+levels:
 
 | Level | Current implementation | Meaning |
 |-------|------------------------|---------|

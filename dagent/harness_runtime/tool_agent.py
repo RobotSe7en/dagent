@@ -298,11 +298,23 @@ class ToolAgentLoop:
                 )
 
             for tool_call in response.tool_calls:
-                invocation = self.tool_adapter.invocation_from_tool_call(
-                    tool_call,
-                    boundary,
-                    enabled_toolsets=self.enabled_toolsets,
-                )
+                try:
+                    invocation = self.tool_adapter.invocation_from_tool_call(
+                        tool_call,
+                        boundary,
+                        enabled_toolsets=self.enabled_toolsets,
+                    )
+                except KeyError as exc:
+                    error_content = f"[TOOL_ERROR] {_exception_message(exc)}"
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": error_content,
+                        }
+                    )
+                    continue
                 invocations.append(invocation)
                 self._emit_capability_event(on_event, invocation, "capability_call")
                 if control_tool_names and tool_call.name in control_tool_names:
@@ -584,6 +596,12 @@ def _tool_content(result: CapabilityResult) -> str:
         return result.content
     prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
     return f"{prefix} {result.error or result.content}"
+
+
+def _exception_message(exc: Exception) -> str:
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:

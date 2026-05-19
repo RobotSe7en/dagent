@@ -15,7 +15,16 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation, RunTrace, RunTraceNode
+from dagent.schemas import (
+    Boundary,
+    CapabilityDefinition,
+    CapabilityInvocation,
+    DAG,
+    DAGEdge,
+    DAGNode,
+    RunTrace,
+    RunTraceNode,
+)
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.registry import ToolRegistry
 
@@ -101,7 +110,12 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
     )
 
 
-def dag_dsl_from_dag(dag: DAG) -> str:
+def dag_dsl_from_dag(
+    dag: DAG,
+    *,
+    tool_adapter: CapabilityToolAdapter,
+    enabled_toolsets: tuple[str, ...] = ("builtin",),
+) -> str:
     lines = []
     for node in dag.nodes:
         if node.node_type == "start":
@@ -109,7 +123,12 @@ def dag_dsl_from_dag(dag: DAG) -> str:
         deps = [e.source for e in dag.edges if e.target == node.id and e.source != "start"]
         deps_str = f" after {', '.join(deps)}" if deps else ""
         args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
-        lines.append(f'{node.id} = {_tool_name_from_capability(node.invocation.capability_id)}({args}){deps_str}')
+        tool_name = _tool_name_from_capability(
+            node.invocation.capability_id,
+            tool_adapter=tool_adapter,
+            enabled_toolsets=enabled_toolsets,
+        )
+        lines.append(f'{node.id} = {tool_name}({args}){deps_str}')
     return "\n".join(lines)
 
 
@@ -233,8 +252,55 @@ def _start_node() -> DAGNode:
     )
 
 
-def _tool_name_from_capability(capability_id: str) -> str:
-    return capability_id.removeprefix("tool.")
+def _tool_name_from_capability(
+    capability_id: str,
+    *,
+    tool_adapter: CapabilityToolAdapter,
+    enabled_toolsets: tuple[str, ...] = ("builtin",),
+) -> str:
+    return tool_adapter.function_name_for_capability(
+        capability_id,
+        enabled_toolsets=enabled_toolsets,
+    )
+
+
+def test_dag_dsl_from_dag_uses_adapter_names_for_non_tool_capabilities() -> None:
+    catalog = CapabilityCatalog()
+    catalog.register(
+        CapabilityDefinition(
+            id="custom.remote-search",
+            name="remote_search",
+            kind="custom_tool",
+        ),
+        lambda **_: None,
+    )
+    tool_adapter = CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("custom", ("custom.remote-search",))],
+    )
+    dag = DAG(
+        dag_id="dag_custom",
+        task_id="task_custom",
+        nodes=[
+            _start_node(),
+            DAGNode(
+                id="search",
+                invocation=CapabilityInvocation(
+                    capability_id="custom.remote-search",
+                    kind="custom_tool",
+                    arguments={"query": "status"},
+                ),
+            ),
+        ],
+    )
+
+    dsl = dag_dsl_from_dag(
+        dag,
+        tool_adapter=tool_adapter,
+        enabled_toolsets=("custom",),
+    )
+
+    assert dsl == "search = remote_search(query='status')"
 
 
 
@@ -412,6 +478,14 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
 
     assert result.status == "completed"
     assert dag_node_trace(result, "answer").output == "echo:adjusted_value"
+    request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
+    assert "Node executions:" in request
+    assert "- node: inspect" in request
+    assert "  tool: tool.echo" in request
+    assert '  args: {"text": "discovered_path"}' in request
+    assert "  status: completed" in request
+    assert "  content:" in request
+    assert "echo:discovered_path" in request
 
 
 def test_harness_runtime_careful_reviews_replan_changes() -> None:
@@ -453,6 +527,9 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    executor = DAGExecutor(capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_failure_replan",
         task_id="task_failure_replan",
@@ -471,11 +548,14 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
         edges=[],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([
-            ChatResponse(content=dag_dsl_from_dag(replacement)),
-            ChatResponse(content="Recovery complete."),
-        ])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        dag_agent_loop=dag_loop_for(
+            MockProvider([
+                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content="Recovery complete."),
+            ]),
+            executor=executor,
+        ),
+        executor=executor,
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -491,7 +571,12 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     assert result.status == "completed"
     assert dag_node_trace(result, "fallback").output == "echo:recovered"
     request = runtime.dag_agent.loop.provider.requests[0]["messages"][-1]["content"]
-    assert "try_bad_tool" in request
+    assert "Node executions:" in request
+    assert "- node: try_bad_tool" in request
+    assert "  tool: tool.fail_tool" in request
+    assert '  args: {"text": "boom"}' in request
+    assert "  status: failed" in request
+    assert "  content:" in request
     assert "failed:boom" in request
     assert "User request:" not in request
 
@@ -667,6 +752,9 @@ def test_harness_runtime_pauses_when_dag_agent_fails_after_tool_error() -> None:
 
 
 def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None:
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    executor = DAGExecutor(capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_stale_trace",
         task_id="task_stale_trace",
@@ -685,8 +773,11 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
         edges=[],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement))])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        dag_agent_loop=dag_loop_for(
+            MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter))]),
+            executor=executor,
+        ),
+        executor=executor,
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(
@@ -707,6 +798,9 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
 
 def test_harness_runtime_patches_failed_node_and_retries() -> None:
     """When a node fails but replan patches its args, execution retries with new args."""
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    executor = DAGExecutor(capability_executor=capability_executor)
     initial = DAG(
         dag_id="dag_patch_retry",
         task_id="task_patch_retry",
@@ -725,11 +819,14 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
         edges=[],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([
-            ChatResponse(content=dag_dsl_from_dag(replacement)),
-            ChatResponse(content="Patched and completed."),
-        ])),
-        executor=DAGExecutor(capability_executor=make_capability_executor()),
+        dag_agent_loop=dag_loop_for(
+            MockProvider([
+                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content="Patched and completed."),
+            ]),
+            executor=executor,
+        ),
+        executor=executor,
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
     record = RuntimeTaskRecord.dag_task(

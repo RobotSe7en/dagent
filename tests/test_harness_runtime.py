@@ -603,6 +603,28 @@ def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
     assert result.final_answer == "The answer."
 
 
+def test_tool_agent_loop_returns_tool_error_for_unknown_tool_call() -> None:
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_unknown", name="missing_tool", arguments={"text": "hi"}),
+        ]),
+        ChatResponse(content="recovered"),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Use the right tool.", mode="tool"))
+
+    assert result.status == "completed"
+    assert result.final_answer == "recovered"
+    retry_messages = provider.requests[1]["messages"]
+    assert retry_messages[-1]["role"] == "tool"
+    assert retry_messages[-1]["tool_call_id"] == "call_unknown"
+    assert retry_messages[-1]["name"] == "missing_tool"
+    assert "[TOOL_ERROR]" in retry_messages[-1]["content"]
+    assert "missing_tool" in retry_messages[-1]["content"]
+    assert "Available tools:" in retry_messages[-1]["content"]
+
+
 def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> None:
     capability_executor = make_capability_executor()
     provider = MockProvider([

@@ -6,12 +6,12 @@ This file is for continuing work from another session or machine.
 
 - GitHub: https://github.com/RobotSe7en/dagent.git
 - Base branch: `main`
-- Active branch: `codex/runnable-platform`
+- Active branch: `codex/analyze-unified-node-plan-a`
 - Latest notable code commits before this documentation refresh:
-  - `02b2db6 Tighten capability toolset boundaries`
-  - `376eb0c Add capability toolset adapter`
-  - `b97d041 Refine capability runtime architecture`
-  - `cb567f7 refactor: rename runnable platform to capabilities`
+  - `e2ec1cf Unify dynamic DAG planning loop`
+  - `aba6f02 refactor: tidy run-trace plumbing and settle awaiting-review nodes`
+  - `0574e4b refactor: unify runtime trace and dag loop model`
+  - `f25589d Implement agent node DAGSpec runtime`
 
 If GitHub access is unstable, use the local Clash proxy:
 
@@ -141,7 +141,8 @@ DAG mode:
 DAGAgent.run()
   -> appends user request to DAGAgent.messages
   -> DAGAgentLoop.run_dynamic()
-  -> _request_dag() sends DAGAgent.messages and parses PlanSpec DSL via dag_builder.py
+  -> seed a start-only DAG and enter execute(entry_observation=request, replan=True)
+  -> first _request_dag() parses PlanSpec DSL via dag_builder.py
      using CapabilityToolAdapter-provided function names
   -> prepare_for_review(): normalize + validate_dag + enabled capability/toolset check
   -> optional human review
@@ -176,7 +177,12 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 ## Key Design Decisions
 
 - **Capability-node DAG**: every DAG node is a direct capability invocation.
-  Intelligence lives in the planner/replanner, not inside node agents.
+  Intelligence lives in the planner/replanner. `DAGSpec` runtime can execute enabled
+  agent capabilities, but the dynamic DAG planner prompt currently should not emit
+  agent nodes.
+- **Unknown tool calls recover through protocol messages**: if a provider returns a
+  hallucinated or disabled tool name, `ToolAgentLoop` appends a protocol-correct
+  `role="tool"` error for that `tool_call_id` and lets the model recover.
 - **Toolset adapter is the only LLM tool schema path**: tool mode and DAG mode both
   use `CapabilityToolAdapter`; there is no `extra_tools` side channel.
 - **No capability id guessing in DAG builder**: PlanSpec functions must match the
@@ -200,9 +206,10 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 - **Agent-owned transcripts**: the runtime does not merge cross-mode history. A session
   is expected to use one active mode; follow-up context lives in the active agent's
   own message thread.
-- **Validation evidence budget**: validation context uses larger evidence excerpts
-  than display summaries. Tool and node result excerpts are capped at 4000 chars, the
-  overall execution context at 16000 chars, and truncation is marked.
+- **Observation/evidence budget**: DAG observations include recent node execution
+  facts as node id, capability function, args, status, and content/error details.
+  Tool and node result excerpts are capped at 4000 chars, capability args at 2000
+  chars, the overall execution context at 16000 chars, and truncation is marked.
 - **No compatibility shims**: old files and names were removed rather than aliased.
 
 ## Configuration
@@ -314,18 +321,13 @@ current `Capability` / `Toolset` naming and module structure.
 
 ## Suggested Next Work
 
-- Fix unknown/hallucinated tool calls in `ToolAgentLoop`: now that `extra_tools` is
-  removed, adapter-owned calls are the only valid path, but an unexpected provider
-  tool call can still surface as a `KeyError`. Prefer appending a protocol-correct
-  `role="tool"` error message for that `tool_call_id` so the loop can recover.
 - Decide whether `ToolCall` should move out of `dagent.providers` into `dagent.schemas`
   or a tiny protocol type. `dagent/capabilities/toolsets.py` currently imports the
   provider DTO, which is workable but still a mild boundary smell.
-- Review DAG replanning DSL serialization helpers that still assume `tool.*` names.
-  They are not the same bug as tool review resume, but future non-tool DAG capabilities
-  may need adapter-based name rendering there too.
 - Start wiring first real non-tool capability providers end-to-end: MCP discovery/call,
   skill execution, shell command templates, memory/file operations, and agent templates.
+  Keep dynamic DAG planner support for agent nodes out of scope until the planner
+  prompt, review surface, budgets, and trace display are designed together.
 - Add API/web surfaces for capability/toolset listing, enabled toolsets, and node
   configuration so frontend DAG nodes select from capability functions rather than
   free-typing names.

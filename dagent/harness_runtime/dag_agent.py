@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 from pathlib import Path
 from typing import Any, Sequence
 from uuid import uuid4
@@ -45,6 +46,7 @@ from dagent.state import PromptBuilder, PromptRequest
 
 MAX_EXECUTION_CONTEXT_CHARS = 16000
 MAX_NODE_RESULT_CONTEXT_CHARS = 4000
+MAX_CAPABILITY_ARGS_CONTEXT_CHARS = 2000
 
 
 class DAGAgent:
@@ -782,7 +784,7 @@ def _format_dag_observation(
         return "\n\n".join(sections)
 
     completed = [
-        f"- {node_id}: {str(node_trace.output or '').strip()[:500]}"
+        f"- {node_id}: {_context_excerpt(str(node_trace.output or '').strip(), limit=MAX_NODE_RESULT_CONTEXT_CHARS)}"
         for node_id, node_trace in _completed_node_traces(record).items()
     ]
     if completed:
@@ -792,11 +794,14 @@ def _format_dag_observation(
     if last_error:
         sections.append(f"Error:\n{last_error}")
 
-    recent = _recent_capability_summaries(record.trace, limit=6)
-    if recent:
-        sections.append("Recent capability executions:\n" + "\n".join(recent))
+    executions = _format_recent_capability_executions(record.trace, limit=6)
+    if executions:
+        sections.append("Node executions:\n" + "\n".join(executions))
 
-    return "\n\n".join(sections)
+    return _context_excerpt(
+        "\n\n".join(sections),
+        limit=MAX_EXECUTION_CONTEXT_CHARS,
+    )
 
 
 def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str:
@@ -1072,26 +1077,79 @@ def _failed_node_ids_from_trace(
     }
 
 
-def _recent_capability_summaries(trace: RunTrace | None, *, limit: int) -> list[str]:
+def _format_recent_capability_executions(trace: RunTrace | None, *, limit: int) -> list[str]:
     if trace is None:
         return []
-    summaries: list[str] = []
+    executions: list[str] = []
 
     def visit(node: RunTraceNode, current_node_id: str | None = None) -> None:
         next_node_id = node.ref.get("node_id") if node.kind == "dag_node" else current_node_id
         if node.kind == "capability_call" and node.capability_execution is not None:
             invocation = node.capability_execution.invocation
-            detail = f"- {next_node_id or '<tool>'} ({invocation.capability_id}): {node.status}"
-            if node.error is not None:
-                detail += f" error={node.error.message}"
-            elif node.capability_execution.result and node.capability_execution.result.error:
-                detail += f" error={node.capability_execution.result.error}"
-            summaries.append(detail)
+            result = node.capability_execution.result
+            args = _context_excerpt(
+                json.dumps(invocation.arguments, ensure_ascii=False, sort_keys=True),
+                limit=MAX_CAPABILITY_ARGS_CONTEXT_CHARS,
+            )
+            content = _capability_execution_content(node)
+            detail = [
+                f"- node: {next_node_id or '<tool>'}",
+                f"  tool: {invocation.capability_id}",
+                f"  args: {args}",
+                f"  status: {node.status}",
+            ]
+            if content:
+                detail.extend([
+                    "  content:",
+                    *_indent_block(content, prefix="    "),
+                ])
+            elif result is not None:
+                detail.extend([
+                    "  content:",
+                    "    ",
+                ])
+            executions.append("\n".join(detail))
         for child in node.children:
             visit(child, next_node_id)
 
     visit(trace.root)
-    return summaries[-limit:]
+    return executions[-limit:]
+
+
+def _capability_execution_content(node: RunTraceNode) -> str:
+    parts: list[str] = []
+    result = node.capability_execution.result if node.capability_execution else None
+    if result is not None:
+        parts.extend([
+            result.content,
+            result.error,
+            result.stdout,
+            result.stderr,
+        ])
+    parts.extend([
+        str(node.output or ""),
+        node.error.message if node.error else "",
+    ])
+    return _context_excerpt(
+        "\n".join(_unique_nonempty(parts)),
+        limit=MAX_NODE_RESULT_CONTEXT_CHARS,
+    )
+
+
+def _unique_nonempty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
+
+
+def _indent_block(text: str, *, prefix: str) -> list[str]:
+    return [f"{prefix}{line}" if line else prefix.rstrip() for line in text.splitlines()]
 
 
 def _invalidate_node_results(record: RuntimeTaskRecord, node_id: str) -> None:
