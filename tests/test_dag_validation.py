@@ -23,10 +23,13 @@ from dagent.tools.registry import ToolRegistry
 def make_node(node_id: str) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=CapabilityInvocation(
-            capability_id="tool.echo",
-            kind="tool",
-            arguments={"text": node_id},
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id="tool.echo",
+                kind="tool",
+                arguments={"text": node_id},
+            ),
         ),
     )
 
@@ -67,7 +70,10 @@ def test_agent_nodes_are_rejected_for_executable_dags() -> None:
         nodes=[
             DAGNode(
                 id="reason",
-                invocation=CapabilityInvocation(capability_id="", kind="tool"),
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(capability_id="", kind="tool"),
+                ),
             )
         ],
     )
@@ -135,8 +141,11 @@ def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
 
     start = dag.nodes[0]
     assert start.id == "start"
-    assert start.node_type == "start"
-    assert start.invocation.capability_id == ""
+    assert start.payload.type == "start"
+    dumped = start.model_dump(mode="json")
+    assert dumped["payload"] == {"type": "start"}
+    assert "node_type" not in dumped
+    assert "invocation" not in dumped
     assert {edge.source for edge in dag.edges} == {"start"}
     assert {edge.target for edge in dag.edges} == {"a", "b"}
     validate_dag(dag)
@@ -179,28 +188,43 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     )
 
     node = dag.nodes[0]
-    assert node.invocation.capability_id == "file.read"
-    assert node.invocation.kind == "file"
+    assert node.payload.invocation.capability_id == "file.read"
+    assert node.payload.invocation.kind == "file"
 
 
-def test_compile_plan_spec_preserves_node_goal_and_instructions() -> None:
+def test_plan_spec_rejects_node_goal_and_instructions() -> None:
+    with pytest.raises(ValueError):
+        PlanSpec.model_validate({
+            "task": "requirements",
+            "nodes": [
+                {
+                    "id": "write_requirements",
+                    "tool": "echo",
+                    "args": {"text": "ok"},
+                    "goal": "Write a requirement specification.",
+                    "instructions": "Use acceptance criteria.",
+                }
+            ],
+        })
+
+
+def test_compile_plan_spec_preserves_agent_prompt_argument() -> None:
     plan = PlanSpec.model_validate({
         "task": "requirements",
         "nodes": [
             {
                 "id": "write_requirements",
-                "tool": "echo",
-                "args": {"text": "ok"},
-                "goal": "Write a requirement specification.",
-                "instructions": "Use acceptance criteria.",
+                "tool": "helper",
+                "args": {"prompt": "Write a requirement specification. Use acceptance criteria."},
             }
         ],
     })
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("helper", "agent.helper", kind="agent")])
 
-    assert dag.nodes[0].goal == "Write a requirement specification."
-    assert dag.nodes[0].instructions == "Use acceptance criteria."
+    assert dag.nodes[0].payload.invocation.arguments == {
+        "prompt": "Write a requirement specification. Use acceptance criteria."
+    }
 
 
 def test_dag_must_be_acyclic() -> None:
@@ -265,8 +289,8 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.invocation.capability_id for node in dag.nodes] == ["tool.run_command"]
-    assert [node.invocation.risk for node in dag.nodes] == ["low"]
+    assert [node.payload.invocation.capability_id for node in dag.nodes] == ["tool.run_command"]
+    assert [node.payload.invocation.risk for node in dag.nodes] == ["low"]
 
 
 def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
@@ -291,10 +315,13 @@ def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
         nodes=[
             DAGNode(
                 id="write",
-                invocation=CapabilityInvocation(
-                    capability_id="tool.write_file",
-                    kind="tool",
-                    arguments={"path": "notes.txt", "content": "hi"},
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="tool.write_file",
+                        kind="tool",
+                        arguments={"path": "notes.txt", "content": "hi"},
+                    ),
                 ),
             )
         ],
@@ -327,10 +354,13 @@ def test_dag_agent_execute_rejects_capability_outside_enabled_toolset() -> None:
         nodes=[
             DAGNode(
                 id="write",
-                invocation=CapabilityInvocation(
-                    capability_id="tool.write_file",
-                    kind="tool",
-                    arguments={"path": "notes.txt", "content": "hi"},
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="tool.write_file",
+                        kind="tool",
+                        arguments={"path": "notes.txt", "content": "hi"},
+                    ),
                 ),
             )
         ],
@@ -369,8 +399,7 @@ def test_dag_agent_execute_rejects_entry_observation_without_replanning() -> Non
         nodes=[
             DAGNode(
                 id="start",
-                node_type="start",
-                invocation=CapabilityInvocation(capability_id="", kind="tool"),
+                payload=dict(type="start"),
             )
         ],
     )

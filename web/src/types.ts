@@ -38,13 +38,21 @@ export interface CapabilityDefinition {
   enabled: boolean;
 }
 
+export interface CapabilityNodePayload {
+  type: 'capability';
+  invocation: CapabilityInvocation;
+}
+
+export interface StartNodePayload {
+  type: 'start';
+}
+
+export type DagNodePayload = CapabilityNodePayload | StartNodePayload;
+
 export interface DagNode {
   id: string;
   title?: string;
-  goal?: string | null;
-  instructions?: string | null;
-  invocation: CapabilityInvocation;
-  node_type?: 'capability' | 'start';
+  payload: DagNodePayload;
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
   inputs?: string[];
   outputs?: string[];
@@ -78,9 +86,17 @@ export interface DagSpec {
   version?: number;
   description?: string;
   input_schema?: Record<string, unknown>;
-  artifacts?: Record<string, unknown>;
+  artifacts?: Record<string, Artifact>;
   nodes: DagNode[];
   edges: DagEdge[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface Artifact {
+  id: string;
+  paths: string[];
+  description?: string;
+  required?: boolean;
   metadata?: Record<string, unknown>;
 }
 

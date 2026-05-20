@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from dagent.config import load_config
 from dagent.factory import create_harness_runtime
 from dagent.harness_runtime.dag_builder import validate_dag_spec
+from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime import (
     HarnessRuntime,
     RuntimeMode,
@@ -45,11 +46,16 @@ class CapabilityTestRequest(BaseModel):
     boundary: dict[str, Any] | None = None
 
 
+class DAGSpecRunRequest(BaseModel):
+    workspace_root: str | None = None
+
+
 class ApiState:
     def __init__(self) -> None:
         self.harness_runtime: HarnessRuntime | None = None
         self.dag_specs: dict[str, DAGSpec] = {}
         self.dag_runs: dict[str, DAGRun] = {}
+        self.dag_spec_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
 
     def get_harness_runtime(self) -> HarnessRuntime:
@@ -99,6 +105,7 @@ async def reset_session() -> dict[str, str]:
     state.harness_runtime = None
     state.dag_specs.clear()
     state.dag_runs.clear()
+    state.dag_spec_artifact_uploads.clear()
     return {"status": "ok"}
 
 
@@ -119,6 +126,7 @@ async def create_dag_spec(spec: DAGSpec) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.dag_specs[spec.id] = spec.model_copy(deep=True)
+    _prune_artifact_uploads(spec)
     return {"dag_spec": spec.model_dump(mode="json")}
 
 
@@ -130,22 +138,57 @@ async def get_dag_spec(spec_id: str) -> dict[str, Any]:
     return {"dag_spec": spec.model_dump(mode="json")}
 
 
+@app.post("/dag-specs/{spec_id}/artifacts/{artifact_id}/upload")
+async def upload_dag_spec_artifact(
+    spec_id: str,
+    artifact_id: str,
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    spec = state.dag_specs.get(spec_id)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+    if artifact_id not in spec.artifacts:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one file is required.")
+
+    uploads: list[ArtifactUpload] = []
+    for file in files:
+        content = await file.read()
+        uploads.append(
+            ArtifactUpload(
+                filename=file.filename or "upload",
+                content=content,
+            )
+        )
+    state.dag_spec_artifact_uploads.setdefault(spec_id, {})[artifact_id] = uploads
+    return {
+        "artifact_id": artifact_id,
+        "files": [upload.filename for upload in uploads],
+    }
+
+
 @app.post("/dag-specs/{spec_id}/run")
-async def run_dag_spec(spec_id: str) -> dict[str, Any]:
+async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -> dict[str, Any]:
     spec = state.dag_specs.get(spec_id)
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
 
-    dag_run = await state.get_harness_runtime().run_dag_spec(spec)
+    dag_run = await state.get_harness_runtime().run_dag_spec(
+        spec,
+        workspace_root=_workspace_root_from_request(request),
+        artifact_uploads=_artifact_uploads_for_spec(spec_id),
+    )
     state.dag_runs[dag_run.run_id] = dag_run
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 
 @app.post("/dag-specs/{spec_id}/run/stream")
-async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
+async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = None) -> StreamingResponse:
     spec = state.dag_specs.get(spec_id)
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
+    workspace_root = _workspace_root_from_request(request)
 
     async def events():
         yield _sse({"type": "status", "message": "dag_spec_run_started"})
@@ -160,6 +203,8 @@ async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
         task = asyncio.create_task(
             state.get_harness_runtime().run_dag_spec(
                 spec,
+                workspace_root=workspace_root,
+                artifact_uploads=_artifact_uploads_for_spec(spec_id),
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -190,6 +235,28 @@ async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
         )
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _workspace_root_from_request(request: DAGSpecRunRequest | None) -> str:
+    if request is None or request.workspace_root is None or not request.workspace_root.strip():
+        return ".dagent-runs"
+    return request.workspace_root.strip()
+
+
+def _artifact_uploads_for_spec(spec_id: str) -> dict[str, list[ArtifactUpload]]:
+    return {
+        artifact_id: list(uploads)
+        for artifact_id, uploads in state.dag_spec_artifact_uploads.get(spec_id, {}).items()
+    }
+
+
+def _prune_artifact_uploads(spec: DAGSpec) -> None:
+    uploads = state.dag_spec_artifact_uploads.get(spec.id)
+    if not uploads:
+        return
+    for artifact_id in list(uploads):
+        if artifact_id not in spec.artifacts:
+            del uploads[artifact_id]
 
 
 @app.get("/dag-runs/{run_id}")

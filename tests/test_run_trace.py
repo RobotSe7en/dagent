@@ -64,10 +64,13 @@ def test_dag_executor_returns_run_trace_tree_for_ready_layer() -> None:
         nodes=[
             DAGNode(
                 id="echo",
-                invocation=CapabilityInvocation(
-                    capability_id="tool.echo",
-                    kind="tool",
-                    arguments={"text": "hi"},
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="tool.echo",
+                        kind="tool",
+                        arguments={"text": "hi"},
+                    ),
                 ),
             )
         ],
@@ -148,7 +151,10 @@ def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
         nodes=[
             DAGNode(
                 id="agent_node",
-                invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                ),
             )
         ],
     )

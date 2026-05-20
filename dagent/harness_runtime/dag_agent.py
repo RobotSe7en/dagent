@@ -9,7 +9,12 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
-from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
+from dagent.harness_runtime.artifacts import (
+    ArtifactUpload,
+    create_run_workspace,
+    init_artifact_states,
+    materialize_artifact_uploads,
+)
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -35,10 +40,12 @@ from dagent.schemas import (
     LoopStatus,
     PendingReview,
     CapabilityDefinition,
+    CapabilityNodePayload,
     CapabilityInvocation,
     RunTrace,
     RunTraceNode,
     RunTraceStatus,
+    StartNodePayload,
 )
 from dagent.schemas.node import NodeStatus
 from dagent.state import PromptBuilder, PromptRequest
@@ -238,6 +245,7 @@ class DAGAgentLoop:
         spec: DAGSpec,
         *,
         workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -251,6 +259,18 @@ class DAGAgentLoop:
         dag = self.prepare_for_review(dag)
         workspace = create_run_workspace(workspace_root)
         artifact_states = init_artifact_states(spec.artifacts)
+        materialized_artifact_ids = materialize_artifact_uploads(
+            artifact_uploads or {},
+            artifacts=spec.artifacts,
+            workspace_path=workspace,
+        )
+        for artifact_id in materialized_artifact_ids:
+            artifact = spec.artifacts[artifact_id]
+            artifact_states[artifact_id] = ArtifactState(
+                id=artifact.id,
+                paths=list(artifact.paths),
+                status="created",
+            )
         dag.status = "approved"
         record = RuntimeTaskRecord.dag_task(
             task_id=run_id,
@@ -461,7 +481,7 @@ class DAGAgentLoop:
                     new_node_ids = set(_node_traces_by_id(layer)) - previous_node_ids
                     record.trace = layer
                     if new_node_ids and all(
-                        _node_by_id(record.dag, nid).node_type == "start"
+                        isinstance(_node_by_id(record.dag, nid).payload, StartNodePayload)
                         for nid in new_node_ids
                     ):
                         # Synthetic start nodes are bookkeeping, not an execution/replan turn.
@@ -707,10 +727,11 @@ class DAGAgentLoop:
 
     def _validate_dag_tools(self, dag: DAG) -> None:
         unknown_tools = sorted({
-            node.invocation.capability_id
+            node.payload.invocation.capability_id
             for node in dag.nodes
-            if node.invocation.capability_id
-            and not self._is_enabled_capability(node.invocation.capability_id)
+            if isinstance(node.payload, CapabilityNodePayload)
+            and node.payload.invocation.capability_id
+            and not self._is_enabled_capability(node.payload.invocation.capability_id)
         })
         if unknown_tools:
             available_capabilities = [
@@ -810,12 +831,16 @@ def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str
     if dag:
         lines.append(f"DAG ({len(dag.nodes)} nodes, status={dag.status}):")
         for node in dag.nodes:
-            if node.node_type == "start":
+            if isinstance(node.payload, StartNodePayload):
                 lines.append(f"  - {node.id}: internal start")
                 continue
+            if not isinstance(node.payload, CapabilityNodePayload):
+                lines.append(f"  - {node.id}: unsupported node payload")
+                continue
+            invocation = node.payload.invocation
             lines.append(
                 f"  - {node.id}: "
-                f"{node.invocation.capability_id}({node.invocation.arguments})"
+                f"{invocation.capability_id}({invocation.arguments})"
             )
     if trace is not None:
         node_traces = _node_traces_by_id(trace)
@@ -878,7 +903,11 @@ def _dag_loop_outcome(
     events: list[dict[str, Any]] = list(extra_events or [])
     invocations: list[CapabilityInvocation] = []
     if dag is not None:
-        invocations = [node.invocation for node in dag.nodes]
+        invocations = [
+            node.payload.invocation
+            for node in dag.nodes
+            if isinstance(node.payload, CapabilityNodePayload)
+        ]
     if task_id and dag:
         if (
             status == "awaiting_review"
@@ -1034,15 +1063,14 @@ def _seed_dag(task_id: str) -> DAG:
         nodes=[
             DAGNode(
                 id="start",
-                node_type="start",
-                invocation=CapabilityInvocation(capability_id="", kind="tool"),
+                payload=StartNodePayload(type="start"),
             )
         ],
     )
 
 
 def _has_real_nodes(dag: DAG) -> bool:
-    return any(node.node_type != "start" for node in dag.nodes)
+    return any(not isinstance(node.payload, StartNodePayload) for node in dag.nodes)
 
 
 def _dag_completed(record: RuntimeTaskRecord) -> bool:

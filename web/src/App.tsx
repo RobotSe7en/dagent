@@ -23,6 +23,7 @@ import {
   CircleStop,
   Database,
   FileText,
+  FolderUp,
   GitBranch,
   Loader,
   MessageSquare,
@@ -35,6 +36,7 @@ import {
   Send,
   SlidersHorizontal,
   Trash2,
+  Upload,
   UserCog,
   Wrench,
   X,
@@ -55,12 +57,15 @@ import {
   setValidationEnabled as apiSetValidation,
   streamTask,
   testCapability,
+  uploadDagSpecArtifact,
 } from './api';
 import type {
   AgentProfile,
   BoundaryMode,
   CapabilityDefinition,
+  CapabilityInvocation,
   CapabilityKind,
+  CapabilityNodePayload,
   CapabilityResult,
   Dag,
   DagEdge,
@@ -75,6 +80,7 @@ import type {
   CapabilityStreamEvent,
   TraceLogEvent,
   WorkspaceKey,
+  Artifact,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -86,6 +92,12 @@ import {
   visibleCapabilitiesForPicker,
   type ArgumentValueType,
 } from './schemaArguments';
+import { pruneEdgesToNodeIds } from './dagEdges';
+import {
+  artifactPlaceholder,
+  removeArtifactBinding,
+  upsertArtifact,
+} from './dagArtifacts';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -97,6 +109,14 @@ const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
+const defaultWorkspaceRoot = '.dagent-runs';
+const directoryInputProps = {
+  directory: '',
+  webkitdirectory: '',
+} as React.InputHTMLAttributes<HTMLInputElement> & {
+  directory: string;
+  webkitdirectory: string;
+};
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -137,22 +157,38 @@ const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.Reac
   { key: 'agents', label: '智能体管理', icon: <UserCog size={16} /> },
 ];
 
+function isCapabilityNode(node: DagNode): node is DagNode & { payload: CapabilityNodePayload } {
+  return node.payload.type === 'capability';
+}
+
+function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvocation {
+  return {
+    ...invocation,
+    capability_id: invocation.capability_id ?? '',
+    kind: invocation.kind ?? 'tool',
+    arguments: invocation.arguments ?? {},
+    boundary: {
+      mode: invocation.boundary?.mode ?? 'read_only',
+      allowed_paths: invocation.boundary?.allowed_paths ?? [],
+      allowed_commands: invocation.boundary?.allowed_commands ?? [],
+    },
+    risk: invocation.risk ?? 'low',
+  };
+}
+
 function normalizeNode(node: DagNode): DagNode {
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return {
+      ...node,
+      payload: { type: 'start' },
+      status: node.status ?? 'planned',
+    };
+  }
   return {
     ...node,
-    node_type: node.node_type ?? 'capability',
-    invocation: {
-      ...invocation,
-      capability_id: invocation.capability_id ?? '',
-      kind: invocation.kind ?? 'tool',
-      arguments: invocation.arguments ?? {},
-      boundary: {
-        mode: invocation.boundary?.mode ?? 'read_only',
-        allowed_paths: invocation.boundary?.allowed_paths ?? [],
-        allowed_commands: invocation.boundary?.allowed_commands ?? [],
-      },
-      risk: invocation.risk ?? 'low',
+    payload: {
+      type: 'capability',
+      invocation: normalizeInvocation(node.payload.invocation),
     },
     status: node.status ?? 'planned',
   };
@@ -184,14 +220,16 @@ function dagFromSpec(spec: DagSpec): Dag {
 }
 
 function specFromDag(spec: DagSpec, dag: Dag): DagSpec {
+  const nodes = dag.nodes.filter(isCapabilityNode).map((node) => ({
+    ...normalizeNode(node),
+    status: 'planned' as const,
+  }));
+  const nodeIds = new Set(nodes.map((node) => node.id));
   return {
     ...spec,
     version: spec.version ?? 1,
-    nodes: dag.nodes.filter((node) => node.node_type !== 'start').map((node) => ({
-      ...normalizeNode(node),
-      status: 'planned',
-    })),
-    edges: dag.edges,
+    nodes,
+    edges: pruneEdgesToNodeIds(dag.edges, nodeIds),
   };
 }
 
@@ -205,7 +243,7 @@ function validateDagSpecDraft(spec: DagSpec): string | null {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(node.id)) return `Node '${node.id}' has an invalid id.`;
     if (nodeIds.has(node.id)) return `Node '${node.id}' is duplicated.`;
     nodeIds.add(node.id);
-    if (!node.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
+    if (!isCapabilityNode(node) || !node.payload.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -247,15 +285,17 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
-    const risk = item.invocation.risk ?? 'low';
+    const invocation = isCapabilityNode(item) ? item.payload.invocation : null;
+    const risk = invocation?.risk ?? 'low';
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
-    const detail = item.node_type === 'start'
+    const detail = !invocation
       ? 'internal start'
-      : item.invocation.capability_id
-        ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
+      : invocation.capability_id
+        ? `${invocation.capability_id} ${JSON.stringify(invocation.arguments)}`
         : 'capability not set';
+    const detailTitle = invocation?.capability_id ? JSON.stringify(invocation.arguments) : '';
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -270,7 +310,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.node_type === 'start' ? 'Internal DAG start node' : item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
+              title={invocation ? detailTitle : 'Internal DAG start node'}
             >
               {detail}
             </div>
@@ -333,6 +373,7 @@ export function App() {
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
+  const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileName, setSelectedProfileName] = useState('');
@@ -460,6 +501,32 @@ export function App() {
     if (patch.id) {
       setEditorDag((current) => ({ ...current, dag_id: patch.id as string, task_id: patch.id as string }));
     }
+  };
+
+  const upsertEditorArtifact = (artifact: Artifact, previousId?: string) => {
+    const nextArtifactId = artifact.id.trim();
+    if (!nextArtifactId) return;
+    const normalizedArtifact = { ...artifact, id: nextArtifactId };
+    const nextArtifacts = upsertArtifact(editorSpec.artifacts ?? {}, normalizedArtifact, previousId);
+    const nextNodes = previousId && previousId !== nextArtifactId
+      ? editorDag.nodes.map((node) => ({
+          ...node,
+          inputs: (node.inputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
+          outputs: (node.outputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
+        }))
+      : editorDag.nodes;
+    const nextSpec = {
+      ...specFromDag(editorSpec, { ...editorDag, nodes: nextNodes }),
+      artifacts: nextArtifacts,
+    };
+    setEditorSpec(nextSpec);
+    syncEditorDag(dagFromSpec(nextSpec));
+  };
+
+  const deleteEditorArtifact = (artifactId: string) => {
+    const nextSpec = removeArtifactBinding(specFromDag(editorSpec, editorDag), artifactId);
+    setEditorSpec(nextSpec);
+    syncEditorDag(dagFromSpec(nextSpec));
   };
 
   const updateEditorDag = (updater: (current: Dag) => Dag) => {
@@ -681,7 +748,8 @@ export function App() {
   const addNode = () => {
     const id = uniqueNodeId(dag);
     updateDag((current) => {
-      const firstCapability = capabilities.find((item) => item.id === current.nodes[0]?.invocation.capability_id);
+      const firstInvocation = current.nodes.find(isCapabilityNode)?.payload.invocation;
+      const firstCapability = capabilities.find((item) => item.id === firstInvocation?.capability_id);
       return {
         ...current,
         status: 'draft',
@@ -689,16 +757,19 @@ export function App() {
           ...current.nodes,
           normalizeNode({
             id,
-            invocation: {
-              capability_id: current.nodes[0]?.invocation.capability_id ?? '',
-              kind: current.nodes[0]?.invocation.kind ?? 'tool',
-              arguments: ensureSchemaArguments({}, firstCapability?.parameters),
-              boundary: {
-                mode: 'read_only',
-                allowed_paths: [],
-                allowed_commands: [],
+            payload: {
+              type: 'capability',
+              invocation: {
+                capability_id: firstInvocation?.capability_id ?? '',
+                kind: firstInvocation?.kind ?? 'tool',
+                arguments: ensureSchemaArguments({}, firstCapability?.parameters),
+                boundary: {
+                  mode: 'read_only',
+                  allowed_paths: [],
+                  allowed_commands: [],
+                },
+                risk: 'low',
               },
-              risk: 'low',
             },
             status: 'planned',
           }),
@@ -720,6 +791,7 @@ export function App() {
 
   const newEditorSpec = () => {
     setEditorSpecAndDag(createEmptyDagSpec());
+    setEditorWorkspaceRoot(defaultWorkspaceRoot);
   };
 
   const loadEditorSpec = (spec: DagSpec) => {
@@ -736,16 +808,19 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          invocation: {
-            capability_id: selectedCapability?.id ?? '',
-            kind: selectedCapability?.kind ?? 'tool',
-            arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
-            boundary: {
-              mode: 'read_only',
-              allowed_paths: [],
-              allowed_commands: [],
+          payload: {
+            type: 'capability',
+            invocation: {
+              capability_id: selectedCapability?.id ?? '',
+              kind: selectedCapability?.kind ?? 'tool',
+              arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
+              boundary: {
+                mode: 'read_only',
+                allowed_paths: [],
+                allowed_commands: [],
+              },
+              risk: capabilityRisk(selectedCapability),
             },
-            risk: capabilityRisk(selectedCapability),
           },
           status: 'planned',
         }),
@@ -802,11 +877,32 @@ export function App() {
       const saved = await saveDagSpec(spec);
       setEditorSpecAndDag(saved);
       await refreshConsoleData();
-      setEditorMessage(`Saved ${saved.id}.`);
+      setEditorMessage(`Saved ${saved.name || 'DAGSpec'}.`);
       return true;
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
       return false;
+    }
+  };
+
+  const uploadEditorArtifact = async (artifactId: string, fileList: FileList | null) => {
+    const files = Array.from(fileList ?? []);
+    if (!files.length) return;
+    const spec = specFromDag(editorSpec, editorDag);
+    const validation = validateDagSpecDraft(spec);
+    if (validation) {
+      setEditorMessage(validation);
+      return;
+    }
+    setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
+    try {
+      const saved = await saveDagSpec(spec);
+      setEditorSpecAndDag(saved);
+      await uploadDagSpecArtifact(saved.id, artifactId, files);
+      await refreshConsoleData();
+      setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`);
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
@@ -820,7 +916,7 @@ export function App() {
     setEditorRunning(true);
     setEditorTrace([]);
     setEditorRun(null);
-    setEditorMessage(`Running ${spec.id}...`);
+    setEditorMessage(`Running ${spec.name || 'DAGSpec'}...`);
     try {
       await runDagSpecStream(spec.id, {
         onStatus: (status) => {
@@ -860,7 +956,7 @@ export function App() {
         onError: (message) => {
           setEditorMessage(message);
         },
-      });
+      }, { workspaceRoot: editorWorkspaceRoot });
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {
@@ -1208,9 +1304,14 @@ export function App() {
             run={editorRun}
             message={editorMessage}
             running={editorRunning}
+            workspaceRoot={editorWorkspaceRoot}
             onNew={newEditorSpec}
             onLoad={loadEditorSpec}
             onPatchSpec={patchEditorSpec}
+            onWorkspaceRootChange={setEditorWorkspaceRoot}
+            onUpsertArtifact={upsertEditorArtifact}
+            onDeleteArtifact={deleteEditorArtifact}
+            onUploadArtifact={uploadEditorArtifact}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
@@ -1438,7 +1539,7 @@ function DagSummaryCard({
   dag: Dag;
   onOpen: () => void;
 }) {
-  const riskyNodes = dag.nodes.filter((node) => node.invocation.risk !== 'low').length;
+  const riskyNodes = dag.nodes.filter((node) => isCapabilityNode(node) && node.payload.invocation.risk !== 'low').length;
   const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">
@@ -1634,6 +1735,119 @@ function CapabilityReviewDialog({
   );
 }
 
+function ArtifactEditorPanel({
+  artifacts,
+  onUpsert,
+  onDelete,
+  onUpload,
+}: {
+  artifacts: Record<string, Artifact>;
+  onUpsert: (artifact: Artifact, previousId?: string) => void;
+  onDelete: (artifactId: string) => void;
+  onUpload: (artifactId: string, files: FileList | null) => void;
+}) {
+  const artifactItems = Object.values(artifacts).sort((a, b) => a.id.localeCompare(b.id));
+  const addArtifact = () => {
+    let index = artifactItems.length + 1;
+    let id = `artifact_${index}`;
+    while (artifacts[id]) {
+      index += 1;
+      id = `artifact_${index}`;
+    }
+    onUpsert({
+      id,
+      paths: [`outputs/${id}`],
+      description: '',
+      required: true,
+      metadata: {},
+    });
+  };
+
+  return (
+    <section className="artifact-panel">
+      <div className="artifact-panel-head">
+        <span>Artifacts</span>
+        <button className="icon-button" onClick={addArtifact} title="Add artifact" type="button">
+          <Plus size={15} />
+        </button>
+      </div>
+      {artifactItems.length ? (
+        <div className="artifact-list">
+          {artifactItems.map((artifact) => (
+            <div className="artifact-row" key={artifact.id}>
+              <div className="artifact-row-grid">
+                <label>
+                  ID
+                  <input
+                    value={artifact.id}
+                    onChange={(event) => onUpsert({ ...artifact, id: event.target.value }, artifact.id)}
+                  />
+                </label>
+                <label>
+                  Paths
+                  <input
+                    value={(artifact.paths ?? []).join(', ')}
+                    onChange={(event) => onUpsert({ ...artifact, paths: splitCsv(event.target.value) }, artifact.id)}
+                  />
+                </label>
+              </div>
+              <label>
+                Description
+                <input
+                  value={artifact.description ?? ''}
+                  onChange={(event) => onUpsert({ ...artifact, description: event.target.value }, artifact.id)}
+                />
+              </label>
+              <div className="artifact-row-actions">
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={artifact.required ?? true}
+                    onChange={(event) => onUpsert({ ...artifact, required: event.target.checked }, artifact.id)}
+                  />
+                  Required
+                </label>
+                <div className="artifact-action-buttons">
+                  <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
+                    <Upload size={14} />
+                    Files
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(event) => {
+                        onUpload(artifact.id, event.currentTarget.files);
+                        event.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
+                    <FolderUp size={14} />
+                    Folder
+                    <input
+                      type="file"
+                      multiple
+                      {...directoryInputProps}
+                      onChange={(event) => {
+                        onUpload(artifact.id, event.currentTarget.files);
+                        event.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No artifacts.</div>
+      )}
+    </section>
+  );
+}
+
 function OrchestrationWorkspace({
   capabilities,
   dagSpecs,
@@ -1646,9 +1860,14 @@ function OrchestrationWorkspace({
   run,
   message,
   running,
+  workspaceRoot,
   onNew,
   onLoad,
   onPatchSpec,
+  onWorkspaceRootChange,
+  onUpsertArtifact,
+  onDeleteArtifact,
+  onUploadArtifact,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -1670,9 +1889,14 @@ function OrchestrationWorkspace({
   run: DagRun | null;
   message: string;
   running: boolean;
+  workspaceRoot: string;
   onNew: () => void;
   onLoad: (spec: DagSpec) => void;
   onPatchSpec: (patch: Partial<DagSpec>) => void;
+  onWorkspaceRootChange: (workspaceRoot: string) => void;
+  onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
+  onDeleteArtifact: (artifactId: string) => void;
+  onUploadArtifact: (artifactId: string, files: FileList | null) => void;
   onAddNode: (capability?: CapabilityDefinition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -1728,10 +1952,6 @@ function OrchestrationWorkspace({
         </div>
         <div className="spec-meta-form">
           <label>
-            ID
-            <input value={spec.id} onChange={(event) => onPatchSpec({ id: event.target.value })} />
-          </label>
-          <label>
             Name
             <input value={spec.name} onChange={(event) => onPatchSpec({ name: event.target.value })} />
           </label>
@@ -1739,7 +1959,17 @@ function OrchestrationWorkspace({
             Description
             <textarea value={spec.description ?? ''} onChange={(event) => onPatchSpec({ description: event.target.value })} />
           </label>
+          <label>
+            Workspace Root
+            <input value={workspaceRoot} onChange={(event) => onWorkspaceRootChange(event.target.value)} />
+          </label>
         </div>
+        <ArtifactEditorPanel
+          artifacts={spec.artifacts ?? {}}
+          onUpsert={onUpsertArtifact}
+          onDelete={onDeleteArtifact}
+          onUpload={onUploadArtifact}
+        />
         <div className="resource-list">
           {dagSpecs.length ? dagSpecs.map((item) => (
             <button
@@ -1748,7 +1978,7 @@ function OrchestrationWorkspace({
               type="button"
               onClick={() => onLoad(item)}
             >
-              <strong>{item.name || item.id}</strong>
+              <strong>{item.name || 'Untitled DAGSpec'}</strong>
               <span>{item.nodes.length} nodes</span>
             </button>
           )) : <div className="empty-state compact">No saved DAGSpecs in this process.</div>}
@@ -1757,7 +1987,7 @@ function OrchestrationWorkspace({
       <section className="flow-workbench">
         <div className="workbench-toolbar">
           <div>
-            <strong>{spec.name || spec.id}</strong>
+            <strong>{spec.name || 'Untitled DAGSpec'}</strong>
             <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAGSpec')}</span>
           </div>
           <select
@@ -1830,6 +2060,7 @@ function OrchestrationWorkspace({
           <OrchestrationNodeEditor
             node={normalizeNode(selectedNode)}
             dag={dag}
+            artifacts={spec.artifacts ?? {}}
             capabilities={capabilities}
             logs={trace.filter((event) => event.node_id === selectedNode.id)}
             onPatch={(patch, nextEdges) => onPatchNode(selectedNode.id, patch, nextEdges)}
@@ -1848,6 +2079,7 @@ function OrchestrationWorkspace({
 function OrchestrationNodeEditor({
   node,
   dag,
+  artifacts,
   capabilities,
   logs,
   onPatch,
@@ -1855,12 +2087,24 @@ function OrchestrationNodeEditor({
 }: {
   node: DagNode;
   dag: Dag;
+  artifacts: Record<string, Artifact>;
   capabilities: CapabilityDefinition[];
   logs: TraceLogEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return (
+      <div className="node-editor">
+        <label>
+          Node ID
+          <input value={node.id} disabled />
+        </label>
+        <div className="empty-state compact">Internal start node</div>
+      </div>
+    );
+  }
+  const invocation = node.payload.invocation;
   const selectedCapability = capabilities.find((capability) => capability.id === invocation.capability_id);
   const pickerCapabilities = visibleCapabilitiesForPicker(capabilities);
   const selectableCapabilities = selectedCapability && !pickerCapabilities.some((capability) => capability.id === selectedCapability.id)
@@ -1873,8 +2117,33 @@ function OrchestrationNodeEditor({
     allowed_paths: [],
     allowed_commands: [],
   };
+  const artifactIds = Object.keys(artifacts).sort();
   const patchInvocation = (patch: Partial<typeof invocation>) =>
-    onPatch({ invocation: { ...invocation, ...patch } });
+    onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
+  const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
+    const current = node[field] ?? [];
+    const next = checked
+      ? [...current.filter((id) => id !== artifactId), artifactId].sort()
+      : current.filter((id) => id !== artifactId);
+    onPatch({ [field]: next });
+  };
+  const setPathArgumentFromArtifact = (artifactId: string) => {
+    patchInvocation({
+      arguments: {
+        ...(invocation.arguments ?? {}),
+        path: artifactPlaceholder(artifactId),
+      },
+    });
+  };
+  const addAllowedPathFromArtifact = (artifactId: string) => {
+    const token = artifactPlaceholder(artifactId);
+    patchInvocation({
+      boundary: {
+        ...boundary,
+        allowed_paths: [...(boundary.allowed_paths ?? []).filter((path) => path !== token), token],
+      },
+    });
+  };
   return (
     <div className="node-editor">
       <label>
@@ -1935,6 +2204,14 @@ function OrchestrationNodeEditor({
         parameters={selectedCapability?.parameters}
         onChange={(argumentsValue) => patchInvocation({ arguments: argumentsValue })}
       />
+      <ArtifactBindingEditor
+        artifactIds={artifactIds}
+        inputs={node.inputs ?? []}
+        outputs={node.outputs ?? []}
+        onToggle={patchArtifactList}
+        onUseAsPath={setPathArgumentFromArtifact}
+        onAllowPath={addAllowedPathFromArtifact}
+      />
       <label>
         Depends On
         <input
@@ -1985,6 +2262,63 @@ function OrchestrationNodeEditor({
       </button>
       <NodeExecutionLog logs={logs} />
     </div>
+  );
+}
+
+function ArtifactBindingEditor({
+  artifactIds,
+  inputs,
+  outputs,
+  onToggle,
+  onUseAsPath,
+  onAllowPath,
+}: {
+  artifactIds: string[];
+  inputs: string[];
+  outputs: string[];
+  onToggle: (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => void;
+  onUseAsPath: (artifactId: string) => void;
+  onAllowPath: (artifactId: string) => void;
+}) {
+  return (
+    <details className="node-policy-details" open>
+      <summary>Artifacts</summary>
+      {artifactIds.length ? (
+        <div className="artifact-binding-list">
+          {artifactIds.map((artifactId) => (
+            <div className="artifact-binding-row" key={artifactId}>
+              <strong>{artifactId}</strong>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={inputs.includes(artifactId)}
+                  onChange={(event) => onToggle('inputs', artifactId, event.target.checked)}
+                />
+                Input
+              </label>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={outputs.includes(artifactId)}
+                  onChange={(event) => onToggle('outputs', artifactId, event.target.checked)}
+                />
+                Output
+              </label>
+              <div className="artifact-binding-actions">
+                <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifactId)} type="button">
+                  Set path
+                </button>
+                <button className="secondary-button compact-button" onClick={() => onAllowPath(artifactId)} type="button">
+                  Allow
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No artifacts.</div>
+      )}
+    </details>
   );
 }
 
@@ -2492,14 +2826,25 @@ function NodeEditor({
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return (
+      <div className="node-editor">
+        <label>
+          Node ID
+          <input value={node.id} disabled />
+        </label>
+        <div className="empty-state compact">Internal start node</div>
+      </div>
+    );
+  }
+  const invocation = node.payload.invocation;
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
     allowed_paths: [],
     allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>
-    onPatch({ invocation: { ...invocation, ...patch } });
+    onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
   return (
     <div className="node-editor">
       <label>

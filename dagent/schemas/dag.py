@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from dagent.schemas.artifact import Artifact
 from dagent.schemas.edge import DAGEdge
@@ -33,10 +33,10 @@ class DAG(BaseModel):
 
 
 class PlanNodeSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     title: str = ""
-    goal: str | None = None
-    instructions: str | None = None
     tool: str | None = None
     args: dict = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)

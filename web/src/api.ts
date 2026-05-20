@@ -108,6 +108,26 @@ export async function saveDagSpec(spec: DagSpec): Promise<DagSpec> {
   return data.dag_spec;
 }
 
+export async function uploadDagSpecArtifact(
+  specId: string,
+  artifactId: string,
+  files: File[],
+): Promise<{ artifact_id: string; files: string[] }> {
+  const body = new FormData();
+  for (const file of files) {
+    body.append('files', file, file.webkitRelativePath || file.name);
+  }
+  const res = await fetch(
+    `${API_BASE}/dag-specs/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
+    {
+      method: 'POST',
+      body,
+    },
+  );
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
 export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnings: ProfileWarning[] }> {
   const res = await fetch(`${API_BASE}/profiles`);
   if (!res.ok) throw new Error(await errorMessage(res));
@@ -230,9 +250,17 @@ export async function runDagSpecStream(
     onDone?: (payload: DagRunDonePayload) => void;
     onError?: (message: string) => void;
   },
+  options: {
+    workspaceRoot?: string;
+  } = {},
 ): Promise<void> {
+  const body = options.workspaceRoot?.trim()
+    ? JSON.stringify({ workspace_root: options.workspaceRoot.trim() })
+    : undefined;
   const response = await fetch(`${API_BASE}/dag-specs/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 import dagent.schemas.results as results_schema
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
@@ -68,38 +69,69 @@ def test_dag_node_binds_artifact_ids_as_inputs_and_outputs() -> None:
     )
 
     assert node.title == "Write requirement"
-    assert node.goal is None
-    assert node.instructions is None
     assert node.inputs == ["raw_requirement"]
     assert node.outputs == ["requirement_package"]
 
 
-def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
+def test_dag_node_model_validate_uses_payload_only_shape() -> None:
     node = DAGNode.model_validate({
         "id": "read",
-        "invocation": {
-            "capability_id": "tool.echo",
-            "kind": "tool",
-            "arguments": {"text": "ok"},
+        "payload": {
+            "type": "capability",
+            "invocation": {
+                "capability_id": "tool.echo",
+                "kind": "tool",
+                "arguments": {"text": "ok"},
+            },
         },
     })
 
-    assert node.goal is None
-    assert node.instructions is None
     dumped = node.model_dump(mode="json")
-    assert dumped["goal"] is None
-    assert dumped["instructions"] is None
+    assert dumped["payload"]["type"] == "capability"
+    assert dumped["payload"]["invocation"]["capability_id"] == "tool.echo"
+    assert "goal" not in dumped
+    assert "instructions" not in dumped
+    assert "invocation" not in dumped
+    assert "node_type" not in dumped
 
 
-def test_dag_node_supports_agent_goal_and_instructions() -> None:
-    node = _node(
-        "write_requirement",
-        goal="Write a complete requirement specification.",
-        instructions="Use clear acceptance criteria.",
-    )
+def test_dag_node_rejects_legacy_invocation_shape() -> None:
+    with pytest.raises(ValidationError):
+        DAGNode.model_validate({
+            "id": "read",
+            "invocation": {
+                "capability_id": "tool.echo",
+                "kind": "tool",
+                "arguments": {"text": "ok"},
+            },
+        })
 
-    assert node.goal == "Write a complete requirement specification."
-    assert node.instructions == "Use clear acceptance criteria."
+
+def test_dag_node_rejects_goal_and_instructions_on_node_shell() -> None:
+    with pytest.raises(ValidationError):
+        DAGNode.model_validate({
+            "id": "read",
+            "goal": "Do work.",
+            "instructions": "Be concise.",
+            "payload": {
+                "type": "capability",
+                "invocation": {
+                    "capability_id": "tool.echo",
+                    "kind": "tool",
+                    "arguments": {"text": "ok"},
+                },
+            },
+        })
+
+
+def test_dag_node_payload_discriminator_is_required_in_json_schema() -> None:
+    schema = DAGNode.model_json_schema()
+
+    capability_schema = schema["$defs"]["CapabilityNodePayload"]
+    start_schema = schema["$defs"]["StartNodePayload"]
+
+    assert "type" in capability_schema["required"]
+    assert "type" in start_schema["required"]
 
 
 def test_dag_run_result_alias_is_removed_from_results_schema() -> None:
@@ -124,6 +156,57 @@ def test_validate_dag_spec_rejects_unknown_node_artifact() -> None:
 
     with pytest.raises(DAGValidationError, match="missing_output"):
         validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_rejects_duplicate_artifact_producers() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "report": Artifact(id="report", paths=["outputs/report.md"]),
+        },
+        nodes=[
+            _node("draft_report", outputs=["report"]),
+            _node("revise_report", outputs=["report"]),
+        ],
+        edges=[DAGEdge(source="draft_report", target="revise_report")],
+    )
+
+    with pytest.raises(DAGValidationError, match="Artifact 'report' is produced by multiple nodes"):
+        validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_requires_consumer_to_depend_on_artifact_producer() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "report": Artifact(id="report", paths=["outputs/report.md"]),
+        },
+        nodes=[
+            _node("write_report", outputs=["report"]),
+            _node("review_report", inputs=["report"]),
+        ],
+        edges=[DAGEdge(source="review_report", target="write_report")],
+    )
+
+    with pytest.raises(DAGValidationError, match="must depend on producer node 'write_report'"):
+        validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_allows_external_input_artifacts_without_producer() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "uploaded_spec": Artifact(id="uploaded_spec", paths=["uploads/spec.md"]),
+        },
+        nodes=[
+            _node("analyze_upload", inputs=["uploaded_spec"]),
+        ],
+    )
+
+    validate_dag_spec(spec)
 
 
 @pytest.mark.parametrize("bad_path", ["C:/outside/file.md", "../outside.md", "safe/../../outside.md"])
@@ -185,7 +268,7 @@ def test_compile_dag_spec_preserves_artifacts_on_nodes() -> None:
     assert dag.nodes[0].outputs == ["requirement_package"]
 
 
-def test_compile_dag_spec_preserves_node_goal_and_instructions() -> None:
+def test_compile_dag_spec_preserves_agent_prompt_argument() -> None:
     spec = DAGSpec(
         id="requirements",
         name="Requirements",
@@ -193,16 +276,18 @@ def test_compile_dag_spec_preserves_node_goal_and_instructions() -> None:
         nodes=[
             _node(
                 "write_requirement",
-                goal="Write the requirement spec.",
-                instructions="Use numbered acceptance criteria.",
+                tool="agent.helper",
+                kind="agent",
+                args={"prompt": "Write the requirement spec. Use numbered acceptance criteria."},
             )
         ],
     )
 
     dag = compile_dag_spec(spec, task_id="task_1")
 
-    assert dag.nodes[0].goal == "Write the requirement spec."
-    assert dag.nodes[0].instructions == "Use numbered acceptance criteria."
+    assert dag.nodes[0].payload.invocation.arguments == {
+        "prompt": "Write the requirement spec. Use numbered acceptance criteria."
+    }
 
 
 def test_compile_dag_spec_copies_capability_policy_risk() -> None:
@@ -233,7 +318,7 @@ def test_compile_dag_spec_copies_capability_policy_risk() -> None:
         ],
     )
 
-    assert dag.nodes[0].invocation.risk == "medium"
+    assert dag.nodes[0].payload.invocation.risk == "medium"
 
 
 def test_artifact_states_mark_created_and_missing_outputs(tmp_path: Path) -> None:
@@ -292,6 +377,44 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
     result = run(executor.execute_next_ready_layer(dag))
 
     assert isinstance(result, RunTrace)
+    assert result.artifacts["note"].status == "created"
+    assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
+
+
+def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_path: Path) -> None:
+    executor = DAGExecutor(
+        capability_executor=_write_capability_executor(tmp_path),
+        workspace_path=tmp_path,
+        artifacts={
+            "note": Artifact(id="note", paths=["notes/output.txt"]),
+        },
+    )
+    dag = compile_dag_spec(
+        DAGSpec(
+            id="write_note",
+            name="Write note",
+            artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
+            nodes=[
+                _node(
+                    "write",
+                    tool="write_note",
+                    args={"path": "{{artifact.note.path}}", "content": "hi"},
+                    boundary=Boundary(
+                        mode="write_limited",
+                        allowed_paths=["{{artifact.note.path}}"],
+                    ),
+                    outputs=["note"],
+                )
+            ],
+        ),
+        task_id="task_1",
+    )
+
+    result = run(executor.execute_next_ready_layer(dag))
+
+    invocation = dag_node_trace(result, "write").children[0].capability_execution.invocation
+    assert invocation.arguments["path"] == "notes/output.txt"
+    assert invocation.boundary.allowed_paths == ["notes/output.txt"]
     assert result.artifacts["note"].status == "created"
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
@@ -429,23 +552,23 @@ def _node(
     node_id: str,
     *,
     tool: str = "echo",
+    kind: str = "tool",
     args: dict | None = None,
     boundary: Boundary | None = None,
-    goal: str | None = None,
-    instructions: str | None = None,
     inputs: list[str] | None = None,
     outputs: list[str] | None = None,
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
         title=node_id.replace("_", " ").capitalize(),
-        goal=goal,
-        instructions=instructions,
-        invocation=CapabilityInvocation(
-            capability_id=f"tool.{tool}",
-            kind="tool",
-            arguments=args or {"text": node_id},
-            boundary=boundary or Boundary(),
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=tool if "." in tool else f"tool.{tool}",
+                kind=kind,
+                arguments=args or {"text": node_id},
+                boundary=boundary or Boundary(),
+            ),
         ),
         inputs=inputs or [],
         outputs=outputs or [],

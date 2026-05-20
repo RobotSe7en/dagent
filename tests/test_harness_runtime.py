@@ -200,7 +200,7 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
-    assert result.dag.nodes[0].invocation.risk == "medium"
+    assert result.dag.nodes[0].payload.invocation.risk == "medium"
     assert result.task_id in runtime.tasks
     assert runtime.tasks[result.task_id].runtime_mode == "dag"
 
@@ -467,7 +467,7 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].invocation.capability_id == "tool.echo"
+    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
     assert "Unknown capability function 'get_current_dir'" in feedback
@@ -789,11 +789,14 @@ def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) ->
         nodes=[
             DAGNode(
                 id="write",
-                invocation=CapabilityInvocation(
-                    capability_id="tool.write_file",
-                    kind="tool",
-                    arguments={"path": "notes/output.txt", "content": "hi"},
-                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="tool.write_file",
+                        kind="tool",
+                        arguments={"path": "notes/output.txt", "content": "hi"},
+                        boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                    ),
                 ),
             )
         ],

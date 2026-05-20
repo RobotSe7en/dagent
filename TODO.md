@@ -4,13 +4,15 @@
 
 - [x] Keep the existing local thread message flow unchanged for `ToolAgent` and `DAGAgent`.
 - [x] Add public DAG platform models: `Artifact`, `ArtifactState`, `DAGSpec`, `DAGRun`.
-- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, `outputs`, `goal`, and `instructions`.
+- [x] Keep `DAGNode` as graph structure with `title`, `inputs`, and `outputs`; agent task text lives in capability `prompt` arguments.
 - [x] Replace per-step DAG result DTOs with the unified `RunTrace` tree.
 - [x] Add run workspace and artifact state helpers.
 - [x] Compile and validate `DAGSpec` into executable `DAG`.
 - [x] Run `DAGSpec` through the existing runtime task path instead of bypassing runtime state.
 - [x] Add in-memory `DAGSpec` and `DAGRun` API endpoints.
 - [x] Add regression coverage for artifact validation, DAGSpec API, run isolation, required artifact failure, and existing executor behavior.
+- [x] Validate artifact producer/consumer contracts while keeping explicit edges as the scheduling source of truth.
+- [x] Resolve `{{artifact.<id>.path}}` placeholders in capability arguments and boundary paths.
 
 ## Phase 2: Agent Node Runtime
 
@@ -18,8 +20,8 @@
 - [x] Support agent capability profiles through capability config.
 - [x] Support enabled capability scopes for agent nodes.
 - [x] Support `max_steps`, workspace boundary, and artifact input/output awareness for agent nodes.
-- [x] Keep node typing unchanged; distinguish execution behavior through `CapabilityInvocation.kind` and `capability_id`.
-- [x] Add tests proving a DAG node can invoke an agent capability without changing the `DAGNode` schema.
+- [x] Use typed `DAGNode.payload` variants while keeping capability and agent execution unified through `CapabilityInvocation.kind` and `capability_id`.
+- [x] Add tests proving a capability payload can invoke an agent capability without a separate agent node schema.
 - [x] Add `/dag-specs/{id}/run/stream` so DAGSpec runs can emit live trace and node-scoped agent events.
 
 ## Phase 3: Persistent Platform APIs
@@ -35,7 +37,8 @@
 
 - [ ] Build frontend screens for creating and editing `DAGSpec`.
 - [ ] Support capability selection and invocation argument editing.
-- [ ] Support artifact binding through node `inputs` and `outputs`.
+- [x] Support artifact registry editing and node artifact binding through `inputs` and `outputs`.
+- [x] Support configurable `workspace_root` when running a DAGSpec from Web.
 - [ ] Support review checkpoints.
 - [ ] Add DAGRun pages showing node status, traces, review state, and artifact outputs.
 

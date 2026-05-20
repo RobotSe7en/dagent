@@ -29,7 +29,7 @@ dagent/
   harness_runtime/  runtime orchestration, tool/DAG loops, review, validation,
                     session state, trace recording, DAG execution
   providers/        OpenAI-compatible and mock providers
-  schemas/          public data contracts: DAG, invocation, trace, results/outcomes
+  schemas/          public data contracts: DAG, typed node payloads, invocation, trace, results/outcomes
   state/            prompt assembly (PromptBuilder)
   tools/            legacy/builtin tool registry used by ToolCapabilityProvider
 profiles/           editable agent profiles (conversation, dag_agent, validator_agent, feedback_learner)
@@ -176,10 +176,11 @@ DAG review reject -> append "DAG observation: review_denied" -> continue DAGAgen
 
 ## Key Design Decisions
 
-- **Capability-node DAG**: every DAG node is a direct capability invocation.
-  Intelligence lives in the planner/replanner. `DAGSpec` runtime can execute enabled
-  agent capabilities, but the dynamic DAG planner prompt currently should not emit
-  agent nodes.
+- **Typed DAG node payloads**: `DAGNode` has a unified graph shell and a discriminated
+  payload. Capability payloads carry `CapabilityInvocation`; start payloads are
+  explicit and do not carry fake invocations. Intelligence lives in the planner/replanner.
+  `DAGSpec` runtime can execute enabled agent capabilities, but the dynamic DAG planner
+  prompt currently should not emit agent nodes.
 - **Unknown tool calls recover through protocol messages**: if a provider returns a
   hallucinated or disabled tool name, `ToolAgentLoop` appends a protocol-correct
   `role="tool"` error for that `tool_call_id` and lets the model recover.

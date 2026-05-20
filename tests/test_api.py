@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -190,7 +191,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     task_id = stream_events[-1]["task_id"]
     review_id = stream_events[-1]["pending_review"]["review_id"]
     dag = stream_events[-1]["dag"]
-    dag["nodes"][0]["invocation"]["arguments"] = {"text": "reviewed"}
+    dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
         "/messages/resume",
@@ -392,16 +393,19 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
                 {
                     "id": "write",
                     "title": "Write output note",
-                    "invocation": {
-                        "capability_id": "tool.write_file",
-                        "kind": "tool",
-                        "arguments": {
-                            "path": "notes/output.txt",
-                            "content": "hello",
-                        },
-                        "boundary": {
-                            "mode": "write_limited",
-                            "allowed_paths": ["notes/output.txt"],
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "notes/output.txt",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["notes/output.txt"],
+                            },
                         },
                     },
                     "outputs": ["note"],
@@ -438,6 +442,120 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
     assert artifacts_response.json()["artifacts"]["note"]["paths"] == ["notes/output.txt"]
 
 
+def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "runs"
+
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "workspace_note",
+            "name": "Workspace note",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/output.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "write",
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "{{artifact.note.path}}",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["{{artifact.note.path}}"],
+                            },
+                        },
+                    },
+                    "outputs": ["note"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    run_response = client.post(
+        "/dag-specs/workspace_note/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()["dag_run"]
+    workspace_path = Path(run_payload["workspace_path"])
+    assert workspace_path.parent == workspace_root
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "runs"
+
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "uploaded_source",
+            "name": "Uploaded source",
+            "artifacts": {
+                "source": {
+                    "id": "source",
+                    "paths": ["inputs/source.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "read",
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.read_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "{{artifact.source.path}}",
+                            },
+                            "boundary": {
+                                "mode": "read_only",
+                                "allowed_paths": ["{{artifact.source.path}}"],
+                            },
+                        },
+                    },
+                    "inputs": ["source"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    upload_response = client.post(
+        "/dag-specs/uploaded_source/artifacts/source/upload",
+        files=[("files", ("source.txt", b"hello from upload", "text/plain"))],
+    )
+    assert upload_response.status_code == 200
+    assert upload_response.json()["files"] == ["source.txt"]
+
+    run_response = client.post(
+        "/dag-specs/uploaded_source/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()["dag_run"]
+    workspace_path = Path(run_payload["workspace_path"])
+    assert run_payload["status"] == "completed"
+    assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
+    assert run_payload["trace"]["root"]["children"][0]["output"] == "hello from upload"
+    assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
+
+
 def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
@@ -462,10 +580,13 @@ def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
             "nodes": [
                 {
                     "id": "call_custom",
-                    "invocation": {
-                        "capability_id": "custom_tool.upper",
-                        "kind": "custom_tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "custom_tool.upper",
+                            "kind": "custom_tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                 }
             ],
@@ -499,16 +620,19 @@ def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
             "nodes": [
                 {
                     "id": "write",
-                    "invocation": {
-                        "capability_id": "tool.write_file",
-                        "kind": "tool",
-                        "arguments": {
-                            "path": "notes/output.txt",
-                            "content": "hello",
-                        },
-                        "boundary": {
-                            "mode": "write_limited",
-                            "allowed_paths": ["notes/output.txt"],
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "notes/output.txt",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["notes/output.txt"],
+                            },
                         },
                     },
                     "outputs": ["note"],
@@ -530,6 +654,59 @@ def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
 
 
+def test_api_dag_spec_run_stream_uses_requested_workspace_root(tmp_path: Path) -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "stream-runs"
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "stream_workspace_note",
+            "name": "Stream workspace note",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/output.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "write",
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "{{artifact.note.path}}",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["{{artifact.note.path}}"],
+                            },
+                        },
+                    },
+                    "outputs": ["note"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    response = client.post(
+        "/dag-specs/stream_workspace_note/run/stream",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    dag_run = events[-1]["dag_run"]
+    workspace_path = Path(dag_run["workspace_path"])
+    assert workspace_path.parent == workspace_root
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+
+
 def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
@@ -548,10 +725,13 @@ def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
             "nodes": [
                 {
                     "id": "answer",
-                    "invocation": {
-                        "capability_id": "tool.echo",
-                        "kind": "tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.echo",
+                            "kind": "tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                     "outputs": ["note"],
                 }
@@ -582,10 +762,13 @@ def test_api_dag_spec_validation_and_missing_resources() -> None:
             "nodes": [
                 {
                     "id": "answer",
-                    "invocation": {
-                        "capability_id": "tool.echo",
-                        "kind": "tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.echo",
+                            "kind": "tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                     "inputs": ["missing"],
                 }
