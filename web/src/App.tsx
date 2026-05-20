@@ -23,6 +23,7 @@ import {
   CircleStop,
   Database,
   FileText,
+  FolderUp,
   GitBranch,
   Loader,
   MessageSquare,
@@ -35,6 +36,7 @@ import {
   Send,
   SlidersHorizontal,
   Trash2,
+  Upload,
   UserCog,
   Wrench,
   X,
@@ -55,6 +57,7 @@ import {
   setValidationEnabled as apiSetValidation,
   streamTask,
   testCapability,
+  uploadDagSpecArtifact,
 } from './api';
 import type {
   AgentProfile,
@@ -107,6 +110,13 @@ const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
 const defaultWorkspaceRoot = '.dagent-runs';
+const directoryInputProps = {
+  directory: '',
+  webkitdirectory: '',
+} as React.InputHTMLAttributes<HTMLInputElement> & {
+  directory: string;
+  webkitdirectory: string;
+};
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -867,11 +877,32 @@ export function App() {
       const saved = await saveDagSpec(spec);
       setEditorSpecAndDag(saved);
       await refreshConsoleData();
-      setEditorMessage(`Saved ${saved.id}.`);
+      setEditorMessage(`Saved ${saved.name || 'DAGSpec'}.`);
       return true;
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
       return false;
+    }
+  };
+
+  const uploadEditorArtifact = async (artifactId: string, fileList: FileList | null) => {
+    const files = Array.from(fileList ?? []);
+    if (!files.length) return;
+    const spec = specFromDag(editorSpec, editorDag);
+    const validation = validateDagSpecDraft(spec);
+    if (validation) {
+      setEditorMessage(validation);
+      return;
+    }
+    setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
+    try {
+      const saved = await saveDagSpec(spec);
+      setEditorSpecAndDag(saved);
+      await uploadDagSpecArtifact(saved.id, artifactId, files);
+      await refreshConsoleData();
+      setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`);
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
@@ -885,7 +916,7 @@ export function App() {
     setEditorRunning(true);
     setEditorTrace([]);
     setEditorRun(null);
-    setEditorMessage(`Running ${spec.id}...`);
+    setEditorMessage(`Running ${spec.name || 'DAGSpec'}...`);
     try {
       await runDagSpecStream(spec.id, {
         onStatus: (status) => {
@@ -1280,6 +1311,7 @@ export function App() {
             onWorkspaceRootChange={setEditorWorkspaceRoot}
             onUpsertArtifact={upsertEditorArtifact}
             onDeleteArtifact={deleteEditorArtifact}
+            onUploadArtifact={uploadEditorArtifact}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
@@ -1707,10 +1739,12 @@ function ArtifactEditorPanel({
   artifacts,
   onUpsert,
   onDelete,
+  onUpload,
 }: {
   artifacts: Record<string, Artifact>;
   onUpsert: (artifact: Artifact, previousId?: string) => void;
   onDelete: (artifactId: string) => void;
+  onUpload: (artifactId: string, files: FileList | null) => void;
 }) {
   const artifactItems = Object.values(artifacts).sort((a, b) => a.id.localeCompare(b.id));
   const addArtifact = () => {
@@ -1773,9 +1807,36 @@ function ArtifactEditorPanel({
                   />
                   Required
                 </label>
-                <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
-                  <Trash2 size={15} />
-                </button>
+                <div className="artifact-action-buttons">
+                  <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
+                    <Upload size={14} />
+                    Files
+                    <input
+                      type="file"
+                      multiple
+                      onChange={(event) => {
+                        onUpload(artifact.id, event.currentTarget.files);
+                        event.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
+                    <FolderUp size={14} />
+                    Folder
+                    <input
+                      type="file"
+                      multiple
+                      {...directoryInputProps}
+                      onChange={(event) => {
+                        onUpload(artifact.id, event.currentTarget.files);
+                        event.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -1806,6 +1867,7 @@ function OrchestrationWorkspace({
   onWorkspaceRootChange,
   onUpsertArtifact,
   onDeleteArtifact,
+  onUploadArtifact,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -1834,6 +1896,7 @@ function OrchestrationWorkspace({
   onWorkspaceRootChange: (workspaceRoot: string) => void;
   onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
   onDeleteArtifact: (artifactId: string) => void;
+  onUploadArtifact: (artifactId: string, files: FileList | null) => void;
   onAddNode: (capability?: CapabilityDefinition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -1889,10 +1952,6 @@ function OrchestrationWorkspace({
         </div>
         <div className="spec-meta-form">
           <label>
-            ID
-            <input value={spec.id} onChange={(event) => onPatchSpec({ id: event.target.value })} />
-          </label>
-          <label>
             Name
             <input value={spec.name} onChange={(event) => onPatchSpec({ name: event.target.value })} />
           </label>
@@ -1909,6 +1968,7 @@ function OrchestrationWorkspace({
           artifacts={spec.artifacts ?? {}}
           onUpsert={onUpsertArtifact}
           onDelete={onDeleteArtifact}
+          onUpload={onUploadArtifact}
         />
         <div className="resource-list">
           {dagSpecs.length ? dagSpecs.map((item) => (
@@ -1918,7 +1978,7 @@ function OrchestrationWorkspace({
               type="button"
               onClick={() => onLoad(item)}
             >
-              <strong>{item.name || item.id}</strong>
+              <strong>{item.name || 'Untitled DAGSpec'}</strong>
               <span>{item.nodes.length} nodes</span>
             </button>
           )) : <div className="empty-state compact">No saved DAGSpecs in this process.</div>}
@@ -1927,7 +1987,7 @@ function OrchestrationWorkspace({
       <section className="flow-workbench">
         <div className="workbench-toolbar">
           <div>
-            <strong>{spec.name || spec.id}</strong>
+            <strong>{spec.name || 'Untitled DAGSpec'}</strong>
             <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAGSpec')}</span>
           </div>
           <select
@@ -2244,12 +2304,14 @@ function ArtifactBindingEditor({
                 />
                 Output
               </label>
-              <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifactId)} type="button">
-                Set path
-              </button>
-              <button className="secondary-button compact-button" onClick={() => onAllowPath(artifactId)} type="button">
-                Allow
-              </button>
+              <div className="artifact-binding-actions">
+                <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifactId)} type="button">
+                  Set path
+                </button>
+                <button className="secondary-button compact-button" onClick={() => onAllowPath(artifactId)} type="button">
+                  Allow
+                </button>
+              </div>
             </div>
           ))}
         </div>

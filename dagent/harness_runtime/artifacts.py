@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from posixpath import normpath
 from uuid import uuid4
 
 from dagent.schemas import Artifact, ArtifactState, DAGNode
@@ -10,6 +13,14 @@ from dagent.schemas import Artifact, ArtifactState, DAGNode
 
 class ArtifactPathError(ValueError):
     """Raised when an artifact path cannot be safely rooted in a run workspace."""
+
+
+@dataclass(frozen=True)
+class ArtifactUpload:
+    """Uploaded file content associated with a DAGSpec artifact."""
+
+    filename: str
+    content: bytes
 
 
 def create_run_workspace(root: str | Path = ".dagent-runs") -> Path:
@@ -82,6 +93,42 @@ def update_node_output_artifacts(
         )
 
 
+def materialize_artifact_uploads(
+    uploads: Mapping[str, Sequence[ArtifactUpload]],
+    *,
+    artifacts: dict[str, Artifact],
+    workspace_path: str | Path,
+) -> set[str]:
+    """Write uploaded artifact files into a run workspace."""
+
+    materialized: set[str] = set()
+    for artifact_id, artifact_uploads in uploads.items():
+        if not artifact_uploads:
+            continue
+        artifact = artifacts.get(artifact_id)
+        if artifact is None:
+            continue
+        target_paths = resolve_artifact_paths(artifact, workspace_path)
+        target_root = target_paths[0]
+        as_directory = (
+            len(artifact_uploads) > 1
+            or _artifact_path_is_directory_like(artifact.paths[0])
+            or any(_upload_filename_has_parent(upload.filename) for upload in artifact_uploads)
+        )
+        if as_directory:
+            for upload in artifact_uploads:
+                destination = (target_root / _safe_upload_filename(upload.filename)).resolve()
+                _ensure_within_workspace(destination, workspace_path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(upload.content)
+        else:
+            _ensure_within_workspace(target_root, workspace_path)
+            target_root.parent.mkdir(parents=True, exist_ok=True)
+            target_root.write_bytes(artifact_uploads[0].content)
+        materialized.add(artifact_id)
+    return materialized
+
+
 def _resolve_artifact_ids(
     artifact_ids: list[str],
     *,
@@ -106,3 +153,35 @@ def _validate_artifact_path(path: str) -> None:
         raise ArtifactPathError("Artifact path cannot be empty.")
     if ".." in candidate.parts:
         raise ArtifactPathError(f"Artifact path '{path}' cannot contain '..'.")
+
+
+def _artifact_path_is_directory_like(path: str) -> bool:
+    return path.endswith(("/", "\\"))
+
+
+def _upload_filename_has_parent(filename: str) -> bool:
+    parts = _safe_upload_filename(filename).parts
+    return len(parts) > 1
+
+
+def _safe_upload_filename(filename: str) -> Path:
+    normalized = normpath(filename.replace("\\", "/")).strip("/")
+    if not normalized or normalized == ".":
+        raise ArtifactPathError("Uploaded file name cannot be empty.")
+    windows_candidate = PureWindowsPath(normalized)
+    candidate = Path(normalized)
+    if candidate.is_absolute() or windows_candidate.is_absolute() or windows_candidate.drive:
+        raise ArtifactPathError(f"Uploaded file name '{filename}' must be relative.")
+    if ".." in candidate.parts:
+        raise ArtifactPathError(f"Uploaded file name '{filename}' cannot contain '..'.")
+    return candidate
+
+
+def _ensure_within_workspace(path: Path, workspace_path: str | Path) -> None:
+    workspace = Path(workspace_path).resolve()
+    try:
+        path.resolve().relative_to(workspace)
+    except ValueError as exc:
+        raise ArtifactPathError(
+            f"Uploaded artifact path '{path}' escapes workspace '{workspace}'."
+        ) from exc

@@ -9,7 +9,12 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
-from dagent.harness_runtime.artifacts import create_run_workspace, init_artifact_states
+from dagent.harness_runtime.artifacts import (
+    ArtifactUpload,
+    create_run_workspace,
+    init_artifact_states,
+    materialize_artifact_uploads,
+)
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
@@ -240,6 +245,7 @@ class DAGAgentLoop:
         spec: DAGSpec,
         *,
         workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -253,6 +259,18 @@ class DAGAgentLoop:
         dag = self.prepare_for_review(dag)
         workspace = create_run_workspace(workspace_root)
         artifact_states = init_artifact_states(spec.artifacts)
+        materialized_artifact_ids = materialize_artifact_uploads(
+            artifact_uploads or {},
+            artifacts=spec.artifacts,
+            workspace_path=workspace,
+        )
+        for artifact_id in materialized_artifact_ids:
+            artifact = spec.artifacts[artifact_id]
+            artifact_states[artifact_id] = ArtifactState(
+                id=artifact.id,
+                paths=list(artifact.paths),
+                status="created",
+            )
         dag.status = "approved"
         record = RuntimeTaskRecord.dag_task(
             task_id=run_id,

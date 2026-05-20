@@ -495,6 +495,67 @@ def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
 
 
+def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) -> None:
+    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "runs"
+
+    create_response = client.post(
+        "/dag-specs",
+        json={
+            "id": "uploaded_source",
+            "name": "Uploaded source",
+            "artifacts": {
+                "source": {
+                    "id": "source",
+                    "paths": ["inputs/source.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "read",
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.read_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "{{artifact.source.path}}",
+                            },
+                            "boundary": {
+                                "mode": "read_only",
+                                "allowed_paths": ["{{artifact.source.path}}"],
+                            },
+                        },
+                    },
+                    "inputs": ["source"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    upload_response = client.post(
+        "/dag-specs/uploaded_source/artifacts/source/upload",
+        files=[("files", ("source.txt", b"hello from upload", "text/plain"))],
+    )
+    assert upload_response.status_code == 200
+    assert upload_response.json()["files"] == ["source.txt"]
+
+    run_response = client.post(
+        "/dag-specs/uploaded_source/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = run_response.json()["dag_run"]
+    workspace_path = Path(run_payload["workspace_path"])
+    assert run_payload["status"] == "completed"
+    assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
+    assert run_payload["trace"]["root"]["children"][0]["output"] == "hello from upload"
+    assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
+
+
 def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
     state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

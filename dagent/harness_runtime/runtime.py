@@ -18,6 +18,7 @@ from dagent.harness_runtime.tool_agent import (
 )
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
+from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
@@ -341,6 +342,7 @@ class HarnessRuntime:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
         workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
@@ -375,6 +377,7 @@ class HarnessRuntime:
             return await self.dag_agent.loop.run_static(
                 request,
                 workspace_root=workspace_root,
+                artifact_uploads=artifact_uploads,
                 on_token=thinking_only,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
@@ -431,6 +434,7 @@ class HarnessRuntime:
         spec: DAGSpec,
         *,
         workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> DAGRun:
@@ -441,6 +445,7 @@ class HarnessRuntime:
             on_token=on_token,
             on_event=on_event,
             workspace_root=workspace_root,
+            artifact_uploads=artifact_uploads,
         )
         record = self.session.save_loop_outcome(
             task_id=outcome.task_id,
