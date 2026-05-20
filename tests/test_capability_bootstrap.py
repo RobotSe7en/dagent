@@ -11,6 +11,20 @@ def test_default_capability_catalog_registers_base_capabilities(tmp_path) -> Non
     assert "tool.dag_start" not in catalog.ids()
 
 
+def test_default_file_capabilities_publish_argument_schemas(tmp_path) -> None:
+    catalog = create_default_capability_catalog(workspace_root=tmp_path)
+
+    read_definition = catalog.get("file.read")
+    write_definition = catalog.get("file.write")
+
+    assert read_definition is not None
+    assert write_definition is not None
+    assert read_definition.parameters["properties"]["path"]["type"] == "string"
+    assert read_definition.parameters["required"] == ["path"]
+    assert write_definition.parameters["properties"]["content"]["type"] == "string"
+    assert write_definition.parameters["required"] == ["path", "content"]
+
+
 def test_default_capability_catalog_uses_workspace_root_for_file_capabilities(tmp_path) -> None:
     catalog = create_default_capability_catalog(workspace_root=tmp_path)
     write_entry = catalog.get_entry("file.write")

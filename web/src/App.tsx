@@ -76,6 +76,16 @@ import type {
   TraceLogEvent,
   WorkspaceKey,
 } from './types';
+import {
+  buildSchemaArgumentFields,
+  coerceArgumentValue,
+  ensureSchemaArguments,
+  formatArgumentValue,
+  parseArgumentValue,
+  resetSchemaArguments,
+  visibleCapabilitiesForPicker,
+  type ArgumentValueType,
+} from './schemaArguments';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -670,28 +680,31 @@ export function App() {
 
   const addNode = () => {
     const id = uniqueNodeId(dag);
-    updateDag((current) => ({
-      ...current,
-      status: 'draft',
-      nodes: [
-        ...current.nodes,
-        normalizeNode({
-          id,
-          invocation: {
-            capability_id: current.nodes[0]?.invocation.capability_id ?? '',
-            kind: current.nodes[0]?.invocation.kind ?? 'tool',
-            arguments: {},
-            boundary: {
-              mode: 'read_only',
-              allowed_paths: [],
-              allowed_commands: [],
+    updateDag((current) => {
+      const firstCapability = capabilities.find((item) => item.id === current.nodes[0]?.invocation.capability_id);
+      return {
+        ...current,
+        status: 'draft',
+        nodes: [
+          ...current.nodes,
+          normalizeNode({
+            id,
+            invocation: {
+              capability_id: current.nodes[0]?.invocation.capability_id ?? '',
+              kind: current.nodes[0]?.invocation.kind ?? 'tool',
+              arguments: ensureSchemaArguments({}, firstCapability?.parameters),
+              boundary: {
+                mode: 'read_only',
+                allowed_paths: [],
+                allowed_commands: [],
+              },
+              risk: 'low',
             },
-            risk: 'low',
-          },
-          status: 'planned',
-        }),
-      ],
-    }));
+            status: 'planned',
+          }),
+        ],
+      };
+    });
     setSelectedId(id);
   };
 
@@ -726,7 +739,7 @@ export function App() {
           invocation: {
             capability_id: selectedCapability?.id ?? '',
             kind: selectedCapability?.kind ?? 'tool',
-            arguments: {},
+            arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
             boundary: {
               mode: 'read_only',
               allowed_paths: [],
@@ -1551,48 +1564,6 @@ function clipText(value: string, maxLength: number) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
-function argumentValueType(value: unknown): ArgumentValueType {
-  if (typeof value === 'number') return 'number';
-  if (typeof value === 'boolean') return 'boolean';
-  if (typeof value === 'string') return 'string';
-  return 'json';
-}
-
-function formatArgumentValue(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return JSON.stringify(value ?? null);
-}
-
-function parseArgumentValue(rawValue: string, type: ArgumentValueType, previous: unknown): unknown {
-  if (type === 'string') return rawValue;
-  if (type === 'number') {
-    if (rawValue.trim() === '') return 0;
-    const parsed = Number(rawValue);
-    return Number.isFinite(parsed) ? parsed : previous;
-  }
-  if (type === 'boolean') return rawValue === 'true';
-  try {
-    return JSON.parse(rawValue);
-  } catch {
-    return previous;
-  }
-}
-
-function coerceArgumentValue(value: unknown, type: ArgumentValueType): unknown {
-  if (type === 'string') return typeof value === 'string' ? value : formatArgumentValue(value);
-  if (type === 'number') return typeof value === 'number' ? value : Number(value) || 0;
-  if (type === 'boolean') return typeof value === 'boolean' ? value : Boolean(value);
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  }
-  return value ?? null;
-}
-
 function uniqueNodeId(dag: Dag) {
   let index = dag.nodes.length + 1;
   let id = `node_${index}`;
@@ -1715,7 +1686,7 @@ function OrchestrationWorkspace({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId?: string } | null>(null);
   const [contextCapabilityId, setContextCapabilityId] = useState('');
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
-  const enabledCapabilities = capabilities.filter((capability) => capability.enabled);
+  const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
   const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
   const openCanvasMenu = (event: MouseEvent | React.MouseEvent<Element>) => {
     event.preventDefault();
@@ -1891,6 +1862,10 @@ function OrchestrationNodeEditor({
 }) {
   const invocation = node.invocation;
   const selectedCapability = capabilities.find((capability) => capability.id === invocation.capability_id);
+  const pickerCapabilities = visibleCapabilitiesForPicker(capabilities);
+  const selectableCapabilities = selectedCapability && !pickerCapabilities.some((capability) => capability.id === selectedCapability.id)
+    ? [selectedCapability, ...pickerCapabilities]
+    : pickerCapabilities;
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
   const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent' && capability.enabled);
   const boundary = invocation.boundary ?? {
@@ -1918,12 +1893,17 @@ function OrchestrationNodeEditor({
             patchInvocation({
               capability_id: event.target.value,
               kind: capability?.kind ?? invocation.kind,
+              arguments: resetSchemaArguments(
+                invocation.arguments ?? {},
+                capability?.parameters,
+                selectedCapability?.parameters,
+              ),
               risk: capabilityRisk(capability),
             });
           }}
         >
           <option value="">Select capability...</option>
-          {capabilities.filter((capability) => capability.enabled).map((capability) => (
+          {selectableCapabilities.map((capability) => (
             <option key={capability.id} value={capability.id}>
               {capabilityDisplayName(capability)}
             </option>
@@ -1952,6 +1932,7 @@ function OrchestrationNodeEditor({
       ) : null}
       <ArgumentForm
         value={invocation.arguments ?? {}}
+        parameters={selectedCapability?.parameters}
         onChange={(argumentsValue) => patchInvocation({ arguments: argumentsValue })}
       />
       <label>
@@ -1998,7 +1979,7 @@ function OrchestrationNodeEditor({
           />
         </label>
       </details>
-      <button className="secondary-button danger-button" onClick={onDelete} type="button">
+      <button className="secondary-button danger-button" onClick={() => onDelete()} type="button">
         <Trash2 size={16} />
         Delete Node
       </button>
@@ -2007,16 +1988,16 @@ function OrchestrationNodeEditor({
   );
 }
 
-type ArgumentValueType = 'string' | 'number' | 'boolean' | 'json';
-
 function ArgumentForm({
   value,
+  parameters,
   onChange,
 }: {
   value: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
   onChange: (value: Record<string, unknown>) => void;
 }) {
-  const entries = Object.entries(value);
+  const fields = buildSchemaArgumentFields(value, parameters);
   const updateKey = (oldKey: string, nextKey: string) => {
     const cleanKey = nextKey.trim();
     if (!cleanKey || (cleanKey !== oldKey && Object.prototype.hasOwnProperty.call(value, cleanKey))) return;
@@ -2039,13 +2020,14 @@ function ArgumentForm({
     });
   };
   const addField = () => {
-    let index = entries.length + 1;
+    const existing = ensureSchemaArguments(value, parameters);
+    let index = Object.keys(existing).length + 1;
     let key = `arg_${index}`;
-    while (Object.prototype.hasOwnProperty.call(value, key)) {
+    while (Object.prototype.hasOwnProperty.call(existing, key)) {
       index += 1;
       key = `arg_${index}`;
     }
-    onChange({ ...value, [key]: '' });
+    onChange({ ...existing, [key]: '' });
   };
   const removeField = (key: string) => {
     const next = { ...value };
@@ -2061,19 +2043,28 @@ function ArgumentForm({
           Add field
         </button>
       </div>
-      {entries.length ? entries.map(([key, itemValue], index) => {
-        const type = argumentValueType(itemValue);
+      {fields.length ? fields.map((field) => {
+        const { key, value: itemValue, valueType: type } = field;
         return (
-          <div className="argument-row" key={`argument-row-${index}`}>
-            <input
-              className="argument-key"
-              value={key}
-              onChange={(event) => updateKey(key, event.target.value)}
-              aria-label="Argument name"
-            />
+          <div className="argument-row" key={`argument-row-${key}`}>
+            <div className="argument-key-wrap">
+              <input
+                className="argument-key"
+                value={key}
+                disabled={field.fixed}
+                onChange={(event) => updateKey(key, event.target.value)}
+                aria-label="Argument name"
+              />
+              {field.fixed ? (
+                <span className="argument-meta" title={field.description}>
+                  {field.required ? 'required' : 'optional'}
+                </span>
+              ) : null}
+            </div>
             <select
               className="argument-type"
               value={type}
+              disabled={field.fixed}
               onChange={(event) => updateType(key, event.target.value as ArgumentValueType)}
               aria-label="Argument type"
             >
@@ -2100,7 +2091,13 @@ function ArgumentForm({
                 aria-label="Argument value"
               />
             )}
-            <button className="icon-button" onClick={() => removeField(key)} title="Remove argument" type="button">
+            <button
+              className="icon-button"
+              onClick={() => removeField(key)}
+              disabled={field.fixed}
+              title={field.fixed ? 'Schema-defined argument' : 'Remove argument'}
+              type="button"
+            >
               <Trash2 size={15} />
             </button>
           </div>
@@ -2428,7 +2425,7 @@ function DagReviewDialog({
             <p>{dag.task_id || dag.dag_id}</p>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button compact-button" onClick={onAddNode} type="button">
+            <button className="secondary-button compact-button" onClick={() => onAddNode()} type="button">
               <Plus size={16} />
               Add Node
             </button>
@@ -2469,7 +2466,7 @@ function DagReviewDialog({
                 dag={dag}
                 logs={selectedNodeLogs}
                 onPatch={onPatchNode}
-                onDelete={onDeleteNode}
+                onDelete={() => onDeleteNode(selectedNode.id)}
               />
             ) : (
               <div className="empty-state compact">Select a DAG node to inspect details.</div>
@@ -2610,7 +2607,7 @@ function NodeEditor({
           />
         </label>
       </details>
-      <button className="secondary-button danger-button" onClick={onDelete} type="button">
+      <button className="secondary-button danger-button" onClick={() => onDelete()} type="button">
         <Trash2 size={16} />
         Delete Node
       </button>

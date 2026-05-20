@@ -187,7 +187,19 @@ class FileCapabilityProvider:
                 return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
         catalog.register(
-            CapabilityDefinition(id="file.read", name="file_read", kind="file"),
+            CapabilityDefinition(
+                id="file.read",
+                name="file_read",
+                kind="file",
+                description="Read a UTF-8 text file from the workspace.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to read."},
+                    },
+                    "required": ["path"],
+                },
+            ),
             read,
         )
         catalog.register(
@@ -195,6 +207,15 @@ class FileCapabilityProvider:
                 id="file.write",
                 name="file_write",
                 kind="file",
+                description="Write UTF-8 text to a workspace file.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path to write."},
+                        "content": {"type": "string", "description": "Text content to write."},
+                    },
+                    "required": ["path", "content"],
+                },
                 policy=CapabilityPolicy(risk="medium"),
             ),
             write,
