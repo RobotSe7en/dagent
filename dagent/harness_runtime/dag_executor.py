@@ -11,6 +11,7 @@ from typing import Any
 
 from dagent.harness_runtime.artifacts import (
     init_artifact_states,
+    resolve_artifact_paths,
     resolve_node_artifacts,
     update_node_output_artifacts,
 )
@@ -36,6 +37,9 @@ from dagent.schemas import (
 
 
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([A-Za-z0-9_-]+)\.(output|final_response|status|stop_reason|steps)\s*}}")
+ARTIFACT_PLACEHOLDER_PATTERN = re.compile(
+    r"{{\s*artifact\.([A-Za-z0-9_-]+)\.(path|paths|absolute_path|absolute_paths)\s*}}"
+)
 
 
 class DAGExecutionError(RuntimeError):
@@ -115,10 +119,7 @@ class DAGExecutor:
             return
         for node in pending_nodes:
             if isinstance(node.payload, CapabilityNodePayload):
-                node.payload.invocation.arguments = _inject_placeholders(
-                    node.payload.invocation.arguments,
-                    node_traces,
-                )
+                self._inject_invocation_placeholders(node, node_traces)
                 _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
             *[
@@ -155,6 +156,37 @@ class DAGExecutor:
 
     def normalize(self, dag: DAG) -> DAG:
         return dag.model_copy(deep=True)
+
+    def _inject_invocation_placeholders(
+        self,
+        node: DAGNode,
+        node_traces: dict[str, RunTraceNode],
+    ) -> None:
+        if not isinstance(node.payload, CapabilityNodePayload):
+            return
+        invocation = node.payload.invocation
+        invocation.arguments = _inject_placeholders(
+            invocation.arguments,
+            node_traces,
+            artifacts=self.artifacts,
+            workspace_path=self.workspace_path,
+        )
+        invocation.boundary = invocation.boundary.model_copy(
+            update={
+                "allowed_paths": _inject_placeholder_list(
+                    invocation.boundary.allowed_paths,
+                    node_traces,
+                    artifacts=self.artifacts,
+                    workspace_path=self.workspace_path,
+                ),
+                "allowed_commands": _inject_placeholder_list(
+                    invocation.boundary.allowed_commands,
+                    node_traces,
+                    artifacts=self.artifacts,
+                    workspace_path=self.workspace_path,
+                ),
+            }
+        )
 
     async def execute_node(
         self,
@@ -390,25 +422,82 @@ def _all_nodes_completed(
 def _inject_placeholders(
     value: Any,
     node_traces: dict[str, RunTraceNode],
+    *,
+    artifacts: dict[str, Artifact] | None = None,
+    workspace_path: Path | None = None,
 ) -> Any:
     if isinstance(value, dict):
         return {
-            key: _inject_placeholders(item, node_traces)
+            key: _inject_placeholders(
+                item,
+                node_traces,
+                artifacts=artifacts,
+                workspace_path=workspace_path,
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_inject_placeholders(item, node_traces) for item in value]
+        return [
+            _inject_placeholders(
+                item,
+                node_traces,
+                artifacts=artifacts,
+                workspace_path=workspace_path,
+            )
+            for item in value
+        ]
     if not isinstance(value, str):
         return value
 
     exact = PLACEHOLDER_PATTERN.fullmatch(value)
     if exact:
         return _placeholder_value(exact, node_traces)
+    exact_artifact = ARTIFACT_PLACEHOLDER_PATTERN.fullmatch(value)
+    if exact_artifact:
+        return _artifact_placeholder_value(
+            exact_artifact,
+            artifacts=artifacts,
+            workspace_path=workspace_path,
+        )
 
     def replace(match: re.Match[str]) -> str:
         return str(_placeholder_value(match, node_traces))
 
-    return PLACEHOLDER_PATTERN.sub(replace, value)
+    resolved = PLACEHOLDER_PATTERN.sub(replace, value)
+
+    def replace_artifact(match: re.Match[str]) -> str:
+        replacement = _artifact_placeholder_value(
+            match,
+            artifacts=artifacts,
+            workspace_path=workspace_path,
+        )
+        if isinstance(replacement, list):
+            return ", ".join(str(item) for item in replacement)
+        return str(replacement)
+
+    return ARTIFACT_PLACEHOLDER_PATTERN.sub(replace_artifact, resolved)
+
+
+def _inject_placeholder_list(
+    values: list[str],
+    node_traces: dict[str, RunTraceNode],
+    *,
+    artifacts: dict[str, Artifact] | None,
+    workspace_path: Path | None,
+) -> list[str]:
+    resolved: list[str] = []
+    for value in values:
+        item = _inject_placeholders(
+            value,
+            node_traces,
+            artifacts=artifacts,
+            workspace_path=workspace_path,
+        )
+        if isinstance(item, list):
+            resolved.extend(str(entry) for entry in item)
+        else:
+            resolved.append(str(item))
+    return resolved
 
 
 def _placeholder_value(
@@ -433,10 +522,41 @@ def _placeholder_value(
     raise DAGExecutionError(f"Unknown placeholder field '{field}'.")
 
 
+def _artifact_placeholder_value(
+    match: re.Match[str],
+    *,
+    artifacts: dict[str, Artifact] | None,
+    workspace_path: Path | None,
+) -> Any:
+    artifact_id = match.group(1)
+    field = match.group(2)
+    artifact = (artifacts or {}).get(artifact_id)
+    if artifact is None:
+        raise DAGExecutionError(f"Unknown artifact placeholder '{artifact_id}'.")
+
+    if field == "path":
+        return artifact.paths[0]
+    if field == "paths":
+        return list(artifact.paths)
+    if workspace_path is None:
+        raise DAGExecutionError(
+            f"Cannot resolve absolute artifact placeholder '{artifact_id}' without a workspace."
+        )
+    absolute_paths = [str(path) for path in resolve_artifact_paths(artifact, workspace_path)]
+    if field == "absolute_path":
+        return absolute_paths[0]
+    if field == "absolute_paths":
+        return absolute_paths
+    raise DAGExecutionError(f"Unknown artifact placeholder field '{field}'.")
+
+
 def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
     if not isinstance(node.payload, CapabilityNodePayload):
         return
-    unresolved = _find_unresolved_placeholders(node.payload.invocation.arguments)
+    invocation = node.payload.invocation
+    unresolved = _find_unresolved_placeholders(invocation.arguments)
+    unresolved.update(_find_unresolved_placeholders(invocation.boundary.allowed_paths))
+    unresolved.update(_find_unresolved_placeholders(invocation.boundary.allowed_commands))
     if unresolved:
         joined = ", ".join(sorted(unresolved))
         raise DAGExecutionError(

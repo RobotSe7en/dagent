@@ -158,6 +158,57 @@ def test_validate_dag_spec_rejects_unknown_node_artifact() -> None:
         validate_dag_spec(spec)
 
 
+def test_validate_dag_spec_rejects_duplicate_artifact_producers() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "report": Artifact(id="report", paths=["outputs/report.md"]),
+        },
+        nodes=[
+            _node("draft_report", outputs=["report"]),
+            _node("revise_report", outputs=["report"]),
+        ],
+        edges=[DAGEdge(source="draft_report", target="revise_report")],
+    )
+
+    with pytest.raises(DAGValidationError, match="Artifact 'report' is produced by multiple nodes"):
+        validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_requires_consumer_to_depend_on_artifact_producer() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "report": Artifact(id="report", paths=["outputs/report.md"]),
+        },
+        nodes=[
+            _node("write_report", outputs=["report"]),
+            _node("review_report", inputs=["report"]),
+        ],
+        edges=[DAGEdge(source="review_report", target="write_report")],
+    )
+
+    with pytest.raises(DAGValidationError, match="must depend on producer node 'write_report'"):
+        validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_allows_external_input_artifacts_without_producer() -> None:
+    spec = DAGSpec(
+        id="requirements",
+        name="Requirements",
+        artifacts={
+            "uploaded_spec": Artifact(id="uploaded_spec", paths=["uploads/spec.md"]),
+        },
+        nodes=[
+            _node("analyze_upload", inputs=["uploaded_spec"]),
+        ],
+    )
+
+    validate_dag_spec(spec)
+
+
 @pytest.mark.parametrize("bad_path", ["C:/outside/file.md", "../outside.md", "safe/../../outside.md"])
 def test_validate_artifact_paths_rejects_absolute_or_escaping_paths(bad_path: str) -> None:
     with pytest.raises(ArtifactPathError):
@@ -326,6 +377,44 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
     result = run(executor.execute_next_ready_layer(dag))
 
     assert isinstance(result, RunTrace)
+    assert result.artifacts["note"].status == "created"
+    assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
+
+
+def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_path: Path) -> None:
+    executor = DAGExecutor(
+        capability_executor=_write_capability_executor(tmp_path),
+        workspace_path=tmp_path,
+        artifacts={
+            "note": Artifact(id="note", paths=["notes/output.txt"]),
+        },
+    )
+    dag = compile_dag_spec(
+        DAGSpec(
+            id="write_note",
+            name="Write note",
+            artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
+            nodes=[
+                _node(
+                    "write",
+                    tool="write_note",
+                    args={"path": "{{artifact.note.path}}", "content": "hi"},
+                    boundary=Boundary(
+                        mode="write_limited",
+                        allowed_paths=["{{artifact.note.path}}"],
+                    ),
+                    outputs=["note"],
+                )
+            ],
+        ),
+        task_id="task_1",
+    )
+
+    result = run(executor.execute_next_ready_layer(dag))
+
+    invocation = dag_node_trace(result, "write").children[0].capability_execution.invocation
+    assert invocation.arguments["path"] == "notes/output.txt"
+    assert invocation.boundary.allowed_paths == ["notes/output.txt"]
     assert result.artifacts["note"].status == "created"
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 

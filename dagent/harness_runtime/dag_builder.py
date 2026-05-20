@@ -158,6 +158,8 @@ def validate_dag_spec(spec: DAGSpec) -> None:
                 f"Node '{node.id}' references unknown artifact(s): {joined}."
             )
 
+    _validate_artifact_data_dependencies(spec)
+
     validate_dag(
         DAG(
             dag_id=f"dag_spec_{spec.id}",
@@ -166,6 +168,57 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             edges=[edge.model_copy(deep=True) for edge in spec.edges],
         )
     )
+
+
+def _validate_artifact_data_dependencies(spec: DAGSpec) -> None:
+    producers: dict[str, list[str]] = defaultdict(list)
+    for node in spec.nodes:
+        for artifact_id in set(node.outputs):
+            producers[artifact_id].append(node.id)
+
+    for artifact_id, producer_ids in sorted(producers.items()):
+        unique_producers = sorted(set(producer_ids))
+        if len(unique_producers) > 1:
+            joined = ", ".join(unique_producers)
+            raise DAGValidationError(
+                f"Artifact '{artifact_id}' is produced by multiple nodes: {joined}."
+            )
+
+    incoming: dict[str, list[str]] = defaultdict(list)
+    for edge in spec.edges:
+        incoming[edge.target].append(edge.source)
+
+    upstream_cache: dict[str, set[str]] = {}
+
+    def upstream_ids(node_id: str) -> set[str]:
+        if node_id in upstream_cache:
+            return upstream_cache[node_id]
+        seen: set[str] = set()
+        stack = list(incoming.get(node_id, ()))
+        while stack:
+            source = stack.pop()
+            if source in seen:
+                continue
+            seen.add(source)
+            stack.extend(incoming.get(source, ()))
+        upstream_cache[node_id] = seen
+        return seen
+
+    producer_by_artifact = {
+        artifact_id: producer_ids[0]
+        for artifact_id, producer_ids in producers.items()
+    }
+    for node in spec.nodes:
+        upstream = upstream_ids(node.id)
+        for artifact_id in set(node.inputs):
+            producer_id = producer_by_artifact.get(artifact_id)
+            if producer_id is None or producer_id == node.id:
+                continue
+            if producer_id not in upstream:
+                raise DAGValidationError(
+                    f"Node '{node.id}' reads artifact '{artifact_id}' and must depend "
+                    f"on producer node '{producer_id}'."
+                )
 
 
 def _normalize_dag_spec_node(

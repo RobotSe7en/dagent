@@ -160,7 +160,11 @@ In concrete response terms, the DAG LLM can return:
 | Natural-language answer | Finish the task and return `final_answer`. |
 
 The executor also resolves placeholders from completed node outputs before a tool call.
-Unresolved placeholders fail closed before execution.
+Unresolved placeholders fail closed before execution. `DAGSpec` artifacts are declared
+once on the spec, then referenced by node `inputs` and `outputs`; output artifacts may
+only have one producer, and consumers of produced artifacts must depend on the producer
+through explicit DAG edges. Capability arguments and boundary paths can reference
+artifact paths with `{{artifact.<id>.path}}`.
 
 ### When to Use DAG vs. Tool Mode
 

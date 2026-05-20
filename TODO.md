@@ -11,6 +11,8 @@
 - [x] Run `DAGSpec` through the existing runtime task path instead of bypassing runtime state.
 - [x] Add in-memory `DAGSpec` and `DAGRun` API endpoints.
 - [x] Add regression coverage for artifact validation, DAGSpec API, run isolation, required artifact failure, and existing executor behavior.
+- [x] Validate artifact producer/consumer contracts while keeping explicit edges as the scheduling source of truth.
+- [x] Resolve `{{artifact.<id>.path}}` placeholders in capability arguments and boundary paths.
 
 ## Phase 2: Agent Node Runtime
 
