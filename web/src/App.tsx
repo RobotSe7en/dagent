@@ -77,6 +77,7 @@ import type {
   CapabilityStreamEvent,
   TraceLogEvent,
   WorkspaceKey,
+  Artifact,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -89,6 +90,11 @@ import {
   type ArgumentValueType,
 } from './schemaArguments';
 import { pruneEdgesToNodeIds } from './dagEdges';
+import {
+  artifactPlaceholder,
+  removeArtifactBinding,
+  upsertArtifact,
+} from './dagArtifacts';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -100,6 +106,7 @@ const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
+const defaultWorkspaceRoot = '.dagent-runs';
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -356,6 +363,7 @@ export function App() {
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
+  const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileName, setSelectedProfileName] = useState('');
@@ -483,6 +491,32 @@ export function App() {
     if (patch.id) {
       setEditorDag((current) => ({ ...current, dag_id: patch.id as string, task_id: patch.id as string }));
     }
+  };
+
+  const upsertEditorArtifact = (artifact: Artifact, previousId?: string) => {
+    const nextArtifactId = artifact.id.trim();
+    if (!nextArtifactId) return;
+    const normalizedArtifact = { ...artifact, id: nextArtifactId };
+    const nextArtifacts = upsertArtifact(editorSpec.artifacts ?? {}, normalizedArtifact, previousId);
+    const nextNodes = previousId && previousId !== nextArtifactId
+      ? editorDag.nodes.map((node) => ({
+          ...node,
+          inputs: (node.inputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
+          outputs: (node.outputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
+        }))
+      : editorDag.nodes;
+    const nextSpec = {
+      ...specFromDag(editorSpec, { ...editorDag, nodes: nextNodes }),
+      artifacts: nextArtifacts,
+    };
+    setEditorSpec(nextSpec);
+    syncEditorDag(dagFromSpec(nextSpec));
+  };
+
+  const deleteEditorArtifact = (artifactId: string) => {
+    const nextSpec = removeArtifactBinding(specFromDag(editorSpec, editorDag), artifactId);
+    setEditorSpec(nextSpec);
+    syncEditorDag(dagFromSpec(nextSpec));
   };
 
   const updateEditorDag = (updater: (current: Dag) => Dag) => {
@@ -747,6 +781,7 @@ export function App() {
 
   const newEditorSpec = () => {
     setEditorSpecAndDag(createEmptyDagSpec());
+    setEditorWorkspaceRoot(defaultWorkspaceRoot);
   };
 
   const loadEditorSpec = (spec: DagSpec) => {
@@ -890,7 +925,7 @@ export function App() {
         onError: (message) => {
           setEditorMessage(message);
         },
-      });
+      }, { workspaceRoot: editorWorkspaceRoot });
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {
@@ -1238,9 +1273,13 @@ export function App() {
             run={editorRun}
             message={editorMessage}
             running={editorRunning}
+            workspaceRoot={editorWorkspaceRoot}
             onNew={newEditorSpec}
             onLoad={loadEditorSpec}
             onPatchSpec={patchEditorSpec}
+            onWorkspaceRootChange={setEditorWorkspaceRoot}
+            onUpsertArtifact={upsertEditorArtifact}
+            onDeleteArtifact={deleteEditorArtifact}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
@@ -1664,6 +1703,90 @@ function CapabilityReviewDialog({
   );
 }
 
+function ArtifactEditorPanel({
+  artifacts,
+  onUpsert,
+  onDelete,
+}: {
+  artifacts: Record<string, Artifact>;
+  onUpsert: (artifact: Artifact, previousId?: string) => void;
+  onDelete: (artifactId: string) => void;
+}) {
+  const artifactItems = Object.values(artifacts).sort((a, b) => a.id.localeCompare(b.id));
+  const addArtifact = () => {
+    let index = artifactItems.length + 1;
+    let id = `artifact_${index}`;
+    while (artifacts[id]) {
+      index += 1;
+      id = `artifact_${index}`;
+    }
+    onUpsert({
+      id,
+      paths: [`outputs/${id}`],
+      description: '',
+      required: true,
+      metadata: {},
+    });
+  };
+
+  return (
+    <section className="artifact-panel">
+      <div className="artifact-panel-head">
+        <span>Artifacts</span>
+        <button className="icon-button" onClick={addArtifact} title="Add artifact" type="button">
+          <Plus size={15} />
+        </button>
+      </div>
+      {artifactItems.length ? (
+        <div className="artifact-list">
+          {artifactItems.map((artifact) => (
+            <div className="artifact-row" key={artifact.id}>
+              <div className="artifact-row-grid">
+                <label>
+                  ID
+                  <input
+                    value={artifact.id}
+                    onChange={(event) => onUpsert({ ...artifact, id: event.target.value }, artifact.id)}
+                  />
+                </label>
+                <label>
+                  Paths
+                  <input
+                    value={(artifact.paths ?? []).join(', ')}
+                    onChange={(event) => onUpsert({ ...artifact, paths: splitCsv(event.target.value) }, artifact.id)}
+                  />
+                </label>
+              </div>
+              <label>
+                Description
+                <input
+                  value={artifact.description ?? ''}
+                  onChange={(event) => onUpsert({ ...artifact, description: event.target.value }, artifact.id)}
+                />
+              </label>
+              <div className="artifact-row-actions">
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={artifact.required ?? true}
+                    onChange={(event) => onUpsert({ ...artifact, required: event.target.checked }, artifact.id)}
+                  />
+                  Required
+                </label>
+                <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No artifacts.</div>
+      )}
+    </section>
+  );
+}
+
 function OrchestrationWorkspace({
   capabilities,
   dagSpecs,
@@ -1676,9 +1799,13 @@ function OrchestrationWorkspace({
   run,
   message,
   running,
+  workspaceRoot,
   onNew,
   onLoad,
   onPatchSpec,
+  onWorkspaceRootChange,
+  onUpsertArtifact,
+  onDeleteArtifact,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -1700,9 +1827,13 @@ function OrchestrationWorkspace({
   run: DagRun | null;
   message: string;
   running: boolean;
+  workspaceRoot: string;
   onNew: () => void;
   onLoad: (spec: DagSpec) => void;
   onPatchSpec: (patch: Partial<DagSpec>) => void;
+  onWorkspaceRootChange: (workspaceRoot: string) => void;
+  onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
+  onDeleteArtifact: (artifactId: string) => void;
   onAddNode: (capability?: CapabilityDefinition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -1769,7 +1900,16 @@ function OrchestrationWorkspace({
             Description
             <textarea value={spec.description ?? ''} onChange={(event) => onPatchSpec({ description: event.target.value })} />
           </label>
+          <label>
+            Workspace Root
+            <input value={workspaceRoot} onChange={(event) => onWorkspaceRootChange(event.target.value)} />
+          </label>
         </div>
+        <ArtifactEditorPanel
+          artifacts={spec.artifacts ?? {}}
+          onUpsert={onUpsertArtifact}
+          onDelete={onDeleteArtifact}
+        />
         <div className="resource-list">
           {dagSpecs.length ? dagSpecs.map((item) => (
             <button
@@ -1860,6 +2000,7 @@ function OrchestrationWorkspace({
           <OrchestrationNodeEditor
             node={normalizeNode(selectedNode)}
             dag={dag}
+            artifacts={spec.artifacts ?? {}}
             capabilities={capabilities}
             logs={trace.filter((event) => event.node_id === selectedNode.id)}
             onPatch={(patch, nextEdges) => onPatchNode(selectedNode.id, patch, nextEdges)}
@@ -1878,6 +2019,7 @@ function OrchestrationWorkspace({
 function OrchestrationNodeEditor({
   node,
   dag,
+  artifacts,
   capabilities,
   logs,
   onPatch,
@@ -1885,6 +2027,7 @@ function OrchestrationNodeEditor({
 }: {
   node: DagNode;
   dag: Dag;
+  artifacts: Record<string, Artifact>;
   capabilities: CapabilityDefinition[];
   logs: TraceLogEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
@@ -1914,8 +2057,33 @@ function OrchestrationNodeEditor({
     allowed_paths: [],
     allowed_commands: [],
   };
+  const artifactIds = Object.keys(artifacts).sort();
   const patchInvocation = (patch: Partial<typeof invocation>) =>
     onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
+  const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
+    const current = node[field] ?? [];
+    const next = checked
+      ? [...current.filter((id) => id !== artifactId), artifactId].sort()
+      : current.filter((id) => id !== artifactId);
+    onPatch({ [field]: next });
+  };
+  const setPathArgumentFromArtifact = (artifactId: string) => {
+    patchInvocation({
+      arguments: {
+        ...(invocation.arguments ?? {}),
+        path: artifactPlaceholder(artifactId),
+      },
+    });
+  };
+  const addAllowedPathFromArtifact = (artifactId: string) => {
+    const token = artifactPlaceholder(artifactId);
+    patchInvocation({
+      boundary: {
+        ...boundary,
+        allowed_paths: [...(boundary.allowed_paths ?? []).filter((path) => path !== token), token],
+      },
+    });
+  };
   return (
     <div className="node-editor">
       <label>
@@ -1976,6 +2144,14 @@ function OrchestrationNodeEditor({
         parameters={selectedCapability?.parameters}
         onChange={(argumentsValue) => patchInvocation({ arguments: argumentsValue })}
       />
+      <ArtifactBindingEditor
+        artifactIds={artifactIds}
+        inputs={node.inputs ?? []}
+        outputs={node.outputs ?? []}
+        onToggle={patchArtifactList}
+        onUseAsPath={setPathArgumentFromArtifact}
+        onAllowPath={addAllowedPathFromArtifact}
+      />
       <label>
         Depends On
         <input
@@ -2026,6 +2202,61 @@ function OrchestrationNodeEditor({
       </button>
       <NodeExecutionLog logs={logs} />
     </div>
+  );
+}
+
+function ArtifactBindingEditor({
+  artifactIds,
+  inputs,
+  outputs,
+  onToggle,
+  onUseAsPath,
+  onAllowPath,
+}: {
+  artifactIds: string[];
+  inputs: string[];
+  outputs: string[];
+  onToggle: (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => void;
+  onUseAsPath: (artifactId: string) => void;
+  onAllowPath: (artifactId: string) => void;
+}) {
+  return (
+    <details className="node-policy-details" open>
+      <summary>Artifacts</summary>
+      {artifactIds.length ? (
+        <div className="artifact-binding-list">
+          {artifactIds.map((artifactId) => (
+            <div className="artifact-binding-row" key={artifactId}>
+              <strong>{artifactId}</strong>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={inputs.includes(artifactId)}
+                  onChange={(event) => onToggle('inputs', artifactId, event.target.checked)}
+                />
+                Input
+              </label>
+              <label className="checkbox-line">
+                <input
+                  type="checkbox"
+                  checked={outputs.includes(artifactId)}
+                  onChange={(event) => onToggle('outputs', artifactId, event.target.checked)}
+                />
+                Output
+              </label>
+              <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifactId)} type="button">
+                Set path
+              </button>
+              <button className="secondary-button compact-button" onClick={() => onAllowPath(artifactId)} type="button">
+                Allow
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">No artifacts.</div>
+      )}
+    </details>
   );
 }
 

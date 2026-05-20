@@ -230,9 +230,17 @@ export async function runDagSpecStream(
     onDone?: (payload: DagRunDonePayload) => void;
     onError?: (message: string) => void;
   },
+  options: {
+    workspaceRoot?: string;
+  } = {},
 ): Promise<void> {
+  const body = options.workspaceRoot?.trim()
+    ? JSON.stringify({ workspace_root: options.workspaceRoot.trim() })
+    : undefined;
   const response = await fetch(`${API_BASE}/dag-specs/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));

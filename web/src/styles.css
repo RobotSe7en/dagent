@@ -498,6 +498,62 @@ select {
   resize: vertical;
 }
 
+.artifact-panel {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.artifact-panel-head,
+.artifact-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.artifact-panel-head span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 10px;
+}
+
+.artifact-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+
+.artifact-row-grid {
+  display: grid;
+  grid-template-columns: minmax(86px, 0.8fr) minmax(120px, 1.2fr);
+  gap: 8px;
+}
+
+.checkbox-line {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 6px !important;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.checkbox-line input {
+  width: auto;
+  min-height: 0;
+}
+
 .resource-list {
   min-height: 0;
   overflow-y: auto;
@@ -1448,6 +1504,11 @@ button:disabled {
   font-size: 13px;
 }
 
+.node-editor .checkbox-line input {
+  min-height: 0;
+  padding: 0;
+}
+
 .node-editor input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1495,6 +1556,27 @@ button:disabled {
 .node-policy-details .two-col,
 .node-policy-details > label {
   padding: 8px 12px 0;
+}
+
+.artifact-binding-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.artifact-binding-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.artifact-binding-row strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Node log ── */

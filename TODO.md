@@ -37,7 +37,8 @@
 
 - [ ] Build frontend screens for creating and editing `DAGSpec`.
 - [ ] Support capability selection and invocation argument editing.
-- [ ] Support artifact binding through node `inputs` and `outputs`.
+- [x] Support artifact registry editing and node artifact binding through `inputs` and `outputs`.
+- [x] Support configurable `workspace_root` when running a DAGSpec from Web.
 - [ ] Support review checkpoints.
 - [ ] Add DAGRun pages showing node status, traces, review state, and artifact outputs.
 

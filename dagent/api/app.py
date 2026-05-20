@@ -45,6 +45,10 @@ class CapabilityTestRequest(BaseModel):
     boundary: dict[str, Any] | None = None
 
 
+class DAGSpecRunRequest(BaseModel):
+    workspace_root: str | None = None
+
+
 class ApiState:
     def __init__(self) -> None:
         self.harness_runtime: HarnessRuntime | None = None
@@ -131,21 +135,25 @@ async def get_dag_spec(spec_id: str) -> dict[str, Any]:
 
 
 @app.post("/dag-specs/{spec_id}/run")
-async def run_dag_spec(spec_id: str) -> dict[str, Any]:
+async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -> dict[str, Any]:
     spec = state.dag_specs.get(spec_id)
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
 
-    dag_run = await state.get_harness_runtime().run_dag_spec(spec)
+    dag_run = await state.get_harness_runtime().run_dag_spec(
+        spec,
+        workspace_root=_workspace_root_from_request(request),
+    )
     state.dag_runs[dag_run.run_id] = dag_run
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 
 @app.post("/dag-specs/{spec_id}/run/stream")
-async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
+async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = None) -> StreamingResponse:
     spec = state.dag_specs.get(spec_id)
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
+    workspace_root = _workspace_root_from_request(request)
 
     async def events():
         yield _sse({"type": "status", "message": "dag_spec_run_started"})
@@ -160,6 +168,7 @@ async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
         task = asyncio.create_task(
             state.get_harness_runtime().run_dag_spec(
                 spec,
+                workspace_root=workspace_root,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -190,6 +199,12 @@ async def run_dag_spec_stream(spec_id: str) -> StreamingResponse:
         )
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _workspace_root_from_request(request: DAGSpecRunRequest | None) -> str:
+    if request is None or request.workspace_root is None or not request.workspace_root.strip():
+        return ".dagent-runs"
+    return request.workspace_root.strip()
 
 
 @app.get("/dag-runs/{run_id}")

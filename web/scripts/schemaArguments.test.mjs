@@ -23,6 +23,11 @@ const {
   visibleCapabilitiesForPicker,
 } = await importTypeScript('../src/schemaArguments.ts');
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
+const {
+  artifactPlaceholder,
+  removeArtifactBinding,
+  upsertArtifact,
+} = await importTypeScript('../src/dagArtifacts.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -113,4 +118,58 @@ test('pruneEdgesToNodeIds removes edges that reference filtered nodes', () => {
   assert.deepEqual(pruneEdgesToNodeIds(edges, new Set(['a', 'b'])), [
     { source: 'a', target: 'b', reason: 'valid dependency' },
   ]);
+});
+
+test('upsertArtifact stores artifacts under their id and normalizes paths', () => {
+  assert.deepEqual(
+    upsertArtifact(
+      {},
+      {
+        id: 'report',
+        paths: [' outputs/report.md ', '', 'outputs/assets/'],
+        description: 'Generated report',
+        required: true,
+      },
+    ),
+    {
+      report: {
+        id: 'report',
+        paths: ['outputs/report.md', 'outputs/assets/'],
+        description: 'Generated report',
+        required: true,
+        metadata: {},
+      },
+    },
+  );
+});
+
+test('removeArtifactBinding deletes artifacts and node input/output references', () => {
+  const spec = {
+    id: 'example',
+    name: 'Example',
+    artifacts: {
+      source: { id: 'source', paths: ['uploads/source.md'] },
+      report: { id: 'report', paths: ['outputs/report.md'] },
+    },
+    nodes: [
+      { id: 'read', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['source'], outputs: ['report'] },
+      { id: 'review', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['report'] },
+    ],
+    edges: [],
+  };
+
+  assert.deepEqual(removeArtifactBinding(spec, 'report'), {
+    ...spec,
+    artifacts: {
+      source: { id: 'source', paths: ['uploads/source.md'] },
+    },
+    nodes: [
+      { ...spec.nodes[0], inputs: ['source'], outputs: [] },
+      { ...spec.nodes[1], inputs: [] },
+    ],
+  });
+});
+
+test('artifactPlaceholder builds executor artifact placeholder syntax', () => {
+  assert.equal(artifactPlaceholder('report'), '{{artifact.report.path}}');
 });

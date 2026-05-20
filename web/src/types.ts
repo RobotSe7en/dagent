@@ -86,9 +86,17 @@ export interface DagSpec {
   version?: number;
   description?: string;
   input_schema?: Record<string, unknown>;
-  artifacts?: Record<string, unknown>;
+  artifacts?: Record<string, Artifact>;
   nodes: DagNode[];
   edges: DagEdge[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface Artifact {
+  id: string;
+  paths: string[];
+  description?: string;
+  required?: boolean;
   metadata?: Record<string, unknown>;
 }
 
