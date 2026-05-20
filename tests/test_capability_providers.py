@@ -273,11 +273,13 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     node_a = DAGNode(
         id="write_requirements",
         title="Write requirements",
-        goal="Draft the requirements.",
-        instructions="Keep it concise.",
         payload=dict(
             type="capability",
-            invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+            invocation=CapabilityInvocation(
+                capability_id="agent.helper",
+                kind="agent",
+                arguments={"prompt": "Draft the requirements. Keep it concise."},
+            ),
         ),
     )
     context_a = CapabilityExecutionContext(
@@ -297,11 +299,13 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
         update={
             "id": "write_tests",
             "title": "Write tests",
-            "goal": "Draft test cases.",
-            "instructions": "Cover failures.",
             "payload": node_a.payload.model_copy(
                 update={
-                    "invocation": CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                    "invocation": CapabilityInvocation(
+                        capability_id="agent.helper",
+                        kind="agent",
+                        arguments={"prompt": "Draft test cases. Cover failures."},
+                    ),
                 },
                 deep=True,
             ),
@@ -332,6 +336,5 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     assert "source_doc" in first_system
     assert "requirements_doc" in first_system
     assert "Write requirements" in first_user
-    assert "Draft the requirements." in first_user
-    assert "Keep it concise." in first_user
+    assert "Draft the requirements. Keep it concise." in first_user
     assert "source_doc" not in first_user

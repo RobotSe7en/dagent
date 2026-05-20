@@ -4,7 +4,7 @@
 
 - [x] Keep the existing local thread message flow unchanged for `ToolAgent` and `DAGAgent`.
 - [x] Add public DAG platform models: `Artifact`, `ArtifactState`, `DAGSpec`, `DAGRun`.
-- [x] Extend `DAGNode` and internal `PlanNodeSpec` with `title`, `inputs`, `outputs`, `goal`, and `instructions`.
+- [x] Keep `DAGNode` as graph structure with `title`, `inputs`, and `outputs`; agent task text lives in capability `prompt` arguments.
 - [x] Replace per-step DAG result DTOs with the unified `RunTrace` tree.
 - [x] Add run workspace and artifact state helpers.
 - [x] Compile and validate `DAGSpec` into executable `DAG`.

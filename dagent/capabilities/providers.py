@@ -552,10 +552,9 @@ def _agent_node_request(
     ]
     if node.title:
         lines.append(f"Title: {node.title}")
-    if node.goal:
-        lines.append(f"Goal:\n{node.goal}")
-    if node.instructions:
-        lines.append(f"Instructions:\n{node.instructions}")
+    prompt = str(invocation.arguments.get("prompt", "")).strip()
+    if prompt:
+        lines.append(f"Prompt:\n{prompt}")
     return "\n\n".join(lines)
 
 

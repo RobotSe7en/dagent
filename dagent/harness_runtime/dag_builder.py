@@ -326,8 +326,6 @@ def _compile_plan_node(
     return DAGNode(
         id=node.id,
         title=node.title,
-        goal=node.goal,
-        instructions=node.instructions,
         payload=CapabilityNodePayload(
             type="capability",
             invocation=CapabilityInvocation(

@@ -334,11 +334,13 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
             DAGNode(
                 id="agent_node",
                 title="Write requirements",
-                goal="Draft requirements.",
-                instructions="Keep it concise.",
                 payload=dict(
                     type="capability",
-                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                    invocation=CapabilityInvocation(
+                        capability_id="agent.helper",
+                        kind="agent",
+                        arguments={"prompt": "Draft requirements. Keep it concise."},
+                    ),
                 ),
                 inputs=["source_doc"],
                 outputs=["requirements_doc"],
@@ -357,8 +359,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
     assert str(workspace / "inputs" / "source.md") in system
     assert str(workspace / "outputs" / "requirements.md") in system
     assert "Write requirements" in user
-    assert "Draft requirements." in user
-    assert "Keep it concise." in user
+    assert "Draft requirements. Keep it concise." in user
     assert "source_doc" not in user
 
 
@@ -412,10 +413,13 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
             DAGNode(
                 id="agent_node",
                 title="Call echo",
-                goal="Use echo.",
                 payload=dict(
                     type="capability",
-                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                    invocation=CapabilityInvocation(
+                        capability_id="agent.helper",
+                        kind="agent",
+                        arguments={"prompt": "Use echo."},
+                    ),
                 ),
             )
         ],

@@ -69,13 +69,11 @@ def test_dag_node_binds_artifact_ids_as_inputs_and_outputs() -> None:
     )
 
     assert node.title == "Write requirement"
-    assert node.goal is None
-    assert node.instructions is None
     assert node.inputs == ["raw_requirement"]
     assert node.outputs == ["requirement_package"]
 
 
-def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
+def test_dag_node_model_validate_uses_payload_only_shape() -> None:
     node = DAGNode.model_validate({
         "id": "read",
         "payload": {
@@ -88,13 +86,11 @@ def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
         },
     })
 
-    assert node.goal is None
-    assert node.instructions is None
     dumped = node.model_dump(mode="json")
-    assert dumped["goal"] is None
-    assert dumped["instructions"] is None
     assert dumped["payload"]["type"] == "capability"
     assert dumped["payload"]["invocation"]["capability_id"] == "tool.echo"
+    assert "goal" not in dumped
+    assert "instructions" not in dumped
     assert "invocation" not in dumped
     assert "node_type" not in dumped
 
@@ -111,6 +107,23 @@ def test_dag_node_rejects_legacy_invocation_shape() -> None:
         })
 
 
+def test_dag_node_rejects_goal_and_instructions_on_node_shell() -> None:
+    with pytest.raises(ValidationError):
+        DAGNode.model_validate({
+            "id": "read",
+            "goal": "Do work.",
+            "instructions": "Be concise.",
+            "payload": {
+                "type": "capability",
+                "invocation": {
+                    "capability_id": "tool.echo",
+                    "kind": "tool",
+                    "arguments": {"text": "ok"},
+                },
+            },
+        })
+
+
 def test_dag_node_payload_discriminator_is_required_in_json_schema() -> None:
     schema = DAGNode.model_json_schema()
 
@@ -119,17 +132,6 @@ def test_dag_node_payload_discriminator_is_required_in_json_schema() -> None:
 
     assert "type" in capability_schema["required"]
     assert "type" in start_schema["required"]
-
-
-def test_dag_node_supports_agent_goal_and_instructions() -> None:
-    node = _node(
-        "write_requirement",
-        goal="Write a complete requirement specification.",
-        instructions="Use clear acceptance criteria.",
-    )
-
-    assert node.goal == "Write a complete requirement specification."
-    assert node.instructions == "Use clear acceptance criteria."
 
 
 def test_dag_run_result_alias_is_removed_from_results_schema() -> None:
@@ -215,7 +217,7 @@ def test_compile_dag_spec_preserves_artifacts_on_nodes() -> None:
     assert dag.nodes[0].outputs == ["requirement_package"]
 
 
-def test_compile_dag_spec_preserves_node_goal_and_instructions() -> None:
+def test_compile_dag_spec_preserves_agent_prompt_argument() -> None:
     spec = DAGSpec(
         id="requirements",
         name="Requirements",
@@ -223,16 +225,18 @@ def test_compile_dag_spec_preserves_node_goal_and_instructions() -> None:
         nodes=[
             _node(
                 "write_requirement",
-                goal="Write the requirement spec.",
-                instructions="Use numbered acceptance criteria.",
+                tool="agent.helper",
+                kind="agent",
+                args={"prompt": "Write the requirement spec. Use numbered acceptance criteria."},
             )
         ],
     )
 
     dag = compile_dag_spec(spec, task_id="task_1")
 
-    assert dag.nodes[0].goal == "Write the requirement spec."
-    assert dag.nodes[0].instructions == "Use numbered acceptance criteria."
+    assert dag.nodes[0].payload.invocation.arguments == {
+        "prompt": "Write the requirement spec. Use numbered acceptance criteria."
+    }
 
 
 def test_compile_dag_spec_copies_capability_policy_risk() -> None:
@@ -459,23 +463,20 @@ def _node(
     node_id: str,
     *,
     tool: str = "echo",
+    kind: str = "tool",
     args: dict | None = None,
     boundary: Boundary | None = None,
-    goal: str | None = None,
-    instructions: str | None = None,
     inputs: list[str] | None = None,
     outputs: list[str] | None = None,
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
         title=node_id.replace("_", " ").capitalize(),
-        goal=goal,
-        instructions=instructions,
         payload=dict(
             type="capability",
             invocation=CapabilityInvocation(
-                capability_id=f"tool.{tool}",
-                kind="tool",
+                capability_id=tool if "." in tool else f"tool.{tool}",
+                kind=kind,
                 arguments=args or {"text": node_id},
                 boundary=boundary or Boundary(),
             ),

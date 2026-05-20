@@ -192,24 +192,39 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     assert node.payload.invocation.kind == "file"
 
 
-def test_compile_plan_spec_preserves_node_goal_and_instructions() -> None:
+def test_plan_spec_rejects_node_goal_and_instructions() -> None:
+    with pytest.raises(ValueError):
+        PlanSpec.model_validate({
+            "task": "requirements",
+            "nodes": [
+                {
+                    "id": "write_requirements",
+                    "tool": "echo",
+                    "args": {"text": "ok"},
+                    "goal": "Write a requirement specification.",
+                    "instructions": "Use acceptance criteria.",
+                }
+            ],
+        })
+
+
+def test_compile_plan_spec_preserves_agent_prompt_argument() -> None:
     plan = PlanSpec.model_validate({
         "task": "requirements",
         "nodes": [
             {
                 "id": "write_requirements",
-                "tool": "echo",
-                "args": {"text": "ok"},
-                "goal": "Write a requirement specification.",
-                "instructions": "Use acceptance criteria.",
+                "tool": "helper",
+                "args": {"prompt": "Write a requirement specification. Use acceptance criteria."},
             }
         ],
     })
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("helper", "agent.helper", kind="agent")])
 
-    assert dag.nodes[0].goal == "Write a requirement specification."
-    assert dag.nodes[0].instructions == "Use acceptance criteria."
+    assert dag.nodes[0].payload.invocation.arguments == {
+        "prompt": "Write a requirement specification. Use acceptance criteria."
+    }
 
 
 def test_dag_must_be_acyclic() -> None:

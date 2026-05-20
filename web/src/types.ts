@@ -52,8 +52,6 @@ export type DagNodePayload = CapabilityNodePayload | StartNodePayload;
 export interface DagNode {
   id: string;
   title?: string;
-  goal?: string | null;
-  instructions?: string | null;
   payload: DagNodePayload;
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
   inputs?: string[];
