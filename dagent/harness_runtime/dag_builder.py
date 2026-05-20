@@ -8,13 +8,21 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from dagent.harness_runtime.review_policy import effective_risk
-from dagent.schemas import Boundary, DAG, DAGEdge, DAGNode, PlanSpec, ToolInvocation
-from dagent.tools.registry import Tool
+from dagent.harness_runtime.artifacts import validate_artifact_paths
+from dagent.schemas.dag import PlanSpec
+from dagent.schemas import (
+    Boundary,
+    DAG,
+    DAGEdge,
+    DAGNode,
+    DAGSpec,
+    CapabilityDefinition,
+    CapabilityInvocation,
+)
 
 
 class DAGCreationError(ValueError):
-    """Raised when a proposed DAG cannot become an executable tool DAG."""
+    """Raised when a proposed DAG cannot become an executable DAG."""
 
 
 class DAGValidationError(ValueError):
@@ -32,7 +40,7 @@ def dag_from_model_output(
     content: str,
     *,
     task_id: str,
-    tools: list[Tool] | None = None,
+    tools: list[CapabilityDefinition] | None = None,
 ) -> DAG | str | None:
     """Parse LLM output into a DAG, a final answer string, or None."""
     if _is_no_change(content):
@@ -74,7 +82,7 @@ def compile_plan_spec(
     plan: PlanSpec,
     *,
     task_id: str,
-    tools: list[Tool] | None = None,
+    tools: list[CapabilityDefinition] | None = None,
 ) -> DAG:
     tool_index = {tool.name: tool for tool in (tools or [])}
     nodes = [_compile_plan_node(node, tool_index=tool_index) for node in plan.nodes]
@@ -98,6 +106,85 @@ def compile_plan_spec(
     )
 
 
+def compile_dag_spec(
+    spec: DAGSpec,
+    *,
+    task_id: str,
+    capabilities: list[CapabilityDefinition] | None = None,
+) -> DAG:
+    validate_dag_spec(spec)
+    definitions_by_id = (
+        None
+        if capabilities is None
+        else {
+            definition.id: definition
+            for definition in capabilities
+        }
+    )
+    nodes = [
+        _normalize_dag_spec_node(node, definitions_by_id)
+        for node in spec.nodes
+    ]
+    edges = [edge.model_copy(deep=True) for edge in spec.edges]
+    return DAG(
+        dag_id=f"dag_{uuid4().hex}",
+        task_id=task_id,
+        status="draft",
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+def validate_dag_spec(spec: DAGSpec) -> None:
+    for artifact_id, artifact in spec.artifacts.items():
+        if artifact.id != artifact_id:
+            raise DAGValidationError(
+                f"Artifact key '{artifact_id}' must match artifact id '{artifact.id}'."
+            )
+        try:
+            validate_artifact_paths(artifact.paths)
+        except ValueError as exc:
+            raise DAGValidationError(str(exc)) from exc
+
+    artifact_ids = set(spec.artifacts)
+    for node in spec.nodes:
+        references = [*node.inputs, *node.outputs]
+        unknown = sorted(set(references) - artifact_ids)
+        if unknown:
+            joined = ", ".join(unknown)
+            raise DAGValidationError(
+                f"Node '{node.id}' references unknown artifact(s): {joined}."
+            )
+
+    validate_dag(
+        DAG(
+            dag_id=f"dag_spec_{spec.id}",
+            task_id=spec.id,
+            nodes=[node.model_copy(deep=True) for node in spec.nodes],
+            edges=[edge.model_copy(deep=True) for edge in spec.edges],
+        )
+    )
+
+
+def _normalize_dag_spec_node(
+    node: DAGNode,
+    definitions_by_id: dict[str, CapabilityDefinition] | None,
+) -> DAGNode:
+    normalized = node.model_copy(deep=True)
+    if definitions_by_id is None or not normalized.invocation.capability_id:
+        return normalized
+    definition = definitions_by_id.get(normalized.invocation.capability_id)
+    if definition is None:
+        available = ", ".join(sorted(definitions_by_id)) or "(none)"
+        raise DAGValidationError(
+            f"Unknown capability '{normalized.invocation.capability_id}'. "
+            f"Available capabilities: {available}."
+        )
+    normalized.invocation.kind = definition.kind
+    normalized.invocation.risk = definition.policy.risk
+    return normalized
+
+
 def validate_dag(dag: DAG) -> None:
     """Validate DAG structure."""
     if not dag.nodes:
@@ -115,8 +202,12 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
-        if not node.invocation.tool_name:
-            raise DAGValidationError(f"Node '{node.id}' must declare a tool.")
+        if node.node_type == "start":
+            if node.id != "start":
+                raise DAGValidationError("Start node must use id 'start'.")
+            continue
+        if not node.invocation.capability_id:
+            raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
     node_id_set = set(node_ids)
     connected_ids: set[str] = set()
@@ -213,20 +304,34 @@ def _parse_depends_on(deps_text: str | None) -> list[str]:
 def _compile_plan_node(
     node,
     *,
-    tool_index: dict[str, Tool] | None = None,
+    tool_index: dict[str, CapabilityDefinition] | None = None,
 ) -> DAGNode:
     if not node.tool:
         raise DAGCreationError(f"PlanSpec node '{node.id}' must declare one concrete tool.")
+    if node.tool == "dag_start":
+        raise DAGCreationError("dag_start is reserved for the internal start node.")
     args = dict(node.args)
     registered = (tool_index or {}).get(node.tool)
+    if registered is None:
+        available = ", ".join(sorted(tool_index or {})) or "(none)"
+        raise DAGCreationError(
+            f"Unknown capability function '{node.tool}'. "
+            f"Available functions: {available}."
+        )
     return DAGNode(
         id=node.id,
-        invocation=ToolInvocation(
-            tool_name=node.tool,
+        title=node.title,
+        goal=node.goal,
+        instructions=node.instructions,
+        invocation=CapabilityInvocation(
+            capability_id=registered.id,
+            kind=registered.kind,
             arguments=args,
             boundary=_infer_boundary(registered, args),
-            risk=effective_risk(registered, args),
+            risk=registered.policy.risk,
         ),
+        inputs=list(node.inputs),
+        outputs=list(node.outputs),
     )
 
 
@@ -248,15 +353,7 @@ def _ensure_start_node(
 
     if start_id not in node_ids:
         next_nodes = [
-            DAGNode(
-                id=start_id,
-                invocation=ToolInvocation(
-                    tool_name="dag_start",
-                    arguments={},
-                    boundary=Boundary(mode="read_only"),
-                    risk="low",
-                ),
-            ),
+            _start_node(),
             *next_nodes,
         ]
     elif not root_ids:
@@ -271,6 +368,20 @@ def _ensure_start_node(
         for node_id in root_ids
     )
     return next_nodes, next_edges
+
+
+def _start_node() -> DAGNode:
+    return DAGNode(
+        id="start",
+        node_type="start",
+        invocation=CapabilityInvocation(
+            capability_id="",
+            kind="tool",
+            arguments={},
+            boundary=Boundary(mode="read_only"),
+            risk="low",
+        ),
+    )
 
 
 def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:
@@ -296,12 +407,12 @@ def _ensure_acyclic(node_ids: set[str], edges: list[tuple[str, str]]) -> None:
         raise DAGValidationError("DAG must be acyclic.")
 
 
-def _infer_boundary(tool_obj: Tool | None, args: dict[str, Any]) -> Boundary:
-    if tool_obj is not None and tool_obj.boundary_fn is not None:
-        return tool_obj.boundary_fn(args)
+def _infer_boundary(tool_obj: CapabilityDefinition | None, args: dict[str, Any]) -> Boundary:
     if tool_obj is None:
         return Boundary(mode="read_only")
-    paths = [str(args.get(path_arg) or ".") for path_arg in tool_obj.path_args] or ["."]
-    if tool_obj.action == "write":
+    path_args = tuple(tool_obj.config.get("path_args") or ())
+    action = str(tool_obj.config.get("action") or "read")
+    paths = [str(args.get(path_arg) or ".") for path_arg in path_args] or ["."]
+    if action == "write":
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)

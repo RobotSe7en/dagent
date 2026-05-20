@@ -1,4 +1,4 @@
-import type { Dag, TraceEvent } from './types';
+import type { Dag, TraceLogEvent } from './types';
 
 export const initialDag: Dag = {
   dag_id: 'dag_review_001',
@@ -7,9 +7,11 @@ export const initialDag: Dag = {
   status: 'review_required',
   nodes: [
     {
-      id: 'plan_request',
+      id: 'start',
+      node_type: 'start',
       invocation: {
-        tool_name: 'dag_start',
+        capability_id: '',
+        kind: 'tool',
         arguments: {},
         boundary: {
           mode: 'read_only',
@@ -22,7 +24,8 @@ export const initialDag: Dag = {
     {
       id: 'inspect_project',
       invocation: {
-        tool_name: 'grep',
+        capability_id: 'tool.grep',
+        kind: 'tool',
         arguments: { pattern: 'DAG', path: '.' },
         boundary: {
           mode: 'read_only',
@@ -35,7 +38,8 @@ export const initialDag: Dag = {
     {
       id: 'summarize_result',
       invocation: {
-        tool_name: 'read_file',
+        capability_id: 'tool.read_file',
+        kind: 'tool',
         arguments: { path: 'README.md' },
         boundary: {
           mode: 'read_only',
@@ -47,12 +51,12 @@ export const initialDag: Dag = {
     },
   ],
   edges: [
-    { source: 'plan_request', target: 'inspect_project', reason: 'Need plan before inspection.' },
+    { source: 'start', target: 'inspect_project', reason: 'Need plan before inspection.' },
     { source: 'inspect_project', target: 'summarize_result', reason: 'Need facts before summary.' },
   ],
 };
 
-export const initialTrace: TraceEvent[] = [
+export const initialTrace: TraceLogEvent[] = [
   {
     id: 't1',
     type: 'dag',
@@ -71,7 +75,7 @@ export const initialTrace: TraceEvent[] = [
   },
   {
     id: 't3',
-    type: 'tool',
+    type: 'capability',
     label: 'read_file',
     detail: 'README.md returned 5.8 KB.',
     status: 'completed',

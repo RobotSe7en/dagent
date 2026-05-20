@@ -4,9 +4,9 @@
 
 **dagent** is a *Dynamic DAG Agent* framework. It can run a request through a
 bounded tool-using agent, or through a planner that creates and executes a
-reviewable tool-node DAG. The runtime keeps those modes separate: each agent owns
-its own message thread, while the harness stores structured task, review, and
-execution state.
+reviewable capability-node DAG. The runtime keeps those modes separate: each
+agent owns its own message thread, while the harness stores structured task,
+review, and execution state.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
@@ -14,7 +14,7 @@ task that needs orchestration gets a reviewable, auditable plan up front. That p
 can evolve from DAG observations as execution proceeds, while completed tool results
 remain structured execution records.
 
-> **Design origin:** The self-planning dynamic DAG agent loop - tool-node DAG with
+> **Design origin:** The self-planning dynamic DAG agent loop - capability-node DAG with
 > three-level incremental re-planning, Trace DB as the long-term context boundary,
 > human review checkpoints, DAG-vs-tool task routing, and resumable execution - was
 > conceived and first implemented by the author of this repository. First committed:
@@ -25,13 +25,15 @@ remain structured execution records.
 ## Core Ideas
 
 **1. Self-planning DAG, not a static pipeline.**
-The DAG agent generates an initial tool-node plan from the goal. After each executable
-layer, the planner receives a DAG observation and can return `NO_CHANGE`, a revised
-DAG, or the final answer.
+The DAG agent generates an initial capability-node plan from the goal. After each
+executable layer, the planner receives a DAG observation and can return `NO_CHANGE`,
+a revised DAG, or the final answer.
 
-**2. Tool nodes, not agent nodes.**
-Every DAG node is a deterministic tool call. Intelligence lives in the re-planner between
-nodes, not inside them. Nodes are cheap, testable, and auditable.
+**2. Capability nodes, direct planner nodes.**
+Every DAG node is a `CapabilityInvocation` executed by `CapabilityExecutor`. The
+dynamic DAG planner currently emits direct, non-agent capability calls from enabled
+toolsets; `DAGSpec` runtime can execute agent capabilities, but the planner does not
+generate agent nodes yet.
 
 **3. Three-level re-planning.**
 The current implementation covers three levels in one execution path: placeholder
@@ -65,13 +67,14 @@ flowchart TD
   R -->|"auto mode"| ROUTE["Route\ndag or tool"]
   R -->|"tool mode"| TA["ToolAgent"]
   R -->|"dag mode"| DA["DAGAgent"]
+  R -->|"dag_spec mode"| DA
 
   ROUTE -->|"tool"| TA
   ROUTE -->|"dag"| DA
 
   TA --> TM[("ToolAgent.messages\nsystem + user + assistant/tool")]
   TA --> TAL["ToolAgentLoop"]
-  TAL -->|"bounded tool calls"| T["ToolExecutor"]
+  TAL -->|"capability invocations"| T["CapabilityExecutor"]
   TAL -->|"tool review needed"| TRV["Human Tool Review"]
   TRV -->|"approve"| TEX["Execute reviewed tool"]
   TRV -->|"reject"| TDENY["Append denied tool result"]
@@ -81,17 +84,19 @@ flowchart TD
 
   DA --> DM[("DAGAgent.messages\nsystem + user + DAG DSL + observations")]
   DA --> DAL["DAGAgentLoop"]
-  DAL --> D["Plan DAG\nPlanSpec DSL -> DAG"]
+  DAL -->|"run_dynamic"| D["Plan DAG\nPlanSpec DSL -> DAG"]
+  DAL -->|"run_static"| SD["Compile DAGSpec -> DAG"]
 
   D -->|"review required"| UI["Human Review"]
   D -->|"approved / auto safe"| E["DAGExecutor"]
+  SD --> E
   UI -->|"approve / edit"| E
   UI -->|"reject"| DENY["Append DAG observation:\nreview_denied"]
   DENY --> DAL
 
   E --> N["Execute Ready Layer"]
   N --> T
-  N --> ER[("RuntimeTaskRecord\nDAG + node_results + execution_records")]
+  N --> ER[("RuntimeTaskRecord\nDAG + RunTrace")]
   N --> TR[("Trace DB\nplanned persistent run memory")]
   N --> OBS["DAG observation"]
   OBS --> DM
@@ -122,9 +127,11 @@ pending tool marker with the real tool result; rejection replaces it with a deni
 result and lets the loop continue.
 
 `DAGAgent` owns the DAG planner system prompt and persistent DAG message thread, then
-delegates planning, review, execution, observations, and replanning to `DAGAgentLoop`.
-`RuntimeTaskRecord` stores structured execution state only: DAG, node results, execution
-records, runs, and pending review. It does not store `dag_messages`.
+delegates DAG work to `DAGAgentLoop`. Dynamic DAG requests enter through `run_dynamic(...)`;
+fixed `DAGSpec` requests enter through `run_static(...)`. Both share `execute(record, ...)`,
+which drives `DAGExecutor` layer execution. `RuntimeTaskRecord` stores structured resume
+state only: DAG, the latest `RunTrace`, and pending review. It does not store
+`dag_messages`.
 
 Once review and validation pass, the runtime returns the loop's `final_answer` directly
 without a separate summarization step.
@@ -132,7 +139,10 @@ without a separate summarization step.
 ### Three-Level Re-planning
 
 After each ready layer executes, `DAGAgentLoop` formats a DAG observation and appends it
-to `DAGAgent.messages`. Re-planning is implemented as three levels:
+to `DAGAgent.messages`. The observation includes each recent node's id, capability
+function, arguments, status, and result/error content so the planner does not need to
+recover execution facts from transcript history. Re-planning is implemented as three
+levels:
 
 | Level | Current implementation | Meaning |
 |-------|------------------------|---------|
@@ -164,25 +174,24 @@ Forcing exploratory tasks into a DAG produces worse results than leaving them as
 sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
 before dispatching to `ToolAgent` or `DAGAgent`.
 
-### Trace DB And Execution Records
+### Run Trace
 
-Every completed tool call is recorded as a `ToolExecutionRecord`:
-
-```
-{ task_id, source, node_id, tool, args, output, error, status, stop_reason, timestamp }
-```
+Runtime execution is represented as one `RunTrace` tree. The root is the run; DAG work
+is represented by `dag_node` children; leaf capability calls are `capability_call`
+nodes with `{ invocation, result }`. Agent capabilities attach their inner loop as
+children, so DAG, agent, tool, skill, and MCP execution share the same shape.
 
 Current implementation:
 
-- `TraceRecorder` emits in-memory `TraceEvent` objects for DAG/node/tool lifecycle events.
-- `ToolExecutionStore` keeps in-memory `ToolExecutionRecord` entries for tool-mode calls
-  and DAG node execution.
-- The API and Web UI surface these traces and records during the current process lifetime.
+- `DAGExecutor.execute_next_ready_layer()` returns a cumulative `RunTrace`.
+- `ToolAgentLoop` and `AgentCapabilityProvider` also return `RunTrace`.
+- `DAGRun`, `LoopOutcome`, and `RuntimeResponse` expose `trace`; artifact state lives at
+  `trace.artifacts`.
+- The API and Web UI surface trace snapshots during the current process lifetime.
 
 Target architecture:
 
-- Persist trace events, tool executions, node outputs, and compact result summaries into
-  a Trace DB.
+- Persist run traces and compact result summaries into a Trace DB.
 - Use Trace DB as the long-term audit store and context boundary for future replanning,
   instead of relying only on in-memory task state.
 
@@ -190,7 +199,7 @@ Trace DB / execution records serve three purposes:
 
 1. **Audit log** - immutable record of what ran, with what inputs, and what it returned.
 2. **DAG observation source** - DAG observations include completed node outputs and recent
-   execution records so the planner can continue or repair the DAG.
+   capability leaves so the planner can continue or repair the DAG.
 3. **Human review** - the WebUI surfaces the trace timeline alongside the DAG graph.
 
 ---
@@ -204,9 +213,9 @@ The runtime is intentionally layered:
 - DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
-- Each node is a bounded tool call - no nested agent loop inside a node.
-- `ToolExecutor` enforces boundaries before every tool call.
-- Human review can be triggered by tool-mode calls, initial DAG creation, and DAG
+- Each node is a bounded capability invocation - no nested agent loop inside a node unless an agent capability is explicitly configured.
+- `CapabilityExecutor` dispatches approved invocations, and capability handlers enforce boundaries before side effects.
+- Human review can be triggered by tool-mode capability calls, initial DAG creation, and DAG
   revisions.
 - Optional result validation uses a separate `validator_agent` profile to check the
   final answer against the original user request and execution context. If validation
@@ -231,7 +240,7 @@ dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
   harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
                     DAGAgentLoop, validation,
-                    session state, event adapters, trace recording, DAG execution
+                    session state, event adapters, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   tools/            tool registry, executor, file tools, boundary checks
@@ -241,8 +250,8 @@ web/                React + Vite frontend
 tests/              pytest suite
 ```
 
-Key runtime contracts such as `DAGRunResult`, `LoopOutcome`, `RuntimeResponse`,
-`PendingReview`, and validation result types live in `dagent/schemas/results.py`.
+Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
+`PendingReview`, and validation result types live in `dagent/schemas`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 
 ## Configuration

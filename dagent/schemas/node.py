@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
-from dagent.schemas.invocation import ToolInvocation
+from pydantic import BaseModel, Field
+from dagent.schemas.capability import CapabilityInvocation
 
 NodeStatus = Literal[
     "planned",
@@ -16,9 +16,20 @@ NodeStatus = Literal[
     "skipped",
 ]
 
+NodeType = Literal[
+    "capability",
+    "start",
+]
+
 
 class DAGNode(BaseModel):
     id: str
-    invocation: ToolInvocation
+    title: str = ""
+    goal: str | None = None
+    instructions: str | None = None
+    invocation: CapabilityInvocation
+    node_type: NodeType = "capability"
     status: NodeStatus = "planned"
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
 

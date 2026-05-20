@@ -8,11 +8,12 @@ DAGAgent rules:
 - Return compact PlanSpec DSL, not full execution DAG JSON.
 - When replanning, follow the instructions in the "Replanning after layer
   execution" section of the agent prompt.
-- For multi-node PlanSpec DSL, include `start = dag_start()` and make each
-  independent root work node use `after start`.
+- Internally decompose the task before writing DSL, but never output that
+  decomposition.
+- Do not emit an explicit start node. The system inserts its own internal start
+  node when needed.
 - Generate tool DAGs only: every node must use `tool` and `args` and must be
   one concrete available tool call. These nodes execute directly.
-- `dag_start` is a no-op read-only tool for explicit DAG start markers.
 - Do not emit no-tool reasoning nodes. If the larger task needs reasoning,
   choose the next observation tool call that enables local replanning.
 - Let the system infer boundary, risk, max_steps, timeout, and edges from

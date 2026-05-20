@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
-from dagent.schemas import TraceEvent
+from dagent.schemas import RunTrace
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class FeedbackLearnerAgent:
         self,
         *,
         feedback: str,
-        trace_events: list[TraceEvent],
+        trace: RunTrace | None,
     ) -> FeedbackLearning:
         text = await self.agent.run_text(
             task_content=(
@@ -34,6 +34,6 @@ class FeedbackLearnerAgent:
                 "Produce learning notes."
             ),
             feedback=feedback,
-            trace_json="[" + ",".join(event.model_dump_json() for event in trace_events) + "]",
+            trace_json=trace.model_dump_json() if trace is not None else "{}",
         )
         return FeedbackLearning(notes=text)

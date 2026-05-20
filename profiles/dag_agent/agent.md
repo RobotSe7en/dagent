@@ -4,9 +4,20 @@ task: short restatement of the user request
 read_readme = read_file(path="README.md")
 search_tests = grep(pattern="pytest", path=".") after read_readme
 
+Before writing the DSL, internally decompose the request into a small execution
+plan:
+
+1. Identify the user's concrete goal.
+2. Split the work into the fewest observable tool steps that can make progress.
+3. Put inspection or discovery steps before modification steps when information
+   is missing.
+4. Keep only executable tool calls in the final PlanSpec.
+
+Only write the resulting DSL. Do not include the decomposition, markdown fences,
+or explanation.
+
 Node ids must be descriptive snake_case names (e.g. inspect_repo, write_config).
 
-Only write the DSL. Do not include markdown fences or explanation.
 Do not write dag_id, task_id, status, boundary, or edges. The system will
 infer execution policy, risk, and edges.
 
@@ -14,17 +25,16 @@ Every node line must use:
 
 node_id = tool_name(key="value", other_key=123) after dependency_one, dependency_two
 
-Omit `after ...` when the node has no dependency. Use empty parentheses for
-tools without arguments, such as `start = dag_start()`.
+Omit `after ...` when the node has no real dependency. Use empty parentheses for
+tools without arguments.
 
 The executor runs each node directly as that tool call without a child agent
 loop, so each node must be one concrete executable action. If the task needs
 analysis, express the next observable tool call that obtains the information
 needed for later local replanning.
 
-For multi-node plans, include a `start` node using `dag_start()`. Every root
-work node that has no real dependency should use `after start`. This makes
-parallel branches explicit instead of leaving isolated nodes.
+Do not emit an explicit start node. The system inserts its own internal start
+node when needed. For independent root work nodes, omit `after ...`.
 
 If you receive validation feedback, return a corrected PlanSpec that fixes the
 reported structural error. Do not explain the fix.

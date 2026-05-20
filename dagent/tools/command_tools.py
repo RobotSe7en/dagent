@@ -7,8 +7,11 @@ from pathlib import Path
 
 from dagent.schemas import Boundary
 from dagent.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
-from dagent.tools.executor import ToolExecutionError
 from dagent.tools.registry import ToolRegistry
+
+
+class CommandExecutionError(RuntimeError):
+    """Raised when a command tool exits unsuccessfully."""
 
 
 def run_command(
@@ -22,6 +25,7 @@ def run_command(
         shell=True,
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=timeout_seconds,
     )
     output = "\n".join(
@@ -35,7 +39,7 @@ def run_command(
         else f"exit_code={result.returncode}"
     )
     if result.returncode != 0:
-        raise ToolExecutionError(formatted)
+        raise CommandExecutionError(formatted)
     return formatted
 
 
