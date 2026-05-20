@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
+from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
-from dagent.harness_runtime.review_policy import effective_risk, review_policy
+from dagent.harness_runtime.review_policy import review_policy
+from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
-from dagent.schemas import Boundary, LoopOutcome, PendingReview, ToolInvocation
+from dagent.schemas import (
+    Boundary,
+    LoopOutcome,
+    PendingReview,
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityResult,
+    RunTrace,
+    RunTraceError,
+    RunTraceNode,
+)
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.boundary import BoundaryViolation
-from dagent.tools.executor import ToolExecutor
-from dagent.tools.registry import Tool
 import dagent.harness_runtime.review_policy as _rp
 
 
@@ -48,13 +58,12 @@ class ToolAgent:
         *,
         loop: "ToolAgentLoop",
         profile: AgentProfile,
-        tools: list[Tool] | None = None,
         prompt_builder: PromptBuilder | None = None,
         max_steps: int = 8,
     ) -> None:
         self.loop = loop
         self.profile = profile
-        self.tools = tools or []
+        self.tools = self.loop.available_capabilities()
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
         self.system_message = self.prompt_builder.build_system_message(
@@ -66,6 +75,7 @@ class ToolAgent:
             )
         )
         self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.trace: RunTrace | None = None
 
     async def run(
         self,
@@ -101,24 +111,32 @@ class ToolAgent:
     ) -> LoopOutcome | None:
         """Resume a reviewed tool call and continue the tool-agent loop."""
         invocation = state.pending_invocation
-        if state.kind != "tool_review" or invocation is None:
+        if state.kind != "capability_review" or invocation is None:
             return None
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
+        result: CapabilityResult | None = None
         if approved:
             try:
-                feed_content = self.loop.tool_executor.execute(
-                    invocation.tool_name,
-                    invocation.arguments,
-                    boundary=invocation.boundary,
-                )
+                result = await self.loop.capability_executor.execute(invocation)
+                feed_content = _tool_content(result)
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
 
+        _reconcile_reviewed_trace_node(
+            self.trace,
+            invocation,
+            approved=approved,
+            result=result,
+            content=feed_content,
+        )
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=invocation.tool_name,
+            tool_name=self.loop.tool_adapter.function_name_for_capability(
+                invocation.capability_id,
+                enabled_toolsets=self.loop.enabled_toolsets,
+            ),
             content=feed_content,
         )
         return await self._continue_messages(
@@ -141,7 +159,7 @@ class ToolAgent:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names()
         control_tool_handler = (
-            self.loop.create_tool_guard(review_level, boundary, self.tools)
+            self.loop.create_tool_guard(review_level, boundary)
             if control_tool_names
             else None
         )
@@ -156,14 +174,11 @@ class ToolAgent:
             on_event=on_event,
         )
         self.messages = list(outcome.messages)
+        self.trace = outcome.trace
         return outcome
 
     def reviewable_tool_names(self) -> set[str]:
-        return {
-            tool.name
-            for tool in self.tools
-            if tool.risk in {"medium", "high"} or tool.risk_fn is not None
-        }
+        return self.loop.reviewable_tool_names()
 
 
 class ToolAgentLoop:
@@ -173,26 +188,43 @@ class ToolAgentLoop:
         self,
         *,
         provider: ChatProvider,
-        tool_executor: ToolExecutor,
+        capability_executor: CapabilityExecutor,
+        tool_adapter: CapabilityToolAdapter,
+        enabled_toolsets: Sequence[str] = ("builtin",),
     ) -> None:
         self.provider = provider
-        self.tool_executor = tool_executor
+        self.capability_executor = capability_executor
+        self.tool_adapter = tool_adapter
+        self.enabled_toolsets = tuple(enabled_toolsets)
+
+    def available_capabilities(self) -> list[CapabilityDefinition]:
+        return self.tool_adapter.capabilities(self.enabled_toolsets)
+
+    def reviewable_tool_names(self) -> set[str]:
+        return self.tool_adapter.reviewable_names(self.enabled_toolsets)
 
     def create_tool_guard(
         self,
         review_level: "_rp.ReviewLevel",
         boundary: Boundary,
-        tools: list[Tool],
     ) -> ControlToolHandler:
         policy = review_policy(review_level)
 
         async def guard(tool_call: ToolCall) -> ControlToolResult:
-            tool_obj = next((t for t in tools if t.name == tool_call.name), None)
-            risk = effective_risk(tool_obj, tool_call.arguments)
+            definition = self.tool_adapter.definition_from_tool_call(
+                tool_call,
+                enabled_toolsets=self.enabled_toolsets,
+            )
+            risk = definition.policy.risk
+            invocation = self.tool_adapter.invocation_from_tool_call(
+                tool_call,
+                boundary,
+                enabled_toolsets=self.enabled_toolsets,
+            )
             if not policy.reviews_tool(risk):
                 try:
-                    result_content = self.tool_executor.execute(
-                        tool_call.name, tool_call.arguments, boundary=boundary
+                    result_content = _tool_content(
+                        await self.capability_executor.execute(invocation)
                     )
                 except Exception as exc:
                     return ControlToolResult(
@@ -200,9 +232,9 @@ class ToolAgentLoop:
                     )
                 return ControlToolResult(content=result_content)
             return ControlToolResult(
-                content=f"[PENDING_REVIEW] Tool '{tool_call.name}' requires human review (risk={risk}).",
+                content=f"[PENDING_REVIEW] Capability '{invocation.capability_id}' requires human review (risk={risk}).",
                 needs_review=True,
-                review_payload={"tool_name": tool_call.name, "risk": risk},
+                review_payload={"capability_id": invocation.capability_id, "risk": risk},
             )
 
         return guard
@@ -215,7 +247,6 @@ class ToolAgentLoop:
         max_steps: int = 8,
         allowed_tools: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
-        extra_tools: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
         control_tool_handler: ControlToolHandler | None = None,
         on_token: TokenHandler | None = None,
@@ -227,14 +258,13 @@ class ToolAgentLoop:
         loop_messages = list(messages or [])
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
+        run_id = f"tool_run_{uuid4().hex}"
+        trace = RunTrace(run_id=run_id, root=RunTraceNode.run(run_id=run_id))
         control_events: list[dict[str, Any]] = []
-        invocations: list[ToolInvocation] = []
+        invocations: list[CapabilityInvocation] = []
 
         for step in range(1, max_steps + 1):
-            tool_definitions = [
-                *self._tool_definitions_for_boundary(boundary, allowed_tools),
-                *(extra_tools or []),
-            ]
+            tool_definitions = self._llm_tool_definitions(allowed_tools)
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
@@ -243,35 +273,65 @@ class ToolAgentLoop:
 
             assistant_message = self._assistant_message(response)
             loop_messages.append(assistant_message)
+            trace.root.children.append(
+                RunTraceNode(
+                    parent_id=trace.root.id,
+                    kind="model_call",
+                    status="completed",
+                    label=f"model_step_{step}",
+                    output=response.content,
+                    ref={"step": str(step)},
+                )
+            )
 
             if not response.tool_calls:
+                trace.root.status = "completed"
+                trace.root.output = strip_thinking_blocks(response.content).strip()
                 return LoopOutcome(
                     status="completed",
-                    execution_context=_format_tool_execution_context(loop_messages),
+                    execution_context=_format_capability_execution_context(loop_messages),
                     final_answer=strip_thinking_blocks(response.content).strip(),
                     messages=loop_messages,
                     events=control_events,
                     invocations=invocations,
+                    trace=trace,
                 )
 
             for tool_call in response.tool_calls:
-                tool_obj = self.tool_executor.registry.get(tool_call.name)
-                invocation = ToolInvocation(
-                    invocation_id=tool_call.id,
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                    boundary=boundary,
-                    risk=effective_risk(tool_obj, tool_call.arguments),
-                )
+                try:
+                    invocation = self.tool_adapter.invocation_from_tool_call(
+                        tool_call,
+                        boundary,
+                        enabled_toolsets=self.enabled_toolsets,
+                    )
+                except KeyError as exc:
+                    error_content = f"[TOOL_ERROR] {_exception_message(exc)}"
+                    loop_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": error_content,
+                        }
+                    )
+                    continue
                 invocations.append(invocation)
-                self._emit_tool_event(on_event, tool_call, "tool_call")
+                self._emit_capability_event(on_event, invocation, "capability_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
                         raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
                     try:
                         control_result = await control_tool_handler(tool_call)
                     except Exception as exc:
-                        self._emit_tool_event(on_event, tool_call, "tool_error", content=str(exc))
+                        self._emit_capability_event(on_event, invocation, "capability_error", content=str(exc))
+                        trace.root.children.append(
+                            RunTraceNode.capability_call(
+                                parent_id=trace.root.id,
+                                invocation=invocation,
+                                result=_failed_capability_result(invocation, str(exc), type(exc).__name__),
+                                error=str(exc),
+                            )
+                        )
                         raise
                     control_events.extend(control_result.events)
                     loop_messages.append(
@@ -282,46 +342,64 @@ class ToolAgentLoop:
                             "content": control_result.content,
                         }
                     )
-                    self._emit_tool_event(
+                    self._emit_capability_event(
                         on_event,
-                        tool_call,
-                        "tool_result",
+                        invocation,
+                        "capability_result",
                         content=control_result.content,
                     )
-                    if control_result.needs_review:
+                    review_pending = control_result.needs_review
+                    trace.root.children.append(
+                        RunTraceNode.capability_call(
+                            parent_id=trace.root.id,
+                            invocation=invocation,
+                            result=(
+                                None
+                                if review_pending
+                                else _completed_capability_result(invocation, control_result.content)
+                            ),
+                            status="awaiting_review" if review_pending else None,
+                            output=control_result.content,
+                        )
+                    )
+                    if review_pending:
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
-                            kind="tool_review",
-                            message=f"Review tool call: {tool_call.name}",
-                            tool_call={
-                                "tool_call_id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": tool_call.arguments,
+                            kind="capability_review",
+                            message=f"Review capability call: {invocation.capability_id}",
+                            capability_call={
+                                "invocation_id": invocation.invocation_id,
+                                "capability_id": invocation.capability_id,
+                                "arguments": invocation.arguments,
                             },
                             payload=control_result.review_payload or {},
                         )
                         return LoopOutcome(
                             status="awaiting_review",
-                            execution_context=_format_tool_execution_context(loop_messages),
+                            execution_context=_format_capability_execution_context(loop_messages),
                             messages=loop_messages,
                             events=control_events,
                             invocations=invocations,
+                            trace=trace,
                             pending_review=pending_review,
                         )
                     if control_result.stop_reason:
+                        trace.root.status = "failed"
+                        trace.root.output = control_result.content
                         return LoopOutcome(
                             status="failed",
-                            execution_context=_format_tool_execution_context(loop_messages),
+                            execution_context=_format_capability_execution_context(loop_messages),
                             final_answer=control_result.content,
                             messages=loop_messages,
                             events=control_events,
                             invocations=invocations,
+                            trace=trace,
                         )
                     continue
 
                 if allowed_tools is not None and tool_call.name not in allowed_tools:
                     error_content = f"[ERROR] Tool '{tool_call.name}' is not allowed. Available tools: {', '.join(allowed_tools)}."
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -329,34 +407,22 @@ class ToolAgentLoop:
                             "name": tool_call.name,
                             "content": error_content,
                         }
+                    )
+                    trace.root.children.append(
+                        RunTraceNode.capability_call(
+                            parent_id=trace.root.id,
+                            invocation=invocation,
+                            result=_failed_capability_result(invocation, error_content, "not_allowed"),
+                            error=error_content,
+                        )
                     )
                     continue
                 try:
-                    tool_result = self.tool_executor.execute(
-                        tool_call.name,
-                        tool_call.arguments,
-                        boundary=boundary,
-                    )
-                except BoundaryViolation as exc:
-                    error_content = (
-                        f"[BOUNDARY_VIOLATION] {exc}\n"
-                        f"Tool '{tool_call.name}' exceeded the current boundary. "
-                        "Adjust your arguments to stay within allowed paths/commands, "
-                        "or use an alternative approach."
-                    )
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": error_content,
-                        }
-                    )
-                    continue
+                    capability_result = await self.capability_executor.execute(invocation)
+                    tool_result = _tool_content(capability_result)
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
-                    self._emit_tool_event(on_event, tool_call, "tool_error", content=error_content)
+                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -364,6 +430,14 @@ class ToolAgentLoop:
                             "name": tool_call.name,
                             "content": error_content,
                         }
+                    )
+                    trace.root.children.append(
+                        RunTraceNode.capability_call(
+                            parent_id=trace.root.id,
+                            invocation=invocation,
+                            result=_failed_capability_result(invocation, error_content, type(exc).__name__),
+                            error=error_content,
+                        )
                     )
                     continue
                 loop_messages.append(
@@ -374,41 +448,40 @@ class ToolAgentLoop:
                         "content": tool_result,
                     }
                 )
-                self._emit_tool_event(on_event, tool_call, "tool_result", content=tool_result)
+                self._emit_capability_event(on_event, invocation, "capability_result", content=tool_result)
+                trace.root.children.append(
+                    RunTraceNode.capability_call(
+                        parent_id=trace.root.id,
+                        invocation=invocation,
+                        result=capability_result,
+                        output=tool_result,
+                        error=capability_result.error,
+                    )
+                )
 
+        trace.root.status = "failed"
         return LoopOutcome(
             status="failed",
-            execution_context=_format_tool_execution_context(loop_messages),
+            execution_context=_format_capability_execution_context(loop_messages),
             messages=loop_messages,
             events=control_events,
             invocations=invocations,
+            trace=trace,
         )
 
-    def _tool_definitions_for_boundary(
+    def _llm_tool_definitions(
         self,
-        boundary: Boundary,
         allowed_tools: list[str] | None,
     ) -> list[dict[str, Any]]:
         allowed = set(allowed_tools) if allowed_tools is not None else None
-        tool_names = sorted(self.tool_executor.registry.names())
-        definitions: list[dict[str, Any]] = []
-        for name in tool_names:
-            if allowed is not None and name not in allowed:
-                continue
-            tool = self.tool_executor.registry.get(name)
-            if tool is None:
-                continue
-            definitions.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters or {"type": "object"},
-                    },
-                }
-            )
-        return definitions
+        definitions = self.tool_adapter.definitions(self.enabled_toolsets)
+        if allowed is None:
+            return definitions
+        return [
+            definition
+            for definition in definitions
+            if definition["function"]["name"] in allowed
+        ]
 
     async def _chat(
         self,
@@ -449,10 +522,10 @@ class ToolAgentLoop:
             },
         }
 
-    def _emit_tool_event(
+    def _emit_capability_event(
         self,
         on_event: LoopEventHandler | None,
-        tool_call: ToolCall,
+        invocation: CapabilityInvocation,
         event_type: str,
         *,
         content: str | None = None,
@@ -461,16 +534,16 @@ class ToolAgentLoop:
             return
         payload: dict[str, Any] = {
             "type": event_type,
-            "tool_call_id": tool_call.id,
-            "name": tool_call.name,
-            "arguments": tool_call.arguments,
+            "invocation_id": invocation.invocation_id,
+            "capability_id": invocation.capability_id,
+            "arguments": invocation.arguments,
         }
         if content is not None:
             payload["content"] = content
         on_event(payload)
 
 
-def _format_tool_execution_context(messages: list[dict[str, Any]]) -> str:
+def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
     """Format ToolAgentLoop tool calls for validation and fallback output."""
     lines: list[str] = []
     for message in messages:
@@ -516,6 +589,86 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
+
+
+def _tool_content(result: CapabilityResult) -> str:
+    if result.status == "completed":
+        return result.content
+    prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
+    return f"{prefix} {result.error or result.content}"
+
+
+def _exception_message(exc: Exception) -> str:
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
+
+
+def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:
+    if node.kind == "capability_call" and node.ref.get("invocation_id") == invocation_id:
+        return node
+    for child in node.children:
+        found = _find_capability_node(child, invocation_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _reconcile_reviewed_trace_node(
+    trace: RunTrace | None,
+    invocation: CapabilityInvocation,
+    *,
+    approved: bool,
+    result: CapabilityResult | None,
+    content: str,
+) -> None:
+    """Settle an awaiting-review capability node once its review is resolved."""
+    if trace is None:
+        return
+    node = _find_capability_node(trace.root, invocation.invocation_id)
+    if node is None:
+        return
+    node.output = content
+    node.ended_at = datetime.now(timezone.utc)
+    if node.capability_execution is not None:
+        node.capability_execution.result = result
+    if not approved:
+        node.status = "failed"
+        node.error = RunTraceError(
+            message="Human reviewer denied this capability call.",
+            code="review_denied",
+        )
+    elif result is not None and result.status == "completed":
+        node.status = "completed"
+    else:
+        node.status = "failed"
+        if result is not None and result.error:
+            node.error = RunTraceError(message=result.error, code=result.stop_reason)
+
+
+def _completed_capability_result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
+    return CapabilityResult(
+        invocation_id=invocation.invocation_id,
+        capability_id=invocation.capability_id,
+        kind=invocation.kind,
+        status="completed",
+        content=content,
+    )
+
+
+def _failed_capability_result(
+    invocation: CapabilityInvocation,
+    error: str,
+    stop_reason: str,
+) -> CapabilityResult:
+    return CapabilityResult(
+        invocation_id=invocation.invocation_id,
+        capability_id=invocation.capability_id,
+        kind=invocation.kind,
+        status="failed",
+        error=error,
+        stop_reason=stop_reason,
+    )
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:

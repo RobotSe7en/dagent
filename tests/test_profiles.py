@@ -33,3 +33,18 @@ def test_profile_store_loads_yaml_profile(tmp_path: Path) -> None:
     assert profile.render_layers() == ["soul text", "agent text"]
     assert profile.memory == "memory text"
     assert profile.output_format == "json"
+
+
+def test_dag_agent_prompt_requires_internal_task_decomposition() -> None:
+    prompt = Path("profiles/dag_agent/agent.md").read_text(encoding="utf-8")
+
+    assert "internally decompose" in prompt
+    assert "Only write the resulting DSL" in prompt
+
+
+def test_dag_agent_prompt_does_not_ask_for_reserved_dag_start() -> None:
+    prompt = Path("profiles/dag_agent/agent.md").read_text(encoding="utf-8")
+    guideline = Path("profiles/dag_agent/guideline.md").read_text(encoding="utf-8")
+
+    assert "dag_start" not in prompt
+    assert "dag_start" not in guideline

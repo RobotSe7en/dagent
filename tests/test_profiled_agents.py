@@ -4,7 +4,7 @@ import json
 from dagent.harness_runtime import ValidatorAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGNode, TraceEvent
+from dagent.schemas import DAG, DAGNode, RunTrace, RunTraceNode
 
 
 def run(coro):
@@ -59,9 +59,9 @@ def test_validator_agent_parses_validation_json() -> None:
 def test_feedback_learner_agent_returns_notes() -> None:
     provider = MockProvider([ChatResponse(content="Prefer narrow allowed_paths.")])
     learner = FeedbackLearnerAgent(provider=provider, profile=profile("feedback_learner"))
-    trace = TraceEvent(event_id="e1", event_type="dag_started", dag_id="dag_1")
+    trace = RunTrace(run_id="run_1", root=RunTraceNode.run(run_id="run_1", status="completed"))
 
-    result = run(learner.learn(feedback="Too broad", trace_events=[trace]))
+    result = run(learner.learn(feedback="Too broad", trace=trace))
 
     assert result.notes == "Prefer narrow allowed_paths."
     assert "Too broad" in provider.requests[0]["messages"][1]["content"]

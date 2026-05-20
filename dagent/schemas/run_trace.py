@@ -1,0 +1,132 @@
+"""Unified run trace and result tree schemas."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+from dagent.schemas.artifact import ArtifactState
+from dagent.schemas.capability import CapabilityInvocation, CapabilityResult
+
+
+RunTraceStatus = Literal[
+    "planned",
+    "running",
+    "awaiting_review",
+    "completed",
+    "failed",
+    "skipped",
+    "cancelled",
+]
+
+RunTraceNodeKind = Literal[
+    "run",
+    "dag_node",
+    "agent_loop",
+    "agent_step",
+    "model_call",
+    "capability_call",
+    "review",
+    "artifact",
+]
+
+
+class RunTraceError(BaseModel):
+    message: str
+    code: str = ""
+
+
+class CapabilityExecution(BaseModel):
+    invocation: CapabilityInvocation
+    result: CapabilityResult | None = None
+
+
+class RunTraceNode(BaseModel):
+    id: str = Field(default_factory=lambda: f"trace_node_{uuid4().hex}")
+    parent_id: str | None = None
+    kind: RunTraceNodeKind
+    status: RunTraceStatus = "running"
+    label: str = ""
+    started_at: datetime | None = Field(default_factory=lambda: datetime.now(timezone.utc))
+    ended_at: datetime | None = None
+    step_count: int = 0
+    ref: dict[str, str] = Field(default_factory=dict)
+    input: dict[str, Any] = Field(default_factory=dict)
+    output: Any | None = None
+    error: RunTraceError | None = None
+    capability_execution: CapabilityExecution | None = None
+    children: list["RunTraceNode"] = Field(default_factory=list)
+
+    @classmethod
+    def run(cls, *, run_id: str, status: RunTraceStatus = "running") -> "RunTraceNode":
+        return cls(
+            id=f"run_trace_node_{run_id}",
+            kind="run",
+            status=status,
+            ref={"run_id": run_id},
+            label=run_id,
+        )
+
+    @classmethod
+    def dag_node(
+        cls,
+        *,
+        parent_id: str,
+        node_id: str,
+        status: RunTraceStatus = "running",
+        label: str = "",
+    ) -> "RunTraceNode":
+        return cls(
+            parent_id=parent_id,
+            kind="dag_node",
+            status=status,
+            ref={"node_id": node_id},
+            label=label or node_id,
+        )
+
+    @classmethod
+    def capability_call(
+        cls,
+        *,
+        parent_id: str,
+        invocation: CapabilityInvocation,
+        result: CapabilityResult | None = None,
+        status: RunTraceStatus | None = None,
+        output: Any | None = None,
+        error: str | None = None,
+    ) -> "RunTraceNode":
+        resolved_status: RunTraceStatus
+        if status is not None:
+            resolved_status = status
+        elif result is None:
+            resolved_status = "running"
+        else:
+            resolved_status = "completed" if result.status == "completed" else "failed"
+        return cls(
+            parent_id=parent_id,
+            kind="capability_call",
+            status=resolved_status,
+            label=invocation.capability_id,
+            ref={
+                "invocation_id": invocation.invocation_id,
+                "capability_id": invocation.capability_id,
+            },
+            input=invocation.arguments,
+            output=output,
+            error=RunTraceError(message=error) if error else None,
+            capability_execution=CapabilityExecution(invocation=invocation, result=result),
+            ended_at=datetime.now(timezone.utc) if result is not None or error else None,
+        )
+
+
+class RunTrace(BaseModel):
+    run_id: str
+    root: RunTraceNode
+    artifacts: dict[str, ArtifactState] = Field(default_factory=dict)
+
+    @property
+    def status(self) -> RunTraceStatus:
+        return self.root.status

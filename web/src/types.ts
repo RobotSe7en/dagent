@@ -8,18 +8,46 @@ export interface Boundary {
   allowed_commands?: string[];
 }
 
-export interface ToolInvocation {
+export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'custom_tool' | 'agent' | 'memory' | 'file';
+
+export interface CapabilityInvocation {
   invocation_id?: string;
-  tool_name: string;
+  capability_id: string;
+  kind: CapabilityKind;
   arguments: Record<string, unknown>;
   boundary?: Boundary;
   risk?: RiskLevel;
 }
 
+export interface CapabilityPolicy {
+  risk: RiskLevel;
+  requires_review: boolean;
+  sandbox_required: boolean;
+  network: boolean;
+  secrets: string[];
+}
+
+export interface CapabilityDefinition {
+  id: string;
+  name: string;
+  kind: CapabilityKind;
+  description: string;
+  parameters: Record<string, unknown>;
+  policy: CapabilityPolicy;
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
 export interface DagNode {
   id: string;
-  invocation: ToolInvocation;
+  title?: string;
+  goal?: string | null;
+  instructions?: string | null;
+  invocation: CapabilityInvocation;
+  node_type?: 'capability' | 'start';
   status?: 'planned' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped';
+  inputs?: string[];
+  outputs?: string[];
 }
 
 export interface DagEdge {
@@ -44,7 +72,28 @@ export interface Dag {
   edges: DagEdge[];
 }
 
-export interface TraceEvent {
+export interface DagSpec {
+  id: string;
+  name: string;
+  version?: number;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>;
+  nodes: DagNode[];
+  edges: DagEdge[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface DagRun {
+  run_id: string;
+  spec_id?: string | null;
+  workspace_path: string;
+  dag: Dag;
+  trace: RunTrace;
+  status: 'planned' | 'running' | 'completed' | 'failed';
+}
+
+export interface TraceLogEvent {
   event_id?: string;
   event_type?: string;
   dag_id?: string;
@@ -52,67 +101,100 @@ export interface TraceEvent {
   payload?: Record<string, unknown>;
   created_at?: string;
   id: string;
-  type: 'dag' | 'node' | 'tool' | 'model';
+  type: 'dag' | 'node' | 'capability' | 'model';
   label: string;
   detail: string;
   status: 'queued' | 'running' | 'completed' | 'failed';
   timestamp: string;
 }
 
-export interface ToolExecutionRecord {
-  record_id: string;
-  task_id: string;
-  invocation: ToolInvocation;
-  source: 'tool_loop' | 'dag_node';
-  output: string;
-  error: string | null;
-  status: 'completed' | 'failed';
-  stop_reason: string;
-  steps: number;
-  dag_id?: string | null;
-  dag_version?: number | null;
-  node_id?: string | null;
-  created_at: string;
+export type CapabilityResultStatus = 'completed' | 'failed';
+
+export interface CapabilityResult {
+  invocation_id: string;
+  capability_id: string;
+  kind: CapabilityKind;
+  status: CapabilityResultStatus;
+  content?: string;
+  error?: string | null;
+  stop_reason?: string;
+  steps?: number;
+  trace?: RunTrace | null;
 }
 
-export interface ToolStreamEvent {
-  type: 'tool_call' | 'tool_result' | 'tool_error';
-  tool_call_id: string;
-  name: string;
+export type RunTraceStatus =
+  | 'planned'
+  | 'running'
+  | 'awaiting_review'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export type RunTraceNodeKind =
+  | 'run'
+  | 'dag_node'
+  | 'agent_loop'
+  | 'agent_step'
+  | 'model_call'
+  | 'capability_call'
+  | 'review'
+  | 'artifact';
+
+export interface RunTraceError {
+  message: string;
+  code?: string;
+}
+
+export interface CapabilityExecution {
+  invocation: CapabilityInvocation;
+  result?: CapabilityResult | null;
+}
+
+export interface RunTraceNode {
+  id: string;
+  parent_id?: string | null;
+  kind: RunTraceNodeKind;
+  status: RunTraceStatus;
+  label: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  step_count: number;
+  ref: Record<string, string>;
+  input: Record<string, unknown>;
+  output?: unknown;
+  error?: RunTraceError | null;
+  capability_execution?: CapabilityExecution | null;
+  children: RunTraceNode[];
+}
+
+export interface RunTrace {
+  run_id: string;
+  root: RunTraceNode;
+  artifacts: Record<string, unknown>;
+}
+
+export interface CapabilityStreamEvent {
+  type: 'capability_call' | 'capability_result' | 'capability_error';
+  invocation_id: string;
+  capability_id: string;
   arguments: Record<string, unknown>;
   content?: string;
 }
 
-export interface ToolCallPayload {
-  tool_call_id: string;
-  name: string;
+export interface CapabilityCallPayload {
+  invocation_id: string;
+  capability_id: string;
   arguments: Record<string, unknown>;
 }
 
 export interface ReviewEventPayload {
   review_id: string;
-  kind: 'initial_dag' | 'dag_replan' | 'tool_review';
+  kind: 'initial_dag' | 'dag_replan' | 'capability_review';
   message: string;
   dag?: Dag;
-  tool_call?: ToolCallPayload;
+  capability_call?: CapabilityCallPayload;
   payload?: Record<string, unknown>;
-}
-
-export interface DagRunResult {
-  dag_id: string;
-  completed: boolean;
-  execution_records?: ToolExecutionRecord[];
-  node_results: Record<
-    string,
-    {
-      node_id: string;
-      final_response: string;
-      completed: boolean;
-      stop_reason: string;
-      steps: number;
-    }
-  >;
-  traces: TraceEvent[];
 }
 
 export interface ValidationIssue {
@@ -127,3 +209,21 @@ export interface ValidationFeedbackEvent {
   summary: string;
   issues: ValidationIssue[];
 }
+
+export interface AgentProfile {
+  name: string;
+  role: string;
+  description: string;
+  layers: string[];
+  layer_contents: Record<string, string>;
+  memory_file?: string | null;
+  memory: string;
+  output_format: string;
+}
+
+export interface ProfileWarning {
+  name: string;
+  error: string;
+}
+
+export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents';

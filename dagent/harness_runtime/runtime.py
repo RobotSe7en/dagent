@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
+from pathlib import Path
 
+from dagent.capabilities import CapabilityCatalog
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
     TokenHandler,
 )
+from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.review_policy import ReviewLevel
@@ -21,13 +24,20 @@ from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
     _ThinkTagFilter,
     _dag_event_emitter,
-    _trace_event_emitter,
 )
 from dagent.providers import ChatProvider
-from dagent.schemas import DAG, LoopOutcome, RuntimeResponse, ToolInvocation
+from dagent.schemas import (
+    DAG,
+    DAGRun,
+    DAGSpec,
+    LoopOutcome,
+    RuntimeResponse,
+    CapabilityInvocation,
+)
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
+_LoopExecutionMode = Literal["tool", "dag", "dag_spec"]
 
 _ROUTE_SYSTEM_PROMPT = """\
 You are a routing classifier. Given the user message, \
@@ -59,6 +69,8 @@ class HarnessRuntime:
         validator: ValidatorAgent | None = None,
         enable_validation: bool = False,
         max_validation_retries: int = 1,
+        capability_catalog: CapabilityCatalog | None = None,
+        capability_executor: CapabilityExecutor | None = None,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
@@ -68,6 +80,12 @@ class HarnessRuntime:
         self.max_validation_retries = max_validation_retries
         self.session = HarnessRuntimeSession()
         self.tasks = self.session.tasks
+        if capability_catalog is None and capability_executor is not None:
+            capability_catalog = capability_executor.catalog
+        self.capability_catalog = capability_catalog or CapabilityCatalog()
+        if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
+            raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
+        self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
 
     # ==================================================================
     # Public API
@@ -199,7 +217,7 @@ class HarnessRuntime:
         state = self.session.pop_review_continuation(review_id)
         if state is None:
             return None
-        if state.kind == "tool_review":
+        if state.kind == "capability_review":
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             initial_outcome = await self.tool_agent.resume_review(
                 state,
@@ -248,7 +266,7 @@ class HarnessRuntime:
             approved=approved,
             review_level=review_level,
             on_token=thinking_only,
-            on_trace=_trace_event_emitter(on_event),
+            on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
         )
         if initial_outcome is None:
@@ -272,7 +290,7 @@ class HarnessRuntime:
                 review_level=review_level or state.review_level,
                 runtime_mode=record.runtime_mode,
                 on_token=thinking_only,
-                on_trace=_trace_event_emitter(on_event),
+                on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
 
@@ -316,34 +334,50 @@ class HarnessRuntime:
 
     async def _execute_loop(
         self,
-        message: str,
+        request: str | DAGSpec,
         *,
-        mode: RuntimeMode,
+        mode: _LoopExecutionMode,
         review_level: ReviewLevel,
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        workspace_root: str | Path = ".dagent-runs",
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
+            if not isinstance(request, str):
+                raise TypeError("DAG message execution requires a string request.")
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self.dag_agent.run(
-                message,
+                request,
                 task_id=None,
                 review_level=review_level,
                 runtime_mode=str(mode),
                 on_token=thinking_only,
-                on_trace=_trace_event_emitter(on_event),
+                on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
         elif mode == "tool":
+            if not isinstance(request, str):
+                raise TypeError("Tool execution requires a string request.")
             # Tool mode: only stream <think> blocks from the loop.
             # The final answer is returned in the done payload.
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self.tool_agent.run(
-                message,
+                request,
                 review_level=review_level,
                 on_token=thinking_only,
                 on_event=on_event,
+            )
+        elif mode == "dag_spec":
+            if not isinstance(request, DAGSpec):
+                raise TypeError("DAGSpec execution requires a DAGSpec request.")
+            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            return await self.dag_agent.loop.run_static(
+                request,
+                workspace_root=workspace_root,
+                on_token=thinking_only,
+                on_event=on_event,
+                on_dag=_dag_event_emitter(on_event),
             )
         else:
             raise ValueError(f"Unknown runtime mode: {mode}")
@@ -355,13 +389,13 @@ class HarnessRuntime:
         mode: Literal["tool", "dag"],
         review_level: ReviewLevel,
         *,
-        extra_invocations: list[ToolInvocation] | None = None,
+        extra_invocations: list[CapabilityInvocation] | None = None,
         task_id: str | None = None,
         runtime_mode: str | None = None,
     ) -> RuntimeResponse:
         invocations = [*(extra_invocations or []), *outcome.invocations]
         if outcome.status == "awaiting_review":
-            record = self.session.record_outcome(
+            record = self.session.save_loop_outcome(
                 task_id=task_id,
                 mode=mode,
                 user_request=user_request,
@@ -372,7 +406,7 @@ class HarnessRuntime:
             )
             return _gate_result_for_task(outcome, record.task_id)
 
-        record = self.session.record_outcome(
+        record = self.session.save_loop_outcome(
             task_id=task_id,
             mode=mode,
             user_request=user_request,
@@ -386,10 +420,45 @@ class HarnessRuntime:
             status=outcome.status,
             final_answer=final_answer,
             dag=outcome.dag,
-            dag_run=outcome.dag_run,
+            trace=record.trace or outcome.trace,
             task_id=record.task_id,
             events=outcome.events,
             pending_review=outcome.pending_review,
+        )
+
+    async def run_dag_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        workspace_root: str | Path = ".dagent-runs",
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> DAGRun:
+        outcome = await self._execute_loop(
+            spec,
+            mode="dag_spec",
+            review_level="fast",
+            on_token=on_token,
+            on_event=on_event,
+            workspace_root=workspace_root,
+        )
+        record = self.session.save_loop_outcome(
+            task_id=outcome.task_id,
+            mode="dag",
+            user_request=f"Run DAGSpec {spec.id}",
+            review_level="fast",
+            loop_outcome=outcome,
+            runtime_mode="dag_spec",
+        )
+        trace = record.trace or outcome.trace
+        if trace is None:
+            raise RuntimeError(f"DAGSpec run '{record.task_id}' completed without a run trace.")
+        return DAGRun(
+            run_id=record.task_id,
+            spec_id=record.spec_id or spec.id,
+            workspace_path=record.workspace_path or "",
+            dag=record.dag,
+            trace=trace,
         )
 
 
@@ -406,7 +475,7 @@ def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeRes
         status="awaiting_review",
         final_answer="",
         dag=loop_outcome.dag,
-        dag_run=loop_outcome.dag_run,
+        trace=loop_outcome.trace,
         task_id=task_id,
         events=loop_outcome.events,
         pending_review=loop_outcome.pending_review,

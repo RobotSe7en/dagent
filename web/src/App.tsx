@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -9,8 +9,10 @@ import {
   MiniMap,
   Node,
   ReactFlow,
+  addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  type Connection,
   type EdgeChange,
   type NodeChange,
 } from '@xyflow/react';
@@ -19,18 +21,71 @@ import {
   Bot,
   Check,
   CircleStop,
+  Database,
+  FileText,
   GitBranch,
   Loader,
+  MessageSquare,
   MessageSquarePlus,
   Plus,
+  Play,
+  RefreshCw,
+  Save,
+  Search,
   Send,
   SlidersHorizontal,
   Trash2,
+  UserCog,
   Wrench,
   X,
 } from 'lucide-react';
-import { getValidationStatus, setValidationEnabled as apiSetValidation, resetSession, resumeDagReview, resumeToolReview, streamTask } from './api';
-import type { BoundaryMode, Dag, DagEdge, DagNode, ReviewEventPayload, ValidationFeedbackEvent, ReviewLevel, RiskLevel, ToolCallPayload, ToolStreamEvent, TraceEvent } from './types';
+import {
+  createCapability,
+  deleteCapability,
+  getValidationStatus,
+  listCapabilities,
+  listDagSpecs,
+  listProfiles,
+  resetSession,
+  resumeCapabilityReview,
+  resumeDagReview,
+  runDagSpecStream,
+  saveDagSpec,
+  setCapabilityEnabled,
+  setValidationEnabled as apiSetValidation,
+  streamTask,
+  testCapability,
+} from './api';
+import type {
+  AgentProfile,
+  BoundaryMode,
+  CapabilityDefinition,
+  CapabilityKind,
+  CapabilityResult,
+  Dag,
+  DagEdge,
+  DagNode,
+  DagRun,
+  DagSpec,
+  ProfileWarning,
+  ReviewEventPayload,
+  ValidationFeedbackEvent,
+  ReviewLevel,
+  RiskLevel,
+  CapabilityStreamEvent,
+  TraceLogEvent,
+  WorkspaceKey,
+} from './types';
+import {
+  buildSchemaArgumentFields,
+  coerceArgumentValue,
+  ensureSchemaArguments,
+  formatArgumentValue,
+  parseArgumentValue,
+  resetSchemaArguments,
+  visibleCapabilitiesForPicker,
+  type ArgumentValueType,
+} from './schemaArguments';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -41,6 +96,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
+const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -50,13 +106,46 @@ const emptyDag: Dag = {
   edges: [],
 };
 
+const defaultCapabilityPolicy = {
+  risk: 'low' as RiskLevel,
+  requires_review: false,
+  sandbox_required: false,
+  network: false,
+  secrets: [],
+};
+
+const defaultCustomCapability: CapabilityDefinition = {
+  id: 'custom_tool.example',
+  name: 'example',
+  kind: 'custom_tool',
+  description: '',
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  policy: defaultCapabilityPolicy,
+  config: {
+    template: 'result:{text}',
+  },
+  enabled: true,
+};
+
+const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
+  { key: 'chat', label: '智能对话', icon: <MessageSquare size={16} /> },
+  { key: 'orchestration', label: 'AI编排', icon: <GitBranch size={16} /> },
+  { key: 'tools', label: '工具管理', icon: <Wrench size={16} /> },
+  { key: 'agents', label: '智能体管理', icon: <UserCog size={16} /> },
+];
+
 function normalizeNode(node: DagNode): DagNode {
   const invocation = node.invocation;
   return {
     ...node,
+    node_type: node.node_type ?? 'capability',
     invocation: {
       ...invocation,
-      tool_name: invocation.tool_name ?? '',
+      capability_id: invocation.capability_id ?? '',
+      kind: invocation.kind ?? 'tool',
       arguments: invocation.arguments ?? {},
       boundary: {
         mode: invocation.boundary?.mode ?? 'read_only',
@@ -69,21 +158,85 @@ function normalizeNode(node: DagNode): DagNode {
   };
 }
 
+function createEmptyDagSpec(): DagSpec {
+  return {
+    id: `custom_dag_${Date.now()}`,
+    name: 'Untitled DAG',
+    version: 1,
+    description: '',
+    input_schema: {},
+    artifacts: {},
+    nodes: [],
+    edges: [],
+    metadata: {},
+  };
+}
+
+function dagFromSpec(spec: DagSpec): Dag {
+  return {
+    dag_id: spec.id,
+    task_id: spec.id,
+    version: spec.version ?? 1,
+    status: 'draft',
+    nodes: (spec.nodes ?? []).map(normalizeNode),
+    edges: spec.edges ?? [],
+  };
+}
+
+function specFromDag(spec: DagSpec, dag: Dag): DagSpec {
+  return {
+    ...spec,
+    version: spec.version ?? 1,
+    nodes: dag.nodes.filter((node) => node.node_type !== 'start').map((node) => ({
+      ...normalizeNode(node),
+      status: 'planned',
+    })),
+    edges: dag.edges,
+  };
+}
+
+function validateDagSpecDraft(spec: DagSpec): string | null {
+  if (!spec.id.trim()) return 'DAGSpec id is required.';
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(spec.id)) return 'DAGSpec id must start with a letter and use letters, numbers, _ or -.';
+  if (!spec.name.trim()) return 'DAGSpec name is required.';
+  const nodeIds = new Set<string>();
+  for (const node of spec.nodes) {
+    if (!node.id.trim()) return 'Every node needs an id.';
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(node.id)) return `Node '${node.id}' has an invalid id.`;
+    if (nodeIds.has(node.id)) return `Node '${node.id}' is duplicated.`;
+    nodeIds.add(node.id);
+    if (!node.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
+  }
+  for (const edge of spec.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      return `Edge ${edge.source} -> ${edge.target} references a missing node.`;
+    }
+  }
+  return null;
+}
+
+function capabilityDisplayName(capability: CapabilityDefinition): string {
+  return `${capability.name} (${capability.id})`;
+}
+
+function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
+  return capability?.policy?.risk ?? 'low';
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
-  kind?: 'text' | 'tool';
-  toolEvent?: ToolStreamEvent;
-  toolEvents?: ToolStreamEvent[];
+  kind?: 'text';
+  capabilityEvents?: CapabilityStreamEvent[];
   timeline?: MessageTimelineItem[];
   dagSnapshot?: Dag;
-  traceSnapshot?: TraceEvent[];
+  traceSnapshot?: TraceLogEvent[];
 }
 
 type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'dag'; dag: Dag }
-  | { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent }
+  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
@@ -98,6 +251,11 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
+    const detail = item.node_type === 'start'
+      ? 'internal start'
+      : item.invocation.capability_id
+        ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
+        : 'capability not set';
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -112,11 +270,9 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.invocation.tool_name ? JSON.stringify(item.invocation.arguments) : ''}
+              title={item.node_type === 'start' ? 'Internal DAG start node' : item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
             >
-              {item.invocation.tool_name
-                ? `${item.invocation.tool_name} ${JSON.stringify(item.invocation.arguments)}`
-                : 'tool not set'}
+              {detail}
             </div>
           </div>
         ),
@@ -140,36 +296,75 @@ function isDagConfirmable(dag: Dag): boolean {
 }
 
 export function App() {
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
   const [selectedId, setSelectedId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
     },
   ]);
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<RuntimeMode>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
   const [streaming, setStreaming] = useState(false);
-  const [trace, setTrace] = useState<TraceEvent[]>([]);
+  const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [validationEnabled, setValidationEnabled] = useState(false);
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dagReview, setDagReview] = useState<ReviewEventPayload | null>(null);
-  const [toolReview, setToolReview] = useState<ReviewEventPayload | null>(null);
+  const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
+  const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
+  const [consoleLoading, setConsoleLoading] = useState(false);
+  const [consoleError, setConsoleError] = useState<string | null>(null);
+  const [dagSpecs, setDagSpecs] = useState<DagSpec[]>([]);
+  const [editorSpec, setEditorSpec] = useState<DagSpec>(() => createEmptyDagSpec());
+  const [editorDag, setEditorDag] = useState<Dag>(() => dagFromSpec(editorSpec));
+  const [editorSelectedId, setEditorSelectedId] = useState('');
+  const [editorTrace, setEditorTrace] = useState<TraceLogEvent[]>([]);
+  const [editorRun, setEditorRun] = useState<DagRun | null>(null);
+  const [editorMessage, setEditorMessage] = useState('');
+  const [editorRunning, setEditorRunning] = useState(false);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
+  const [selectedProfileName, setSelectedProfileName] = useState('');
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
+  const editorGraph = useMemo(() => graphFromDag(editorDag), [editorDag]);
+  const [editorNodes, setEditorNodes] = useState<Node[]>(editorGraph.nodes);
+  const [editorEdges, setEditorEdges] = useState<Edge[]>(editorGraph.edges);
+
+  const refreshConsoleData = useCallback(async () => {
+    setConsoleLoading(true);
+    setConsoleError(null);
+    try {
+      const [nextCapabilities, nextSpecs, nextProfiles] = await Promise.all([
+        listCapabilities(),
+        listDagSpecs(),
+        listProfiles(),
+      ]);
+      setCapabilities(nextCapabilities);
+      setDagSpecs(nextSpecs);
+      setProfiles(nextProfiles.profiles);
+      setProfileWarnings(nextProfiles.warnings);
+      setSelectedProfileName((current) => current || nextProfiles.profiles[0]?.name || '');
+    } catch (exc) {
+      setConsoleError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setConsoleLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const requestId = ++validationRequestIdRef.current;
@@ -186,6 +381,10 @@ export function App() {
         }
       });
   }, []);
+
+  useEffect(() => {
+    void refreshConsoleData();
+  }, [refreshConsoleData]);
 
   useEffect(() => {
     const element = messageListRef.current;
@@ -224,6 +423,50 @@ export function App() {
       setSelectedId(nextDag.nodes[0]?.id ?? '');
     }
   }, [selectedId]);
+
+  const syncEditorDag = useCallback((nextDag: Dag) => {
+    setEditorDag(nextDag);
+    const nextGraph = graphFromDag(nextDag);
+    setEditorNodes(nextGraph.nodes);
+    setEditorEdges(nextGraph.edges);
+    setEditorSelectedId((current) =>
+      nextDag.nodes.some((node) => node.id === current) ? current : nextDag.nodes[0]?.id ?? '',
+    );
+  }, []);
+
+  const setEditorSpecAndDag = useCallback((spec: DagSpec) => {
+    const normalizedSpec = {
+      ...spec,
+      version: spec.version ?? 1,
+      description: spec.description ?? '',
+      input_schema: spec.input_schema ?? {},
+      artifacts: spec.artifacts ?? {},
+      nodes: (spec.nodes ?? []).map(normalizeNode),
+      edges: spec.edges ?? [],
+      metadata: spec.metadata ?? {},
+    };
+    setEditorSpec(normalizedSpec);
+    syncEditorDag(dagFromSpec(normalizedSpec));
+    setEditorTrace([]);
+    setEditorRun(null);
+    setEditorMessage('');
+  }, [syncEditorDag]);
+
+  const patchEditorSpec = (patch: Partial<DagSpec>) => {
+    setEditorSpec((current) => ({
+      ...current,
+      ...patch,
+    }));
+    if (patch.id) {
+      setEditorDag((current) => ({ ...current, dag_id: patch.id as string, task_id: patch.id as string }));
+    }
+  };
+
+  const updateEditorDag = (updater: (current: Dag) => Dag) => {
+    const nextDag = updater(editorDag);
+    syncEditorDag(nextDag);
+    setEditorSpec((current) => specFromDag(current, nextDag));
+  };
 
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
@@ -327,21 +570,21 @@ export function App() {
 
   const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
-    if (pendingReview.kind === 'tool_review') {
-      setToolReview(pendingReview as ReviewEventPayload);
+    if (pendingReview.kind === 'capability_review') {
+      setCapabilityReview(pendingReview as ReviewEventPayload);
       return;
     }
     setDagReview(pendingReview);
   };
 
-  const appendTrace = (event: Omit<TraceEvent, 'id' | 'timestamp'>): TraceEvent => {
+  const appendTrace = (event: Omit<TraceLogEvent, 'id' | 'timestamp'>): TraceLogEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
     setTrace((items) => [...items, nextEvent]);
     return nextEvent;
   };
 
-  const appendRuntimeTrace = (event: TraceEvent) => {
+  const appendRuntimeTrace = (event: TraceLogEvent) => {
     setTrace((items) => [...items, event]);
     updateLastAssistantText((message) => ({
       ...message,
@@ -365,27 +608,59 @@ export function App() {
     }));
   };
 
-  const appendToolMessage = (event: ToolStreamEvent) => {
-    if (event.type === 'tool_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
+  const appendCapabilityMessage = (event: CapabilityStreamEvent) => {
+    if (event.type === 'capability_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
     updateLastAssistantText((message) => {
-      const toolEvents = [...(message.toolEvents ?? []), event];
+      const capabilityEvents = [...(message.capabilityEvents ?? []), event];
       const timeline = [...(message.timeline ?? [])];
-      if (event.type === 'tool_result' || event.type === 'tool_error') {
-        const idx = findMatchingToolCall(timeline, event.tool_call_id);
+      if (event.type === 'capability_result' || event.type === 'capability_error') {
+        const idx = findMatchingCapabilityCall(timeline, event.invocation_id);
         if (idx !== -1) {
-          const item = timeline[idx] as { type: 'tool'; event: ToolStreamEvent; result?: ToolStreamEvent };
+          const item = timeline[idx] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
           timeline[idx] = { ...item, result: event };
-          return { ...message, toolEvents, timeline };
+          return { ...message, capabilityEvents, timeline };
         }
       }
-      timeline.push({ type: 'tool', event });
-      return { ...message, toolEvents, timeline };
+      timeline.push({ type: 'capability', event });
+      return { ...message, capabilityEvents, timeline };
     });
   };
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
+  const onEditorNodesChange = useCallback((changes: NodeChange[]) => setEditorNodes((nds) => applyNodeChanges(changes, nds)), []);
+  const onEditorEdgesChange = useCallback((changes: EdgeChange[]) => {
+    setEditorEdges((eds) => {
+      const next = applyEdgeChanges(changes, eds);
+      const nextDagEdges = next
+        .filter((edge) => edge.source && edge.target)
+        .map((edge) => ({
+          source: edge.source,
+          target: edge.target,
+          reason: 'User dependency.',
+        }));
+      setEditorDag((current) => ({ ...current, edges: nextDagEdges }));
+      setEditorSpec((current) => specFromDag(current, { ...editorDag, edges: nextDagEdges }));
+      return next;
+    });
+  }, [editorDag]);
+  const onEditorConnect = useCallback((connection: Connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    const nextEdge = {
+      source: connection.source,
+      target: connection.target,
+      reason: 'User dependency.',
+    };
+    setEditorEdges((eds) => addEdge({ ...connection, id: `${connection.source}-${connection.target}` }, eds));
+    updateEditorDag((current) => ({
+      ...current,
+      edges: [
+        ...current.edges.filter((edge) => !(edge.source === nextEdge.source && edge.target === nextEdge.target)),
+        nextEdge,
+      ],
+    }));
+  }, [editorDag]);
 
   const updateDag = (updater: (current: Dag) => Dag) => {
     syncDag(updater(dag));
@@ -405,27 +680,31 @@ export function App() {
 
   const addNode = () => {
     const id = uniqueNodeId(dag);
-    updateDag((current) => ({
-      ...current,
-      status: 'draft',
-      nodes: [
-        ...current.nodes,
-        normalizeNode({
-          id,
-          invocation: {
-            tool_name: current.nodes[0]?.invocation.tool_name ?? '',
-            arguments: {},
-            boundary: {
-              mode: 'read_only',
-              allowed_paths: [],
-              allowed_commands: [],
+    updateDag((current) => {
+      const firstCapability = capabilities.find((item) => item.id === current.nodes[0]?.invocation.capability_id);
+      return {
+        ...current,
+        status: 'draft',
+        nodes: [
+          ...current.nodes,
+          normalizeNode({
+            id,
+            invocation: {
+              capability_id: current.nodes[0]?.invocation.capability_id ?? '',
+              kind: current.nodes[0]?.invocation.kind ?? 'tool',
+              arguments: ensureSchemaArguments({}, firstCapability?.parameters),
+              boundary: {
+                mode: 'read_only',
+                allowed_paths: [],
+                allowed_commands: [],
+              },
+              risk: 'low',
             },
-            risk: 'low',
-          },
-          status: 'planned',
-        }),
-      ],
-    }));
+            status: 'planned',
+          }),
+        ],
+      };
+    });
     setSelectedId(id);
   };
 
@@ -437,6 +716,156 @@ export function App() {
       nodes: current.nodes.filter((node) => node.id !== selectedNode.id),
       edges: current.edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
     }));
+  };
+
+  const newEditorSpec = () => {
+    setEditorSpecAndDag(createEmptyDagSpec());
+  };
+
+  const loadEditorSpec = (spec: DagSpec) => {
+    setEditorSpecAndDag(spec);
+  };
+
+  const addEditorNode = (capability?: CapabilityDefinition) => {
+    const selectedCapability = capability ?? capabilities.find((item) => item.enabled);
+    const id = uniqueNodeId(editorDag);
+    updateEditorDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: [
+        ...current.nodes,
+        normalizeNode({
+          id,
+          invocation: {
+            capability_id: selectedCapability?.id ?? '',
+            kind: selectedCapability?.kind ?? 'tool',
+            arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
+            boundary: {
+              mode: 'read_only',
+              allowed_paths: [],
+              allowed_commands: [],
+            },
+            risk: capabilityRisk(selectedCapability),
+          },
+          status: 'planned',
+        }),
+      ],
+    }));
+    setEditorSelectedId(id);
+  };
+
+  const patchEditorNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
+    updateEditorDag((current) => {
+      const updatedNodes = current.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const merged = normalizeNode({ ...node, ...patch });
+        if (patch.id && patch.id !== nodeId) {
+          setEditorSelectedId(patch.id);
+        }
+        return merged;
+      });
+      const edgesForRename = patch.id && patch.id !== nodeId
+        ? current.edges.map((edge) => ({
+            ...edge,
+            source: edge.source === nodeId ? patch.id as string : edge.source,
+            target: edge.target === nodeId ? patch.id as string : edge.target,
+          }))
+        : current.edges;
+      return {
+        ...current,
+        status: 'draft',
+        nodes: updatedNodes,
+        edges: nextEdges ?? edgesForRename,
+      };
+    });
+  };
+
+  const deleteEditorNode = (nodeId: string = editorSelectedId) => {
+    if (!nodeId) return;
+    updateEditorDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: current.nodes.filter((node) => node.id !== nodeId),
+      edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+    }));
+  };
+
+  const persistEditorSpec = async (): Promise<boolean> => {
+    const spec = specFromDag(editorSpec, editorDag);
+    const validation = validateDagSpecDraft(spec);
+    if (validation) {
+      setEditorMessage(validation);
+      return false;
+    }
+    setEditorMessage('Saving DAGSpec...');
+    try {
+      const saved = await saveDagSpec(spec);
+      setEditorSpecAndDag(saved);
+      await refreshConsoleData();
+      setEditorMessage(`Saved ${saved.id}.`);
+      return true;
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+      return false;
+    }
+  };
+
+  const runEditorSpec = async () => {
+    if (editorRunning) return;
+    const spec = specFromDag(editorSpec, editorDag);
+    const saved = await persistEditorSpec();
+    if (!saved) return;
+    const validation = validateDagSpecDraft(spec);
+    if (validation) return;
+    setEditorRunning(true);
+    setEditorTrace([]);
+    setEditorRun(null);
+    setEditorMessage(`Running ${spec.id}...`);
+    try {
+      await runDagSpecStream(spec.id, {
+        onStatus: (status) => {
+          setEditorTrace((items) => [
+            ...items,
+            {
+              id: crypto.randomUUID(),
+              type: 'model',
+              label: status,
+              detail: 'DAGSpec run event.',
+              status: 'running',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            },
+          ]);
+        },
+        onTrace: (event) => {
+          setEditorTrace((items) => [...items, event]);
+        },
+        onCapability: (event) => {
+          setEditorTrace((items) => [
+            ...items,
+            {
+              id: `${event.invocation_id}-${event.type}-${items.length}`,
+              type: 'capability',
+              label: event.capability_id,
+              detail: event.content || JSON.stringify(event.arguments),
+              status: event.type === 'capability_error' ? 'failed' : event.type === 'capability_result' ? 'completed' : 'running',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            },
+          ]);
+        },
+        onDone: (payload) => {
+          setEditorRun(payload.dag_run);
+          syncEditorDag(payload.dag_run.dag);
+          setEditorMessage(`Run ${payload.dag_run.status}.`);
+        },
+        onError: (message) => {
+          setEditorMessage(message);
+        },
+      });
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setEditorRunning(false);
+    }
   };
 
   const runStream = async () => {
@@ -465,7 +894,7 @@ export function App() {
           if (shouldOpenDagReview(nextDag)) setReviewOpen(true);
         },
         onTrace: appendRuntimeTrace,
-        onTool: appendToolMessage,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -482,7 +911,7 @@ export function App() {
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: payload.dag ? 'DAGAgentLoop completed the request.' : 'ToolAgentLoop completed the request.',
+            detail: payload.dag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
             status: payload.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -537,7 +966,7 @@ export function App() {
           attachDagToLastAssistant(nextDag);
         },
         onTrace: appendRuntimeTrace,
-        onTool: appendToolMessage,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -550,7 +979,7 @@ export function App() {
           }
           handlePendingReview(payload.pending_review);
           enqueueFinalAnswer(payload.final_answer);
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAGAgentLoop completed the request.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAG loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
@@ -575,9 +1004,9 @@ export function App() {
     void resumeDag(false);
   };
 
-  const confirmToolReview = async (approved: boolean) => {
-    if (!toolReview || streaming) return;
-    setToolReview(null);
+  const confirmCapabilityReview = async (approved: boolean) => {
+    if (!capabilityReview || streaming) return;
+    setCapabilityReview(null);
     setError(null);
     tokenQueueRef.current = [];
     stopTokenTimer();
@@ -586,11 +1015,11 @@ export function App() {
       ...items,
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'model', label: 'tool_review_resumed', detail: `Tool review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
+    appendTrace({ type: 'model', label: 'capability_review_resumed', detail: `Capability review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
 
     try {
-      await resumeToolReview(toolReview.review_id, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'ToolAgentLoop resumed from tool review.', status: 'running' }),
+      await resumeCapabilityReview(capabilityReview.review_id, approved, {
+        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -598,17 +1027,17 @@ export function App() {
           flushQueuedTokensNow();
           handlePendingReview(payload.pending_review);
           enqueueFinalAnswer(payload.final_answer);
-          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'ToolAgentLoop completed the request.', status: 'completed' });
+          appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
           setError(message);
-          appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+          appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
       });
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
-      appendTrace({ type: 'model', label: 'tool_review_failed', detail: message, status: 'failed' });
+      appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
     } finally {
       await waitForTokenQueue();
       setStreaming(false);
@@ -623,13 +1052,13 @@ export function App() {
       setValidationEnabled(enabled);
       setValidationError(null);
       setDagReview(null);
-      setToolReview(null);
+      setCapabilityReview(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }
     setMessages([{
       role: 'assistant',
-      content: '输入任务后，我会通过 Tool 模式直接使用工具，或在需要编排时通过 DAG 模式生成并执行计划。Auto 模式会自动选择。',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
     }]);
     setDraft('');
     syncDag(emptyDag);
@@ -650,64 +1079,85 @@ export function App() {
           </div>
           <p>Human-reviewed Agent DAG Harness</p>
         </div>
+        <nav className="workspace-nav" aria-label="Workspace navigation">
+          {workspaceItems.map((item) => (
+            <button
+              key={item.key}
+              className={activeWorkspace === item.key ? 'active' : ''}
+              type="button"
+              onClick={() => setActiveWorkspace(item.key)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="top-actions">
-          <div className="mode-switch" aria-label="Runtime mode">
-            {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
-              <button
-                key={item}
-                className={mode === item ? 'active' : ''}
-                onClick={() => setMode(item)}
-                type="button"
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-          <select
-            className="review-select"
-            value={reviewLevel}
-            onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
-            aria-label="Review level"
-          >
-            {reviewLevels.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </select>
-          <button
-            className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
-            type="button"
-            onClick={toggleValidation}
-            disabled={validationPending}
-            title={validationError ?? 'Validate final answers against the user request'}
-            aria-pressed={validationEnabled}
-          >
-            {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
-          </button>
-          {dag.nodes.length ? (
+          {activeWorkspace === 'chat' ? (
             <>
-              <StatusBadge status={dag.status} />
-              <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
-                <GitBranch size={16} />
-                Review DAG
+              <div className="mode-switch" aria-label="Runtime mode">
+                {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
+                  <button
+                    key={item}
+                    className={mode === item ? 'active' : ''}
+                    onClick={() => setMode(item)}
+                    type="button"
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <select
+                className="review-select"
+                value={reviewLevel}
+                onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
+                aria-label="Review level"
+              >
+                {reviewLevels.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </select>
+              <button
+                className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
+                type="button"
+                onClick={toggleValidation}
+                disabled={validationPending}
+                title={validationError ?? 'Validate final answers against the user request'}
+                aria-pressed={validationEnabled}
+              >
+                {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
               </button>
+              {dag.nodes.length ? (
+                <>
+                  <StatusBadge status={dag.status} />
+                  <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
+                    <GitBranch size={16} />
+                    Review DAG
+                  </button>
+                </>
+              ) : null}
             </>
-          ) : null}
+          ) : (
+            <button className="secondary-button compact-button" onClick={() => void refreshConsoleData()} disabled={consoleLoading} type="button">
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+          )}
         </div>
       </header>
 
       <main className="workspace">
-        <section className="chat-pane">
-          <PaneTitle icon={<Bot size={18} />} title="Conversation" />
-          {error ? <div className="error-banner">{error}</div> : null}
-          <div className="message-list" ref={messageListRef}>
-            {messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`message ${message.role} ${message.kind ?? 'text'}`}>
-                <span>{message.kind === 'tool' ? 'tool' : message.role}</span>
-                {message.kind === 'tool' && message.toolEvent ? (
-                  <ToolEventCard event={message.toolEvent} />
-                ) : (
+        {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
+        {activeWorkspace === 'chat' ? (
+          <section className="chat-pane">
+            <PaneTitle icon={<Bot size={18} />} title="智能对话" />
+            {error ? <div className="error-banner">{error}</div> : null}
+            <div className="message-list" ref={messageListRef}>
+              {messages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className={`message ${message.role} ${message.kind ?? 'text'}`}>
+                  <span>{message.role}</span>
                   <MessageTimeline
                     message={message}
                     loading={streaming}
@@ -717,35 +1167,73 @@ export function App() {
                       setReviewOpen(true);
                     }}
                   />
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="composer">
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) runStream();
-              }}
-              placeholder="Ask for a plan, review, or execution result"
-            />
-            <div className="composer-bar">
-              <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
-                <MessageSquarePlus size={18} />
-              </button>
-              <div className="composer-actions">
-                <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
-                  <CircleStop size={18} />
+                </div>
+              ))}
+            </div>
+            <div className="composer">
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) runStream();
+                }}
+                placeholder="Ask for a plan, review, or execution result"
+              />
+              <div className="composer-bar">
+                <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
+                  <MessageSquarePlus size={18} />
                 </button>
-                <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
-                  <Send size={17} />
-                  Send
-                </button>
+                <div className="composer-actions">
+                  <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
+                    <CircleStop size={18} />
+                  </button>
+                  <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
+                    <Send size={17} />
+                    Send
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : activeWorkspace === 'orchestration' ? (
+          <OrchestrationWorkspace
+            capabilities={capabilities}
+            dagSpecs={dagSpecs}
+            spec={editorSpec}
+            dag={editorDag}
+            nodes={editorNodes}
+            edges={editorEdges}
+            selectedId={editorSelectedId}
+            trace={editorTrace}
+            run={editorRun}
+            message={editorMessage}
+            running={editorRunning}
+            onNew={newEditorSpec}
+            onLoad={loadEditorSpec}
+            onPatchSpec={patchEditorSpec}
+            onAddNode={addEditorNode}
+            onPatchNode={patchEditorNode}
+            onDeleteNode={deleteEditorNode}
+            onSave={() => void persistEditorSpec()}
+            onRun={() => void runEditorSpec()}
+            onNodesChange={onEditorNodesChange}
+            onEdgesChange={onEditorEdgesChange}
+            onConnect={onEditorConnect}
+            onSelectNode={setEditorSelectedId}
+          />
+        ) : activeWorkspace === 'tools' ? (
+          <CapabilityDirectory
+            capabilities={capabilities}
+            onRefresh={refreshConsoleData}
+          />
+        ) : (
+          <AgentDirectory
+            profiles={profiles}
+            warnings={profileWarnings}
+            selectedName={selectedProfileName}
+            onSelect={setSelectedProfileName}
+          />
+        )}
       </main>
 
       {reviewOpen && dag.nodes.length ? (
@@ -767,12 +1255,12 @@ export function App() {
         />
       ) : null}
 
-      {toolReview ? (
-        <ToolReviewDialog
-          review={toolReview}
-          onApprove={() => confirmToolReview(true)}
-          onReject={() => confirmToolReview(false)}
-          onClose={() => setToolReview(null)}
+      {capabilityReview ? (
+        <CapabilityReviewDialog
+          review={capabilityReview}
+          onApprove={() => confirmCapabilityReview(true)}
+          onReject={() => confirmCapabilityReview(false)}
+          onClose={() => setCapabilityReview(null)}
         />
       ) : null}
     </div>
@@ -795,7 +1283,7 @@ function MessageTimeline({
 }: {
   message: ChatMessage;
   loading: boolean;
-  onOpenDag: (dag: Dag, trace?: TraceEvent[]) => void;
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
 }) {
   if (!message.timeline?.length) {
     return <MessageContent content={message.content || (loading ? '...' : '')} />;
@@ -804,8 +1292,8 @@ function MessageTimeline({
   return (
     <div className="message-timeline">
       {message.timeline.map((item, index) =>
-        item.type === 'tool' ? (
-          <ToolEventCard key={`${item.event.tool_call_id}-${index}`} event={item.event} result={item.result} />
+        item.type === 'capability' ? (
+          <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />
         ) : item.type === 'dag' ? (
           <DagSummaryCard
             key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
@@ -971,8 +1459,8 @@ function DagSummaryCard({
 
 function ValidatingIndicator() {
   return (
-    <details className="tool-event-card">
-      <summary className="tool-event-head">
+    <details className="timeline-card">
+      <summary className="timeline-card-head">
         <Loader size={14} />
         <strong>Validating result quality...</strong>
         <span>validating</span>
@@ -984,21 +1472,21 @@ function ValidatingIndicator() {
 function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
   const passed = event.type === 'validation_passed' || event.passed === true;
   return (
-    <details className={`tool-event-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
-      <summary className="tool-event-head">
+    <details className={`timeline-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
+      <summary className="timeline-card-head">
         {passed ? <Check size={14} /> : <AlertTriangle size={14} />}
         <strong>Validation {passed ? 'Passed' : 'Feedback'}</strong>
         <span>{passed ? 'passed' : 'retry'}</span>
       </summary>
       {event.summary ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Summary</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Summary</div>
           <p>{event.summary}</p>
         </div>
       ) : null}
       {!passed && event.issues.length ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Issues</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Issues</div>
           <ul className="validation-issues">
             {event.issues.map((issue, index) => (
               <li key={index}>
@@ -1010,8 +1498,8 @@ function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
         </div>
       ) : null}
       {!passed && event.reason ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Feedback to Agent</div>
+        <div className="timeline-section">
+          <div className="timeline-section-label">Feedback to Agent</div>
           <p>{event.reason}</p>
         </div>
       ) : null}
@@ -1025,31 +1513,31 @@ function hasNonZeroExitCode(content?: string): boolean {
   return match !== null && match[1] !== '0';
 }
 
-function ToolEventCard({ event, result }: { event: ToolStreamEvent; result?: ToolStreamEvent }) {
-  const resultContent = result?.content || (event.type !== 'tool_call' ? event.content || '' : '');
-  const isError = result?.type === 'tool_error' || event.type === 'tool_error';
+function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
+  const resultContent = result?.content || (event.type !== 'capability_call' ? event.content || '' : '');
+  const isError = result?.type === 'capability_error' || event.type === 'capability_error';
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const statusLabel = result
     ? (isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'tool_call' ? 'running' : event.type === 'tool_error' ? 'failed' : 'done');
-  const argsText = formatToolArguments(event.arguments);
+    : (event.type === 'capability_call' ? 'running' : event.type === 'capability_error' ? 'failed' : 'done');
+  const argsText = formatCapabilityArguments(event.arguments);
   return (
-    <details className={`tool-event-card ${showError ? 'tool_error' : event.type}`}>
-      <summary className="tool-event-head">
+    <details className={`capability-event-card ${showError ? 'capability_error' : event.type}`}>
+      <summary className="capability-event-head">
         <Wrench size={14} />
-        <strong>{event.name}</strong>
+        <strong>{event.capability_id}</strong>
         <span>{statusLabel}</span>
       </summary>
       {argsText ? (
-        <div className="tool-section">
-          <div className="tool-section-label">Args</div>
+        <div className="capability-section">
+          <div className="capability-section-label">Args</div>
           <pre>{clipText(argsText, 800)}</pre>
         </div>
       ) : null}
       {resultContent ? (
-        <div className="tool-section">
-          <div className="tool-section-label">{showError ? 'Error' : 'Result'}</div>
+        <div className="capability-section">
+          <div className="capability-section-label">{showError ? 'Error' : 'Result'}</div>
           <pre>{clipText(resultContent, 1200)}</pre>
         </div>
       ) : null}
@@ -1057,17 +1545,17 @@ function ToolEventCard({ event, result }: { event: ToolStreamEvent; result?: Too
   );
 }
 
-function findMatchingToolCall(timeline: MessageTimelineItem[], toolCallId: string): number {
+function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationId: string): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item.type === 'tool' && item.event.tool_call_id === toolCallId && item.event.type === 'tool_call') {
+    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability_call') {
       return i;
     }
   }
   return -1;
 }
 
-function formatToolArguments(value: Record<string, unknown>) {
+function formatCapabilityArguments(value: Record<string, unknown>) {
   if (!Object.keys(value).length) return '';
   return JSON.stringify(value, null, 2);
 }
@@ -1087,7 +1575,7 @@ function uniqueNodeId(dag: Dag) {
   return id;
 }
 
-function ToolReviewDialog({
+function CapabilityReviewDialog({
   review,
   onApprove,
   onReject,
@@ -1098,20 +1586,20 @@ function ToolReviewDialog({
   onReject: () => void;
   onClose: () => void;
 }) {
-  const toolCall = review.tool_call;
-  const argsText = toolCall ? JSON.stringify(toolCall.arguments, null, 2) : '';
+  const capabilityCall = review.capability_call;
+  const argsText = capabilityCall ? JSON.stringify(capabilityCall.arguments, null, 2) : '';
   const risk = (review.payload?.risk as string) || 'low';
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Tool review">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Capability review">
       <div className="dag-modal">
         <header className="modal-header">
           <div>
             <div className="modal-title">
               <AlertTriangle size={20} />
-              <span>Tool Review</span>
+              <span>Capability Review</span>
               <span className={`risk-badge risk-${risk}`}>{risk.toUpperCase()}</span>
             </div>
-            <p>{toolCall?.name || review.message}</p>
+            <p>{capabilityCall?.capability_id || review.message}</p>
           </div>
           <div className="modal-actions">
             <button className="secondary-button compact-button" onClick={onReject} type="button">
@@ -1128,21 +1616,764 @@ function ToolReviewDialog({
           </div>
         </header>
         <div className="modal-body">
-          {toolCall ? (
-            <div className="tool-section">
-              <div className="tool-section-label">Tool</div>
-              <p><strong>{toolCall.name}</strong></p>
+          {capabilityCall ? (
+            <div className="capability-section">
+              <div className="capability-section-label">Capability</div>
+              <p><strong>{capabilityCall.capability_id}</strong></p>
             </div>
           ) : null}
           {argsText ? (
-            <div className="tool-section">
-              <div className="tool-section-label">Arguments</div>
+            <div className="capability-section">
+              <div className="capability-section-label">Arguments</div>
               <pre>{clipText(argsText, 1200)}</pre>
             </div>
           ) : null}
         </div>
       </div>
     </div>
+  );
+}
+
+function OrchestrationWorkspace({
+  capabilities,
+  dagSpecs,
+  spec,
+  dag,
+  nodes,
+  edges,
+  selectedId,
+  trace,
+  run,
+  message,
+  running,
+  onNew,
+  onLoad,
+  onPatchSpec,
+  onAddNode,
+  onPatchNode,
+  onDeleteNode,
+  onSave,
+  onRun,
+  onNodesChange,
+  onEdgesChange,
+  onConnect,
+  onSelectNode,
+}: {
+  capabilities: CapabilityDefinition[];
+  dagSpecs: DagSpec[];
+  spec: DagSpec;
+  dag: Dag;
+  nodes: Node[];
+  edges: Edge[];
+  selectedId: string;
+  trace: TraceLogEvent[];
+  run: DagRun | null;
+  message: string;
+  running: boolean;
+  onNew: () => void;
+  onLoad: (spec: DagSpec) => void;
+  onPatchSpec: (patch: Partial<DagSpec>) => void;
+  onAddNode: (capability?: CapabilityDefinition) => void;
+  onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onDeleteNode: (nodeId?: string) => void;
+  onSave: () => void;
+  onRun: () => void;
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  onConnect: (connection: Connection) => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId?: string } | null>(null);
+  const [contextCapabilityId, setContextCapabilityId] = useState('');
+  const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
+  const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
+  const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
+  const openCanvasMenu = (event: MouseEvent | React.MouseEvent<Element>) => {
+    event.preventDefault();
+    setContextMenu({ x: event.clientX, y: event.clientY });
+    setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
+  };
+  const openNodeMenu = (event: React.MouseEvent, node: Node) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectNode(node.id);
+    setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+    setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
+  };
+  const addFromContext = () => {
+    if (contextCapability) onAddNode(contextCapability);
+    setContextMenu(null);
+  };
+  const deleteFromContext = () => {
+    if (contextMenu?.nodeId) onDeleteNode(contextMenu.nodeId);
+    setContextMenu(null);
+  };
+  return (
+    <section className="console-grid orchestration-grid">
+      <aside className="console-sidebar">
+        <PaneTitle icon={<FileText size={18} />} title="DAGSpecs" />
+        <div className="sidebar-actions">
+          <button className="secondary-button compact-button" onClick={onNew} type="button">
+            <Plus size={16} />
+            New
+          </button>
+          <button className="secondary-button compact-button" onClick={onSave} type="button">
+            <Save size={16} />
+            Save
+          </button>
+          <button className="primary-button compact-button" onClick={onRun} disabled={running} type="button">
+            <Play size={16} />
+            Run
+          </button>
+        </div>
+        <div className="spec-meta-form">
+          <label>
+            ID
+            <input value={spec.id} onChange={(event) => onPatchSpec({ id: event.target.value })} />
+          </label>
+          <label>
+            Name
+            <input value={spec.name} onChange={(event) => onPatchSpec({ name: event.target.value })} />
+          </label>
+          <label>
+            Description
+            <textarea value={spec.description ?? ''} onChange={(event) => onPatchSpec({ description: event.target.value })} />
+          </label>
+        </div>
+        <div className="resource-list">
+          {dagSpecs.length ? dagSpecs.map((item) => (
+            <button
+              key={item.id}
+              className={item.id === spec.id ? 'resource-row active' : 'resource-row'}
+              type="button"
+              onClick={() => onLoad(item)}
+            >
+              <strong>{item.name || item.id}</strong>
+              <span>{item.nodes.length} nodes</span>
+            </button>
+          )) : <div className="empty-state compact">No saved DAGSpecs in this process.</div>}
+        </div>
+      </aside>
+      <section className="flow-workbench">
+        <div className="workbench-toolbar">
+          <div>
+            <strong>{spec.name || spec.id}</strong>
+            <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAGSpec')}</span>
+          </div>
+          <select
+            onChange={(event) => {
+              const capability = enabledCapabilities.find((item) => item.id === event.target.value);
+              if (capability) onAddNode(capability);
+              event.currentTarget.value = '';
+            }}
+            defaultValue=""
+            aria-label="Add capability node"
+          >
+            <option value="" disabled>Add node from capability...</option>
+            {enabledCapabilities.map((capability) => (
+              <option key={capability.id} value={capability.id}>
+                {capabilityDisplayName(capability)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={(_, node) => onSelectNode(node.id)}
+          onPaneClick={() => setContextMenu(null)}
+          onPaneContextMenu={openCanvasMenu}
+          onNodeContextMenu={openNodeMenu}
+          fitView
+          fitViewOptions={{ padding: 0.2 }}
+        >
+          <Background color="#e2e4ea" gap={20} />
+          <MiniMap pannable zoomable nodeColor="#4f6ef7" maskColor="rgba(245,246,248,0.7)" />
+          <Controls />
+        </ReactFlow>
+        {contextMenu ? (
+          <div
+            className="canvas-context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="context-menu-title">{contextMenu.nodeId ? `Node: ${contextMenu.nodeId}` : 'Canvas'}</div>
+            <label>
+              Capability
+              <select value={contextCapability?.id ?? ''} onChange={(event) => setContextCapabilityId(event.target.value)}>
+                {enabledCapabilities.map((capability) => (
+                  <option key={capability.id} value={capability.id}>
+                    {capabilityDisplayName(capability)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="context-menu-item" onClick={addFromContext} disabled={!contextCapability} type="button">
+              <Plus size={15} />
+              Add node
+            </button>
+            {contextMenu.nodeId ? (
+              <button className="context-menu-item danger" onClick={deleteFromContext} type="button">
+                <Trash2 size={15} />
+                Delete node
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+      <aside className="console-detail">
+        <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Config" />
+        {selectedNode ? (
+          <OrchestrationNodeEditor
+            node={normalizeNode(selectedNode)}
+            dag={dag}
+            capabilities={capabilities}
+            logs={trace.filter((event) => event.node_id === selectedNode.id)}
+            onPatch={(patch, nextEdges) => onPatchNode(selectedNode.id, patch, nextEdges)}
+            onDelete={onDeleteNode}
+          />
+        ) : (
+          <div className="empty-state compact">
+            Select a node or add one from the capability list.
+          </div>
+        )}
+      </aside>
+    </section>
+  );
+}
+
+function OrchestrationNodeEditor({
+  node,
+  dag,
+  capabilities,
+  logs,
+  onPatch,
+  onDelete,
+}: {
+  node: DagNode;
+  dag: Dag;
+  capabilities: CapabilityDefinition[];
+  logs: TraceLogEvent[];
+  onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onDelete: () => void;
+}) {
+  const invocation = node.invocation;
+  const selectedCapability = capabilities.find((capability) => capability.id === invocation.capability_id);
+  const pickerCapabilities = visibleCapabilitiesForPicker(capabilities);
+  const selectableCapabilities = selectedCapability && !pickerCapabilities.some((capability) => capability.id === selectedCapability.id)
+    ? [selectedCapability, ...pickerCapabilities]
+    : pickerCapabilities;
+  const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
+  const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent' && capability.enabled);
+  const boundary = invocation.boundary ?? {
+    mode: 'read_only' as BoundaryMode,
+    allowed_paths: [],
+    allowed_commands: [],
+  };
+  const patchInvocation = (patch: Partial<typeof invocation>) =>
+    onPatch({ invocation: { ...invocation, ...patch } });
+  return (
+    <div className="node-editor">
+      <label>
+        Node ID
+        <input
+          value={node.id}
+          onChange={(event) => onPatch({ id: event.target.value })}
+        />
+      </label>
+      <label>
+        Capability
+        <select
+          value={invocation.capability_id}
+          onChange={(event) => {
+            const capability = capabilities.find((item) => item.id === event.target.value);
+            patchInvocation({
+              capability_id: event.target.value,
+              kind: capability?.kind ?? invocation.kind,
+              arguments: resetSchemaArguments(
+                invocation.arguments ?? {},
+                capability?.parameters,
+                selectedCapability?.parameters,
+              ),
+              risk: capabilityRisk(capability),
+            });
+          }}
+        >
+          <option value="">Select capability...</option>
+          {selectableCapabilities.map((capability) => (
+            <option key={capability.id} value={capability.id}>
+              {capabilityDisplayName(capability)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="two-col">
+        <label>
+          Type
+          <input value={selectedCapability?.kind ?? invocation.kind ?? 'tool'} disabled />
+        </label>
+        <label>
+          Risk
+          <select
+            value={invocation.risk ?? capabilityRisk(selectedCapability)}
+            onChange={(event) => patchInvocation({ risk: event.target.value as RiskLevel })}
+          >
+            {riskLevels.map((risk) => (
+              <option key={risk} value={risk}>{risk}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {selectedCapability?.kind === 'agent' && agentCapabilities.length === 0 ? (
+        <div className="empty-state compact">No agent capabilities are enabled.</div>
+      ) : null}
+      <ArgumentForm
+        value={invocation.arguments ?? {}}
+        parameters={selectedCapability?.parameters}
+        onChange={(argumentsValue) => patchInvocation({ arguments: argumentsValue })}
+      />
+      <label>
+        Depends On
+        <input
+          value={dependsOn.join(', ')}
+          onChange={(event) => {
+            const sources = splitCsv(event.target.value).filter((source) => source !== node.id);
+            const nextEdges = [
+              ...dag.edges.filter((edge) => edge.target !== node.id),
+              ...sources.map((source) => ({ source, target: node.id, reason: 'User dependency.' })),
+            ];
+            onPatch({}, nextEdges);
+          }}
+        />
+      </label>
+      <details className="node-policy-details">
+        <summary>Execution Policy</summary>
+        <div className="two-col">
+          <label>
+            Boundary
+            <select
+              value={boundary.mode}
+              onChange={(event) => patchInvocation({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })}
+            >
+              {boundaryModes.map((mode) => (
+                <option key={mode} value={mode}>{mode}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Allowed Paths
+            <input
+              value={(boundary.allowed_paths ?? []).join(', ')}
+              onChange={(event) => patchInvocation({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })}
+            />
+          </label>
+        </div>
+        <label>
+          Allowed Commands
+          <input
+            value={(boundary.allowed_commands ?? []).join(', ')}
+            onChange={(event) => patchInvocation({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })}
+          />
+        </label>
+      </details>
+      <button className="secondary-button danger-button" onClick={() => onDelete()} type="button">
+        <Trash2 size={16} />
+        Delete Node
+      </button>
+      <NodeExecutionLog logs={logs} />
+    </div>
+  );
+}
+
+function ArgumentForm({
+  value,
+  parameters,
+  onChange,
+}: {
+  value: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  onChange: (value: Record<string, unknown>) => void;
+}) {
+  const fields = buildSchemaArgumentFields(value, parameters);
+  const updateKey = (oldKey: string, nextKey: string) => {
+    const cleanKey = nextKey.trim();
+    if (!cleanKey || (cleanKey !== oldKey && Object.prototype.hasOwnProperty.call(value, cleanKey))) return;
+    const next: Record<string, unknown> = {};
+    for (const [key, itemValue] of Object.entries(value)) {
+      next[key === oldKey ? cleanKey : key] = itemValue;
+    }
+    onChange(next);
+  };
+  const updateValue = (key: string, rawValue: string, type: ArgumentValueType) => {
+    onChange({
+      ...value,
+      [key]: parseArgumentValue(rawValue, type, value[key]),
+    });
+  };
+  const updateType = (key: string, nextType: ArgumentValueType) => {
+    onChange({
+      ...value,
+      [key]: coerceArgumentValue(value[key], nextType),
+    });
+  };
+  const addField = () => {
+    const existing = ensureSchemaArguments(value, parameters);
+    let index = Object.keys(existing).length + 1;
+    let key = `arg_${index}`;
+    while (Object.prototype.hasOwnProperty.call(existing, key)) {
+      index += 1;
+      key = `arg_${index}`;
+    }
+    onChange({ ...existing, [key]: '' });
+  };
+  const removeField = (key: string) => {
+    const next = { ...value };
+    delete next[key];
+    onChange(next);
+  };
+  return (
+    <section className="argument-form">
+      <div className="argument-form-head">
+        <span>Arguments</span>
+        <button className="secondary-button compact-button" onClick={addField} type="button">
+          <Plus size={14} />
+          Add field
+        </button>
+      </div>
+      {fields.length ? fields.map((field) => {
+        const { key, value: itemValue, valueType: type } = field;
+        return (
+          <div className="argument-row" key={`argument-row-${key}`}>
+            <div className="argument-key-wrap">
+              <input
+                className="argument-key"
+                value={key}
+                disabled={field.fixed}
+                onChange={(event) => updateKey(key, event.target.value)}
+                aria-label="Argument name"
+              />
+              {field.fixed ? (
+                <span className="argument-meta" title={field.description}>
+                  {field.required ? 'required' : 'optional'}
+                </span>
+              ) : null}
+            </div>
+            <select
+              className="argument-type"
+              value={type}
+              disabled={field.fixed}
+              onChange={(event) => updateType(key, event.target.value as ArgumentValueType)}
+              aria-label="Argument type"
+            >
+              <option value="string">string</option>
+              <option value="number">number</option>
+              <option value="boolean">boolean</option>
+              <option value="json">json</option>
+            </select>
+            {type === 'boolean' ? (
+              <select
+                className="argument-value"
+                value={String(Boolean(itemValue))}
+                onChange={(event) => updateValue(key, event.target.value, type)}
+                aria-label="Argument value"
+              >
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            ) : (
+              <input
+                className="argument-value"
+                value={formatArgumentValue(itemValue)}
+                onChange={(event) => updateValue(key, event.target.value, type)}
+                aria-label="Argument value"
+              />
+            )}
+            <button
+              className="icon-button"
+              onClick={() => removeField(key)}
+              disabled={field.fixed}
+              title={field.fixed ? 'Schema-defined argument' : 'Remove argument'}
+              type="button"
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        );
+      }) : (
+        <div className="empty-state compact">No arguments yet. Add a field for this node.</div>
+      )}
+    </section>
+  );
+}
+
+function CapabilityDirectory({
+  capabilities,
+  onRefresh,
+}: {
+  capabilities: CapabilityDefinition[];
+  onRefresh: () => Promise<void>;
+}) {
+  const [query, setQuery] = useState('');
+  const [draftCapability, setDraftCapability] = useState<CapabilityDefinition>(defaultCustomCapability);
+  const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
+  const [selectedId, setSelectedId] = useState('');
+  const [result, setResult] = useState<CapabilityResult | null>(null);
+  const [message, setMessage] = useState('');
+  const filtered = capabilities.filter((capability) => {
+    const haystack = `${capability.id} ${capability.name} ${capability.kind} ${capability.description}`.toLowerCase();
+    return haystack.includes(query.toLowerCase());
+  });
+  const selected = capabilities.find((capability) => capability.id === selectedId) ?? filtered[0];
+  const grouped = capabilityKinds
+    .map((kind) => ({ kind, items: filtered.filter((capability) => capability.kind === kind) }))
+    .filter((group) => group.items.length);
+
+  const runCreate = async () => {
+    setMessage('Creating custom tool...');
+    try {
+      await createCapability(draftCapability);
+      await onRefresh();
+      setMessage(`Created ${draftCapability.id}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const runTest = async () => {
+    if (!selected) return;
+    const parsed = parseJsonObject(argumentsText);
+    if (!parsed) {
+      setMessage('Test arguments must be a JSON object.');
+      return;
+    }
+    setMessage(`Testing ${selected.id}...`);
+    try {
+      const nextResult = await testCapability(selected.id, parsed);
+      setResult(nextResult);
+      setMessage(`Test ${nextResult.status}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const toggleCapability = async (enabled: boolean) => {
+    if (!selected) return;
+    setMessage(enabled ? 'Enabling capability...' : 'Disabling capability...');
+    try {
+      await setCapabilityEnabled(selected.id, enabled);
+      await onRefresh();
+      setMessage(`${enabled ? 'Enabled' : 'Disabled'} ${selected.id}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const removeCapability = async () => {
+    if (!selected || selected.kind !== 'custom_tool') return;
+    setMessage('Deleting custom tool...');
+    try {
+      await deleteCapability(selected.id);
+      setSelectedId('');
+      await onRefresh();
+      setMessage(`Deleted ${selected.id}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  return (
+    <section className="console-grid directory-grid">
+      <aside className="console-sidebar">
+        <PaneTitle icon={<Wrench size={18} />} title="Capabilities" />
+        <label className="search-field">
+          <Search size={15} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capabilities" />
+        </label>
+        <div className="resource-list">
+          {grouped.map((group) => (
+            <div key={group.kind} className="resource-group">
+              <h3>{group.kind}</h3>
+              {group.items.map((capability) => (
+                <button
+                  key={capability.id}
+                  className={selected?.id === capability.id ? 'resource-row active' : 'resource-row'}
+                  type="button"
+                  onClick={() => setSelectedId(capability.id)}
+                >
+                  <strong>{capability.name}</strong>
+                  <span>{capability.id}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      </aside>
+      <section className="console-detail wide">
+        <PaneTitle icon={<Database size={18} />} title="Capability Detail" />
+        {selected ? (
+          <div className="directory-detail">
+            <div className="detail-header">
+              <div>
+                <h2>{selected.name}</h2>
+                <p>{selected.id}</p>
+              </div>
+              <span className={`risk-badge risk-${selected.policy.risk}`}>{selected.policy.risk}</span>
+            </div>
+            <div className="metadata-grid">
+              <span>Kind</span><strong>{selected.kind}</strong>
+              <span>Status</span><strong>{selected.enabled ? 'enabled' : 'disabled'}</strong>
+              <span>Source</span><strong>{selected.kind === 'custom_tool' ? 'custom editable' : 'backend/config readonly'}</strong>
+            </div>
+            <p>{selected.description || 'No description.'}</p>
+            <div className="two-col">
+              <section className="code-panel">
+                <h3>Parameters</h3>
+                <pre>{JSON.stringify(selected.parameters, null, 2)}</pre>
+              </section>
+              <section className="code-panel">
+                <h3>Config</h3>
+                <pre>{JSON.stringify(selected.config, null, 2)}</pre>
+              </section>
+            </div>
+            <section className="code-panel">
+              <h3>Test Arguments</h3>
+              <textarea value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} />
+              <div className="inline-actions">
+                <button className="primary-button compact-button" onClick={runTest} type="button">
+                  <Play size={16} />
+                  Test
+                </button>
+                <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selected.enabled)} disabled={selected.kind !== 'custom_tool'} type="button">
+                  {selected.enabled ? 'Disable' : 'Enable'}
+                </button>
+                <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={selected.kind !== 'custom_tool'} type="button">
+                  Delete
+                </button>
+              </div>
+              {message ? <p className="form-message">{message}</p> : null}
+              {result ? <pre>{JSON.stringify(result, null, 2)}</pre> : null}
+            </section>
+            {selected.kind !== 'custom_tool' ? <div className="readonly-note">This capability is provided by backend configuration and is read-only in the MVP.</div> : null}
+          </div>
+        ) : <div className="empty-state compact">No capabilities loaded.</div>}
+      </section>
+      <aside className="console-sidebar">
+        <PaneTitle icon={<Plus size={18} />} title="New custom_tool" />
+        <div className="spec-meta-form">
+          <label>
+            ID
+            <input
+              value={draftCapability.id}
+              onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value }))}
+            />
+          </label>
+          <label>
+            Name
+            <input
+              value={draftCapability.name}
+              onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value }))}
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              value={draftCapability.description}
+              onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value }))}
+            />
+          </label>
+          <label>
+            Template
+            <textarea
+              value={String(draftCapability.config.template ?? '')}
+              onChange={(event) => setDraftCapability((current) => ({
+                ...current,
+                config: { ...current.config, template: event.target.value },
+              }))}
+            />
+          </label>
+          <button className="primary-button" onClick={runCreate} type="button">
+            <Plus size={16} />
+            Create custom_tool
+          </button>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function AgentDirectory({
+  profiles,
+  warnings,
+  selectedName,
+  onSelect,
+}: {
+  profiles: AgentProfile[];
+  warnings: ProfileWarning[];
+  selectedName: string;
+  onSelect: (name: string) => void;
+}) {
+  const selected = profiles.find((profile) => profile.name === selectedName) ?? profiles[0];
+  return (
+    <section className="console-grid directory-grid">
+      <aside className="console-sidebar">
+        <PaneTitle icon={<UserCog size={18} />} title="Profiles" />
+        <div className="resource-list">
+          {profiles.length ? profiles.map((profile) => (
+            <button
+              key={profile.name}
+              className={selected?.name === profile.name ? 'resource-row active' : 'resource-row'}
+              type="button"
+              onClick={() => onSelect(profile.name)}
+            >
+              <strong>{profile.name}</strong>
+              <span>{profile.role}</span>
+            </button>
+          )) : <div className="empty-state compact">No profiles found.</div>}
+        </div>
+        {warnings.length ? (
+          <div className="warning-list">
+            {warnings.map((warning) => (
+              <p key={warning.name}><strong>{warning.name}</strong>: {warning.error}</p>
+            ))}
+          </div>
+        ) : null}
+      </aside>
+      <section className="console-detail wide">
+        <PaneTitle icon={<Bot size={18} />} title="Agent Profile" />
+        {selected ? (
+          <div className="directory-detail">
+            <div className="detail-header">
+              <div>
+                <h2>{selected.name}</h2>
+                <p>{selected.description || selected.role}</p>
+              </div>
+              <span className="risk-badge risk-low">{selected.output_format}</span>
+            </div>
+            <div className="metadata-grid">
+              <span>Role</span><strong>{selected.role}</strong>
+              <span>Layers</span><strong>{selected.layers.length}</strong>
+              <span>Memory file</span><strong>{selected.memory_file || 'none'}</strong>
+            </div>
+            <div className="profile-layer-list">
+              {selected.layers.map((layer) => (
+                <section key={layer} className="code-panel">
+                  <h3>{layer}</h3>
+                  <pre>{selected.layer_contents[layer] || '(empty)'}</pre>
+                </section>
+              ))}
+              <section className="code-panel">
+                <h3>Memory</h3>
+                <pre>{selected.memory || '(empty)'}</pre>
+              </section>
+            </div>
+            <div className="readonly-note">Profiles are read-only in this MVP. Add or edit profile files on disk, then refresh.</div>
+          </div>
+        ) : <div className="empty-state compact">Select a profile to inspect prompt layers.</div>}
+      </section>
+    </section>
   );
 }
 
@@ -1165,14 +2396,14 @@ function DagReviewDialog({
   dag: Dag;
   nodes: Node[];
   edges: Edge[];
-  trace: TraceEvent[];
+  trace: TraceLogEvent[];
   selectedNode?: DagNode;
   onClose: () => void;
   onConfirm: () => void;
   onReject: () => void;
   onPatchNode: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onAddNode: () => void;
-  onDeleteNode: () => void;
+  onDeleteNode: (nodeId?: string) => void;
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
@@ -1194,7 +2425,7 @@ function DagReviewDialog({
             <p>{dag.task_id || dag.dag_id}</p>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button compact-button" onClick={onAddNode} type="button">
+            <button className="secondary-button compact-button" onClick={() => onAddNode()} type="button">
               <Plus size={16} />
               Add Node
             </button>
@@ -1235,7 +2466,7 @@ function DagReviewDialog({
                 dag={dag}
                 logs={selectedNodeLogs}
                 onPatch={onPatchNode}
-                onDelete={onDeleteNode}
+                onDelete={() => onDeleteNode(selectedNode.id)}
               />
             ) : (
               <div className="empty-state compact">Select a DAG node to inspect details.</div>
@@ -1256,7 +2487,7 @@ function NodeEditor({
 }: {
   node: DagNode;
   dag: Dag;
-  logs: TraceEvent[];
+  logs: TraceLogEvent[];
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
@@ -1295,11 +2526,24 @@ function NodeEditor({
         </label>
       </div>
       <label>
-        Tool
+        Capability
         <input
-          value={invocation.tool_name}
-          onChange={(event) => patchInvocation({ tool_name: event.target.value })}
+          value={invocation.capability_id}
+          onChange={(event) => patchInvocation({ capability_id: event.target.value })}
         />
+      </label>
+      <label>
+        Type
+        <select
+          value={invocation.kind ?? 'tool'}
+          onChange={(event) => patchInvocation({ kind: event.target.value as CapabilityKind })}
+        >
+          {capabilityKinds.map((kind) => (
+            <option key={kind} value={kind}>
+              {kind}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         Args JSON
@@ -1363,7 +2607,7 @@ function NodeEditor({
           />
         </label>
       </details>
-      <button className="secondary-button danger-button" onClick={onDelete} type="button">
+      <button className="secondary-button danger-button" onClick={() => onDelete()} type="button">
         <Trash2 size={16} />
         Delete Node
       </button>
@@ -1372,7 +2616,7 @@ function NodeEditor({
   );
 }
 
-function NodeExecutionLog({ logs }: { logs: TraceEvent[] }) {
+function NodeExecutionLog({ logs }: { logs: TraceLogEvent[] }) {
   return (
     <section className="node-log-panel">
       <div className="node-log-title">

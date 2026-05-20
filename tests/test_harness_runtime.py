@@ -7,11 +7,23 @@ from dagent.harness_runtime import (
     DAGExecutor,
     HarnessRuntime,
     ValidatorAgent,
+    CapabilityExecutor,
 )
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import ValidationIssue, ValidationResult
-from dagent.tools.executor import ToolExecutor
+from dagent.schemas import (
+    Artifact,
+    Boundary,
+    CapabilityInvocation,
+    DAGNode,
+    DAGSpec,
+    RunTrace,
+    RunTraceNode,
+    ValidationIssue,
+    ValidationResult,
+)
 from dagent.tools.registry import ToolRegistry
 
 
@@ -19,12 +31,29 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def dag_node_trace(trace: RunTrace, node_id: str) -> RunTraceNode:
+    for child in trace.root.children:
+        if child.kind == "dag_node" and child.ref.get("node_id") == node_id:
+            return child
+    raise AssertionError(f"Missing dag_node trace for {node_id}")
+
+
+def capability_trace(trace: RunTrace, capability_id: str) -> RunTraceNode:
+    stack = [trace.root]
+    while stack:
+        node = stack.pop(0)
+        if node.kind == "capability_call" and node.ref.get("capability_id") == capability_id:
+            return node
+        stack[0:0] = node.children
+    raise AssertionError(f"Missing capability_call trace for {capability_id}")
+
+
 def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
     tool_names = {tool.name for tool in runtime.dag_agent.tools}
-    assert tool_names == {"dag_start", "echo", "fail_tool", "write_file"}
+    assert tool_names == {"echo", "fail_tool", "write_file"}
 
 
 def test_harness_runtime_session_owns_dag_task_store() -> None:
@@ -34,6 +63,37 @@ def test_harness_runtime_session_owns_dag_task_store() -> None:
     assert not hasattr(runtime.dag_agent, "tasks")
     assert not hasattr(runtime.dag_agent.loop, "tasks")
     assert runtime.tasks is runtime.session.tasks
+
+
+def test_harness_runtime_reuses_executor_catalog_without_assembling_capabilities() -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    tool_agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=capability_executor,
+            tool_adapter=tool_adapter,
+        ),
+        profile=_conversation_profile(),
+    )
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
+    runtime = HarnessRuntime(
+        provider=provider,
+        tool_agent=tool_agent,
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
+                provider=provider,
+                dag_executor=dag_executor,
+                tool_adapter=tool_adapter,
+            ),
+            profile=_dag_agent_profile(),
+        ),
+        capability_executor=capability_executor,
+    )
+
+    assert runtime.capability_catalog is capability_executor.catalog
+    assert "memory.write" not in runtime.capability_catalog.ids()
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
@@ -52,8 +112,9 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert len(runtime.tasks) == 1
     record = runtime.tasks[result.task_id]
     assert record.mode == "tool"
-    assert record.status == "completed"
-    assert record.final_response == "hello"
+    assert record.trace is not None
+    assert record.trace.status == "completed"
+    assert record.trace.root.output == "hello"
 
 
 def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
@@ -144,6 +205,18 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     assert runtime.tasks[result.task_id].runtime_mode == "dag"
 
 
+def test_harness_runtime_dag_mode_direct_answer_does_not_expose_seed_dag() -> None:
+    provider = MockProvider([ChatResponse(content="A direct answer.")])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Answer directly if no DAG is needed.", mode="dag"))
+
+    assert result.status == "completed"
+    assert result.final_answer == "A direct answer."
+    assert result.dag is None
+    assert result.events == []
+
+
 def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
     provider = MockProvider([
         ChatResponse(content="dag"),           # _route()
@@ -174,17 +247,13 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert resumed.status == "completed"
-    assert resumed.dag_run is not None
-    assert resumed.dag_run.completed is True
-    assert resumed.dag_run.execution_records
+    assert resumed.trace is not None
+    assert resumed.trace.status == "completed"
     assert resumed.final_answer == "Here is the final answer."
     runtime_task = runtime.session.tasks[result.task_id]
     assert runtime_task.mode == "dag"
-    assert runtime_task.dag_state is not None
-    assert runtime_task.invocations
-    assert runtime_task.execution_records
-    assert runtime_task.execution_records[0].source == "dag_node"
-    assert runtime_task.execution_records[0].invocation.tool_name == "echo"
+    assert runtime_task.dag is not None
+    assert capability_trace(runtime_task.trace, "tool.echo").status == "completed"
 
 
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
@@ -210,6 +279,26 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
         "user",
     ]
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
+
+
+def test_harness_runtime_retries_denied_dag_review_continuation_with_validation_feedback() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="inspect = missing_tool()"),
+        ChatResponse(content="I will stop instead of applying that DAG."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=False))
+
+    assert result.status == "awaiting_review"
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "I will stop instead of applying that DAG."
+    assert len(provider.requests) == 3
+    retry_content = provider.requests[2]["messages"][-1]["content"]
+    assert "DAG observation: validation_error" in retry_content
+    assert "Unknown capability function 'missing_tool'" in retry_content
 
 
 def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
@@ -272,8 +361,8 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
 
     assert resumed.status == "completed"
     assert resumed.final_answer == "final dag-mode answer"
-    assert resumed.dag_run is not None
-    assert resumed.dag_run.node_results["node_1"].final_response == "echo:ok"
+    assert resumed.trace is not None
+    assert dag_node_trace(resumed.trace, "node_1").output == "echo:ok"
 
 
 def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
@@ -288,7 +377,7 @@ def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
     repeated = run(runtime.resume_review(first.pending_review.review_id, dag=resumed.dag))
 
     assert repeated is None
-    assert len(runtime.tasks[first.task_id].runs) == 1
+    assert runtime.tasks[first.task_id].trace is not None
     assert len(provider.requests) == 2  # dag_agent + execute observation
 
 
@@ -337,7 +426,7 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
             content='a = echo(text="a")\nb = echo(text="b") after nonexistent'
         ),
         ChatResponse(
-            content='start = dag_start()\na = echo(text="a") after start\nb = echo(text="b") after a'
+            content='a = echo(text="a")\nb = echo(text="b") after a'
         ),
     ])
     runtime = _runtime(provider)
@@ -378,11 +467,11 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].invocation.tool_name == "echo"
+    assert result.dag.nodes[0].invocation.capability_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown tool(s): get_current_dir" in feedback
-    assert "Available tools:" in feedback
+    assert "Unknown capability function 'get_current_dir'" in feedback
+    assert "Available functions:" in feedback
     assert "echo" in feedback
     assert "User request:" not in feedback
 
@@ -398,8 +487,7 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
         ChatResponse(
             content=(
                 "task: inspect current directory\n"
-                "start = dag_start()\n"
-                "inspect = echo(text=\"ok\") after start\n"
+                "inspect = echo(text=\"ok\")\n"
             )
         ),
         ChatResponse(content="The DAG completed after inspection."),
@@ -411,9 +499,9 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
 
     assert result.status == "completed"
     assert result.final_answer == "The DAG completed after inspection."
-    assert result.dag_run is not None
-    assert result.dag_run.completed is True
-    assert result.dag_run.node_results["inspect"].final_response == "echo:ok"
+    assert result.trace is not None
+    assert result.trace.status == "completed"
+    assert dag_node_trace(result.trace, "inspect").output == "echo:ok"
 
 
 def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
@@ -515,8 +603,30 @@ def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
     assert result.final_answer == "The answer."
 
 
+def test_tool_agent_loop_returns_tool_error_for_unknown_tool_call() -> None:
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(id="call_unknown", name="missing_tool", arguments={"text": "hi"}),
+        ]),
+        ChatResponse(content="recovered"),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("Use the right tool.", mode="tool"))
+
+    assert result.status == "completed"
+    assert result.final_answer == "recovered"
+    retry_messages = provider.requests[1]["messages"]
+    assert retry_messages[-1]["role"] == "tool"
+    assert retry_messages[-1]["tool_call_id"] == "call_unknown"
+    assert retry_messages[-1]["name"] == "missing_tool"
+    assert "[TOOL_ERROR]" in retry_messages[-1]["content"]
+    assert "missing_tool" in retry_messages[-1]["content"]
+    assert "Available tools:" in retry_messages[-1]["content"]
+
+
 def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> None:
-    tool_executor = make_tool_executor()
+    capability_executor = make_capability_executor()
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
@@ -530,22 +640,26 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
         ChatResponse(content="bad answer"),
         ChatResponse(content="good answer"),
     ])
-    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    tool_agent_loop = ToolAgentLoop(
+        provider=provider,
+        capability_executor=capability_executor,
+        tool_adapter=tool_adapter,
+    )
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
             loop=tool_agent_loop,
             profile=_conversation_profile(),
-            tools=tool_executor.registry.all_tools(),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
                 dag_executor=dag_executor,
+                tool_adapter=tool_adapter,
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -557,7 +671,12 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert first.status == "awaiting_review"
     assert first.task_id is not None
     assert first.pending_review is not None
-    assert first.pending_review.kind == "tool_review"
+    assert first.pending_review.kind == "capability_review"
+    assert first.pending_review.capability_call == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.write_file",
+        "arguments": {"path": "notes.md", "content": "hi"},
+    }
     assert resumed.status == "completed"
     assert resumed.task_id == first.task_id
     assert resumed.final_answer == "good answer"
@@ -568,38 +687,41 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     ]
     assert len(tool_tasks) == 1
     assert tool_tasks[0].task_id == first.task_id
-    assert tool_tasks[0].status == "completed"
-    assert tool_tasks[0].tool_state is not None
-    assert tool_tasks[0].invocations
-    assert tool_tasks[0].execution_records
-    assert tool_tasks[0].execution_records[0].source == "tool_loop"
-    assert tool_tasks[0].execution_records[0].invocation.tool_name == "write_file"
+    assert tool_tasks[0].trace is not None
+    assert tool_tasks[0].trace.status == "completed"
+    # write_file runs under the conversation's read_only boundary, so the approved
+    # call settles as a boundary failure instead of a stale awaiting_review node.
+    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "failed"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 
 
 def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
-    tool_executor = make_tool_executor()
+    capability_executor = make_capability_executor()
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),        # initial DAG review
         ChatResponse(content="bad answer"),            # approved DAG execution
         ChatResponse(content=_dag_agent_dsl(text="retry")),  # validation retry DAG
         ChatResponse(content="good answer"),           # retry DAG execution
     ])
+    tool_adapter = _tool_adapter(capability_executor.catalog)
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            loop=ToolAgentLoop(
+                provider=provider,
+                capability_executor=capability_executor,
+                tool_adapter=tool_adapter,
+            ),
             profile=_conversation_profile(),
-            tools=[],
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(tool_executor=tool_executor),
+                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                tool_adapter=tool_adapter,
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
         ),
         validator=_RejectThenApproveValidator(),
         enable_validation=True,
@@ -618,11 +740,8 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
     assert resumed.dag.task_id == first.task_id
     record = runtime.tasks[first.task_id]
     assert record.dag.task_id == first.task_id
-    assert record.execution_records
-    assert all(
-        execution.task_id == first.task_id
-        for execution in record.execution_records
-    )
+    assert record.trace is not None
+    assert record.trace.run_id == first.task_id
 
 
 def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
@@ -631,20 +750,25 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
         ChatResponse(content="NO_CHANGE"),            # execute observation
         ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
-    tool_executor = make_tool_executor()
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
     runtime = HarnessRuntime(
         provider=provider,
         tool_agent=ToolAgent(
-            loop=ToolAgentLoop(provider=provider, tool_executor=tool_executor),
+            loop=ToolAgentLoop(
+                provider=provider,
+                capability_executor=capability_executor,
+                tool_adapter=tool_adapter,
+            ),
             profile=_conversation_profile(),
         ),
         dag_agent=DAGAgent(
             loop=DAGAgentLoop(
                 provider=provider,
-                dag_executor=DAGExecutor(tool_executor=tool_executor),
+                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                tool_adapter=tool_adapter,
             ),
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
         ),
         validator=ValidatorAgent(provider=provider, profile=_validator_profile()),
         enable_validation=True,
@@ -654,6 +778,36 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
 
     assert result.status == "completed"
     assert result.final_answer.startswith("DAG execution completed.")
+
+
+def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) -> None:
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    spec = DAGSpec(
+        id="write_note",
+        name="Write note",
+        artifacts={},
+        nodes=[
+            DAGNode(
+                id="write",
+                invocation=CapabilityInvocation(
+                    capability_id="tool.write_file",
+                    kind="tool",
+                    arguments={"path": "notes/output.txt", "content": "hi"},
+                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                ),
+            )
+        ],
+    )
+
+    dag_run = run(runtime.run_dag_spec(spec, workspace_root=tmp_path / "runs"))
+
+    record = runtime.tasks[dag_run.run_id]
+    assert record.mode == "dag"
+    assert record.runtime_mode == "dag_spec"
+    assert record.spec_id == "write_note"
+    assert record.workspace_path == dag_run.workspace_path
+    assert record.trace is not None
+    assert dag_node_trace(record.trace, "write").status == "completed"
 
 
 class _RejectThenApproveValidator:
@@ -673,17 +827,22 @@ class _RejectThenApproveValidator:
 def _runtime(
     provider: MockProvider,
 ) -> HarnessRuntime:
-    tool_executor = make_tool_executor()
-    tool_agent_loop = ToolAgentLoop(provider=provider, tool_executor=tool_executor)
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    tool_agent_loop = ToolAgentLoop(
+        provider=provider,
+        capability_executor=capability_executor,
+        tool_adapter=tool_adapter,
+    )
     tool_agent = ToolAgent(
         loop=tool_agent_loop,
         profile=_conversation_profile(),
-        tools=[],
     )
-    dag_executor = DAGExecutor(tool_executor=tool_executor)
+    dag_executor = DAGExecutor(capability_executor=capability_executor)
     dag_agent_loop = DAGAgentLoop(
         provider=provider,
         dag_executor=dag_executor,
+        tool_adapter=tool_adapter,
     )
     return HarnessRuntime(
         provider=provider,
@@ -691,23 +850,15 @@ def _runtime(
         dag_agent=DAGAgent(
             loop=dag_agent_loop,
             profile=_dag_agent_profile(),
-            tools=tool_executor.registry.all_tools(),
         ),
+        capability_catalog=capability_executor.catalog,
+        capability_executor=capability_executor,
     )
 
 
-def make_tool_executor() -> ToolExecutor:
-    registry = ToolRegistry()
-    registry.register(
-        name="dag_start",
-        handler=lambda: "started",
-        action="read",
-        parameters={
-            "type": "object",
-            "properties": {},
-        },
-    )
-    registry.register(
+def make_capability_executor() -> CapabilityExecutor:
+    tool_registry = ToolRegistry()
+    tool_registry.register(
         name="echo",
         handler=lambda text: f"echo:{text}",
         action="read",
@@ -717,7 +868,7 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    registry.register(
+    tool_registry.register(
         name="write_file",
         handler=lambda path, content="": f"wrote:{path}:{content}",
         action="write",
@@ -732,7 +883,7 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["path"],
         },
     )
-    registry.register(
+    tool_registry.register(
         name="fail_tool",
         handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
         action="read",
@@ -742,7 +893,17 @@ def make_tool_executor() -> ToolExecutor:
             "required": ["text"],
         },
     )
-    return ToolExecutor(registry)
+    capability_catalog = CapabilityCatalog()
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(tool_registry).register_into(capability_catalog)
+    return capability_executor
+
+
+def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
+    return CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))],
+    )
 
 
 def _conversation_profile() -> AgentProfile:

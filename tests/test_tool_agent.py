@@ -4,20 +4,35 @@ from pathlib import Path
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.harness_runtime import ToolAgentLoop
-from dagent.schemas import Boundary
-from dagent.tools.boundary import BoundaryViolation
-from dagent.tools.executor import ToolExecutor
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.providers import ToolCapabilityProvider
+from dagent.harness_runtime import ToolAgent, ToolAgentLoop, ReviewContinuation
+from dagent.harness_runtime import CapabilityExecutor
+from dagent.profiles import AgentProfile
+from dagent.schemas import Boundary, CapabilityDefinition, CapabilityPolicy, CapabilityInvocation, CapabilityResult
 from dagent.tools.file_tools import create_file_tool_registry
 
 
 def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:
-    executor = ToolExecutor(create_file_tool_registry(), workspace_root=tmp_path)
-    return ToolAgentLoop(provider=provider, tool_executor=executor)
+    capability_catalog = CapabilityCatalog(workspace_root=tmp_path)
+    capability_executor = CapabilityExecutor(capability_catalog)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(capability_catalog)
+    return ToolAgentLoop(
+        provider=provider,
+        capability_executor=capability_executor,
+        tool_adapter=_tool_adapter(capability_catalog),
+    )
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
+    return CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))],
+    )
 
 
 def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
@@ -185,17 +200,17 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     )
 
     assert result.status == "completed"
-    assert [event["type"] for event in events] == ["tool_call", "tool_result"]
+    assert [event["type"] for event in events] == ["capability_call", "capability_result"]
     assert events[0] == {
-        "type": "tool_call",
-        "tool_call_id": "call_1",
-        "name": "read_file",
+        "type": "capability_call",
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
     }
     assert events[1] == {
-        "type": "tool_result",
-        "tool_call_id": "call_1",
-        "name": "read_file",
+        "type": "capability_result",
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
         "content": "hello from file",
     }
@@ -262,3 +277,81 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
     assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]
 
 
+def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_path: Path) -> None:
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    definition = CapabilityDefinition(
+        id="file.read",
+        name="file.read",
+        kind="file",
+        policy=CapabilityPolicy(risk="medium"),
+    )
+    catalog.register(definition, _capability_result("file content"))
+    adapter = CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", ("file.read",))],
+    )
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="file_read",
+                        arguments={"path": "notes.txt"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Read it."),
+        ]
+    )
+    agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=CapabilityExecutor(catalog),
+            tool_adapter=adapter,
+        ),
+        profile=_profile(),
+    )
+
+    first = run(agent.run("Read notes", review_level="careful"))
+    state = ReviewContinuation(
+        review_id=first.pending_review.review_id,
+        task_id="task_1",
+        kind="capability_review",
+        user_request="Read notes",
+        review_level="careful",
+        invocations=first.invocations,
+        pending_invocation=first.invocations[0],
+    )
+
+    resumed = run(agent.resume_review(state, approved=True))
+
+    assert resumed.status == "completed"
+    assert agent.messages[3] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "file_read",
+        "content": "file content",
+    }
+
+
+def _capability_result(content: str):
+    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
+        return CapabilityResult(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content=content,
+        )
+
+    return handler
+
+
+def _profile() -> AgentProfile:
+    return AgentProfile(
+        name="conversation",
+        role="conversation",
+        layers=["soul"],
+        layer_contents={"soul": "You are a conversation agent."},
+    )
