@@ -5,7 +5,7 @@ from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
-from dagent.schemas.node import DAGNode
+from dagent.schemas.node import CapabilityNodePayload, DAGNode, NodePayload, NodePayloadType, StartNodePayload
 from dagent.schemas.capability import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -53,18 +53,22 @@ __all__ = [
     "ReviewKind",
     "RuntimeResponse",
     "CapabilityDefinition",
+    "CapabilityNodePayload",
     "CapabilityInvocation",
     "CapabilityKind",
     "CapabilityPolicy",
     "CapabilityResult",
     "CapabilityRuntime",
     "CapabilityStatus",
+    "NodePayload",
+    "NodePayloadType",
     "CapabilityExecution",
     "RunTrace",
     "RunTraceError",
     "RunTraceNode",
     "RunTraceNodeKind",
     "RunTraceStatus",
+    "StartNodePayload",
     "ValidationIssue",
     "ValidationResult",
 ]

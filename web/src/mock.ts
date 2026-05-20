@@ -8,45 +8,40 @@ export const initialDag: Dag = {
   nodes: [
     {
       id: 'start',
-      node_type: 'start',
-      invocation: {
-        capability_id: '',
-        kind: 'tool',
-        arguments: {},
-        boundary: {
-          mode: 'read_only',
-          allowed_paths: [],
-          allowed_commands: [],
-        },
-        risk: 'low',
-      },
+      payload: { type: 'start' },
     },
     {
       id: 'inspect_project',
-      invocation: {
-        capability_id: 'tool.grep',
-        kind: 'tool',
-        arguments: { pattern: 'DAG', path: '.' },
-        boundary: {
-          mode: 'read_only',
-          allowed_paths: ['./'],
-          allowed_commands: [],
+      payload: {
+        type: 'capability',
+        invocation: {
+          capability_id: 'tool.grep',
+          kind: 'tool',
+          arguments: { pattern: 'DAG', path: '.' },
+          boundary: {
+            mode: 'read_only',
+            allowed_paths: ['./'],
+            allowed_commands: [],
+          },
+          risk: 'medium',
         },
-        risk: 'medium',
       },
     },
     {
       id: 'summarize_result',
-      invocation: {
-        capability_id: 'tool.read_file',
-        kind: 'tool',
-        arguments: { path: 'README.md' },
-        boundary: {
-          mode: 'read_only',
-          allowed_paths: [],
-          allowed_commands: [],
+      payload: {
+        type: 'capability',
+        invocation: {
+          capability_id: 'tool.read_file',
+          kind: 'tool',
+          arguments: { path: 'README.md' },
+          boundary: {
+            mode: 'read_only',
+            allowed_paths: [],
+            allowed_commands: [],
+          },
+          risk: 'low',
         },
-        risk: 'low',
       },
     },
   ],

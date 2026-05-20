@@ -29,11 +29,12 @@ The DAG agent generates an initial capability-node plan from the goal. After eac
 executable layer, the planner receives a DAG observation and can return `NO_CHANGE`,
 a revised DAG, or the final answer.
 
-**2. Capability nodes, direct planner nodes.**
-Every DAG node is a `CapabilityInvocation` executed by `CapabilityExecutor`. The
-dynamic DAG planner currently emits direct, non-agent capability calls from enabled
-toolsets; `DAGSpec` runtime can execute agent capabilities, but the planner does not
-generate agent nodes yet.
+**2. Typed DAG nodes, direct capability payloads.**
+Every DAG node has a typed `payload`. Capability payloads wrap a
+`CapabilityInvocation` executed by `CapabilityExecutor`; start nodes are explicit
+payloads and do not carry fake invocations. The dynamic DAG planner currently emits
+direct, non-agent capability calls from enabled toolsets; `DAGSpec` runtime can execute
+agent capabilities, but the planner does not generate agent nodes yet.
 
 **3. Three-level re-planning.**
 The current implementation covers three levels in one execution path: placeholder
@@ -213,7 +214,7 @@ The runtime is intentionally layered:
 - DAG Agent proposes a DAG but does not grant permissions.
 - `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
   risk DAGs until explicitly approved.
-- Each node is a bounded capability invocation - no nested agent loop inside a node unless an agent capability is explicitly configured.
+- Each capability node is a bounded invocation - no nested agent loop inside a node unless an agent capability is explicitly configured.
 - `CapabilityExecutor` dispatches approved invocations, and capability handlers enforce boundaries before side effects.
 - Human review can be triggered by tool-mode capability calls, initial DAG creation, and DAG
   revisions.

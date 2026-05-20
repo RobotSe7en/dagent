@@ -16,8 +16,10 @@ from dagent.schemas import (
     DAGEdge,
     DAGNode,
     DAGSpec,
+    CapabilityNodePayload,
     CapabilityDefinition,
     CapabilityInvocation,
+    StartNodePayload,
 )
 
 
@@ -171,17 +173,20 @@ def _normalize_dag_spec_node(
     definitions_by_id: dict[str, CapabilityDefinition] | None,
 ) -> DAGNode:
     normalized = node.model_copy(deep=True)
-    if definitions_by_id is None or not normalized.invocation.capability_id:
+    if not isinstance(normalized.payload, CapabilityNodePayload):
         return normalized
-    definition = definitions_by_id.get(normalized.invocation.capability_id)
+    invocation = normalized.payload.invocation
+    if definitions_by_id is None or not invocation.capability_id:
+        return normalized
+    definition = definitions_by_id.get(invocation.capability_id)
     if definition is None:
         available = ", ".join(sorted(definitions_by_id)) or "(none)"
         raise DAGValidationError(
-            f"Unknown capability '{normalized.invocation.capability_id}'. "
+            f"Unknown capability '{invocation.capability_id}'. "
             f"Available capabilities: {available}."
         )
-    normalized.invocation.kind = definition.kind
-    normalized.invocation.risk = definition.policy.risk
+    normalized.payload.invocation.kind = definition.kind
+    normalized.payload.invocation.risk = definition.policy.risk
     return normalized
 
 
@@ -202,11 +207,11 @@ def validate_dag(dag: DAG) -> None:
         raise DAGValidationError(f"Duplicate node IDs: {duplicate_list}.")
 
     for node in dag.nodes:
-        if node.node_type == "start":
+        if isinstance(node.payload, StartNodePayload):
             if node.id != "start":
                 raise DAGValidationError("Start node must use id 'start'.")
             continue
-        if not node.invocation.capability_id:
+        if isinstance(node.payload, CapabilityNodePayload) and not node.payload.invocation.capability_id:
             raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
     node_id_set = set(node_ids)
@@ -323,12 +328,15 @@ def _compile_plan_node(
         title=node.title,
         goal=node.goal,
         instructions=node.instructions,
-        invocation=CapabilityInvocation(
-            capability_id=registered.id,
-            kind=registered.kind,
-            arguments=args,
-            boundary=_infer_boundary(registered, args),
-            risk=registered.policy.risk,
+        payload=CapabilityNodePayload(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=registered.id,
+                kind=registered.kind,
+                arguments=args,
+                boundary=_infer_boundary(registered, args),
+                risk=registered.policy.risk,
+            ),
         ),
         inputs=list(node.inputs),
         outputs=list(node.outputs),
@@ -373,14 +381,7 @@ def _ensure_start_node(
 def _start_node() -> DAGNode:
     return DAGNode(
         id="start",
-        node_type="start",
-        invocation=CapabilityInvocation(
-            capability_id="",
-            kind="tool",
-            arguments={},
-            boundary=Boundary(mode="read_only"),
-            risk="low",
-        ),
+        payload=StartNodePayload(type="start"),
     )
 
 

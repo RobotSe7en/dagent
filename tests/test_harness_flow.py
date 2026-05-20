@@ -17,6 +17,7 @@ from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
 from dagent.profiles import AgentProfile
 from dagent.schemas import (
     Boundary,
+    CapabilityNodePayload,
     CapabilityDefinition,
     CapabilityInvocation,
     DAG,
@@ -24,6 +25,7 @@ from dagent.schemas import (
     DAGNode,
     RunTrace,
     RunTraceNode,
+    StartNodePayload,
 )
 from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
 from dagent.tools.registry import ToolRegistry
@@ -118,13 +120,15 @@ def dag_dsl_from_dag(
 ) -> str:
     lines = []
     for node in dag.nodes:
-        if node.node_type == "start":
+        if isinstance(node.payload, StartNodePayload):
             continue
+        assert isinstance(node.payload, CapabilityNodePayload)
         deps = [e.source for e in dag.edges if e.target == node.id and e.source != "start"]
         deps_str = f" after {', '.join(deps)}" if deps else ""
-        args = ", ".join(f'{k}={repr(v)}' for k, v in node.invocation.arguments.items())
+        invocation = node.payload.invocation
+        args = ", ".join(f'{k}={repr(v)}' for k, v in invocation.arguments.items())
         tool_name = _tool_name_from_capability(
-            node.invocation.capability_id,
+            invocation.capability_id,
             tool_adapter=tool_adapter,
             enabled_toolsets=enabled_toolsets,
         )
@@ -231,11 +235,14 @@ def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
 def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=CapabilityInvocation(
-            capability_id=_tool_capability_id(tool),
-            kind="tool",
-            arguments=args,
-            boundary=Boundary(mode="read_only"),
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=_tool_capability_id(tool),
+                kind="tool",
+                arguments=args,
+                boundary=Boundary(mode="read_only"),
+            ),
         ),
     )
 
@@ -247,8 +254,7 @@ def _tool_capability_id(tool_name: str) -> str:
 def _start_node() -> DAGNode:
     return DAGNode(
         id="start",
-        node_type="start",
-        invocation=CapabilityInvocation(capability_id="", kind="tool"),
+        payload=dict(type="start"),
     )
 
 
@@ -285,10 +291,13 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_non_tool_capabilities() -> None
             _start_node(),
             DAGNode(
                 id="search",
-                invocation=CapabilityInvocation(
-                    capability_id="custom.remote-search",
-                    kind="custom_tool",
-                    arguments={"query": "status"},
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="custom.remote-search",
+                        kind="custom_tool",
+                        arguments={"query": "status"},
+                    ),
                 ),
             ),
         ],
@@ -331,8 +340,8 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
-    assert dag.nodes[1].invocation.capability_id == "tool.run_command"
-    assert dag.nodes[1].invocation.arguments == {"command": "dir", "cwd": "."}
+    assert dag.nodes[1].payload.invocation.capability_id == "tool.run_command"
+    assert dag.nodes[1].payload.invocation.arguments == {"command": "dir", "cwd": "."}
     assert {(edge.source, edge.target) for edge in dag.edges} == {
         ("start", "list_files"),
         ("list_files", "show_result"),
@@ -523,7 +532,7 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     assert record.dag.status == "review_required"
     assert record.pending_review is not None
     assert record.pending_review.kind == "dag_replan"
-    assert record.pending_review.proposed_dag.nodes[-1].invocation.arguments == {"text": "adjusted_value"}
+    assert record.pending_review.proposed_dag.nodes[-1].payload.invocation.arguments == {"text": "adjusted_value"}
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:

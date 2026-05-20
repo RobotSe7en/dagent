@@ -25,11 +25,13 @@ from dagent.schemas import (
     Artifact,
     ArtifactState,
     CapabilityInvocation,
+    CapabilityNodePayload,
     CapabilityResult,
     DAG,
     DAGNode,
     RunTrace,
     RunTraceNode,
+    StartNodePayload,
 )
 
 
@@ -112,11 +114,12 @@ class DAGExecutor:
         if not pending_nodes:
             return
         for node in pending_nodes:
-            node.invocation.arguments = _inject_placeholders(
-                node.invocation.arguments,
-                node_traces,
-            )
-            _ensure_no_unresolved_placeholders(node)
+            if isinstance(node.payload, CapabilityNodePayload):
+                node.payload.invocation.arguments = _inject_placeholders(
+                    node.payload.invocation.arguments,
+                    node_traces,
+                )
+                _ensure_no_unresolved_placeholders(node)
         batch_results = await asyncio.gather(
             *[
                 self.execute_node(
@@ -167,12 +170,14 @@ class DAGExecutor:
             node_id=node.id,
             label=node.title or node.id,
         )
-        if node.node_type == "start":
+        if isinstance(node.payload, StartNodePayload):
             node.status = "completed"
             dag_node.status = "completed"
             dag_node.output = "started"
             dag_node.ended_at = _now()
             return dag_node
+        if not isinstance(node.payload, CapabilityNodePayload):
+            raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
         node.status = "running"
         return await self.execute_capability_node(
             node,
@@ -191,7 +196,9 @@ class DAGExecutor:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTraceNode:
-        invocation = node.invocation
+        if not isinstance(node.payload, CapabilityNodePayload):
+            raise DAGExecutionError(f"Node '{node.id}' is not a capability node.")
+        invocation = node.payload.invocation
         if not invocation.capability_id:
             raise CapabilityExecutionError(f"Node '{node.id}' has no capability id.")
 
@@ -201,7 +208,7 @@ class DAGExecutor:
                 context=self._execution_context(dag, node),
                 callbacks=CapabilityExecutionCallbacks(
                     on_token=on_token,
-                    on_event=_node_event_emitter(on_event, dag=dag, node=node),
+                    on_event=_node_event_emitter(on_event, dag=dag, node=node, invocation=invocation),
                 ),
             )
         except Exception as exc:
@@ -280,7 +287,11 @@ class DAGExecutor:
         )
 
     def _enforce_review_gate(self, dag: DAG) -> None:
-        needs_approval = any(node.invocation.risk in {"medium", "high"} for node in dag.nodes)
+        needs_approval = any(
+            node.payload.invocation.risk in {"medium", "high"}
+            for node in dag.nodes
+            if isinstance(node.payload, CapabilityNodePayload)
+        )
         if needs_approval and dag.status != "approved":
             raise DAGExecutionError("DAG is not approved for execution.")
 
@@ -290,6 +301,7 @@ def _node_event_emitter(
     *,
     dag: DAG,
     node: DAGNode,
+    invocation: CapabilityInvocation,
 ) -> Callable[[dict[str, Any]], None] | None:
     if on_event is None:
         return None
@@ -299,7 +311,7 @@ def _node_event_emitter(
         payload.setdefault("task_id", dag.task_id)
         payload.setdefault("dag_id", dag.dag_id)
         payload.setdefault("node_id", node.id)
-        payload.setdefault("parent_capability_id", node.invocation.capability_id)
+        payload.setdefault("parent_capability_id", invocation.capability_id)
         on_event(payload)
 
     return emit
@@ -422,7 +434,9 @@ def _placeholder_value(
 
 
 def _ensure_no_unresolved_placeholders(node: DAGNode) -> None:
-    unresolved = _find_unresolved_placeholders(node.invocation.arguments)
+    if not isinstance(node.payload, CapabilityNodePayload):
+        return
+    unresolved = _find_unresolved_placeholders(node.payload.invocation.arguments)
     if unresolved:
         joined = ", ".join(sorted(unresolved))
         raise DAGExecutionError(

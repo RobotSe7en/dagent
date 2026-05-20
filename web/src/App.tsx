@@ -60,7 +60,9 @@ import type {
   AgentProfile,
   BoundaryMode,
   CapabilityDefinition,
+  CapabilityInvocation,
   CapabilityKind,
+  CapabilityNodePayload,
   CapabilityResult,
   Dag,
   DagEdge,
@@ -86,6 +88,7 @@ import {
   visibleCapabilitiesForPicker,
   type ArgumentValueType,
 } from './schemaArguments';
+import { pruneEdgesToNodeIds } from './dagEdges';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -137,22 +140,38 @@ const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.Reac
   { key: 'agents', label: '智能体管理', icon: <UserCog size={16} /> },
 ];
 
+function isCapabilityNode(node: DagNode): node is DagNode & { payload: CapabilityNodePayload } {
+  return node.payload.type === 'capability';
+}
+
+function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvocation {
+  return {
+    ...invocation,
+    capability_id: invocation.capability_id ?? '',
+    kind: invocation.kind ?? 'tool',
+    arguments: invocation.arguments ?? {},
+    boundary: {
+      mode: invocation.boundary?.mode ?? 'read_only',
+      allowed_paths: invocation.boundary?.allowed_paths ?? [],
+      allowed_commands: invocation.boundary?.allowed_commands ?? [],
+    },
+    risk: invocation.risk ?? 'low',
+  };
+}
+
 function normalizeNode(node: DagNode): DagNode {
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return {
+      ...node,
+      payload: { type: 'start' },
+      status: node.status ?? 'planned',
+    };
+  }
   return {
     ...node,
-    node_type: node.node_type ?? 'capability',
-    invocation: {
-      ...invocation,
-      capability_id: invocation.capability_id ?? '',
-      kind: invocation.kind ?? 'tool',
-      arguments: invocation.arguments ?? {},
-      boundary: {
-        mode: invocation.boundary?.mode ?? 'read_only',
-        allowed_paths: invocation.boundary?.allowed_paths ?? [],
-        allowed_commands: invocation.boundary?.allowed_commands ?? [],
-      },
-      risk: invocation.risk ?? 'low',
+    payload: {
+      type: 'capability',
+      invocation: normalizeInvocation(node.payload.invocation),
     },
     status: node.status ?? 'planned',
   };
@@ -184,14 +203,16 @@ function dagFromSpec(spec: DagSpec): Dag {
 }
 
 function specFromDag(spec: DagSpec, dag: Dag): DagSpec {
+  const nodes = dag.nodes.filter(isCapabilityNode).map((node) => ({
+    ...normalizeNode(node),
+    status: 'planned' as const,
+  }));
+  const nodeIds = new Set(nodes.map((node) => node.id));
   return {
     ...spec,
     version: spec.version ?? 1,
-    nodes: dag.nodes.filter((node) => node.node_type !== 'start').map((node) => ({
-      ...normalizeNode(node),
-      status: 'planned',
-    })),
-    edges: dag.edges,
+    nodes,
+    edges: pruneEdgesToNodeIds(dag.edges, nodeIds),
   };
 }
 
@@ -205,7 +226,7 @@ function validateDagSpecDraft(spec: DagSpec): string | null {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(node.id)) return `Node '${node.id}' has an invalid id.`;
     if (nodeIds.has(node.id)) return `Node '${node.id}' is duplicated.`;
     nodeIds.add(node.id);
-    if (!node.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
+    if (!isCapabilityNode(node) || !node.payload.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -247,15 +268,17 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
-    const risk = item.invocation.risk ?? 'low';
+    const invocation = isCapabilityNode(item) ? item.payload.invocation : null;
+    const risk = invocation?.risk ?? 'low';
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
-    const detail = item.node_type === 'start'
+    const detail = !invocation
       ? 'internal start'
-      : item.invocation.capability_id
-        ? `${item.invocation.capability_id} ${JSON.stringify(item.invocation.arguments)}`
+      : invocation.capability_id
+        ? `${invocation.capability_id} ${JSON.stringify(invocation.arguments)}`
         : 'capability not set';
+    const detailTitle = invocation?.capability_id ? JSON.stringify(invocation.arguments) : '';
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -270,7 +293,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
             </div>
             <div
               className="dag-node-tools"
-              title={item.node_type === 'start' ? 'Internal DAG start node' : item.invocation.capability_id ? JSON.stringify(item.invocation.arguments) : ''}
+              title={invocation ? detailTitle : 'Internal DAG start node'}
             >
               {detail}
             </div>
@@ -681,7 +704,8 @@ export function App() {
   const addNode = () => {
     const id = uniqueNodeId(dag);
     updateDag((current) => {
-      const firstCapability = capabilities.find((item) => item.id === current.nodes[0]?.invocation.capability_id);
+      const firstInvocation = current.nodes.find(isCapabilityNode)?.payload.invocation;
+      const firstCapability = capabilities.find((item) => item.id === firstInvocation?.capability_id);
       return {
         ...current,
         status: 'draft',
@@ -689,16 +713,19 @@ export function App() {
           ...current.nodes,
           normalizeNode({
             id,
-            invocation: {
-              capability_id: current.nodes[0]?.invocation.capability_id ?? '',
-              kind: current.nodes[0]?.invocation.kind ?? 'tool',
-              arguments: ensureSchemaArguments({}, firstCapability?.parameters),
-              boundary: {
-                mode: 'read_only',
-                allowed_paths: [],
-                allowed_commands: [],
+            payload: {
+              type: 'capability',
+              invocation: {
+                capability_id: firstInvocation?.capability_id ?? '',
+                kind: firstInvocation?.kind ?? 'tool',
+                arguments: ensureSchemaArguments({}, firstCapability?.parameters),
+                boundary: {
+                  mode: 'read_only',
+                  allowed_paths: [],
+                  allowed_commands: [],
+                },
+                risk: 'low',
               },
-              risk: 'low',
             },
             status: 'planned',
           }),
@@ -736,16 +763,19 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          invocation: {
-            capability_id: selectedCapability?.id ?? '',
-            kind: selectedCapability?.kind ?? 'tool',
-            arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
-            boundary: {
-              mode: 'read_only',
-              allowed_paths: [],
-              allowed_commands: [],
+          payload: {
+            type: 'capability',
+            invocation: {
+              capability_id: selectedCapability?.id ?? '',
+              kind: selectedCapability?.kind ?? 'tool',
+              arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
+              boundary: {
+                mode: 'read_only',
+                allowed_paths: [],
+                allowed_commands: [],
+              },
+              risk: capabilityRisk(selectedCapability),
             },
-            risk: capabilityRisk(selectedCapability),
           },
           status: 'planned',
         }),
@@ -1438,7 +1468,7 @@ function DagSummaryCard({
   dag: Dag;
   onOpen: () => void;
 }) {
-  const riskyNodes = dag.nodes.filter((node) => node.invocation.risk !== 'low').length;
+  const riskyNodes = dag.nodes.filter((node) => isCapabilityNode(node) && node.payload.invocation.risk !== 'low').length;
   const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">
@@ -1860,7 +1890,18 @@ function OrchestrationNodeEditor({
   onPatch: (patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDelete: () => void;
 }) {
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return (
+      <div className="node-editor">
+        <label>
+          Node ID
+          <input value={node.id} disabled />
+        </label>
+        <div className="empty-state compact">Internal start node</div>
+      </div>
+    );
+  }
+  const invocation = node.payload.invocation;
   const selectedCapability = capabilities.find((capability) => capability.id === invocation.capability_id);
   const pickerCapabilities = visibleCapabilitiesForPicker(capabilities);
   const selectableCapabilities = selectedCapability && !pickerCapabilities.some((capability) => capability.id === selectedCapability.id)
@@ -1874,7 +1915,7 @@ function OrchestrationNodeEditor({
     allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>
-    onPatch({ invocation: { ...invocation, ...patch } });
+    onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
   return (
     <div className="node-editor">
       <label>
@@ -2492,14 +2533,25 @@ function NodeEditor({
   onDelete: () => void;
 }) {
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
-  const invocation = node.invocation;
+  if (!isCapabilityNode(node)) {
+    return (
+      <div className="node-editor">
+        <label>
+          Node ID
+          <input value={node.id} disabled />
+        </label>
+        <div className="empty-state compact">Internal start node</div>
+      </div>
+    );
+  }
+  const invocation = node.payload.invocation;
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
     allowed_paths: [],
     allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>
-    onPatch({ invocation: { ...invocation, ...patch } });
+    onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
   return (
     <div className="node-editor">
       <label>

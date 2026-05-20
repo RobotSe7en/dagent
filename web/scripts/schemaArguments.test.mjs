@@ -22,6 +22,7 @@ const {
   resetSchemaArguments,
   visibleCapabilitiesForPicker,
 } = await importTypeScript('../src/schemaArguments.ts');
+const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -100,4 +101,16 @@ test('resetSchemaArguments drops arguments from the previous capability schema',
     resetSchemaArguments({ path: 'README.md', content: 'old content' }, grepParameters, readFileParameters),
     { path: 'README.md', pattern: '' },
   );
+});
+
+test('pruneEdgesToNodeIds removes edges that reference filtered nodes', () => {
+  const edges = [
+    { source: 'start', target: 'a', reason: 'internal start' },
+    { source: 'a', target: 'b', reason: 'valid dependency' },
+    { source: 'b', target: 'missing', reason: 'stale target' },
+  ];
+
+  assert.deepEqual(pruneEdgesToNodeIds(edges, new Set(['a', 'b'])), [
+    { source: 'a', target: 'b', reason: 'valid dependency' },
+  ]);
 });

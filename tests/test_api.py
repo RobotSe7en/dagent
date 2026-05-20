@@ -190,7 +190,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     task_id = stream_events[-1]["task_id"]
     review_id = stream_events[-1]["pending_review"]["review_id"]
     dag = stream_events[-1]["dag"]
-    dag["nodes"][0]["invocation"]["arguments"] = {"text": "reviewed"}
+    dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
         "/messages/resume",
@@ -392,16 +392,19 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
                 {
                     "id": "write",
                     "title": "Write output note",
-                    "invocation": {
-                        "capability_id": "tool.write_file",
-                        "kind": "tool",
-                        "arguments": {
-                            "path": "notes/output.txt",
-                            "content": "hello",
-                        },
-                        "boundary": {
-                            "mode": "write_limited",
-                            "allowed_paths": ["notes/output.txt"],
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "notes/output.txt",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["notes/output.txt"],
+                            },
                         },
                     },
                     "outputs": ["note"],
@@ -462,10 +465,13 @@ def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
             "nodes": [
                 {
                     "id": "call_custom",
-                    "invocation": {
-                        "capability_id": "custom_tool.upper",
-                        "kind": "custom_tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "custom_tool.upper",
+                            "kind": "custom_tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                 }
             ],
@@ -499,16 +505,19 @@ def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
             "nodes": [
                 {
                     "id": "write",
-                    "invocation": {
-                        "capability_id": "tool.write_file",
-                        "kind": "tool",
-                        "arguments": {
-                            "path": "notes/output.txt",
-                            "content": "hello",
-                        },
-                        "boundary": {
-                            "mode": "write_limited",
-                            "allowed_paths": ["notes/output.txt"],
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.write_file",
+                            "kind": "tool",
+                            "arguments": {
+                                "path": "notes/output.txt",
+                                "content": "hello",
+                            },
+                            "boundary": {
+                                "mode": "write_limited",
+                                "allowed_paths": ["notes/output.txt"],
+                            },
                         },
                     },
                     "outputs": ["note"],
@@ -548,10 +557,13 @@ def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
             "nodes": [
                 {
                     "id": "answer",
-                    "invocation": {
-                        "capability_id": "tool.echo",
-                        "kind": "tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.echo",
+                            "kind": "tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                     "outputs": ["note"],
                 }
@@ -582,10 +594,13 @@ def test_api_dag_spec_validation_and_missing_resources() -> None:
             "nodes": [
                 {
                     "id": "answer",
-                    "invocation": {
-                        "capability_id": "tool.echo",
-                        "kind": "tool",
-                        "arguments": {"text": "ok"},
+                    "payload": {
+                        "type": "capability",
+                        "invocation": {
+                            "capability_id": "tool.echo",
+                            "kind": "tool",
+                            "arguments": {"text": "ok"},
+                        },
                     },
                     "inputs": ["missing"],
                 }

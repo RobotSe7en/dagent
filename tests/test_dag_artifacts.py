@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 import dagent.schemas.results as results_schema
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
@@ -77,10 +78,13 @@ def test_dag_node_binds_artifact_ids_as_inputs_and_outputs() -> None:
 def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
     node = DAGNode.model_validate({
         "id": "read",
-        "invocation": {
-            "capability_id": "tool.echo",
-            "kind": "tool",
-            "arguments": {"text": "ok"},
+        "payload": {
+            "type": "capability",
+            "invocation": {
+                "capability_id": "tool.echo",
+                "kind": "tool",
+                "arguments": {"text": "ok"},
+            },
         },
     })
 
@@ -89,6 +93,32 @@ def test_dag_node_model_validate_keeps_goal_and_instructions_optional() -> None:
     dumped = node.model_dump(mode="json")
     assert dumped["goal"] is None
     assert dumped["instructions"] is None
+    assert dumped["payload"]["type"] == "capability"
+    assert dumped["payload"]["invocation"]["capability_id"] == "tool.echo"
+    assert "invocation" not in dumped
+    assert "node_type" not in dumped
+
+
+def test_dag_node_rejects_legacy_invocation_shape() -> None:
+    with pytest.raises(ValidationError):
+        DAGNode.model_validate({
+            "id": "read",
+            "invocation": {
+                "capability_id": "tool.echo",
+                "kind": "tool",
+                "arguments": {"text": "ok"},
+            },
+        })
+
+
+def test_dag_node_payload_discriminator_is_required_in_json_schema() -> None:
+    schema = DAGNode.model_json_schema()
+
+    capability_schema = schema["$defs"]["CapabilityNodePayload"]
+    start_schema = schema["$defs"]["StartNodePayload"]
+
+    assert "type" in capability_schema["required"]
+    assert "type" in start_schema["required"]
 
 
 def test_dag_node_supports_agent_goal_and_instructions() -> None:
@@ -233,7 +263,7 @@ def test_compile_dag_spec_copies_capability_policy_risk() -> None:
         ],
     )
 
-    assert dag.nodes[0].invocation.risk == "medium"
+    assert dag.nodes[0].payload.invocation.risk == "medium"
 
 
 def test_artifact_states_mark_created_and_missing_outputs(tmp_path: Path) -> None:
@@ -441,11 +471,14 @@ def _node(
         title=node_id.replace("_", " ").capitalize(),
         goal=goal,
         instructions=instructions,
-        invocation=CapabilityInvocation(
-            capability_id=f"tool.{tool}",
-            kind="tool",
-            arguments=args or {"text": node_id},
-            boundary=boundary or Boundary(),
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=f"tool.{tool}",
+                kind="tool",
+                arguments=args or {"text": node_id},
+                boundary=boundary or Boundary(),
+            ),
         ),
         inputs=inputs or [],
         outputs=outputs or [],

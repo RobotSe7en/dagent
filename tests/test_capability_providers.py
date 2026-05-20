@@ -140,7 +140,7 @@ def test_capability_executor_passes_context_to_async_handler(tmp_path) -> None:
     registry = CapabilityCatalog()
     executor = CapabilityExecutor(registry)
     invocation = CapabilityInvocation(capability_id="agent.contextual", kind="agent")
-    node = DAGNode(id="agent_node", invocation=invocation)
+    node = DAGNode(id="agent_node", payload=dict(type="capability", invocation=invocation))
     context = CapabilityExecutionContext(
         task_id="task_1",
         dag_id="dag_1",
@@ -275,7 +275,10 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
         title="Write requirements",
         goal="Draft the requirements.",
         instructions="Keep it concise.",
-        invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+        ),
     )
     context_a = CapabilityExecutionContext(
         task_id="run_1",
@@ -287,8 +290,8 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
         output_artifacts={"requirements_doc": [tmp_path / "outputs" / "requirements.md"]},
     )
 
-    first = run(executor.execute(node_a.invocation, context=context_a))
-    second = run(executor.execute(node_a.invocation, context=context_a))
+    first = run(executor.execute(node_a.payload.invocation, context=context_a))
+    second = run(executor.execute(node_a.payload.invocation, context=context_a))
 
     node_b = node_a.model_copy(
         update={
@@ -296,7 +299,12 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
             "title": "Write tests",
             "goal": "Draft test cases.",
             "instructions": "Cover failures.",
-            "invocation": CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+            "payload": node_a.payload.model_copy(
+                update={
+                    "invocation": CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                },
+                deep=True,
+            ),
         },
         deep=True,
     )
@@ -307,7 +315,7 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
         node=node_b,
         workspace_path=tmp_path,
     )
-    other = run(executor.execute(node_b.invocation, context=context_b))
+    other = run(executor.execute(node_b.payload.invocation, context=context_b))
 
     assert first.content == "first"
     assert second.content == "second"

@@ -50,12 +50,15 @@ def node(
     tool = (tools or ["echo"])[0]
     return DAGNode(
         id=node_id,
-        invocation=CapabilityInvocation(
-            capability_id=_tool_capability_id(tool),
-            kind="tool",
-            arguments=args or {"text": node_id},
-            boundary=boundary or Boundary(),
-            risk=risk,
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=_tool_capability_id(tool),
+                kind="tool",
+                arguments=args or {"text": node_id},
+                boundary=boundary or Boundary(),
+                risk=risk,
+            ),
         ),
     )
 
@@ -104,7 +107,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
 
     assert result.status == "completed"
     assert str(dag_node_trace(result, "write").output).endswith("notes.md:hi")
-    assert dag.nodes[0].invocation.risk == "low"
+    assert dag.nodes[0].payload.invocation.risk == "low"
 
 
 def test_medium_risk_dag_requires_approval() -> None:
@@ -163,12 +166,15 @@ def tool_node(
 ) -> DAGNode:
     return DAGNode(
         id=node_id,
-        invocation=CapabilityInvocation(
-            capability_id=_tool_capability_id(tool),
-            kind="tool",
-            arguments=args,
-            boundary=boundary or Boundary(),
-            risk=risk,
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id=_tool_capability_id(tool),
+                kind="tool",
+                arguments=args,
+                boundary=boundary or Boundary(),
+                risk=risk,
+            ),
         ),
     )
 
@@ -330,7 +336,10 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
                 title="Write requirements",
                 goal="Draft requirements.",
                 instructions="Keep it concise.",
-                invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                ),
                 inputs=["source_doc"],
                 outputs=["requirements_doc"],
             )
@@ -404,7 +413,10 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
                 id="agent_node",
                 title="Call echo",
                 goal="Use echo.",
-                invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                ),
             )
         ],
     )
