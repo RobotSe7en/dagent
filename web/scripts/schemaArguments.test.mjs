@@ -31,6 +31,7 @@ const {
   uploadFormFilename,
   upsertArtifact,
 } = await importTypeScript('../src/dagArtifacts.ts');
+const { buildRunDialogSummary } = await importTypeScript('../src/orchestrationRun.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -231,4 +232,91 @@ test('uploadFormFilename can upload a generated artifact with only the file base
 
   assert.equal(uploadFormFilename(file, { preserveRelativePath: false }), 'data.csv');
   assert.equal(uploadFormFilename(file, { preserveRelativePath: true }), 'dataset/data.csv');
+});
+
+test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues', () => {
+  const summary = buildRunDialogSummary({
+    id: 'summary_dag',
+    name: 'Summary DAG',
+    artifacts: {
+      upload_source: {
+        id: 'upload_source',
+        paths: ['inputs/uploads/source/source.md'],
+        description: 'source.md',
+        metadata: {
+          source: 'upload',
+          kind: 'file',
+          hidden: true,
+          display_name: 'source.md',
+        },
+      },
+      report: {
+        id: 'report',
+        paths: ['outputs/report.md'],
+        description: 'Report',
+      },
+    },
+    nodes: [
+      {
+        id: 'agent_1',
+        inputs: ['upload_source'],
+        outputs: ['report', 'missing_output'],
+        payload: {
+          type: 'capability',
+          invocation: {
+            capability_id: 'agent.capability',
+            kind: 'agent',
+            arguments: {},
+            risk: 'medium',
+          },
+        },
+      },
+      {
+        id: 'broken',
+        inputs: ['missing_input'],
+        payload: {
+          type: 'capability',
+          invocation: {
+            capability_id: '',
+            kind: 'tool',
+            arguments: {},
+            risk: 'low',
+          },
+        },
+      },
+    ],
+    edges: [{ source: 'agent_1', target: 'broken', reason: 'test' }],
+  });
+
+  assert.equal(summary.nodeCount, 2);
+  assert.equal(summary.edgeCount, 1);
+  assert.deepEqual(summary.inputArtifacts, [
+    {
+      id: 'upload_source',
+      label: 'source.md',
+      path: 'inputs/uploads/source/source.md',
+      kind: 'file',
+    },
+  ]);
+  assert.deepEqual(summary.outputArtifacts, [
+    {
+      id: 'report',
+      label: 'report',
+      path: 'outputs/report.md',
+      kind: 'artifact',
+    },
+  ]);
+  assert.deepEqual(summary.riskyNodes, [
+    {
+      id: 'agent_1',
+      capabilityId: 'agent.capability',
+      risk: 'medium',
+    },
+  ]);
+  assert.equal(summary.canRun, false);
+  assert.deepEqual(summary.issues.map((issue) => issue.message), [
+    "Node 'agent_1' references unknown output artifact 'missing_output'.",
+    "Node 'broken' is missing a capability.",
+    "Node 'broken' references unknown input artifact 'missing_input'.",
+  ]);
 });

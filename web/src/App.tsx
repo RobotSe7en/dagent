@@ -101,6 +101,7 @@ import {
   upsertArtifact,
   type UploadSourceFile,
 } from './dagArtifacts';
+import { buildRunDialogSummary, type RunDialogSummary } from './orchestrationRun';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -2060,9 +2061,16 @@ function OrchestrationWorkspace({
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId?: string } | null>(null);
   const [contextCapabilityId, setContextCapabilityId] = useState('');
+  const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
+  const [runDialogOpen, setRunDialogOpen] = useState(false);
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
+  const runSummary = buildRunDialogSummary(specFromDag(spec, dag));
   const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
   const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
+  const selectNode = (id: string) => {
+    onSelectNode(id);
+    setNodeDrawerOpen(true);
+  };
   const openCanvasMenu = (event: MouseEvent | React.MouseEvent<Element>) => {
     event.preventDefault();
     setContextMenu({ x: event.clientX, y: event.clientY });
@@ -2071,17 +2079,24 @@ function OrchestrationWorkspace({
   const openNodeMenu = (event: React.MouseEvent, node: Node) => {
     event.preventDefault();
     event.stopPropagation();
-    onSelectNode(node.id);
+    selectNode(node.id);
     setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
   };
   const addFromContext = () => {
-    if (contextCapability) onAddNode(contextCapability);
+    if (contextCapability) {
+      onAddNode(contextCapability);
+      setNodeDrawerOpen(true);
+    }
     setContextMenu(null);
   };
   const deleteFromContext = () => {
     if (contextMenu?.nodeId) onDeleteNode(contextMenu.nodeId);
     setContextMenu(null);
+  };
+  const deleteSelectedNode = () => {
+    onDeleteNode(selectedNode?.id);
+    setNodeDrawerOpen(false);
   };
   return (
     <section className="console-grid orchestration-grid">
@@ -2096,7 +2111,7 @@ function OrchestrationWorkspace({
             <Save size={16} />
             Save
           </button>
-          <button className="primary-button compact-button" onClick={onRun} disabled={running} type="button">
+          <button className="primary-button compact-button" onClick={() => setRunDialogOpen(true)} type="button">
             <Play size={16} />
             Run
           </button>
@@ -2145,7 +2160,10 @@ function OrchestrationWorkspace({
           <select
             onChange={(event) => {
               const capability = enabledCapabilities.find((item) => item.id === event.target.value);
-              if (capability) onAddNode(capability);
+              if (capability) {
+                onAddNode(capability);
+                setNodeDrawerOpen(true);
+              }
               event.currentTarget.value = '';
             }}
             defaultValue=""
@@ -2165,8 +2183,11 @@ function OrchestrationWorkspace({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onNodeClick={(_, node) => onSelectNode(node.id)}
-          onPaneClick={() => setContextMenu(null)}
+          onNodeClick={(_, node) => selectNode(node.id)}
+          onPaneClick={() => {
+            setContextMenu(null);
+            setNodeDrawerOpen(false);
+          }}
           onPaneContextMenu={openCanvasMenu}
           onNodeContextMenu={openNodeMenu}
           fitView
@@ -2206,9 +2227,14 @@ function OrchestrationWorkspace({
           </div>
         ) : null}
       </section>
-      <aside className="console-detail">
-        <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Config" />
-        {selectedNode ? (
+      {nodeDrawerOpen && selectedNode ? (
+        <aside className="node-config-drawer" aria-label="Node config">
+          <header className="node-config-drawer-head">
+            <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Config" />
+            <button className="icon-button" onClick={() => setNodeDrawerOpen(false)} title="Close node config" type="button">
+              <X size={18} />
+            </button>
+          </header>
           <OrchestrationNodeEditor
             node={normalizeNode(selectedNode)}
             dag={dag}
@@ -2216,14 +2242,176 @@ function OrchestrationWorkspace({
             capabilities={capabilities}
             logs={trace.filter((event) => event.node_id === selectedNode.id)}
             onPatch={(patch, nextEdges) => onPatchNode(selectedNode.id, patch, nextEdges)}
-            onDelete={onDeleteNode}
+            onDelete={deleteSelectedNode}
           />
-        ) : (
-          <div className="empty-state compact">
-            Select a node or add one from the capability list.
+        </aside>
+      ) : null}
+      {runDialogOpen ? (
+        <RunDagSpecDialog
+          specName={spec.name}
+          summary={runSummary}
+          trace={trace}
+          run={run}
+          running={running}
+          message={message}
+          onStart={onRun}
+          onClose={() => setRunDialogOpen(false)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function RunDagSpecDialog({
+  specName,
+  summary,
+  trace,
+  run,
+  running,
+  message,
+  onStart,
+  onClose,
+}: {
+  specName: string;
+  summary: RunDialogSummary;
+  trace: TraceLogEvent[];
+  run: DagRun | null;
+  running: boolean;
+  message: string;
+  onStart: () => void;
+  onClose: () => void;
+}) {
+  const state = running ? 'running' : run?.status ?? 'ready';
+  const recentEvents = trace.slice(-10).reverse();
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run DAGSpec">
+      <div className="run-dialog">
+        <header className="modal-header">
+          <div>
+            <div className="modal-title">
+              <Play size={20} />
+              <span>Run DAG</span>
+              <span className={`run-state ${state}`}>{state}</span>
+            </div>
+            <p>{message || specName || 'Untitled DAG'}</p>
           </div>
-        )}
-      </aside>
+          <div className="modal-actions">
+            <button className="secondary-button compact-button" onClick={onClose} type="button">
+              <X size={16} />
+              Close
+            </button>
+            <button
+              className="primary-button"
+              onClick={onStart}
+              disabled={running || !summary.canRun}
+              type="button"
+            >
+              {running ? <Loader size={17} className="spin" /> : <Play size={17} />}
+              Start Run
+            </button>
+          </div>
+        </header>
+        <div className="run-dialog-body">
+          <section className="run-overview-grid">
+            <div className="run-stat-card">
+              <span>Nodes</span>
+              <strong>{summary.nodeCount}</strong>
+            </div>
+            <div className="run-stat-card">
+              <span>Edges</span>
+              <strong>{summary.edgeCount}</strong>
+            </div>
+            <div className="run-stat-card">
+              <span>Inputs</span>
+              <strong>{summary.inputArtifacts.length}</strong>
+            </div>
+            <div className="run-stat-card">
+              <span>Review</span>
+              <strong>{summary.riskyNodes.length}</strong>
+            </div>
+          </section>
+          {summary.issues.length ? (
+            <section className="run-section run-issues">
+              <h3><AlertTriangle size={15} /> Blocking Issues</h3>
+              <div className="run-list">
+                {summary.issues.map((issue, index) => (
+                  <div className="run-list-row" key={`${issue.nodeId ?? 'spec'}-${index}`}>
+                    <strong>{issue.nodeId ?? 'DAG'}</strong>
+                    <span>{issue.message}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <section className="run-artifact-grid">
+            <RunArtifactPanel title="Input Files" artifacts={summary.inputArtifacts} empty="No file inputs selected." />
+            <RunArtifactPanel title="Outputs" artifacts={summary.outputArtifacts} empty="No output artifacts selected." />
+          </section>
+          {summary.riskyNodes.length ? (
+            <section className="run-section">
+              <h3><AlertTriangle size={15} /> Review Nodes</h3>
+              <div className="run-risk-list">
+                {summary.riskyNodes.map((node) => (
+                  <div className="run-risk-row" key={node.id}>
+                    <strong>{node.id}</strong>
+                    <span>{node.capabilityId || 'Missing capability'}</span>
+                    <em className={`risk-badge risk-${node.risk}`}>{node.risk}</em>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <section className="run-section run-events">
+            <h3><Wrench size={15} /> Run Events</h3>
+            {recentEvents.length ? (
+              <div className="run-event-list">
+                {recentEvents.map((event, index) => (
+                  <details className={`run-event-row ${event.status}`} key={event.id ?? `${event.label}-${index}`}>
+                    <summary>
+                      <strong>{event.node_id || event.event_type || event.label}</strong>
+                      <span>{event.status}</span>
+                    </summary>
+                    <p>{event.detail}</p>
+                  </details>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state compact">No run events yet.</div>
+            )}
+          </section>
+          {run?.workspace_path ? (
+            <div className="readonly-note">Workspace: {run.workspace_path}</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunArtifactPanel({
+  title,
+  artifacts,
+  empty,
+}: {
+  title: string;
+  artifacts: RunDialogSummary['inputArtifacts'];
+  empty: string;
+}) {
+  return (
+    <section className="run-section">
+      <h3>{title}</h3>
+      {artifacts.length ? (
+        <div className="run-list">
+          {artifacts.map((artifact) => (
+            <div className="run-list-row" key={artifact.id}>
+              <strong>{artifact.label}</strong>
+              <span>{artifact.path}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state compact">{empty}</div>
+      )}
     </section>
   );
 }
