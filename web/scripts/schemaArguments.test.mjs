@@ -31,7 +31,11 @@ const {
   uploadFormFilename,
   upsertArtifact,
 } = await importTypeScript('../src/dagArtifacts.ts');
-const { buildRunDialogSummary } = await importTypeScript('../src/orchestrationRun.ts');
+const {
+  appendRunTranscriptCapability,
+  appendRunTranscriptToken,
+  buildRunDialogSummary,
+} = await importTypeScript('../src/orchestrationRun.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -319,4 +323,42 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     "Node 'broken' is missing a capability.",
     "Node 'broken' references unknown input artifact 'missing_input'.",
   ]);
+});
+
+test('appendRunTranscriptToken streams consecutive text into one message', () => {
+  const timeline = appendRunTranscriptToken([], 'Hello ');
+  const next = appendRunTranscriptToken(timeline, 'world');
+
+  assert.deepEqual(next, [
+    {
+      type: 'text',
+      content: 'Hello world',
+    },
+  ]);
+});
+
+test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
+  const call = {
+    type: 'capability_call',
+    invocation_id: 'invoke_1',
+    capability_id: 'tool.read_file',
+    arguments: { path: 'inputs/source.md' },
+  };
+  const result = {
+    type: 'capability_result',
+    invocation_id: 'invoke_1',
+    capability_id: 'tool.read_file',
+    arguments: {},
+    content: 'file contents',
+  };
+
+  const timeline = appendRunTranscriptCapability([], call);
+  const next = appendRunTranscriptCapability(timeline, result);
+
+  assert.equal(next.length, 1);
+  assert.deepEqual(next[0], {
+    type: 'capability',
+    event: call,
+    result,
+  });
 });

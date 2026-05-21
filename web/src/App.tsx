@@ -101,7 +101,13 @@ import {
   upsertArtifact,
   type UploadSourceFile,
 } from './dagArtifacts';
-import { buildRunDialogSummary, type RunDialogSummary } from './orchestrationRun';
+import {
+  appendRunTranscriptCapability,
+  appendRunTranscriptToken,
+  buildRunDialogSummary,
+  type RunDialogSummary,
+  type RunTranscriptItem,
+} from './orchestrationRun';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -375,6 +381,7 @@ export function App() {
   const [editorSelectedId, setEditorSelectedId] = useState('');
   const [editorTrace, setEditorTrace] = useState<TraceLogEvent[]>([]);
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
+  const [editorRunTimeline, setEditorRunTimeline] = useState<RunTranscriptItem[]>([]);
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
@@ -494,6 +501,7 @@ export function App() {
     syncEditorDag(dagFromSpec(normalizedSpec));
     setEditorTrace([]);
     setEditorRun(null);
+    setEditorRunTimeline([]);
     setEditorMessage('');
   }, [syncEditorDag]);
 
@@ -957,6 +965,7 @@ export function App() {
     setEditorRunning(true);
     setEditorTrace([]);
     setEditorRun(null);
+    setEditorRunTimeline([]);
     setEditorMessage(`Running ${spec.name || 'DAGSpec'}...`);
     try {
       await runDagSpecStream(spec.id, {
@@ -977,6 +986,7 @@ export function App() {
           setEditorTrace((items) => [...items, event]);
         },
         onCapability: (event) => {
+          setEditorRunTimeline((items) => appendRunTranscriptCapability(items, event));
           setEditorTrace((items) => [
             ...items,
             {
@@ -989,13 +999,21 @@ export function App() {
             },
           ]);
         },
+        onToken: (content) => {
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
+        },
         onDone: (payload) => {
           setEditorRun(payload.dag_run);
           syncEditorDag(payload.dag_run.dag);
           setEditorMessage(`Run ${payload.dag_run.status}.`);
+          setEditorRunTimeline((items) => appendRunTranscriptToken(
+            items,
+            `\n\nRun ${payload.dag_run.status}.`,
+          ));
         },
         onError: (message) => {
           setEditorMessage(message);
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
       }, { workspaceRoot: editorWorkspaceRoot });
     } catch (exc) {
@@ -1343,6 +1361,7 @@ export function App() {
             selectedId={editorSelectedId}
             trace={editorTrace}
             run={editorRun}
+            runTimeline={editorRunTimeline}
             message={editorMessage}
             running={editorRunning}
             workspaceRoot={editorWorkspaceRoot}
@@ -2008,6 +2027,7 @@ function OrchestrationWorkspace({
   selectedId,
   trace,
   run,
+  runTimeline,
   message,
   running,
   workspaceRoot,
@@ -2038,6 +2058,7 @@ function OrchestrationWorkspace({
   selectedId: string;
   trace: TraceLogEvent[];
   run: DagRun | null;
+  runTimeline: RunTranscriptItem[];
   message: string;
   running: boolean;
   workspaceRoot: string;
@@ -2250,8 +2271,8 @@ function OrchestrationWorkspace({
         <RunDagSpecDialog
           specName={spec.name}
           summary={runSummary}
-          trace={trace}
           run={run}
+          timeline={runTimeline}
           running={running}
           message={message}
           onStart={onRun}
@@ -2265,8 +2286,8 @@ function OrchestrationWorkspace({
 function RunDagSpecDialog({
   specName,
   summary,
-  trace,
   run,
+  timeline,
   running,
   message,
   onStart,
@@ -2274,15 +2295,16 @@ function RunDagSpecDialog({
 }: {
   specName: string;
   summary: RunDialogSummary;
-  trace: TraceLogEvent[];
   run: DagRun | null;
+  timeline: RunTranscriptItem[];
   running: boolean;
   message: string;
   onStart: () => void;
   onClose: () => void;
 }) {
   const state = running ? 'running' : run?.status ?? 'ready';
-  const recentEvents = trace.slice(-10).reverse();
+  const hasStarted = running || Boolean(run) || timeline.length > 0;
+  const startLabel = run ? 'Run Again' : 'Start Run';
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run DAGSpec">
       <div className="run-dialog">
@@ -2307,84 +2329,112 @@ function RunDagSpecDialog({
               type="button"
             >
               {running ? <Loader size={17} className="spin" /> : <Play size={17} />}
-              Start Run
+              {startLabel}
             </button>
           </div>
         </header>
-        <div className="run-dialog-body">
-          <section className="run-overview-grid">
-            <div className="run-stat-card">
-              <span>Nodes</span>
-              <strong>{summary.nodeCount}</strong>
-            </div>
-            <div className="run-stat-card">
-              <span>Edges</span>
-              <strong>{summary.edgeCount}</strong>
-            </div>
-            <div className="run-stat-card">
-              <span>Inputs</span>
-              <strong>{summary.inputArtifacts.length}</strong>
-            </div>
-            <div className="run-stat-card">
-              <span>Review</span>
-              <strong>{summary.riskyNodes.length}</strong>
-            </div>
-          </section>
-          {summary.issues.length ? (
-            <section className="run-section run-issues">
-              <h3><AlertTriangle size={15} /> Blocking Issues</h3>
-              <div className="run-list">
-                {summary.issues.map((issue, index) => (
-                  <div className="run-list-row" key={`${issue.nodeId ?? 'spec'}-${index}`}>
-                    <strong>{issue.nodeId ?? 'DAG'}</strong>
-                    <span>{issue.message}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          <section className="run-artifact-grid">
-            <RunArtifactPanel title="Input Files" artifacts={summary.inputArtifacts} empty="No file inputs selected." />
-            <RunArtifactPanel title="Outputs" artifacts={summary.outputArtifacts} empty="No output artifacts selected." />
-          </section>
-          {summary.riskyNodes.length ? (
-            <section className="run-section">
-              <h3><AlertTriangle size={15} /> Review Nodes</h3>
-              <div className="run-risk-list">
-                {summary.riskyNodes.map((node) => (
-                  <div className="run-risk-row" key={node.id}>
-                    <strong>{node.id}</strong>
-                    <span>{node.capabilityId || 'Missing capability'}</span>
-                    <em className={`risk-badge risk-${node.risk}`}>{node.risk}</em>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          <section className="run-section run-events">
-            <h3><Wrench size={15} /> Run Events</h3>
-            {recentEvents.length ? (
-              <div className="run-event-list">
-                {recentEvents.map((event, index) => (
-                  <details className={`run-event-row ${event.status}`} key={event.id ?? `${event.label}-${index}`}>
-                    <summary>
-                      <strong>{event.node_id || event.event_type || event.label}</strong>
-                      <span>{event.status}</span>
-                    </summary>
-                    <p>{event.detail}</p>
-                  </details>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state compact">No run events yet.</div>
-            )}
-          </section>
-          {run?.workspace_path ? (
-            <div className="readonly-note">Workspace: {run.workspace_path}</div>
-          ) : null}
+        <div className={hasStarted ? 'run-dialog-body transcript-mode' : 'run-dialog-body'}>
+          {hasStarted ? (
+            <>
+              <details className="run-context-details">
+                <summary>Run Context</summary>
+                <div className="run-context-body">
+                  <RunPreflightPanel summary={summary} />
+                </div>
+              </details>
+              <RunTranscript timeline={timeline} running={running} />
+              {run?.workspace_path ? (
+                <div className="readonly-note">Workspace: {run.workspace_path}</div>
+              ) : null}
+            </>
+          ) : (
+            <RunPreflightPanel summary={summary} />
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+function RunPreflightPanel({ summary }: { summary: RunDialogSummary }) {
+  return (
+    <>
+      <section className="run-overview-grid">
+        <div className="run-stat-card">
+          <span>Nodes</span>
+          <strong>{summary.nodeCount}</strong>
+        </div>
+        <div className="run-stat-card">
+          <span>Edges</span>
+          <strong>{summary.edgeCount}</strong>
+        </div>
+        <div className="run-stat-card">
+          <span>Inputs</span>
+          <strong>{summary.inputArtifacts.length}</strong>
+        </div>
+        <div className="run-stat-card">
+          <span>Review</span>
+          <strong>{summary.riskyNodes.length}</strong>
+        </div>
+      </section>
+      {summary.issues.length ? (
+        <section className="run-section run-issues">
+          <h3><AlertTriangle size={15} /> Blocking Issues</h3>
+          <div className="run-list">
+            {summary.issues.map((issue, index) => (
+              <div className="run-list-row" key={`${issue.nodeId ?? 'spec'}-${index}`}>
+                <strong>{issue.nodeId ?? 'DAG'}</strong>
+                <span>{issue.message}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      <section className="run-artifact-grid">
+        <RunArtifactPanel title="Input Files" artifacts={summary.inputArtifacts} empty="No file inputs selected." />
+        <RunArtifactPanel title="Outputs" artifacts={summary.outputArtifacts} empty="No output artifacts selected." />
+      </section>
+      {summary.riskyNodes.length ? (
+        <section className="run-section">
+          <h3><AlertTriangle size={15} /> Review Nodes</h3>
+          <div className="run-risk-list">
+            {summary.riskyNodes.map((node) => (
+              <div className="run-risk-row" key={node.id}>
+                <strong>{node.id}</strong>
+                <span>{node.capabilityId || 'Missing capability'}</span>
+                <em className={`risk-badge risk-${node.risk}`}>{node.risk}</em>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function RunTranscript({
+  timeline,
+  running,
+}: {
+  timeline: RunTranscriptItem[];
+  running: boolean;
+}) {
+  const message: ChatMessage = {
+    role: 'assistant',
+    content: timeline.length ? '' : (running ? 'Running DAG...' : 'Run transcript will appear here.'),
+    timeline,
+  };
+  return (
+    <section className="run-transcript">
+      <div className="message assistant run-transcript-message">
+        <span>Run Transcript</span>
+        <MessageTimeline
+          message={message}
+          loading={running && timeline.length === 0}
+          onOpenDag={() => undefined}
+        />
+      </div>
+    </section>
   );
 }
 

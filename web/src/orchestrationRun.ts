@@ -1,4 +1,4 @@
-import type { Artifact, DagNode, DagSpec, RiskLevel } from './types';
+import type { Artifact, CapabilityStreamEvent, DagNode, DagSpec, RiskLevel } from './types';
 
 export interface RunArtifactSummary {
   id: string;
@@ -27,6 +27,10 @@ export interface RunDialogSummary {
   issues: RunDialogIssue[];
   canRun: boolean;
 }
+
+export type RunTranscriptItem =
+  | { type: 'text'; content: string }
+  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
 
 export function buildRunDialogSummary(spec: DagSpec): RunDialogSummary {
   const artifacts = spec.artifacts ?? {};
@@ -64,6 +68,40 @@ export function buildRunDialogSummary(spec: DagSpec): RunDialogSummary {
     issues,
     canRun: issues.length === 0,
   };
+}
+
+export function appendRunTranscriptToken(
+  timeline: RunTranscriptItem[],
+  content: string,
+): RunTranscriptItem[] {
+  if (!content) return timeline;
+  const next = [...timeline];
+  const last = next[next.length - 1];
+  if (last?.type === 'text') {
+    next[next.length - 1] = { ...last, content: `${last.content}${content}` };
+    return next;
+  }
+  return [...next, { type: 'text', content }];
+}
+
+export function appendRunTranscriptCapability(
+  timeline: RunTranscriptItem[],
+  event: CapabilityStreamEvent,
+): RunTranscriptItem[] {
+  const next = [...timeline];
+  if (event.type === 'capability_result' || event.type === 'capability_error') {
+    const index = next.findIndex(
+      (item) => item.type === 'capability'
+        && item.event.invocation_id === event.invocation_id
+        && item.event.type === 'capability_call',
+    );
+    if (index !== -1) {
+      const item = next[index] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
+      next[index] = { ...item, result: event };
+      return next;
+    }
+  }
+  return [...next, { type: 'capability', event }];
 }
 
 function collectArtifactReferences(

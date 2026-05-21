@@ -1764,6 +1764,59 @@ button:disabled {
   scrollbar-color: var(--border) transparent;
 }
 
+.run-dialog-body.transcript-mode {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: stretch;
+}
+
+.run-context-details {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+.run-context-details summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.run-context-details[open] summary {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.run-context-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.run-transcript {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.run-transcript-message {
+  width: 100%;
+  max-width: none;
+  align-self: stretch;
+}
+
+.run-transcript .message-timeline {
+  gap: 10px;
+}
+
 .run-overview-grid,
 .run-artifact-grid {
   display: grid;
