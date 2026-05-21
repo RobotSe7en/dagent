@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 
 from dagent.schemas import Boundary
-from dagent.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 class CommandExecutionError(RuntimeError):

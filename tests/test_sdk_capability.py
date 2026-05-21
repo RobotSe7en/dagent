@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from dagent import CapabilityBinding, capability
+from dagent.capabilities import capability as capability_from_subsystem
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
 
@@ -40,6 +41,7 @@ def test_capability_decorator_builds_definition_from_function_signature() -> Non
 
     assert result.status == "completed"
     assert result.content == "hi:1:False"
+    assert capability_from_subsystem is capability
 
 
 def test_capability_decorator_serializes_structured_results_and_failures() -> None:

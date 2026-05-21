@@ -10,7 +10,7 @@ from dagent.capabilities.providers import (
     MemoryCapabilityProvider,
     ToolCapabilityProvider,
 )
-from dagent.tools.file_tools import create_file_tool_registry
+from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
 def create_default_capability_catalog(*, workspace_root: str | Path = ".") -> CapabilityCatalog:

@@ -17,7 +17,7 @@ from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:

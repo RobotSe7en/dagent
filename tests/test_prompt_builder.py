@@ -1,6 +1,6 @@
 from dagent.profiles import AgentProfile
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.registry import Tool
+from dagent.capabilities.tools.registry import Tool
 
 
 def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:

@@ -27,8 +27,8 @@ from dagent.schemas import (
     RunTraceNode,
     StartNodePayload,
 )
-from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.command_tools import _infer_command_boundary, _infer_command_risk
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):

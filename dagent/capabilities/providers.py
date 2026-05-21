@@ -21,13 +21,13 @@ from dagent.schemas import (
     CapabilityPolicy,
     CapabilityResult,
 )
-from dagent.tools.boundary import (
+from dagent.capabilities.tools.boundary import (
     enforce_action_allowed,
     enforce_command_allowed,
     enforce_path_allowed,
 )
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 class ToolCapabilityProvider:

@@ -17,7 +17,7 @@ from dagent.harness_runtime.capability_executor import CapabilityExecutionContex
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import Boundary, CapabilityDefinition, CapabilityInvocation, CapabilityResult, DAGNode
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):

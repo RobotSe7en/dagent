@@ -25,7 +25,7 @@ from dagent.schemas import (
     ValidationIssue,
     ValidationResult,
 )
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):

@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from dagent.tools.command_tools import register_command_tools
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.command_tools import register_command_tools
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 GREP_EXCLUDED_DIRS = {

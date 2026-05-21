@@ -28,6 +28,33 @@ def test_capability_boundaries_are_not_split_into_top_level_runtime_package() ->
     assert (root / "dagent" / "capabilities" / "toolsets.py").exists()
 
 
+def test_public_capability_decorator_and_tools_live_under_capabilities() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    assert not (root / "dagent" / "capability.py").exists()
+    assert (root / "dagent" / "capabilities" / "decorator.py").exists()
+    assert not (root / "dagent" / "tools").exists()
+    assert (root / "dagent" / "capabilities" / "tools" / "registry.py").exists()
+    assert (root / "dagent" / "capabilities" / "tools" / "file_tools.py").exists()
+    assert (root / "dagent" / "capabilities" / "tools" / "command_tools.py").exists()
+    assert (root / "dagent" / "capabilities" / "tools" / "boundary.py").exists()
+
+
+def test_source_no_longer_imports_top_level_tools_package() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = [
+        *list((root / "dagent").rglob("*.py")),
+        *list((root / "tests").rglob("*.py")),
+    ]
+    allowed_files = {root / "tests" / "test_architecture_boundaries.py"}
+
+    for path in paths:
+        if "__pycache__" in path.parts or path in allowed_files:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "dagent.tools" not in text, f"top-level tools import remains in {path}"
+
+
 def test_harness_runtime_executors_do_not_depend_on_tool_executor() -> None:
     root = Path(__file__).resolve().parents[1]
     runtime_files = [
