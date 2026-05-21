@@ -386,6 +386,47 @@ async def main():
 asyncio.run(main())
 ```
 
+Use `Dag` and `run_dag` for user-defined static DAG execution:
+
+```python
+import asyncio
+from pathlib import Path
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+@dagent.tool(risk="medium", supports_context=True)
+def write_note(path: str, content: str, *, context, callbacks=None) -> str:
+    resolved = Path(context.workspace_path) / path
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding="utf-8")
+    return f"wrote:{path}"
+
+
+async def main():
+    dag = dagent.Dag("research_report", name="Research Report")
+    report = dag.artifact("report", "outputs/report.md")
+
+    search_node = dag.tool_node("search", search, q="dagent sdk")
+    dag.tool_node(
+        "write_report",
+        write_note,
+        path=report.path,
+        content=search_node.output,
+        outputs=[report],
+    ).after(search_node)
+
+    run = await dagent.run_dag(dag, workspace=".")
+    print(run.status)
+
+asyncio.run(main())
+```
+
 ## Quick Start
 
 Verify provider connection:

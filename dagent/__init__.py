@@ -2,6 +2,7 @@
 
 from dagent.agent import DagAgent, ToolAgent
 from dagent.capabilities.decorator import CapabilityBinding, capability, tool
+from dagent.dag_builder import ArtifactRef, Dag, NodeRef, run_dag
 from dagent.providers import OpenAICompatibleProvider
 from dagent.result import RunResult
 from dagent.review import ReviewDecision, ReviewHandle
@@ -29,6 +30,9 @@ __all__ = [
     "DAGRun",
     "DAGSpec",
     "DagAgent",
+    "Dag",
+    "ArtifactRef",
+    "NodeRef",
     "OpenAICompatibleProvider",
     "PendingReview",
     "ReviewDecision",
@@ -38,5 +42,6 @@ __all__ = [
     "RuntimeResponse",
     "ToolAgent",
     "capability",
+    "run_dag",
     "tool",
 ]
