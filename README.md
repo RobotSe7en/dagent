@@ -328,6 +328,41 @@ uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
 cd web && npm install && npm run dev
 ```
 
+## Python SDK Quick Start
+
+Use the package root as the SDK facade:
+
+```python
+import asyncio
+
+from dagent import DAgent, Runner, capability
+
+
+@capability(id="custom_tool.echo", risk="low")
+def echo(text: str) -> str:
+    """Echo text back to the agent."""
+    return f"echo:{text}"
+
+
+async def main():
+    agent = DAgent.from_config(workspace_root=".").with_capabilities([echo])
+
+    result = await Runner.run(
+        agent,
+        "Use echo to respond with hello.",
+        mode="tool",
+        review="fast",
+    )
+
+    if result.requires_review and result.review is not None:
+        result = await Runner.resume(agent, result.review.approve())
+
+    print(result.output_text)
+
+
+asyncio.run(main())
+```
+
 ## Quick Start
 
 Verify provider connection:

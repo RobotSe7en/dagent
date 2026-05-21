@@ -75,6 +75,7 @@ def create_harness_runtime(
         enable_validation=resolved_config.enable_result_validation,
         capability_catalog=session_capabilities,
         capability_executor=capability_executor,
+        agent_capability_configs=profile_agent_configs.values(),
     )
 
 

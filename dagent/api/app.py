@@ -21,7 +21,6 @@ from dagent.harness_runtime import (
     RuntimeMode,
 )
 from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import ProfileStore
 from dagent.schemas import DAG, DAGRun, DAGSpec
@@ -316,7 +315,7 @@ async def delete_capability(capability_id: str) -> dict[str, str]:
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     runtime.capability_catalog.delete(capability_id)
-    _sync_runtime_toolsets(runtime)
+    runtime.refresh_toolsets()
     return {"status": "deleted"}
 
 
@@ -381,13 +380,11 @@ async def sandbox_status() -> dict[str, Any]:
 
 
 def _install_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
-    runtime.capability_catalog.register(definition, _handler_for_definition(definition))
-    _sync_runtime_toolsets(runtime)
+    runtime.register_capability(definition, _handler_for_definition(definition))
 
 
 def _replace_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
-    runtime.capability_catalog.replace(definition, _handler_for_definition(definition))
-    _sync_runtime_toolsets(runtime)
+    runtime.replace_capability(definition, _handler_for_definition(definition))
 
 
 def _handler_for_definition(definition: CapabilityDefinition):
@@ -405,16 +402,12 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
     if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     updated = runtime.capability_catalog.set_enabled(capability_id, enabled)
+    runtime.refresh_toolsets()
     return {"capability": updated.model_dump(mode="json")}
 
 
 def _sync_runtime_toolsets(runtime: HarnessRuntime) -> None:
-    tool_adapter = CapabilityToolAdapter(
-        runtime.capability_catalog,
-        toolsets=[CapabilityToolset("builtin", tuple(sorted(runtime.capability_catalog.ids())))],
-    )
-    runtime.tool_agent.loop.tool_adapter = tool_adapter
-    runtime.dag_agent.loop.tool_adapter = tool_adapter
+    runtime.refresh_toolsets()
 
 
 @app.post("/capabilities/{capability_id}/test")

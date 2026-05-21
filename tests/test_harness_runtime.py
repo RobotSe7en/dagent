@@ -1,4 +1,5 @@
 import asyncio
+from dagent import capability
 from dagent.harness_runtime import (
     ToolAgent,
     ToolAgentLoop,
@@ -94,6 +95,45 @@ def test_harness_runtime_reuses_executor_catalog_without_assembling_capabilities
 
     assert runtime.capability_catalog is capability_executor.catalog
     assert "memory.write" not in runtime.capability_catalog.ids()
+
+
+def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
+    runtime._agent_capability_configs.append(agent_config)
+
+    @capability(id="custom_tool.echo2", name="echo2")
+    def echo2(text: str) -> str:
+        return f"first:{text}"
+
+    registered = runtime.register_capability(echo2)
+    invocation = CapabilityInvocation(
+        capability_id="custom_tool.echo2",
+        kind="custom_tool",
+        arguments={"text": "ok"},
+    )
+    first = run(runtime.capability_executor.execute(invocation))
+
+    @capability(id="custom_tool.echo2", name="echo2")
+    def echo2_replacement(text: str) -> str:
+        return f"second:{text}"
+
+    replaced = runtime.replace_capability(echo2_replacement)
+    second = run(runtime.capability_executor.execute(invocation))
+
+    assert registered.id == "custom_tool.echo2"
+    assert replaced.id == "custom_tool.echo2"
+    assert first.content == "first:ok"
+    assert second.content == "second:ok"
+    assert runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
+        "custom_tool.echo2",
+        enabled_toolsets=("builtin",),
+    ) == "echo2"
+    assert runtime.dag_agent.loop.tool_adapter.function_name_for_capability(
+        "custom_tool.echo2",
+        enabled_toolsets=("builtin",),
+    ) == "echo2"
+    assert agent_config["tool_adapter"] is runtime.tool_agent.loop.tool_adapter
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
