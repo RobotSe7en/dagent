@@ -330,35 +330,58 @@ cd web && npm install && npm run dev
 
 ## Python SDK Quick Start
 
-Use the package root as the SDK facade:
+Use `ToolAgent` for profile-backed tool-loop work:
 
 ```python
 import asyncio
 
-from dagent import DAgent, Runner, capability
+import dagent
 
 
-@capability(id="custom_tool.echo", risk="low")
+@dagent.tool(risk="low")
 def echo(text: str) -> str:
     """Echo text back to the agent."""
     return f"echo:{text}"
 
 
 async def main():
-    agent = DAgent.from_config(workspace_root=".").with_capabilities([echo])
-
-    result = await Runner.run(
-        agent,
-        "Use echo to respond with hello.",
-        mode="tool",
-        review="fast",
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=[echo],
+        workspace=".",
     )
+    result = await agent.run("Use echo to respond with hello.")
 
     if result.requires_review and result.review is not None:
-        result = await Runner.resume(agent, result.review.approve())
+        result = await agent.resume(result.review.approve())
 
     print(result.output_text)
 
+
+asyncio.run(main())
+```
+
+Use `DagAgent` for dynamic DAG planning, execution, observation, and replanning:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+async def main():
+    agent = dagent.DagAgent(
+        capabilities=[search],
+        workspace=".",
+        review="careful",
+    )
+    result = await agent.run("Research X and write a concise report.")
+    print(result.output_text)
 
 asyncio.run(main())
 ```
@@ -377,25 +400,6 @@ async def main():
     provider = OpenAICompatibleProvider(config.provider)
     response = await provider.chat([{"role": "user", "content": "Reply with exactly: OK"}])
     print(response.content)
-
-asyncio.run(main())
-```
-
-Run the harness runtime:
-
-```python
-import asyncio
-from dagent.factory import create_harness_runtime
-
-async def main():
-    runtime = create_harness_runtime(workspace_root=".")
-    result = await runtime.handle_message(
-        "Read README and summarize the implemented milestones.",
-        mode="auto",
-        review_level="fast",
-    )
-    print(result.status)
-    print(result.final_answer)
 
 asyncio.run(main())
 ```

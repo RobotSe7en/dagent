@@ -12,8 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from dagent.agent import create_default_runtime
 from dagent.config import load_config
-from dagent.factory import create_harness_runtime
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime import (
@@ -59,7 +59,7 @@ class ApiState:
 
     def get_harness_runtime(self) -> HarnessRuntime:
         if self.harness_runtime is None:
-            self.harness_runtime = create_harness_runtime(workspace_root=".")
+            self.harness_runtime = create_default_runtime(workspace=".")
         return self.harness_runtime
 
     def get_profile_directory(self) -> str:

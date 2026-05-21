@@ -1,11 +1,10 @@
 """Reviewable DAG agent runtime SDK."""
 
-from dagent.agent import DAgent
-from dagent.capabilities.decorator import CapabilityBinding, capability
+from dagent.agent import DagAgent, ToolAgent
+from dagent.capabilities.decorator import CapabilityBinding, capability, tool
 from dagent.providers import OpenAICompatibleProvider
 from dagent.result import RunResult
 from dagent.review import ReviewDecision, ReviewHandle
-from dagent.runner import Runner
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityPolicy,
@@ -26,17 +25,18 @@ __all__ = [
     "CapabilityDefinition",
     "CapabilityPolicy",
     "CapabilityResult",
-    "DAgent",
     "DAG",
     "DAGRun",
     "DAGSpec",
+    "DagAgent",
     "OpenAICompatibleProvider",
     "PendingReview",
     "ReviewDecision",
     "ReviewHandle",
     "RunResult",
     "RunTrace",
-    "Runner",
     "RuntimeResponse",
+    "ToolAgent",
     "capability",
+    "tool",
 ]
