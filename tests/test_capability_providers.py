@@ -10,6 +10,7 @@ from dagent.capabilities.providers import (
     SkillCapabilityProvider,
     ShellCapabilityProvider,
     ToolCapabilityProvider,
+    _agent_boundary,
 )
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.capability_executor import CapabilityExecutionContext
@@ -338,3 +339,22 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     assert "Write requirements" in first_user
     assert "Draft the requirements. Keep it concise." in first_user
     assert "source_doc" not in first_user
+
+
+def test_agent_boundary_grants_full_run_workspace_with_artifact_paths(tmp_path) -> None:
+    uploaded_file = tmp_path / "inputs" / "uploads" / "source.txt"
+    invocation = CapabilityInvocation(
+        capability_id="agent.helper",
+        kind="agent",
+        boundary=Boundary(mode="read_only", allowed_paths=[str(uploaded_file)]),
+    )
+    context = CapabilityExecutionContext(
+        task_id="run_1",
+        workspace_path=tmp_path,
+    )
+
+    boundary = _agent_boundary(invocation, context)
+
+    assert boundary.mode == "full"
+    assert str(tmp_path) in boundary.allowed_paths
+    assert str(uploaded_file) in boundary.allowed_paths

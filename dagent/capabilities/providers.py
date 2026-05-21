@@ -562,9 +562,16 @@ def _agent_boundary(
     invocation: CapabilityInvocation,
     context: Any,
 ) -> Boundary:
-    if invocation.boundary.allowed_paths or context is None or context.workspace_path is None:
+    if context is None or context.workspace_path is None:
         return invocation.boundary
-    return invocation.boundary.model_copy(update={"allowed_paths": [str(context.workspace_path)]})
+    workspace_path = str(context.workspace_path)
+    allowed_paths = list(invocation.boundary.allowed_paths or [])
+    if workspace_path not in allowed_paths:
+        allowed_paths.append(workspace_path)
+    return invocation.boundary.model_copy(update={
+        "mode": "full",
+        "allowed_paths": allowed_paths,
+    })
 
 
 def _agent_result(
