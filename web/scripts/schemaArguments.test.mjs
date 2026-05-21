@@ -25,7 +25,10 @@ const {
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 const {
   artifactPlaceholder,
+  createUploadedFileArtifacts,
+  isUploadedFileArtifact,
   removeArtifactBinding,
+  uploadFormFilename,
   upsertArtifact,
 } = await importTypeScript('../src/dagArtifacts.ts');
 
@@ -172,4 +175,60 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
 
 test('artifactPlaceholder builds executor artifact placeholder syntax', () => {
   assert.equal(artifactPlaceholder('report'), '{{artifact.report.path}}');
+});
+
+test('createUploadedFileArtifacts creates hidden file artifacts with workspace paths', () => {
+  const result = createUploadedFileArtifacts(
+    [
+      { name: 'notes.md', relativePath: '' },
+      { name: 'data.csv', relativePath: 'dataset/data.csv' },
+    ],
+    {
+      artifacts: {
+        upload_inputs_upload_notes_md: {
+          id: 'upload_inputs_upload_notes_md',
+          paths: ['inputs/upload/old-notes.md'],
+        },
+      },
+      uploadRoot: 'inputs/upload',
+    },
+  );
+
+  assert.deepEqual(result.uploads.map((item) => ({
+    artifactId: item.artifact.id,
+    sourceName: item.source.name,
+    sourceRelativePath: item.source.relativePath,
+    path: item.artifact.paths[0],
+    hidden: item.artifact.metadata.hidden,
+    source: item.artifact.metadata.source,
+    kind: item.artifact.metadata.kind,
+  })), [
+    {
+      artifactId: 'upload_inputs_upload_notes_md_2',
+      sourceName: 'notes.md',
+      sourceRelativePath: '',
+      path: 'inputs/upload/notes.md',
+      hidden: true,
+      source: 'upload',
+      kind: 'file',
+    },
+    {
+      artifactId: 'upload_inputs_upload_dataset_data_csv',
+      sourceName: 'data.csv',
+      sourceRelativePath: 'dataset/data.csv',
+      path: 'inputs/upload/dataset/data.csv',
+      hidden: true,
+      source: 'upload',
+      kind: 'file',
+    },
+  ]);
+  assert.equal(isUploadedFileArtifact(result.uploads[0].artifact), true);
+  assert.equal(isUploadedFileArtifact({ id: 'manual', paths: ['outputs/report.md'] }), false);
+});
+
+test('uploadFormFilename can upload a generated artifact with only the file basename', () => {
+  const file = { name: 'data.csv', webkitRelativePath: 'dataset/data.csv' };
+
+  assert.equal(uploadFormFilename(file, { preserveRelativePath: false }), 'data.csv');
+  assert.equal(uploadFormFilename(file, { preserveRelativePath: true }), 'dataset/data.csv');
 });

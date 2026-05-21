@@ -16,6 +16,7 @@ import type {
   RunTraceNode,
   RunTraceStatus,
 } from './types';
+import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -112,10 +113,11 @@ export async function uploadDagSpecArtifact(
   specId: string,
   artifactId: string,
   files: File[],
+  options: UploadFormFilenameOptions = {},
 ): Promise<{ artifact_id: string; files: string[] }> {
   const body = new FormData();
   for (const file of files) {
-    body.append('files', file, file.webkitRelativePath || file.name);
+    body.append('files', file, uploadFormFilename(file, options));
   }
   const res = await fetch(
     `${API_BASE}/dag-specs/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,

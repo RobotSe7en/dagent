@@ -525,6 +525,10 @@ select {
   gap: 8px;
 }
 
+.artifact-panel-head.nested {
+  padding: 10px 12px 0;
+}
+
 .artifact-row-actions {
   flex-wrap: wrap;
 }
@@ -539,6 +543,51 @@ select {
 .artifact-list {
   display: grid;
   gap: 10px;
+}
+
+.artifact-panel-actions,
+.uploaded-file-list {
+  display: grid;
+  gap: 8px;
+}
+
+.artifact-panel-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.uploaded-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+
+.uploaded-file-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.uploaded-file-main strong,
+.artifact-binding-label strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploaded-file-main span,
+.artifact-binding-label span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .artifact-row {
@@ -575,6 +624,14 @@ select {
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+.artifact-advanced {
+  border-radius: 8px;
+}
+
+.artifact-advanced .artifact-list {
+  padding: 8px 12px 0;
 }
 
 .checkbox-line {
@@ -1613,12 +1670,14 @@ button:disabled {
   gap: 8px;
 }
 
-.artifact-binding-row strong {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.artifact-binding-label {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.file-binding-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .artifact-binding-actions {

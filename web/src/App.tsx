@@ -95,8 +95,11 @@ import {
 import { pruneEdgesToNodeIds } from './dagEdges';
 import {
   artifactPlaceholder,
+  createUploadedFileArtifacts,
+  isUploadedFileArtifact,
   removeArtifactBinding,
   upsertArtifact,
+  type UploadSourceFile,
 } from './dagArtifacts';
 
 const riskClass: Record<RiskLevel, string> = {
@@ -906,6 +909,43 @@ export function App() {
     }
   };
 
+  const uploadEditorFiles = async (fileList: FileList | null) => {
+    const files = Array.from(fileList ?? []);
+    if (!files.length) return;
+    const spec = specFromDag(editorSpec, editorDag);
+    const uploadRoot = uploadBatchRoot(files);
+    const uploadDraft = createUploadedFileArtifacts(uploadSourceFiles(files), {
+      artifacts: spec.artifacts ?? {},
+      uploadRoot,
+    });
+    const nextSpec = {
+      ...spec,
+      artifacts: uploadDraft.artifacts,
+    };
+    const validation = validateDagSpecDraft(nextSpec);
+    if (validation) {
+      setEditorMessage(validation);
+      return;
+    }
+    setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
+    try {
+      const saved = await saveDagSpec(nextSpec);
+      setEditorSpecAndDag(saved);
+      for (let index = 0; index < uploadDraft.uploads.length; index += 1) {
+        await uploadDagSpecArtifact(
+          saved.id,
+          uploadDraft.uploads[index].artifact.id,
+          [files[index]],
+          { preserveRelativePath: false },
+        );
+      }
+      await refreshConsoleData();
+      setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'} to ${uploadRoot}.`);
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
   const runEditorSpec = async () => {
     if (editorRunning) return;
     const spec = specFromDag(editorSpec, editorDag);
@@ -1312,6 +1352,7 @@ export function App() {
             onUpsertArtifact={upsertEditorArtifact}
             onDeleteArtifact={deleteEditorArtifact}
             onUploadArtifact={uploadEditorArtifact}
+            onUploadFiles={uploadEditorFiles}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
@@ -1676,6 +1717,60 @@ function uniqueNodeId(dag: Dag) {
   return id;
 }
 
+function uploadBatchRoot(files: File[]) {
+  const firstPath = files[0]?.webkitRelativePath || files[0]?.name || 'upload';
+  const firstSegment = firstPath.replace(/\\/g, '/').split('/').filter(Boolean)[0] || 'upload';
+  return `inputs/uploads/${safeUploadSegment(firstSegment)}-${Date.now()}`;
+}
+
+function uploadSourceFiles(files: File[]): UploadSourceFile[] {
+  const rawPaths = files.map((file) => (file.webkitRelativePath || file.name).replace(/\\/g, '/'));
+  const commonFolder = commonUploadedFolder(rawPaths);
+  return files.map((file) => {
+    const rawPath = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
+    return {
+      name: file.name,
+      relativePath: commonFolder && rawPath.startsWith(`${commonFolder}/`)
+        ? rawPath.slice(commonFolder.length + 1)
+        : rawPath,
+      webkitRelativePath: file.webkitRelativePath,
+    };
+  });
+}
+
+function commonUploadedFolder(paths: string[]) {
+  if (!paths.length || paths.some((path) => !path.includes('/'))) return '';
+  const firstSegments = paths.map((path) => path.replace(/\\/g, '/').split('/')[0]);
+  const first = firstSegments[0];
+  return first && firstSegments.every((segment) => segment === first) ? first : '';
+}
+
+function safeUploadSegment(value: string) {
+  return value
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    ?.replace(/[<>:"|?*]/g, '_')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'upload';
+}
+
+function artifactDisplayPath(artifact: Artifact) {
+  return artifact.paths?.[0] || artifact.id;
+}
+
+function artifactDisplayName(artifact: Artifact) {
+  const displayName = artifact.metadata?.display_name;
+  if (typeof displayName === 'string' && displayName.trim()) return displayName;
+  return artifact.description || artifact.id;
+}
+
+function compareArtifactsByPath(left: Artifact, right: Artifact) {
+  return artifactDisplayPath(left).localeCompare(artifactDisplayPath(right));
+}
+
 function CapabilityReviewDialog({
   review,
   onApprove,
@@ -1740,15 +1835,19 @@ function ArtifactEditorPanel({
   onUpsert,
   onDelete,
   onUpload,
+  onUploadFiles,
 }: {
   artifacts: Record<string, Artifact>;
   onUpsert: (artifact: Artifact, previousId?: string) => void;
   onDelete: (artifactId: string) => void;
   onUpload: (artifactId: string, files: FileList | null) => void;
+  onUploadFiles: (files: FileList | null) => void;
 }) {
-  const artifactItems = Object.values(artifacts).sort((a, b) => a.id.localeCompare(b.id));
+  const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
+  const uploadedFiles = artifactItems.filter(isUploadedFileArtifact);
+  const manualArtifacts = artifactItems.filter((artifact) => !isUploadedFileArtifact(artifact));
   const addArtifact = () => {
-    let index = artifactItems.length + 1;
+    let index = manualArtifacts.length + 1;
     let id = `artifact_${index}`;
     while (artifacts[id]) {
       index += 1;
@@ -1766,84 +1865,134 @@ function ArtifactEditorPanel({
   return (
     <section className="artifact-panel">
       <div className="artifact-panel-head">
-        <span>Artifacts</span>
-        <button className="icon-button" onClick={addArtifact} title="Add artifact" type="button">
-          <Plus size={15} />
-        </button>
+        <span>Files</span>
+        <div className="artifact-panel-actions">
+          <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
+            <Upload size={14} />
+            Files
+            <input
+              type="file"
+              multiple
+              onChange={(event) => {
+                onUploadFiles(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+          </label>
+          <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
+            <FolderUp size={14} />
+            Folder
+            <input
+              type="file"
+              multiple
+              {...directoryInputProps}
+              onChange={(event) => {
+                onUploadFiles(event.currentTarget.files);
+                event.currentTarget.value = '';
+              }}
+            />
+          </label>
+        </div>
       </div>
-      {artifactItems.length ? (
-        <div className="artifact-list">
-          {artifactItems.map((artifact) => (
-            <div className="artifact-row" key={artifact.id}>
-              <div className="artifact-row-grid">
-                <label>
-                  ID
-                  <input
-                    value={artifact.id}
-                    onChange={(event) => onUpsert({ ...artifact, id: event.target.value }, artifact.id)}
-                  />
-                </label>
-                <label>
-                  Paths
-                  <input
-                    value={(artifact.paths ?? []).join(', ')}
-                    onChange={(event) => onUpsert({ ...artifact, paths: splitCsv(event.target.value) }, artifact.id)}
-                  />
-                </label>
+      {uploadedFiles.length ? (
+        <div className="uploaded-file-list">
+          {uploadedFiles.map((artifact) => (
+            <div className="uploaded-file-row" key={artifact.id}>
+              <div className="uploaded-file-main">
+                <strong>{artifactDisplayName(artifact)}</strong>
+                <span>{artifactDisplayPath(artifact)}</span>
               </div>
-              <label>
-                Description
-                <input
-                  value={artifact.description ?? ''}
-                  onChange={(event) => onUpsert({ ...artifact, description: event.target.value }, artifact.id)}
-                />
-              </label>
-              <div className="artifact-row-actions">
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
-                    checked={artifact.required ?? true}
-                    onChange={(event) => onUpsert({ ...artifact, required: event.target.checked }, artifact.id)}
-                  />
-                  Required
-                </label>
-                <div className="artifact-action-buttons">
-                  <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
-                    <Upload size={14} />
-                    Files
-                    <input
-                      type="file"
-                      multiple
-                      onChange={(event) => {
-                        onUpload(artifact.id, event.currentTarget.files);
-                        event.currentTarget.value = '';
-                      }}
-                    />
-                  </label>
-                  <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
-                    <FolderUp size={14} />
-                    Folder
-                    <input
-                      type="file"
-                      multiple
-                      {...directoryInputProps}
-                      onChange={(event) => {
-                        onUpload(artifact.id, event.currentTarget.files);
-                        event.currentTarget.value = '';
-                      }}
-                    />
-                  </label>
-                  <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
+              <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete file" type="button">
+                <Trash2 size={15} />
+              </button>
             </div>
           ))}
         </div>
       ) : (
-        <div className="empty-state compact">No artifacts.</div>
+        <div className="empty-state compact">No files uploaded.</div>
       )}
+      <details className="node-policy-details artifact-advanced">
+        <summary>Advanced Artifacts</summary>
+        <div className="artifact-panel-head nested">
+          <span>Artifact Contracts</span>
+          <button className="icon-button" onClick={addArtifact} title="Add artifact" type="button">
+            <Plus size={15} />
+          </button>
+        </div>
+        {manualArtifacts.length ? (
+          <div className="artifact-list">
+            {manualArtifacts.map((artifact) => (
+              <div className="artifact-row" key={artifact.id}>
+                <div className="artifact-row-grid">
+                  <label>
+                    ID
+                    <input
+                      value={artifact.id}
+                      onChange={(event) => onUpsert({ ...artifact, id: event.target.value }, artifact.id)}
+                    />
+                  </label>
+                  <label>
+                    Paths
+                    <input
+                      value={(artifact.paths ?? []).join(', ')}
+                      onChange={(event) => onUpsert({ ...artifact, paths: splitCsv(event.target.value) }, artifact.id)}
+                    />
+                  </label>
+                </div>
+                <label>
+                  Description
+                  <input
+                    value={artifact.description ?? ''}
+                    onChange={(event) => onUpsert({ ...artifact, description: event.target.value }, artifact.id)}
+                  />
+                </label>
+                <div className="artifact-row-actions">
+                  <label className="checkbox-line">
+                    <input
+                      type="checkbox"
+                      checked={artifact.required ?? true}
+                      onChange={(event) => onUpsert({ ...artifact, required: event.target.checked }, artifact.id)}
+                    />
+                    Required
+                  </label>
+                  <div className="artifact-action-buttons">
+                    <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
+                      <Upload size={14} />
+                      Files
+                      <input
+                        type="file"
+                        multiple
+                        onChange={(event) => {
+                          onUpload(artifact.id, event.currentTarget.files);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                    <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
+                      <FolderUp size={14} />
+                      Folder
+                      <input
+                        type="file"
+                        multiple
+                        {...directoryInputProps}
+                        onChange={(event) => {
+                          onUpload(artifact.id, event.currentTarget.files);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                    <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state compact">No advanced artifacts.</div>
+        )}
+      </details>
     </section>
   );
 }
@@ -1868,6 +2017,7 @@ function OrchestrationWorkspace({
   onUpsertArtifact,
   onDeleteArtifact,
   onUploadArtifact,
+  onUploadFiles,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -1897,6 +2047,7 @@ function OrchestrationWorkspace({
   onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
   onDeleteArtifact: (artifactId: string) => void;
   onUploadArtifact: (artifactId: string, files: FileList | null) => void;
+  onUploadFiles: (files: FileList | null) => void;
   onAddNode: (capability?: CapabilityDefinition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -1969,6 +2120,7 @@ function OrchestrationWorkspace({
           onUpsert={onUpsertArtifact}
           onDelete={onDeleteArtifact}
           onUpload={onUploadArtifact}
+          onUploadFiles={onUploadFiles}
         />
         <div className="resource-list">
           {dagSpecs.length ? dagSpecs.map((item) => (
@@ -2117,7 +2269,7 @@ function OrchestrationNodeEditor({
     allowed_paths: [],
     allowed_commands: [],
   };
-  const artifactIds = Object.keys(artifacts).sort();
+  const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
   const patchInvocation = (patch: Partial<typeof invocation>) =>
     onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
   const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
@@ -2125,6 +2277,24 @@ function OrchestrationNodeEditor({
     const next = checked
       ? [...current.filter((id) => id !== artifactId), artifactId].sort()
       : current.filter((id) => id !== artifactId);
+    if (field === 'inputs' && checked) {
+      const token = artifactPlaceholder(artifactId);
+      const allowedPaths = boundary.allowed_paths ?? [];
+      onPatch({
+        [field]: next,
+        payload: {
+          type: 'capability',
+          invocation: {
+            ...invocation,
+            boundary: {
+              ...boundary,
+              allowed_paths: allowedPaths.includes(token) ? allowedPaths : [...allowedPaths, token],
+            },
+          },
+        },
+      });
+      return;
+    }
     onPatch({ [field]: next });
   };
   const setPathArgumentFromArtifact = (artifactId: string) => {
@@ -2205,7 +2375,7 @@ function OrchestrationNodeEditor({
         onChange={(argumentsValue) => patchInvocation({ arguments: argumentsValue })}
       />
       <ArtifactBindingEditor
-        artifactIds={artifactIds}
+        artifacts={artifactItems}
         inputs={node.inputs ?? []}
         outputs={node.outputs ?? []}
         onToggle={patchArtifactList}
@@ -2266,14 +2436,14 @@ function OrchestrationNodeEditor({
 }
 
 function ArtifactBindingEditor({
-  artifactIds,
+  artifacts,
   inputs,
   outputs,
   onToggle,
   onUseAsPath,
   onAllowPath,
 }: {
-  artifactIds: string[];
+  artifacts: Artifact[];
   inputs: string[];
   outputs: string[];
   onToggle: (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => void;
@@ -2282,41 +2452,49 @@ function ArtifactBindingEditor({
 }) {
   return (
     <details className="node-policy-details" open>
-      <summary>Artifacts</summary>
-      {artifactIds.length ? (
+      <summary>Files & Artifacts</summary>
+      {artifacts.length ? (
         <div className="artifact-binding-list">
-          {artifactIds.map((artifactId) => (
-            <div className="artifact-binding-row" key={artifactId}>
-              <strong>{artifactId}</strong>
-              <label className="checkbox-line">
-                <input
-                  type="checkbox"
-                  checked={inputs.includes(artifactId)}
-                  onChange={(event) => onToggle('inputs', artifactId, event.target.checked)}
-                />
-                Input
-              </label>
-              <label className="checkbox-line">
-                <input
-                  type="checkbox"
-                  checked={outputs.includes(artifactId)}
-                  onChange={(event) => onToggle('outputs', artifactId, event.target.checked)}
-                />
-                Output
-              </label>
-              <div className="artifact-binding-actions">
-                <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifactId)} type="button">
-                  Set path
-                </button>
-                <button className="secondary-button compact-button" onClick={() => onAllowPath(artifactId)} type="button">
-                  Allow
-                </button>
+          {artifacts.map((artifact) => {
+            const uploadedFile = isUploadedFileArtifact(artifact);
+            return (
+              <div className={uploadedFile ? 'artifact-binding-row file-binding-row' : 'artifact-binding-row'} key={artifact.id}>
+                <div className="artifact-binding-label">
+                  <strong>{uploadedFile ? artifactDisplayName(artifact) : artifact.id}</strong>
+                  <span>{artifactDisplayPath(artifact)}</span>
+                </div>
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={inputs.includes(artifact.id)}
+                    onChange={(event) => onToggle('inputs', artifact.id, event.target.checked)}
+                  />
+                  Input
+                </label>
+                {uploadedFile ? null : (
+                  <label className="checkbox-line">
+                    <input
+                      type="checkbox"
+                      checked={outputs.includes(artifact.id)}
+                      onChange={(event) => onToggle('outputs', artifact.id, event.target.checked)}
+                    />
+                    Output
+                  </label>
+                )}
+                <div className="artifact-binding-actions">
+                  <button className="secondary-button compact-button" onClick={() => onUseAsPath(artifact.id)} type="button">
+                    Set path
+                  </button>
+                  <button className="secondary-button compact-button" onClick={() => onAllowPath(artifact.id)} type="button">
+                    Allow
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
-        <div className="empty-state compact">No artifacts.</div>
+        <div className="empty-state compact">Upload files or add an advanced artifact first.</div>
       )}
     </details>
   );

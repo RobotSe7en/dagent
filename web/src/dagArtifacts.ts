@@ -1,11 +1,31 @@
 import type { Artifact, DagSpec } from './types';
 
+export interface UploadSourceFile {
+  name: string;
+  relativePath?: string;
+  webkitRelativePath?: string;
+}
+
 export interface ArtifactDraft {
   id: string;
   paths: string[];
   description?: string;
   required?: boolean;
   metadata?: Record<string, unknown>;
+}
+
+export interface UploadedFileArtifact {
+  source: UploadSourceFile;
+  artifact: Artifact;
+}
+
+export interface CreateUploadedFileArtifactsOptions {
+  artifacts: Record<string, Artifact>;
+  uploadRoot: string;
+}
+
+export interface UploadFormFilenameOptions {
+  preserveRelativePath?: boolean;
 }
 
 export function normalizeArtifact(artifact: ArtifactDraft): Artifact {
@@ -49,4 +69,91 @@ export function removeArtifactBinding(spec: DagSpec, artifactId: string): DagSpe
 
 export function artifactPlaceholder(artifactId: string): string {
   return `{{artifact.${artifactId}.path}}`;
+}
+
+export function isUploadedFileArtifact(artifact: Artifact): boolean {
+  return artifact.metadata?.source === 'upload'
+    && artifact.metadata?.kind === 'file'
+    && artifact.metadata?.hidden === true;
+}
+
+export function createUploadedFileArtifacts(
+  files: UploadSourceFile[],
+  options: CreateUploadedFileArtifactsOptions,
+): { artifacts: Record<string, Artifact>; uploads: UploadedFileArtifact[] } {
+  const next = { ...options.artifacts };
+  const usedIds = new Set(Object.keys(next));
+  const uploadRoot = normalizeUploadPath(options.uploadRoot) || 'inputs/uploads';
+  const uploads = files.map((source) => {
+    const relativePath = sourceUploadPath(source);
+    const artifactPath = joinArtifactPath(uploadRoot, relativePath);
+    const id = uniqueArtifactId(`upload_${slugForId(artifactPath)}`, usedIds);
+    const artifact: Artifact = {
+      id,
+      paths: [artifactPath],
+      description: source.name,
+      required: true,
+      metadata: {
+        source: 'upload',
+        kind: 'file',
+        hidden: true,
+        display_name: source.name,
+        relative_path: relativePath,
+      },
+    };
+    next[id] = artifact;
+    return { source, artifact };
+  });
+  return { artifacts: next, uploads };
+}
+
+export function uploadFormFilename(
+  file: UploadSourceFile,
+  options: UploadFormFilenameOptions = {},
+): string {
+  if (options.preserveRelativePath === false) {
+    return sanitizePathSegment(file.name || 'upload');
+  }
+  return sourceUploadPath(file);
+}
+
+function sourceUploadPath(file: UploadSourceFile): string {
+  return normalizeUploadPath(file.relativePath || file.webkitRelativePath || file.name || 'upload') || 'upload';
+}
+
+function normalizeUploadPath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter((part) => part && part !== '.' && part !== '..')
+    .map(sanitizePathSegment)
+    .filter(Boolean)
+    .join('/');
+}
+
+function sanitizePathSegment(segment: string): string {
+  return segment.replace(/[<>:"|?*]/g, '_').trim();
+}
+
+function joinArtifactPath(root: string, relativePath: string): string {
+  return [root, relativePath].filter(Boolean).join('/');
+}
+
+function slugForId(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'file';
+}
+
+function uniqueArtifactId(baseId: string, usedIds: Set<string>): string {
+  let candidate = baseId;
+  let index = 2;
+  while (usedIds.has(candidate)) {
+    candidate = `${baseId}_${index}`;
+    index += 1;
+  }
+  usedIds.add(candidate);
+  return candidate;
 }
