@@ -12,19 +12,19 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_dag_builder_creates_tool_nodes_edges_and_refs() -> None:
-    @dagent.tool
+def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
+    @dagent.capability
     def search(q: str) -> str:
         return f"found:{q}"
 
-    @dagent.tool(risk="medium")
+    @dagent.capability(risk="medium")
     def write_file(path: str, content: str) -> str:
         return f"wrote:{path}:{content}"
 
     dag = dagent.Dag("research_report", name="Research Report")
     report = dag.artifact("report", "outputs/report.md")
-    search_node = dag.tool_node("search", search, q="dagent sdk")
-    write_node = dag.tool_node(
+    search_node = dag.capability_node("search", search, q="dagent sdk")
+    write_node = dag.capability_node(
         "write_report",
         write_file,
         path=report.path,
@@ -50,16 +50,16 @@ def test_dag_builder_creates_tool_nodes_edges_and_refs() -> None:
 
 
 def test_dag_builder_supports_fan_out_and_fan_in() -> None:
-    @dagent.tool
+    @dagent.capability
     def echo(text: str) -> str:
         return text
 
     dag = dagent.Dag("fan")
-    root = dag.tool_node("root", echo, text="start")
-    a = dag.tool_node("a", echo, text=root.output).after(root)
-    b = dag.tool_node("b", echo, text=root.output).after(root)
-    c = dag.tool_node("c", echo, text=root.output).after(root)
-    dag.tool_node("join", echo, text=a.output).after(a, b, c)
+    root = dag.capability_node("root", echo, text="start")
+    a = dag.capability_node("a", echo, text=root.output).after(root)
+    b = dag.capability_node("b", echo, text=root.output).after(root)
+    c = dag.capability_node("c", echo, text=root.output).after(root)
+    dag.capability_node("join", echo, text=a.output).after(a, b, c)
 
     spec = dag.to_dag_spec()
 
@@ -74,22 +74,22 @@ def test_dag_builder_supports_fan_out_and_fan_in() -> None:
 
 
 def test_dag_builder_rejects_duplicate_nodes_and_unknown_edges() -> None:
-    @dagent.tool
+    @dagent.capability
     def echo(text: str) -> str:
         return text
 
     dag = dagent.Dag("bad")
-    dag.tool_node("echo", echo, text="one")
+    dag.capability_node("echo", echo, text="one")
 
     with pytest.raises(ValueError, match="already exists"):
-        dag.tool_node("echo", echo, text="two")
+        dag.capability_node("echo", echo, text="two")
 
     with pytest.raises(ValueError, match="Unknown node"):
         dag.edge("missing", "echo")
 
 
-def test_run_dag_executes_builder_with_collected_tool_capabilities(tmp_path: Path) -> None:
-    @dagent.tool(supports_context=True)
+def test_runner_executes_builder_with_collected_capabilities(tmp_path: Path) -> None:
+    @dagent.capability(supports_context=True)
     def write_note(path: str, content: str, *, context, callbacks=None) -> str:
         resolved = Path(context.workspace_path) / path
         resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ def test_run_dag_executes_builder_with_collected_tool_capabilities(tmp_path: Pat
 
     dag = dagent.Dag("write_note")
     note = dag.artifact("note", "notes/output.txt")
-    dag.tool_node(
+    dag.capability_node(
         "write",
         write_note,
         path="notes/output.txt",
@@ -106,7 +106,8 @@ def test_run_dag_executes_builder_with_collected_tool_capabilities(tmp_path: Pat
         outputs=[note],
     )
 
-    result = run(dagent.run_dag(dag, workspace=tmp_path, workspace_root=tmp_path / "runs"))
+    runner = dagent.Runner(workspace=tmp_path)
+    result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
     assert result.trace.artifacts["note"].status == "created"
@@ -118,8 +119,6 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
     provider = MockProvider([ChatResponse(content="drafted")])
     writer = dagent.ToolAgent(
         profile=_profile_root(tmp_path, "writer"),
-        workspace=tmp_path,
-        provider=provider,
     )
     dag = dagent.Dag("agent_flow")
     draft = dag.agent_node("draft", writer, prompt="Draft the report.", max_steps=3)
@@ -131,6 +130,10 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
     assert invocation.capability_id == "agent.writer"
     assert invocation.kind == "agent"
     assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 3}
+
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
+    assert result.status == "completed"
 
 
 def _profile_root(tmp_path: Path, name: str) -> str:

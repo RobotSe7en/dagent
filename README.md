@@ -338,22 +338,25 @@ import asyncio
 import dagent
 
 
-@dagent.tool(risk="low")
+@dagent.capability(risk="low")
 def echo(text: str) -> str:
     """Echo text back to the agent."""
     return f"echo:{text}"
 
 
 async def main():
+    runner = dagent.Runner(
+        workspace=".",
+        capabilities=[echo],
+    )
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=[echo],
-        workspace=".",
+        capabilities=["custom_tool.echo"],
     )
-    result = await agent.run("Use echo to respond with hello.")
+    result = await runner.run(agent, "Use echo to respond with hello.")
 
     if result.requires_review and result.review is not None:
-        result = await agent.resume(result.review.approve())
+        result = await runner.resume(result.review.approve())
 
     print(result.output_text)
 
@@ -369,24 +372,27 @@ import asyncio
 import dagent
 
 
-@dagent.tool
+@dagent.capability
 def search(q: str) -> str:
     return f"found:{q}"
 
 
 async def main():
-    agent = dagent.DagAgent(
-        capabilities=[search],
+    runner = dagent.Runner(
         workspace=".",
+        capabilities=[search],
+    )
+    agent = dagent.DagAgent(
+        capabilities=["custom_tool.search"],
         review="careful",
     )
-    result = await agent.run("Research X and write a concise report.")
+    result = await runner.run(agent, "Research X and write a concise report.")
     print(result.output_text)
 
 asyncio.run(main())
 ```
 
-Use `Dag` and `run_dag` for user-defined static DAG execution:
+Use `Dag` and `Runner` for user-defined static DAG execution:
 
 ```python
 import asyncio
@@ -395,12 +401,12 @@ from pathlib import Path
 import dagent
 
 
-@dagent.tool
+@dagent.capability
 def search(q: str) -> str:
     return f"found:{q}"
 
 
-@dagent.tool(risk="medium", supports_context=True)
+@dagent.capability(risk="medium", supports_context=True)
 def write_note(path: str, content: str, *, context, callbacks=None) -> str:
     resolved = Path(context.workspace_path) / path
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -412,8 +418,8 @@ async def main():
     dag = dagent.Dag("research_report", name="Research Report")
     report = dag.artifact("report", "outputs/report.md")
 
-    search_node = dag.tool_node("search", search, q="dagent sdk")
-    dag.tool_node(
+    search_node = dag.capability_node("search", search, q="dagent sdk")
+    dag.capability_node(
         "write_report",
         write_note,
         path=report.path,
@@ -421,7 +427,8 @@ async def main():
         outputs=[report],
     ).after(search_node)
 
-    run = await dagent.run_dag(dag, workspace=".")
+    runner = dagent.Runner(workspace=".")
+    run = await runner.run(dag)
     print(run.status)
 
 asyncio.run(main())

@@ -2,7 +2,7 @@
 
 import pytest
 
-from dagent import DagAgent
+from dagent import DagAgent, Runner
 
 
 pytestmark = pytest.mark.skipif(
@@ -13,12 +13,14 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_minimax_dag_agent_generates_valid_dag() -> None:
-    agent = DagAgent(workspace=".", review="careful")
+    runner = Runner(workspace=".")
+    agent = DagAgent(review="careful")
 
-    result = await agent.run(
+    result = await runner.run(
+        agent,
         "Create a low-risk plan that directly answers what dagent is without reading files.",
     )
-    record = agent.runtime.tasks[result.task_id]
+    record = runner.runtime.tasks[result.task_id]
 
     assert record.dag.task_id == result.task_id
     assert record.dag.nodes
@@ -27,15 +29,17 @@ async def test_minimax_dag_agent_generates_valid_dag() -> None:
 
 @pytest.mark.asyncio
 async def test_minimax_harness_executes_safe_dag() -> None:
-    agent = DagAgent(workspace=".", review="fast")
+    runner = Runner(workspace=".")
+    agent = DagAgent(review="fast")
 
-    result = await agent.run(
+    result = await runner.run(
+        agent,
         "Create and execute a safe plan that answers in one sentence: dagent is a human-reviewed DAG agent framework.",
     )
     if result.trace is None:
         assert result.dag is not None
         assert result.review is not None
-        resumed = await agent.resume(result.review.approve(review_level="fast"))
+        resumed = await runner.resume(result.review.approve(review_level="fast"))
         assert resumed is not None
         assert resumed.trace is not None
         trace = resumed.trace

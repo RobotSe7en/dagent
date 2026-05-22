@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from dagent.agent import create_default_runtime
 from dagent.config import load_config
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
@@ -23,6 +22,7 @@ from dagent.harness_runtime import (
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import ProfileStore
+from dagent.runner import Runner
 from dagent.schemas import DAG, DAGRun, DAGSpec
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
@@ -51,6 +51,7 @@ class DAGSpecRunRequest(BaseModel):
 
 class ApiState:
     def __init__(self) -> None:
+        self.runner: Runner | None = None
         self.harness_runtime: HarnessRuntime | None = None
         self.dag_specs: dict[str, DAGSpec] = {}
         self.dag_runs: dict[str, DAGRun] = {}
@@ -58,9 +59,11 @@ class ApiState:
         self.profile_directory: str | None = None
 
     def get_harness_runtime(self) -> HarnessRuntime:
-        if self.harness_runtime is None:
-            self.harness_runtime = create_default_runtime(workspace=".")
-        return self.harness_runtime
+        if self.harness_runtime is not None:
+            return self.harness_runtime
+        if self.runner is None:
+            self.runner = Runner(workspace=".")
+        return self.runner.runtime
 
     def get_profile_directory(self) -> str:
         if self.profile_directory is not None:
@@ -101,6 +104,7 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
+    state.runner = None
     state.harness_runtime = None
     state.dag_specs.clear()
     state.dag_runs.clear()
@@ -548,8 +552,8 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
 
 @app.get("/tasks/{task_id}/trace")
 async def get_task_trace(task_id: str) -> dict[str, Any]:
-    if state.harness_runtime is not None and task_id in state.harness_runtime.tasks:
-        runtime = state.harness_runtime
+    runtime = state.get_harness_runtime() if (state.harness_runtime is not None or state.runner is not None) else None
+    if runtime is not None and task_id in runtime.tasks:
         task = runtime.tasks[task_id]
         return {
             "task_id": task_id,

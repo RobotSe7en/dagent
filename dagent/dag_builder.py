@@ -3,23 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from dagent.agent import ToolAgent, _create_runtime
+from dagent.agent import ToolAgent
 from dagent.capabilities.decorator import CapabilityBinding
-from dagent.capabilities.providers import AgentCapabilityProvider
-from dagent.harness_runtime.artifacts import ArtifactUpload
-from dagent.harness_runtime.review_policy import ReviewLevel
-from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
-from dagent.providers import ChatProvider
 from dagent.schemas import (
     Artifact,
     Boundary,
     CapabilityInvocation,
+    CapabilityKind,
     DAGEdge,
     DAGNode,
-    DAGRun,
     DAGSpec,
 )
 
@@ -99,10 +93,10 @@ class Dag:
         )
         return ArtifactRef(id)
 
-    def tool_node(
+    def capability_node(
         self,
         id: str,
-        capability: CapabilityBinding,
+        capability: CapabilityBinding | str,
         *,
         title: str | None = None,
         inputs: list[ArtifactRef | str] | None = None,
@@ -110,14 +104,22 @@ class Dag:
         boundary: Boundary | None = None,
         **arguments: Any,
     ) -> NodeRef:
-        if not isinstance(capability, CapabilityBinding):
-            raise TypeError("tool_node expects a capability created with @dagent.tool.")
-        self._capabilities[capability.definition.id] = capability
+        if isinstance(capability, CapabilityBinding):
+            capability_id = capability.definition.id
+            kind = capability.definition.kind
+            risk = capability.definition.policy.risk
+            self._capabilities[capability_id] = capability
+        elif isinstance(capability, str):
+            capability_id = capability
+            kind = _capability_kind_from_id(capability_id)
+            risk = "low"
+        else:
+            raise TypeError("capability_node expects a CapabilityBinding or capability id string.")
         return self._add_capability_node(
             id,
-            capability_id=capability.definition.id,
-            kind=capability.definition.kind,
-            risk=capability.definition.policy.risk,
+            capability_id=capability_id,
+            kind=kind,
+            risk=risk,
             arguments=_normalize_arguments(arguments),
             title=title,
             inputs=inputs,
@@ -139,7 +141,10 @@ class Dag:
     ) -> NodeRef:
         if not isinstance(agent, ToolAgent):
             raise TypeError("agent_node expects a dagent.ToolAgent.")
-        agent_name = agent.runtime.tool_agent.profile.name
+        agent_name = agent.name or ""
+        existing = self._agents.get(agent_name)
+        if existing is not None and existing != agent:
+            raise ValueError(f"Agent '{agent_name}' already exists with different config.")
         capability_id = f"agent.{agent_name}"
         self._agents[agent_name] = agent
         return self._add_capability_node(
@@ -227,61 +232,6 @@ class Dag:
             raise ValueError(f"Unknown node '{node_id}'.")
 
 
-async def run_dag(
-    dag: Dag | DAGSpec,
-    *,
-    workspace: str | Path = ".",
-    workspace_root: str | Path = ".dagent-runs",
-    provider: ChatProvider | None = None,
-    review: ReviewLevel = "fast",
-    validator: str | Any | None = None,
-    capabilities: list[CapabilityBinding] | None = None,
-    artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-    on_token: TokenHandler | None = None,
-    on_event: LoopEventHandler | None = None,
-) -> DAGRun:
-    if isinstance(dag, Dag):
-        spec = dag.to_dag_spec()
-        resolved_capabilities = [*dag.capabilities, *(capabilities or [])]
-        agents = dag.agents
-    elif isinstance(dag, DAGSpec):
-        spec = dag
-        resolved_capabilities = list(capabilities or [])
-        agents = []
-    else:
-        raise TypeError("run_dag expects a dagent.Dag or dagent.schemas.DAGSpec.")
-
-    runtime = _create_runtime(
-        workspace=workspace,
-        provider=provider,
-        capabilities=resolved_capabilities,
-        validator=validator,
-    )
-    if agents:
-        _register_agent_capabilities(runtime, agents)
-    return await runtime.run_dag_spec(
-        spec,
-        workspace_root=workspace_root,
-        artifact_uploads=artifact_uploads,
-        on_token=on_token,
-        on_event=on_event,
-    )
-
-
-def _register_agent_capabilities(runtime, agents: list[ToolAgent]) -> None:
-    configs = {}
-    for agent in agents:
-        profile = agent.runtime.tool_agent.profile
-        configs[profile.name] = {
-            "provider": agent.runtime.provider,
-            "profile": profile,
-            "capability_executor": agent.runtime.capability_executor,
-            "tool_adapter": agent.runtime.tool_agent.loop.tool_adapter,
-        }
-    AgentCapabilityProvider(configs).register_into(runtime.capability_catalog)
-    runtime.refresh_toolsets()
-
-
 def _artifact_ids(values: list[ArtifactRef | str] | None) -> list[str]:
     return [value.id if isinstance(value, ArtifactRef) else str(value) for value in values or []]
 
@@ -304,3 +254,10 @@ def _normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _title_from_id(node_id: str) -> str:
     return node_id.replace("_", " ").capitalize()
+
+
+def _capability_kind_from_id(capability_id: str) -> CapabilityKind:
+    kind = capability_id.split(".", 1)[0]
+    if kind in {"tool", "mcp", "skill", "shell", "custom_tool", "agent", "memory", "file"}:
+        return kind  # type: ignore[return-value]
+    raise ValueError(f"Cannot infer capability kind from id '{capability_id}'.")
