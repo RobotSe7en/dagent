@@ -113,16 +113,6 @@ def capability(
     return decorate
 
 
-def tool(
-    fn: Callable[..., Any] | None = None,
-    **kwargs: Any,
-) -> CapabilityBinding | Callable[[Callable[..., Any]], CapabilityBinding]:
-    """Decorate a Python function as a user-facing tool capability."""
-
-    kwargs.setdefault("kind", "custom_tool")
-    return capability(fn, **kwargs)
-
-
 def _invoke_function(
     func: Callable[..., Any],
     arguments: dict[str, Any],

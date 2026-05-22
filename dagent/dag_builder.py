@@ -133,7 +133,7 @@ class Dag:
         agent: ToolAgent,
         *,
         prompt: str,
-        max_steps: int = 8,
+        max_steps: int | None = None,
         title: str | None = None,
         inputs: list[ArtifactRef | str] | None = None,
         outputs: list[ArtifactRef | str] | None = None,
@@ -146,13 +146,16 @@ class Dag:
         if existing is not None and existing != agent:
             raise ValueError(f"Agent '{agent_name}' already exists with different config.")
         capability_id = f"agent.{agent_name}"
+        resolved_max_steps = agent.max_steps if max_steps is None else max_steps
+        if resolved_max_steps < 1:
+            raise ValueError("max_steps must be at least 1.")
         self._agents[agent_name] = agent
         return self._add_capability_node(
             id,
             capability_id=capability_id,
             kind="agent",
             risk="medium",
-            arguments={"prompt": prompt, "max_steps": max_steps},
+            arguments={"prompt": prompt, "max_steps": resolved_max_steps},
             title=title,
             inputs=inputs,
             outputs=outputs,

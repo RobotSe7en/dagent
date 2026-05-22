@@ -44,8 +44,11 @@ class HarnessRuntimeSession:
             pending_invocation=pending_review_invocation(loop_outcome, task_invocations),
         )
 
-    def pop_review_continuation(self, review_id: str) -> ReviewContinuation | None:
-        return self._review_continuations.pop(review_id, None)
+    def get_review_continuation(self, review_id: str) -> ReviewContinuation | None:
+        return self._review_continuations.get(review_id)
+
+    def discard_review_continuation(self, review_id: str) -> None:
+        self._review_continuations.pop(review_id, None)
 
     def discard_review_continuations_for_task(self, task_id: str) -> None:
         stale_review_ids = [

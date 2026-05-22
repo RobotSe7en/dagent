@@ -136,6 +136,19 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
     assert result.status == "completed"
 
 
+def test_agent_node_defaults_to_tool_agent_max_steps(tmp_path: Path) -> None:
+    writer = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "writer"),
+        max_steps=11,
+    )
+    dag = dagent.Dag("agent_flow")
+
+    dag.agent_node("draft", writer, prompt="Draft the report.")
+
+    invocation = dag.to_dag_spec().nodes[0].payload.invocation
+    assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 11}
+
+
 def _profile_root(tmp_path: Path, name: str) -> str:
     profile_dir = tmp_path / "profiles" / name
     profile_dir.mkdir(parents=True)

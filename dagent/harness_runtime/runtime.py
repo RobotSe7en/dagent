@@ -270,7 +270,7 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RuntimeResponse | None:
-        state = self.session.pop_review_continuation(review_id)
+        state = self.session.get_review_continuation(review_id)
         if state is None:
             return None
         if state.kind == "capability_review":
@@ -283,6 +283,7 @@ class HarnessRuntime:
             )
             if initial_outcome is None:
                 return None
+            self.session.discard_review_continuation(review_id)
 
             async def run_once(feedback: str | None) -> LoopOutcome:
                 if feedback is None:
@@ -313,7 +314,6 @@ class HarnessRuntime:
             return None
         task_id = state.task_id
         record = self.tasks[task_id]
-        self.session.discard_review_continuations_for_task(task_id)
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
         initial_outcome = await self.dag_agent.resume_review(
             state,
@@ -327,6 +327,7 @@ class HarnessRuntime:
         )
         if initial_outcome is None:
             return None
+        self.session.discard_review_continuations_for_task(task_id)
         if initial_outcome.status == "awaiting_review":
             return self._finish_loop_outcome(
                 initial_outcome,

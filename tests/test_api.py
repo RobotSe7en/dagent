@@ -4,24 +4,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
-from dagent.harness_runtime import (
-    ToolAgent,
-    ToolAgentLoop,
-    DAGAgent,
-    DAGAgentLoop,
-    DAGExecutor,
-    HarnessRuntime,
-    CapabilityExecutor,
-)
-from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
+from dagent.runner import Runner
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
+def test_api_state_owns_runner_without_runtime_shim() -> None:
+    assert not hasattr(state, "harness_runtime")
+
+
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
-    state.harness_runtime = _runtime(MockProvider([
+    state.runner = _runner(MockProvider([
         ChatResponse(content="tool"),            # _route()
         ChatResponse(content="hello there"),     # ToolAgentLoop
     ]))
@@ -40,7 +34,7 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
 
 
 def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     response = client.post(
@@ -52,7 +46,7 @@ def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
 
 
 def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
-    state.harness_runtime = _runtime(MockProvider([
+    state.runner = _runner(MockProvider([
         ChatResponse(
             content="",
             tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
@@ -79,7 +73,7 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
 
 
 def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),           # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
@@ -104,7 +98,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
 
 
 def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                          # _route()
             ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),  # DAG agent
@@ -129,7 +123,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
             ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
@@ -153,7 +147,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
 
 
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
             ChatResponse(content="NO_CHANGE"),
@@ -174,7 +168,7 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
@@ -215,7 +209,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
 
 
 def test_api_resume_review_returns_final_answer_without_streaming_answer_text() -> None:
-    state.harness_runtime = _runtime(
+    state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
@@ -246,7 +240,7 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
 
 
 def test_api_old_dag_lifecycle_routes_are_removed() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     assert client.post("/tasks", json={"message": "old path"}).status_code == 404
@@ -256,7 +250,7 @@ def test_api_old_dag_lifecycle_routes_are_removed() -> None:
 
 
 def test_api_capability_list_create_and_test() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     list_response = client.get("/capabilities")
@@ -302,7 +296,7 @@ def test_api_capability_list_create_and_test() -> None:
 
 
 def test_api_capability_status_endpoints() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     assert client.get("/mcp/servers").status_code == 200
@@ -375,7 +369,7 @@ def test_api_profiles_skips_invalid_profile_with_warning(tmp_path, monkeypatch) 
 
 
 def test_api_dag_spec_create_run_and_artifacts() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     create_response = client.post(
@@ -443,7 +437,7 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
 
 
 def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     workspace_root = tmp_path / "runs"
 
@@ -496,7 +490,7 @@ def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
 
 
 def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     workspace_root = tmp_path / "runs"
 
@@ -557,7 +551,7 @@ def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) ->
 
 
 def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     create_capability_response = client.post(
@@ -604,7 +598,7 @@ def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
 
 
 def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     create_response = client.post(
         "/dag-specs",
@@ -655,7 +649,7 @@ def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
 
 
 def test_api_dag_spec_run_stream_uses_requested_workspace_root(tmp_path: Path) -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     workspace_root = tmp_path / "stream-runs"
     create_response = client.post(
@@ -708,7 +702,7 @@ def test_api_dag_spec_run_stream_uses_requested_workspace_root(tmp_path: Path) -
 
 
 def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     create_response = client.post(
@@ -750,7 +744,7 @@ def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
 
 
 def test_api_dag_spec_validation_and_missing_resources() -> None:
-    state.harness_runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     invalid_response = client.post(
@@ -783,37 +777,8 @@ def test_api_dag_spec_validation_and_missing_resources() -> None:
     assert client.get("/dag-runs/missing/artifacts").status_code == 404
 
 
-def _runtime(provider: MockProvider) -> HarnessRuntime:
-    capability_executor = _capability_executor()
-    tool_adapter = CapabilityToolAdapter(
-        capability_executor.catalog,
-        toolsets=[CapabilityToolset("builtin", tuple(sorted(capability_executor.catalog.ids())))],
-    )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
-    return HarnessRuntime(
-        provider=provider,
-        tool_agent=ToolAgent(
-            loop=ToolAgentLoop(
-                provider=provider,
-                capability_executor=capability_executor,
-                tool_adapter=tool_adapter,
-            ),
-            profile=_profile("conversation"),
-        ),
-        dag_agent=DAGAgent(
-            loop=DAGAgentLoop(
-                provider=provider,
-                dag_executor=dag_executor,
-                tool_adapter=tool_adapter,
-            ),
-            profile=_profile("dag_agent"),
-        ),
-        capability_catalog=capability_executor.catalog,
-        capability_executor=capability_executor,
-    )
-
-
-def _capability_executor() -> CapabilityExecutor:
+def _runner(provider: MockProvider) -> Runner:
+    runner = Runner(provider=provider)
     registry = ToolRegistry()
     registry.register(
         name="echo",
@@ -835,23 +800,13 @@ def _capability_executor() -> CapabilityExecutor:
             "required": ["text"],
         },
     )
-    capability_catalog = create_default_capability_catalog()
-    capability_executor = CapabilityExecutor(capability_catalog)
-    ToolCapabilityProvider(registry).register_into(capability_catalog)
-    return capability_executor
+    ToolCapabilityProvider(registry).register_into(runner.runtime.capability_catalog)
+    runner.runtime.refresh_toolsets()
+    return runner
 
 
 def _dag_agent_dsl() -> str:
     return 'task: mock\nanswer = echo(text="ok")\n'
-
-
-def _profile(name: str) -> AgentProfile:
-    return AgentProfile(
-        name=name,
-        role=name,
-        layers=["soul"],
-        layer_contents={"soul": f"You are {name}."},
-    )
 
 
 def _sse_events(text: str) -> list[dict]:

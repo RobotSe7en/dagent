@@ -194,7 +194,7 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
-        runtime = self._pending_runtimes.pop(decision.review_id, self._runtime)
+        runtime = self._pending_runtimes.get(decision.review_id, self._runtime)
         response = await runtime.resume_review(
             decision.review_id,
             dag=decision.dag,
@@ -205,6 +205,7 @@ class Runner:
         )
         if response is None:
             return None
+        self._pending_runtimes.pop(decision.review_id, None)
         return self._run_result(runtime, response)
 
     def _run_result(self, runtime: HarnessRuntime, response: RuntimeResponse) -> RunResult:
@@ -245,7 +246,7 @@ class Runner:
         register_bindings: bool = True,
     ) -> tuple[str, ...]:
         if refs is None:
-            return tuple(sorted(self._runtime.capability_catalog.ids()))
+            return self._default_visible_capability_ids()
         capability_ids: list[str] = []
         for ref in refs:
             if isinstance(ref, CapabilityBinding):
@@ -260,6 +261,15 @@ class Runner:
             else:
                 raise TypeError("capabilities must contain CapabilityBinding or capability id strings.")
         return tuple(dict.fromkeys(capability_ids))
+
+    def _default_visible_capability_ids(self) -> tuple[str, ...]:
+        capability_ids: list[str] = []
+        for capability_id in sorted(self._runtime.capability_catalog.ids()):
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is not None and definition.kind == "agent":
+                continue
+            capability_ids.append(capability_id)
+        return tuple(capability_ids)
 
     def _ensure_dag_capabilities(self, dag: Dag) -> None:
         for capability in dag.capabilities:

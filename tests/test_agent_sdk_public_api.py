@@ -13,6 +13,7 @@ def run(coro):
 def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "capability")
     assert not hasattr(dagent, "tool")
+    assert not hasattr(dagent.capabilities, "tool")
     assert hasattr(dagent, "Runner")
     assert hasattr(dagent, "ToolAgent")
     assert hasattr(dagent, "DagAgent")
@@ -140,6 +141,25 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
     assert "write" not in system_message
 
 
+def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities(tmp_path) -> None:
+    _profile_root(tmp_path, "writer")
+    _profile_root(tmp_path, "conversation")
+    provider = MockProvider([
+        ChatResponse(content="drafted"),
+        ChatResponse(content="hello"),
+    ])
+    writer = dagent.ToolAgent(profile="writer")
+    dag = dagent.Dag("agent_flow")
+    dag.agent_node("draft", writer, prompt="Draft the report.")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    run(runner.run(dag, workspace_root=tmp_path / "runs"))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+
+    assert result.output_text == "hello"
+    assert "writer" not in _tool_names(provider.requests[-1])
+
+
 def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     @dagent.capability(risk="medium")
     def write(text: str) -> str:
@@ -166,6 +186,35 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     assert resumed.output_text == "done"
 
 
+def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) -> None:
+    _profile_root(tmp_path, "planner")
+    provider = MockProvider([
+        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content="Report: found:X"),
+    ])
+
+    @dagent.capability
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    first = run(runner.run(agent, "research X"))
+    assert first.requires_review
+    assert first.review is not None
+
+    missing_dag = dagent.ReviewDecision(review_id=first.review.id, approved=True)
+    assert run(runner.resume(missing_dag)) is None
+
+    resumed = run(runner.resume(first.review.approve()))
+
+    assert resumed is not None
+    assert resumed.output_text == "Report: found:X"
+    resume_system_message = provider.requests[-1]["messages"][0]["content"]
+    assert "You are a planner profile." in resume_system_message
+
+
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
     @dagent.capability(id="custom_tool.same", name="same")
     def first() -> str:
@@ -181,18 +230,26 @@ def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
         runner.add_capability(second)
 
 
-def _profile_root(tmp_path):
+def _profile_root(tmp_path, name: str = "conversation"):
     profiles = tmp_path / "profiles"
-    conversation = profiles / "conversation"
-    conversation.mkdir(parents=True)
-    (conversation / "profile.yaml").write_text(
+    profile = profiles / name
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "profile.yaml").write_text(
         "\n".join([
-            "name: conversation",
-            "role: conversation",
+            f"name: {name}",
+            f"role: {name}",
             "layers:",
             "  - agent.md",
         ]),
         encoding="utf-8",
     )
-    (conversation / "agent.md").write_text("You are a conversation profile.", encoding="utf-8")
-    return str(conversation)
+    (profile / "agent.md").write_text(f"You are a {name} profile.", encoding="utf-8")
+    return str(profile)
+
+
+def _tool_names(request: dict) -> set[str]:
+    return {
+        tool["function"]["name"]
+        for tool in request["tools"]
+        if tool.get("type") == "function"
+    }

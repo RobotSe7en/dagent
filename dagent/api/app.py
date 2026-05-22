@@ -15,10 +15,7 @@ from pydantic import BaseModel, Field
 from dagent.config import load_config
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
-from dagent.harness_runtime import (
-    HarnessRuntime,
-    RuntimeMode,
-)
+from dagent.harness_runtime import RuntimeMode
 from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import ProfileStore
@@ -52,18 +49,19 @@ class DAGSpecRunRequest(BaseModel):
 class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
-        self.harness_runtime: HarnessRuntime | None = None
         self.dag_specs: dict[str, DAGSpec] = {}
         self.dag_runs: dict[str, DAGRun] = {}
         self.dag_spec_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
 
-    def get_harness_runtime(self) -> HarnessRuntime:
-        if self.harness_runtime is not None:
-            return self.harness_runtime
+    def get_runner(self) -> Runner:
         if self.runner is None:
             self.runner = Runner(workspace=".")
-        return self.runner.runtime
+        return self.runner
+
+    def get_runtime(self):
+        runner = self.get_runner()
+        return runner.runtime
 
     def get_profile_directory(self) -> str:
         if self.profile_directory is not None:
@@ -91,13 +89,13 @@ async def health() -> dict[str, str]:
 
 @app.get("/settings/validation")
 async def get_validation_status() -> dict[str, bool]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     return {"enabled": runtime.enable_validation}
 
 
 @app.post("/settings/validation")
 async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     runtime.enable_validation = payload.get("enabled", False)
     return {"enabled": runtime.enable_validation}
 
@@ -105,7 +103,6 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
     state.runner = None
-    state.harness_runtime = None
     state.dag_specs.clear()
     state.dag_runs.clear()
     state.dag_spec_artifact_uploads.clear()
@@ -177,7 +174,7 @@ async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
 
-    dag_run = await state.get_harness_runtime().run_dag_spec(
+    dag_run = await state.get_runtime().run_dag_spec(
         spec,
         workspace_root=_workspace_root_from_request(request),
         artifact_uploads=_artifact_uploads_for_spec(spec_id),
@@ -204,7 +201,7 @@ async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = 
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
-            state.get_harness_runtime().run_dag_spec(
+            state.get_runtime().run_dag_spec(
                 spec,
                 workspace_root=workspace_root,
                 artifact_uploads=_artifact_uploads_for_spec(spec_id),
@@ -286,7 +283,7 @@ async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
 
 @app.get("/capabilities")
 async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     return {
         "capabilities": [
             definition.model_dump(mode="json")
@@ -297,14 +294,14 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 
 @app.post("/capabilities")
 async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     _install_capability(runtime, definition)
     return {"capability": definition.model_dump(mode="json")}
 
 
 @app.put("/capabilities/{capability_id}")
 async def update_capability(capability_id: str, definition: CapabilityDefinition) -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     if capability_id != definition.id:
         raise HTTPException(status_code=400, detail="Capability id mismatch.")
     if runtime.capability_catalog.get(capability_id) is None:
@@ -315,7 +312,7 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
 
 @app.delete("/capabilities/{capability_id}")
 async def delete_capability(capability_id: str) -> dict[str, str]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     runtime.capability_catalog.delete(capability_id)
@@ -335,7 +332,7 @@ async def disable_capability(capability_id: str) -> dict[str, Any]:
 
 @app.get("/mcp/servers")
 async def list_mcp_servers() -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     servers = sorted({
         definition.config.get("server")
         for definition in runtime.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
@@ -346,7 +343,7 @@ async def list_mcp_servers() -> dict[str, Any]:
 
 @app.get("/skills")
 async def list_skills() -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     return {
         "skills": [
             definition.model_dump(mode="json")
@@ -375,7 +372,7 @@ async def list_profiles() -> dict[str, Any]:
 
 @app.get("/sandbox/status")
 async def sandbox_status() -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     return {
         "runner": "local-dev",
         "workspace_root": str(runtime.capability_executor.workspace_root),
@@ -383,11 +380,11 @@ async def sandbox_status() -> dict[str, Any]:
     }
 
 
-def _install_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
+def _install_capability(runtime, definition: CapabilityDefinition) -> None:
     runtime.register_capability(definition, _handler_for_definition(definition))
 
 
-def _replace_capability(runtime: HarnessRuntime, definition: CapabilityDefinition) -> None:
+def _replace_capability(runtime, definition: CapabilityDefinition) -> None:
     runtime.replace_capability(definition, _handler_for_definition(definition))
 
 
@@ -401,7 +398,7 @@ def _handler_for_definition(definition: CapabilityDefinition):
 
 
 def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     definition = runtime.capability_catalog.get(capability_id)
     if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
@@ -410,13 +407,13 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
     return {"capability": updated.model_dump(mode="json")}
 
 
-def _sync_runtime_toolsets(runtime: HarnessRuntime) -> None:
+def _sync_runtime_toolsets(runtime) -> None:
     runtime.refresh_toolsets()
 
 
 @app.post("/capabilities/{capability_id}/test")
 async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
-    runtime = state.get_harness_runtime()
+    runtime = state.get_runtime()
     definition = runtime.capability_catalog.get(capability_id)
     if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
@@ -446,7 +443,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
-            state.get_harness_runtime().handle_message(
+            state.get_runtime().handle_message(
                 request.message,
                 mode=request.mode,
                 review_level=request.review_level,
@@ -502,7 +499,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             event_queue.put_nowait(event)
 
         task = asyncio.create_task(
-            state.get_harness_runtime().resume_review(
+            state.get_runtime().resume_review(
                 request.review_id,
                 dag=request.dag,
                 approved=request.approved,
@@ -552,7 +549,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
 
 @app.get("/tasks/{task_id}/trace")
 async def get_task_trace(task_id: str) -> dict[str, Any]:
-    runtime = state.get_harness_runtime() if (state.harness_runtime is not None or state.runner is not None) else None
+    runtime = state.runner.runtime if state.runner is not None else None
     if runtime is not None and task_id in runtime.tasks:
         task = runtime.tasks[task_id]
         return {
