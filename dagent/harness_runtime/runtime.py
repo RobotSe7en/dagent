@@ -21,12 +21,12 @@ from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
     _ThinkTagFilter,
     _dag_event_emitter,
 )
+from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
 from dagent.schemas import (
     DAG,

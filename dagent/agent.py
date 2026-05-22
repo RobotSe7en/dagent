@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Iterable
 
 from dagent.capabilities.decorator import CapabilityBinding
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.profiles import AgentProfile
+from dagent.review import ReviewLevel
 
 
 CapabilityRef = CapabilityBinding | str

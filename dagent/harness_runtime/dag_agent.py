@@ -26,7 +26,7 @@ from dagent.harness_runtime.dag_builder import (
     dag_from_model_output,
     validate_dag,
 )
-from dagent.harness_runtime.review_policy import ReviewLevel, review_policy
+from dagent.review import ReviewLevel, _review_policy
 from dagent.harness_runtime.task_record import ReviewContinuation, RuntimeTaskRecord
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
@@ -656,7 +656,7 @@ class DAGAgentLoop:
         changed = _changed_node_ids(record.dag, prepared)
         needs_review = bool(changed) and (
             (is_initial and force_review)
-            or review_policy(record.review_level).reviews_dag_changes()
+            or _review_policy(record.review_level).reviews_dag_changes()
         )
         if needs_review:
             prepared.status = "review_required"

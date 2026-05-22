@@ -24,12 +24,11 @@ from dagent.harness_runtime import (
     ValidatorAgent,
 )
 from dagent.harness_runtime.artifacts import ArtifactUpload
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
 from dagent.result import RunResult
-from dagent.review import ReviewDecision
+from dagent.review import ReviewDecision, ReviewLevel
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityNodePayload,

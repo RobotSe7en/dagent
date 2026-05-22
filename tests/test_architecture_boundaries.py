@@ -78,6 +78,16 @@ def test_harness_runtime_does_not_assemble_capability_providers() -> None:
     assert "_register_default_capabilities" not in text
 
 
+def test_review_policy_lives_with_public_review_types() -> None:
+    root = Path(__file__).resolve().parents[1]
+    review_text = (root / "dagent" / "review.py").read_text(encoding="utf-8")
+
+    assert not (root / "dagent" / "harness_runtime" / "review_policy.py").exists()
+    assert "ReviewLevel" in review_text
+    assert "class _ReviewPolicy" in review_text
+    assert "def _review_policy" in review_text
+
+
 def test_capability_catalog_does_not_expose_handler_reusing_snapshot_api() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "dagent" / "capabilities" / "catalog.py").read_text(encoding="utf-8")

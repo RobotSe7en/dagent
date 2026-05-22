@@ -16,9 +16,9 @@ from dagent.config import load_config
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime import RuntimeMode
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import ProfileStore
+from dagent.review import ReviewLevel
 from dagent.runner import Runner
 from dagent.schemas import DAG, DAGRun, DAGSpec
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation

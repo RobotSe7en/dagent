@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.review import ReviewLevel
 from dagent.harness_runtime.task_record import (
     ReviewContinuation,
     RuntimeTaskMode,

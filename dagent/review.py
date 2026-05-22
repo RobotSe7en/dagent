@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.schemas import DAG, PendingReview, ReviewKind
+
+
+ReviewLevel = Literal["fast", "careful"]
+
+
+@dataclass(frozen=True)
+class _ReviewPolicy:
+    level: ReviewLevel = "fast"
+
+    def reviews_dag_changes(self) -> bool:
+        return self.level == "careful"
+
+    def reviews_tool(self, risk: str) -> bool:
+        return self.level == "careful" and risk in {"medium", "high"}
+
+
+def _review_policy(level: ReviewLevel | None) -> _ReviewPolicy:
+    return _ReviewPolicy(level=level or "fast")
 
 
 @dataclass(frozen=True)

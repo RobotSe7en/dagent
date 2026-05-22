@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.review import ReviewLevel
 from dagent.schemas import (
     DAG,
     CapabilityInvocation,
