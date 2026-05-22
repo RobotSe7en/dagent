@@ -396,10 +396,10 @@ def _replace_capability(runtime, definition: CapabilityDefinition) -> None:
 
 
 def _handler_for_definition(definition: CapabilityDefinition):
-    if definition.kind != "custom_tool":
+    if definition.kind != "tool":
         raise HTTPException(
             status_code=400,
-            detail="Only custom_tool capabilities can be created through this endpoint.",
+            detail="Only tool capabilities can be created through this endpoint.",
         )
     return template_capability_handler(str(definition.config.get("template", "")))
 

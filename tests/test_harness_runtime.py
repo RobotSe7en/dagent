@@ -17,7 +17,9 @@ from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import (
     Artifact,
     Boundary,
+    CapabilityDefinition,
     CapabilityInvocation,
+    CapabilityResult,
     DAGNode,
     DAGSpec,
     RunTrace,
@@ -102,38 +104,66 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
     runtime._agent_capability_configs.append(agent_config)
 
-    @capability(id="custom_tool.echo2", name="echo2")
+    @capability(id="tool.echo2", name="echo2")
     def echo2(text: str) -> str:
         return f"first:{text}"
 
     registered = runtime.register_capability(echo2)
     invocation = CapabilityInvocation(
-        capability_id="custom_tool.echo2",
-        kind="custom_tool",
+        capability_id="tool.echo2",
+        kind="tool",
         arguments={"text": "ok"},
     )
     first = run(runtime.capability_executor.execute(invocation))
 
-    @capability(id="custom_tool.echo2", name="echo2")
+    @capability(id="tool.echo2", name="echo2")
     def echo2_replacement(text: str) -> str:
         return f"second:{text}"
 
     replaced = runtime.replace_capability(echo2_replacement)
     second = run(runtime.capability_executor.execute(invocation))
 
-    assert registered.id == "custom_tool.echo2"
-    assert replaced.id == "custom_tool.echo2"
+    assert registered.id == "tool.echo2"
+    assert replaced.id == "tool.echo2"
     assert first.content == "first:ok"
     assert second.content == "second:ok"
     assert runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
-        "custom_tool.echo2",
+        "tool.echo2",
         enabled_toolsets=("builtin",),
     ) == "echo2"
     assert runtime.dag_agent.loop.tool_adapter.function_name_for_capability(
-        "custom_tool.echo2",
+        "tool.echo2",
         enabled_toolsets=("builtin",),
     ) == "echo2"
     assert agent_config["tool_adapter"] is runtime.tool_agent.loop.tool_adapter
+
+
+def test_harness_runtime_exposes_registered_mcp_capabilities_by_default() -> None:
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+
+    definition = CapabilityDefinition(
+        id="mcp.mock.lookup",
+        name="mcp_mock__lookup",
+        kind="mcp",
+        parameters={"type": "object"},
+    )
+
+    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
+        return CapabilityResult(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content="ok",
+        )
+
+    runtime.register_capability(definition, handler)
+
+    names = {
+        tool["function"]["name"]
+        for tool in runtime.tool_agent.loop.tool_adapter.definitions(("builtin",))
+    }
+    assert "mcp_mock__lookup" in names
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:

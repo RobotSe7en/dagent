@@ -21,15 +21,15 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "run_dag")
 
 
-def test_capability_decorator_registers_custom_tool_capability() -> None:
+def test_capability_decorator_registers_tool_capability() -> None:
     @dagent.capability
     def search(q: str) -> str:
         """Search text."""
         return f"found:{q}"
 
-    assert search.definition.id == "custom_tool.search"
+    assert search.definition.id == "tool.search"
     assert search.definition.name == "search"
-    assert search.definition.kind == "custom_tool"
+    assert search.definition.kind == "tool"
 
 
 def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
@@ -41,7 +41,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["custom_tool.search"],
+        capabilities=["tool.search"],
     )
     runner = dagent.Runner(
         workspace=tmp_path,
@@ -70,7 +70,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         ChatResponse(content="Report: found:X"),
     ])
     agent = dagent.DagAgent(
-        capabilities=["custom_tool.search"],
+        capabilities=["tool.search"],
     )
     runner = dagent.Runner(
         workspace=tmp_path,
@@ -82,7 +82,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
 
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "custom_tool.search"
+    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
 
 
 def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
@@ -101,7 +101,7 @@ def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
     result = run(runner.run(agent, "hi"))
 
     assert result.output_text == "hello"
-    assert runner.runtime.capability_catalog.get("custom_tool.search") is not None
+    assert runner.runtime.capability_catalog.get("tool.search") is not None
 
 
 def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
@@ -109,11 +109,11 @@ def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["custom_tool.missing"],
+        capabilities=["tool.missing"],
     )
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    with pytest.raises(KeyError, match="custom_tool.missing"):
+    with pytest.raises(KeyError, match="tool.missing"):
         run(runner.run(agent, "hi"))
 
 
@@ -130,7 +130,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["custom_tool.search"],
+        capabilities=["tool.search"],
     )
     runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search, write])
 
@@ -216,17 +216,17 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
-    @dagent.capability(id="custom_tool.same", name="same")
+    @dagent.capability(id="tool.same", name="same")
     def first() -> str:
         return "first"
 
-    @dagent.capability(id="custom_tool.same", name="same")
+    @dagent.capability(id="tool.same", name="same")
     def second() -> str:
         return "second"
 
     runner = dagent.Runner(workspace=tmp_path, capabilities=[first])
 
-    with pytest.raises(ValueError, match="custom_tool.same"):
+    with pytest.raises(ValueError, match="tool.same"):
         runner.add_capability(second)
 
 

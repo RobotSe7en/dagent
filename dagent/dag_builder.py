@@ -261,6 +261,6 @@ def _title_from_id(node_id: str) -> str:
 
 def _capability_kind_from_id(capability_id: str) -> CapabilityKind:
     kind = capability_id.split(".", 1)[0]
-    if kind in {"tool", "mcp", "skill", "shell", "custom_tool", "agent", "memory", "file"}:
+    if kind in {"tool", "mcp", "skill", "shell", "agent", "memory", "file"}:
         return kind  # type: ignore[return-value]
     raise ValueError(f"Cannot infer capability kind from id '{capability_id}'.")

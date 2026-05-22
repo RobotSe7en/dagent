@@ -39,7 +39,7 @@ def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
     assert spec.name == "Research Report"
     assert spec.artifacts["report"].paths == ["outputs/report.md"]
     assert [node.id for node in spec.nodes] == ["search", "write_report"]
-    assert spec.nodes[0].payload.invocation.capability_id == "custom_tool.search"
+    assert spec.nodes[0].payload.invocation.capability_id == "tool.search"
     assert spec.nodes[1].payload.invocation.arguments == {
         "path": "{{artifact.report.path}}",
         "content": "{{search.output}}",

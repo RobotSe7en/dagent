@@ -6,7 +6,7 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.mcp.config import build_stdio_env
 from dagent.harness_runtime import CapabilityExecutor
-from dagent.schemas import CapabilityInvocation
+from dagent.schemas import CapabilityDefinition, CapabilityInvocation
 
 
 def run(coro):
@@ -77,25 +77,10 @@ def test_mcp_provider_skips_function_name_collisions() -> None:
     manager = FakeMCPManager()
     catalog = CapabilityCatalog()
     catalog.register(
-        definition=SimpleNamespace(
-            id="custom_tool.collision",
+        CapabilityDefinition(
+            id="tool.collision",
             name="mcp_mock_server__lookup",
-            kind="custom_tool",
-            description="",
-            parameters={"type": "object"},
-            policy=SimpleNamespace(risk="low", requires_review=False),
-            config={},
-            enabled=True,
-            model_copy=lambda **_: SimpleNamespace(
-                id="custom_tool.collision",
-                name="mcp_mock_server__lookup",
-                kind="custom_tool",
-                description="",
-                parameters={"type": "object"},
-                policy=SimpleNamespace(risk="low", requires_review=False),
-                config={},
-                enabled=True,
-            ),
+            kind="tool",
         ),
         handler=lambda invocation: None,
     )

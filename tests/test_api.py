@@ -288,9 +288,9 @@ def test_api_capability_list_create_and_test() -> None:
     create_response = client.post(
         "/capabilities",
         json={
-            "id": "custom_tool.upper",
+            "id": "tool.upper",
             "name": "upper",
-            "kind": "custom_tool",
+            "kind": "tool",
             "description": "Uppercase text.",
             "config": {"template": "upper:{text}"},
         },
@@ -298,25 +298,25 @@ def test_api_capability_list_create_and_test() -> None:
     assert create_response.status_code == 200
 
     test_response = client.post(
-        "/capabilities/custom_tool.upper/test",
+        "/capabilities/tool.upper/test",
         json={"arguments": {"text": "ok"}},
     )
 
     assert test_response.status_code == 200
     assert test_response.json()["result"]["content"] == "upper:ok"
 
-    disable_response = client.post("/capabilities/custom_tool.upper/disable")
+    disable_response = client.post("/capabilities/tool.upper/disable")
     assert disable_response.status_code == 200
     assert disable_response.json()["capability"]["enabled"] is False
 
-    enable_response = client.post("/capabilities/custom_tool.upper/enable")
+    enable_response = client.post("/capabilities/tool.upper/enable")
     assert enable_response.status_code == 200
     assert enable_response.json()["capability"]["enabled"] is True
 
-    delete_response = client.delete("/capabilities/custom_tool.upper")
+    delete_response = client.delete("/capabilities/tool.upper")
     assert delete_response.status_code == 200
     assert client.post(
-        "/capabilities/custom_tool.upper/test",
+        "/capabilities/tool.upper/test",
         json={"arguments": {"text": "ok"}},
     ).status_code == 404
 
@@ -576,16 +576,16 @@ def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) ->
     assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
 
 
-def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
+def test_api_created_tool_capability_can_run_in_dag_spec() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     create_capability_response = client.post(
         "/capabilities",
         json={
-            "id": "custom_tool.upper",
+            "id": "tool.upper",
             "name": "upper",
-            "kind": "custom_tool",
+            "kind": "tool",
             "description": "Uppercase-ish text.",
             "config": {"template": "upper:{text}"},
         },
@@ -595,16 +595,16 @@ def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
     create_spec_response = client.post(
         "/dag-specs",
         json={
-            "id": "custom_tool_dag",
-            "name": "Custom tool DAG",
+            "id": "tool_dag",
+            "name": "Tool DAG",
             "nodes": [
                 {
                     "id": "call_custom",
                     "payload": {
                         "type": "capability",
                         "invocation": {
-                            "capability_id": "custom_tool.upper",
-                            "kind": "custom_tool",
+                            "capability_id": "tool.upper",
+                            "kind": "tool",
                             "arguments": {"text": "ok"},
                         },
                     },
@@ -615,7 +615,7 @@ def test_api_created_custom_capability_can_run_in_dag_spec() -> None:
     )
     assert create_spec_response.status_code == 200
 
-    run_response = client.post("/dag-specs/custom_tool_dag/run")
+    run_response = client.post("/dag-specs/tool_dag/run")
 
     assert run_response.status_code == 200
     payload = run_response.json()["dag_run"]

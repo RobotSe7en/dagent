@@ -439,22 +439,9 @@ def _runtime_from_existing(
 
 
 def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAdapter:
-    builtin_ids = tuple(
-        capability_id
-        for capability_id in capability_ids
-        if (catalog.get(capability_id) is None or catalog.get(capability_id).kind != "mcp")
-    )
-    mcp_ids = tuple(
-        capability_id
-        for capability_id in capability_ids
-        if (catalog.get(capability_id) is not None and catalog.get(capability_id).kind == "mcp")
-    )
-    toolsets = [CapabilityToolset("builtin", builtin_ids)]
-    if mcp_ids:
-        toolsets.append(CapabilityToolset("mcp", mcp_ids))
     return CapabilityToolAdapter(
         catalog,
-        toolsets=toolsets,
+        toolsets=[CapabilityToolset("builtin", tuple(capability_ids))],
     )
 
 

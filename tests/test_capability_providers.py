@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
-    CustomToolCapabilityProvider,
     FileCapabilityProvider,
     MCPCapabilityProvider,
     MemoryCapabilityProvider,
@@ -182,7 +181,7 @@ def test_capability_executor_passes_context_to_async_handler(tmp_path) -> None:
     assert seen == {"node_id": "agent_node"}
 
 
-def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> None:
+def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -222,14 +221,6 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
         manager=FakeMCPManager(),
     ).register_into(registry)
     SkillCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
-    CustomToolCapabilityProvider(
-        tools={
-            "upper": {
-                "description": "Uppercase text.",
-                "handler": lambda text: str(text).upper(),
-            }
-        }
-    ).register_into(registry)
     AgentCapabilityProvider(
         agents={
             "helper": {
@@ -245,16 +236,12 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
     skill_result = run(executor.execute(
         CapabilityInvocation(capability_id="skill.view", kind="skill", arguments={"name": "summarize"})
     ))
-    custom_result = run(executor.execute(
-        CapabilityInvocation(capability_id="custom_tool.upper", kind="custom_tool", arguments={"text": "hi"})
-    ))
     agent_result = run(executor.execute(
         CapabilityInvocation(capability_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
     ))
 
     assert mcp_result.content == "mcp:x"
     assert "Use concise summaries." in json.loads(skill_result.content)["content"]
-    assert custom_result.content == "HI"
     assert agent_result.content == "agent:done"
     assert provider.requests[0]["messages"][0]["role"] == "system"
 

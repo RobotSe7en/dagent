@@ -17,9 +17,9 @@ def test_capability_decorator_builds_definition_from_function_signature() -> Non
         return f"{text}:{count}:{loud}"
 
     assert isinstance(echo, CapabilityBinding)
-    assert echo.definition.id == "custom_tool.echo"
+    assert echo.definition.id == "tool.echo"
     assert echo.definition.name == "echo"
-    assert echo.definition.kind == "custom_tool"
+    assert echo.definition.kind == "tool"
     assert echo.definition.description == "Echo text for SDK callers."
     assert echo.definition.parameters == {
         "type": "object",
@@ -45,11 +45,11 @@ def test_capability_decorator_builds_definition_from_function_signature() -> Non
 
 
 def test_capability_decorator_serializes_structured_results_and_failures() -> None:
-    @capability(id="custom_tool.lookup")
+    @capability(id="tool.lookup")
     async def lookup(query: str) -> dict[str, object]:
         return {"query": query, "matches": [1, 2]}
 
-    @capability(id="custom_tool.boom")
+    @capability(id="tool.boom")
     def boom() -> str:
         raise ValueError("bad input")
 
@@ -70,8 +70,8 @@ def test_capability_decorator_serializes_structured_results_and_failures() -> No
     assert json.loads(lookup_result.content) == {"query": "sdk", "matches": [1, 2]}
     assert boom_result == CapabilityResult(
         invocation_id=boom_result.invocation_id,
-        capability_id="custom_tool.boom",
-        kind="custom_tool",
+        capability_id="tool.boom",
+        kind="tool",
         status="failed",
         error="bad input",
         stop_reason="ValueError",

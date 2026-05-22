@@ -34,7 +34,7 @@ def capability(
     id: str | None = None,
     name: str | None = None,
     description: str = "",
-    kind: CapabilityKind = "custom_tool",
+    kind: CapabilityKind = "tool",
     risk: RiskLevel = "low",
     requires_review: bool = False,
     sandbox_required: bool = False,

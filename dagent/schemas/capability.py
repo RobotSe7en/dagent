@@ -15,7 +15,6 @@ CapabilityKind = Literal[
     "mcp",
     "skill",
     "shell",
-    "custom_tool",
     "agent",
     "memory",
     "file",

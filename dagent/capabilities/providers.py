@@ -220,26 +220,6 @@ class FileCapabilityProvider:
         )
 
 
-class CustomToolCapabilityProvider:
-    """Registers web/user-defined custom tool handlers."""
-
-    def __init__(self, tools: dict[str, dict[str, Any]]) -> None:
-        self.tools = tools
-
-    def register_into(self, catalog: CapabilityCatalog) -> None:
-        for name, config in sorted(self.tools.items()):
-            definition = CapabilityDefinition(
-                id=f"custom_tool.{name}",
-                name=name,
-                kind="custom_tool",
-                description=str(config.get("description", "")),
-                parameters=config.get("parameters") or {"type": "object"},
-                policy=CapabilityPolicy(risk=config.get("risk", "medium"), sandbox_required=True),
-                config={key: value for key, value in config.items() if key != "handler"},
-            )
-            catalog.register(definition, custom_tool_handler(config.get("handler")))
-
-
 @dataclass
 class AgentNodeSessionStore:
     """Stores one local thread per DAG run node."""
@@ -394,18 +374,6 @@ class AgentCapabilityProvider:
             _agent_node_request(context, invocation),
         )
         return [system, user]
-
-
-def custom_tool_handler(handler: Any = None):
-    def execute(invocation: CapabilityInvocation) -> CapabilityResult:
-        if not callable(handler):
-            return _failed(invocation, "Custom tool has no callable handler.", stop_reason="missing_handler")
-        try:
-            return _completed(invocation, str(handler(**invocation.arguments)))
-        except Exception as exc:
-            return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-
-    return execute
 
 
 def template_capability_handler(template: str):
