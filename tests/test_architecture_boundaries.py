@@ -25,6 +25,8 @@ def test_capability_boundaries_are_not_split_into_top_level_runtime_package() ->
     assert (root / "dagent" / "capabilities" / "catalog.py").exists()
     assert (root / "dagent" / "capabilities" / "bootstrap.py").exists()
     assert (root / "dagent" / "capabilities" / "providers.py").exists()
+    assert (root / "dagent" / "capabilities" / "mcp" / "__init__.py").exists()
+    assert (root / "dagent" / "capabilities" / "skills.py").exists()
     assert (root / "dagent" / "capabilities" / "toolsets.py").exists()
 
 

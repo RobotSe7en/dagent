@@ -337,8 +337,21 @@ def _create_runtime(
     dag_max_cycles: int = 6,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
-    resolved_provider = provider or OpenAICompatibleProvider(load_config().provider)
-    catalog = create_default_capability_catalog(workspace_root=workspace_path)
+    try:
+        config = load_config()
+    except Exception:
+        if provider is None:
+            raise
+        config = None
+    if provider is not None:
+        resolved_provider = provider
+    else:
+        assert config is not None
+        resolved_provider = OpenAICompatibleProvider(config.provider)
+    catalog = create_default_capability_catalog(
+        workspace_root=workspace_path,
+        mcp_servers=config.mcp_servers if config is not None else None,
+    )
     capability_executor = CapabilityExecutor(catalog)
     for capability in capabilities:
         _register_capability_parts(catalog, capability)
@@ -426,9 +439,22 @@ def _runtime_from_existing(
 
 
 def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAdapter:
+    builtin_ids = tuple(
+        capability_id
+        for capability_id in capability_ids
+        if (catalog.get(capability_id) is None or catalog.get(capability_id).kind != "mcp")
+    )
+    mcp_ids = tuple(
+        capability_id
+        for capability_id in capability_ids
+        if (catalog.get(capability_id) is not None and catalog.get(capability_id).kind == "mcp")
+    )
+    toolsets = [CapabilityToolset("builtin", builtin_ids)]
+    if mcp_ids:
+        toolsets.append(CapabilityToolset("mcp", mcp_ids))
     return CapabilityToolAdapter(
         catalog,
-        toolsets=[CapabilityToolset("builtin", tuple(capability_ids))],
+        toolsets=toolsets,
     )
 
 

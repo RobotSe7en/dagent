@@ -18,6 +18,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest>=8.0",
 ]
+mcp = [
+    "mcp>=1,<2",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

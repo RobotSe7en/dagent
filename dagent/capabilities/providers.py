@@ -7,8 +7,6 @@ import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
-
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.workspace import current_workspace_root
@@ -220,74 +218,6 @@ class FileCapabilityProvider:
             ),
             write,
         )
-
-
-class MCPCapabilityProvider:
-    """Registers configured MCP-like tools as capabilities."""
-
-    def __init__(self, servers: dict[str, dict[str, Any]]) -> None:
-        self.servers = servers
-
-    def register_into(self, catalog: CapabilityCatalog) -> None:
-        for server_name, server_config in sorted(self.servers.items()):
-            tools = server_config.get("tools", {})
-            for tool_name, tool_config in sorted(tools.items()):
-                handler = tool_config.get("handler")
-                definition = CapabilityDefinition(
-                    id=f"mcp.{server_name}.{tool_name}",
-                    name=f"{server_name}.{tool_name}",
-                    kind="mcp",
-                    description=str(tool_config.get("description", "")),
-                    parameters=tool_config.get("parameters") or {"type": "object"},
-                    policy=CapabilityPolicy(risk=tool_config.get("risk", "medium"), sandbox_required=True),
-                    config={"server": server_name, "tool": tool_name},
-                )
-
-                def execute(invocation: CapabilityInvocation, *, mcp_handler=handler) -> CapabilityResult:
-                    if not callable(mcp_handler):
-                        return _failed(invocation, "MCP tool has no callable handler.", stop_reason="missing_handler")
-                    try:
-                        return _completed(invocation, str(mcp_handler(**invocation.arguments)))
-                    except Exception as exc:
-                        return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-
-                catalog.register(definition, execute)
-
-
-class SkillCapabilityProvider:
-    """Registers local skills as capabilities."""
-
-    def __init__(self, skill_roots: list[str | Path]) -> None:
-        self.skill_roots = [Path(root) for root in skill_roots]
-
-    def register_into(self, catalog: CapabilityCatalog) -> None:
-        for skill_file in self._skill_files():
-            metadata, body = _read_skill(skill_file)
-            name = str(metadata.get("name") or skill_file.parent.name)
-            definition = CapabilityDefinition(
-                id=f"skill.{name}",
-                name=name,
-                kind="skill",
-                description=str(metadata.get("description", "")),
-                policy=CapabilityPolicy(risk="medium", sandbox_required=True),
-                config={"path": str(skill_file)},
-            )
-
-            def execute(invocation: CapabilityInvocation, *, skill_body: str = body) -> CapabilityResult:
-                user_input = str(invocation.arguments.get("input", ""))
-                content = skill_body if not user_input else f"{skill_body}\n\nInput:\n{user_input}"
-                return _completed(invocation, content)
-
-            catalog.register(definition, execute)
-
-    def _skill_files(self) -> list[Path]:
-        files: list[Path] = []
-        for root in self.skill_roots:
-            if root.is_file() and root.name == "SKILL.md":
-                files.append(root)
-            elif root.exists():
-                files.extend(root.glob("*/SKILL.md"))
-        return sorted(files)
 
 
 class CustomToolCapabilityProvider:
@@ -622,16 +552,6 @@ def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def _read_skill(path: Path) -> tuple[dict[str, Any], str]:
-    text = path.read_text(encoding="utf-8")
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        if len(parts) == 3:
-            metadata = yaml.safe_load(parts[1]) or {}
-            return metadata if isinstance(metadata, dict) else {}, parts[2].strip()
-    return {}, text.strip()
-
-
 def _completed(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
     return CapabilityResult(
         invocation_id=invocation.invocation_id,
@@ -661,3 +581,9 @@ def _policy_decision(boundary: Boundary) -> dict[str, Any]:
         "allowed_paths": boundary.allowed_paths or [],
         "allowed_commands": boundary.allowed_commands or [],
     }
+
+
+from dagent.capabilities.mcp import MCPCapabilityProvider as MCPCapabilityProvider
+from dagent.capabilities.skills import SkillsCapabilityProvider as SkillsCapabilityProvider
+
+SkillCapabilityProvider = SkillsCapabilityProvider

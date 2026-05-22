@@ -137,9 +137,21 @@ class HarnessRuntime:
         return self.capability_catalog.get(definition.id) or definition
 
     def refresh_toolsets(self) -> CapabilityToolAdapter:
+        builtin_ids = tuple(sorted(
+            definition.id
+            for definition in self.capability_catalog.list()
+            if definition.kind != "mcp"
+        ))
+        mcp_ids = tuple(sorted(
+            definition.id
+            for definition in self.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
+        ))
+        toolsets = [CapabilityToolset("builtin", builtin_ids)]
+        if mcp_ids:
+            toolsets.append(CapabilityToolset("mcp", mcp_ids))
         tool_adapter = CapabilityToolAdapter(
             self.capability_catalog,
-            toolsets=[CapabilityToolset("builtin", tuple(sorted(self.capability_catalog.ids())))],
+            toolsets=toolsets,
         )
         self.tool_agent.loop.tool_adapter = tool_adapter
         self.dag_agent.loop.tool_adapter = tool_adapter

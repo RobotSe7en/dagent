@@ -1,4 +1,6 @@
 import asyncio
+import json
+from types import SimpleNamespace
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import (
@@ -190,17 +192,34 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
     provider = MockProvider([ChatResponse(content="agent:done")])
     registry = CapabilityCatalog()
     executor = CapabilityExecutor(registry)
-    MCPCapabilityProvider(
-        servers={
-            "mock": {
-                "tools": {
-                    "lookup": {
-                        "description": "Lookup a value.",
-                        "handler": lambda query: f"mcp:{query}",
-                    }
-                }
+
+    class FakeMCPManager:
+        available = True
+
+        def start(self) -> None:
+            return None
+
+        def discovered_tools(self):
+            return {
+                "mock": [
+                    SimpleNamespace(
+                        name="lookup",
+                        description="Lookup a value.",
+                        inputSchema={"type": "object"},
+                    )
+                ]
             }
-        }
+
+        def call_tool_blocking(self, server_name, tool_name, arguments, timeout):
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(type="text", text=f"mcp:{arguments['query']}")],
+                structuredContent=None,
+            )
+
+    MCPCapabilityProvider(
+        servers={"mock": {"command": "fake"}},
+        manager=FakeMCPManager(),
     ).register_into(registry)
     SkillCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
     CustomToolCapabilityProvider(
@@ -224,7 +243,7 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
         CapabilityInvocation(capability_id="mcp.mock.lookup", kind="mcp", arguments={"query": "x"})
     ))
     skill_result = run(executor.execute(
-        CapabilityInvocation(capability_id="skill.summarize", kind="skill", arguments={"input": "long text"})
+        CapabilityInvocation(capability_id="skill.view", kind="skill", arguments={"name": "summarize"})
     ))
     custom_result = run(executor.execute(
         CapabilityInvocation(capability_id="custom_tool.upper", kind="custom_tool", arguments={"text": "hi"})
@@ -234,7 +253,7 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
     ))
 
     assert mcp_result.content == "mcp:x"
-    assert "Use concise summaries." in skill_result.content
+    assert "Use concise summaries." in json.loads(skill_result.content)["content"]
     assert custom_result.content == "HI"
     assert agent_result.content == "agent:done"
     assert provider.requests[0]["messages"][0]["role"] == "system"

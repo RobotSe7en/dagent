@@ -17,6 +17,7 @@ from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime import RuntimeMode
 from dagent.capabilities.providers import template_capability_handler
+from dagent.capabilities.skills import default_skill_roots, scan_skill_roots, skill_view_payload
 from dagent.profiles import ProfileStore
 from dagent.review import ReviewLevel
 from dagent.runner import Runner
@@ -70,6 +71,9 @@ class ApiState:
             return load_config().profiles.directory
         except Exception:
             return "profiles"
+
+    def get_skill_roots(self) -> list[Path]:
+        return default_skill_roots()
 
 
 state = ApiState()
@@ -343,13 +347,16 @@ async def list_mcp_servers() -> dict[str, Any]:
 
 @app.get("/skills")
 async def list_skills() -> dict[str, Any]:
-    runtime = state.get_runtime()
-    return {
-        "skills": [
-            definition.model_dump(mode="json")
-            for definition in runtime.capability_catalog.list(kind="skill")  # type: ignore[arg-type]
-        ]
-    }
+    return {"skills": [skill.as_list_item() for skill in scan_skill_roots(state.get_skill_roots())]}
+
+
+@app.get("/skills/{name:path}")
+async def get_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
+    payload = skill_view_payload(name, state.get_skill_roots(), file_path=file_path)
+    if payload.get("success") is False:
+        status_code = 400 if payload.get("matches") else 404
+        raise HTTPException(status_code=status_code, detail=payload)
+    return payload
 
 
 @app.get("/profiles")

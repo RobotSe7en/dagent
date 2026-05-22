@@ -14,6 +14,32 @@ def test_api_state_owns_runner_without_runtime_shim() -> None:
     assert not hasattr(state, "harness_runtime")
 
 
+def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "writing" / "summarize"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: summarize\ndescription: Summarize text.\n---\nBody.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [tmp_path / "skills"])
+    client = TestClient(app)
+
+    listed = client.get("/skills")
+    viewed = client.get("/skills/writing/summarize")
+
+    assert listed.status_code == 200
+    assert listed.json()["skills"] == [
+        {
+            "name": "summarize",
+            "description": "Summarize text.",
+            "category": "writing",
+            "path": str(skill_dir / "SKILL.md"),
+        }
+    ]
+    assert viewed.status_code == 200
+    assert viewed.json()["content"] == "Body."
+
+
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(content="tool"),            # _route()
