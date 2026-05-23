@@ -2,7 +2,7 @@
 
 from dagent.capabilities.bootstrap import create_default_capability_catalog
 from dagent.capabilities.catalog import CapabilityCatalog
-from dagent.capabilities.decorator import CapabilityBinding, capability
+from dagent.capabilities.decorator import CapabilityBinding, capability, tool
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import AgentCapabilityProvider, AgentNodeSessionStore
 from dagent.capabilities.skills import SkillCapabilityProvider, SkillsCapabilityProvider
@@ -20,4 +20,5 @@ __all__ = [
     "SkillsCapabilityProvider",
     "capability",
     "create_default_capability_catalog",
+    "tool",
 ]

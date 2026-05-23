@@ -12,13 +12,30 @@ def run(coro):
 
 def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "capability")
-    assert not hasattr(dagent, "tool")
-    assert not hasattr(dagent.capabilities, "tool")
+    assert hasattr(dagent, "tool")
+    assert hasattr(dagent.capabilities, "tool")
     assert hasattr(dagent, "Runner")
     assert hasattr(dagent, "ToolAgent")
     assert hasattr(dagent, "DagAgent")
     assert not hasattr(dagent, "DAgent")
     assert not hasattr(dagent, "run_dag")
+
+
+def test_tool_decorator_matches_capability_with_default_kind() -> None:
+    @dagent.tool
+    def search(q: str) -> str:
+        """Search text."""
+        return f"found:{q}"
+
+    @dagent.tool(risk="medium")
+    def write_file(path: str, content: str) -> str:
+        return f"wrote:{path}"
+
+    assert search.definition.id == "tool.search"
+    assert search.definition.kind == "tool"
+    assert search.definition.policy.risk == "low"
+    assert write_file.definition.id == "tool.write_file"
+    assert write_file.definition.policy.risk == "medium"
 
 
 def test_capability_decorator_registers_tool_capability() -> None:

@@ -337,7 +337,7 @@ import asyncio
 import dagent
 
 
-@dagent.capability(risk="low")
+@dagent.tool
 def echo(text: str) -> str:
     """Echo text back to the agent."""
     return f"echo:{text}"
@@ -350,7 +350,7 @@ async def main():
     )
     agent = dagent.ToolAgent(
         profile="conversation",
-        capabilities=["custom_tool.echo"],
+        capabilities=["tool.echo"],
     )
     result = await runner.run(agent, "Use echo to respond with hello.")
 
@@ -371,7 +371,7 @@ import asyncio
 import dagent
 
 
-@dagent.capability
+@dagent.tool
 def search(q: str) -> str:
     return f"found:{q}"
 
@@ -382,7 +382,7 @@ async def main():
         capabilities=[search],
     )
     agent = dagent.DagAgent(
-        capabilities=["custom_tool.search"],
+        capabilities=["tool.search"],
         review="careful",
     )
     result = await runner.run(agent, "Research X and write a concise report.")
@@ -404,12 +404,12 @@ from pathlib import Path
 import dagent
 
 
-@dagent.capability
+@dagent.tool
 def search(q: str) -> str:
     return f"found:{q}"
 
 
-@dagent.capability(risk="medium", supports_context=True)
+@dagent.tool(risk="medium", supports_context=True)
 def write_note(path: str, content: str, *, context, callbacks=None) -> str:
     resolved = Path(context.workspace_path) / path
     resolved.parent.mkdir(parents=True, exist_ok=True)

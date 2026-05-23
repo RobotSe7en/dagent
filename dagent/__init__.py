@@ -1,7 +1,7 @@
 """Reviewable DAG agent runtime SDK."""
 
 from dagent.agent import DagAgent, ToolAgent
-from dagent.capabilities.decorator import CapabilityBinding, capability
+from dagent.capabilities.decorator import CapabilityBinding, capability, tool
 from dagent.dag_builder import ArtifactRef, Dag, NodeRef
 from dagent.providers import OpenAICompatibleProvider
 from dagent.result import RunResult
@@ -44,4 +44,5 @@ __all__ = [
     "Runner",
     "ToolAgent",
     "capability",
+    "tool",
 ]

@@ -113,6 +113,21 @@ def capability(
     return decorate
 
 
+def tool(
+    fn: Callable[..., Any] | None = None,
+    **kwargs: Any,
+) -> CapabilityBinding | Callable[[Callable[..., Any]], CapabilityBinding]:
+    """Decorate a Python function as a dagent tool capability.
+
+    Shorthand for ``@capability(kind="tool", ...)``. Use this for the common
+    case of exposing a Python function as an LLM-callable tool; reach for
+    ``@capability`` only when you need to set a non-tool ``kind``.
+    """
+
+    kwargs.setdefault("kind", "tool")
+    return capability(fn, **kwargs)
+
+
 def _invoke_function(
     func: Callable[..., Any],
     arguments: dict[str, Any],
