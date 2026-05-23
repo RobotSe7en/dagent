@@ -474,6 +474,7 @@ select {
 }
 
 .spec-meta-form input,
+.spec-meta-form select,
 .spec-meta-form textarea,
 .search-field input,
 .node-editor input,
@@ -763,6 +764,32 @@ select {
   border: 0;
   padding-inline: 0;
   outline: none;
+}
+
+.capability-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 12px 12px 0;
+}
+
+.capability-tabs button {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  padding: 8px 6px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.capability-tabs button.active {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
+  color: var(--accent-blue);
 }
 
 .detail-header {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,11 +36,41 @@ class SkillIndexEntry:
         return f"{self.category}/{self.name}" if self.category else self.name
 
 
+@dataclass(frozen=True)
+class ImportedSkillEntry:
+    name: str
+    description: str
+    category: str | None
+    content: str
+    metadata: dict[str, Any]
+
+    def as_list_item(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "category": self.category,
+            "path": f"memory://skills/{self.qualified_name}",
+        }
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.category}/{self.name}" if self.category else self.name
+
+
+SkillEntry = SkillIndexEntry | ImportedSkillEntry
+
+
 class SkillsCapabilityProvider:
     """Registers the low-risk skill discovery tools."""
 
-    def __init__(self, skill_roots: list[str | Path] | None = None) -> None:
+    def __init__(
+        self,
+        skill_roots: list[str | Path] | None = None,
+        *,
+        imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
+    ) -> None:
         self.skill_roots = [Path(root) for root in (skill_roots or default_skill_roots())]
+        self.imported_skills = imported_skills
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
         catalog.register(
@@ -81,7 +112,7 @@ class SkillsCapabilityProvider:
 
     def _list(self, invocation: CapabilityInvocation) -> CapabilityResult:
         category = invocation.arguments.get("category")
-        skills = scan_skill_roots(self.skill_roots)
+        skills = list_skill_entries(self.skill_roots, self.imported_skills)
         if category:
             skills = [skill for skill in skills if skill.category == str(category)]
         payload = {
@@ -97,7 +128,9 @@ class SkillsCapabilityProvider:
             self.skill_roots,
             str(invocation.arguments.get("name", "")),
             file_path=invocation.arguments.get("file_path"),
+            imported_skills=self.imported_skills,
         )
+
 
 def default_skill_roots() -> list[Path]:
     return [Path("skills"), Path.home() / ".dagent" / "skills"]
@@ -130,13 +163,22 @@ def scan_skill_roots(skill_roots: list[str | Path]) -> list[SkillIndexEntry]:
     return sorted(entries, key=lambda skill: (skill.category or "", skill.name, str(skill.skill_file)))
 
 
+def list_skill_entries(
+    skill_roots: list[str | Path],
+    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
+) -> list[SkillEntry]:
+    entries: list[SkillEntry] = [*scan_skill_roots(skill_roots), *_imported_skill_values(imported_skills)]
+    return sorted(entries, key=lambda skill: (skill.category or "", skill.name, skill.qualified_name))
+
+
 def skill_view_payload(
     name: str,
     skill_roots: list[str | Path] | None = None,
     *,
     file_path: str | None = None,
+    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
 ) -> dict[str, Any]:
-    matches = _find_skill_matches(name, scan_skill_roots(skill_roots or default_skill_roots()))
+    matches = _find_skill_matches(name, list_skill_entries(skill_roots or default_skill_roots(), imported_skills))
     if len(matches) > 1:
         return {
             "success": False,
@@ -146,6 +188,24 @@ def skill_view_payload(
     if not matches:
         return {"success": False, "error": f"Skill '{name}' was not found.", "matches": []}
     skill = matches[0]
+    if isinstance(skill, ImportedSkillEntry):
+        if file_path:
+            return {
+                "success": False,
+                "error": "Imported in-memory skills do not include linked files.",
+                "skill": skill.as_list_item(),
+            }
+        return {
+            "success": True,
+            "skill": skill.as_list_item(),
+            "name": skill.name,
+            "description": skill.description,
+            "category": skill.category,
+            "path": skill.as_list_item()["path"],
+            "metadata": skill.metadata,
+            "content": skill.content,
+            "linked_files": {},
+        }
     if file_path:
         try:
             target = _resolve_skill_file(skill, file_path)
@@ -177,15 +237,19 @@ def skill_view_result(
     name: str,
     *,
     file_path: str | None = None,
+    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
 ) -> CapabilityResult:
-    payload = skill_view_payload(name, skill_roots, file_path=file_path)
+    payload = skill_view_payload(name, skill_roots, file_path=file_path, imported_skills=imported_skills)
     if payload.get("success") is False:
         return _failed(invocation, str(payload.get("error") or "Skill view failed."), payload)
     return _completed(invocation, payload)
 
 
 def read_skill_markdown(path: Path) -> tuple[dict[str, Any], str]:
-    text = path.read_text(encoding="utf-8")
+    return read_skill_markdown_text(path.read_text(encoding="utf-8"))
+
+
+def read_skill_markdown_text(text: str) -> tuple[dict[str, Any], str]:
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
@@ -231,12 +295,26 @@ def _category_for(root: Path, skill_file: Path) -> str | None:
     return None
 
 
-def _find_skill_matches(name: str, skills: list[SkillIndexEntry]) -> list[SkillIndexEntry]:
+def _imported_skill_values(
+    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None,
+) -> list[ImportedSkillEntry]:
+    if imported_skills is None:
+        return []
+    if isinstance(imported_skills, Mapping):
+        return list(imported_skills.values())
+    return list(imported_skills)
+
+
+def _find_skill_matches(name: str, skills: list[SkillEntry]) -> list[SkillEntry]:
     query = name.strip()
-    return [
-        skill for skill in skills
-        if query in {skill.name, skill.qualified_name, skill.skill_dir.name}
-    ]
+    matches: list[SkillEntry] = []
+    for skill in skills:
+        candidates = {skill.name, skill.qualified_name}
+        if isinstance(skill, SkillIndexEntry):
+            candidates.add(skill.skill_dir.name)
+        if query in candidates:
+            matches.append(skill)
+    return matches
 
 
 def _resolve_skill_file(skill: SkillIndexEntry, file_path: str) -> Path:
@@ -286,10 +364,14 @@ def _policy_decision(invocation: CapabilityInvocation) -> dict[str, Any]:
 
 
 __all__ = [
+    "ImportedSkillEntry",
     "SkillIndexEntry",
+    "SkillEntry",
     "SkillsCapabilityProvider",
     "default_skill_roots",
     "list_linked_files",
+    "list_skill_entries",
+    "read_skill_markdown_text",
     "scan_skill_roots",
     "skill_view_payload",
 ]

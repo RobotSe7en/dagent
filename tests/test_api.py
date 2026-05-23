@@ -1,13 +1,16 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from dagent.api.app import app, state
+from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.runner import Runner
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityResult
 
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
@@ -38,6 +41,157 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
     ]
     assert viewed.status_code == 200
     assert viewed.json()["content"] == "Body."
+
+
+def test_api_imports_skill_with_frontmatter_and_serves_through_capability() -> None:
+    state.close_runner()
+    state.imported_skills.clear()
+    state.runner = Runner(
+        provider=MockProvider([ChatResponse(content="unused")]),
+        imported_skills=state.imported_skills,
+    )
+    client = TestClient(app)
+
+    import_response = client.post(
+        "/skills/import",
+        json={
+            "content": "---\nname: summarize\ndescription: Summarize carefully.\n---\nUse concise summaries.",
+            "category": "writing",
+        },
+    )
+    list_response = client.get("/skills")
+    view_response = client.get("/skills/writing/summarize")
+    capability_response = client.post(
+        "/capabilities/skill.view/test",
+        json={"arguments": {"name": "writing/summarize"}},
+    )
+
+    assert import_response.status_code == 200
+    assert list_response.status_code == 200
+    assert {
+        "name": "summarize",
+        "description": "Summarize carefully.",
+        "category": "writing",
+        "path": "memory://skills/writing/summarize",
+    } in list_response.json()["skills"]
+    assert view_response.status_code == 200
+    assert view_response.json()["content"] == "Use concise summaries."
+    payload = json.loads(capability_response.json()["result"]["content"])
+    assert payload["content"] == "Use concise summaries."
+
+
+def test_api_imports_plain_markdown_skill_and_rejects_name_collision(monkeypatch, tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "plain"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: existing\ndescription: Existing skill.\n---\nBody.",
+        encoding="utf-8",
+    )
+    state.close_runner()
+    state.imported_skills.clear()
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [tmp_path / "skills"])
+    client = TestClient(app)
+
+    imported = client.post(
+        "/skills/import",
+        json={
+            "name": "draft",
+            "description": "Draft skill.",
+            "content": "# Draft Skill\n\nUse this temporary instruction.",
+        },
+    )
+    collision = client.post(
+        "/skills/import",
+        json={
+            "name": "existing",
+            "content": "Body.",
+        },
+    )
+
+    assert imported.status_code == 200
+    assert imported.json()["skill"]["content"].startswith("# Draft Skill")
+    assert collision.status_code == 400
+    assert "collides" in collision.json()["detail"]
+
+
+def test_api_memory_mcp_server_reload_updates_runtime_catalog() -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                if config.get("enabled", True) is False:
+                    continue
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        description="Lookup.",
+                        policy=CapabilityPolicy(risk=config.get("risk", "medium")),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult(
+                        invocation_id=invocation.invocation_id,
+                        capability_id=invocation.capability_id,
+                        kind=invocation.kind,
+                        status="completed",
+                        content="found",
+                    ),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_capability_ids.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    previous_factory = state.mcp_provider_factory
+    state.mcp_provider_factory = FakeMCPProvider
+    client = TestClient(app)
+    try:
+        create_response = client.post(
+            "/mcp/servers",
+            json={"name": "mock", "command": "fake", "risk": "low"},
+        )
+        capability_ids = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
+        delete_response = client.delete("/mcp/servers/mock")
+        capability_ids_after_delete = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
+    finally:
+        state.mcp_provider_factory = previous_factory
+
+    assert create_response.status_code == 200
+    assert create_response.json()["server"]["status"] == "connected"
+    assert "mcp.mock.lookup" in capability_ids
+    assert delete_response.status_code == 200
+    assert "mcp.mock.lookup" not in capability_ids_after_delete
+
+
+def test_api_session_reset_clears_in_memory_workbench_state() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    client.post(
+        "/capabilities",
+        json={
+            "id": "tool.temp",
+            "name": "temp",
+            "kind": "tool",
+            "config": {"template": "temp"},
+        },
+    )
+    client.post(
+        "/skills/import",
+        json={"name": "temp_skill", "content": "Use temporary guidance."},
+    )
+    state.custom_mcp_servers["temp"] = {"command": "fake"}
+
+    response = client.post("/session/reset")
+
+    assert response.status_code == 200
+    assert state.custom_capabilities == {}
+    assert state.imported_skills == {}
+    assert state.custom_mcp_servers == {}
 
 
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
