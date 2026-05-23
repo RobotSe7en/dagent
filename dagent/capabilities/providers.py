@@ -549,9 +549,3 @@ def _policy_decision(boundary: Boundary) -> dict[str, Any]:
         "allowed_paths": boundary.allowed_paths or [],
         "allowed_commands": boundary.allowed_commands or [],
     }
-
-
-from dagent.capabilities.mcp import MCPCapabilityProvider as MCPCapabilityProvider
-from dagent.capabilities.skills import SkillsCapabilityProvider as SkillsCapabilityProvider
-
-SkillCapabilityProvider = SkillsCapabilityProvider

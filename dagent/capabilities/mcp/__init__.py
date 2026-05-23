@@ -36,6 +36,8 @@ class MCPCapabilityProvider:
         if not getattr(manager, "available", True):
             return
         manager.start()
+        if hasattr(catalog, "add_shutdown_hook") and hasattr(manager, "shutdown"):
+            catalog.add_shutdown_hook(manager.shutdown)
         for server_name, tools in sorted(manager.discovered_tools().items()):
             include = set(self.servers.get(server_name, {}).get("include_tools") or [])
             exclude = set(self.servers.get(server_name, {}).get("exclude_tools") or [])
@@ -60,7 +62,7 @@ class MCPCapabilityProvider:
         safe_tool = _safe_component(tool_name)
         capability_id = f"mcp.{safe_server}.{safe_tool}"
         function_name = f"mcp_{safe_server}__{safe_tool}"
-        if catalog.get(capability_id) is not None or _catalog_has_name(catalog, function_name):
+        if catalog.get(capability_id) is not None or catalog.get_by_name(function_name) is not None:
             self.registration_errors.append(
                 f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{function_name}'."
             )
@@ -96,13 +98,6 @@ class MCPCapabilityProvider:
 def _safe_component(value: str) -> str:
     safe = _SAFE_NAME_RE.sub("_", value.strip()).strip("_").lower()
     return safe or "unnamed"
-
-
-def _catalog_has_name(catalog: CapabilityCatalog, name: str) -> bool:
-    for entry in getattr(catalog, "_entries", {}).values():
-        if getattr(entry.definition, "name", None) == name:
-            return True
-    return False
 
 
 __all__ = ["MCPCapabilityProvider", "MCPServerManager", "normalize_mcp_input_schema"]

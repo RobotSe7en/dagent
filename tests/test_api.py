@@ -321,6 +321,36 @@ def test_api_capability_list_create_and_test() -> None:
     ).status_code == 404
 
 
+def test_api_rejects_removed_custom_tool_capability_kind() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/capabilities",
+        json={
+            "id": "custom_tool.upper",
+            "name": "upper",
+            "kind": "custom_tool",
+            "description": "Uppercase text.",
+            "config": {"template": "upper:{text}"},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_api_session_reset_closes_existing_runner() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    closed: list[str] = []
+    state.runner.runtime.capability_catalog.add_shutdown_hook(lambda: closed.append("closed"))
+    client = TestClient(app)
+
+    response = client.post("/session/reset")
+
+    assert response.status_code == 200
+    assert closed == ["closed"]
+
+
 def test_api_capability_status_endpoints() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

@@ -60,6 +60,11 @@ class ApiState:
             self.runner = Runner(workspace=".")
         return self.runner
 
+    def close_runner(self) -> None:
+        if self.runner is not None:
+            self.runner.close()
+        self.runner = None
+
     def get_runtime(self):
         runner = self.get_runner()
         return runner.runtime
@@ -106,7 +111,7 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
-    state.runner = None
+    state.close_runner()
     state.dag_specs.clear()
     state.dag_runs.clear()
     state.dag_spec_artifact_uploads.clear()

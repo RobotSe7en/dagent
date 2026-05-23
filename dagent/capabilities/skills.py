@@ -99,10 +99,6 @@ class SkillsCapabilityProvider:
             file_path=invocation.arguments.get("file_path"),
         )
 
-
-SkillCapabilityProvider = SkillsCapabilityProvider
-
-
 def default_skill_roots() -> list[Path]:
     return [Path("skills"), Path.home() / ".dagent" / "skills"]
 
@@ -290,7 +286,6 @@ def _policy_decision(invocation: CapabilityInvocation) -> dict[str, Any]:
 
 
 __all__ = [
-    "SkillCapabilityProvider",
     "SkillIndexEntry",
     "SkillsCapabilityProvider",
     "default_skill_roots",

@@ -16,6 +16,7 @@ from dagent.schemas import (
 
 CapabilityHandlerResult = CapabilityResult | Awaitable[CapabilityResult]
 CapabilityHandler = Callable[..., CapabilityHandlerResult]
+ShutdownHook = Callable[[], None]
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ class CapabilityCatalog:
     def __init__(self, *, workspace_root: str | Path = ".") -> None:
         self.workspace_root = Path(workspace_root).resolve()
         self._entries: dict[str, CapabilityEntry] = {}
+        self._shutdown_hooks: list[ShutdownHook] = []
+        self._shutdown_complete = False
 
     def register(
         self,
@@ -111,3 +114,16 @@ class CapabilityCatalog:
 
     def ids(self) -> set[str]:
         return set(self._entries)
+
+    def add_shutdown_hook(self, hook: ShutdownHook) -> None:
+        if hook not in self._shutdown_hooks:
+            self._shutdown_hooks.append(hook)
+
+    def shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+        hooks = list(self._shutdown_hooks)
+        self._shutdown_hooks.clear()
+        for hook in hooks:
+            hook()

@@ -71,6 +71,10 @@ class Runner:
     def capabilities(self) -> list[CapabilityDefinition]:
         return self._runtime.capability_catalog.list(enabled_only=True)
 
+    def close(self) -> None:
+        self._runtime.capability_catalog.shutdown()
+        self._pending_runtimes.clear()
+
     def add_capability(self, capability: CapabilityLike) -> CapabilityDefinition:
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
@@ -339,7 +343,7 @@ def _create_runtime(
     workspace_path = Path(workspace)
     try:
         config = load_config()
-    except Exception:
+    except FileNotFoundError:
         if provider is None:
             raise
         config = None
