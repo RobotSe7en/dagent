@@ -9,7 +9,7 @@ from dagent.capabilities.providers import AgentCapabilityProvider, ToolCapabilit
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation, RunTrace, RunTraceNode
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):

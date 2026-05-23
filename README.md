@@ -5,8 +5,8 @@
 **dagent** is a *Dynamic DAG Agent* framework. It can run a request through a
 bounded tool-using agent, or through a planner that creates and executes a
 reviewable capability-node DAG. The runtime keeps those modes separate: each
-agent owns its own message thread, while the harness stores structured task,
-review, and execution state.
+public agent object is declarative configuration, while `Runner` owns the runtime
+session, capability catalog, review continuations, and execution state.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
@@ -41,11 +41,10 @@ The current implementation covers three levels in one execution path: placeholde
 injection before a tool call, `NO_CHANGE`/parameter-level continuation after an
 observation, and DAG revision when the pending graph must change.
 
-**4. Agent-owned message threads.**
-`ToolAgent` and `DAGAgent` each own one persistent message thread for the session.
-The runtime does not merge global conversation history or inject prior task context.
-A follow-up such as "continue" is just the next user message in the active agent's
-thread.
+**4. Runner-owned runtime state.**
+Public `ToolAgent` and `DagAgent` instances are pure configuration. A `Runner`
+creates the runtime agent needed for each run, keeps the capability catalog, and
+preserves pending review state until `resume(...)` completes it.
 
 **5. Structured task state, not transcript state.**
 DAG tasks store the current DAG, node results, execution records, runs, and pending
@@ -118,16 +117,17 @@ flowchart TD
   V -->|"passed / disabled"| O["Return final_answer\nto user"]
 ```
 
-`HarnessRuntime` is the top-level control layer. It owns routing, session task state,
-review continuation lookup, optional result validation, retry feedback, and final result
-delivery. It does not own the model transcript.
+`Runner` is the public SDK entrypoint and owns the configured runtime, session, and
+capability catalog. `HarnessRuntime` is the lower-level control layer. It owns routing,
+session task state, review continuation lookup, optional result validation, retry
+feedback, and final result delivery. It does not own the model transcript.
 
-`ToolAgent` owns the tool-agent system prompt and persistent tool-call message thread,
+The internal runtime `ToolAgent` owns the tool-agent system prompt and tool-call message thread,
 then delegates bounded execution to `ToolAgentLoop`. Tool review approval replaces the
 pending tool marker with the real tool result; rejection replaces it with a denied tool
 result and lets the loop continue.
 
-`DAGAgent` owns the DAG planner system prompt and persistent DAG message thread, then
+The internal runtime `DAGAgent` owns the DAG planner system prompt and DAG message thread, then
 delegates DAG work to `DAGAgentLoop`. Dynamic DAG requests enter through `run_dynamic(...)`;
 fixed `DAGSpec` requests enter through `run_static(...)`. Both share `execute(record, ...)`,
 which drives `DAGExecutor` layer execution. `RuntimeTaskRecord` stores structured resume
@@ -233,8 +233,7 @@ Boundary checks:
 
 - `read_only` nodes cannot write files
 - `allowed_paths` prevents path traversal and absolute path escape
-- `forbidden_tools` blocks specific tools
-- unregistered tools fail closed
+- disabled or unregistered capabilities fail closed
 
 ---
 
@@ -243,12 +242,12 @@ Boundary checks:
 ```text
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
+  capabilities/     capability catalog, providers, adapters, and built-in handlers
   harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
                     DAGAgentLoop, validation,
                     session state, event adapters, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
-  tools/            tool registry, executor, file tools, boundary checks
   state/            prompt assembly
 profiles/           editable agent profiles (conversation, dag_agent, validator_agent, feedback_learner)
 web/                React + Vite frontend
@@ -328,6 +327,116 @@ uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
 cd web && npm install && npm run dev
 ```
 
+## Python SDK Quick Start
+
+Use `ToolAgent` for profile-backed tool-loop work:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def echo(text: str) -> str:
+    """Echo text back to the agent."""
+    return f"echo:{text}"
+
+
+async def main():
+    runner = dagent.Runner(
+        workspace=".",
+        capabilities=[echo],
+    )
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=["tool.echo"],
+    )
+    result = await runner.run(agent, "Use echo to respond with hello.")
+
+    if result.requires_review and result.review is not None:
+        result = await runner.resume(result.review.approve())
+
+    print(result.output_text)
+
+
+asyncio.run(main())
+```
+
+Use `DagAgent` for dynamic DAG planning, execution, observation, and replanning:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+async def main():
+    runner = dagent.Runner(
+        workspace=".",
+        capabilities=[search],
+    )
+    agent = dagent.DagAgent(
+        capabilities=["tool.search"],
+        review="careful",
+    )
+    result = await runner.run(agent, "Research X and write a concise report.")
+
+    if result.requires_review and result.review is not None:
+        result = await runner.resume(result.review.approve())
+
+    print(result.output_text)
+
+asyncio.run(main())
+```
+
+Use `Dag` and `Runner` for user-defined static DAG execution:
+
+```python
+import asyncio
+from pathlib import Path
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+@dagent.tool(risk="medium", supports_context=True)
+def write_note(path: str, content: str, *, context, callbacks=None) -> str:
+    resolved = Path(context.workspace_path) / path
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding="utf-8")
+    return f"wrote:{path}"
+
+
+async def main():
+    dag = dagent.Dag("research_report", name="Research Report")
+    report = dag.artifact("report", "outputs/report.md")
+
+    search_node = dag.capability_node("search", search, q="dagent sdk")
+    dag.capability_node(
+        "write_report",
+        write_note,
+        path=report.path,
+        content=search_node.output,
+        outputs=[report],
+    ).after(search_node)
+
+    runner = dagent.Runner(workspace=".")
+    run = await runner.run(dag)
+    print(run.status)
+
+asyncio.run(main())
+```
+
 ## Quick Start
 
 Verify provider connection:
@@ -342,25 +451,6 @@ async def main():
     provider = OpenAICompatibleProvider(config.provider)
     response = await provider.chat([{"role": "user", "content": "Reply with exactly: OK"}])
     print(response.content)
-
-asyncio.run(main())
-```
-
-Run the harness runtime:
-
-```python
-import asyncio
-from dagent.factory import create_harness_runtime
-
-async def main():
-    runtime = create_harness_runtime(workspace_root=".")
-    result = await runtime.handle_message(
-        "Read README and summarize the implemented milestones.",
-        mode="auto",
-        review_level="fast",
-    )
-    print(result.status)
-    print(result.final_answer)
 
 asyncio.run(main())
 ```

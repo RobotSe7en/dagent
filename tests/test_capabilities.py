@@ -27,31 +27,31 @@ def _result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
 def test_capability_catalog_replaces_definition_and_handler_atomically() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
-    first = CapabilityDefinition(id="custom_tool.echo", name="echo", kind="custom_tool")
+    first = CapabilityDefinition(id="tool.echo", name="echo", kind="tool")
     second = first.model_copy(update={"description": "second"})
 
     catalog.register(first, lambda invocation: _result(invocation, "first"))
     catalog.replace(second, lambda invocation: _result(invocation, "second"))
 
     result = run(executor.execute(
-        CapabilityInvocation(capability_id="custom_tool.echo", kind="custom_tool")
+        CapabilityInvocation(capability_id="tool.echo", kind="tool")
     ))
 
-    assert catalog.get("custom_tool.echo") == second
+    assert catalog.get("tool.echo") == second
     assert result.content == "second"
 
 
 def test_capability_catalog_delete_removes_definition_and_handler() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
-    definition = CapabilityDefinition(id="custom_tool.echo", name="echo", kind="custom_tool")
+    definition = CapabilityDefinition(id="tool.echo", name="echo", kind="tool")
 
     catalog.register(definition, lambda invocation: _result(invocation, "old"))
-    catalog.delete("custom_tool.echo")
+    catalog.delete("tool.echo")
     catalog.register(definition, lambda invocation: _result(invocation, "new"))
 
     result = run(executor.execute(
-        CapabilityInvocation(capability_id="custom_tool.echo", kind="custom_tool")
+        CapabilityInvocation(capability_id="tool.echo", kind="tool")
     ))
 
     assert result.content == "new"

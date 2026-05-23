@@ -27,8 +27,8 @@ from dagent.schemas import (
     RunTraceNode,
     StartNodePayload,
 )
-from dagent.tools.command_tools import _infer_command_boundary, _infer_command_risk
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.command_tools import _infer_command_boundary, _infer_command_risk
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):
@@ -270,19 +270,19 @@ def _tool_name_from_capability(
     )
 
 
-def test_dag_dsl_from_dag_uses_adapter_names_for_non_tool_capabilities() -> None:
+def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
         CapabilityDefinition(
-            id="custom.remote-search",
+            id="tool.remote_search",
             name="remote_search",
-            kind="custom_tool",
+            kind="tool",
         ),
         lambda **_: None,
     )
     tool_adapter = CapabilityToolAdapter(
         catalog,
-        toolsets=[CapabilityToolset("custom", ("custom.remote-search",))],
+        toolsets=[CapabilityToolset("selected", ("tool.remote_search",))],
     )
     dag = DAG(
         dag_id="dag_custom",
@@ -294,8 +294,8 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_non_tool_capabilities() -> None
                 payload=dict(
                     type="capability",
                     invocation=CapabilityInvocation(
-                        capability_id="custom.remote-search",
-                        kind="custom_tool",
+                        capability_id="tool.remote_search",
+                        kind="tool",
                         arguments={"query": "status"},
                     ),
                 ),
@@ -306,7 +306,7 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_non_tool_capabilities() -> None
     dsl = dag_dsl_from_dag(
         dag,
         tool_adapter=tool_adapter,
-        enabled_toolsets=("custom",),
+        enabled_toolsets=("selected",),
     )
 
     assert dsl == "search = remote_search(query='status')"

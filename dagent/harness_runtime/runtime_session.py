@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from dagent.harness_runtime.review_policy import ReviewLevel
+from dagent.review import ReviewLevel
 from dagent.harness_runtime.task_record import (
     ReviewContinuation,
     RuntimeTaskMode,
@@ -44,8 +44,11 @@ class HarnessRuntimeSession:
             pending_invocation=pending_review_invocation(loop_outcome, task_invocations),
         )
 
-    def pop_review_continuation(self, review_id: str) -> ReviewContinuation | None:
-        return self._review_continuations.pop(review_id, None)
+    def get_review_continuation(self, review_id: str) -> ReviewContinuation | None:
+        return self._review_continuations.get(review_id)
+
+    def discard_review_continuation(self, review_id: str) -> None:
+        self._review_continuations.pop(review_id, None)
 
     def discard_review_continuations_for_task(self, task_id: str) -> None:
         stale_review_ids = [

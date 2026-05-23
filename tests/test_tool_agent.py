@@ -10,7 +10,7 @@ from dagent.harness_runtime import ToolAgent, ToolAgentLoop, ReviewContinuation
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, CapabilityDefinition, CapabilityPolicy, CapabilityInvocation, CapabilityResult
-from dagent.tools.file_tools import create_file_tool_registry
+from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
 def make_loop(tmp_path: Path, provider: MockProvider) -> ToolAgentLoop:

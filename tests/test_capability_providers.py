@@ -1,9 +1,10 @@
 import asyncio
+import json
+from types import SimpleNamespace
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
-    CustomToolCapabilityProvider,
     FileCapabilityProvider,
     MCPCapabilityProvider,
     MemoryCapabilityProvider,
@@ -17,7 +18,7 @@ from dagent.harness_runtime.capability_executor import CapabilityExecutionContex
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import Boundary, CapabilityDefinition, CapabilityInvocation, CapabilityResult, DAGNode
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):
@@ -180,7 +181,7 @@ def test_capability_executor_passes_context_to_async_handler(tmp_path) -> None:
     assert seen == {"node_id": "agent_node"}
 
 
-def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> None:
+def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -190,27 +191,36 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
     provider = MockProvider([ChatResponse(content="agent:done")])
     registry = CapabilityCatalog()
     executor = CapabilityExecutor(registry)
-    MCPCapabilityProvider(
-        servers={
-            "mock": {
-                "tools": {
-                    "lookup": {
-                        "description": "Lookup a value.",
-                        "handler": lambda query: f"mcp:{query}",
-                    }
-                }
+
+    class FakeMCPManager:
+        available = True
+
+        def start(self) -> None:
+            return None
+
+        def discovered_tools(self):
+            return {
+                "mock": [
+                    SimpleNamespace(
+                        name="lookup",
+                        description="Lookup a value.",
+                        inputSchema={"type": "object"},
+                    )
+                ]
             }
-        }
+
+        def call_tool_blocking(self, server_name, tool_name, arguments, timeout):
+            return SimpleNamespace(
+                isError=False,
+                content=[SimpleNamespace(type="text", text=f"mcp:{arguments['query']}")],
+                structuredContent=None,
+            )
+
+    MCPCapabilityProvider(
+        servers={"mock": {"command": "fake"}},
+        manager=FakeMCPManager(),
     ).register_into(registry)
     SkillCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
-    CustomToolCapabilityProvider(
-        tools={
-            "upper": {
-                "description": "Uppercase text.",
-                "handler": lambda text: str(text).upper(),
-            }
-        }
-    ).register_into(registry)
     AgentCapabilityProvider(
         agents={
             "helper": {
@@ -224,18 +234,14 @@ def test_mcp_skill_custom_and_agent_providers_register_and_execute(tmp_path) -> 
         CapabilityInvocation(capability_id="mcp.mock.lookup", kind="mcp", arguments={"query": "x"})
     ))
     skill_result = run(executor.execute(
-        CapabilityInvocation(capability_id="skill.summarize", kind="skill", arguments={"input": "long text"})
-    ))
-    custom_result = run(executor.execute(
-        CapabilityInvocation(capability_id="custom_tool.upper", kind="custom_tool", arguments={"text": "hi"})
+        CapabilityInvocation(capability_id="skill.view", kind="skill", arguments={"name": "summarize"})
     ))
     agent_result = run(executor.execute(
         CapabilityInvocation(capability_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
     ))
 
     assert mcp_result.content == "mcp:x"
-    assert "Use concise summaries." in skill_result.content
-    assert custom_result.content == "HI"
+    assert "Use concise summaries." in json.loads(skill_result.content)["content"]
     assert agent_result.content == "agent:done"
     assert provider.requests[0]["messages"][0]["role"] == "system"
 

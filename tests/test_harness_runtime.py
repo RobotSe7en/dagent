@@ -1,4 +1,5 @@
 import asyncio
+from dagent import capability
 from dagent.harness_runtime import (
     ToolAgent,
     ToolAgentLoop,
@@ -16,7 +17,9 @@ from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import (
     Artifact,
     Boundary,
+    CapabilityDefinition,
     CapabilityInvocation,
+    CapabilityResult,
     DAGNode,
     DAGSpec,
     RunTrace,
@@ -24,7 +27,7 @@ from dagent.schemas import (
     ValidationIssue,
     ValidationResult,
 )
-from dagent.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolRegistry
 
 
 def run(coro):
@@ -94,6 +97,73 @@ def test_harness_runtime_reuses_executor_catalog_without_assembling_capabilities
 
     assert runtime.capability_catalog is capability_executor.catalog
     assert "memory.write" not in runtime.capability_catalog.ids()
+
+
+def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
+    runtime._agent_capability_configs.append(agent_config)
+
+    @capability(id="tool.echo2", name="echo2")
+    def echo2(text: str) -> str:
+        return f"first:{text}"
+
+    registered = runtime.register_capability(echo2)
+    invocation = CapabilityInvocation(
+        capability_id="tool.echo2",
+        kind="tool",
+        arguments={"text": "ok"},
+    )
+    first = run(runtime.capability_executor.execute(invocation))
+
+    @capability(id="tool.echo2", name="echo2")
+    def echo2_replacement(text: str) -> str:
+        return f"second:{text}"
+
+    replaced = runtime.replace_capability(echo2_replacement)
+    second = run(runtime.capability_executor.execute(invocation))
+
+    assert registered.id == "tool.echo2"
+    assert replaced.id == "tool.echo2"
+    assert first.content == "first:ok"
+    assert second.content == "second:ok"
+    assert runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
+        "tool.echo2",
+        enabled_toolsets=("builtin",),
+    ) == "echo2"
+    assert runtime.dag_agent.loop.tool_adapter.function_name_for_capability(
+        "tool.echo2",
+        enabled_toolsets=("builtin",),
+    ) == "echo2"
+    assert agent_config["tool_adapter"] is runtime.tool_agent.loop.tool_adapter
+
+
+def test_harness_runtime_exposes_registered_mcp_capabilities_by_default() -> None:
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+
+    definition = CapabilityDefinition(
+        id="mcp.mock.lookup",
+        name="mcp_mock__lookup",
+        kind="mcp",
+        parameters={"type": "object"},
+    )
+
+    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
+        return CapabilityResult(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content="ok",
+        )
+
+    runtime.register_capability(definition, handler)
+
+    names = {
+        tool["function"]["name"]
+        for tool in runtime.tool_agent.loop.tool_adapter.definitions(("builtin",))
+    }
+    assert "mcp_mock__lookup" in names
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
@@ -279,6 +349,25 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
         "user",
     ]
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
+
+
+def test_harness_runtime_preserves_dag_review_when_approved_without_submitted_dag() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="Here is the final answer."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(runtime.handle_message("What files are here?", mode="dag", review_level="careful"))
+    missing_dag = run(runtime.resume_review(result.pending_review.review_id, approved=True))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, dag=result.dag))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert missing_dag is None
+    assert resumed is not None
+    assert resumed.status == "completed"
+    assert resumed.final_answer == "Here is the final answer."
 
 
 def test_harness_runtime_retries_denied_dag_review_continuation_with_validation_feedback() -> None:

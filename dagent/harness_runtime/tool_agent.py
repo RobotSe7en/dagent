@@ -10,9 +10,9 @@ from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
-from dagent.harness_runtime.review_policy import review_policy
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.task_record import ReviewContinuation
+from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import (
@@ -27,7 +27,6 @@ from dagent.schemas import (
     RunTraceNode,
 )
 from dagent.state import PromptBuilder, PromptRequest
-import dagent.harness_runtime.review_policy as _rp
 
 
 MAX_EXECUTION_CONTEXT_CHARS = 16000
@@ -81,7 +80,7 @@ class ToolAgent:
         self,
         message: str,
         *,
-        review_level: "_rp.ReviewLevel" = "fast",
+        review_level: ReviewLevel = "fast",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
@@ -151,7 +150,7 @@ class ToolAgent:
         self,
         messages: list[dict[str, Any]],
         *,
-        review_level: "_rp.ReviewLevel",
+        review_level: ReviewLevel,
         boundary: Boundary,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -205,10 +204,10 @@ class ToolAgentLoop:
 
     def create_tool_guard(
         self,
-        review_level: "_rp.ReviewLevel",
+        review_level: ReviewLevel,
         boundary: Boundary,
     ) -> ControlToolHandler:
-        policy = review_policy(review_level)
+        policy = _review_policy(review_level)
 
         async def guard(tool_call: ToolCall) -> ControlToolResult:
             definition = self.tool_adapter.definition_from_tool_call(

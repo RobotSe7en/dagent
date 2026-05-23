@@ -9,8 +9,8 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import CapabilityExecutionError, CapabilityExecutor
 from dagent.schemas import Boundary
 from dagent.schemas import CapabilityInvocation, CapabilityResult
-from dagent.tools.command_tools import CommandExecutionError, run_command
-from dagent.tools.file_tools import create_file_tool_registry
+from dagent.capabilities.tools.command_tools import CommandExecutionError, run_command
+from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
 def run(coro):

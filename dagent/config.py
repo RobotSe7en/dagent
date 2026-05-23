@@ -35,6 +35,7 @@ class DagentConfig(BaseModel):
     provider: ProviderConfig
     profiles: "ProfilesConfig" = Field(default_factory=lambda: ProfilesConfig())
     enable_result_validation: bool = False
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ProfilesConfig(BaseModel):

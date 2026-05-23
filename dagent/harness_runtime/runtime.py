@@ -6,26 +6,27 @@ It does not know how loops execute internally; it only consumes LoopOutcome.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any, Literal
 from pathlib import Path
 
-from dagent.capabilities import CapabilityCatalog
+from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
     TokenHandler,
 )
+from dagent.capabilities.catalog import CapabilityHandler
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
-from dagent.harness_runtime.review_policy import ReviewLevel
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
     _ThinkTagFilter,
     _dag_event_emitter,
 )
+from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
 from dagent.schemas import (
     DAG,
@@ -34,6 +35,7 @@ from dagent.schemas import (
     LoopOutcome,
     RuntimeResponse,
     CapabilityInvocation,
+    CapabilityDefinition,
 )
 
 
@@ -72,6 +74,7 @@ class HarnessRuntime:
         max_validation_retries: int = 1,
         capability_catalog: CapabilityCatalog | None = None,
         capability_executor: CapabilityExecutor | None = None,
+        agent_capability_configs: Iterable[MutableMapping[str, Any]] | None = None,
     ) -> None:
         self.provider = provider
         self.tool_agent = tool_agent
@@ -87,10 +90,62 @@ class HarnessRuntime:
         if capability_executor is not None and capability_executor.catalog is not self.capability_catalog:
             raise ValueError("HarnessRuntime capability_catalog must match capability_executor.catalog.")
         self.capability_executor = capability_executor or CapabilityExecutor(self.capability_catalog)
+        self._agent_capability_configs = list(agent_capability_configs or [])
 
     # ==================================================================
     # Public API
     # ==================================================================
+
+    def register_capability(
+        self,
+        capability: Any,
+        handler: CapabilityHandler | None = None,
+        *,
+        supports_context: bool | None = None,
+    ) -> CapabilityDefinition:
+        definition, resolved_handler, resolved_supports_context = _capability_registration_parts(
+            capability,
+            handler,
+            supports_context=supports_context,
+        )
+        self.capability_catalog.register(
+            definition,
+            resolved_handler,
+            supports_context=resolved_supports_context,
+        )
+        self.refresh_toolsets()
+        return self.capability_catalog.get(definition.id) or definition
+
+    def replace_capability(
+        self,
+        capability: Any,
+        handler: CapabilityHandler | None = None,
+        *,
+        supports_context: bool | None = None,
+    ) -> CapabilityDefinition:
+        definition, resolved_handler, resolved_supports_context = _capability_registration_parts(
+            capability,
+            handler,
+            supports_context=supports_context,
+        )
+        self.capability_catalog.replace(
+            definition,
+            resolved_handler,
+            supports_context=resolved_supports_context,
+        )
+        self.refresh_toolsets()
+        return self.capability_catalog.get(definition.id) or definition
+
+    def refresh_toolsets(self) -> CapabilityToolAdapter:
+        tool_adapter = CapabilityToolAdapter(
+            self.capability_catalog,
+            toolsets=[CapabilityToolset("builtin", tuple(sorted(self.capability_catalog.ids())))],
+        )
+        self.tool_agent.loop.tool_adapter = tool_adapter
+        self.dag_agent.loop.tool_adapter = tool_adapter
+        for config in self._agent_capability_configs:
+            config["tool_adapter"] = tool_adapter
+        return tool_adapter
 
     async def _validate_loop_outcome(
         self,
@@ -215,7 +270,7 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RuntimeResponse | None:
-        state = self.session.pop_review_continuation(review_id)
+        state = self.session.get_review_continuation(review_id)
         if state is None:
             return None
         if state.kind == "capability_review":
@@ -228,6 +283,7 @@ class HarnessRuntime:
             )
             if initial_outcome is None:
                 return None
+            self.session.discard_review_continuation(review_id)
 
             async def run_once(feedback: str | None) -> LoopOutcome:
                 if feedback is None:
@@ -258,7 +314,6 @@ class HarnessRuntime:
             return None
         task_id = state.task_id
         record = self.tasks[task_id]
-        self.session.discard_review_continuations_for_task(task_id)
         thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
         initial_outcome = await self.dag_agent.resume_review(
             state,
@@ -272,6 +327,7 @@ class HarnessRuntime:
         )
         if initial_outcome is None:
             return None
+        self.session.discard_review_continuations_for_task(task_id)
         if initial_outcome.status == "awaiting_review":
             return self._finish_loop_outcome(
                 initial_outcome,
@@ -485,4 +541,27 @@ def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeRes
         events=loop_outcome.events,
         pending_review=loop_outcome.pending_review,
     )
+
+
+def _capability_registration_parts(
+    capability: Any,
+    handler: CapabilityHandler | None,
+    *,
+    supports_context: bool | None,
+) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
+    if isinstance(capability, CapabilityDefinition):
+        if handler is None:
+            raise ValueError("handler is required when registering a CapabilityDefinition.")
+        return capability, handler, bool(supports_context)
+
+    definition = getattr(capability, "definition", None)
+    resolved_handler = handler or getattr(capability, "handler", None)
+    if not isinstance(definition, CapabilityDefinition) or not callable(resolved_handler):
+        raise TypeError("Expected a CapabilityBinding or CapabilityDefinition with handler.")
+    resolved_supports_context = (
+        bool(getattr(capability, "supports_context", False))
+        if supports_context is None
+        else supports_context
+    )
+    return definition, resolved_handler, resolved_supports_context
 
