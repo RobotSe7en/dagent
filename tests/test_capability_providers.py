@@ -3,16 +3,19 @@ import json
 from types import SimpleNamespace
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
     FileCapabilityProvider,
-    MCPCapabilityProvider,
     MemoryCapabilityProvider,
-    SkillCapabilityProvider,
     ShellCapabilityProvider,
     ToolCapabilityProvider,
     _agent_boundary,
 )
+from dagent.capabilities.skills import SkillsCapabilityProvider
+import dagent.capabilities as capabilities_module
+import dagent.capabilities.providers as providers_module
+import dagent.capabilities.skills as skills_module
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.capability_executor import CapabilityExecutionContext
 from dagent.profiles import AgentProfile
@@ -181,6 +184,14 @@ def test_capability_executor_passes_context_to_async_handler(tmp_path) -> None:
     assert seen == {"node_id": "agent_node"}
 
 
+def test_capability_provider_legacy_import_shims_are_removed() -> None:
+    assert not hasattr(providers_module, "MCPCapabilityProvider")
+    assert not hasattr(providers_module, "SkillsCapabilityProvider")
+    assert not hasattr(providers_module, "SkillCapabilityProvider")
+    assert not hasattr(skills_module, "SkillCapabilityProvider")
+    assert not hasattr(capabilities_module, "SkillCapabilityProvider")
+
+
 def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "summarize"
     skill_dir.mkdir(parents=True)
@@ -220,7 +231,7 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
         servers={"mock": {"command": "fake"}},
         manager=FakeMCPManager(),
     ).register_into(registry)
-    SkillCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
+    SkillsCapabilityProvider(skill_roots=[tmp_path / "skills"]).register_into(registry)
     AgentCapabilityProvider(
         agents={
             "helper": {

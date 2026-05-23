@@ -15,6 +15,10 @@ import type {
   RunTrace,
   RunTraceNode,
   RunTraceStatus,
+  SkillDetail,
+  SkillSummary,
+  MCPServer,
+  MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 
@@ -138,6 +142,85 @@ export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnin
     profiles: data.profiles ?? [],
     warnings: data.warnings ?? [],
   };
+}
+
+export async function listSkills(): Promise<SkillSummary[]> {
+  const res = await fetch(`${API_BASE}/skills`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.skills ?? [];
+}
+
+export async function getSkill(name: string): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills/${skillPath(name)}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export async function importSkill(payload: {
+  content: string;
+  name?: string;
+  description?: string;
+  category?: string;
+}): Promise<SkillDetail> {
+  const res = await fetch(`${API_BASE}/skills/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.skill;
+}
+
+export async function deleteImportedSkill(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/skills/imported/${skillPath(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function listMcpServers(): Promise<MCPServer[]> {
+  const res = await fetch(`${API_BASE}/mcp/servers`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.servers ?? [];
+}
+
+export async function createMcpServer(payload: { name: string } & MCPServerConfig): Promise<MCPServer> {
+  const res = await fetch(`${API_BASE}/mcp/servers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.server;
+}
+
+export async function updateMcpServer(name: string, payload: { name: string } & MCPServerConfig): Promise<MCPServer> {
+  const res = await fetch(`${API_BASE}/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.server;
+}
+
+export async function deleteMcpServer(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/mcp/servers/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function reloadMcpServers(): Promise<MCPServer[]> {
+  const res = await fetch(`${API_BASE}/mcp/reload`, { method: 'POST' });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.servers ?? [];
 }
 
 interface DonePayload {
@@ -378,6 +461,10 @@ async function errorMessage(response: Response): Promise<string> {
   } catch {
     return response.statusText;
   }
+}
+
+function skillPath(name: string): string {
+  return name.split('/').map((part) => encodeURIComponent(part)).join('/');
 }
 
 function TraceLogEventFromNode(

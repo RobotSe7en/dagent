@@ -329,6 +329,11 @@ cd web && npm install && npm run dev
 
 ## Python SDK Quick Start
 
+Capability ids use the capability kind as their prefix. Python function tools now use
+`tool.*` ids; the old `custom_tool.*` kind has been removed instead of kept as a
+compatibility alias. Update existing DAG specs, API payloads, and agent capability
+lists from `custom_tool.name` to `tool.name`.
+
 Use `ToolAgent` for profile-backed tool-loop work:
 
 ```python

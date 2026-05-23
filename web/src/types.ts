@@ -8,7 +8,7 @@ export interface Boundary {
   allowed_commands?: string[];
 }
 
-export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'custom_tool' | 'agent' | 'memory' | 'file';
+export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'agent' | 'memory' | 'file';
 
 export interface CapabilityInvocation {
   invocation_id?: string;
@@ -243,3 +243,44 @@ export interface ProfileWarning {
 }
 
 export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents';
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  category?: string | null;
+  path: string;
+}
+
+export interface SkillDetail {
+  success?: boolean;
+  skill: SkillSummary;
+  name: string;
+  description: string;
+  category?: string | null;
+  path: string;
+  metadata: Record<string, unknown>;
+  content: string;
+  linked_files: Record<string, string[]>;
+}
+
+export interface MCPServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string | null;
+  enabled?: boolean;
+  risk?: RiskLevel;
+  connect_timeout?: number;
+  tool_timeout?: number;
+  include_tools?: string[];
+  exclude_tools?: string[];
+}
+
+export interface MCPServer {
+  name: string;
+  source: 'memory' | 'config' | 'runtime';
+  config: MCPServerConfig;
+  status: 'disabled' | 'connected' | 'error' | 'pending';
+  error?: string | null;
+  tools: CapabilityDefinition[];
+}

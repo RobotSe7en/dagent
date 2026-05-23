@@ -43,11 +43,19 @@ import {
 } from 'lucide-react';
 import {
   createCapability,
+  createMcpServer,
+  deleteImportedSkill,
   deleteCapability,
+  deleteMcpServer,
+  getSkill,
   getValidationStatus,
+  importSkill,
   listCapabilities,
   listDagSpecs,
+  listMcpServers,
   listProfiles,
+  listSkills,
+  reloadMcpServers,
   resetSession,
   resumeCapabilityReview,
   resumeDagReview,
@@ -57,6 +65,7 @@ import {
   setValidationEnabled as apiSetValidation,
   streamTask,
   testCapability,
+  updateMcpServer,
   uploadDagSpecArtifact,
 } from './api';
 import type {
@@ -81,6 +90,10 @@ import type {
   TraceLogEvent,
   WorkspaceKey,
   Artifact,
+  MCPServer,
+  MCPServerConfig,
+  SkillDetail,
+  SkillSummary,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -118,7 +131,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
-const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'custom_tool', 'agent', 'memory', 'file'];
+const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'agent', 'memory', 'file'];
 const defaultWorkspaceRoot = '.dagent-runs';
 const directoryInputProps = {
   directory: '',
@@ -145,9 +158,9 @@ const defaultCapabilityPolicy = {
 };
 
 const defaultCustomCapability: CapabilityDefinition = {
-  id: 'custom_tool.example',
+  id: 'tool.example',
   name: 'example',
-  kind: 'custom_tool',
+  kind: 'tool',
   description: '',
   parameters: {
     type: 'object',
@@ -158,6 +171,17 @@ const defaultCustomCapability: CapabilityDefinition = {
     template: 'result:{text}',
   },
   enabled: true,
+};
+
+const defaultMcpConfig: { name: string } & MCPServerConfig = {
+  name: 'local',
+  command: '',
+  args: [],
+  env: {},
+  enabled: true,
+  risk: 'medium',
+  connect_timeout: 30,
+  tool_timeout: 60,
 };
 
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
@@ -388,6 +412,8 @@ export function App() {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileName, setSelectedProfileName] = useState('');
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
@@ -401,15 +427,19 @@ export function App() {
     setConsoleLoading(true);
     setConsoleError(null);
     try {
-      const [nextCapabilities, nextSpecs, nextProfiles] = await Promise.all([
+      const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers] = await Promise.all([
         listCapabilities(),
         listDagSpecs(),
         listProfiles(),
+        listSkills(),
+        listMcpServers(),
       ]);
       setCapabilities(nextCapabilities);
       setDagSpecs(nextSpecs);
       setProfiles(nextProfiles.profiles);
       setProfileWarnings(nextProfiles.warnings);
+      setSkills(nextSkills);
+      setMcpServers(nextMcpServers);
       setSelectedProfileName((current) => current || nextProfiles.profiles[0]?.name || '');
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
@@ -1386,6 +1416,8 @@ export function App() {
         ) : activeWorkspace === 'tools' ? (
           <CapabilityDirectory
             capabilities={capabilities}
+            skills={skills}
+            mcpServers={mcpServers}
             onRefresh={refreshConsoleData}
           />
         ) : (
@@ -2861,32 +2893,65 @@ function ArgumentForm({
 
 function CapabilityDirectory({
   capabilities,
+  skills,
+  mcpServers,
   onRefresh,
 }: {
   capabilities: CapabilityDefinition[];
+  skills: SkillSummary[];
+  mcpServers: MCPServer[];
   onRefresh: () => Promise<void>;
 }) {
+  const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'mcp'>('tools');
   const [query, setQuery] = useState('');
   const [draftCapability, setDraftCapability] = useState<CapabilityDefinition>(defaultCustomCapability);
+  const [draftParametersText, setDraftParametersText] = useState(JSON.stringify(defaultCustomCapability.parameters, null, 2));
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
   const [selectedId, setSelectedId] = useState('');
   const [result, setResult] = useState<CapabilityResult | null>(null);
   const [message, setMessage] = useState('');
+  const [selectedSkillName, setSelectedSkillName] = useState('');
+  const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  const [skillMessage, setSkillMessage] = useState('');
+  const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
+  const [selectedMcpName, setSelectedMcpName] = useState('');
+  const [mcpDraft, setMcpDraft] = useState<{ name: string } & MCPServerConfig>(defaultMcpConfig);
+  const [mcpArgsText, setMcpArgsText] = useState('');
+  const [mcpEnvText, setMcpEnvText] = useState('');
+  const [mcpMessage, setMcpMessage] = useState('');
   const filtered = capabilities.filter((capability) => {
     const haystack = `${capability.id} ${capability.name} ${capability.kind} ${capability.description}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
   const selected = capabilities.find((capability) => capability.id === selectedId) ?? filtered[0];
+  const selectedEditable = Boolean(selected && isEditableToolCapability(selected));
   const grouped = capabilityKinds
     .map((kind) => ({ kind, items: filtered.filter((capability) => capability.kind === kind) }))
     .filter((group) => group.items.length);
+  const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? skills[0];
+  const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
 
   const runCreate = async () => {
-    setMessage('Creating custom tool...');
+    const parameters = parseJsonObject(draftParametersText);
+    if (!parameters) {
+      setMessage('Parameters must be a JSON object.');
+      return;
+    }
+    if (!draftCapability.id.startsWith('tool.')) {
+      setMessage('Tool ID must start with tool.');
+      return;
+    }
+    setMessage('Creating tool...');
     try {
-      await createCapability(draftCapability);
+      const definition = {
+        ...draftCapability,
+        kind: 'tool' as const,
+        parameters,
+      };
+      await createCapability(definition);
       await onRefresh();
-      setMessage(`Created ${draftCapability.id}.`);
+      setSelectedId(definition.id);
+      setMessage(`Created ${definition.id}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -2922,8 +2987,8 @@ function CapabilityDirectory({
   };
 
   const removeCapability = async () => {
-    if (!selected || selected.kind !== 'custom_tool') return;
-    setMessage('Deleting custom tool...');
+    if (!selected || !isEditableToolCapability(selected)) return;
+    setMessage('Deleting tool...');
     try {
       await deleteCapability(selected.id);
       setSelectedId('');
@@ -2934,124 +2999,508 @@ function CapabilityDirectory({
     }
   };
 
+  const openSkill = async (skill: SkillSummary) => {
+    const lookup = skillLookupName(skill);
+    setSelectedSkillName(lookup);
+    setSkillMessage(`Loading ${lookup}...`);
+    try {
+      const detail = await getSkill(lookup);
+      setSkillDetail(detail);
+      setSkillMessage('');
+    } catch (exc) {
+      setSkillDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const importSkillDraft = async () => {
+    setSkillMessage('Importing skill...');
+    try {
+      const detail = await importSkill({
+        content: skillImport.content,
+        name: skillImport.name || undefined,
+        description: skillImport.description || undefined,
+        category: skillImport.category || undefined,
+      });
+      await onRefresh();
+      setSkillDetail(detail);
+      setSelectedSkillName(skillLookupName(detail.skill));
+      setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const removeImportedSkill = async () => {
+    const skill = skillDetail?.skill ?? selectedSkill;
+    if (!skill || !isImportedSkill(skill)) return;
+    setSkillMessage('Removing imported skill...');
+    try {
+      await deleteImportedSkill(skillLookupName(skill));
+      setSkillDetail(null);
+      setSelectedSkillName('');
+      await onRefresh();
+      setSkillMessage(`Removed ${skillLookupName(skill)}.`);
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const loadSkillFile = (file: File | undefined) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
+    };
+    reader.readAsText(file);
+  };
+
+  const selectMcpServer = (server: MCPServer) => {
+    setSelectedMcpName(server.name);
+    setMcpDraft({
+      ...defaultMcpConfig,
+      name: server.name,
+      ...server.config,
+    });
+    setMcpArgsText((server.config.args ?? []).join('\n'));
+    setMcpEnvText(formatEnvText(server.config.env ?? {}));
+  };
+
+  const saveMcpServer = async () => {
+    setMcpMessage('Saving MCP server...');
+    try {
+      const payload = {
+        ...mcpDraft,
+        args: linesFromText(mcpArgsText),
+        env: parseEnvText(mcpEnvText),
+      };
+      const editingExistingMemoryServer = selectedMcp?.source === 'memory' && selectedMcp.name === payload.name;
+      if (editingExistingMemoryServer) {
+        await updateMcpServer(selectedMcp.name, payload);
+      } else {
+        await createMcpServer(payload);
+      }
+      await onRefresh();
+      setSelectedMcpName(payload.name);
+      setMcpMessage(`Saved ${payload.name}.`);
+    } catch (exc) {
+      setMcpMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const removeMcpServer = async () => {
+    if (!selectedMcp || selectedMcp.source !== 'memory') return;
+    setMcpMessage('Deleting MCP server...');
+    try {
+      await deleteMcpServer(selectedMcp.name);
+      setSelectedMcpName('');
+      await onRefresh();
+      setMcpMessage(`Deleted ${selectedMcp.name}.`);
+    } catch (exc) {
+      setMcpMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const reloadMcp = async () => {
+    setMcpMessage('Reloading MCP servers...');
+    try {
+      await reloadMcpServers();
+      await onRefresh();
+      setMcpMessage('MCP servers reloaded.');
+    } catch (exc) {
+      setMcpMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
   return (
     <section className="console-grid directory-grid">
       <aside className="console-sidebar">
-        <PaneTitle icon={<Wrench size={18} />} title="Capabilities" />
-        <label className="search-field">
-          <Search size={15} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capabilities" />
-        </label>
-        <div className="resource-list">
-          {grouped.map((group) => (
-            <div key={group.kind} className="resource-group">
-              <h3>{group.kind}</h3>
-              {group.items.map((capability) => (
-                <button
-                  key={capability.id}
-                  className={selected?.id === capability.id ? 'resource-row active' : 'resource-row'}
-                  type="button"
-                  onClick={() => setSelectedId(capability.id)}
-                >
-                  <strong>{capability.name}</strong>
-                  <span>{capability.id}</span>
-                </button>
-              ))}
-            </div>
+        <PaneTitle icon={<Wrench size={18} />} title="Capability Workbench" />
+        <div className="capability-tabs" role="tablist" aria-label="Capability workbench sections">
+          {(['tools', 'skills', 'mcp'] as const).map((tab) => (
+            <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)} type="button">
+              {tab}
+            </button>
           ))}
         </div>
+        {activeTab === 'tools' ? (
+          <>
+            <label className="search-field">
+              <Search size={15} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capabilities" />
+            </label>
+            <div className="resource-list">
+              {grouped.map((group) => (
+                <div key={group.kind} className="resource-group">
+                  <h3>{group.kind}</h3>
+                  {group.items.map((capability) => (
+                    <button
+                      key={capability.id}
+                      className={selected?.id === capability.id ? 'resource-row active' : 'resource-row'}
+                      type="button"
+                      onClick={() => setSelectedId(capability.id)}
+                    >
+                      <strong>{capability.name}</strong>
+                      <span>{capability.id}</span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </>
+        ) : activeTab === 'skills' ? (
+          <div className="resource-list">
+            {skills.length ? skills.map((skill) => (
+              <button
+                key={skill.path}
+                className={skillLookupName(selectedSkill ?? skill) === skillLookupName(skill) ? 'resource-row active' : 'resource-row'}
+                type="button"
+                onClick={() => void openSkill(skill)}
+              >
+                <strong>{skill.name}</strong>
+                <span>{skill.category ? `${skill.category} · ${skill.path}` : skill.path}</span>
+              </button>
+            )) : <div className="empty-state compact">No skills found.</div>}
+          </div>
+        ) : (
+          <div className="resource-list">
+            {mcpServers.length ? mcpServers.map((server) => (
+              <button
+                key={server.name}
+                className={selectedMcp?.name === server.name ? 'resource-row active' : 'resource-row'}
+                type="button"
+                onClick={() => selectMcpServer(server)}
+              >
+                <strong>{server.name}</strong>
+                <span>{server.status} · {server.tools.length} tools · {server.source}</span>
+              </button>
+            )) : <div className="empty-state compact">No MCP servers configured.</div>}
+          </div>
+        )}
       </aside>
       <section className="console-detail wide">
-        <PaneTitle icon={<Database size={18} />} title="Capability Detail" />
-        {selected ? (
-          <div className="directory-detail">
-            <div className="detail-header">
-              <div>
-                <h2>{selected.name}</h2>
-                <p>{selected.id}</p>
+        {activeTab === 'tools' ? (
+          <>
+            <PaneTitle icon={<Database size={18} />} title="Capability Detail" />
+            {selected ? (
+              <div className="directory-detail">
+                <div className="detail-header">
+                  <div>
+                    <h2>{selected.name}</h2>
+                    <p>{selected.id}</p>
+                  </div>
+                  <span className={`risk-badge risk-${selected.policy.risk}`}>{selected.policy.risk}</span>
+                </div>
+                <div className="metadata-grid">
+                  <span>Kind</span><strong>{selected.kind}</strong>
+                  <span>Status</span><strong>{selected.enabled ? 'enabled' : 'disabled'}</strong>
+                  <span>Source</span><strong>{selectedEditable ? 'memory tool' : 'backend/config readonly'}</strong>
+                </div>
+                <p>{selected.description || 'No description.'}</p>
+                <div className="two-col">
+                  <section className="code-panel">
+                    <h3>Parameters</h3>
+                    <pre>{JSON.stringify(selected.parameters, null, 2)}</pre>
+                  </section>
+                  <section className="code-panel">
+                    <h3>Config</h3>
+                    <pre>{JSON.stringify(selected.config, null, 2)}</pre>
+                  </section>
+                </div>
+                <section className="code-panel">
+                  <h3>Test Arguments</h3>
+                  <textarea value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} />
+                  <div className="inline-actions">
+                    <button className="primary-button compact-button" onClick={runTest} type="button">
+                      <Play size={16} />
+                      Test
+                    </button>
+                    <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selected.enabled)} disabled={!selectedEditable} type="button">
+                      {selected.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                    <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedEditable} type="button">
+                      Delete
+                    </button>
+                  </div>
+                  {message ? <p className="form-message">{message}</p> : null}
+                  {result ? <pre>{JSON.stringify(result, null, 2)}</pre> : null}
+                </section>
+                {!selectedEditable ? <div className="readonly-note">This capability is provided by backend configuration and is read-only in the MVP.</div> : null}
               </div>
-              <span className={`risk-badge risk-${selected.policy.risk}`}>{selected.policy.risk}</span>
-            </div>
-            <div className="metadata-grid">
-              <span>Kind</span><strong>{selected.kind}</strong>
-              <span>Status</span><strong>{selected.enabled ? 'enabled' : 'disabled'}</strong>
-              <span>Source</span><strong>{selected.kind === 'custom_tool' ? 'custom editable' : 'backend/config readonly'}</strong>
-            </div>
-            <p>{selected.description || 'No description.'}</p>
-            <div className="two-col">
-              <section className="code-panel">
-                <h3>Parameters</h3>
-                <pre>{JSON.stringify(selected.parameters, null, 2)}</pre>
-              </section>
-              <section className="code-panel">
-                <h3>Config</h3>
-                <pre>{JSON.stringify(selected.config, null, 2)}</pre>
-              </section>
-            </div>
-            <section className="code-panel">
-              <h3>Test Arguments</h3>
-              <textarea value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} />
+            ) : <div className="empty-state compact">No capabilities loaded.</div>}
+          </>
+        ) : activeTab === 'skills' ? (
+          <>
+            <PaneTitle icon={<FileText size={18} />} title="Skill Detail" />
+            <div className="directory-detail">
+              {skillDetail ? (
+                <>
+                  <div className="detail-header">
+                    <div>
+                      <h2>{skillDetail.name}</h2>
+                      <p>{skillDetail.category ? `${skillDetail.category}/${skillDetail.name}` : skillDetail.name}</p>
+                    </div>
+                    <span className="status-badge" data-status={isImportedSkill(skillDetail.skill) ? 'approved' : 'completed'}>
+                      {isImportedSkill(skillDetail.skill) ? 'imported' : 'local'}
+                    </span>
+                  </div>
+                  <p>{skillDetail.description || 'No description.'}</p>
+                  <section className="code-panel">
+                    <h3>Content</h3>
+                    <pre>{skillDetail.content}</pre>
+                  </section>
+                  <section className="code-panel">
+                    <h3>Metadata</h3>
+                    <pre>{JSON.stringify(skillDetail.metadata, null, 2)}</pre>
+                  </section>
+                </>
+              ) : selectedSkill ? (
+                <div className="readonly-note">Select a skill to load its normalized content.</div>
+              ) : (
+                <div className="empty-state compact">No skill selected.</div>
+              )}
               <div className="inline-actions">
-                <button className="primary-button compact-button" onClick={runTest} type="button">
-                  <Play size={16} />
-                  Test
-                </button>
-                <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selected.enabled)} disabled={selected.kind !== 'custom_tool'} type="button">
-                  {selected.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={selected.kind !== 'custom_tool'} type="button">
-                  Delete
+                {selectedSkill ? (
+                  <button className="secondary-button compact-button" onClick={() => void openSkill(selectedSkill)} type="button">
+                    <Search size={16} />
+                    View
+                  </button>
+                ) : null}
+                <button className="secondary-button danger-button compact-button" onClick={removeImportedSkill} disabled={!skillDetail || !isImportedSkill(skillDetail.skill)} type="button">
+                  Delete imported
                 </button>
               </div>
-              {message ? <p className="form-message">{message}</p> : null}
-              {result ? <pre>{JSON.stringify(result, null, 2)}</pre> : null}
-            </section>
-            {selected.kind !== 'custom_tool' ? <div className="readonly-note">This capability is provided by backend configuration and is read-only in the MVP.</div> : null}
-          </div>
-        ) : <div className="empty-state compact">No capabilities loaded.</div>}
+              {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <PaneTitle icon={<Database size={18} />} title="MCP Server Detail" />
+            <div className="directory-detail">
+              {selectedMcp ? (
+                <>
+                  <div className="detail-header">
+                    <div>
+                      <h2>{selectedMcp.name}</h2>
+                      <p>{selectedMcp.source}</p>
+                    </div>
+                    <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
+                      {selectedMcp.status}
+                    </span>
+                  </div>
+                  {selectedMcp.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
+                  <div className="metadata-grid">
+                    <span>Command</span><strong>{selectedMcp.config.command || 'not set'}</strong>
+                    <span>Risk</span><strong>{selectedMcp.config.risk ?? 'medium'}</strong>
+                    <span>Tools</span><strong>{selectedMcp.tools.length}</strong>
+                  </div>
+                  <section className="code-panel">
+                    <h3>Discovered Tools</h3>
+                    <pre>{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
+                  </section>
+                </>
+              ) : <div className="empty-state compact">No MCP server selected.</div>}
+              <div className="inline-actions">
+                <button className="secondary-button compact-button" onClick={() => void reloadMcp()} type="button">
+                  <RefreshCw size={16} />
+                  Reload
+                </button>
+                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || selectedMcp.source !== 'memory'} type="button">
+                  Delete memory server
+                </button>
+              </div>
+              {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
+            </div>
+          </>
+        )}
       </section>
       <aside className="console-sidebar">
-        <PaneTitle icon={<Plus size={18} />} title="New custom_tool" />
-        <div className="spec-meta-form">
-          <label>
-            ID
-            <input
-              value={draftCapability.id}
-              onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value }))}
-            />
-          </label>
-          <label>
-            Name
-            <input
-              value={draftCapability.name}
-              onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value }))}
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              value={draftCapability.description}
-              onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value }))}
-            />
-          </label>
-          <label>
-            Template
-            <textarea
-              value={String(draftCapability.config.template ?? '')}
-              onChange={(event) => setDraftCapability((current) => ({
-                ...current,
-                config: { ...current.config, template: event.target.value },
-              }))}
-            />
-          </label>
-          <button className="primary-button" onClick={runCreate} type="button">
-            <Plus size={16} />
-            Create custom_tool
-          </button>
-        </div>
+        {activeTab === 'tools' ? (
+          <>
+            <PaneTitle icon={<Plus size={18} />} title="New tool" />
+            <div className="spec-meta-form">
+              <label>
+                ID
+                <input
+                  value={draftCapability.id}
+                  onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))}
+                />
+              </label>
+              <label>
+                Name
+                <input
+                  value={draftCapability.name}
+                  onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))}
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  value={draftCapability.description}
+                  onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))}
+                />
+              </label>
+              <div className="two-col">
+                <label>
+                  Risk
+                  <select
+                    value={draftCapability.policy.risk}
+                    onChange={(event) => setDraftCapability((current) => ({
+                      ...current,
+                      kind: 'tool',
+                      policy: { ...current.policy, risk: event.target.value as RiskLevel },
+                    }))}
+                  >
+                    {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+                  </select>
+                </label>
+                <label className="checkbox-line">
+                  <input
+                    type="checkbox"
+                    checked={draftCapability.policy.requires_review}
+                    onChange={(event) => setDraftCapability((current) => ({
+                      ...current,
+                      kind: 'tool',
+                      policy: { ...current.policy, requires_review: event.target.checked },
+                    }))}
+                  />
+                  Requires review
+                </label>
+              </div>
+              <label>
+                Parameters JSON Schema
+                <textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} />
+              </label>
+              <label>
+                Template
+                <textarea
+                  value={String(draftCapability.config.template ?? '')}
+                  onChange={(event) => setDraftCapability((current) => ({
+                    ...current,
+                    kind: 'tool',
+                    config: { ...current.config, template: event.target.value },
+                  }))}
+                />
+              </label>
+              <button className="primary-button" onClick={runCreate} type="button">
+                <Plus size={16} />
+                Create tool
+              </button>
+            </div>
+          </>
+        ) : activeTab === 'skills' ? (
+          <>
+            <PaneTitle icon={<FolderUp size={18} />} title="Import skill" />
+            <div className="spec-meta-form">
+              <label>
+                Name
+                <input value={skillImport.name} onChange={(event) => setSkillImport((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label>
+                Category
+                <input value={skillImport.category} onChange={(event) => setSkillImport((current) => ({ ...current, category: event.target.value }))} />
+              </label>
+              <label>
+                Description
+                <textarea value={skillImport.description} onChange={(event) => setSkillImport((current) => ({ ...current, description: event.target.value }))} />
+              </label>
+              <label>
+                SKILL.md
+                <textarea value={skillImport.content} onChange={(event) => setSkillImport((current) => ({ ...current, content: event.target.value }))} />
+              </label>
+              <label>
+                Upload
+                <input type="file" accept=".md,text/markdown,text/plain" onChange={(event) => loadSkillFile(event.target.files?.[0])} />
+              </label>
+              <div className="readonly-note">Imported skills are in-memory instructions only. Linked folders and scripts are not imported or executed in this MVP.</div>
+              <button className="primary-button" onClick={importSkillDraft} type="button">
+                <Upload size={16} />
+                Import skill
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <PaneTitle icon={<Plus size={18} />} title="Stdio MCP server" />
+            <div className="spec-meta-form">
+              <label>
+                Name
+                <input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label>
+                Command
+                <input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} />
+              </label>
+              <label>
+                Args
+                <textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="One argument per line" />
+              </label>
+              <label>
+                Env
+                <textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" />
+              </label>
+              <div className="two-col">
+                <label>
+                  Risk
+                  <select value={mcpDraft.risk ?? 'medium'} onChange={(event) => setMcpDraft((current) => ({ ...current, risk: event.target.value as RiskLevel }))}>
+                    {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+                  </select>
+                </label>
+                <label className="checkbox-line">
+                  <input type="checkbox" checked={mcpDraft.enabled !== false} onChange={(event) => setMcpDraft((current) => ({ ...current, enabled: event.target.checked }))} />
+                  Enabled
+                </label>
+              </div>
+              <div className="two-col">
+                <label>
+                  Connect timeout
+                  <input type="number" value={mcpDraft.connect_timeout ?? 30} onChange={(event) => setMcpDraft((current) => ({ ...current, connect_timeout: Number(event.target.value) }))} />
+                </label>
+                <label>
+                  Tool timeout
+                  <input type="number" value={mcpDraft.tool_timeout ?? 60} onChange={(event) => setMcpDraft((current) => ({ ...current, tool_timeout: Number(event.target.value) }))} />
+                </label>
+              </div>
+              <button className="primary-button" onClick={saveMcpServer} type="button">
+                <Save size={16} />
+                Save MCP server
+              </button>
+            </div>
+          </>
+        )}
       </aside>
     </section>
   );
+}
+
+function isEditableToolCapability(capability: CapabilityDefinition): boolean {
+  return capability.kind === 'tool' && Object.prototype.hasOwnProperty.call(capability.config, 'template');
+}
+
+function skillLookupName(skill: SkillSummary): string {
+  return skill.category ? `${skill.category}/${skill.name}` : skill.name;
+}
+
+function isImportedSkill(skill: SkillSummary): boolean {
+  return skill.path.startsWith('memory://');
+}
+
+function linesFromText(value: string): string[] {
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function parseEnvText(value: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const line of linesFromText(value)) {
+    const index = line.indexOf('=');
+    if (index <= 0) throw new Error(`Invalid env line: ${line}`);
+    env[line.slice(0, index).trim()] = line.slice(index + 1).trim();
+  }
+  return env;
+}
+
+function formatEnvText(env: Record<string, string>): string {
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n');
 }
 
 function AgentDirectory({

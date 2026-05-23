@@ -11,6 +11,7 @@ from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.providers import AgentCapabilityProvider
+from dagent.capabilities.skills import ImportedSkillEntry
 from dagent.dag_builder import Dag
 from dagent.config import load_config
 from dagent.harness_runtime import (
@@ -51,6 +52,9 @@ class Runner:
         provider: ChatProvider | None = None,
         capabilities: Iterable[CapabilityLike] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
+        skill_roots: list[str | Path] | None = None,
+        imported_skills: dict[str, ImportedSkillEntry] | None = None,
+        mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = Path(workspace)
         self._runtime = _create_runtime(
@@ -58,6 +62,9 @@ class Runner:
             provider=provider,
             capabilities=capabilities,
             validator=validator,
+            skill_roots=skill_roots,
+            imported_skills=imported_skills,
+            mcp_servers=mcp_servers,
         )
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
         self._registered_agent_configs: dict[str, ToolAgent] = {}
@@ -70,6 +77,10 @@ class Runner:
     @property
     def capabilities(self) -> list[CapabilityDefinition]:
         return self._runtime.capability_catalog.list(enabled_only=True)
+
+    def close(self) -> None:
+        self._runtime.capability_catalog.shutdown()
+        self._pending_runtimes.clear()
 
     def add_capability(self, capability: CapabilityLike) -> CapabilityDefinition:
         definition = _register_capability(self._runtime, capability)
@@ -335,11 +346,14 @@ def _create_runtime(
     tool_max_steps: int = 8,
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
+    skill_roots: list[str | Path] | None = None,
+    imported_skills: dict[str, ImportedSkillEntry] | None = None,
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     try:
         config = load_config()
-    except Exception:
+    except FileNotFoundError:
         if provider is None:
             raise
         config = None
@@ -348,9 +362,16 @@ def _create_runtime(
     else:
         assert config is not None
         resolved_provider = OpenAICompatibleProvider(config.provider)
+    resolved_mcp_servers: dict[str, dict[str, Any]] = {}
+    if config is not None:
+        resolved_mcp_servers.update(config.mcp_servers)
+    if mcp_servers is not None:
+        resolved_mcp_servers.update(mcp_servers)
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
-        mcp_servers=config.mcp_servers if config is not None else None,
+        skill_roots=skill_roots,
+        imported_skills=imported_skills,
+        mcp_servers=resolved_mcp_servers,
     )
     capability_executor = CapabilityExecutor(catalog)
     for capability in capabilities:

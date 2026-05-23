@@ -16,13 +16,20 @@ from dagent.config import load_config
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime import RuntimeMode
+from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
-from dagent.capabilities.skills import default_skill_roots, scan_skill_roots, skill_view_payload
+from dagent.capabilities.skills import (
+    ImportedSkillEntry,
+    default_skill_roots,
+    list_skill_entries,
+    read_skill_markdown_text,
+    skill_view_payload,
+)
 from dagent.profiles import ProfileStore
 from dagent.review import ReviewLevel
 from dagent.runner import Runner
 from dagent.schemas import DAG, DAGRun, DAGSpec
-from dagent.schemas import CapabilityDefinition, CapabilityInvocation
+from dagent.schemas import CapabilityDefinition, CapabilityInvocation, RiskLevel
 
 
 class MessageRequest(BaseModel):
@@ -47,6 +54,27 @@ class DAGSpecRunRequest(BaseModel):
     workspace_root: str | None = None
 
 
+class SkillImportRequest(BaseModel):
+    content: str = Field(min_length=1)
+    name: str | None = None
+    description: str | None = None
+    category: str | None = None
+
+
+class MCPServerRequest(BaseModel):
+    name: str = Field(min_length=1)
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    enabled: bool = True
+    risk: RiskLevel = "medium"
+    connect_timeout: float = 30
+    tool_timeout: float = 60
+    include_tools: list[str] = Field(default_factory=list)
+    exclude_tools: list[str] = Field(default_factory=list)
+
+
 class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
@@ -54,11 +82,30 @@ class ApiState:
         self.dag_runs: dict[str, DAGRun] = {}
         self.dag_spec_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
+        self.custom_capabilities: dict[str, CapabilityDefinition] = {}
+        self.imported_skills: dict[str, ImportedSkillEntry] = {}
+        self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
+        self.custom_mcp_capability_ids: set[str] = set()
+        self.custom_mcp_errors: dict[str, str] = {}
+        self.mcp_provider_factory = MCPCapabilityProvider
 
     def get_runner(self) -> Runner:
         if self.runner is None:
-            self.runner = Runner(workspace=".")
+            self.runner = Runner(
+                workspace=".",
+                skill_roots=self.get_skill_roots(),
+                imported_skills=self.imported_skills,
+            )
+            self._install_custom_capabilities()
+            self.reload_custom_mcp()
         return self.runner
+
+    def close_runner(self) -> None:
+        if self.runner is not None:
+            self.runner.close()
+        self.runner = None
+        self.custom_mcp_capability_ids.clear()
+        self.custom_mcp_errors.clear()
 
     def get_runtime(self):
         runner = self.get_runner()
@@ -74,6 +121,42 @@ class ApiState:
 
     def get_skill_roots(self) -> list[Path]:
         return default_skill_roots()
+
+    def _install_custom_capabilities(self) -> None:
+        if self.runner is None:
+            return
+        runtime = self.runner.runtime
+        for definition in self.custom_capabilities.values():
+            if runtime.capability_catalog.get(definition.id) is None:
+                runtime.register_capability(definition, _handler_for_definition(definition))
+
+    def reload_custom_mcp(self) -> None:
+        if self.runner is None:
+            return
+        runtime = self.runner.runtime
+        for capability_id in list(self.custom_mcp_capability_ids):
+            runtime.capability_catalog.delete(capability_id)
+        self.custom_mcp_capability_ids.clear()
+        self.custom_mcp_errors.clear()
+        if not self.custom_mcp_servers:
+            runtime.refresh_toolsets()
+            return
+        before_ids = set(runtime.capability_catalog.ids())
+        provider = self.mcp_provider_factory(self.custom_mcp_servers)
+        provider.register_into(runtime.capability_catalog)
+        after_ids = set(runtime.capability_catalog.ids())
+        self.custom_mcp_capability_ids = {
+            capability_id
+            for capability_id in after_ids - before_ids
+            if capability_id.startswith("mcp.")
+        }
+        manager = getattr(provider, "manager", None)
+        manager_errors = getattr(manager, "last_errors", {}) if manager is not None else {}
+        self.custom_mcp_errors = {
+            str(server): str(error)
+            for server, error in dict(manager_errors or {}).items()
+        }
+        runtime.refresh_toolsets()
 
 
 state = ApiState()
@@ -106,10 +189,13 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
-    state.runner = None
+    state.close_runner()
     state.dag_specs.clear()
     state.dag_runs.clear()
     state.dag_spec_artifact_uploads.clear()
+    state.custom_capabilities.clear()
+    state.imported_skills.clear()
+    state.custom_mcp_servers.clear()
     return {"status": "ok"}
 
 
@@ -299,8 +385,12 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 @app.post("/capabilities")
 async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     runtime = state.get_runtime()
-    _install_capability(runtime, definition)
-    return {"capability": definition.model_dump(mode="json")}
+    try:
+        _install_capability(runtime, definition)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    return {"capability": runtime.capability_catalog.get(definition.id).model_dump(mode="json")}
 
 
 @app.put("/capabilities/{capability_id}")
@@ -310,8 +400,12 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
         raise HTTPException(status_code=400, detail="Capability id mismatch.")
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
-    _replace_capability(runtime, definition)
-    return {"capability": definition.model_dump(mode="json")}
+    try:
+        _replace_capability(runtime, definition)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    return {"capability": runtime.capability_catalog.get(definition.id).model_dump(mode="json")}
 
 
 @app.delete("/capabilities/{capability_id}")
@@ -320,6 +414,7 @@ async def delete_capability(capability_id: str) -> dict[str, str]:
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     runtime.capability_catalog.delete(capability_id)
+    state.custom_capabilities.pop(capability_id, None)
     runtime.refresh_toolsets()
     return {"status": "deleted"}
 
@@ -337,26 +432,96 @@ async def disable_capability(capability_id: str) -> dict[str, Any]:
 @app.get("/mcp/servers")
 async def list_mcp_servers() -> dict[str, Any]:
     runtime = state.get_runtime()
-    servers = sorted({
-        definition.config.get("server")
-        for definition in runtime.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
-        if definition.config.get("server")
-    })
-    return {"servers": servers}
+    return {"servers": _mcp_server_payloads(runtime)}
+
+
+@app.post("/mcp/servers")
+async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
+    name = _clean_name(request.name, field="MCP server name")
+    if name in _configured_mcp_server_names():
+        raise HTTPException(status_code=400, detail=f"MCP server '{name}' is already configured.")
+    if name in state.custom_mcp_servers:
+        raise HTTPException(status_code=400, detail=f"MCP server '{name}' already exists.")
+    state.custom_mcp_servers[name] = _mcp_server_config(request)
+    try:
+        state.reload_custom_mcp()
+    except Exception as exc:
+        state.custom_mcp_errors[name] = str(exc)
+    return {"server": _mcp_server_payload(name, "memory", state.custom_mcp_servers[name], state.get_runtime())}
+
+
+@app.put("/mcp/servers/{name}")
+async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, Any]:
+    server_name = _clean_name(name, field="MCP server name")
+    body_name = _clean_name(request.name, field="MCP server name")
+    if body_name != server_name:
+        raise HTTPException(status_code=400, detail="MCP server name mismatch.")
+    if server_name not in state.custom_mcp_servers:
+        raise HTTPException(status_code=404, detail="MCP server not found.")
+    state.custom_mcp_servers[server_name] = _mcp_server_config(request)
+    try:
+        state.reload_custom_mcp()
+    except Exception as exc:
+        state.custom_mcp_errors[server_name] = str(exc)
+    return {"server": _mcp_server_payload(server_name, "memory", state.custom_mcp_servers[server_name], state.get_runtime())}
+
+
+@app.delete("/mcp/servers/{name}")
+async def delete_mcp_server(name: str) -> dict[str, str]:
+    server_name = _clean_name(name, field="MCP server name")
+    if server_name not in state.custom_mcp_servers:
+        raise HTTPException(status_code=404, detail="MCP server not found.")
+    state.custom_mcp_servers.pop(server_name, None)
+    state.reload_custom_mcp()
+    return {"status": "deleted"}
+
+
+@app.post("/mcp/reload")
+async def reload_mcp_servers() -> dict[str, Any]:
+    state.reload_custom_mcp()
+    return await list_mcp_servers()
 
 
 @app.get("/skills")
 async def list_skills() -> dict[str, Any]:
-    return {"skills": [skill.as_list_item() for skill in scan_skill_roots(state.get_skill_roots())]}
+    return {
+        "skills": [
+            skill.as_list_item()
+            for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills)
+        ]
+    }
 
 
 @app.get("/skills/{name:path}")
 async def get_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
-    payload = skill_view_payload(name, state.get_skill_roots(), file_path=file_path)
+    payload = skill_view_payload(
+        name,
+        state.get_skill_roots(),
+        file_path=file_path,
+        imported_skills=state.imported_skills,
+    )
     if payload.get("success") is False:
         status_code = 400 if payload.get("matches") else 404
         raise HTTPException(status_code=status_code, detail=payload)
     return payload
+
+
+@app.post("/skills/import")
+async def import_skill(request: SkillImportRequest) -> dict[str, Any]:
+    skill = _imported_skill_from_request(request)
+    if _skill_name_collides(skill):
+        raise HTTPException(status_code=400, detail=f"Skill '{skill.qualified_name}' collides with an existing skill.")
+    state.imported_skills[skill.qualified_name] = skill
+    return {"skill": skill_view_payload(skill.qualified_name, state.get_skill_roots(), imported_skills=state.imported_skills)}
+
+
+@app.delete("/skills/imported/{name:path}")
+async def delete_imported_skill(name: str) -> dict[str, str]:
+    key = _imported_skill_key(name)
+    if key not in state.imported_skills:
+        raise HTTPException(status_code=404, detail="Imported skill not found.")
+    state.imported_skills.pop(key, None)
+    return {"status": "deleted"}
 
 
 @app.get("/profiles")
@@ -400,6 +565,11 @@ def _handler_for_definition(definition: CapabilityDefinition):
         raise HTTPException(
             status_code=400,
             detail="Only tool capabilities can be created through this endpoint.",
+        )
+    if not definition.id.startswith("tool."):
+        raise HTTPException(
+            status_code=400,
+            detail="Tool capability ids must start with 'tool.'.",
         )
     return template_capability_handler(str(definition.config.get("template", "")))
 
@@ -583,6 +753,149 @@ def _review_payload(review) -> dict[str, Any]:
             "arguments": review.capability_call["arguments"],
         }
     return payload
+
+
+def _configured_mcp_server_names() -> set[str]:
+    try:
+        return set(load_config().mcp_servers)
+    except Exception:
+        return set()
+
+
+def _mcp_server_config(request: MCPServerRequest) -> dict[str, Any]:
+    command = request.command.strip()
+    if request.enabled and not command:
+        raise HTTPException(status_code=400, detail="Enabled MCP servers require a command.")
+    config: dict[str, Any] = {
+        "command": command,
+        "args": [str(arg) for arg in request.args],
+        "env": {str(key): str(value) for key, value in request.env.items()},
+        "enabled": request.enabled,
+        "risk": request.risk,
+        "connect_timeout": request.connect_timeout,
+        "tool_timeout": request.tool_timeout,
+    }
+    if request.cwd:
+        config["cwd"] = request.cwd
+    if request.include_tools:
+        config["include_tools"] = [str(tool) for tool in request.include_tools]
+    if request.exclude_tools:
+        config["exclude_tools"] = [str(tool) for tool in request.exclude_tools]
+    return config
+
+
+def _mcp_server_payloads(runtime) -> list[dict[str, Any]]:
+    servers: dict[str, tuple[str, dict[str, Any]]] = {}
+    try:
+        for name, config in load_config().mcp_servers.items():
+            servers[str(name)] = ("config", dict(config))
+    except Exception:
+        pass
+    for name, config in state.custom_mcp_servers.items():
+        servers[str(name)] = ("memory", dict(config))
+    capability_servers = {
+        str(definition.config.get("server"))
+        for definition in runtime.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
+        if definition.config.get("server")
+    }
+    for name in capability_servers:
+        servers.setdefault(name, ("runtime", {}))
+    return [
+        _mcp_server_payload(name, source, config, runtime)
+        for name, (source, config) in sorted(servers.items())
+    ]
+
+
+def _mcp_server_payload(name: str, source: str, config: dict[str, Any], runtime) -> dict[str, Any]:
+    tools = [
+        definition.model_dump(mode="json")
+        for definition in runtime.capability_catalog.list(kind="mcp")  # type: ignore[arg-type]
+        if definition.config.get("server") == name
+    ]
+    error = state.custom_mcp_errors.get(name)
+    enabled = bool(config.get("enabled", True))
+    status = "disabled" if not enabled else "connected" if tools else "error" if error else "pending"
+    return {
+        "name": name,
+        "source": source,
+        "config": config,
+        "status": status,
+        "error": error,
+        "tools": tools,
+    }
+
+
+def _imported_skill_from_request(request: SkillImportRequest) -> ImportedSkillEntry:
+    metadata, body = read_skill_markdown_text(request.content)
+    name = _clean_name(request.name or metadata.get("name") or "", field="Skill name")
+    category_value = request.category if request.category is not None else metadata.get("category")
+    category = _clean_optional_name(category_value, field="Skill category")
+    description = (
+        request.description
+        if request.description is not None and request.description.strip()
+        else metadata.get("description")
+        if metadata.get("description")
+        else _skill_description_from_body(body)
+    )
+    normalized_metadata = dict(metadata)
+    normalized_metadata["name"] = name
+    normalized_metadata["description"] = str(description or "")
+    if category:
+        normalized_metadata["category"] = category
+    return ImportedSkillEntry(
+        name=name,
+        description=str(description or ""),
+        category=category,
+        content=body,
+        metadata=normalized_metadata,
+    )
+
+
+def _skill_description_from_body(body: str) -> str:
+    for line in body.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:160]
+    return ""
+
+
+def _skill_name_collides(candidate: ImportedSkillEntry) -> bool:
+    for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills):
+        if skill.name == candidate.name or skill.qualified_name == candidate.qualified_name:
+            return True
+    return False
+
+
+def _imported_skill_key(name: str) -> str:
+    query = name.strip()
+    if query in state.imported_skills:
+        return query
+    matches = [key for key, skill in state.imported_skills.items() if query in {skill.name, skill.qualified_name}]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HTTPException(status_code=400, detail="Imported skill name is ambiguous.")
+    return query
+
+
+def _clean_name(value: Any, *, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{field} is required.")
+    if "/" in text or "\\" in text:
+        raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
+    return text
+
+
+def _clean_optional_name(value: Any, *, field: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "/" in text or "\\" in text:
+        raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
+    return text
 
 
 def _sse(payload: dict[str, Any]) -> str:

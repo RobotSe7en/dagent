@@ -247,6 +247,36 @@ def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
         runner.add_capability(second)
 
 
+def test_runner_close_shuts_down_capability_resources(tmp_path) -> None:
+    closed: list[str] = []
+    provider = MockProvider([])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner.runtime.capability_catalog.add_shutdown_hook(lambda: closed.append("closed"))
+
+    runner.close()
+    runner.close()
+
+    assert closed == ["closed"]
+
+
+def test_runner_with_injected_provider_allows_missing_config(tmp_path, monkeypatch) -> None:
+    provider = MockProvider([])
+    monkeypatch.setenv("DAGENT_CONFIG", str(tmp_path / "missing.yaml"))
+
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    assert runner.runtime.provider is provider
+
+
+def test_runner_with_injected_provider_surfaces_invalid_config(tmp_path, monkeypatch) -> None:
+    bad_config = tmp_path / "config.yaml"
+    bad_config.write_text("provider: [", encoding="utf-8")
+    monkeypatch.setenv("DAGENT_CONFIG", str(bad_config))
+
+    with pytest.raises(Exception):
+        dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+
+
 def _profile_root(tmp_path, name: str = "conversation"):
     profiles = tmp_path / "profiles"
     profile = profiles / name
