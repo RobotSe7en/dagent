@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
-    "httpx[socks]>=0.28.1",
     "openai>=1.0",
     "pydantic>=2.0",
     "python-multipart>=0.0.20",
@@ -16,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx[socks]>=0.28.1",
     "pytest-asyncio>=0.23",
     "pytest>=8.0",
 ]

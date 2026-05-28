@@ -107,6 +107,41 @@ def test_tool_agent_scope_filters_tools_and_injects_skill_prompt(tmp_path: Path)
     assert "write_file" not in system_content
 
 
+def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes.txt", "content": "hi"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Recovered without writing."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run(
+            "Only read files",
+            capability_scope=CapabilityScope(capability_ids=("tool.read_file",)),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.invocations == []
+    assert result.final_answer == "Recovered without writing."
+    assert not (tmp_path / "notes.txt").exists()
+    tool_message = next(message for message in result.messages if message["role"] == "tool")
+    assert tool_message["role"] == "tool"
+    assert tool_message["name"] == "write_file"
+    assert "[TOOL_ERROR]" in tool_message["content"]
+    assert "write_file" in tool_message["content"]
+
+
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     tmp_path: Path,
 ) -> None:
