@@ -58,8 +58,10 @@ def test_skills_provider_registers_progressive_disclosure_tools(tmp_path) -> Non
         }
     ]
     assert viewed["linked_files"] == {"references": ["references/style.md"]}
+    assert viewed["skill_dir"] == str(skill_dir.resolve())
     assert "Use concise summaries." in viewed["content"]
     assert reference["content"] == "Prefer short prose."
+    assert reference["skill_dir"] == str(skill_dir.resolve())
 
 
 def test_skill_view_rejects_ambiguous_names_and_path_traversal(tmp_path) -> None:

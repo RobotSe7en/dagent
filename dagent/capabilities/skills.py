@@ -95,7 +95,10 @@ class SkillsCapabilityProvider:
                 id="skill.view",
                 name="skill_view",
                 kind="skill",
-                description="Read a skill's SKILL.md or a linked file inside the skill directory.",
+                description=(
+                    "Read a skill's SKILL.md or a linked file inside the skill directory. "
+                    "If scripts are present, inspect them here and run them through tool.run_command's system shell."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {
@@ -202,6 +205,7 @@ def skill_view_payload(
             "description": skill.description,
             "category": skill.category,
             "path": skill.as_list_item()["path"],
+            "skill_dir": None,
             "metadata": skill.metadata,
             "content": skill.content,
             "linked_files": {},
@@ -215,6 +219,8 @@ def skill_view_payload(
             "success": True,
             "skill": skill.as_list_item(),
             "file_path": str(Path(file_path).as_posix()),
+            "path": str(target),
+            "skill_dir": str(skill.skill_dir),
             "content": target.read_text(encoding="utf-8"),
         }
     metadata, body = read_skill_markdown(skill.skill_file)
@@ -225,6 +231,7 @@ def skill_view_payload(
         "description": skill.description,
         "category": skill.category,
         "path": str(skill.skill_file),
+        "skill_dir": str(skill.skill_dir),
         "metadata": metadata,
         "content": body,
         "linked_files": list_linked_files(skill.skill_dir),

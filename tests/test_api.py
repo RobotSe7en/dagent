@@ -1,6 +1,9 @@
+import io
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
@@ -41,6 +44,7 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
     ]
     assert viewed.status_code == 200
     assert viewed.json()["content"] == "Body."
+    assert viewed.json()["skill_dir"] == str(skill_dir.resolve())
 
 
 def test_api_imports_skill_with_frontmatter_and_serves_through_capability() -> None:
@@ -112,6 +116,45 @@ def test_api_imports_plain_markdown_skill_and_rejects_name_collision(monkeypatch
     assert imported.json()["skill"]["content"].startswith("# Draft Skill")
     assert collision.status_code == 400
     assert "collides" in collision.json()["detail"]
+
+
+def test_api_imports_zip_skill_package(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    state.imported_skills.clear()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "bundle/SKILL.md",
+            "---\n"
+            "name: summarize\n"
+            "description: Summarize with a helper.\n"
+            "category: writing\n"
+            "---\n"
+            "Use the helper script.",
+        )
+        archive.writestr("bundle/scripts/run.py", "print('ok')\n")
+        archive.writestr("bundle/references/style.md", "Keep it short.\n")
+    client = TestClient(app)
+
+    imported = client.post(
+        "/skills/import/package",
+        files={"file": ("bundle.zip", buffer.getvalue(), "application/zip")},
+    )
+    viewed = client.get("/skills/writing/summarize")
+    script = client.get("/skills/writing/summarize", params={"file_path": "scripts/run.py"})
+
+    assert imported.status_code == 200
+    assert imported.json()["skill"]["skill_dir"] == str((managed_root / "writing" / "summarize").resolve())
+    assert imported.json()["skill"]["linked_files"] == {
+        "references": ["references/style.md"],
+        "scripts": ["scripts/run.py"],
+    }
+    assert viewed.status_code == 200
+    assert script.status_code == 200
+    assert script.json()["content"] == "print('ok')\n"
 
 
 def test_api_memory_mcp_server_reload_updates_runtime_catalog() -> None:
@@ -515,6 +558,25 @@ def test_api_capability_list_create_and_test() -> None:
         "/capabilities/tool.upper/test",
         json={"arguments": {"text": "ok"}},
     ).status_code == 404
+
+
+def test_api_capability_test_infers_run_command_boundary() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    command = f'{sys.executable} -c "print(1); print(2)"'
+
+    response = client.post(
+        "/capabilities/tool.run_command/test",
+        json={"arguments": {"command": command, "cwd": "."}},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["status"] == "completed"
+    assert result["policy_decision"]["boundary_mode"] == "write_limited"
+    assert result["policy_decision"]["allowed_commands"] == []
+    assert "1" in result["content"]
+    assert "2" in result["content"]
 
 
 def test_api_rejects_removed_custom_tool_capability_kind() -> None:

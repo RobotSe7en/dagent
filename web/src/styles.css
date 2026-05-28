@@ -864,6 +864,36 @@ select {
   overflow-wrap: anywhere;
 }
 
+.linked-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.linked-file-group {
+  display: grid;
+  gap: 6px;
+}
+
+.linked-file-group > strong {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.linked-file-group > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.linked-file-group .secondary-button {
+  min-height: 34px;
+  height: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .readonly-note,
 .warning-list {
   padding: 10px 12px;
@@ -1559,6 +1589,11 @@ select {
 
 .secondary-button {
   background: var(--bg-surface);
+}
+
+.secondary-button.active {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
 }
 
 .danger-button {

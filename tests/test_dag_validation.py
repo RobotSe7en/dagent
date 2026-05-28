@@ -192,6 +192,36 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     assert node.payload.invocation.kind == "file"
 
 
+def test_compile_infers_boundary_for_command_capability() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: run command\n'
+        'run = run_command(command="node -e \\"console.log(1);\\"", cwd=".")\n'
+    )
+
+    dag = compile_plan_spec(
+        plan,
+        task_id="task_1",
+        tools=[
+            CapabilityDefinition(
+                id="tool.run_command",
+                name="run_command",
+                kind="tool",
+                config={
+                    "action": "command",
+                    "path_args": ["cwd"],
+                    "command_args": ["command"],
+                    "default_args": {"cwd": "."},
+                },
+            )
+        ],
+    )
+
+    boundary = dag.nodes[0].payload.invocation.boundary
+    assert boundary.mode == "write_limited"
+    assert boundary.allowed_paths == ["."]
+    assert boundary.allowed_commands == []
+
+
 def test_plan_spec_rejects_node_goal_and_instructions() -> None:
     with pytest.raises(ValueError):
         PlanSpec.model_validate({

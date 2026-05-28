@@ -258,9 +258,19 @@ export interface SkillDetail {
   description: string;
   category?: string | null;
   path: string;
+  skill_dir?: string | null;
   metadata: Record<string, unknown>;
   content: string;
   linked_files: Record<string, string[]>;
+}
+
+export interface SkillFileDetail {
+  success?: boolean;
+  skill: SkillSummary;
+  file_path: string;
+  path: string;
+  skill_dir: string;
+  content: string;
 }
 
 export interface MCPServerConfig {

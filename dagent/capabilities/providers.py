@@ -52,6 +52,7 @@ class ToolCapabilityProvider:
                     "action": tool.action,
                     "path_args": list(tool.path_args),
                     "command_args": list(tool.command_args),
+                    "default_args": dict(tool.default_args or {}),
                 },
             )
 
@@ -71,7 +72,7 @@ class ToolCapabilityProvider:
 
 
 class ShellCapabilityProvider:
-    """Registers allowlisted shell commands as capabilities."""
+    """Registers fixed shell commands as capabilities."""
 
     def __init__(self, commands: dict[str, dict[str, Any]]) -> None:
         self.commands = commands

@@ -16,6 +16,7 @@ import type {
   RunTraceNode,
   RunTraceStatus,
   SkillDetail,
+  SkillFileDetail,
   SkillSummary,
   MCPServer,
   MCPServerConfig,
@@ -157,6 +158,13 @@ export async function getSkill(name: string): Promise<SkillDetail> {
   return await res.json();
 }
 
+export async function getSkillFile(name: string, filePath: string): Promise<SkillFileDetail> {
+  const params = new URLSearchParams({ file_path: filePath });
+  const res = await fetch(`${API_BASE}/skills/${skillPath(name)}?${params.toString()}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
 export async function importSkill(payload: {
   content: string;
   name?: string;
@@ -167,6 +175,18 @@ export async function importSkill(payload: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.skill;
+}
+
+export async function importSkillPackage(file: File): Promise<SkillDetail> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API_BASE}/skills/import/package`, {
+    method: 'POST',
+    body: form,
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();

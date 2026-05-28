@@ -48,8 +48,10 @@ import {
   deleteCapability,
   deleteMcpServer,
   getSkill,
+  getSkillFile,
   getValidationStatus,
   importSkill,
+  importSkillPackage,
   listCapabilities,
   listDagSpecs,
   listMcpServers,
@@ -93,6 +95,7 @@ import type {
   MCPServer,
   MCPServerConfig,
   SkillDetail,
+  SkillFileDetail,
   SkillSummary,
 } from './types';
 import {
@@ -3115,6 +3118,7 @@ function CapabilityDirectory({
   const [message, setMessage] = useState('');
   const [selectedSkillName, setSelectedSkillName] = useState('');
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  const [skillFileDetail, setSkillFileDetail] = useState<SkillFileDetail | null>(null);
   const [skillMessage, setSkillMessage] = useState('');
   const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
   const [selectedMcpName, setSelectedMcpName] = useState('');
@@ -3132,6 +3136,8 @@ function CapabilityDirectory({
     .map((kind) => ({ kind, items: filtered.filter((capability) => capability.kind === kind) }))
     .filter((group) => group.items.length);
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? skills[0];
+  const linkedFileGroups = Object.entries(skillDetail?.linked_files ?? {})
+    .filter(([, files]) => files.length);
   const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
 
   const runCreate = async () => {
@@ -3209,9 +3215,26 @@ function CapabilityDirectory({
     try {
       const detail = await getSkill(lookup);
       setSkillDetail(detail);
+      setSkillFileDetail(null);
       setSkillMessage('');
     } catch (exc) {
       setSkillDetail(null);
+      setSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const openSkillLinkedFile = async (filePath: string) => {
+    const skill = skillDetail?.skill ?? selectedSkill;
+    if (!skill) return;
+    const lookup = skillLookupName(skill);
+    setSkillMessage(`Loading ${filePath}...`);
+    try {
+      const detail = await getSkillFile(lookup, filePath);
+      setSkillFileDetail(detail);
+      setSkillMessage('');
+    } catch (exc) {
+      setSkillFileDetail(null);
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
@@ -3227,6 +3250,7 @@ function CapabilityDirectory({
       });
       await onRefresh();
       setSkillDetail(detail);
+      setSkillFileDetail(null);
       setSelectedSkillName(skillLookupName(detail.skill));
       setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
     } catch (exc) {
@@ -3241,6 +3265,7 @@ function CapabilityDirectory({
     try {
       await deleteImportedSkill(skillLookupName(skill));
       setSkillDetail(null);
+      setSkillFileDetail(null);
       setSelectedSkillName('');
       await onRefresh();
       setSkillMessage(`Removed ${skillLookupName(skill)}.`);
@@ -3249,8 +3274,22 @@ function CapabilityDirectory({
     }
   };
 
-  const loadSkillFile = (file: File | undefined) => {
+  const loadSkillFile = async (file: File | undefined) => {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      setSkillMessage('Importing skill package...');
+      try {
+        const detail = await importSkillPackage(file);
+        await onRefresh();
+        setSkillDetail(detail);
+        setSkillFileDetail(null);
+        setSelectedSkillName(skillLookupName(detail.skill));
+        setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
+      } catch (exc) {
+        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+      }
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
@@ -3448,10 +3487,46 @@ function CapabilityDirectory({
                     </span>
                   </div>
                   <p>{skillDetail.description || 'No description.'}</p>
+                  {skillDetail.skill_dir ? (
+                    <div className="metadata-grid">
+                      <span>Directory</span><strong>{skillDetail.skill_dir}</strong>
+                    </div>
+                  ) : null}
+                  {linkedFileGroups.length ? (
+                    <section className="code-panel">
+                      <h3>Linked Files</h3>
+                      <div className="linked-file-list">
+                        {linkedFileGroups.map(([folder, files]) => (
+                          <div key={folder} className="linked-file-group">
+                            <strong>{folder}</strong>
+                            <div>
+                              {files.map((filePath) => (
+                                <button
+                                  key={filePath}
+                                  className={skillFileDetail?.file_path === filePath ? 'secondary-button compact-button active' : 'secondary-button compact-button'}
+                                  onClick={() => void openSkillLinkedFile(filePath)}
+                                  type="button"
+                                >
+                                  <FileText size={14} />
+                                  {filePath}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
                   <section className="code-panel">
                     <h3>Content</h3>
                     <pre>{skillDetail.content}</pre>
                   </section>
+                  {skillFileDetail ? (
+                    <section className="code-panel">
+                      <h3>{skillFileDetail.file_path}</h3>
+                      <pre>{skillFileDetail.content}</pre>
+                    </section>
+                  ) : null}
                   <section className="code-panel">
                     <h3>Metadata</h3>
                     <pre>{JSON.stringify(skillDetail.metadata, null, 2)}</pre>
@@ -3613,9 +3688,9 @@ function CapabilityDirectory({
               </label>
               <label>
                 Upload
-                <input type="file" accept=".md,text/markdown,text/plain" onChange={(event) => loadSkillFile(event.target.files?.[0])} />
+                <input type="file" accept=".md,text/markdown,text/plain,.zip,application/zip" onChange={(event) => void loadSkillFile(event.target.files?.[0])} />
               </label>
-              <div className="readonly-note">Imported skills are in-memory instructions only. Linked folders and scripts are not imported or executed in this MVP.</div>
+              <div className="readonly-note">Markdown imports are temporary in-memory skills. Zip packages are installed under the managed local skill root and may include references, templates, scripts, and assets.</div>
               <button className="primary-button" onClick={importSkillDraft} type="button">
                 <Upload size={16} />
                 Import skill

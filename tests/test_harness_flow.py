@@ -27,7 +27,7 @@ from dagent.schemas import (
     RunTraceNode,
     StartNodePayload,
 )
-from dagent.capabilities.tools.command_tools import _infer_command_boundary, _infer_command_risk
+from dagent.capabilities.tools.command_tools import _infer_command_boundary
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
@@ -169,8 +169,8 @@ def make_capability_executor() -> CapabilityExecutor:
         action="command",
         path_args=("cwd",),
         command_args=("command",),
+        risk="high",
         boundary_fn=_infer_command_boundary,
-        risk_fn=_infer_command_risk,
         default_args={"cwd": ".", "timeout_seconds": 30},
         parameters={
             "type": "object",
