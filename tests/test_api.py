@@ -213,6 +213,48 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert events[-1]["final_answer"] == "hello there"
 
 
+def test_api_message_stream_scopes_capabilities_and_skills() -> None:
+    state.close_runner()
+    state.imported_skills.clear()
+    provider = MockProvider([ChatResponse(content="scoped answer")])
+    state.runner = _runner(provider)
+    client = TestClient(app)
+
+    import_response = client.post(
+        "/skills/import",
+        json={"name": "brief", "content": "Use brief responses."},
+    )
+    response = client.post(
+        "/messages/stream",
+        json={
+            "message": "hello",
+            "mode": "tool",
+            "capability_ids": ["tool.echo"],
+            "skill_names": ["brief"],
+        },
+    )
+
+    assert import_response.status_code == 200
+    assert response.status_code == 200
+    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["echo"]
+    system_content = provider.requests[0]["messages"][0]["content"]
+    assert "Use brief responses." in system_content
+    assert "fail_tool" not in system_content
+
+
+def test_api_message_stream_rejects_unknown_capability_scope() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "hello", "mode": "tool", "capability_ids": ["tool.missing"]},
+    )
+
+    assert response.status_code == 400
+    assert "tool.missing" in response.json()["detail"]
+
+
 def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

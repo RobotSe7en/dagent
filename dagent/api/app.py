@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from dagent.config import load_config
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.harness_runtime import RuntimeMode
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
@@ -36,6 +37,8 @@ class MessageRequest(BaseModel):
     message: str = Field(min_length=1)
     mode: RuntimeMode = "auto"
     review_level: ReviewLevel = "fast"
+    capability_ids: list[str] | None = None
+    skill_names: list[str] = Field(default_factory=list)
 
 
 class ResumeReviewRequest(BaseModel):
@@ -588,6 +591,59 @@ def _sync_runtime_toolsets(runtime) -> None:
     runtime.refresh_toolsets()
 
 
+def _capability_scope_from_message(request: MessageRequest) -> CapabilityScope:
+    capability_ids = None
+    if request.capability_ids is not None:
+        capability_ids = tuple(_validated_capability_ids(request.capability_ids))
+    skill_instructions = tuple(_skill_instruction(name) for name in _dedupe(request.skill_names))
+    return CapabilityScope(
+        capability_ids=capability_ids,
+        skill_instructions=skill_instructions,
+    )
+
+
+def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
+    runtime = state.get_runtime()
+    validated: list[str] = []
+    for capability_id in _dedupe(capability_ids):
+        definition = runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' was not found.")
+        if not definition.enabled:
+            raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' is disabled.")
+        validated.append(capability_id)
+    return validated
+
+
+def _skill_instruction(name: str) -> str:
+    payload = skill_view_payload(
+        name,
+        state.get_skill_roots(),
+        imported_skills=state.imported_skills,
+    )
+    if payload.get("success") is False:
+        raise HTTPException(status_code=400, detail=str(payload.get("error") or "Skill was not found."))
+    category = payload.get("category")
+    skill_name = str(payload.get("name") or name)
+    qualified_name = f"{category}/{skill_name}" if category else skill_name
+    description = str(payload.get("description") or "")
+    content = str(payload.get("content") or "").strip()
+    if description:
+        return f"{qualified_name}: {description}\n{content}".strip()
+    return f"{qualified_name}\n{content}".strip()
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
 @app.post("/capabilities/{capability_id}/test")
 async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
     runtime = state.get_runtime()
@@ -609,6 +665,8 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
+    capability_scope = _capability_scope_from_message(request)
+
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_started"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -624,6 +682,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 request.message,
                 mode=request.mode,
                 review_level=request.review_level,
+                capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
             )

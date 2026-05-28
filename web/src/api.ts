@@ -237,6 +237,11 @@ interface DagRunDonePayload {
   dag_run: DagRun;
 }
 
+export interface ChatCapabilityScopePayload {
+  capabilityIds: string[] | null;
+  skillNames: string[];
+}
+
 export async function streamTask(
   message: string,
   mode: 'auto' | 'tool' | 'dag',
@@ -252,11 +257,17 @@ export async function streamTask(
     onDone?: (payload: DonePayload) => void;
     onError?: (message: string) => void;
   },
+  capabilityScope?: ChatCapabilityScopePayload,
 ): Promise<void> {
+  const body: Record<string, unknown> = { message, mode, review_level: reviewLevel };
+  if (capabilityScope) {
+    body.capability_ids = capabilityScope.capabilityIds;
+    body.skill_names = capabilityScope.skillNames;
+  }
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, mode, review_level: reviewLevel }),
+    body: JSON.stringify(body),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));

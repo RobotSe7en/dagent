@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from dagent.review import ReviewLevel
+from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.schemas import (
     DAG,
     CapabilityInvocation,
@@ -30,6 +31,7 @@ class ReviewContinuation:
     review_level: ReviewLevel
     invocations: list[CapabilityInvocation] = field(default_factory=list)
     pending_invocation: CapabilityInvocation | None = None
+    capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE
 
 
 @dataclass
@@ -44,6 +46,7 @@ class RuntimeTaskRecord:
     runtime_mode: str = "auto"
     spec_id: str | None = None
     workspace_path: str | None = None
+    capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE
 
     @classmethod
     def dag_task(
@@ -56,6 +59,7 @@ class RuntimeTaskRecord:
         runtime_mode: str = "auto",
         spec_id: str | None = None,
         workspace_path: str | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> "RuntimeTaskRecord":
         return cls(
             task_id=task_id,
@@ -66,6 +70,7 @@ class RuntimeTaskRecord:
             runtime_mode=runtime_mode,
             spec_id=spec_id,
             workspace_path=workspace_path,
+            capability_scope=capability_scope,
         )
 
     @classmethod
@@ -75,12 +80,14 @@ class RuntimeTaskRecord:
         task_id: str,
         user_request: str,
         review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> "RuntimeTaskRecord":
         return cls(
             task_id=task_id,
             mode="tool",
             user_request=user_request,
             review_level=review_level,
+            capability_scope=capability_scope,
         )
 
     def apply_outcome(
@@ -88,8 +95,11 @@ class RuntimeTaskRecord:
         loop_outcome: "LoopOutcome",
         *,
         review_level: ReviewLevel,
+        capability_scope: CapabilityScope | None = None,
     ) -> None:
         self.review_level = review_level
+        if capability_scope is not None:
+            self.capability_scope = capability_scope
         self.pending_review = loop_outcome.pending_review
         if loop_outcome.dag is not None:
             self.dag = loop_outcome.dag

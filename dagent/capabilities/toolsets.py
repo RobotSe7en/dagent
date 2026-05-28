@@ -43,13 +43,23 @@ class CapabilityToolAdapter:
         )
         self._toolsets = {toolset.name: toolset for toolset in resolved_toolsets}
 
-    def capabilities(self, enabled_toolsets: Sequence[str]) -> list[CapabilityDefinition]:
+    def capabilities(
+        self,
+        enabled_toolsets: Sequence[str],
+        *,
+        capability_ids: Sequence[str] | None = None,
+    ) -> list[CapabilityDefinition]:
         return [
             definition.model_copy(update={"name": self.function_name(definition)}, deep=True)
-            for definition in self._definitions(enabled_toolsets)
+            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         ]
 
-    def definitions(self, enabled_toolsets: Sequence[str]) -> list[dict[str, Any]]:
+    def definitions(
+        self,
+        enabled_toolsets: Sequence[str],
+        *,
+        capability_ids: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -59,7 +69,7 @@ class CapabilityToolAdapter:
                     "parameters": definition.parameters or {"type": "object"},
                 },
             }
-            for definition in self.capabilities(enabled_toolsets)
+            for definition in self.capabilities(enabled_toolsets, capability_ids=capability_ids)
         ]
 
     def invocation_from_tool_call(
@@ -68,10 +78,12 @@ class CapabilityToolAdapter:
         boundary: Boundary,
         *,
         enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
     ) -> CapabilityInvocation:
         definition = self.definition_from_tool_call(
             tool_call,
             enabled_toolsets=enabled_toolsets,
+            capability_ids=capability_ids,
         )
         return CapabilityInvocation(
             invocation_id=tool_call.id,
@@ -87,8 +99,12 @@ class CapabilityToolAdapter:
         tool_call: ToolCall,
         *,
         enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
     ) -> CapabilityDefinition:
-        definitions_by_name = self._definitions_by_function_name(enabled_toolsets)
+        definitions_by_name = self._definitions_by_function_name(
+            enabled_toolsets,
+            capability_ids=capability_ids,
+        )
         definition = definitions_by_name.get(tool_call.name)
         if definition is None:
             available = ", ".join(sorted(definitions_by_name))
@@ -103,10 +119,11 @@ class CapabilityToolAdapter:
         capability_id: str,
         *,
         enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
     ) -> CapabilityDefinition:
         definitions_by_id = {
             definition.id: definition
-            for definition in self._definitions(enabled_toolsets)
+            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         }
         definition = definitions_by_id.get(capability_id)
         if definition is None:
@@ -117,10 +134,15 @@ class CapabilityToolAdapter:
             )
         return definition
 
-    def reviewable_names(self, enabled_toolsets: Sequence[str]) -> set[str]:
+    def reviewable_names(
+        self,
+        enabled_toolsets: Sequence[str],
+        *,
+        capability_ids: Sequence[str] | None = None,
+    ) -> set[str]:
         return {
             self.function_name(definition)
-            for definition in self._definitions(enabled_toolsets)
+            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
             if definition.policy.risk in {"medium", "high"} or definition.policy.requires_review
         }
 
@@ -129,10 +151,12 @@ class CapabilityToolAdapter:
         capability_id: str,
         *,
         enabled_toolsets: Sequence[str],
+        capability_ids: Sequence[str] | None = None,
     ) -> str:
         definition = self.ensure_allowed(
             capability_id,
             enabled_toolsets=enabled_toolsets,
+            capability_ids=capability_ids,
         )
         return self.function_name(definition)
 
@@ -144,10 +168,26 @@ class CapabilityToolAdapter:
             name = f"capability_{name}"
         return name
 
-    def _definitions(self, enabled_toolsets: Sequence[str]) -> list[CapabilityDefinition]:
-        capability_ids = self._capability_ids(enabled_toolsets)
+    def _definitions(
+        self,
+        enabled_toolsets: Sequence[str],
+        *,
+        capability_ids: Sequence[str] | None = None,
+    ) -> list[CapabilityDefinition]:
+        resolved_ids = self._capability_ids(enabled_toolsets)
+        if capability_ids is not None:
+            available = set(resolved_ids)
+            unknown = [capability_id for capability_id in capability_ids if capability_id not in available]
+            if unknown:
+                raise KeyError(f"Capability '{unknown[0]}' is not registered in enabled toolsets.")
+            seen: set[str] = set()
+            resolved_ids = []
+            for capability_id in capability_ids:
+                if capability_id not in seen:
+                    seen.add(capability_id)
+                    resolved_ids.append(capability_id)
         definitions: list[CapabilityDefinition] = []
-        for capability_id in capability_ids:
+        for capability_id in resolved_ids:
             definition = self.catalog.get(capability_id)
             if definition is None:
                 raise KeyError(f"Capability '{capability_id}' is not registered.")
@@ -172,10 +212,12 @@ class CapabilityToolAdapter:
     def _definitions_by_function_name(
         self,
         enabled_toolsets: Sequence[str],
+        *,
+        capability_ids: Sequence[str] | None = None,
     ) -> dict[str, CapabilityDefinition]:
         return {
             self.function_name(definition): definition
-            for definition in self._definitions(enabled_toolsets)
+            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         }
 
     def _check_name_collisions(self, definitions: Sequence[CapabilityDefinition]) -> None:

@@ -8,6 +8,7 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import ToolAgent, ToolAgentLoop, ReviewContinuation
 from dagent.harness_runtime import CapabilityExecutor
+from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.profiles import AgentProfile
 from dagent.schemas import Boundary, CapabilityDefinition, CapabilityPolicy, CapabilityInvocation, CapabilityResult
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
@@ -67,6 +68,43 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert tokens == ["<think>checking</think>\nDone."]
     assert result.final_answer == "Done."
+
+
+def test_tool_agent_scope_can_disable_all_tools(tmp_path: Path) -> None:
+    provider = MockProvider([ChatResponse(content="Plain answer.")])
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run(
+            "Answer without tools",
+            capability_scope=CapabilityScope(capability_ids=()),
+        )
+    )
+
+    assert result.status == "completed"
+    assert provider.requests[0]["tools"] == []
+    assert "## Available Tools" not in provider.requests[0]["messages"][0]["content"]
+
+
+def test_tool_agent_scope_filters_tools_and_injects_skill_prompt(tmp_path: Path) -> None:
+    provider = MockProvider([ChatResponse(content="Done.")])
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run(
+            "Use scoped context",
+            capability_scope=CapabilityScope(
+                capability_ids=("tool.read_file",),
+                skill_instructions=("writing/summarize: Summarize.\nUse short bullets.",),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["read_file"]
+    system_content = provider.requests[0]["messages"][0]["content"]
+    assert "Use short bullets." in system_content
+    assert "write_file" not in system_content
 
 
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(

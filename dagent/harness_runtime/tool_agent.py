@@ -11,6 +11,7 @@ from uuid import uuid4
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
+from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
@@ -62,30 +63,46 @@ class ToolAgent:
     ) -> None:
         self.loop = loop
         self.profile = profile
-        self.tools = self.loop.available_capabilities()
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.max_steps = max_steps
-        self.system_message = self.prompt_builder.build_system_message(
+        self.tools = self.loop.available_capabilities()
+        self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
+        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.trace: RunTrace | None = None
+
+    def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
+        tools = self.loop.available_capabilities(capability_scope.capability_ids)
+        return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
-                tools=self.tools,
+                tools=tools,
+                skills=list(capability_scope.skill_instructions),
                 memory=self.profile.memory,
             )
         )
-        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
-        self.trace: RunTrace | None = None
+
+    def _messages_for_scope(self, capability_scope: CapabilityScope) -> list[dict[str, Any]]:
+        messages = list(self.messages)
+        system_message = self._build_system_message(capability_scope)
+        if messages and messages[0].get("role") == "system":
+            messages[0] = dict(system_message)
+        else:
+            messages.insert(0, dict(system_message))
+        return messages
 
     async def run(
         self,
         message: str,
         *,
         review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
         """Append a user turn to the tool-agent thread and run the bounded loop."""
         boundary = Boundary(mode="read_only", allowed_paths=["."])
+        self.messages = self._messages_for_scope(capability_scope)
         self.messages.append(
             self.prompt_builder.build_user_message(
                 "{{ user_message }}",
@@ -96,6 +113,7 @@ class ToolAgent:
             self.messages,
             review_level=review_level,
             boundary=boundary,
+            capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
         )
@@ -135,6 +153,7 @@ class ToolAgent:
             tool_name=self.loop.tool_adapter.function_name_for_capability(
                 invocation.capability_id,
                 enabled_toolsets=self.loop.enabled_toolsets,
+                capability_ids=state.capability_scope.capability_ids,
             ),
             content=feed_content,
         )
@@ -142,6 +161,7 @@ class ToolAgent:
             self.messages,
             review_level=state.review_level,
             boundary=invocation.boundary,
+            capability_scope=state.capability_scope,
             on_token=on_token,
             on_event=on_event,
         )
@@ -152,13 +172,14 @@ class ToolAgent:
         *,
         review_level: ReviewLevel,
         boundary: Boundary,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from already-built messages."""
-        control_tool_names = self.reviewable_tool_names()
+        control_tool_names = self.reviewable_tool_names(capability_scope)
         control_tool_handler = (
-            self.loop.create_tool_guard(review_level, boundary)
+            self.loop.create_tool_guard(review_level, boundary, capability_scope.capability_ids)
             if control_tool_names
             else None
         )
@@ -169,6 +190,7 @@ class ToolAgent:
             messages=messages,
             control_tool_names=control_tool_names,
             control_tool_handler=control_tool_handler,
+            capability_ids=capability_scope.capability_ids,
             on_token=on_token,
             on_event=on_event,
         )
@@ -176,8 +198,8 @@ class ToolAgent:
         self.trace = outcome.trace
         return outcome
 
-    def reviewable_tool_names(self) -> set[str]:
-        return self.loop.reviewable_tool_names()
+    def reviewable_tool_names(self, capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE) -> set[str]:
+        return self.loop.reviewable_tool_names(capability_scope.capability_ids)
 
 
 class ToolAgentLoop:
@@ -196,16 +218,26 @@ class ToolAgentLoop:
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
 
-    def available_capabilities(self) -> list[CapabilityDefinition]:
-        return self.tool_adapter.capabilities(self.enabled_toolsets)
+    def available_capabilities(
+        self,
+        capability_ids: Sequence[str] | None = None,
+    ) -> list[CapabilityDefinition]:
+        return self.tool_adapter.capabilities(
+            self.enabled_toolsets,
+            capability_ids=capability_ids,
+        )
 
-    def reviewable_tool_names(self) -> set[str]:
-        return self.tool_adapter.reviewable_names(self.enabled_toolsets)
+    def reviewable_tool_names(self, capability_ids: Sequence[str] | None = None) -> set[str]:
+        return self.tool_adapter.reviewable_names(
+            self.enabled_toolsets,
+            capability_ids=capability_ids,
+        )
 
     def create_tool_guard(
         self,
         review_level: ReviewLevel,
         boundary: Boundary,
+        capability_ids: Sequence[str] | None = None,
     ) -> ControlToolHandler:
         policy = _review_policy(review_level)
 
@@ -213,12 +245,14 @@ class ToolAgentLoop:
             definition = self.tool_adapter.definition_from_tool_call(
                 tool_call,
                 enabled_toolsets=self.enabled_toolsets,
+                capability_ids=capability_ids,
             )
             risk = definition.policy.risk
             invocation = self.tool_adapter.invocation_from_tool_call(
                 tool_call,
                 boundary,
                 enabled_toolsets=self.enabled_toolsets,
+                capability_ids=capability_ids,
             )
             if not policy.reviews_tool(risk):
                 try:
@@ -248,6 +282,7 @@ class ToolAgentLoop:
         messages: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
         control_tool_handler: ControlToolHandler | None = None,
+        capability_ids: Sequence[str] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
@@ -263,7 +298,10 @@ class ToolAgentLoop:
         invocations: list[CapabilityInvocation] = []
 
         for step in range(1, max_steps + 1):
-            tool_definitions = self._llm_tool_definitions(allowed_tools)
+            tool_definitions = self._llm_tool_definitions(
+                allowed_tools,
+                capability_ids=capability_ids,
+            )
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
@@ -302,6 +340,7 @@ class ToolAgentLoop:
                         tool_call,
                         boundary,
                         enabled_toolsets=self.enabled_toolsets,
+                        capability_ids=capability_ids,
                     )
                 except KeyError as exc:
                     error_content = f"[TOOL_ERROR] {_exception_message(exc)}"
@@ -471,9 +510,14 @@ class ToolAgentLoop:
     def _llm_tool_definitions(
         self,
         allowed_tools: list[str] | None,
+        *,
+        capability_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         allowed = set(allowed_tools) if allowed_tools is not None else None
-        definitions = self.tool_adapter.definitions(self.enabled_toolsets)
+        definitions = self.tool_adapter.definitions(
+            self.enabled_toolsets,
+            capability_ids=capability_ids,
+        )
         if allowed is None:
             return definitions
         return [
