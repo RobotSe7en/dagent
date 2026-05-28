@@ -11,3 +11,4 @@ web/tsconfig.tsbuildinfo
 web/vite.*.log
 .claude/
 .dagent-runs/
+.DS_STORE
