@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from dagent.review import ReviewLevel
+from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.task_record import (
     ReviewContinuation,
     RuntimeTaskMode,
@@ -29,6 +30,7 @@ class HarnessRuntimeSession:
         review_level: ReviewLevel,
         loop_outcome: LoopOutcome,
         invocations: list[CapabilityInvocation] | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> None:
         review = loop_outcome.pending_review
         if review is None:
@@ -42,6 +44,7 @@ class HarnessRuntimeSession:
             invocations=task_invocations,
             review_level=review_level,
             pending_invocation=pending_review_invocation(loop_outcome, task_invocations),
+            capability_scope=capability_scope,
         )
 
     def get_review_continuation(self, review_id: str) -> ReviewContinuation | None:
@@ -69,6 +72,7 @@ class HarnessRuntimeSession:
         loop_outcome: LoopOutcome,
         invocations: list[CapabilityInvocation] | None = None,
         runtime_mode: str | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> RuntimeTaskRecord:
         resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
         record = self.tasks.get(resolved_task_id)
@@ -82,6 +86,7 @@ class HarnessRuntimeSession:
                     runtime_mode=runtime_mode or "auto",
                     spec_id=loop_outcome.spec_id,
                     workspace_path=loop_outcome.workspace_path,
+                    capability_scope=capability_scope,
                 )
             else:
                 if mode == "tool":
@@ -89,6 +94,7 @@ class HarnessRuntimeSession:
                         task_id=resolved_task_id,
                         user_request=user_request,
                         review_level=review_level,
+                        capability_scope=capability_scope,
                     )
                 else:
                     record = RuntimeTaskRecord(
@@ -97,10 +103,12 @@ class HarnessRuntimeSession:
                         user_request=user_request,
                         review_level=review_level,
                         runtime_mode=runtime_mode or "auto",
+                        capability_scope=capability_scope,
                     )
         record.apply_outcome(
             loop_outcome,
             review_level=review_level,
+            capability_scope=capability_scope,
         )
         self.tasks[resolved_task_id] = record
         if loop_outcome.status == "awaiting_review":
@@ -110,5 +118,6 @@ class HarnessRuntimeSession:
                 review_level=review_level,
                 loop_outcome=loop_outcome,
                 invocations=invocations,
+                capability_scope=capability_scope,
             )
         return record

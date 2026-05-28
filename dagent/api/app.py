@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,8 +17,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dagent.config import load_config
+from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.harness_runtime.dag_builder import validate_dag_spec
 from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.harness_runtime import RuntimeMode
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
@@ -36,6 +42,8 @@ class MessageRequest(BaseModel):
     message: str = Field(min_length=1)
     mode: RuntimeMode = "auto"
     review_level: ReviewLevel = "fast"
+    capability_ids: list[str] | None = None
+    skill_names: list[str] = Field(default_factory=list)
 
 
 class ResumeReviewRequest(BaseModel):
@@ -59,6 +67,11 @@ class SkillImportRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     category: str | None = None
+
+
+MAX_SKILL_PACKAGE_BYTES = 10 * 1024 * 1024
+MAX_SKILL_PACKAGE_FILES = 256
+MAX_SKILL_PACKAGE_FILE_BYTES = 1024 * 1024
 
 
 class MCPServerRequest(BaseModel):
@@ -121,6 +134,9 @@ class ApiState:
 
     def get_skill_roots(self) -> list[Path]:
         return default_skill_roots()
+
+    def get_managed_skill_root(self) -> Path:
+        return Path.home() / ".dagent" / "skills"
 
     def _install_custom_capabilities(self) -> None:
         if self.runner is None:
@@ -512,7 +528,29 @@ async def import_skill(request: SkillImportRequest) -> dict[str, Any]:
     if _skill_name_collides(skill):
         raise HTTPException(status_code=400, detail=f"Skill '{skill.qualified_name}' collides with an existing skill.")
     state.imported_skills[skill.qualified_name] = skill
-    return {"skill": skill_view_payload(skill.qualified_name, state.get_skill_roots(), imported_skills=state.imported_skills)}
+    return {
+        "skill": skill_view_payload(
+            skill.qualified_name,
+            state.get_skill_roots(),
+            imported_skills=state.imported_skills,
+        )
+    }
+
+
+@app.post("/skills/import/package")
+async def import_skill_package(file: UploadFile = File(...)) -> dict[str, Any]:
+    filename = file.filename or "skill.zip"
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Skill package must be a .zip file.")
+    content = await file.read()
+    qualified_name = _install_skill_package(content, filename)
+    return {
+        "skill": skill_view_payload(
+            qualified_name,
+            state.get_skill_roots(),
+            imported_skills=state.imported_skills,
+        )
+    }
 
 
 @app.delete("/skills/imported/{name:path}")
@@ -588,6 +626,68 @@ def _sync_runtime_toolsets(runtime) -> None:
     runtime.refresh_toolsets()
 
 
+def _capability_scope_from_message(request: MessageRequest) -> CapabilityScope:
+    capability_ids = None
+    if request.capability_ids is not None:
+        capability_ids = tuple(_validated_capability_ids(request.capability_ids))
+    skill_instructions = tuple(_skill_instruction(name) for name in _dedupe(request.skill_names))
+    return CapabilityScope(
+        capability_ids=capability_ids,
+        skill_instructions=skill_instructions,
+    )
+
+
+def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
+    runtime = state.get_runtime()
+    validated: list[str] = []
+    for capability_id in _dedupe(capability_ids):
+        definition = runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' was not found.")
+        if not definition.enabled:
+            raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' is disabled.")
+        validated.append(capability_id)
+    return validated
+
+
+def _skill_instruction(name: str) -> str:
+    payload = skill_view_payload(
+        name,
+        state.get_skill_roots(),
+        imported_skills=state.imported_skills,
+    )
+    if payload.get("success") is False:
+        raise HTTPException(status_code=400, detail=str(payload.get("error") or "Skill was not found."))
+    category = payload.get("category")
+    skill_name = str(payload.get("name") or name)
+    qualified_name = f"{category}/{skill_name}" if category else skill_name
+    description = str(payload.get("description") or "")
+    content = str(payload.get("content") or "").strip()
+    lines = [f"{qualified_name}: {description}".strip(), content]
+    skill_dir = payload.get("skill_dir")
+    if skill_dir:
+        lines.append(f"[Skill directory: {skill_dir}]")
+    linked_files = payload.get("linked_files")
+    if linked_files:
+        lines.append(f"[Linked files: {json.dumps(linked_files, ensure_ascii=False)}]")
+        if isinstance(linked_files, dict) and linked_files.get("scripts"):
+            lines.append("Run skill scripts with tool.run_command when needed; it uses the system shell.")
+    if description:
+        return "\n".join(line for line in lines if line).strip()
+    return "\n".join(line for line in [qualified_name, *lines[1:]] if line).strip()
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
 @app.post("/capabilities/{capability_id}/test")
 async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
     runtime = state.get_runtime()
@@ -603,12 +703,16 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
         from dagent.schemas import Boundary
 
         invocation.boundary = Boundary.model_validate(request.boundary)
+    else:
+        invocation.boundary = infer_capability_boundary(definition, request.arguments)
     result = await runtime.capability_executor.execute(invocation)
     return {"result": result.model_dump(mode="json")}
 
 
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
+    capability_scope = _capability_scope_from_message(request)
+
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_started"})
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -624,6 +728,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 request.message,
                 mode=request.mode,
                 review_level=request.review_level,
+                capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -851,6 +956,99 @@ def _imported_skill_from_request(request: SkillImportRequest) -> ImportedSkillEn
     )
 
 
+def _install_skill_package(content: bytes, filename: str) -> str:
+    if len(content) > MAX_SKILL_PACKAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Skill package is too large.")
+    try:
+        with ZipFile(io.BytesIO(content)) as archive:
+            members = _skill_package_members(archive)
+            skill_md_member = next((member for member, path in members if path.as_posix() == "SKILL.md"), None)
+            if skill_md_member is None:
+                raise HTTPException(status_code=400, detail="Skill package must contain SKILL.md.")
+            metadata, _body = read_skill_markdown_text(archive.read(skill_md_member).decode("utf-8"))
+            package_name = Path(filename).stem
+            name = _clean_name(metadata.get("name") or package_name, field="Skill name")
+            category = _clean_optional_name(metadata.get("category"), field="Skill category")
+            qualified_name = f"{category}/{name}" if category else name
+            if _skill_name_exists(name, qualified_name):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Skill '{qualified_name}' collides with an existing skill.",
+                )
+            root = state.get_managed_skill_root()
+            root.mkdir(parents=True, exist_ok=True)
+            destination = root / category / name if category else root / name
+            if destination.exists():
+                raise HTTPException(status_code=400, detail=f"Skill directory already exists: {destination}")
+            with tempfile.TemporaryDirectory(prefix=".skill-import-", dir=root) as temp:
+                staged = Path(temp) / "skill"
+                staged.mkdir()
+                for member, relative_path in members:
+                    target = (staged / relative_path).resolve()
+                    if not _is_relative_to(target, staged.resolve()):
+                        raise HTTPException(status_code=400, detail="Skill package contains an unsafe path.")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(member))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(staged), str(destination))
+            return qualified_name
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="SKILL.md must be UTF-8 text.") from exc
+    except BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Skill package is not a valid zip file.") from exc
+
+
+def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
+    files = [member for member in archive.infolist() if not member.is_dir()]
+    if len(files) > MAX_SKILL_PACKAGE_FILES:
+        raise HTTPException(status_code=400, detail="Skill package contains too many files.")
+    raw_paths: list[tuple[Any, Path]] = []
+    for member in files:
+        if member.file_size > MAX_SKILL_PACKAGE_FILE_BYTES:
+            raise HTTPException(status_code=400, detail=f"Skill package file is too large: {member.filename}")
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise HTTPException(status_code=400, detail=f"Skill package contains a symlink: {member.filename}")
+        text_path = member.filename.replace("\\", "/")
+        path = Path(text_path)
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise HTTPException(status_code=400, detail=f"Skill package contains an unsafe path: {member.filename}")
+        raw_paths.append((member, path))
+    if not raw_paths:
+        raise HTTPException(status_code=400, detail="Skill package is empty.")
+    if any(path.as_posix() == "SKILL.md" for _member, path in raw_paths):
+        members = raw_paths
+    else:
+        roots = {path.parts[0] for _member, path in raw_paths}
+        if len(roots) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Skill package must contain SKILL.md at the root or inside one top-level directory.",
+            )
+        members = [
+            (member, Path(*path.parts[1:]))
+            for member, path in raw_paths
+            if len(path.parts) > 1
+        ]
+    seen: set[str] = set()
+    normalized: list[tuple[Any, Path]] = []
+    for member, path in members:
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise HTTPException(status_code=400, detail=f"Skill package contains an unsafe path: {member.filename}")
+        key = path.as_posix()
+        if key in seen:
+            raise HTTPException(status_code=400, detail=f"Skill package contains duplicate path: {key}")
+        seen.add(key)
+        normalized.append((member, path))
+    return normalized
+
+
+def _skill_name_exists(name: str, qualified_name: str) -> bool:
+    for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills):
+        if skill.name == name or skill.qualified_name == qualified_name:
+            return True
+    return False
+
+
 def _skill_description_from_body(body: str) -> str:
     for line in body.splitlines():
         stripped = line.strip().lstrip("#").strip()
@@ -860,10 +1058,7 @@ def _skill_description_from_body(body: str) -> str:
 
 
 def _skill_name_collides(candidate: ImportedSkillEntry) -> bool:
-    for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills):
-        if skill.name == candidate.name or skill.qualified_name == candidate.qualified_name:
-            return True
-    return False
+    return _skill_name_exists(candidate.name, candidate.qualified_name)
 
 
 def _imported_skill_key(name: str) -> str:
@@ -896,6 +1091,14 @@ def _clean_optional_name(value: Any, *, field: str) -> str | None:
     if "/" in text or "\\" in text:
         raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
     return text
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _sse(payload: dict[str, Any]) -> str:

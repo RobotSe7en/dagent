@@ -71,9 +71,9 @@ select {
 /* ── Top bar ── */
 .topbar {
   min-height: 56px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
   padding: 10px 24px;
   background: var(--bg-surface);
@@ -83,6 +83,11 @@ select {
   z-index: 2;
 }
 
+.topbar > :first-child {
+  min-width: 0;
+  justify-self: start;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -90,7 +95,7 @@ select {
   font-size: 17px;
   font-weight: 750;
   color: var(--text-primary);
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .brand svg {
@@ -103,7 +108,6 @@ select {
   font-size: 12px;
 }
 
-.top-actions,
 .composer-actions,
 .modal-actions {
   display: flex;
@@ -112,6 +116,7 @@ select {
 }
 
 .workspace-nav {
+  justify-self: center;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -859,6 +864,36 @@ select {
   overflow-wrap: anywhere;
 }
 
+.linked-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.linked-file-group {
+  display: grid;
+  gap: 6px;
+}
+
+.linked-file-group > strong {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.linked-file-group > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.linked-file-group .secondary-button {
+  min-height: 34px;
+  height: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .readonly-note,
 .warning-list {
   padding: 10px 12px;
@@ -1316,8 +1351,24 @@ select {
 
 .composer-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.composer-controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer-controls .scope-button {
+  max-width: min(260px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer textarea,
@@ -1540,6 +1591,11 @@ select {
   background: var(--bg-surface);
 }
 
+.secondary-button.active {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
 .danger-button {
   border-color: #fca5a5;
   background: #fef2f2;
@@ -1598,6 +1654,154 @@ button:disabled {
   overflow: hidden;
   background: var(--bg-surface);
   box-shadow: var(--shadow-xl);
+}
+
+.capability-scope-modal {
+  width: min(980px, 100%);
+  height: min(760px, 100%);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xl);
+}
+
+.capability-scope-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+
+.capability-scope-sidebar {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg-raised);
+}
+
+.scope-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 12px 12px 0;
+}
+
+.scope-mode-switch button,
+.scope-server-button {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.scope-mode-switch button {
+  height: 34px;
+}
+
+.scope-mode-switch button.active,
+.scope-button.active {
+  border-color: var(--accent-blue);
+  background: #eff6ff;
+  color: var(--accent-blue);
+}
+
+.scope-search {
+  margin-top: 12px;
+}
+
+.scope-server-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
+.scope-server-list h3,
+.scope-group h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.scope-server-button {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px;
+}
+
+.scope-server-button:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.capability-scope-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+}
+
+.scope-group {
+  display: grid;
+  gap: 7px;
+}
+
+.scope-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.scope-row:hover {
+  border-color: var(--accent-blue);
+  background: #f8fbff;
+}
+
+.scope-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.scope-row span {
+  min-width: 0;
+}
+
+.scope-row strong,
+.scope-row span span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scope-row strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.scope-row span span {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .modal-header {
@@ -2423,19 +2627,26 @@ pre.readonly-field {
 
   .topbar,
   .modal-header {
+    display: flex;
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .top-actions,
+  .composer-bar,
+  .composer-controls,
   .modal-actions {
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
   }
 
+  .composer-actions {
+    margin-left: auto;
+  }
+
   .workspace-nav {
     width: 100%;
+    justify-self: start;
     overflow-x: auto;
   }
 
@@ -2484,9 +2695,20 @@ pre.readonly-field {
     border-bottom: 1px solid var(--border);
   }
 
-  .run-dialog {
+  .run-dialog,
+  .capability-scope-modal {
     height: 100%;
     border-radius: 12px;
+  }
+
+  .capability-scope-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(320px, 1fr);
+  }
+
+  .capability-scope-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .run-overview-grid,

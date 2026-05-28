@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 from dagent.schemas import Boundary
-from dagent.capabilities.tools.boundary import DEFAULT_READ_ONLY_COMMANDS
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
@@ -43,38 +42,9 @@ def run_command(
     return formatted
 
 
-def _command_executable(command: str) -> str:
-    return command.strip().split(maxsplit=1)[0] if command.strip() else ""
-
-
 def _infer_command_boundary(args: dict) -> Boundary:
-    """Infer boundary from command arguments.
-
-    Read-only commands (ls, cat, git, etc.) get read_only boundary.
-    All other commands get write_limited and require approval.
-    """
-    command = str(args.get("command") or "").strip()
-    executable = _command_executable(command)
     cwd = str(args.get("cwd") or ".")
-    is_read_only = executable in DEFAULT_READ_ONLY_COMMANDS
-    return Boundary(
-        mode="read_only" if is_read_only else "write_limited",
-        allowed_paths=[cwd],
-        allowed_commands=[] if is_read_only else [executable or command],
-    )
-
-
-def _infer_command_risk(args: dict) -> str:
-    """Infer risk from command arguments.
-
-    Whitelisted read-only commands are low risk.
-    All other commands are high risk.
-    """
-    command = str(args.get("command") or "").strip()
-    executable = _command_executable(command)
-    if executable in DEFAULT_READ_ONLY_COMMANDS:
-        return "low"
-    return "high"
+    return Boundary(mode="write_limited", allowed_paths=[cwd])
 
 
 def register_command_tools(registry: ToolRegistry) -> None:
@@ -84,13 +54,12 @@ def register_command_tools(registry: ToolRegistry) -> None:
         action="command",
         path_args=("cwd",),
         command_args=("command",),
-        risk="low",
+        risk="high",
         boundary_fn=_infer_command_boundary,
-        risk_fn=_infer_command_risk,
         default_args={"cwd": ".", "timeout_seconds": 30},
         description=(
-            "Run a bounded command in a bounded working directory. "
-            "Read-only common inspection commands are allowed by default; other commands require boundary.allowed_commands."
+            "Run a shell command in a bounded working directory. "
+            "Commands use the system shell and are allowed except hard-blocked dangerous patterns."
         ),
         parameters={
             "type": "object",

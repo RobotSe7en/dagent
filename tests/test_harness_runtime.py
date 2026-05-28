@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from dagent import capability
 from dagent.harness_runtime import (
     ToolAgent,
@@ -10,6 +11,7 @@ from dagent.harness_runtime import (
     ValidatorAgent,
     CapabilityExecutor,
 )
+from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
@@ -303,6 +305,37 @@ def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
     assert result.dag.status == "review_required"
 
 
+def test_harness_runtime_dag_scope_filters_prompt_and_retry_feedback() -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(content=_dag_agent_dsl(tools=["write_file"])),
+            ChatResponse(content=_dag_agent_dsl()),
+        ]
+    )
+    runtime = _runtime(provider)
+
+    result = run(
+        runtime.handle_message(
+            "Create a scoped DAG",
+            mode="dag",
+            review_level="careful",
+            capability_scope=CapabilityScope(capability_ids=("tool.echo",)),
+        )
+    )
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.dag is not None
+    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.echo"
+    system_content = provider.requests[0]["messages"][0]["content"]
+    assert "echo" in system_content
+    assert "write_file" not in system_content
+    retry_content = provider.requests[1]["messages"][-1]["content"]
+    assert "Unknown capability function 'write_file'" in retry_content
+    assert "Available functions:" in retry_content
+    assert "echo" in retry_content
+
+
 def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode, no routing)
@@ -324,6 +357,27 @@ def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     assert runtime_task.mode == "dag"
     assert runtime_task.dag is not None
     assert capability_trace(runtime_task.trace, "tool.echo").status == "completed"
+
+
+def test_harness_runtime_resume_review_rejects_out_of_scope_dag_edit() -> None:
+    provider = MockProvider([ChatResponse(content=_dag_agent_dsl())])
+    runtime = _runtime(provider)
+
+    result = run(
+        runtime.handle_message(
+            "Create a scoped DAG",
+            mode="dag",
+            review_level="careful",
+            capability_scope=CapabilityScope(capability_ids=("tool.echo",)),
+        )
+    )
+    edited = result.dag.model_copy(deep=True)
+    invocation = edited.nodes[0].payload.invocation
+    invocation.capability_id = "tool.write_file"
+    invocation.arguments = {"path": "notes.md", "content": "hi"}
+
+    with pytest.raises(Exception, match="tool.write_file"):
+        run(runtime.resume_review(result.pending_review.review_id, dag=edited))
 
 
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:

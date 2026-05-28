@@ -48,8 +48,10 @@ import {
   deleteCapability,
   deleteMcpServer,
   getSkill,
+  getSkillFile,
   getValidationStatus,
   importSkill,
+  importSkillPackage,
   listCapabilities,
   listDagSpecs,
   listMcpServers,
@@ -93,6 +95,7 @@ import type {
   MCPServer,
   MCPServerConfig,
   SkillDetail,
+  SkillFileDetail,
   SkillSummary,
 } from './types';
 import {
@@ -313,6 +316,7 @@ type MessageTimelineItem =
   | { type: 'validating' };
 
 type RuntimeMode = 'auto' | 'tool' | 'dag';
+type ChatScopeMode = 'all' | 'custom';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
@@ -382,6 +386,10 @@ export function App() {
   const [draft, setDraft] = useState('');
   const [mode, setMode] = useState<RuntimeMode>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
+  const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
+  const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
+  const [selectedChatSkillNames, setSelectedChatSkillNames] = useState<string[]>([]);
+  const [capabilityScopeOpen, setCapabilityScopeOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -397,7 +405,6 @@ export function App() {
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
-  const [consoleLoading, setConsoleLoading] = useState(false);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [dagSpecs, setDagSpecs] = useState<DagSpec[]>([]);
   const [editorSpec, setEditorSpec] = useState<DagSpec>(() => createEmptyDagSpec());
@@ -415,6 +422,12 @@ export function App() {
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
+  const chatScopeLabel = chatCapabilityScopeLabel(
+    chatScopeMode,
+    selectedChatCapabilityIds.length,
+    selectedChatSkillNames.length,
+  );
+
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
@@ -424,7 +437,6 @@ export function App() {
   const [editorEdges, setEditorEdges] = useState<Edge[]>(editorGraph.edges);
 
   const refreshConsoleData = useCallback(async () => {
-    setConsoleLoading(true);
     setConsoleError(null);
     try {
       const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers] = await Promise.all([
@@ -443,8 +455,6 @@ export function App() {
       setSelectedProfileName((current) => current || nextProfiles.profiles[0]?.name || '');
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
-    } finally {
-      setConsoleLoading(false);
     }
   }, []);
 
@@ -467,6 +477,16 @@ export function App() {
   useEffect(() => {
     void refreshConsoleData();
   }, [refreshConsoleData]);
+
+  useEffect(() => {
+    const enabledIds = new Set(capabilities.filter((capability) => capability.enabled).map((capability) => capability.id));
+    setSelectedChatCapabilityIds((items) => items.filter((id) => enabledIds.has(id)));
+  }, [capabilities]);
+
+  useEffect(() => {
+    const availableSkills = new Set(skills.map((skill) => skillLookupName(skill)));
+    setSelectedChatSkillNames((items) => items.filter((name) => availableSkills.has(name)));
+  }, [skills]);
 
   useEffect(() => {
     const element = messageListRef.current;
@@ -1067,7 +1087,15 @@ export function App() {
       { role: 'user', kind: 'text', content: prompt },
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    appendTrace({ type: 'model', label: 'runtime_started', detail: `HarnessRuntime mode=${mode}.`, status: 'running' });
+    const capabilityScope = chatScopeMode === 'all'
+      ? undefined
+      : { capabilityIds: selectedChatCapabilityIds, skillNames: selectedChatSkillNames };
+    appendTrace({
+      type: 'model',
+      label: 'runtime_started',
+      detail: `HarnessRuntime mode=${mode}; capabilities=${chatScopeLabel}.`,
+      status: 'running',
+    });
 
     try {
       await streamTask(prompt, mode, reviewLevel, {
@@ -1104,7 +1132,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      });
+      }, capabilityScope);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1277,60 +1305,6 @@ export function App() {
             </button>
           ))}
         </nav>
-        <div className="top-actions">
-          {activeWorkspace === 'chat' ? (
-            <>
-              <div className="mode-switch" aria-label="Runtime mode">
-                {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
-                  <button
-                    key={item}
-                    className={mode === item ? 'active' : ''}
-                    onClick={() => setMode(item)}
-                    type="button"
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-              <select
-                className="review-select"
-                value={reviewLevel}
-                onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
-                aria-label="Review level"
-              >
-                {reviewLevels.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-              <button
-                className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
-                type="button"
-                onClick={toggleValidation}
-                disabled={validationPending}
-                title={validationError ?? 'Validate final answers against the user request'}
-                aria-pressed={validationEnabled}
-              >
-                {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
-              </button>
-              {dag.nodes.length ? (
-                <>
-                  <StatusBadge status={dag.status} />
-                  <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
-                    <GitBranch size={16} />
-                    Review DAG
-                  </button>
-                </>
-              ) : null}
-            </>
-          ) : (
-            <button className="secondary-button compact-button" onClick={() => void refreshConsoleData()} disabled={consoleLoading} type="button">
-              <RefreshCw size={16} />
-              Refresh
-            </button>
-          )}
-        </div>
       </header>
 
       <main className="workspace">
@@ -1365,9 +1339,63 @@ export function App() {
                 placeholder="Ask for a plan, review, or execution result"
               />
               <div className="composer-bar">
-                <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
-                  <MessageSquarePlus size={18} />
-                </button>
+                <div className="composer-controls">
+                  <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
+                    <MessageSquarePlus size={18} />
+                  </button>
+                  <div className="mode-switch" aria-label="Runtime mode">
+                    {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
+                      <button
+                        key={item}
+                        className={mode === item ? 'active' : ''}
+                        onClick={() => setMode(item)}
+                        type="button"
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    className="review-select"
+                    value={reviewLevel}
+                    onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
+                    aria-label="Review level"
+                  >
+                    {reviewLevels.map((level) => (
+                      <option key={level} value={level}>
+                        {level}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
+                    type="button"
+                    onClick={toggleValidation}
+                    disabled={validationPending}
+                    title={validationError ?? 'Validate final answers against the user request'}
+                    aria-pressed={validationEnabled}
+                  >
+                    {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
+                  </button>
+                  <button
+                    className={`secondary-button compact-button scope-button ${chatScopeMode === 'custom' ? 'active' : ''}`}
+                    onClick={() => setCapabilityScopeOpen(true)}
+                    title="Select chat capabilities"
+                    type="button"
+                  >
+                    <SlidersHorizontal size={16} />
+                    {chatScopeLabel}
+                  </button>
+                  {dag.nodes.length ? (
+                    <>
+                      <StatusBadge status={dag.status} />
+                      <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
+                        <GitBranch size={16} />
+                        Review DAG
+                      </button>
+                    </>
+                  ) : null}
+                </div>
                 <div className="composer-actions">
                   <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
                     <CircleStop size={18} />
@@ -1429,6 +1457,21 @@ export function App() {
           />
         )}
       </main>
+
+      {capabilityScopeOpen ? (
+        <ChatCapabilityScopeDialog
+          capabilities={capabilities}
+          skills={skills}
+          mcpServers={mcpServers}
+          mode={chatScopeMode}
+          selectedCapabilityIds={selectedChatCapabilityIds}
+          selectedSkillNames={selectedChatSkillNames}
+          onModeChange={setChatScopeMode}
+          onCapabilityIdsChange={setSelectedChatCapabilityIds}
+          onSkillNamesChange={setSelectedChatSkillNames}
+          onClose={() => setCapabilityScopeOpen(false)}
+        />
+      ) : null}
 
       {reviewOpen && dag.nodes.length ? (
         <DagReviewDialog
@@ -1876,6 +1919,169 @@ function CapabilityReviewDialog({
               <pre>{clipText(argsText, 1200)}</pre>
             </div>
           ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatCapabilityScopeDialog({
+  capabilities,
+  skills,
+  mcpServers,
+  mode,
+  selectedCapabilityIds,
+  selectedSkillNames,
+  onModeChange,
+  onCapabilityIdsChange,
+  onSkillNamesChange,
+  onClose,
+}: {
+  capabilities: CapabilityDefinition[];
+  skills: SkillSummary[];
+  mcpServers: MCPServer[];
+  mode: ChatScopeMode;
+  selectedCapabilityIds: string[];
+  selectedSkillNames: string[];
+  onModeChange: React.Dispatch<React.SetStateAction<ChatScopeMode>>;
+  onCapabilityIdsChange: React.Dispatch<React.SetStateAction<string[]>>;
+  onSkillNamesChange: React.Dispatch<React.SetStateAction<string[]>>;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const selectedCapabilities = new Set(selectedCapabilityIds);
+  const selectedSkills = new Set(selectedSkillNames);
+  const normalizedQuery = query.trim().toLowerCase();
+  const enabledCapabilities = capabilities.filter((capability) => capability.enabled);
+  const visibleCapabilities = enabledCapabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
+  const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
+  const groups = capabilityKinds
+    .map((kind) => ({ kind, items: visibleCapabilities.filter((capability) => capability.kind === kind) }))
+    .filter((group) => group.items.length);
+  const mcpServerCounts = mcpServers
+    .map((server) => ({
+      name: server.name,
+      ids: server.tools.filter((tool) => tool.enabled && matchesCapabilityQuery(tool, normalizedQuery)).map((tool) => tool.id),
+    }))
+    .filter((server) => server.ids.length);
+
+  const selectVisible = () => {
+    onModeChange('custom');
+    onCapabilityIdsChange((current) => mergeValues(current, visibleCapabilities.map((capability) => capability.id)));
+    onSkillNamesChange((current) => mergeValues(current, visibleSkills.map((skill) => skillLookupName(skill))));
+  };
+
+  const clearSelection = () => {
+    onModeChange('custom');
+    onCapabilityIdsChange([]);
+    onSkillNamesChange([]);
+  };
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Chat capabilities">
+      <div className="capability-scope-modal">
+        <header className="modal-header">
+          <div>
+            <div className="modal-title">
+              <SlidersHorizontal size={20} />
+              <span>Chat Capabilities</span>
+            </div>
+            <p>{chatCapabilityScopeLabel(mode, selectedCapabilityIds.length, selectedSkillNames.length)}</p>
+          </div>
+          <div className="modal-actions">
+            <button className="secondary-button compact-button" onClick={selectVisible} type="button">
+              Select visible
+            </button>
+            <button className="secondary-button compact-button" onClick={clearSelection} type="button">
+              Clear
+            </button>
+            <button className="icon-button" onClick={onClose} title="Close" type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </header>
+        <div className="capability-scope-body">
+          <aside className="capability-scope-sidebar">
+            <div className="scope-mode-switch" role="tablist" aria-label="Capability scope mode">
+              <button className={mode === 'all' ? 'active' : ''} onClick={() => onModeChange('all')} type="button">
+                All enabled
+              </button>
+              <button className={mode === 'custom' ? 'active' : ''} onClick={() => onModeChange('custom')} type="button">
+                Custom
+              </button>
+            </div>
+            <div className="search-field scope-search">
+              <Search size={15} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capabilities" />
+            </div>
+            {mcpServerCounts.length ? (
+              <div className="scope-server-list">
+                <h3>MCP Servers</h3>
+                {mcpServerCounts.map((server) => (
+                  <button
+                    key={server.name}
+                    className="scope-server-button"
+                    onClick={() => {
+                      onModeChange('custom');
+                      onCapabilityIdsChange((current) => mergeValues(current, server.ids));
+                    }}
+                    type="button"
+                  >
+                    <span>{server.name}</span>
+                    <strong>{server.ids.length}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </aside>
+          <div className="capability-scope-list">
+            {groups.map((group) => (
+              <section className="scope-group" key={group.kind}>
+                <h3>{group.kind}</h3>
+                {group.items.map((capability) => (
+                  <label className="scope-row" key={capability.id}>
+                    <input
+                      type="checkbox"
+                      checked={mode === 'custom' && selectedCapabilities.has(capability.id)}
+                      onChange={(event) => {
+                        onModeChange('custom');
+                        onCapabilityIdsChange((current) => toggleValue(current, capability.id, event.target.checked));
+                      }}
+                    />
+                    <span>
+                      <strong>{capability.name}</strong>
+                      <span>{capabilityScopeDetail(capability)}</span>
+                    </span>
+                  </label>
+                ))}
+              </section>
+            ))}
+            {visibleSkills.length ? (
+              <section className="scope-group">
+                <h3>skills</h3>
+                {visibleSkills.map((skill) => {
+                  const lookup = skillLookupName(skill);
+                  return (
+                    <label className="scope-row" key={skill.path}>
+                      <input
+                        type="checkbox"
+                        checked={mode === 'custom' && selectedSkills.has(lookup)}
+                        onChange={(event) => {
+                          onModeChange('custom');
+                          onSkillNamesChange((current) => toggleValue(current, lookup, event.target.checked));
+                        }}
+                      />
+                      <span>
+                        <strong>{skill.name}</strong>
+                        <span>{skill.category ? `${skill.category} · ${skill.path}` : skill.path}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </section>
+            ) : null}
+            {!groups.length && !visibleSkills.length ? <div className="empty-state compact">No matching capabilities.</div> : null}
+          </div>
         </div>
       </div>
     </div>
@@ -2912,6 +3118,7 @@ function CapabilityDirectory({
   const [message, setMessage] = useState('');
   const [selectedSkillName, setSelectedSkillName] = useState('');
   const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
+  const [skillFileDetail, setSkillFileDetail] = useState<SkillFileDetail | null>(null);
   const [skillMessage, setSkillMessage] = useState('');
   const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
   const [selectedMcpName, setSelectedMcpName] = useState('');
@@ -2929,6 +3136,8 @@ function CapabilityDirectory({
     .map((kind) => ({ kind, items: filtered.filter((capability) => capability.kind === kind) }))
     .filter((group) => group.items.length);
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? skills[0];
+  const linkedFileGroups = Object.entries(skillDetail?.linked_files ?? {})
+    .filter(([, files]) => files.length);
   const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
 
   const runCreate = async () => {
@@ -3006,9 +3215,26 @@ function CapabilityDirectory({
     try {
       const detail = await getSkill(lookup);
       setSkillDetail(detail);
+      setSkillFileDetail(null);
       setSkillMessage('');
     } catch (exc) {
       setSkillDetail(null);
+      setSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const openSkillLinkedFile = async (filePath: string) => {
+    const skill = skillDetail?.skill ?? selectedSkill;
+    if (!skill) return;
+    const lookup = skillLookupName(skill);
+    setSkillMessage(`Loading ${filePath}...`);
+    try {
+      const detail = await getSkillFile(lookup, filePath);
+      setSkillFileDetail(detail);
+      setSkillMessage('');
+    } catch (exc) {
+      setSkillFileDetail(null);
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
@@ -3024,6 +3250,7 @@ function CapabilityDirectory({
       });
       await onRefresh();
       setSkillDetail(detail);
+      setSkillFileDetail(null);
       setSelectedSkillName(skillLookupName(detail.skill));
       setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
     } catch (exc) {
@@ -3038,6 +3265,7 @@ function CapabilityDirectory({
     try {
       await deleteImportedSkill(skillLookupName(skill));
       setSkillDetail(null);
+      setSkillFileDetail(null);
       setSelectedSkillName('');
       await onRefresh();
       setSkillMessage(`Removed ${skillLookupName(skill)}.`);
@@ -3046,8 +3274,22 @@ function CapabilityDirectory({
     }
   };
 
-  const loadSkillFile = (file: File | undefined) => {
+  const loadSkillFile = async (file: File | undefined) => {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      setSkillMessage('Importing skill package...');
+      try {
+        const detail = await importSkillPackage(file);
+        await onRefresh();
+        setSkillDetail(detail);
+        setSkillFileDetail(null);
+        setSelectedSkillName(skillLookupName(detail.skill));
+        setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
+      } catch (exc) {
+        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+      }
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
@@ -3245,10 +3487,46 @@ function CapabilityDirectory({
                     </span>
                   </div>
                   <p>{skillDetail.description || 'No description.'}</p>
+                  {skillDetail.skill_dir ? (
+                    <div className="metadata-grid">
+                      <span>Directory</span><strong>{skillDetail.skill_dir}</strong>
+                    </div>
+                  ) : null}
+                  {linkedFileGroups.length ? (
+                    <section className="code-panel">
+                      <h3>Linked Files</h3>
+                      <div className="linked-file-list">
+                        {linkedFileGroups.map(([folder, files]) => (
+                          <div key={folder} className="linked-file-group">
+                            <strong>{folder}</strong>
+                            <div>
+                              {files.map((filePath) => (
+                                <button
+                                  key={filePath}
+                                  className={skillFileDetail?.file_path === filePath ? 'secondary-button compact-button active' : 'secondary-button compact-button'}
+                                  onClick={() => void openSkillLinkedFile(filePath)}
+                                  type="button"
+                                >
+                                  <FileText size={14} />
+                                  {filePath}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
                   <section className="code-panel">
                     <h3>Content</h3>
                     <pre>{skillDetail.content}</pre>
                   </section>
+                  {skillFileDetail ? (
+                    <section className="code-panel">
+                      <h3>{skillFileDetail.file_path}</h3>
+                      <pre>{skillFileDetail.content}</pre>
+                    </section>
+                  ) : null}
                   <section className="code-panel">
                     <h3>Metadata</h3>
                     <pre>{JSON.stringify(skillDetail.metadata, null, 2)}</pre>
@@ -3410,9 +3688,9 @@ function CapabilityDirectory({
               </label>
               <label>
                 Upload
-                <input type="file" accept=".md,text/markdown,text/plain" onChange={(event) => loadSkillFile(event.target.files?.[0])} />
+                <input type="file" accept=".md,text/markdown,text/plain,.zip,application/zip" onChange={(event) => void loadSkillFile(event.target.files?.[0])} />
               </label>
-              <div className="readonly-note">Imported skills are in-memory instructions only. Linked folders and scripts are not imported or executed in this MVP.</div>
+              <div className="readonly-note">Markdown imports are temporary in-memory skills. Zip packages are installed under the managed local skill root and may include references, templates, scripts, and assets.</div>
               <button className="primary-button" onClick={importSkillDraft} type="button">
                 <Upload size={16} />
                 Import skill
@@ -3471,6 +3749,52 @@ function CapabilityDirectory({
       </aside>
     </section>
   );
+}
+
+function chatCapabilityScopeLabel(mode: ChatScopeMode, capabilityCount: number, skillCount: number): string {
+  if (mode === 'all') return 'All capabilities';
+  const total = capabilityCount + skillCount;
+  if (total === 0) return 'No capabilities';
+  if (skillCount === 0) return `${capabilityCount} capabilities`;
+  if (capabilityCount === 0) return `${skillCount} skills`;
+  return `${capabilityCount} capabilities · ${skillCount} skills`;
+}
+
+function matchesCapabilityQuery(capability: CapabilityDefinition, query: string): boolean {
+  if (!query) return true;
+  const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
+  const haystack = `${capability.id} ${capability.name} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function matchesSkillQuery(skill: SkillSummary, query: string): boolean {
+  if (!query) return true;
+  const haystack = `${skill.name} ${skill.category ?? ''} ${skill.description} ${skill.path}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function capabilityScopeDetail(capability: CapabilityDefinition): string {
+  const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
+  const tool = typeof capability.config?.tool === 'string' ? capability.config.tool : '';
+  const source = server ? `${server}${tool ? ` · ${tool}` : ''}` : capability.id;
+  return `${capability.kind} · ${source}`;
+}
+
+function toggleValue(items: string[], value: string, enabled: boolean): string[] {
+  if (enabled) return mergeValues(items, [value]);
+  return items.filter((item) => item !== value);
+}
+
+function mergeValues(items: string[], values: string[]): string[] {
+  const merged = [...items];
+  const seen = new Set(merged);
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      merged.push(value);
+    }
+  }
+  return merged;
 }
 
 function isEditableToolCapability(capability: CapabilityDefinition): boolean {

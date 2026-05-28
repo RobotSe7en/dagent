@@ -80,7 +80,7 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.policy_decision["boundary_mode"] == "read_only"
 
 
-def test_shell_provider_executes_allowlisted_command() -> None:
+def test_shell_provider_executes_fixed_command() -> None:
     registry = CapabilityCatalog()
     executor = CapabilityExecutor(registry)
     ShellCapabilityProvider(
@@ -97,7 +97,7 @@ def test_shell_provider_executes_allowlisted_command() -> None:
             capability_id="shell.say_hello",
             kind="shell",
             arguments={},
-            boundary=Boundary(mode="read_only", allowed_commands=["python"]),
+            boundary=Boundary(mode="read_only"),
         )
     ))
 

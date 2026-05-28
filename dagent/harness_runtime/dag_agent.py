@@ -9,6 +9,7 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
+from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -68,17 +69,31 @@ class DAGAgent:
     ) -> None:
         self.loop = loop
         self.profile = profile
-        self.tools = self.loop.available_capabilities()
         self.prompt_builder = prompt_builder or PromptBuilder()
-        self.system_message = self.prompt_builder.build_system_message(
+        self.tools = self.loop.available_capabilities()
+        self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
+        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+
+    def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
+        tools = self.loop.available_capabilities(capability_scope.capability_ids)
+        return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
-                tools=self.tools,
+                tools=tools,
+                skills=list(capability_scope.skill_instructions),
                 memory=self.profile.memory,
             )
         )
-        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+
+    def _messages_for_scope(self, capability_scope: CapabilityScope) -> list[dict[str, Any]]:
+        messages = list(self.messages)
+        system_message = self._build_system_message(capability_scope)
+        if messages and messages[0].get("role") == "system":
+            messages[0] = dict(system_message)
+        else:
+            messages.insert(0, dict(system_message))
+        return messages
 
     async def run(
         self,
@@ -88,15 +103,18 @@ class DAGAgent:
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
         force_review: bool = False,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
+        self.messages = self._messages_for_scope(capability_scope)
         return await self.loop.run_dynamic(
             request,
             task_id=resolved_task_id,
             review_level=review_level,
+            capability_scope=capability_scope,
             messages=self.messages,
             build_user_message=self.build_request_user_message,
             runtime_mode=runtime_mode,
@@ -118,6 +136,7 @@ class DAGAgent:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
+        self.messages = self._messages_for_scope(state.capability_scope)
         return await self.loop.resume_review(
             state,
             record,
@@ -175,8 +194,14 @@ class DAGAgentLoop:
         self.enabled_toolsets = tuple(enabled_toolsets)
         self.max_cycles = max_cycles
 
-    def available_capabilities(self) -> list[CapabilityDefinition]:
-        return self.tool_adapter.capabilities(self.enabled_toolsets)
+    def available_capabilities(
+        self,
+        capability_ids: Sequence[str] | None = None,
+    ) -> list[CapabilityDefinition]:
+        return self.tool_adapter.capabilities(
+            self.enabled_toolsets,
+            capability_ids=capability_ids,
+        )
 
     async def _request_dag(
         self,
@@ -186,6 +211,7 @@ class DAGAgentLoop:
         user_message: dict[str, str],
         allow_no_change: bool = True,
         on_token: Callable[[str], None] | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> DAG | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages.append(dict(user_message))
@@ -194,7 +220,10 @@ class DAGAgentLoop:
         result = dag_from_model_output(
             response.content,
             task_id=resolved_task_id,
-            tools=self.tool_adapter.capabilities(self.enabled_toolsets),
+            tools=self.tool_adapter.capabilities(
+                self.enabled_toolsets,
+                capability_ids=capability_scope.capability_ids,
+            ),
         )
         if result is None:
             if not allow_no_change:
@@ -216,6 +245,7 @@ class DAGAgentLoop:
         build_user_message: Callable[..., dict[str, str]],
         runtime_mode: str = "auto",
         force_review: bool = False,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -227,6 +257,7 @@ class DAGAgentLoop:
             dag=_seed_dag(resolved_task_id),
             review_level=review_level,
             runtime_mode=runtime_mode,
+            capability_scope=capability_scope,
         )
         result = await self.execute(
             record,
@@ -391,7 +422,7 @@ class DAGAgentLoop:
         submitted.task_id = task_id
         submitted.dag_id = record.dag.dag_id
         submitted.version = record.dag.version + 1
-        prepared = self.prepare_for_review(submitted)
+        prepared = self.prepare_for_review(submitted, record.capability_scope.capability_ids)
 
         existing_node_ids = {node.id for node in record.dag.nodes}
         changed_node_ids = _changed_node_ids(record.dag, prepared)
@@ -436,7 +467,7 @@ class DAGAgentLoop:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
         if entry_observation is not None and not replan:
             raise TypeError("entry_observation requires replan=True.")
-        self._validate_dag_tools(record.dag)
+        self._validate_dag_tools(record.dag, record.capability_scope.capability_ids)
         if replan and (messages is None or build_user_message is None):
             raise TypeError("Dynamic DAG execution requires messages and build_user_message.")
 
@@ -520,6 +551,7 @@ class DAGAgentLoop:
                     messages=messages,
                     allow_no_change=_has_real_nodes(record.dag),
                     on_token=on_token,
+                    capability_scope=record.capability_scope,
                 )
             except Exception as exc:
                 pending_observation = _format_dag_observation(
@@ -651,7 +683,7 @@ class DAGAgentLoop:
         prepared.task_id = record.task_id
         prepared.dag_id = record.dag.dag_id
         prepared.version = record.dag.version + 1
-        prepared = self.prepare_for_review(prepared)
+        prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
         changed = _changed_node_ids(record.dag, prepared)
         needs_review = bool(changed) and (
@@ -719,24 +751,35 @@ class DAGAgentLoop:
         _emit_dag(on_dag, record.dag)
         return trace
 
-    def prepare_for_review(self, dag: DAG) -> DAG:
+    def prepare_for_review(
+        self,
+        dag: DAG,
+        capability_ids: Sequence[str] | None = None,
+    ) -> DAG:
         prepared = self.dag_executor.normalize(dag)
         validate_dag(prepared)
-        self._validate_dag_tools(prepared)
+        self._validate_dag_tools(prepared, capability_ids)
         return prepared
 
-    def _validate_dag_tools(self, dag: DAG) -> None:
+    def _validate_dag_tools(
+        self,
+        dag: DAG,
+        capability_ids: Sequence[str] | None = None,
+    ) -> None:
         unknown_tools = sorted({
             node.payload.invocation.capability_id
             for node in dag.nodes
             if isinstance(node.payload, CapabilityNodePayload)
             and node.payload.invocation.capability_id
-            and not self._is_enabled_capability(node.payload.invocation.capability_id)
+            and not self._is_enabled_capability(node.payload.invocation.capability_id, capability_ids)
         })
         if unknown_tools:
             available_capabilities = [
                 definition.id
-                for definition in self.tool_adapter.capabilities(self.enabled_toolsets)
+                for definition in self.tool_adapter.capabilities(
+                    self.enabled_toolsets,
+                    capability_ids=capability_ids,
+                )
             ]
             raise DAGValidationError(
                 "Unknown capability(s): "
@@ -745,11 +788,16 @@ class DAGAgentLoop:
                 f"{', '.join(sorted(available_capabilities))}."
             )
 
-    def _is_enabled_capability(self, capability_id: str) -> bool:
+    def _is_enabled_capability(
+        self,
+        capability_id: str,
+        capability_ids: Sequence[str] | None = None,
+    ) -> bool:
         try:
             self.tool_adapter.ensure_allowed(
                 capability_id,
                 enabled_toolsets=self.enabled_toolsets,
+                capability_ids=capability_ids,
             )
             return True
         except KeyError:

@@ -28,22 +28,63 @@ class BoundaryViolation(PermissionError):
 
 
 WRITE_ACTIONS = {"write"}
-COMMAND_ACTIONS = {"command"}
-COMMAND_CONTROL_PATTERN = re.compile(r"&&|\|\||[;|`]")
-DEFAULT_READ_ONLY_COMMANDS = {
-    "cat",
-    "dir",
-    "echo",
-    "find",
-    "findstr",
-    "git",
-    "grep",
-    "ls",
-    "pwd",
-    "type",
-    "where",
-    "whoami",
-}
+
+_BLOCKED_SHELL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:"),
+        "fork bomb",
+    ),
+    (
+        re.compile(r"\bsudo\b(?=[^;&|`]*\s-S(?:\s|$))", re.IGNORECASE),
+        "sudo password from stdin",
+    ),
+    (
+        re.compile(
+            r"\brm\b(?=[^;&|`]*-[^\s;&|`]*r)(?=[^;&|`]*-[^\s;&|`]*f)"
+            r"[^;&|`]*(?:\s|^)(?:/|/\*|~|~/|\$HOME|\$\{HOME\})(?:\s|$)",
+            re.IGNORECASE,
+        ),
+        "recursive delete of root or home",
+    ),
+    (
+        re.compile(r"\brm\b[^;&|`]*--no-preserve-root\b", re.IGNORECASE),
+        "disable rm root protection",
+    ),
+    (
+        re.compile(r"(?:^|[;&|`\n])\s*(?:sudo\s+)?mkfs(?:\.[\w-]+)?\b", re.IGNORECASE),
+        "format filesystem",
+    ),
+    (
+        re.compile(
+            r"(?:^|[;&|`\n])\s*(?:sudo\s+)?dd\b(?=[^;&|`]*\bof=/dev/"
+            r"(?:sd|hd|vd|xvd|nvme|mmcblk|disk)\w*)",
+            re.IGNORECASE,
+        ),
+        "write raw block device",
+    ),
+    (
+        re.compile(
+            r"(?:>|>>)\s*/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|disk)\w*",
+            re.IGNORECASE,
+        ),
+        "redirect to raw block device",
+    ),
+    (
+        re.compile(
+            r"(?:^|[;&|`\n])\s*(?:sudo\s+)?(?:shutdown|reboot|halt|poweroff)\b",
+            re.IGNORECASE,
+        ),
+        "system shutdown or reboot",
+    ),
+    (
+        re.compile(
+            r"(?:^|[;&|`\n])\s*(?:sudo\s+)?systemctl\s+"
+            r"(?:poweroff|reboot|halt|shutdown)\b",
+            re.IGNORECASE,
+        ),
+        "system shutdown or reboot",
+    ),
+)
 
 
 def enforce_action_allowed(action: str, boundary: Boundary) -> None:
@@ -54,31 +95,14 @@ def enforce_action_allowed(action: str, boundary: Boundary) -> None:
         )
 
 
-def enforce_command_allowed(command: str, boundary: Boundary) -> None:
-    if COMMAND_CONTROL_PATTERN.search(command):
-        raise BoundaryViolation(
-            "Command contains unsupported shell control operators.",
-            command=command,
-        )
-
-    executable = _command_executable(command)
-    if not executable:
+def enforce_command_allowed(command: str, _boundary: Boundary) -> None:
+    if not command.strip():
         raise BoundaryViolation("Command cannot be empty.", command=command)
 
-    if boundary.mode == "full":
-        return
-
-    allowed = boundary.allowed_commands or _default_allowed_commands(boundary)
-    if not allowed:
+    blocked_reason = blocked_shell_command(command)
+    if blocked_reason:
         raise BoundaryViolation(
-            "Command execution requires boundary.allowed_commands.",
-            command=command,
-        )
-
-    if not any(command == item or executable == item for item in allowed):
-        allowed_display = ", ".join(allowed)
-        raise BoundaryViolation(
-            f"Command '{executable}' is outside allowed commands: {allowed_display}.",
+            f"Command is blocked by shell safety policy: {blocked_reason}.",
             command=command,
         )
 
@@ -116,12 +140,8 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def _command_executable(command: str) -> str:
-    return command.strip().split(maxsplit=1)[0] if command.strip() else ""
-
-
-def _default_allowed_commands(boundary: Boundary) -> list[str]:
-    if boundary.mode != "read_only":
-        return []
-    return sorted(DEFAULT_READ_ONLY_COMMANDS)
-
+def blocked_shell_command(command: str) -> str | None:
+    for pattern, reason in _BLOCKED_SHELL_PATTERNS:
+        if pattern.search(command):
+            return reason
+    return None

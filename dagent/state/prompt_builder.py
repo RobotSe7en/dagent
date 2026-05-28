@@ -59,7 +59,10 @@ def _tools_section(tools: list[CapabilityDefinition]) -> str:
 
 
 def _skills_section(skills: list[str]) -> str:
-    return "\n".join(["## Skills", *[f"- {skill}" for skill in skills]])
+    lines = ["## Skills"]
+    for skill in skills:
+        lines.append(f"- {skill.strip().replace(chr(10), chr(10) + '  ')}")
+    return "\n".join(lines)
 
 
 def _named_section(title: str, content: str) -> str:

@@ -18,6 +18,7 @@ from dagent.harness_runtime.tool_agent import (
 )
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
+from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
@@ -230,6 +231,7 @@ class HarnessRuntime:
         *,
         mode: RuntimeMode = "auto",
         review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RuntimeResponse:
@@ -243,6 +245,7 @@ class HarnessRuntime:
                 feedback or message,
                 mode=resolved_mode,
                 review_level=review_level,
+                capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -258,6 +261,7 @@ class HarnessRuntime:
             resolved_mode,
             review_level,
             runtime_mode=resolved_mode,
+            capability_scope=capability_scope,
         )
 
     async def resume_review(
@@ -291,6 +295,7 @@ class HarnessRuntime:
                 return await self.tool_agent.run(
                     feedback,
                     review_level=state.review_level,
+                    capability_scope=state.capability_scope,
                     on_token=thinking_only,
                     on_event=on_event,
                 )
@@ -308,6 +313,7 @@ class HarnessRuntime:
                 state.review_level,
                 extra_invocations=state.invocations,
                 task_id=state.task_id,
+                capability_scope=state.capability_scope,
             )
 
         if approved and dag is None:
@@ -336,6 +342,7 @@ class HarnessRuntime:
                 review_level or state.review_level,
                 task_id=task_id,
                 runtime_mode=record.runtime_mode,
+                capability_scope=record.capability_scope,
             )
 
         async def run_once(feedback: str | None) -> LoopOutcome:
@@ -346,6 +353,7 @@ class HarnessRuntime:
                 task_id=record.task_id,
                 review_level=review_level or state.review_level,
                 runtime_mode=record.runtime_mode,
+                capability_scope=record.capability_scope,
                 on_token=thinking_only,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
@@ -364,6 +372,7 @@ class HarnessRuntime:
             review_level or state.review_level,
             task_id=task_id,
             runtime_mode=record.runtime_mode,
+            capability_scope=record.capability_scope,
         )
 
     # ==================================================================
@@ -399,6 +408,7 @@ class HarnessRuntime:
         on_event: LoopEventHandler | None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
@@ -410,6 +420,7 @@ class HarnessRuntime:
                 task_id=None,
                 review_level=review_level,
                 runtime_mode=str(mode),
+                capability_scope=capability_scope,
                 on_token=thinking_only,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
@@ -423,6 +434,7 @@ class HarnessRuntime:
             return await self.tool_agent.run(
                 request,
                 review_level=review_level,
+                capability_scope=capability_scope,
                 on_token=thinking_only,
                 on_event=on_event,
             )
@@ -451,6 +463,7 @@ class HarnessRuntime:
         extra_invocations: list[CapabilityInvocation] | None = None,
         task_id: str | None = None,
         runtime_mode: str | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> RuntimeResponse:
         invocations = [*(extra_invocations or []), *outcome.invocations]
         if outcome.status == "awaiting_review":
@@ -462,6 +475,7 @@ class HarnessRuntime:
                 loop_outcome=outcome,
                 invocations=invocations,
                 runtime_mode=runtime_mode,
+                capability_scope=capability_scope,
             )
             return _gate_result_for_task(outcome, record.task_id)
 
@@ -473,6 +487,7 @@ class HarnessRuntime:
             loop_outcome=outcome,
             invocations=invocations,
             runtime_mode=runtime_mode,
+            capability_scope=capability_scope,
         )
         final_answer = outcome.final_answer.strip() or _fallback_final_answer(outcome)
         return RuntimeResponse(
