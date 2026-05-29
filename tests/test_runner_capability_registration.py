@@ -118,4 +118,39 @@ def test_add_mcp_server_raises_on_connect_failure(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="failed to connect: boom"):
         runner.add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+    assert manager.shutdown_calls == 1
+    runner.close()
+
+
+def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    # A tool whose LLM function name collides with one of the MCP server's tools.
+    @dagent.tool(id="tool.collide", name="mcp_mock_server__dup")
+    def collide() -> str:
+        return "x"
+
+    runner.add_tool(collide)
+
+    class TwoToolManager(FakeMCPManager):
+        def discovered_tools(self):
+            return {
+                "mock-server": [
+                    SimpleNamespace(name="good", description="", inputSchema={"properties": {}}),
+                    SimpleNamespace(name="dup", description="", inputSchema={"properties": {}}),
+                ]
+            }
+
+    manager = TwoToolManager()
+
+    with pytest.raises(RuntimeError, match="collides"):
+        runner.add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+
+    catalog = runner.runtime.capability_catalog
+    # The successfully-registered "good" tool must be rolled back...
+    assert catalog.get("mcp.mock_server.good") is None
+    # ...the pre-existing colliding tool must survive...
+    assert catalog.get("tool.collide") is not None
+    # ...and the manager must be shut down.
+    assert manager.shutdown_calls == 1
     runner.close()

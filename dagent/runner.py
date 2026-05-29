@@ -58,7 +58,6 @@ class Runner:
     ) -> None:
         self.workspace = Path(workspace)
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
-        self._mcp_providers: list[MCPCapabilityProvider] = []
         self._runtime = _create_runtime(
             workspace=self.workspace,
             provider=provider,
@@ -90,9 +89,8 @@ class Runner:
         self._refresh_registered_agent_runtime_configs()
         return definition
 
-    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> None:
-        for capability in capabilities:
-            self.add_tool(capability)
+    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> list[CapabilityDefinition]:
+        return [self.add_tool(capability) for capability in capabilities]
 
     @property
     def skill_store(self) -> SkillStore:
@@ -103,12 +101,12 @@ class Runner:
     def add_skill_root(self, root: str | Path) -> Path:
         """Add a directory to scan for skills, visible to skill.list/skill.view."""
 
-        resolved = Path(root)
+        candidate = Path(root)
         existing = {Path(existing_root).resolve() for existing_root in self._skill_provider.store.roots}
-        if resolved.resolve() not in existing:
-            self._skill_provider.store.roots.append(resolved)
-            self._sync_skill_root_metadata()
-        return resolved
+        if candidate.resolve() not in existing:
+            self._skill_provider.store.roots.append(candidate)
+        self._sync_skill_root_metadata()
+        return candidate
 
     def add_skill_roots(self, roots: Iterable[str | Path]) -> list[Path]:
         return [self.add_skill_root(root) for root in roots]
@@ -120,9 +118,18 @@ class Runner:
         *,
         manager: Any | None = None,
     ) -> list[CapabilityDefinition]:
-        """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities."""
+        """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities.
 
-        if not getattr(manager, "available", MCPServerManager.available):
+        Registration is all-or-nothing: if any discovered tool fails to register
+        or the server fails to connect, every capability registered by this call
+        is rolled back and the server's manager is shut down before raising.
+        """
+
+        if manager is None:
+            available = MCPServerManager.available
+        else:
+            available = getattr(manager, "available", True)
+        if not available:
             raise RuntimeError(
                 "MCP SDK is not installed. Install dagent[mcp] to register MCP servers."
             )
@@ -130,17 +137,24 @@ class Runner:
         before = set(catalog.ids())
         provider = MCPCapabilityProvider({name: config}, manager=manager)
         provider.register_into(catalog)
+        new_ids = sorted(set(catalog.ids()) - before)
         errors = list(provider.registration_errors)
         connect_error = getattr(provider.manager, "last_errors", {}).get(name)
         if connect_error:
             errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
         if errors:
+            self._rollback_mcp_registration(catalog, new_ids, provider.manager)
             raise RuntimeError("; ".join(errors))
-        self._mcp_providers.append(provider)
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
-        new_ids = sorted(set(catalog.ids()) - before)
         return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
+
+    def _rollback_mcp_registration(self, catalog: Any, capability_ids: list[str], manager: Any) -> None:
+        for capability_id in capability_ids:
+            catalog.delete(capability_id)
+        if manager is not None and hasattr(manager, "shutdown"):
+            catalog.remove_shutdown_hook(manager.shutdown)
+            manager.shutdown()
 
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
@@ -149,10 +163,7 @@ class Runner:
             entry = catalog.get_entry(capability_id)
             if entry is None:
                 continue
-            updated = entry.definition.model_copy(
-                update={"config": {**entry.definition.config, "roots": roots}},
-                deep=True,
-            )
+            updated = entry.definition.model_copy(update={"config": {**entry.definition.config, "roots": roots}})
             catalog.replace(updated, entry.handler, supports_context=entry.supports_context)
 
     @overload
@@ -410,7 +421,6 @@ def _create_runtime(
     tool_max_steps: int = 8,
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
-    skill_roots: list[str | Path] | None = None,
     skills_provider: SkillsCapabilityProvider | None = None,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
@@ -433,7 +443,6 @@ def _create_runtime(
         resolved_mcp_servers.update(mcp_servers)
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
-        skill_roots=skill_roots,
         skills_provider=skills_provider,
         mcp_servers=resolved_mcp_servers,
     )

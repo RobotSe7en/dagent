@@ -22,6 +22,8 @@ def create_default_capability_catalog(
     skills_provider: SkillsCapabilityProvider | None = None,
     mcp_servers: dict[str, dict] | None = None,
 ) -> CapabilityCatalog:
+    if skills_provider is not None and skill_roots is not None:
+        raise ValueError("Pass either skill_roots or skills_provider, not both.")
     catalog = CapabilityCatalog(workspace_root=workspace_root)
     ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
     MemoryCapabilityProvider().register_into(catalog)
