@@ -10,7 +10,9 @@ from dagent.agent import CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
+from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
+from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
 from dagent.dag_builder import Dag
 from dagent.config import load_config
 from dagent.harness_runtime import (
@@ -55,12 +57,14 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = Path(workspace)
+        self._closed = False
+        self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._runtime = _create_runtime(
             workspace=self.workspace,
             provider=provider,
             capabilities=capabilities,
             validator=validator,
-            skill_roots=skill_roots,
+            skills_provider=self._skill_provider,
             mcp_servers=mcp_servers,
         )
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
@@ -76,17 +80,116 @@ class Runner:
         return self._runtime.capability_catalog.list(enabled_only=True)
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._runtime.capability_catalog.shutdown()
         self._pending_runtimes.clear()
+        self._closed = True
 
-    def add_capability(self, capability: CapabilityLike) -> CapabilityDefinition:
+    def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
+        """Register a single ``@dagent.tool`` binding."""
+
+        self._ensure_open()
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
         return definition
 
-    def add_capabilities(self, capabilities: Iterable[CapabilityLike]) -> None:
-        for capability in capabilities:
-            self.add_capability(capability)
+    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> list[CapabilityDefinition]:
+        return [self.add_tool(capability) for capability in capabilities]
+
+    @property
+    def skill_store(self) -> SkillStore:
+        """The filesystem-backed store powering skill discovery and installation."""
+
+        return self._skill_provider.store
+
+    def add_skill_root(self, root: str | Path) -> Path:
+        """Add a directory to scan for skills, visible to skill.list/skill.view."""
+
+        self._ensure_open()
+        candidate = Path(root)
+        existing = {Path(existing_root).resolve() for existing_root in self._skill_provider.store.roots}
+        if candidate.resolve() not in existing:
+            self._skill_provider.store.roots.append(candidate)
+        self._sync_skill_root_metadata()
+        return candidate
+
+    def add_skill_roots(self, roots: Iterable[str | Path]) -> list[Path]:
+        return [self.add_skill_root(root) for root in roots]
+
+    def add_mcp_server(
+        self,
+        name: str,
+        config: dict[str, Any],
+    ) -> list[CapabilityDefinition]:
+        """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities.
+
+        Registration is all-or-nothing: if any discovered tool fails to register
+        or the server fails to connect, every capability registered by this call
+        is rolled back and the server's manager is shut down before raising.
+        """
+
+        return self._add_mcp_server(name, config)
+
+    def _add_mcp_server(
+        self,
+        name: str,
+        config: dict[str, Any],
+        *,
+        manager: Any | None = None,
+    ) -> list[CapabilityDefinition]:
+        self._ensure_open()
+        if manager is None:
+            available = MCPServerManager.available
+        else:
+            available = getattr(manager, "available", True)
+        if not available:
+            raise RuntimeError(
+                "MCP SDK is not installed. Install dagent[mcp] to register MCP servers."
+            )
+        catalog = self._runtime.capability_catalog
+        before = set(catalog.ids())
+        provider = MCPCapabilityProvider({name: config}, manager=manager)
+        try:
+            provider.register_into(catalog)
+            new_ids = sorted(set(catalog.ids()) - before)
+            errors = list(provider.registration_errors)
+            connect_error = getattr(provider.manager, "last_errors", {}).get(name)
+            if connect_error:
+                errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
+            if errors:
+                raise RuntimeError("; ".join(errors))
+        except Exception:
+            new_ids = sorted(set(catalog.ids()) - before)
+            self._rollback_mcp_registration(catalog, new_ids, getattr(provider, "manager", manager))
+            raise
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+        return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
+
+    def _rollback_mcp_registration(self, catalog: Any, capability_ids: list[str], manager: Any) -> None:
+        for capability_id in capability_ids:
+            catalog.delete(capability_id)
+        if manager is not None and hasattr(manager, "shutdown"):
+            catalog.remove_shutdown_hook(manager.shutdown)
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Runner is closed.")
+
+    def _sync_skill_root_metadata(self) -> None:
+        roots = [str(root) for root in self._skill_provider.store.roots]
+        catalog = self._runtime.capability_catalog
+        for capability_id in ("skill.list", "skill.view"):
+            entry = catalog.get_entry(capability_id)
+            if entry is None:
+                continue
+            updated = entry.definition.model_copy(update={"config": {**entry.definition.config, "roots": roots}})
+            catalog.replace(updated, entry.handler, supports_context=entry.supports_context)
 
     @overload
     async def run(
@@ -257,7 +360,7 @@ class Runner:
         capability_ids: list[str] = []
         for ref in refs:
             if isinstance(ref, CapabilityBinding):
-                definition = self.add_capability(ref) if register_bindings else ref.definition
+                definition = self.add_tool(ref) if register_bindings else ref.definition
                 if self._runtime.capability_catalog.get(definition.id) is None:
                     raise KeyError(f"Capability '{definition.id}' is not registered.")
                 capability_ids.append(definition.id)
@@ -280,7 +383,7 @@ class Runner:
 
     def _ensure_dag_capabilities(self, dag: Dag) -> None:
         for capability in dag.capabilities:
-            self.add_capability(capability)
+            self.add_tool(capability)
         new_agent_configs: dict[str, dict[str, Any]] = {}
         for agent in dag.agents:
             name = agent.name or ""
@@ -343,7 +446,7 @@ def _create_runtime(
     tool_max_steps: int = 8,
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
-    skill_roots: list[str | Path] | None = None,
+    skills_provider: SkillsCapabilityProvider | None = None,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
@@ -365,7 +468,7 @@ def _create_runtime(
         resolved_mcp_servers.update(mcp_servers)
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
-        skill_roots=skill_roots,
+        skills_provider=skills_provider,
         mcp_servers=resolved_mcp_servers,
     )
     capability_executor = CapabilityExecutor(catalog)
@@ -497,7 +600,7 @@ def _register_capability_parts(
 
 def _capability_parts(capability: CapabilityLike) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
     if not isinstance(capability, CapabilityBinding):
-        raise TypeError("Expected a capability created with @dagent.capability.")
+        raise TypeError("Expected a capability created with @dagent.tool.")
     return capability.definition, capability.handler, capability.supports_context
 
 

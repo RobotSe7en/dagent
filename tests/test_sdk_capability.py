@@ -1,8 +1,8 @@
 import asyncio
 import json
 
-from dagent import CapabilityBinding, capability
-from dagent.capabilities import capability as capability_from_subsystem
+from dagent import CapabilityBinding, tool
+from dagent.capabilities import tool as tool_from_subsystem
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
 
@@ -10,8 +10,8 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_capability_decorator_builds_definition_from_function_signature() -> None:
-    @capability(risk="low")
+def test_tool_decorator_builds_definition_from_function_signature() -> None:
+    @tool(risk="low")
     def echo(text: str, count: int = 1, loud: bool = False) -> str:
         """Echo text for SDK callers."""
         return f"{text}:{count}:{loud}"
@@ -41,15 +41,15 @@ def test_capability_decorator_builds_definition_from_function_signature() -> Non
 
     assert result.status == "completed"
     assert result.content == "hi:1:False"
-    assert capability_from_subsystem is capability
+    assert tool_from_subsystem is tool
 
 
-def test_capability_decorator_serializes_structured_results_and_failures() -> None:
-    @capability(id="tool.lookup")
+def test_tool_decorator_serializes_structured_results_and_failures() -> None:
+    @tool(id="tool.lookup")
     async def lookup(query: str) -> dict[str, object]:
         return {"query": query, "matches": [1, 2]}
 
-    @capability(id="tool.boom")
+    @tool(id="tool.boom")
     def boom() -> str:
         raise ValueError("bad input")
 

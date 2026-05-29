@@ -30,7 +30,7 @@ def test_capability_boundaries_are_not_split_into_top_level_runtime_package() ->
     assert (root / "dagent" / "capabilities" / "toolsets.py").exists()
 
 
-def test_public_capability_decorator_and_tools_live_under_capabilities() -> None:
+def test_public_tool_decorator_and_tools_live_under_capabilities() -> None:
     root = Path(__file__).resolve().parents[1]
 
     assert not (root / "dagent" / "capability.py").exists()

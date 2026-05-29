@@ -119,6 +119,12 @@ class CapabilityCatalog:
         if hook not in self._shutdown_hooks:
             self._shutdown_hooks.append(hook)
 
+    def remove_shutdown_hook(self, hook: ShutdownHook) -> None:
+        try:
+            self._shutdown_hooks.remove(hook)
+        except ValueError:
+            pass
+
     def shutdown(self) -> None:
         if self._shutdown_complete:
             return

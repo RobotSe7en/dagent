@@ -2,7 +2,7 @@
 
 from dagent.capabilities.bootstrap import create_default_capability_catalog
 from dagent.capabilities.catalog import CapabilityCatalog
-from dagent.capabilities.decorator import CapabilityBinding, capability, tool
+from dagent.capabilities.decorator import CapabilityBinding, tool
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import AgentCapabilityProvider, AgentNodeSessionStore
 from dagent.capabilities.skills import (
@@ -35,7 +35,6 @@ __all__ = [
     "SkillStoreError",
     "SkillView",
     "SkillsCapabilityProvider",
-    "capability",
     "create_default_capability_catalog",
     "default_managed_skill_root",
     "default_skill_roots",
