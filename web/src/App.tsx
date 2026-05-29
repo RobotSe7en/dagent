@@ -44,14 +44,13 @@ import {
 import {
   createCapability,
   createMcpServer,
-  deleteImportedSkill,
   deleteCapability,
   deleteMcpServer,
+  deleteSkill,
   getSkill,
   getSkillFile,
   getValidationStatus,
-  importSkill,
-  importSkillPackage,
+  installSkill,
   listCapabilities,
   listDagSpecs,
   listMcpServers,
@@ -3239,36 +3238,44 @@ function CapabilityDirectory({
     }
   };
 
-  const importSkillDraft = async () => {
-    setSkillMessage('Importing skill...');
+  const installSkillDraft = async () => {
+    setSkillMessage('Installing skill...');
     try {
-      const detail = await importSkill({
+      const detail = await installSkill({
         content: skillImport.content,
         name: skillImport.name || undefined,
         description: skillImport.description || undefined,
         category: skillImport.category || undefined,
       });
-      await onRefresh();
       setSkillDetail(detail);
       setSkillFileDetail(null);
       setSelectedSkillName(skillLookupName(detail.skill));
-      setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
+      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+      try {
+        await onRefresh();
+      } catch (exc) {
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
     } catch (exc) {
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
-  const removeImportedSkill = async () => {
+  const removeManagedSkill = async () => {
     const skill = skillDetail?.skill ?? selectedSkill;
-    if (!skill || !isImportedSkill(skill)) return;
-    setSkillMessage('Removing imported skill...');
+    if (!skill || !isManagedSkill(skill)) return;
+    setSkillMessage('Deleting skill...');
     try {
-      await deleteImportedSkill(skillLookupName(skill));
+      await deleteSkill(skillLookupName(skill));
       setSkillDetail(null);
       setSkillFileDetail(null);
       setSelectedSkillName('');
-      await onRefresh();
-      setSkillMessage(`Removed ${skillLookupName(skill)}.`);
+      setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
+      try {
+        await onRefresh();
+      } catch (exc) {
+        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
     } catch (exc) {
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -3277,14 +3284,18 @@ function CapabilityDirectory({
   const loadSkillFile = async (file: File | undefined) => {
     if (!file) return;
     if (file.name.toLowerCase().endsWith('.zip')) {
-      setSkillMessage('Importing skill package...');
+      setSkillMessage('Installing skill package...');
       try {
-        const detail = await importSkillPackage(file);
-        await onRefresh();
+        const detail = await installSkill({ file });
         setSkillDetail(detail);
         setSkillFileDetail(null);
         setSelectedSkillName(skillLookupName(detail.skill));
-        setSkillMessage(`Imported ${skillLookupName(detail.skill)}.`);
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+        try {
+          await onRefresh();
+        } catch (exc) {
+          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+        }
       } catch (exc) {
         setSkillMessage(exc instanceof Error ? exc.message : String(exc));
       }
@@ -3482,8 +3493,8 @@ function CapabilityDirectory({
                       <h2>{skillDetail.name}</h2>
                       <p>{skillDetail.category ? `${skillDetail.category}/${skillDetail.name}` : skillDetail.name}</p>
                     </div>
-                    <span className="status-badge" data-status={isImportedSkill(skillDetail.skill) ? 'approved' : 'completed'}>
-                      {isImportedSkill(skillDetail.skill) ? 'imported' : 'local'}
+                    <span className="status-badge" data-status={isManagedSkill(skillDetail.skill) ? 'approved' : 'completed'}>
+                      {isManagedSkill(skillDetail.skill) ? 'installed' : 'local'}
                     </span>
                   </div>
                   <p>{skillDetail.description || 'No description.'}</p>
@@ -3544,8 +3555,8 @@ function CapabilityDirectory({
                     View
                   </button>
                 ) : null}
-                <button className="secondary-button danger-button compact-button" onClick={removeImportedSkill} disabled={!skillDetail || !isImportedSkill(skillDetail.skill)} type="button">
-                  Delete imported
+                <button className="secondary-button danger-button compact-button" onClick={removeManagedSkill} disabled={!skillDetail || !isManagedSkill(skillDetail.skill)} type="button">
+                  Delete installed
                 </button>
               </div>
               {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
@@ -3668,7 +3679,7 @@ function CapabilityDirectory({
           </>
         ) : activeTab === 'skills' ? (
           <>
-            <PaneTitle icon={<FolderUp size={18} />} title="Import skill" />
+            <PaneTitle icon={<FolderUp size={18} />} title="Install skill" />
             <div className="spec-meta-form">
               <label>
                 Name
@@ -3690,10 +3701,10 @@ function CapabilityDirectory({
                 Upload
                 <input type="file" accept=".md,text/markdown,text/plain,.zip,application/zip" onChange={(event) => void loadSkillFile(event.target.files?.[0])} />
               </label>
-              <div className="readonly-note">Markdown imports are temporary in-memory skills. Zip packages are installed under the managed local skill root and may include references, templates, scripts, and assets.</div>
-              <button className="primary-button" onClick={importSkillDraft} type="button">
+              <div className="readonly-note">Markdown and zip installs are stored under the managed local skill root. Zip packages may include references, templates, scripts, and assets.</div>
+              <button className="primary-button" onClick={installSkillDraft} type="button">
                 <Upload size={16} />
-                Import skill
+                Install skill
               </button>
             </div>
           </>
@@ -3805,8 +3816,8 @@ function skillLookupName(skill: SkillSummary): string {
   return skill.category ? `${skill.category}/${skill.name}` : skill.name;
 }
 
-function isImportedSkill(skill: SkillSummary): boolean {
-  return skill.path.startsWith('memory://');
+function isManagedSkill(skill: SkillSummary): boolean {
+  return Boolean(skill.managed);
 }
 
 function linesFromText(value: string): string[] {
