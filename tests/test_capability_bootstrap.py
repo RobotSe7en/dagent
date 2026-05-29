@@ -1,5 +1,17 @@
+import pytest
+
 from dagent.capabilities.bootstrap import create_default_capability_catalog
+from dagent.capabilities.skills import SkillsCapabilityProvider
 from dagent.schemas import Boundary, CapabilityInvocation
+
+
+def test_create_default_rejects_both_skill_roots_and_provider(tmp_path) -> None:
+    with pytest.raises(ValueError, match="not both"):
+        create_default_capability_catalog(
+            workspace_root=tmp_path,
+            skill_roots=[tmp_path / "skills"],
+            skills_provider=SkillsCapabilityProvider([tmp_path / "skills"]),
+        )
 
 
 def test_default_capability_catalog_registers_base_capabilities(tmp_path) -> None:

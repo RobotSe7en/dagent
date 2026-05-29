@@ -11,9 +11,10 @@ def run(coro):
 
 
 def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
-    assert hasattr(dagent, "capability")
     assert hasattr(dagent, "tool")
     assert hasattr(dagent.capabilities, "tool")
+    assert not hasattr(dagent, "capability")
+    assert not hasattr(dagent.capabilities, "capability")
     assert hasattr(dagent, "Runner")
     assert hasattr(dagent, "ToolAgent")
     assert hasattr(dagent, "DagAgent")
@@ -46,7 +47,7 @@ def test_tool_decorator_matches_capability_with_default_kind() -> None:
 
 
 def test_capability_decorator_registers_tool_capability() -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         """Search text."""
         return f"found:{q}"
@@ -57,7 +58,7 @@ def test_capability_decorator_registers_tool_capability() -> None:
 
 
 def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
@@ -82,7 +83,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
@@ -110,7 +111,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
 
 
 def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
@@ -142,11 +143,11 @@ def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
 
 
 def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
-    @dagent.capability
+    @dagent.tool
     def write(text: str) -> str:
         return f"wrote:{text}"
 
@@ -185,7 +186,7 @@ def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities
 
 
 def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
-    @dagent.capability(risk="medium")
+    @dagent.tool(risk="medium")
     def write(text: str) -> str:
         return f"wrote:{text}"
 
@@ -217,7 +218,7 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
         ChatResponse(content="Report: found:X"),
     ])
 
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
@@ -240,18 +241,18 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
-    @dagent.capability(id="tool.same", name="same")
+    @dagent.tool(id="tool.same", name="same")
     def first() -> str:
         return "first"
 
-    @dagent.capability(id="tool.same", name="same")
+    @dagent.tool(id="tool.same", name="same")
     def second() -> str:
         return "second"
 
     runner = dagent.Runner(workspace=tmp_path, capabilities=[first])
 
     with pytest.raises(ValueError, match="tool.same"):
-        runner.add_capability(second)
+        runner.add_tool(second)
 
 
 def test_runner_close_shuts_down_capability_resources(tmp_path) -> None:

@@ -13,11 +13,11 @@ def run(coro):
 
 
 def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
-    @dagent.capability
+    @dagent.tool
     def search(q: str) -> str:
         return f"found:{q}"
 
-    @dagent.capability(risk="medium")
+    @dagent.tool(risk="medium")
     def write_file(path: str, content: str) -> str:
         return f"wrote:{path}:{content}"
 
@@ -50,7 +50,7 @@ def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
 
 
 def test_dag_builder_supports_fan_out_and_fan_in() -> None:
-    @dagent.capability
+    @dagent.tool
     def echo(text: str) -> str:
         return text
 
@@ -74,7 +74,7 @@ def test_dag_builder_supports_fan_out_and_fan_in() -> None:
 
 
 def test_dag_builder_rejects_duplicate_nodes_and_unknown_edges() -> None:
-    @dagent.capability
+    @dagent.tool
     def echo(text: str) -> str:
         return text
 
@@ -89,7 +89,7 @@ def test_dag_builder_rejects_duplicate_nodes_and_unknown_edges() -> None:
 
 
 def test_runner_executes_builder_with_collected_capabilities(tmp_path: Path) -> None:
-    @dagent.capability(supports_context=True)
+    @dagent.tool(supports_context=True)
     def write_note(path: str, content: str, *, context, callbacks=None) -> str:
         resolved = Path(context.workspace_path) / path
         resolved.parent.mkdir(parents=True, exist_ok=True)
