@@ -334,10 +334,40 @@ Capability ids use the capability kind as their prefix. Python function tools no
 compatibility alias. Update existing DAG specs, API payloads, and agent capability
 lists from `custom_tool.name` to `tool.name`.
 
+### Current Public SDK Surface
+
+Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`, `DagAgent`,
+`Dag`, and `SkillStore`. The top-level `dagent` package currently exposes:
+
+| Area | Public SDK |
+|------|------------|
+| Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
+| Agents | `ToolAgent`, `DagAgent` |
+| Static DAGs | `Dag`, `NodeRef`, `ArtifactRef`, `validate_dag_spec` |
+| Profiles | `AgentProfile`, `ProfileStore` |
+| Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
+| Reviews and results | `RunResult`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload` |
+| Providers | `OpenAICompatibleProvider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, and `ToolCall` for custom providers and tests |
+
+Runnable examples live under [`examples/`](examples/):
+
+- [`examples/tool_agent.py`](examples/tool_agent.py): profile-backed tool loop.
+- [`examples/dynamic_dag_agent.py`](examples/dynamic_dag_agent.py): dynamic DAG planning and execution.
+- [`examples/static_dag.py`](examples/static_dag.py): user-built static DAG with artifacts.
+- [`examples/runtime_registration_and_skills.py`](examples/runtime_registration_and_skills.py): runtime tool/skill registration and `SkillStore`.
+
+Run any example from the repository root:
+
+```powershell
+uv run python -m examples.tool_agent
+```
+
 ### Registering Capabilities
 
-`Runner` owns the capability catalog. Tools, MCP servers, and skills can be registered
-declaratively at construction:
+`Runner` owns the capability catalog. Tools, MCP servers, and skill roots can be
+registered declaratively at construction. Leave `skill_roots` unset to use the
+default roots: local `skills/` plus the managed install root `~/.dagent/skills`.
 
 ```python
 import dagent
@@ -352,41 +382,64 @@ def search(q: str) -> str:
 runner = dagent.Runner(
     workspace=".",
     capabilities=[search],                 # tool.* capabilities
-    skill_roots=["skills"],                # skill.list / skill.view discovery roots
     mcp_servers={                          # stdio MCP servers -> mcp.<server>.<tool>
         "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
     },
 )
 ```
 
-The same capability types can be registered incrementally at runtime:
+The same capability types can be registered incrementally at runtime. `add_mcp_server`
+connects to the server, discovers its tools, and returns the new `mcp.*`
+capability definitions:
 
 ```python
 import dagent
 
 
-@dagent.tool
-def search(q: str) -> str:
-    """Search the web."""
-    return f"found:{q}"
+runner = dagent.Runner(workspace=".")
+
+mcp_definitions = runner.add_mcp_server(
+    "team_fs",
+    {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    },
+)
+
+print([definition.id for definition in mcp_definitions])
+```
+
+MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently supports
+the stdio transport. `add_mcp_server` raises if the SDK is missing or the server
+fails to connect. Newly registered capabilities are visible to agents that do not
+pin an explicit `capabilities` list.
+
+Skill roots and managed skill installs are available through the same runner:
+
+```python
+import dagent
 
 
 runner = dagent.Runner(workspace=".")
 
-runner.add_tool(search)                             # add one tool binding
-runner.add_skill_root("team-skills")                # add a skill discovery root
-runner.add_mcp_server("team_fs", {"command": "npx", "args": ["..."]})  # returns the new mcp.* defs
+runner.add_skill_root("team-skills")  # extra root scanned by skill.list / skill.view
 
-# Install/list/delete managed skills through the store:
-runner.skill_store.install(open("my-skill.zip", "rb").read(), filename="my-skill.zip")
+installed = runner.skill_store.install(
+    "Keep every answer to one compact sentence.",
+    name="terse",
+    description="Compact response style.",
+    category="writing",
+)
+
+print(installed.skill.qualified_name)      # writing/terse
+print(runner.skill_store.view("writing/terse").content)
 
 print([definition.id for definition in runner.capabilities])
 ```
 
-MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently supports the
-stdio transport. `add_mcp_server` raises if the SDK is missing or the server fails to
-connect. Newly registered capabilities are visible to agents that do not pin an explicit
-`capabilities` list.
+`SkillStore.install(...)` writes Markdown or zip skill packages into the managed
+root. Use `runner.skill_store.view(name, file_path="scripts/example.py")` to read
+linked files inside a skill package with the same path checks used by `skill.view`.
 
 Use `ToolAgent` for profile-backed tool-loop work:
 
