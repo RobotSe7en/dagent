@@ -249,11 +249,10 @@ export interface SkillSummary {
   description: string;
   category?: string | null;
   path: string;
-  managed?: boolean;
+  managed: boolean;
 }
 
 export interface SkillDetail {
-  success?: boolean;
   skill: SkillSummary;
   name: string;
   description: string;
@@ -266,7 +265,6 @@ export interface SkillDetail {
 }
 
 export interface SkillFileDetail {
-  success?: boolean;
   skill: SkillSummary;
   file_path: string;
   path: string;

@@ -490,7 +490,10 @@ async def reload_mcp_servers() -> dict[str, Any]:
 
 @app.get("/skills")
 async def list_skills() -> dict[str, Any]:
-    return {"skills": [skill.as_list_item() for skill in state.skill_store().list()]}
+    try:
+        return {"skills": [skill.as_list_item() for skill in state.skill_store().list()]}
+    except SkillStoreError as exc:
+        raise _skill_http_exception(exc) from exc
 
 
 @app.get("/skills/{name:path}")
@@ -515,7 +518,7 @@ async def install_skill(
         if file is not None:
             view = state.skill_store().install(
                 await file.read(),
-                filename=file.filename or "skill",
+                filename=file.filename,
                 name=name or None,
                 description=description or None,
                 category=category or None,
@@ -523,7 +526,7 @@ async def install_skill(
         else:
             view = state.skill_store().install(
                 content or "",
-                filename="SKILL.md",
+                filename=None,
                 name=name or None,
                 description=description or None,
                 category=category or None,

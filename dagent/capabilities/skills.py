@@ -168,28 +168,21 @@ class SkillStore:
 
     def delete(self, name: str) -> None:
         self._ensure_managed_root()
-        all_matches = _find_skill_matches(name, self.list())
-        managed_matches = [skill for skill in all_matches if skill.managed and _is_relative_to(skill.skill_dir, self.managed_root)]
-        if len(managed_matches) > 1:
-            raise SkillAmbiguousError(name, managed_matches)
-        if not managed_matches:
-            if all_matches:
-                raise SkillPermissionError("Only skills installed under the managed skill root can be deleted.")
-            raise SkillNotFoundError(f"Skill '{name}' was not found.")
-        skill = managed_matches[0]
-        shutil.rmtree(skill.skill_dir)
-        parent = skill.skill_dir.parent
-        if parent != self.managed_root.resolve():
+        skill = self._resolve_skill(name)
+        managed_root = self.managed_root.resolve()
+        skill_dir = skill.skill_dir.resolve()
+        if not skill.managed or not _is_relative_to(skill_dir, managed_root) or skill_dir == managed_root:
+            raise SkillPermissionError("Only skills installed under the managed skill root can be deleted.")
+        shutil.rmtree(skill_dir)
+        parent = skill_dir.parent
+        if parent != managed_root:
             try:
                 parent.rmdir()
             except OSError:
                 pass
 
-    def exists(self, name: str, qualified_name: str | None = None) -> bool:
-        candidates = {name}
-        if qualified_name:
-            candidates.add(qualified_name)
-        return any(skill.name in candidates or skill.qualified_name in candidates for skill in self.list())
+    def exists(self, qualified_name: str) -> bool:
+        return any(skill.qualified_name == qualified_name for skill in self.list())
 
     def _resolve_skill(self, name: str) -> SkillEntry:
         matches = _find_skill_matches(name, self.list())
@@ -209,7 +202,7 @@ class SkillStore:
         category: str | None,
     ) -> SkillView:
         metadata, body = read_skill_markdown_text(content)
-        filename_name = Path(filename).stem if filename else ""
+        filename_name = _filename_skill_name(filename)
         resolved_name = _clean_name(name or metadata.get("name") or filename_name, field="Skill name")
         resolved_category = _clean_optional_name(
             category if category is not None else metadata.get("category"),
@@ -230,16 +223,13 @@ class SkillStore:
 
         destination = self._skill_destination(resolved_name, resolved_category)
         qualified_name = f"{resolved_category}/{resolved_name}" if resolved_category else resolved_name
-        if self.exists(resolved_name, qualified_name):
-            raise SkillStoreError(f"Skill '{qualified_name}' collides with an existing skill.")
-        if destination.exists():
-            raise SkillStoreError(f"Skill directory already exists: {destination}")
+        self._ensure_install_available(destination, qualified_name)
         destination.mkdir(parents=True)
         (destination / "SKILL.md").write_text(
             _format_skill_markdown(normalized_metadata, body),
             encoding="utf-8",
         )
-        return self.view(qualified_name)
+        return self._view_installed(destination)
 
     def _install_package(self, content: bytes, filename: str) -> SkillView:
         if len(content) > MAX_SKILL_PACKAGE_BYTES:
@@ -255,11 +245,8 @@ class SkillStore:
                 name = _clean_name(metadata.get("name") or package_name, field="Skill name")
                 category = _clean_optional_name(metadata.get("category"), field="Skill category")
                 qualified_name = f"{category}/{name}" if category else name
-                if self.exists(name, qualified_name):
-                    raise SkillStoreError(f"Skill '{qualified_name}' collides with an existing skill.")
                 destination = self._skill_destination(name, category)
-                if destination.exists():
-                    raise SkillStoreError(f"Skill directory already exists: {destination}")
+                self._ensure_install_available(destination, qualified_name)
                 self.managed_root.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(prefix=".skill-install-", dir=self.managed_root) as temp:
                     staged = Path(temp) / "skill"
@@ -273,15 +260,46 @@ class SkillStore:
                         target.write_bytes(archive.read(member))
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(staged), str(destination))
-                return self.view(qualified_name)
+                return self._view_installed(destination)
         except UnicodeDecodeError as exc:
             raise SkillStoreError("SKILL.md must be UTF-8 text.") from exc
         except BadZipFile as exc:
             raise SkillStoreError("Skill package is not a valid zip file.") from exc
 
     def _skill_destination(self, name: str, category: str | None) -> Path:
-        base = self.managed_root / category if category else self.managed_root
-        return base / name
+        managed_root = self.managed_root.resolve()
+        base = managed_root / category if category else managed_root
+        destination = (base / name).resolve()
+        if not _is_relative_to(destination, managed_root):
+            raise SkillStoreError("Skill destination must stay inside the managed skill root.")
+        return destination
+
+    def _ensure_install_available(self, destination: Path, qualified_name: str) -> None:
+        if self.exists(qualified_name):
+            raise SkillStoreError(f"Skill '{qualified_name}' collides with an existing skill.")
+        if destination.exists():
+            raise SkillStoreError(f"Skill directory already exists: {destination}")
+
+    def _view_installed(self, skill_dir: Path) -> SkillView:
+        resolved_dir = skill_dir.resolve()
+        skill_file = (resolved_dir / "SKILL.md").resolve()
+        metadata, body = read_skill_markdown(skill_file)
+        skill = SkillEntry(
+            name=str(metadata.get("name") or resolved_dir.name),
+            description=str(metadata.get("description") or ""),
+            category=_category_for(self.managed_root.resolve(), skill_file),
+            skill_dir=resolved_dir,
+            skill_file=skill_file,
+            metadata=metadata,
+            managed=True,
+        )
+        return SkillView(
+            skill=skill,
+            content=body,
+            path=skill_file,
+            metadata=metadata,
+            linked_files=list_linked_files(resolved_dir),
+        )
 
     def _ensure_managed_root(self) -> None:
         managed = self.managed_root.resolve()
@@ -338,7 +356,10 @@ class SkillsCapabilityProvider:
 
     def _list(self, invocation: CapabilityInvocation) -> CapabilityResult:
         category = invocation.arguments.get("category")
-        skills = self.store.list()
+        try:
+            skills = self.store.list()
+        except SkillStoreError as exc:
+            return _failed(invocation, str(exc), _error_payload(exc))
         if category:
             skills = [skill for skill in skills if skill.category == str(category)]
         payload = {
@@ -404,7 +425,10 @@ def read_skill_markdown_text(text: str) -> tuple[dict[str, Any], str]:
     if text.startswith("---"):
         parts = text.split("---", 2)
         if len(parts) == 3:
-            metadata = yaml.safe_load(parts[1]) or {}
+            try:
+                metadata = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError as exc:
+                raise SkillStoreError("Skill frontmatter is invalid YAML.") from exc
             return metadata if isinstance(metadata, dict) else {}, parts[2].strip()
     return {}, text.strip()
 
@@ -485,6 +509,12 @@ def _ensure_text(content: bytes | str) -> str:
         raise SkillStoreError("Skill Markdown must be UTF-8 text.") from exc
 
 
+def _filename_skill_name(filename: str | None) -> str:
+    if not filename:
+        return ""
+    return Path(filename).stem
+
+
 def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
     files = [member for member in archive.infolist() if not member.is_dir()]
     if len(files) > MAX_SKILL_PACKAGE_FILES:
@@ -530,6 +560,8 @@ def _clean_name(value: Any, *, field: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise SkillStoreError(f"{field} is required.")
+    if text in {".", ".."}:
+        raise SkillStoreError(f"{field} cannot be a dot path segment.")
     if "/" in text or "\\" in text:
         raise SkillStoreError(f"{field} cannot contain path separators.")
     return text
@@ -541,6 +573,8 @@ def _clean_optional_name(value: Any, *, field: str) -> str | None:
     text = str(value).strip()
     if not text:
         return None
+    if text in {".", ".."}:
+        raise SkillStoreError(f"{field} cannot be a dot path segment.")
     if "/" in text or "\\" in text:
         raise SkillStoreError(f"{field} cannot contain path separators.")
     return text

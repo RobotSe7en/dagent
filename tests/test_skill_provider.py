@@ -7,8 +7,10 @@ import pytest
 
 from dagent.capabilities import CapabilityCatalog
 from dagent.capabilities.skills import (
+    SkillAmbiguousError,
     SkillPermissionError,
     SkillStore,
+    SkillStoreError,
     SkillsCapabilityProvider,
     scan_skill_roots,
 )
@@ -174,3 +176,83 @@ def test_skill_store_deletes_only_managed_skills(tmp_path) -> None:
     assert not (managed_root / "managed").exists()
     with pytest.raises(SkillPermissionError):
         store.delete("local")
+
+
+def test_skill_store_rejects_dot_segments_without_writing_outside_managed_root(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+
+    with pytest.raises(SkillStoreError):
+        store.install("Body.", name="escape", category="..")
+    with pytest.raises(SkillStoreError):
+        store.install("Body.", name="..")
+
+    assert not (tmp_path / "escape" / "SKILL.md").exists()
+    assert not (tmp_path / "SKILL.md").exists()
+
+
+def test_skill_store_rejects_zip_manifest_dot_segments(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "bundle/SKILL.md",
+            "---\nname: escape\ncategory: ..\n---\nBody.",
+        )
+
+    with pytest.raises(SkillStoreError):
+        store.install(buffer.getvalue(), filename="bundle.zip")
+
+    assert not (tmp_path / "escape" / "SKILL.md").exists()
+
+
+def test_skill_store_requires_name_when_markdown_has_no_name_or_filename(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+
+    with pytest.raises(SkillStoreError, match="Skill name is required"):
+        store.install("Body.")
+
+
+def test_skill_store_allows_same_name_in_different_categories(tmp_path) -> None:
+    managed_root = tmp_path / "managed"
+    store = SkillStore([managed_root], managed_root=managed_root)
+
+    writing = store.install("Body.", name="summarize", category="writing")
+    analysis = store.install("Body.", name="summarize", category="analysis")
+
+    assert writing.skill.qualified_name == "writing/summarize"
+    assert analysis.skill.qualified_name == "analysis/summarize"
+    with pytest.raises(SkillAmbiguousError):
+        store.view("summarize")
+
+
+def test_skill_store_delete_uses_global_ambiguity_before_managed_permission(tmp_path) -> None:
+    local_dir = tmp_path / "skills" / "local" / "shared"
+    local_dir.mkdir(parents=True)
+    (local_dir / "SKILL.md").write_text("---\nname: shared\n---\nLocal.", encoding="utf-8")
+    managed_root = tmp_path / "managed"
+    store = SkillStore([tmp_path / "skills", managed_root], managed_root=managed_root)
+    store.install("Managed.", name="shared")
+
+    with pytest.raises(SkillAmbiguousError):
+        store.delete("shared")
+
+    assert (managed_root / "shared" / "SKILL.md").exists()
+
+
+def test_malformed_skill_frontmatter_is_reported_as_skill_error(tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "bad"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: [unterminated\n---\nBody.", encoding="utf-8")
+    catalog = CapabilityCatalog()
+    executor = CapabilityExecutor(catalog)
+    SkillsCapabilityProvider([tmp_path / "skills"]).register_into(catalog)
+
+    result = run(executor.execute(
+        CapabilityInvocation(capability_id="skill.list", kind="skill")
+    ))
+
+    assert result.status == "failed"
+    assert "invalid YAML" in (result.error or "")

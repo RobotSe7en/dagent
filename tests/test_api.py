@@ -125,6 +125,49 @@ def test_api_installs_plain_markdown_skill_and_rejects_name_collision(monkeypatc
     assert "collides" in collision.json()["detail"]
 
 
+def test_api_text_skill_install_requires_explicit_or_frontmatter_name(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
+    client = TestClient(app)
+
+    response = client.post("/skills/install", data={"content": "Use terse prose."})
+
+    assert response.status_code == 400
+    assert "Skill name is required" in response.json()["detail"]
+
+
+def test_api_markdown_file_install_can_use_filename_stem(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
+    client = TestClient(app)
+
+    response = client.post(
+        "/skills/install",
+        files={"file": ("brief.md", b"Use brief responses.", "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["skill"]["name"] == "brief"
+    assert response.json()["skill"]["skill_dir"] == str((managed_root / "brief").resolve())
+
+
+def test_api_skill_list_reports_malformed_frontmatter(monkeypatch, tmp_path) -> None:
+    skill_dir = tmp_path / "skills" / "bad"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: [unterminated\n---\nBody.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [tmp_path / "skills"])
+    client = TestClient(app)
+
+    response = client.get("/skills")
+
+    assert response.status_code == 400
+    assert "invalid YAML" in response.json()["detail"]
+
+
 def test_api_installs_zip_skill_package(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_root = tmp_path / "managed-skills"

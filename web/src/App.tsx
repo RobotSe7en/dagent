@@ -3247,11 +3247,15 @@ function CapabilityDirectory({
         description: skillImport.description || undefined,
         category: skillImport.category || undefined,
       });
-      await onRefresh();
       setSkillDetail(detail);
       setSkillFileDetail(null);
       setSelectedSkillName(skillLookupName(detail.skill));
       setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+      try {
+        await onRefresh();
+      } catch (exc) {
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
     } catch (exc) {
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -3266,8 +3270,12 @@ function CapabilityDirectory({
       setSkillDetail(null);
       setSkillFileDetail(null);
       setSelectedSkillName('');
-      await onRefresh();
       setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
+      try {
+        await onRefresh();
+      } catch (exc) {
+        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
     } catch (exc) {
       setSkillMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -3279,11 +3287,15 @@ function CapabilityDirectory({
       setSkillMessage('Installing skill package...');
       try {
         const detail = await installSkill({ file });
-        await onRefresh();
         setSkillDetail(detail);
         setSkillFileDetail(null);
         setSelectedSkillName(skillLookupName(detail.skill));
         setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+        try {
+          await onRefresh();
+        } catch (exc) {
+          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+        }
       } catch (exc) {
         setSkillMessage(exc instanceof Error ? exc.message : String(exc));
       }
