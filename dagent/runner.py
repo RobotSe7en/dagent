@@ -11,7 +11,6 @@ from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.providers import AgentCapabilityProvider
-from dagent.capabilities.skills import ImportedSkillEntry
 from dagent.dag_builder import Dag
 from dagent.config import load_config
 from dagent.harness_runtime import (
@@ -53,7 +52,6 @@ class Runner:
         capabilities: Iterable[CapabilityLike] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
-        imported_skills: dict[str, ImportedSkillEntry] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = Path(workspace)
@@ -63,7 +61,6 @@ class Runner:
             capabilities=capabilities,
             validator=validator,
             skill_roots=skill_roots,
-            imported_skills=imported_skills,
             mcp_servers=mcp_servers,
         )
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
@@ -347,7 +344,6 @@ def _create_runtime(
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
     skill_roots: list[str | Path] | None = None,
-    imported_skills: dict[str, ImportedSkillEntry] | None = None,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
@@ -370,7 +366,6 @@ def _create_runtime(
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skill_roots=skill_roots,
-        imported_skills=imported_skills,
         mcp_servers=resolved_mcp_servers,
     )
     capability_executor = CapabilityExecutor(catalog)

@@ -40,6 +40,7 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
             "description": "Summarize text.",
             "category": "writing",
             "path": str(skill_dir / "SKILL.md"),
+            "managed": False,
         }
     ]
     assert viewed.status_code == 200
@@ -47,21 +48,23 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
     assert viewed.json()["skill_dir"] == str(skill_dir.resolve())
 
 
-def test_api_imports_skill_with_frontmatter_and_serves_through_capability() -> None:
+def test_api_installs_markdown_skill_and_serves_through_capability(monkeypatch, tmp_path) -> None:
     state.close_runner()
-    state.imported_skills.clear()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
     state.runner = Runner(
         provider=MockProvider([ChatResponse(content="unused")]),
-        imported_skills=state.imported_skills,
+        skill_roots=[managed_root],
     )
     client = TestClient(app)
 
-    import_response = client.post(
-        "/skills/import",
-        json={
+    install_response = client.post(
+        "/skills/install",
+        data={
             "content": "---\nname: summarize\ndescription: Summarize carefully.\n---\nUse concise summaries.",
             "category": "writing",
-        },
+        }
     )
     list_response = client.get("/skills")
     view_response = client.get("/skills/writing/summarize")
@@ -70,21 +73,23 @@ def test_api_imports_skill_with_frontmatter_and_serves_through_capability() -> N
         json={"arguments": {"name": "writing/summarize"}},
     )
 
-    assert import_response.status_code == 200
+    assert install_response.status_code == 200
     assert list_response.status_code == 200
     assert {
         "name": "summarize",
         "description": "Summarize carefully.",
         "category": "writing",
-        "path": "memory://skills/writing/summarize",
+        "path": str(managed_root / "writing" / "summarize" / "SKILL.md"),
+        "managed": True,
     } in list_response.json()["skills"]
     assert view_response.status_code == 200
     assert view_response.json()["content"] == "Use concise summaries."
+    assert view_response.json()["skill_dir"] == str((managed_root / "writing" / "summarize").resolve())
     payload = json.loads(capability_response.json()["result"]["content"])
     assert payload["content"] == "Use concise summaries."
 
 
-def test_api_imports_plain_markdown_skill_and_rejects_name_collision(monkeypatch, tmp_path) -> None:
+def test_api_installs_plain_markdown_skill_and_rejects_name_collision(monkeypatch, tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "plain"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -92,35 +97,36 @@ def test_api_imports_plain_markdown_skill_and_rejects_name_collision(monkeypatch
         encoding="utf-8",
     )
     state.close_runner()
-    state.imported_skills.clear()
-    monkeypatch.setattr(state, "get_skill_roots", lambda: [tmp_path / "skills"])
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [tmp_path / "skills", managed_root])
     client = TestClient(app)
 
-    imported = client.post(
-        "/skills/import",
-        json={
+    installed = client.post(
+        "/skills/install",
+        data={
             "name": "draft",
             "description": "Draft skill.",
             "content": "# Draft Skill\n\nUse this temporary instruction.",
         },
     )
     collision = client.post(
-        "/skills/import",
-        json={
+        "/skills/install",
+        data={
             "name": "existing",
             "content": "Body.",
         },
     )
 
-    assert imported.status_code == 200
-    assert imported.json()["skill"]["content"].startswith("# Draft Skill")
+    assert installed.status_code == 200
+    assert installed.json()["skill"]["content"].startswith("# Draft Skill")
+    assert installed.json()["skill"]["skill_dir"] == str((managed_root / "draft").resolve())
     assert collision.status_code == 400
     assert "collides" in collision.json()["detail"]
 
 
-def test_api_imports_zip_skill_package(monkeypatch, tmp_path) -> None:
+def test_api_installs_zip_skill_package(monkeypatch, tmp_path) -> None:
     state.close_runner()
-    state.imported_skills.clear()
     managed_root = tmp_path / "managed-skills"
     monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
     monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
@@ -139,16 +145,16 @@ def test_api_imports_zip_skill_package(monkeypatch, tmp_path) -> None:
         archive.writestr("bundle/references/style.md", "Keep it short.\n")
     client = TestClient(app)
 
-    imported = client.post(
-        "/skills/import/package",
+    installed = client.post(
+        "/skills/install",
         files={"file": ("bundle.zip", buffer.getvalue(), "application/zip")},
     )
     viewed = client.get("/skills/writing/summarize")
     script = client.get("/skills/writing/summarize", params={"file_path": "scripts/run.py"})
 
-    assert imported.status_code == 200
-    assert imported.json()["skill"]["skill_dir"] == str((managed_root / "writing" / "summarize").resolve())
-    assert imported.json()["skill"]["linked_files"] == {
+    assert installed.status_code == 200
+    assert installed.json()["skill"]["skill_dir"] == str((managed_root / "writing" / "summarize").resolve())
+    assert installed.json()["skill"]["linked_files"] == {
         "references": ["references/style.md"],
         "scripts": ["scripts/run.py"],
     }
@@ -223,17 +229,12 @@ def test_api_session_reset_clears_in_memory_workbench_state() -> None:
             "config": {"template": "temp"},
         },
     )
-    client.post(
-        "/skills/import",
-        json={"name": "temp_skill", "content": "Use temporary guidance."},
-    )
     state.custom_mcp_servers["temp"] = {"command": "fake"}
 
     response = client.post("/session/reset")
 
     assert response.status_code == 200
     assert state.custom_capabilities == {}
-    assert state.imported_skills == {}
     assert state.custom_mcp_servers == {}
 
 
@@ -256,16 +257,18 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert events[-1]["final_answer"] == "hello there"
 
 
-def test_api_message_stream_scopes_capabilities_and_skills() -> None:
+def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
     state.close_runner()
-    state.imported_skills.clear()
+    managed_root = tmp_path / "managed-skills"
+    monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
+    monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
     provider = MockProvider([ChatResponse(content="scoped answer")])
-    state.runner = _runner(provider)
+    state.runner = _runner(provider, skill_roots=[managed_root])
     client = TestClient(app)
 
-    import_response = client.post(
-        "/skills/import",
-        json={"name": "brief", "content": "Use brief responses."},
+    install_response = client.post(
+        "/skills/install",
+        data={"name": "brief", "content": "Use brief responses."},
     )
     response = client.post(
         "/messages/stream",
@@ -277,7 +280,7 @@ def test_api_message_stream_scopes_capabilities_and_skills() -> None:
         },
     )
 
-    assert import_response.status_code == 200
+    assert install_response.status_code == 200
     assert response.status_code == 200
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["echo"]
     system_content = provider.requests[0]["messages"][0]["content"]
@@ -1091,8 +1094,8 @@ def test_api_dag_spec_validation_and_missing_resources() -> None:
     assert client.get("/dag-runs/missing/artifacts").status_code == 404
 
 
-def _runner(provider: MockProvider) -> Runner:
-    runner = Runner(provider=provider)
+def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) -> Runner:
+    runner = Runner(provider=provider, skill_roots=skill_roots)
     registry = ToolRegistry()
     registry.register(
         name="echo",

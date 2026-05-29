@@ -3,39 +3,41 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import shutil
-import tempfile
 from pathlib import Path
 from typing import Any
-from zipfile import BadZipFile, ZipFile
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from dagent import (
+    ArtifactUpload,
+    Boundary,
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityScope,
+    DAG,
+    DAGRun,
+    DAGSpec,
+    ProfileStore,
+    ReviewLevel,
+    RiskLevel,
+    Runner,
+    RuntimeMode,
+    SkillAmbiguousError,
+    SkillNotFoundError,
+    SkillPermissionError,
+    SkillStore,
+    SkillStoreError,
+    default_skill_roots,
+    validate_dag_spec,
+)
 from dagent.config import load_config
 from dagent.capabilities.boundaries import infer_capability_boundary
-from dagent.harness_runtime.dag_builder import validate_dag_spec
-from dagent.harness_runtime.artifacts import ArtifactUpload
-from dagent.harness_runtime.capability_scope import CapabilityScope
-from dagent.harness_runtime import RuntimeMode
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
-from dagent.capabilities.skills import (
-    ImportedSkillEntry,
-    default_skill_roots,
-    list_skill_entries,
-    read_skill_markdown_text,
-    skill_view_payload,
-)
-from dagent.profiles import ProfileStore
-from dagent.review import ReviewLevel
-from dagent.runner import Runner
-from dagent.schemas import DAG, DAGRun, DAGSpec
-from dagent.schemas import CapabilityDefinition, CapabilityInvocation, RiskLevel
 
 
 class MessageRequest(BaseModel):
@@ -62,18 +64,6 @@ class DAGSpecRunRequest(BaseModel):
     workspace_root: str | None = None
 
 
-class SkillImportRequest(BaseModel):
-    content: str = Field(min_length=1)
-    name: str | None = None
-    description: str | None = None
-    category: str | None = None
-
-
-MAX_SKILL_PACKAGE_BYTES = 10 * 1024 * 1024
-MAX_SKILL_PACKAGE_FILES = 256
-MAX_SKILL_PACKAGE_FILE_BYTES = 1024 * 1024
-
-
 class MCPServerRequest(BaseModel):
     name: str = Field(min_length=1)
     command: str = ""
@@ -96,7 +86,6 @@ class ApiState:
         self.dag_spec_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
-        self.imported_skills: dict[str, ImportedSkillEntry] = {}
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
         self.custom_mcp_capability_ids: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
@@ -107,7 +96,6 @@ class ApiState:
             self.runner = Runner(
                 workspace=".",
                 skill_roots=self.get_skill_roots(),
-                imported_skills=self.imported_skills,
             )
             self._install_custom_capabilities()
             self.reload_custom_mcp()
@@ -137,6 +125,9 @@ class ApiState:
 
     def get_managed_skill_root(self) -> Path:
         return Path.home() / ".dagent" / "skills"
+
+    def skill_store(self) -> SkillStore:
+        return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
 
     def _install_custom_capabilities(self) -> None:
         if self.runner is None:
@@ -210,7 +201,6 @@ async def reset_session() -> dict[str, str]:
     state.dag_runs.clear()
     state.dag_spec_artifact_uploads.clear()
     state.custom_capabilities.clear()
-    state.imported_skills.clear()
     state.custom_mcp_servers.clear()
     return {"status": "ok"}
 
@@ -500,65 +490,55 @@ async def reload_mcp_servers() -> dict[str, Any]:
 
 @app.get("/skills")
 async def list_skills() -> dict[str, Any]:
-    return {
-        "skills": [
-            skill.as_list_item()
-            for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills)
-        ]
-    }
+    return {"skills": [skill.as_list_item() for skill in state.skill_store().list()]}
 
 
 @app.get("/skills/{name:path}")
 async def get_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
-    payload = skill_view_payload(
-        name,
-        state.get_skill_roots(),
-        file_path=file_path,
-        imported_skills=state.imported_skills,
-    )
-    if payload.get("success") is False:
-        status_code = 400 if payload.get("matches") else 404
-        raise HTTPException(status_code=status_code, detail=payload)
-    return payload
+    try:
+        return state.skill_store().view(name, file_path=file_path).as_payload()
+    except SkillStoreError as exc:
+        raise _skill_http_exception(exc) from exc
 
 
-@app.post("/skills/import")
-async def import_skill(request: SkillImportRequest) -> dict[str, Any]:
-    skill = _imported_skill_from_request(request)
-    if _skill_name_collides(skill):
-        raise HTTPException(status_code=400, detail=f"Skill '{skill.qualified_name}' collides with an existing skill.")
-    state.imported_skills[skill.qualified_name] = skill
-    return {
-        "skill": skill_view_payload(
-            skill.qualified_name,
-            state.get_skill_roots(),
-            imported_skills=state.imported_skills,
-        )
-    }
+@app.post("/skills/install")
+async def install_skill(
+    file: UploadFile | None = File(None),
+    content: str | None = Form(None),
+    name: str | None = Form(None),
+    description: str | None = Form(None),
+    category: str | None = Form(None),
+) -> dict[str, Any]:
+    if file is None and not content:
+        raise HTTPException(status_code=400, detail="Skill content or file is required.")
+    try:
+        if file is not None:
+            view = state.skill_store().install(
+                await file.read(),
+                filename=file.filename or "skill",
+                name=name or None,
+                description=description or None,
+                category=category or None,
+            )
+        else:
+            view = state.skill_store().install(
+                content or "",
+                filename="SKILL.md",
+                name=name or None,
+                description=description or None,
+                category=category or None,
+            )
+    except SkillStoreError as exc:
+        raise _skill_http_exception(exc) from exc
+    return {"skill": view.as_payload()}
 
 
-@app.post("/skills/import/package")
-async def import_skill_package(file: UploadFile = File(...)) -> dict[str, Any]:
-    filename = file.filename or "skill.zip"
-    if not filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Skill package must be a .zip file.")
-    content = await file.read()
-    qualified_name = _install_skill_package(content, filename)
-    return {
-        "skill": skill_view_payload(
-            qualified_name,
-            state.get_skill_roots(),
-            imported_skills=state.imported_skills,
-        )
-    }
-
-
-@app.delete("/skills/imported/{name:path}")
-async def delete_imported_skill(name: str) -> dict[str, str]:
-    key = _imported_skill_key(name)
-    if key not in state.imported_skills:
-        raise HTTPException(status_code=404, detail="Imported skill not found.")
-    state.imported_skills.pop(key, None)
+@app.delete("/skills/{name:path}")
+async def delete_skill(name: str) -> dict[str, str]:
+    try:
+        state.skill_store().delete(name)
+    except SkillStoreError as exc:
+        raise _skill_http_exception(exc) from exc
     return {"status": "deleted"}
 
 
@@ -651,26 +631,21 @@ def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
 
 
 def _skill_instruction(name: str) -> str:
-    payload = skill_view_payload(
-        name,
-        state.get_skill_roots(),
-        imported_skills=state.imported_skills,
-    )
-    if payload.get("success") is False:
-        raise HTTPException(status_code=400, detail=str(payload.get("error") or "Skill was not found."))
-    category = payload.get("category")
-    skill_name = str(payload.get("name") or name)
+    try:
+        view = state.skill_store().view(name)
+    except SkillStoreError as exc:
+        raise _skill_http_exception(exc) from exc
+    category = view.category
+    skill_name = view.name
     qualified_name = f"{category}/{skill_name}" if category else skill_name
-    description = str(payload.get("description") or "")
-    content = str(payload.get("content") or "").strip()
+    description = view.description
+    content = view.content.strip()
     lines = [f"{qualified_name}: {description}".strip(), content]
-    skill_dir = payload.get("skill_dir")
-    if skill_dir:
-        lines.append(f"[Skill directory: {skill_dir}]")
-    linked_files = payload.get("linked_files")
+    lines.append(f"[Skill directory: {view.skill_dir}]")
+    linked_files = view.linked_files
     if linked_files:
         lines.append(f"[Linked files: {json.dumps(linked_files, ensure_ascii=False)}]")
-        if isinstance(linked_files, dict) and linked_files.get("scripts"):
+        if linked_files.get("scripts"):
             lines.append("Run skill scripts with tool.run_command when needed; it uses the system shell.")
     if description:
         return "\n".join(line for line in lines if line).strip()
@@ -688,6 +663,22 @@ def _dedupe(values: list[str]) -> list[str]:
     return deduped
 
 
+def _skill_http_exception(exc: SkillStoreError) -> HTTPException:
+    if isinstance(exc, SkillNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, SkillAmbiguousError):
+        return HTTPException(
+            status_code=400,
+            detail={
+                "error": str(exc),
+                "matches": [match.as_list_item() for match in exc.matches],
+            },
+        )
+    if isinstance(exc, SkillPermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/capabilities/{capability_id}/test")
 async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
     runtime = state.get_runtime()
@@ -700,8 +691,6 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
         arguments=request.arguments,
     )
     if request.boundary is not None:
-        from dagent.schemas import Boundary
-
         invocation.boundary = Boundary.model_validate(request.boundary)
     else:
         invocation.boundary = infer_capability_boundary(definition, request.arguments)
@@ -930,149 +919,6 @@ def _mcp_server_payload(name: str, source: str, config: dict[str, Any], runtime)
     }
 
 
-def _imported_skill_from_request(request: SkillImportRequest) -> ImportedSkillEntry:
-    metadata, body = read_skill_markdown_text(request.content)
-    name = _clean_name(request.name or metadata.get("name") or "", field="Skill name")
-    category_value = request.category if request.category is not None else metadata.get("category")
-    category = _clean_optional_name(category_value, field="Skill category")
-    description = (
-        request.description
-        if request.description is not None and request.description.strip()
-        else metadata.get("description")
-        if metadata.get("description")
-        else _skill_description_from_body(body)
-    )
-    normalized_metadata = dict(metadata)
-    normalized_metadata["name"] = name
-    normalized_metadata["description"] = str(description or "")
-    if category:
-        normalized_metadata["category"] = category
-    return ImportedSkillEntry(
-        name=name,
-        description=str(description or ""),
-        category=category,
-        content=body,
-        metadata=normalized_metadata,
-    )
-
-
-def _install_skill_package(content: bytes, filename: str) -> str:
-    if len(content) > MAX_SKILL_PACKAGE_BYTES:
-        raise HTTPException(status_code=400, detail="Skill package is too large.")
-    try:
-        with ZipFile(io.BytesIO(content)) as archive:
-            members = _skill_package_members(archive)
-            skill_md_member = next((member for member, path in members if path.as_posix() == "SKILL.md"), None)
-            if skill_md_member is None:
-                raise HTTPException(status_code=400, detail="Skill package must contain SKILL.md.")
-            metadata, _body = read_skill_markdown_text(archive.read(skill_md_member).decode("utf-8"))
-            package_name = Path(filename).stem
-            name = _clean_name(metadata.get("name") or package_name, field="Skill name")
-            category = _clean_optional_name(metadata.get("category"), field="Skill category")
-            qualified_name = f"{category}/{name}" if category else name
-            if _skill_name_exists(name, qualified_name):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Skill '{qualified_name}' collides with an existing skill.",
-                )
-            root = state.get_managed_skill_root()
-            root.mkdir(parents=True, exist_ok=True)
-            destination = root / category / name if category else root / name
-            if destination.exists():
-                raise HTTPException(status_code=400, detail=f"Skill directory already exists: {destination}")
-            with tempfile.TemporaryDirectory(prefix=".skill-import-", dir=root) as temp:
-                staged = Path(temp) / "skill"
-                staged.mkdir()
-                for member, relative_path in members:
-                    target = (staged / relative_path).resolve()
-                    if not _is_relative_to(target, staged.resolve()):
-                        raise HTTPException(status_code=400, detail="Skill package contains an unsafe path.")
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(archive.read(member))
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(staged), str(destination))
-            return qualified_name
-    except UnicodeDecodeError as exc:
-        raise HTTPException(status_code=400, detail="SKILL.md must be UTF-8 text.") from exc
-    except BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="Skill package is not a valid zip file.") from exc
-
-
-def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
-    files = [member for member in archive.infolist() if not member.is_dir()]
-    if len(files) > MAX_SKILL_PACKAGE_FILES:
-        raise HTTPException(status_code=400, detail="Skill package contains too many files.")
-    raw_paths: list[tuple[Any, Path]] = []
-    for member in files:
-        if member.file_size > MAX_SKILL_PACKAGE_FILE_BYTES:
-            raise HTTPException(status_code=400, detail=f"Skill package file is too large: {member.filename}")
-        if (member.external_attr >> 16) & 0o170000 == 0o120000:
-            raise HTTPException(status_code=400, detail=f"Skill package contains a symlink: {member.filename}")
-        text_path = member.filename.replace("\\", "/")
-        path = Path(text_path)
-        if path.is_absolute() or not path.parts or ".." in path.parts:
-            raise HTTPException(status_code=400, detail=f"Skill package contains an unsafe path: {member.filename}")
-        raw_paths.append((member, path))
-    if not raw_paths:
-        raise HTTPException(status_code=400, detail="Skill package is empty.")
-    if any(path.as_posix() == "SKILL.md" for _member, path in raw_paths):
-        members = raw_paths
-    else:
-        roots = {path.parts[0] for _member, path in raw_paths}
-        if len(roots) != 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Skill package must contain SKILL.md at the root or inside one top-level directory.",
-            )
-        members = [
-            (member, Path(*path.parts[1:]))
-            for member, path in raw_paths
-            if len(path.parts) > 1
-        ]
-    seen: set[str] = set()
-    normalized: list[tuple[Any, Path]] = []
-    for member, path in members:
-        if path.is_absolute() or not path.parts or ".." in path.parts:
-            raise HTTPException(status_code=400, detail=f"Skill package contains an unsafe path: {member.filename}")
-        key = path.as_posix()
-        if key in seen:
-            raise HTTPException(status_code=400, detail=f"Skill package contains duplicate path: {key}")
-        seen.add(key)
-        normalized.append((member, path))
-    return normalized
-
-
-def _skill_name_exists(name: str, qualified_name: str) -> bool:
-    for skill in list_skill_entries(state.get_skill_roots(), state.imported_skills):
-        if skill.name == name or skill.qualified_name == qualified_name:
-            return True
-    return False
-
-
-def _skill_description_from_body(body: str) -> str:
-    for line in body.splitlines():
-        stripped = line.strip().lstrip("#").strip()
-        if stripped:
-            return stripped[:160]
-    return ""
-
-
-def _skill_name_collides(candidate: ImportedSkillEntry) -> bool:
-    return _skill_name_exists(candidate.name, candidate.qualified_name)
-
-
-def _imported_skill_key(name: str) -> str:
-    query = name.strip()
-    if query in state.imported_skills:
-        return query
-    matches = [key for key, skill in state.imported_skills.items() if query in {skill.name, skill.qualified_name}]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise HTTPException(status_code=400, detail="Imported skill name is ambiguous.")
-    return query
-
-
 def _clean_name(value: Any, *, field: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1080,25 +926,6 @@ def _clean_name(value: Any, *, field: str) -> str:
     if "/" in text or "\\" in text:
         raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
     return text
-
-
-def _clean_optional_name(value: Any, *, field: str) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if "/" in text or "\\" in text:
-        raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
-    return text
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _sse(payload: dict[str, Any]) -> str:

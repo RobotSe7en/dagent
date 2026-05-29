@@ -249,6 +249,7 @@ export interface SkillSummary {
   description: string;
   category?: string | null;
   path: string;
+  managed?: boolean;
 }
 
 export interface SkillDetail {

@@ -1,12 +1,15 @@
-"""Progressive-disclosure skill capabilities."""
+"""Progressive-disclosure skill capabilities and local skill storage."""
 
 from __future__ import annotations
 
+import io
 import json
-from collections.abc import Iterable, Mapping
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 import yaml
 
@@ -14,14 +17,40 @@ from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityPolicy, CapabilityResult
 
 
+MAX_SKILL_PACKAGE_BYTES = 10 * 1024 * 1024
+MAX_SKILL_PACKAGE_FILES = 256
+MAX_SKILL_PACKAGE_FILE_BYTES = 1024 * 1024
+
+
+class SkillStoreError(ValueError):
+    """Raised when local skill storage cannot satisfy a request."""
+
+
+class SkillNotFoundError(SkillStoreError):
+    """Raised when a requested skill cannot be found."""
+
+
+class SkillAmbiguousError(SkillStoreError):
+    """Raised when a skill query matches more than one skill."""
+
+    def __init__(self, name: str, matches: list[SkillEntry]) -> None:
+        super().__init__(f"Skill '{name}' is ambiguous.")
+        self.matches = matches
+
+
+class SkillPermissionError(SkillStoreError):
+    """Raised when a skill store operation targets a non-managed skill."""
+
+
 @dataclass(frozen=True)
-class SkillIndexEntry:
+class SkillEntry:
     name: str
     description: str
     category: str | None
     skill_dir: Path
     skill_file: Path
     metadata: dict[str, Any]
+    managed: bool = False
 
     def as_list_item(self) -> dict[str, Any]:
         return {
@@ -29,6 +58,7 @@ class SkillIndexEntry:
             "description": self.description,
             "category": self.category,
             "path": str(self.skill_file),
+            "managed": self.managed,
         }
 
     @property
@@ -37,40 +67,233 @@ class SkillIndexEntry:
 
 
 @dataclass(frozen=True)
-class ImportedSkillEntry:
-    name: str
-    description: str
-    category: str | None
+class SkillView:
+    skill: SkillEntry
     content: str
+    path: Path
     metadata: dict[str, Any]
+    linked_files: dict[str, list[str]]
+    file_path: str | None = None
 
-    def as_list_item(self) -> dict[str, Any]:
-        return {
+    @property
+    def name(self) -> str:
+        return self.skill.name
+
+    @property
+    def description(self) -> str:
+        return self.skill.description
+
+    @property
+    def category(self) -> str | None:
+        return self.skill.category
+
+    @property
+    def skill_dir(self) -> Path:
+        return self.skill.skill_dir
+
+    def as_payload(self) -> dict[str, Any]:
+        payload = {
+            "skill": self.skill.as_list_item(),
             "name": self.name,
             "description": self.description,
             "category": self.category,
-            "path": f"memory://skills/{self.qualified_name}",
+            "path": str(self.path),
+            "skill_dir": str(self.skill_dir),
+            "metadata": self.metadata,
+            "content": self.content,
+            "linked_files": self.linked_files,
         }
+        if self.file_path is not None:
+            payload["file_path"] = self.file_path
+        return payload
 
-    @property
-    def qualified_name(self) -> str:
-        return f"{self.category}/{self.name}" if self.category else self.name
 
+class SkillStore:
+    """Filesystem-backed skill listing, reading, installing, and deletion."""
 
-SkillEntry = SkillIndexEntry | ImportedSkillEntry
+    def __init__(
+        self,
+        roots: list[str | Path] | None = None,
+        *,
+        managed_root: str | Path | None = None,
+    ) -> None:
+        self.roots = [Path(root) for root in (roots if roots is not None else default_skill_roots())]
+        self.managed_root = Path(managed_root) if managed_root is not None else default_managed_skill_root()
+
+    def list(self) -> list[SkillEntry]:
+        return scan_skill_roots(self.roots, managed_root=self.managed_root)
+
+    def view(self, name: str, file_path: str | None = None) -> SkillView:
+        skill = self._resolve_skill(name)
+        if file_path:
+            target = _resolve_skill_file(skill, file_path)
+            return SkillView(
+                skill=skill,
+                content=target.read_text(encoding="utf-8"),
+                path=target,
+                metadata={},
+                linked_files={},
+                file_path=Path(file_path).as_posix(),
+            )
+        metadata, body = read_skill_markdown(skill.skill_file)
+        return SkillView(
+            skill=skill,
+            content=body,
+            path=skill.skill_file,
+            metadata=metadata,
+            linked_files=list_linked_files(skill.skill_dir),
+        )
+
+    def install(
+        self,
+        content: bytes | str,
+        *,
+        filename: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        category: str | None = None,
+    ) -> SkillView:
+        self._ensure_managed_root()
+        if _is_zip_install(content, filename):
+            if name or description or category:
+                raise SkillStoreError("Skill package metadata overrides are only supported for Markdown installs.")
+            return self._install_package(_ensure_bytes(content), filename or "skill.zip")
+        return self._install_markdown(
+            _ensure_text(content),
+            filename=filename,
+            name=name,
+            description=description,
+            category=category,
+        )
+
+    def delete(self, name: str) -> None:
+        self._ensure_managed_root()
+        all_matches = _find_skill_matches(name, self.list())
+        managed_matches = [skill for skill in all_matches if skill.managed and _is_relative_to(skill.skill_dir, self.managed_root)]
+        if len(managed_matches) > 1:
+            raise SkillAmbiguousError(name, managed_matches)
+        if not managed_matches:
+            if all_matches:
+                raise SkillPermissionError("Only skills installed under the managed skill root can be deleted.")
+            raise SkillNotFoundError(f"Skill '{name}' was not found.")
+        skill = managed_matches[0]
+        shutil.rmtree(skill.skill_dir)
+        parent = skill.skill_dir.parent
+        if parent != self.managed_root.resolve():
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+
+    def exists(self, name: str, qualified_name: str | None = None) -> bool:
+        candidates = {name}
+        if qualified_name:
+            candidates.add(qualified_name)
+        return any(skill.name in candidates or skill.qualified_name in candidates for skill in self.list())
+
+    def _resolve_skill(self, name: str) -> SkillEntry:
+        matches = _find_skill_matches(name, self.list())
+        if len(matches) > 1:
+            raise SkillAmbiguousError(name, matches)
+        if not matches:
+            raise SkillNotFoundError(f"Skill '{name}' was not found.")
+        return matches[0]
+
+    def _install_markdown(
+        self,
+        content: str,
+        *,
+        filename: str | None,
+        name: str | None,
+        description: str | None,
+        category: str | None,
+    ) -> SkillView:
+        metadata, body = read_skill_markdown_text(content)
+        filename_name = Path(filename).stem if filename else ""
+        resolved_name = _clean_name(name or metadata.get("name") or filename_name, field="Skill name")
+        resolved_category = _clean_optional_name(
+            category if category is not None else metadata.get("category"),
+            field="Skill category",
+        )
+        resolved_description = _skill_description(
+            body,
+            description=description,
+            metadata_description=metadata.get("description"),
+        )
+        normalized_metadata = dict(metadata)
+        normalized_metadata["name"] = resolved_name
+        normalized_metadata["description"] = resolved_description
+        if resolved_category:
+            normalized_metadata["category"] = resolved_category
+        elif "category" in normalized_metadata:
+            normalized_metadata.pop("category", None)
+
+        destination = self._skill_destination(resolved_name, resolved_category)
+        qualified_name = f"{resolved_category}/{resolved_name}" if resolved_category else resolved_name
+        if self.exists(resolved_name, qualified_name):
+            raise SkillStoreError(f"Skill '{qualified_name}' collides with an existing skill.")
+        if destination.exists():
+            raise SkillStoreError(f"Skill directory already exists: {destination}")
+        destination.mkdir(parents=True)
+        (destination / "SKILL.md").write_text(
+            _format_skill_markdown(normalized_metadata, body),
+            encoding="utf-8",
+        )
+        return self.view(qualified_name)
+
+    def _install_package(self, content: bytes, filename: str) -> SkillView:
+        if len(content) > MAX_SKILL_PACKAGE_BYTES:
+            raise SkillStoreError("Skill package is too large.")
+        try:
+            with ZipFile(io.BytesIO(content)) as archive:
+                members = _skill_package_members(archive)
+                skill_md_member = next((member for member, path in members if path.as_posix() == "SKILL.md"), None)
+                if skill_md_member is None:
+                    raise SkillStoreError("Skill package must contain SKILL.md.")
+                metadata, _body = read_skill_markdown_text(archive.read(skill_md_member).decode("utf-8"))
+                package_name = Path(filename).stem
+                name = _clean_name(metadata.get("name") or package_name, field="Skill name")
+                category = _clean_optional_name(metadata.get("category"), field="Skill category")
+                qualified_name = f"{category}/{name}" if category else name
+                if self.exists(name, qualified_name):
+                    raise SkillStoreError(f"Skill '{qualified_name}' collides with an existing skill.")
+                destination = self._skill_destination(name, category)
+                if destination.exists():
+                    raise SkillStoreError(f"Skill directory already exists: {destination}")
+                self.managed_root.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix=".skill-install-", dir=self.managed_root) as temp:
+                    staged = Path(temp) / "skill"
+                    staged.mkdir()
+                    staged_root = staged.resolve()
+                    for member, relative_path in members:
+                        target = (staged / relative_path).resolve()
+                        if not _is_relative_to(target, staged_root):
+                            raise SkillStoreError("Skill package contains an unsafe path.")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(archive.read(member))
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(staged), str(destination))
+                return self.view(qualified_name)
+        except UnicodeDecodeError as exc:
+            raise SkillStoreError("SKILL.md must be UTF-8 text.") from exc
+        except BadZipFile as exc:
+            raise SkillStoreError("Skill package is not a valid zip file.") from exc
+
+    def _skill_destination(self, name: str, category: str | None) -> Path:
+        base = self.managed_root / category if category else self.managed_root
+        return base / name
+
+    def _ensure_managed_root(self) -> None:
+        managed = self.managed_root.resolve()
+        if not any(root.resolve() == managed for root in self.roots):
+            self.roots.append(self.managed_root)
 
 
 class SkillsCapabilityProvider:
     """Registers the low-risk skill discovery tools."""
 
-    def __init__(
-        self,
-        skill_roots: list[str | Path] | None = None,
-        *,
-        imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
-    ) -> None:
-        self.skill_roots = [Path(root) for root in (skill_roots or default_skill_roots())]
-        self.imported_skills = imported_skills
+    def __init__(self, skill_roots: list[str | Path] | None = None) -> None:
+        self.store = SkillStore(skill_roots)
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
         catalog.register(
@@ -86,7 +309,7 @@ class SkillsCapabilityProvider:
                     },
                 },
                 policy=CapabilityPolicy(risk="low"),
-                config={"roots": [str(root) for root in self.skill_roots]},
+                config={"roots": [str(root) for root in self.store.roots]},
             ),
             self._list,
         )
@@ -108,14 +331,14 @@ class SkillsCapabilityProvider:
                     "required": ["name"],
                 },
                 policy=CapabilityPolicy(risk="low"),
-                config={"roots": [str(root) for root in self.skill_roots]},
+                config={"roots": [str(root) for root in self.store.roots]},
             ),
             self._view,
         )
 
     def _list(self, invocation: CapabilityInvocation) -> CapabilityResult:
         category = invocation.arguments.get("category")
-        skills = list_skill_entries(self.skill_roots, self.imported_skills)
+        skills = self.store.list()
         if category:
             skills = [skill for skill in skills if skill.category == str(category)]
         payload = {
@@ -126,26 +349,31 @@ class SkillsCapabilityProvider:
         return _completed(invocation, payload)
 
     def _view(self, invocation: CapabilityInvocation) -> CapabilityResult:
-        return skill_view_result(
-            invocation,
-            self.skill_roots,
-            str(invocation.arguments.get("name", "")),
-            file_path=invocation.arguments.get("file_path"),
-            imported_skills=self.imported_skills,
-        )
+        try:
+            view = self.store.view(
+                str(invocation.arguments.get("name", "")),
+                file_path=invocation.arguments.get("file_path"),
+            )
+        except SkillStoreError as exc:
+            return _failed(invocation, str(exc), _error_payload(exc))
+        return _completed(invocation, view.as_payload())
+
+
+def default_managed_skill_root() -> Path:
+    return Path.home() / ".dagent" / "skills"
 
 
 def default_skill_roots() -> list[Path]:
-    return [Path("skills"), Path.home() / ".dagent" / "skills"]
+    return [Path("skills"), default_managed_skill_root()]
 
 
-def scan_skill_roots(skill_roots: list[str | Path]) -> list[SkillIndexEntry]:
-    entries: list[SkillIndexEntry] = []
+def scan_skill_roots(skill_roots: list[str | Path], *, managed_root: str | Path | None = None) -> list[SkillEntry]:
+    entries: list[SkillEntry] = []
     seen: set[Path] = set()
+    managed = Path(managed_root).resolve() if managed_root is not None else None
     for root_value in skill_roots:
         root = Path(root_value)
-        candidates = _skill_files(root)
-        for skill_file in candidates:
+        for skill_file in _skill_files(root):
             resolved = skill_file.resolve()
             if resolved in seen:
                 continue
@@ -153,103 +381,19 @@ def scan_skill_roots(skill_roots: list[str | Path]) -> list[SkillIndexEntry]:
             metadata, _body = read_skill_markdown(skill_file)
             name = str(metadata.get("name") or skill_file.parent.name)
             description = str(metadata.get("description") or "")
+            skill_dir = skill_file.parent.resolve()
             entries.append(
-                SkillIndexEntry(
+                SkillEntry(
                     name=name,
                     description=description,
                     category=_category_for(root, skill_file),
-                    skill_dir=skill_file.parent.resolve(),
+                    skill_dir=skill_dir,
                     skill_file=resolved,
                     metadata=metadata,
+                    managed=managed is not None and _is_relative_to(skill_dir, managed),
                 )
             )
     return sorted(entries, key=lambda skill: (skill.category or "", skill.name, str(skill.skill_file)))
-
-
-def list_skill_entries(
-    skill_roots: list[str | Path],
-    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
-) -> list[SkillEntry]:
-    entries: list[SkillEntry] = [*scan_skill_roots(skill_roots), *_imported_skill_values(imported_skills)]
-    return sorted(entries, key=lambda skill: (skill.category or "", skill.name, skill.qualified_name))
-
-
-def skill_view_payload(
-    name: str,
-    skill_roots: list[str | Path] | None = None,
-    *,
-    file_path: str | None = None,
-    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
-) -> dict[str, Any]:
-    matches = _find_skill_matches(name, list_skill_entries(skill_roots or default_skill_roots(), imported_skills))
-    if len(matches) > 1:
-        return {
-            "success": False,
-            "error": "Ambiguous skill name.",
-            "matches": [match.as_list_item() for match in matches],
-        }
-    if not matches:
-        return {"success": False, "error": f"Skill '{name}' was not found.", "matches": []}
-    skill = matches[0]
-    if isinstance(skill, ImportedSkillEntry):
-        if file_path:
-            return {
-                "success": False,
-                "error": "Imported in-memory skills do not include linked files.",
-                "skill": skill.as_list_item(),
-            }
-        return {
-            "success": True,
-            "skill": skill.as_list_item(),
-            "name": skill.name,
-            "description": skill.description,
-            "category": skill.category,
-            "path": skill.as_list_item()["path"],
-            "skill_dir": None,
-            "metadata": skill.metadata,
-            "content": skill.content,
-            "linked_files": {},
-        }
-    if file_path:
-        try:
-            target = _resolve_skill_file(skill, file_path)
-        except ValueError as exc:
-            return {"success": False, "error": str(exc), "skill": skill.as_list_item()}
-        return {
-            "success": True,
-            "skill": skill.as_list_item(),
-            "file_path": str(Path(file_path).as_posix()),
-            "path": str(target),
-            "skill_dir": str(skill.skill_dir),
-            "content": target.read_text(encoding="utf-8"),
-        }
-    metadata, body = read_skill_markdown(skill.skill_file)
-    return {
-        "success": True,
-        "skill": skill.as_list_item(),
-        "name": skill.name,
-        "description": skill.description,
-        "category": skill.category,
-        "path": str(skill.skill_file),
-        "skill_dir": str(skill.skill_dir),
-        "metadata": metadata,
-        "content": body,
-        "linked_files": list_linked_files(skill.skill_dir),
-    }
-
-
-def skill_view_result(
-    invocation: CapabilityInvocation,
-    skill_roots: list[str | Path],
-    name: str,
-    *,
-    file_path: str | None = None,
-    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None = None,
-) -> CapabilityResult:
-    payload = skill_view_payload(name, skill_roots, file_path=file_path, imported_skills=imported_skills)
-    if payload.get("success") is False:
-        return _failed(invocation, str(payload.get("error") or "Skill view failed."), payload)
-    return _completed(invocation, payload)
 
 
 def read_skill_markdown(path: Path) -> tuple[dict[str, Any], str]:
@@ -302,40 +446,136 @@ def _category_for(root: Path, skill_file: Path) -> str | None:
     return None
 
 
-def _imported_skill_values(
-    imported_skills: Mapping[str, ImportedSkillEntry] | Iterable[ImportedSkillEntry] | None,
-) -> list[ImportedSkillEntry]:
-    if imported_skills is None:
-        return []
-    if isinstance(imported_skills, Mapping):
-        return list(imported_skills.values())
-    return list(imported_skills)
-
-
 def _find_skill_matches(name: str, skills: list[SkillEntry]) -> list[SkillEntry]:
     query = name.strip()
     matches: list[SkillEntry] = []
     for skill in skills:
-        candidates = {skill.name, skill.qualified_name}
-        if isinstance(skill, SkillIndexEntry):
-            candidates.add(skill.skill_dir.name)
+        candidates = {skill.name, skill.qualified_name, skill.skill_dir.name}
         if query in candidates:
             matches.append(skill)
     return matches
 
 
-def _resolve_skill_file(skill: SkillIndexEntry, file_path: str) -> Path:
+def _resolve_skill_file(skill: SkillEntry, file_path: str) -> Path:
     requested = Path(file_path)
     if requested.is_absolute() or ".." in requested.parts:
-        raise ValueError("Path traversal is not allowed for skill files.")
+        raise SkillStoreError("Path traversal is not allowed for skill files.")
     target = (skill.skill_dir / requested).resolve()
-    try:
-        target.relative_to(skill.skill_dir)
-    except ValueError as exc:
-        raise ValueError("Path traversal is not allowed for skill files.") from exc
+    if not _is_relative_to(target, skill.skill_dir):
+        raise SkillStoreError("Path traversal is not allowed for skill files.")
     if not target.is_file():
-        raise ValueError(f"Skill file '{file_path}' was not found.")
+        raise SkillNotFoundError(f"Skill file '{file_path}' was not found.")
     return target
+
+
+def _is_zip_install(content: bytes | str, filename: str | None) -> bool:
+    return isinstance(content, bytes) and bool(filename and filename.lower().endswith(".zip"))
+
+
+def _ensure_bytes(content: bytes | str) -> bytes:
+    return content if isinstance(content, bytes) else content.encode("utf-8")
+
+
+def _ensure_text(content: bytes | str) -> str:
+    if isinstance(content, str):
+        return content
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SkillStoreError("Skill Markdown must be UTF-8 text.") from exc
+
+
+def _skill_package_members(archive: ZipFile) -> list[tuple[Any, Path]]:
+    files = [member for member in archive.infolist() if not member.is_dir()]
+    if len(files) > MAX_SKILL_PACKAGE_FILES:
+        raise SkillStoreError("Skill package contains too many files.")
+    raw_paths: list[tuple[Any, Path]] = []
+    for member in files:
+        if member.file_size > MAX_SKILL_PACKAGE_FILE_BYTES:
+            raise SkillStoreError(f"Skill package file is too large: {member.filename}")
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise SkillStoreError(f"Skill package contains a symlink: {member.filename}")
+        text_path = member.filename.replace("\\", "/")
+        path = Path(text_path)
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise SkillStoreError(f"Skill package contains an unsafe path: {member.filename}")
+        raw_paths.append((member, path))
+    if not raw_paths:
+        raise SkillStoreError("Skill package is empty.")
+    if any(path.as_posix() == "SKILL.md" for _member, path in raw_paths):
+        members = raw_paths
+    else:
+        roots = {path.parts[0] for _member, path in raw_paths}
+        if len(roots) != 1:
+            raise SkillStoreError("Skill package must contain SKILL.md at the root or inside one top-level directory.")
+        members = [
+            (member, Path(*path.parts[1:]))
+            for member, path in raw_paths
+            if len(path.parts) > 1
+        ]
+    seen: set[str] = set()
+    normalized: list[tuple[Any, Path]] = []
+    for member, path in members:
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise SkillStoreError(f"Skill package contains an unsafe path: {member.filename}")
+        key = path.as_posix()
+        if key in seen:
+            raise SkillStoreError(f"Skill package contains duplicate path: {key}")
+        seen.add(key)
+        normalized.append((member, path))
+    return normalized
+
+
+def _clean_name(value: Any, *, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise SkillStoreError(f"{field} is required.")
+    if "/" in text or "\\" in text:
+        raise SkillStoreError(f"{field} cannot contain path separators.")
+    return text
+
+
+def _clean_optional_name(value: Any, *, field: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "/" in text or "\\" in text:
+        raise SkillStoreError(f"{field} cannot contain path separators.")
+    return text
+
+
+def _skill_description(body: str, *, description: str | None, metadata_description: Any) -> str:
+    if description is not None and description.strip():
+        return description.strip()
+    if metadata_description:
+        return str(metadata_description)
+    for line in body.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:160]
+    return ""
+
+
+def _format_skill_markdown(metadata: dict[str, Any], body: str) -> str:
+    frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+    return f"---\n{frontmatter}\n---\n{body.strip()}\n"
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _error_payload(exc: SkillStoreError) -> dict[str, Any]:
+    payload: dict[str, Any] = {"error": str(exc)}
+    if isinstance(exc, SkillAmbiguousError):
+        payload["matches"] = [match.as_list_item() for match in exc.matches]
+    return payload
 
 
 def _completed(invocation: CapabilityInvocation, payload: dict[str, Any]) -> CapabilityResult:
@@ -371,14 +611,16 @@ def _policy_decision(invocation: CapabilityInvocation) -> dict[str, Any]:
 
 
 __all__ = [
-    "ImportedSkillEntry",
-    "SkillIndexEntry",
+    "SkillAmbiguousError",
     "SkillEntry",
+    "SkillNotFoundError",
+    "SkillPermissionError",
+    "SkillStore",
+    "SkillStoreError",
+    "SkillView",
     "SkillsCapabilityProvider",
+    "default_managed_skill_root",
     "default_skill_roots",
     "list_linked_files",
-    "list_skill_entries",
-    "read_skill_markdown_text",
     "scan_skill_roots",
-    "skill_view_payload",
 ]

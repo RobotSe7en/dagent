@@ -165,26 +165,20 @@ export async function getSkillFile(name: string, filePath: string): Promise<Skil
   return await res.json();
 }
 
-export async function importSkill(payload: {
-  content: string;
+export async function installSkill(payload: {
+  file?: File;
+  content?: string;
   name?: string;
   description?: string;
   category?: string;
 }): Promise<SkillDetail> {
-  const res = await fetch(`${API_BASE}/skills/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(await errorMessage(res));
-  const data = await res.json();
-  return data.skill;
-}
-
-export async function importSkillPackage(file: File): Promise<SkillDetail> {
   const form = new FormData();
-  form.append('file', file);
-  const res = await fetch(`${API_BASE}/skills/import/package`, {
+  if (payload.file) form.append('file', payload.file);
+  if (payload.content) form.append('content', payload.content);
+  if (payload.name) form.append('name', payload.name);
+  if (payload.description) form.append('description', payload.description);
+  if (payload.category) form.append('category', payload.category);
+  const res = await fetch(`${API_BASE}/skills/install`, {
     method: 'POST',
     body: form,
   });
@@ -193,8 +187,8 @@ export async function importSkillPackage(file: File): Promise<SkillDetail> {
   return data.skill;
 }
 
-export async function deleteImportedSkill(name: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/skills/imported/${skillPath(name)}`, {
+export async function deleteSkill(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/skills/${skillPath(name)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(await errorMessage(res));

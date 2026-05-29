@@ -17,6 +17,13 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "Runner")
     assert hasattr(dagent, "ToolAgent")
     assert hasattr(dagent, "DagAgent")
+    assert hasattr(dagent, "ArtifactUpload")
+    assert hasattr(dagent, "CapabilityScope")
+    assert hasattr(dagent, "ProfileStore")
+    assert hasattr(dagent, "ReviewLevel")
+    assert hasattr(dagent, "RuntimeMode")
+    assert hasattr(dagent, "SkillStore")
+    assert hasattr(dagent, "validate_dag_spec")
     assert not hasattr(dagent, "DAgent")
     assert not hasattr(dagent, "run_dag")
 
