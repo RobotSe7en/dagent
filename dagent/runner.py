@@ -57,6 +57,7 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = Path(workspace)
+        self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._runtime = _create_runtime(
             workspace=self.workspace,
@@ -79,12 +80,16 @@ class Runner:
         return self._runtime.capability_catalog.list(enabled_only=True)
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._runtime.capability_catalog.shutdown()
         self._pending_runtimes.clear()
+        self._closed = True
 
     def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
         """Register a single ``@dagent.tool`` binding."""
 
+        self._ensure_open()
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
         return definition
@@ -101,6 +106,7 @@ class Runner:
     def add_skill_root(self, root: str | Path) -> Path:
         """Add a directory to scan for skills, visible to skill.list/skill.view."""
 
+        self._ensure_open()
         candidate = Path(root)
         existing = {Path(existing_root).resolve() for existing_root in self._skill_provider.store.roots}
         if candidate.resolve() not in existing:
@@ -115,8 +121,6 @@ class Runner:
         self,
         name: str,
         config: dict[str, Any],
-        *,
-        manager: Any | None = None,
     ) -> list[CapabilityDefinition]:
         """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities.
 
@@ -125,6 +129,16 @@ class Runner:
         is rolled back and the server's manager is shut down before raising.
         """
 
+        return self._add_mcp_server(name, config)
+
+    def _add_mcp_server(
+        self,
+        name: str,
+        config: dict[str, Any],
+        *,
+        manager: Any | None = None,
+    ) -> list[CapabilityDefinition]:
+        self._ensure_open()
         if manager is None:
             available = MCPServerManager.available
         else:
@@ -136,15 +150,19 @@ class Runner:
         catalog = self._runtime.capability_catalog
         before = set(catalog.ids())
         provider = MCPCapabilityProvider({name: config}, manager=manager)
-        provider.register_into(catalog)
-        new_ids = sorted(set(catalog.ids()) - before)
-        errors = list(provider.registration_errors)
-        connect_error = getattr(provider.manager, "last_errors", {}).get(name)
-        if connect_error:
-            errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
-        if errors:
-            self._rollback_mcp_registration(catalog, new_ids, provider.manager)
-            raise RuntimeError("; ".join(errors))
+        try:
+            provider.register_into(catalog)
+            new_ids = sorted(set(catalog.ids()) - before)
+            errors = list(provider.registration_errors)
+            connect_error = getattr(provider.manager, "last_errors", {}).get(name)
+            if connect_error:
+                errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
+            if errors:
+                raise RuntimeError("; ".join(errors))
+        except Exception:
+            new_ids = sorted(set(catalog.ids()) - before)
+            self._rollback_mcp_registration(catalog, new_ids, getattr(provider, "manager", manager))
+            raise
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
         return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
@@ -154,7 +172,14 @@ class Runner:
             catalog.delete(capability_id)
         if manager is not None and hasattr(manager, "shutdown"):
             catalog.remove_shutdown_hook(manager.shutdown)
-            manager.shutdown()
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Runner is closed.")
 
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]

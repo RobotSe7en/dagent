@@ -337,7 +337,7 @@ lists from `custom_tool.name` to `tool.name`.
 ### Registering Capabilities
 
 `Runner` owns the capability catalog. Tools, MCP servers, and skills can be registered
-declaratively at construction or incrementally at runtime:
+declaratively at construction:
 
 ```python
 import dagent
@@ -357,11 +357,25 @@ runner = dagent.Runner(
         "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
     },
 )
+```
 
-# Incremental registration after construction:
+The same capability types can be registered incrementally at runtime:
+
+```python
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    """Search the web."""
+    return f"found:{q}"
+
+
+runner = dagent.Runner(workspace=".")
+
 runner.add_tool(search)                             # add one tool binding
 runner.add_skill_root("team-skills")                # add a skill discovery root
-runner.add_mcp_server("fs", {"command": "npx", "args": ["..."]})  # returns the new mcp.* defs
+runner.add_mcp_server("team_fs", {"command": "npx", "args": ["..."]})  # returns the new mcp.* defs
 
 # Install/list/delete managed skills through the store:
 runner.skill_store.install(open("my-skill.zip", "rb").read(), filename="my-skill.zip")

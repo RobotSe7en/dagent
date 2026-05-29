@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 
 import pytest
 
@@ -29,7 +30,12 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "run_dag")
 
 
-def test_tool_decorator_matches_capability_with_default_kind() -> None:
+def test_tool_decorator_has_tool_only_signature() -> None:
+    assert "kind" not in inspect.signature(dagent.tool).parameters
+    assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
+
+
+def test_tool_decorator_matches_tool_default_kind() -> None:
     @dagent.tool
     def search(q: str) -> str:
         """Search text."""
@@ -46,7 +52,7 @@ def test_tool_decorator_matches_capability_with_default_kind() -> None:
     assert write_file.definition.policy.risk == "medium"
 
 
-def test_capability_decorator_registers_tool_capability() -> None:
+def test_tool_decorator_registers_tool_capability() -> None:
     @dagent.tool
     def search(q: str) -> str:
         """Search text."""

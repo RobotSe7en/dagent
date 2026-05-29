@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 import dagent
-from dagent.providers import MockProvider
+import dagent.runner as runner_module
+from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import CapabilityInvocation
 
 
@@ -85,14 +86,30 @@ def test_add_skill_root_is_idempotent(tmp_path) -> None:
 
 
 def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None:
-    runner = _runner(tmp_path)
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="mcp_mock_server__lookup",
+                    arguments={"query": "x"},
+                )
+            ]
+        ),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
     manager = FakeMCPManager()
 
-    definitions = runner.add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+    definitions = runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     assert manager.started is True
     assert [definition.id for definition in definitions] == ["mcp.mock_server.lookup"]
     assert any(definition.id == "mcp.mock_server.lookup" for definition in runner.capabilities)
+
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "lookup x"))
+    assert result.output_text == "done"
+    assert any(tool["function"]["name"] == "mcp_mock_server__lookup" for tool in provider.requests[0]["tools"])
 
     result = run(runner.runtime.capability_executor.execute(
         CapabilityInvocation(capability_id="mcp.mock_server.lookup", kind="mcp", arguments={"query": "x"})
@@ -102,9 +119,10 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     runner.close()
 
 
-def test_add_mcp_server_requires_mcp_sdk_without_manager(tmp_path) -> None:
+def test_add_mcp_server_requires_mcp_sdk_when_unavailable(monkeypatch, tmp_path) -> None:
     runner = _runner(tmp_path)
-    # The dev test environment does not install the optional MCP SDK.
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", False)
+
     with pytest.raises(RuntimeError, match="MCP SDK is not installed"):
         runner.add_mcp_server("mock-server", {"command": "fake"})
     runner.close()
@@ -117,7 +135,7 @@ def test_add_mcp_server_raises_on_connect_failure(tmp_path) -> None:
     manager.discovered_tools = lambda: {}
 
     with pytest.raises(RuntimeError, match="failed to connect: boom"):
-        runner.add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+        runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
     assert manager.shutdown_calls == 1
     runner.close()
 
@@ -144,7 +162,7 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
     manager = TwoToolManager()
 
     with pytest.raises(RuntimeError, match="collides"):
-        runner.add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+        runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     catalog = runner.runtime.capability_catalog
     # The successfully-registered "good" tool must be rolled back...
@@ -154,3 +172,38 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
     # ...and the manager must be shut down.
     assert manager.shutdown_calls == 1
     runner.close()
+
+
+def test_add_mcp_server_rolls_back_if_discovery_raises(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    class BrokenDiscoveryManager(FakeMCPManager):
+        def discovered_tools(self):
+            raise RuntimeError("discovery failed")
+
+    manager = BrokenDiscoveryManager()
+
+    with pytest.raises(RuntimeError, match="discovery failed"):
+        runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+
+    assert manager.started is True
+    assert manager.shutdown_calls == 1
+    assert not any(capability_id.startswith("mcp.mock_server.") for capability_id in runner.runtime.capability_catalog.ids())
+    runner.close()
+
+
+def test_runner_rejects_runtime_registration_after_close(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def search(q: str) -> str:
+        return q
+
+    runner.close()
+
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.add_tool(search)
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.add_skill_root(tmp_path / "extra")
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.add_mcp_server("mock-server", {"command": "fake"})
