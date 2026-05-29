@@ -334,6 +334,46 @@ Capability ids use the capability kind as their prefix. Python function tools no
 compatibility alias. Update existing DAG specs, API payloads, and agent capability
 lists from `custom_tool.name` to `tool.name`.
 
+### Registering Capabilities
+
+`Runner` owns the capability catalog. Tools, MCP servers, and skills can be registered
+declaratively at construction or incrementally at runtime:
+
+```python
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    """Search the web."""
+    return f"found:{q}"
+
+
+runner = dagent.Runner(
+    workspace=".",
+    capabilities=[search],                 # tool.* capabilities
+    skill_roots=["skills"],                # skill.list / skill.view discovery roots
+    mcp_servers={                          # stdio MCP servers -> mcp.<server>.<tool>
+        "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
+    },
+)
+
+# Incremental registration after construction:
+runner.add_capability(search)                       # add one tool
+runner.add_skill_root("team-skills")                # add a skill discovery root
+runner.add_mcp_server("fs", {"command": "npx", "args": ["..."]})  # returns the new mcp.* defs
+
+# Install/list/delete managed skills through the store:
+runner.skill_store.install(open("my-skill.zip", "rb").read(), filename="my-skill.zip")
+
+print([definition.id for definition in runner.capabilities])
+```
+
+MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently supports the
+stdio transport. `add_mcp_server` raises if the SDK is missing or the server fails to
+connect. Newly registered capabilities are visible to agents that do not pin an explicit
+`capabilities` list.
+
 Use `ToolAgent` for profile-backed tool-loop work:
 
 ```python

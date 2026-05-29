@@ -10,7 +10,9 @@ from dagent.agent import CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
+from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
+from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
 from dagent.dag_builder import Dag
 from dagent.config import load_config
 from dagent.harness_runtime import (
@@ -55,12 +57,14 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = Path(workspace)
+        self._skill_provider = SkillsCapabilityProvider(skill_roots)
+        self._mcp_providers: list[MCPCapabilityProvider] = []
         self._runtime = _create_runtime(
             workspace=self.workspace,
             provider=provider,
             capabilities=capabilities,
             validator=validator,
-            skill_roots=skill_roots,
+            skills_provider=self._skill_provider,
             mcp_servers=mcp_servers,
         )
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
@@ -87,6 +91,67 @@ class Runner:
     def add_capabilities(self, capabilities: Iterable[CapabilityLike]) -> None:
         for capability in capabilities:
             self.add_capability(capability)
+
+    @property
+    def skill_store(self) -> SkillStore:
+        """The filesystem-backed store powering skill discovery and installation."""
+
+        return self._skill_provider.store
+
+    def add_skill_root(self, root: str | Path) -> Path:
+        """Add a directory to scan for skills, visible to skill.list/skill.view."""
+
+        resolved = Path(root)
+        existing = {Path(existing_root).resolve() for existing_root in self._skill_provider.store.roots}
+        if resolved.resolve() not in existing:
+            self._skill_provider.store.roots.append(resolved)
+            self._sync_skill_root_metadata()
+        return resolved
+
+    def add_skill_roots(self, roots: Iterable[str | Path]) -> list[Path]:
+        return [self.add_skill_root(root) for root in roots]
+
+    def add_mcp_server(
+        self,
+        name: str,
+        config: dict[str, Any],
+        *,
+        manager: Any | None = None,
+    ) -> list[CapabilityDefinition]:
+        """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities."""
+
+        if not getattr(manager, "available", MCPServerManager.available):
+            raise RuntimeError(
+                "MCP SDK is not installed. Install dagent[mcp] to register MCP servers."
+            )
+        catalog = self._runtime.capability_catalog
+        before = set(catalog.ids())
+        provider = MCPCapabilityProvider({name: config}, manager=manager)
+        provider.register_into(catalog)
+        errors = list(provider.registration_errors)
+        connect_error = getattr(provider.manager, "last_errors", {}).get(name)
+        if connect_error:
+            errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+        self._mcp_providers.append(provider)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+        new_ids = sorted(set(catalog.ids()) - before)
+        return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
+
+    def _sync_skill_root_metadata(self) -> None:
+        roots = [str(root) for root in self._skill_provider.store.roots]
+        catalog = self._runtime.capability_catalog
+        for capability_id in ("skill.list", "skill.view"):
+            entry = catalog.get_entry(capability_id)
+            if entry is None:
+                continue
+            updated = entry.definition.model_copy(
+                update={"config": {**entry.definition.config, "roots": roots}},
+                deep=True,
+            )
+            catalog.replace(updated, entry.handler, supports_context=entry.supports_context)
 
     @overload
     async def run(
@@ -344,6 +409,7 @@ def _create_runtime(
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
     skill_roots: list[str | Path] | None = None,
+    skills_provider: SkillsCapabilityProvider | None = None,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
@@ -366,6 +432,7 @@ def _create_runtime(
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skill_roots=skill_roots,
+        skills_provider=skills_provider,
         mcp_servers=resolved_mcp_servers,
     )
     capability_executor = CapabilityExecutor(catalog)
