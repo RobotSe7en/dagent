@@ -359,7 +359,7 @@ runner = dagent.Runner(
 )
 
 # Incremental registration after construction:
-runner.add_capability(search)                       # add one tool
+runner.add_tool(search)                             # add one tool binding
 runner.add_skill_root("team-skills")                # add a skill discovery root
 runner.add_mcp_server("fs", {"command": "npx", "args": ["..."]})  # returns the new mcp.* defs
 

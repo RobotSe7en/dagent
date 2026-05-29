@@ -251,7 +251,7 @@ def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, capabilities=[first])
 
     with pytest.raises(ValueError, match="tool.same"):
-        runner.add_capability(second)
+        runner.add_tool(second)
 
 
 def test_runner_close_shuts_down_capability_resources(tmp_path) -> None:

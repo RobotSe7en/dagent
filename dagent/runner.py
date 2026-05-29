@@ -83,14 +83,16 @@ class Runner:
         self._runtime.capability_catalog.shutdown()
         self._pending_runtimes.clear()
 
-    def add_capability(self, capability: CapabilityLike) -> CapabilityDefinition:
+    def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
+        """Register a single ``@dagent.tool``/``@dagent.capability`` binding."""
+
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
         return definition
 
-    def add_capabilities(self, capabilities: Iterable[CapabilityLike]) -> None:
+    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> None:
         for capability in capabilities:
-            self.add_capability(capability)
+            self.add_tool(capability)
 
     @property
     def skill_store(self) -> SkillStore:
@@ -322,7 +324,7 @@ class Runner:
         capability_ids: list[str] = []
         for ref in refs:
             if isinstance(ref, CapabilityBinding):
-                definition = self.add_capability(ref) if register_bindings else ref.definition
+                definition = self.add_tool(ref) if register_bindings else ref.definition
                 if self._runtime.capability_catalog.get(definition.id) is None:
                     raise KeyError(f"Capability '{definition.id}' is not registered.")
                 capability_ids.append(definition.id)
@@ -345,7 +347,7 @@ class Runner:
 
     def _ensure_dag_capabilities(self, dag: Dag) -> None:
         for capability in dag.capabilities:
-            self.add_capability(capability)
+            self.add_tool(capability)
         new_agent_configs: dict[str, dict[str, Any]] = {}
         for agent in dag.agents:
             name = agent.name or ""
