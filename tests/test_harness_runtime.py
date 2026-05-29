@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from dagent import capability
+from dagent import tool
 from dagent.harness_runtime import (
     ToolAgent,
     ToolAgentLoop,
@@ -106,7 +106,7 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
     runtime._agent_capability_configs.append(agent_config)
 
-    @capability(id="tool.echo2", name="echo2")
+    @tool(id="tool.echo2", name="echo2")
     def echo2(text: str) -> str:
         return f"first:{text}"
 
@@ -118,7 +118,7 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     )
     first = run(runtime.capability_executor.execute(invocation))
 
-    @capability(id="tool.echo2", name="echo2")
+    @tool(id="tool.echo2", name="echo2")
     def echo2_replacement(text: str) -> str:
         return f"second:{text}"
 

@@ -84,7 +84,7 @@ class Runner:
         self._pending_runtimes.clear()
 
     def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
-        """Register a single ``@dagent.tool``/``@dagent.capability`` binding."""
+        """Register a single ``@dagent.tool`` binding."""
 
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
@@ -566,7 +566,7 @@ def _register_capability_parts(
 
 def _capability_parts(capability: CapabilityLike) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
     if not isinstance(capability, CapabilityBinding):
-        raise TypeError("Expected a capability created with @dagent.capability.")
+        raise TypeError("Expected a capability created with @dagent.tool.")
     return capability.definition, capability.handler, capability.supports_context
 
 

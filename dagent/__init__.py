@@ -12,7 +12,7 @@ from dagent.capabilities import (
     default_managed_skill_root,
     default_skill_roots,
 )
-from dagent.capabilities.decorator import CapabilityBinding, capability, tool
+from dagent.capabilities.decorator import CapabilityBinding, tool
 from dagent.dag_builder import ArtifactRef, Dag, NodeRef
 from dagent.harness_runtime import ArtifactUpload, CapabilityScope, RuntimeMode, validate_dag_spec
 from dagent.profiles import AgentProfile, ProfileStore
@@ -75,7 +75,6 @@ __all__ = [
     "SkillStoreError",
     "SkillView",
     "ToolAgent",
-    "capability",
     "default_managed_skill_root",
     "default_skill_roots",
     "tool",

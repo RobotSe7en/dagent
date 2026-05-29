@@ -28,7 +28,7 @@ class CapabilityBinding:
     supports_context: bool = False
 
 
-def capability(
+def tool(
     fn: Callable[..., Any] | None = None,
     *,
     id: str | None = None,
@@ -45,7 +45,13 @@ def capability(
     enabled: bool = True,
     supports_context: bool = False,
 ) -> CapabilityBinding | Callable[[Callable[..., Any]], CapabilityBinding]:
-    """Decorate a Python function as a dagent capability."""
+    """Decorate a Python function as a dagent tool capability.
+
+    This is the public way to expose a Python function as an LLM-callable
+    capability. ``kind`` defaults to ``"tool"``; MCP and skill capabilities are
+    registered through ``Runner.add_mcp_server`` and ``Runner.add_skill_root``
+    rather than this decorator.
+    """
 
     def decorate(func: Callable[..., Any]) -> CapabilityBinding:
         capability_name = name or func.__name__
@@ -111,21 +117,6 @@ def capability(
     if fn is not None:
         return decorate(fn)
     return decorate
-
-
-def tool(
-    fn: Callable[..., Any] | None = None,
-    **kwargs: Any,
-) -> CapabilityBinding | Callable[[Callable[..., Any]], CapabilityBinding]:
-    """Decorate a Python function as a dagent tool capability.
-
-    Shorthand for ``@capability(kind="tool", ...)``. Use this for the common
-    case of exposing a Python function as an LLM-callable tool; reach for
-    ``@capability`` only when you need to set a non-tool ``kind``.
-    """
-
-    kwargs.setdefault("kind", "tool")
-    return capability(fn, **kwargs)
 
 
 def _invoke_function(
