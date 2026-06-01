@@ -32,7 +32,6 @@ from dagent.schemas.run_trace import (
     RunTraceNodeKind,
     RunTraceStatus,
 )
-
 __all__ = [
     "Boundary",
     "BoundaryMode",

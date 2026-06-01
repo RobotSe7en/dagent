@@ -221,7 +221,7 @@ class Runner:
     async def run(
         self,
         target: Dag | DAGSpec,
-        input: None = None,
+        input: Any = None,
         *,
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
@@ -233,7 +233,7 @@ class Runner:
     async def run(
         self,
         target: ToolAgent | DagAgent | Dag | DAGSpec,
-        input: str | None = None,
+        input: Any = None,
         *,
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
@@ -268,14 +268,13 @@ class Runner:
             return self._run_result(runtime, response)
 
         if isinstance(target, Dag):
-            if input is not None:
-                raise TypeError("input is not accepted for Dag targets.")
             if review is not None:
                 raise TypeError("review is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
             return await self._runtime.run_dag_spec(
                 spec,
+                input=input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
@@ -283,12 +282,11 @@ class Runner:
             )
 
         if isinstance(target, DAGSpec):
-            if input is not None:
-                raise TypeError("input is not accepted for DAGSpec targets.")
             if review is not None:
                 raise TypeError("review is not accepted for DAGSpec targets.")
             return await self._runtime.run_dag_spec(
                 self._resolve_spec_capability_metadata(target),
+                input=input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,

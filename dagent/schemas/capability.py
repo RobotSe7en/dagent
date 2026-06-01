@@ -36,6 +36,7 @@ class CapabilityDefinition(BaseModel):
     kind: CapabilityKind
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+    output_schema: dict[str, Any] = Field(default_factory=dict)
     policy: CapabilityPolicy = Field(default_factory=CapabilityPolicy)
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
@@ -56,6 +57,7 @@ class CapabilityResult(BaseModel):
     kind: CapabilityKind
     status: CapabilityStatus
     content: str = ""
+    value: Any = None
     error: str | None = None
     stop_reason: str = "completed"
     stdout: str = ""

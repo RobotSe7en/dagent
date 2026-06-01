@@ -409,6 +409,7 @@ class HarnessRuntime:
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        graph_input: Any = None,
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
         if mode == "dag":
@@ -444,6 +445,7 @@ class HarnessRuntime:
             thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
             return await self.dag_agent.loop.run_static(
                 request,
+                graph_input=graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_token=thinking_only,
@@ -504,6 +506,7 @@ class HarnessRuntime:
         self,
         spec: DAGSpec,
         *,
+        input: Any = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -517,6 +520,7 @@ class HarnessRuntime:
             on_event=on_event,
             workspace_root=workspace_root,
             artifact_uploads=artifact_uploads,
+            graph_input=input,
         )
         record = self.session.save_loop_outcome(
             task_id=outcome.task_id,
@@ -579,4 +583,3 @@ def _capability_registration_parts(
         else supports_context
     )
     return definition, resolved_handler, resolved_supports_context
-

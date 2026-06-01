@@ -77,6 +77,7 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     ))
     payload = json.loads(result.content)
     assert payload == {"result": "found:x", "structuredContent": {"ok": True}}
+    assert result.value == {"ok": True}
     assert manager.calls == [("mock-server", "lookup", {"query": "x"})]
 
 

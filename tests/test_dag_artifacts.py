@@ -381,7 +381,11 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
 
-def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_path: Path) -> None:
+def _expr(payload: dict) -> dict:
+    return {"$expr": payload}
+
+
+def test_executor_resolves_artifact_exprs_in_arguments_and_boundary(tmp_path: Path) -> None:
     executor = DAGExecutor(
         capability_executor=_write_capability_executor(tmp_path),
         workspace_path=tmp_path,
@@ -398,10 +402,13 @@ def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_p
                 _node(
                     "write",
                     tool="write_note",
-                    args={"path": "{{artifact.note.path}}", "content": "hi"},
+                    args={
+                        "path": _expr({"type": "artifact", "artifact_id": "note", "field": "path"}),
+                        "content": "hi",
+                    },
                     boundary=Boundary(
                         mode="write_limited",
-                        allowed_paths=["{{artifact.note.path}}"],
+                        allowed_paths=[_expr({"type": "artifact", "artifact_id": "note", "field": "path"})],
                     ),
                     outputs=["note"],
                 )
@@ -417,6 +424,45 @@ def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_p
     assert invocation.boundary.allowed_paths == ["notes/output.txt"]
     assert result.artifacts["note"].status == "created"
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
+
+
+def test_validate_dag_spec_rejects_unknown_artifact_expr() -> None:
+    spec = DAGSpec(
+        id="bad_artifact_expr",
+        name="Bad artifact expr",
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={"path": _expr({"type": "artifact", "artifact_id": "missing", "field": "path"})},
+            )
+        ],
+    )
+
+    with pytest.raises(DAGValidationError, match="unknown artifact 'missing'"):
+        validate_dag_spec(spec)
+
+
+def test_validate_dag_spec_rejects_malformed_value_expr() -> None:
+    spec = DAGSpec(
+        id="bad_value_expr",
+        name="Bad value expr",
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={
+                    "path": {
+                        "$expr": {"type": "graph_input", "path": []},
+                        "comment": "extra keys are not part of the value expression envelope",
+                    },
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(DAGValidationError, match="invalid value expression"):
+        validate_dag_spec(spec)
 
 
 def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) -> None:

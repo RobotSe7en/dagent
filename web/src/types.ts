@@ -2,10 +2,24 @@ export type RiskLevel = 'low' | 'medium' | 'high';
 export type BoundaryMode = 'read_only' | 'write_limited' | 'full';
 export type ReviewLevel = 'fast' | 'careful';
 
+export type ValuePathItem = string | number;
+
+export type ValueExpr =
+  | { type: 'graph_input'; path?: ValuePathItem[] }
+  | { type: 'node_output'; node_id: string; field?: 'value' | 'content' | 'status' | 'steps'; path?: ValuePathItem[] }
+  | { type: 'artifact'; artifact_id: string; field?: 'path' | 'paths' | 'absolute_path' | 'absolute_paths' }
+  | { type: 'format'; template: string; values?: Record<string, unknown> };
+
+export interface ValueBinding {
+  $expr: ValueExpr;
+}
+
+export type BoundaryValue = string | ValueBinding;
+
 export interface Boundary {
   mode: BoundaryMode;
-  allowed_paths?: string[];
-  allowed_commands?: string[];
+  allowed_paths?: BoundaryValue[];
+  allowed_commands?: BoundaryValue[];
 }
 
 export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'agent' | 'memory' | 'file';
@@ -33,6 +47,7 @@ export interface CapabilityDefinition {
   kind: CapabilityKind;
   description: string;
   parameters: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
   policy: CapabilityPolicy;
   config: Record<string, unknown>;
   enabled: boolean;
@@ -132,6 +147,7 @@ export interface CapabilityResult {
   kind: CapabilityKind;
   status: CapabilityResultStatus;
   content?: string;
+  value?: unknown;
   error?: string | null;
   stop_reason?: string;
   steps?: number;
@@ -179,6 +195,7 @@ export interface RunTraceNode {
   ref: Record<string, string>;
   input: Record<string, unknown>;
   output?: unknown;
+  value?: unknown;
   error?: RunTraceError | null;
   capability_execution?: CapabilityExecution | null;
   children: RunTraceNode[];

@@ -275,6 +275,7 @@ class DAGAgentLoop:
         self,
         spec: DAGSpec,
         *,
+        graph_input: Any = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: Callable[[str], None] | None = None,
@@ -320,6 +321,7 @@ class DAGAgentLoop:
             artifacts=spec.artifacts,
             artifact_states=artifact_states,
             spec_id=spec.id,
+            graph_input=graph_input,
         )
         trace = await self.execute(
             record,

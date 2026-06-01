@@ -111,6 +111,7 @@ class ShellCapabilityProvider:
                     kind=invocation.kind,
                     status=status,
                     content=content,
+                    value=content if status == "completed" else None,
                     error=None if status == "completed" else completed.stderr,
                     stop_reason="completed" if status == "completed" else "nonzero_exit",
                     stdout=completed.stdout,
@@ -488,6 +489,7 @@ def _agent_result(
         kind=invocation.kind,
         status=status,
         content=content,
+        value=content if status == "completed" else None,
         error=error,
         stop_reason=stop_reason,
         trace=trace,
@@ -528,6 +530,7 @@ def _completed(invocation: CapabilityInvocation, content: str) -> CapabilityResu
         kind=invocation.kind,
         status="completed",
         content=content,
+        value=content,
         policy_decision=_policy_decision(invocation.boundary),
     )
 

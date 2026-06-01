@@ -619,6 +619,7 @@ def _completed(invocation: CapabilityInvocation, payload: dict[str, Any]) -> Cap
         kind=invocation.kind,
         status="completed",
         content=json.dumps(payload, ensure_ascii=False),
+        value=payload,
         policy_decision=_policy_decision(invocation),
     )
 

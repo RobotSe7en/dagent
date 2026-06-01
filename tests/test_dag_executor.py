@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from dagent.harness_runtime import DAGExecutionError, DAGExecutor
+from dagent.harness_runtime.dag_builder import DAGValidationError
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import AgentCapabilityProvider, ToolCapabilityProvider
@@ -37,6 +38,10 @@ def node_outputs(trace: RunTrace) -> dict[str, str]:
         for child in trace.root.children
         if child.kind == "dag_node" and child.ref.get("node_id")
     }
+
+
+def expr(payload: dict) -> dict:
+    return {"$expr": payload}
 
 
 def node(
@@ -472,14 +477,25 @@ def test_executor_can_run_one_ready_layer_at_a_time() -> None:
     ] == ["a", "b"]
 
 
-def test_executor_injects_completed_node_output_into_downstream_args() -> None:
+def test_executor_resolves_completed_node_value_into_downstream_args() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
         nodes=[
             tool_node("source", tool="echo", args={"text": "value"}),
-            tool_node("sink", tool="echo", args={"text": "{{source.output}}"}),
+            tool_node(
+                "sink",
+                tool="echo",
+                args={
+                    "text": expr({
+                        "type": "node_output",
+                        "node_id": "source",
+                        "field": "value",
+                        "path": [],
+                    })
+                },
+            ),
         ],
         edges=[DAGEdge(source="source", target="sink")],
     )
@@ -493,14 +509,25 @@ def test_executor_injects_completed_node_output_into_downstream_args() -> None:
     assert capability_trace(result, "sink").capability_execution.invocation.arguments == {"text": "echo:value"}
 
 
-def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
+def test_stepwise_executor_resolves_value_expr_from_initial_results() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
         nodes=[
             tool_node("source", tool="echo", args={"text": "value"}),
-            tool_node("sink", tool="echo", args={"text": "{{source.output}}"}),
+            tool_node(
+                "sink",
+                tool="echo",
+                args={
+                    "text": expr({
+                        "type": "node_output",
+                        "node_id": "source",
+                        "field": "content",
+                        "path": [],
+                    })
+                },
+            ),
         ],
         edges=[DAGEdge(source="source", target="sink")],
     )
@@ -512,17 +539,28 @@ def test_stepwise_executor_injects_placeholders_from_initial_results() -> None:
     assert dag_node_trace(second, "sink").output == "echo:echo:value"
 
 
-def test_executor_rejects_unresolved_placeholders_before_tool_call() -> None:
+def test_executor_rejects_node_value_ref_without_completed_dependency() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
         nodes=[
-            tool_node("sink", tool="echo", args={"text": "{{missing.output}}"}),
+            tool_node(
+                "sink",
+                tool="echo",
+                args={
+                    "text": expr({
+                        "type": "node_output",
+                        "node_id": "missing",
+                        "field": "value",
+                        "path": [],
+                    })
+                },
+            ),
         ],
     )
 
-    with pytest.raises(DAGExecutionError, match="missing"):
+    with pytest.raises(DAGValidationError, match="missing"):
         run(executor.execute_next_ready_layer(dag))
 
     assert executor.partial_node_traces == {}

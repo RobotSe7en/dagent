@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+from pydantic import BaseModel
+
 from dagent import CapabilityBinding, tool
 from dagent.capabilities import tool as tool_from_subsystem
 from dagent.schemas import CapabilityInvocation, CapabilityResult
@@ -45,9 +47,13 @@ def test_tool_decorator_builds_definition_from_function_signature() -> None:
 
 
 def test_tool_decorator_serializes_structured_results_and_failures() -> None:
+    class LookupResult(BaseModel):
+        query: str
+        matches: list[int]
+
     @tool(id="tool.lookup")
-    async def lookup(query: str) -> dict[str, object]:
-        return {"query": query, "matches": [1, 2]}
+    async def lookup(query: str) -> LookupResult:
+        return LookupResult(query=query, matches=[1, 2])
 
     @tool(id="tool.boom")
     def boom() -> str:
@@ -67,7 +73,16 @@ def test_tool_decorator_serializes_structured_results_and_failures() -> None:
         )
     ))
 
+    assert lookup.definition.output_schema["properties"] == {
+        "query": {"title": "Query", "type": "string"},
+        "matches": {
+            "items": {"type": "integer"},
+            "title": "Matches",
+            "type": "array",
+        },
+    }
     assert json.loads(lookup_result.content) == {"query": "sdk", "matches": [1, 2]}
+    assert lookup_result.value == {"query": "sdk", "matches": [1, 2]}
     assert boom_result == CapabilityResult(
         invocation_id=boom_result.invocation_id,
         capability_id="tool.boom",
@@ -76,3 +91,49 @@ def test_tool_decorator_serializes_structured_results_and_failures() -> None:
         error="bad input",
         stop_reason="ValueError",
     )
+
+
+def test_tool_decorator_resolves_postponed_annotations() -> None:
+    namespace: dict[str, object] = {}
+    exec(
+        "\n".join([
+            "from __future__ import annotations",
+            "from pydantic import BaseModel",
+            "from dagent import tool",
+            "",
+            "class LookupResult(BaseModel):",
+            "    title: str",
+            "",
+            "@tool",
+            "def lookup(query: str) -> LookupResult:",
+            "    return LookupResult(title=query)",
+        ]),
+        namespace,
+    )
+
+    lookup = namespace["lookup"]
+
+    assert lookup.definition.parameters["properties"]["query"]["type"] == "string"
+    assert lookup.definition.output_schema["properties"]["title"]["type"] == "string"
+
+
+def test_tool_decorator_backfills_value_for_explicit_completed_result() -> None:
+    @tool
+    def explicit() -> CapabilityResult:
+        return CapabilityResult(
+            invocation_id="custom",
+            capability_id="tool.explicit",
+            kind="tool",
+            status="completed",
+            content="hello",
+        )
+
+    result = run(explicit.handler(
+        CapabilityInvocation(
+            capability_id=explicit.definition.id,
+            kind=explicit.definition.kind,
+        )
+    ))
+
+    assert result.content == "hello"
+    assert result.value == "hello"

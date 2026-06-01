@@ -34,14 +34,14 @@ def write_note(path: str, content: str, *, context, callbacks=None) -> str:
 
 async def main() -> None:
     with TemporaryDirectory(prefix="dagent-static-") as workspace:
-        dag = dagent.Dag("research_report", name="Research Report")
+        dag = dagent.Dag("research_report", name="Research Report", input=str)
         report = dag.artifact("report", "outputs/report.md")
 
-        search_node = dag.capability_node("search", search, q="dagent sdk")
+        search_node = dag.capability_node("search", search, q=dag.input)
         dag.capability_node(
             "write_report",
             write_note,
-            path="outputs/report.md",
+            path=report.path,
             content=search_node.output,
             outputs=[report],
         ).after(search_node)
@@ -50,7 +50,7 @@ async def main() -> None:
         dagent.validate_dag_spec(spec)
 
         runner = dagent.Runner(workspace=workspace, provider=MockProvider([]))
-        result = await runner.run(dag, workspace_root=Path(workspace) / "runs")
+        result = await runner.run(dag, input="dagent sdk", workspace_root=Path(workspace) / "runs")
         output_path = Path(result.workspace_path) / "outputs" / "report.md"
 
         print(result.status)

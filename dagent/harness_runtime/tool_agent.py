@@ -696,6 +696,7 @@ def _completed_capability_result(invocation: CapabilityInvocation, content: str)
         kind=invocation.kind,
         status="completed",
         content=content,
+        value=content,
     )
 
 

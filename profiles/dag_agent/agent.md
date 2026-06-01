@@ -28,6 +28,15 @@ node_id = tool_name(key="value", other_key=123) after dependency_one, dependency
 Omit `after ...` when the node has no real dependency. Use empty parentheses for
 tools without arguments.
 
+When a pending node must consume a previous node's result directly, keep the
+dependency explicit with `after ...` and bind the argument with a structured
+expression:
+
+node_b = some_tool(value={"$expr": {"type": "node_output", "node_id": "node_a", "field": "content", "path": []}}) after node_a
+
+Use `field: "content"` for a previous node's text output. Use `field: "value"`
+with a `path` list only when the previous capability returns structured data.
+
 The executor runs each node directly as that tool call without a child agent
 loop, so each node must be one concrete executable action. If the task needs
 analysis, express the next observable tool call that obtains the information
@@ -47,7 +56,9 @@ the remaining pending nodes. Evaluate the situation and choose one action:
 - **No change**: the pending nodes can execute as-is. Return exactly `NO_CHANGE`.
 - **Adjust parameters**: some pending nodes need updated args based on upstream
   outputs (e.g. a file path discovered at runtime, a value extracted from a
-  previous result). Return a complete PlanSpec DSL for the entire DAG.
+  previous result). Return a complete PlanSpec DSL for the entire DAG. Use
+  structured `$expr` bindings when the value should remain linked to a prior
+  node output rather than copied as a literal.
 - **Restructure**: the remaining plan needs structural changes (add/remove
   nodes, change tools, reorder dependencies). Return a complete PlanSpec DSL
   for the entire DAG.
