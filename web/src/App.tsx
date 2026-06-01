@@ -419,7 +419,7 @@ export function App() {
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
-  const [selectedProfileName, setSelectedProfileName] = useState('');
+  const [selectedProfileId, setSelectedProfileId] = useState('');
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
@@ -453,7 +453,7 @@ export function App() {
       setProfileWarnings(nextProfiles.warnings);
       setSkills(nextSkills);
       setMcpServers(nextMcpServers);
-      setSelectedProfileName((current) => current || nextProfiles.profiles[0]?.name || '');
+      setSelectedProfileId((current) => current || nextProfiles.profiles[0]?.id || '');
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -1453,8 +1453,8 @@ export function App() {
           <AgentDirectory
             profiles={profiles}
             warnings={profileWarnings}
-            selectedName={selectedProfileName}
-            onSelect={setSelectedProfileName}
+            selectedId={selectedProfileId}
+            onSelect={setSelectedProfileId}
           />
         )}
       </main>
@@ -3843,15 +3843,15 @@ function formatEnvText(env: Record<string, string>): string {
 function AgentDirectory({
   profiles,
   warnings,
-  selectedName,
+  selectedId,
   onSelect,
 }: {
   profiles: AgentProfile[];
   warnings: ProfileWarning[];
-  selectedName: string;
-  onSelect: (name: string) => void;
+  selectedId: string;
+  onSelect: (id: string) => void;
 }) {
-  const selected = profiles.find((profile) => profile.name === selectedName) ?? profiles[0];
+  const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0];
   return (
     <section className="console-grid directory-grid">
       <aside className="console-sidebar">
@@ -3859,13 +3859,13 @@ function AgentDirectory({
         <div className="resource-list">
           {profiles.length ? profiles.map((profile) => (
             <button
-              key={profile.name}
-              className={selected?.name === profile.name ? 'resource-row active' : 'resource-row'}
+              key={profile.id}
+              className={selected?.id === profile.id ? 'resource-row active' : 'resource-row'}
               type="button"
-              onClick={() => onSelect(profile.name)}
+              onClick={() => onSelect(profile.id)}
             >
               <strong>{profile.name}</strong>
-              <span>{profile.role}</span>
+              <span>{profile.source} · {profile.description || 'Markdown profile'}</span>
             </button>
           )) : <div className="empty-state compact">No profiles found.</div>}
         </div>
@@ -3884,30 +3884,23 @@ function AgentDirectory({
             <div className="detail-header">
               <div>
                 <h2>{selected.name}</h2>
-                <p>{selected.description || selected.role}</p>
+                <p>{selected.description || 'Markdown profile'}</p>
               </div>
-              <span className="risk-badge risk-low">{selected.output_format}</span>
             </div>
             <div className="metadata-grid">
-              <span>Role</span><strong>{selected.role}</strong>
-              <span>Layers</span><strong>{selected.layers.length}</strong>
-              <span>Memory file</span><strong>{selected.memory_file || 'none'}</strong>
+              <span>File</span><strong>{selected.name}.md</strong>
+              <span>Source</span><strong>{selected.source}</strong>
+              <span>Characters</span><strong>{selected.content.length}</strong>
             </div>
             <div className="profile-layer-list">
-              {selected.layers.map((layer) => (
-                <section key={layer} className="code-panel">
-                  <h3>{layer}</h3>
-                  <pre>{selected.layer_contents[layer] || '(empty)'}</pre>
-                </section>
-              ))}
               <section className="code-panel">
-                <h3>Memory</h3>
-                <pre>{selected.memory || '(empty)'}</pre>
+                <h3>Prompt</h3>
+                <pre>{selected.content || '(empty)'}</pre>
               </section>
             </div>
             <div className="readonly-note">Profiles are read-only in this MVP. Add or edit profile files on disk, then refresh.</div>
           </div>
-        ) : <div className="empty-state compact">Select a profile to inspect prompt layers.</div>}
+        ) : <div className="empty-state compact">Select a profile to inspect its prompt.</div>}
       </section>
     </section>
   );

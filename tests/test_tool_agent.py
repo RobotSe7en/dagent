@@ -424,7 +424,5 @@ def _capability_result(content: str):
 def _profile() -> AgentProfile:
     return AgentProfile(
         name="conversation",
-        role="conversation",
-        layers=["soul"],
-        layer_contents={"soul": "You are a conversation agent."},
+        content="You are a conversation agent.",
     )

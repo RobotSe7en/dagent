@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_minimax_dag_agent_generates_valid_dag() -> None:
-    runner = Runner(workspace=".")
+    runner = Runner.from_config(workspace=".")
     agent = DagAgent(review="careful")
 
     result = await runner.run(
@@ -29,7 +29,7 @@ async def test_minimax_dag_agent_generates_valid_dag() -> None:
 
 @pytest.mark.asyncio
 async def test_minimax_harness_executes_safe_dag() -> None:
-    runner = Runner(workspace=".")
+    runner = Runner.from_config(workspace=".")
     agent = DagAgent(review="fast")
 
     result = await runner.run(

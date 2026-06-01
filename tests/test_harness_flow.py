@@ -74,18 +74,14 @@ def runtime_for(
             ),
             profile=AgentProfile(
                 name="conversation",
-                role="conversation",
-                layers=["soul"],
-                layer_contents={"soul": "You are a conversation agent."},
+                content="You are a conversation agent.",
             ),
         ),
         dag_agent=DAGAgent(
             loop=dag_agent_loop,
             profile=AgentProfile(
                 name="dag_agent",
-                role="dag_agent",
-                layers=["soul"],
-                layer_contents={"soul": "You are a DAG creator."},
+                content="You are a DAG creator.",
             ),
         ),
     )
@@ -105,9 +101,7 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
         loop=dag_loop,
         profile=AgentProfile(
             name="dag_agent",
-            role="dag_agent",
-            layers=["soul"],
-            layer_contents={"soul": "You are a DAG creator."},
+            content="You are a DAG creator.",
         ),
     )
 

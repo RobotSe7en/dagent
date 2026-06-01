@@ -68,7 +68,8 @@ def search(q: str) -> str:
     return f"found:{q}"
 
 
-runner = dagent.Runner(
+runner = dagent.Runner.from_config(
+    "config.yaml",
     workspace=".",
     capabilities=[search],
     mcp_servers={
@@ -89,7 +90,7 @@ def summarize(text: str) -> str:
     return text.split(".")[0]
 
 
-runner = dagent.Runner(workspace=".")
+runner = dagent.Runner.from_config("config.yaml", workspace=".")
 runner.add_tool(summarize)
 runner.add_mcp_server(
     "fs",
@@ -125,7 +126,7 @@ def echo(text: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner(workspace=".", capabilities=[echo])
+    runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[echo])
     agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
 
     result = await runner.run(agent, "Use echo to respond with hello.")
@@ -149,7 +150,7 @@ def search(q: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner(workspace=".", capabilities=[search])
+    runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[search])
     agent = dagent.DagAgent(capabilities=["tool.search"], review="careful")
 
     result = await runner.run(agent, "Research dagent and write a short note.")
@@ -205,7 +206,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner(workspace=".")
+    runner = dagent.Runner.from_config("config.yaml", workspace=".")
     run = await runner.run(dag, input=ResearchInput(query="dagent"))
     print(run.status)
 
@@ -282,15 +283,15 @@ executes ready layers, updates artifact state, and returns a cumulative
 ## Project Layout
 
 ```text
+api/               local FastAPI backend for the WebUI
 dagent/
-  api/              FastAPI app - task, DAG, run, and trace endpoints
   capabilities/     capability catalog, providers, adapters, and built-in handlers
   harness_runtime/  runtime orchestration, agent loops, validation, session state,
                     event adapters, DAG execution
   providers/        OpenAI-compatible and mock chat providers
+  resources/        packaged default Markdown profiles
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   state/            prompt assembly
-profiles/           editable agent profiles (conversation, dag_agent, validator_agent, feedback_learner)
 web/                React + Vite frontend
 tests/              pytest suite
 ```

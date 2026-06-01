@@ -34,10 +34,11 @@ from dagent import (
     default_skill_roots,
     validate_dag_spec,
 )
-from dagent.config import load_config
+from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
+from dagent.profiles import list_builtin_profiles
 
 
 class MessageRequest(BaseModel):
@@ -94,7 +95,7 @@ class ApiState:
 
     def get_runner(self) -> Runner:
         if self.runner is None:
-            self.runner = Runner(
+            self.runner = Runner.from_config(
                 workspace=".",
                 skill_roots=self.get_skill_roots(),
             )
@@ -113,13 +114,15 @@ class ApiState:
         runner = self.get_runner()
         return runner.runtime
 
-    def get_profile_directory(self) -> str:
+    def get_profile_directory(self) -> str | None:
         if self.profile_directory is not None:
             return self.profile_directory
         try:
-            return load_config().profiles.directory
+            config_path = resolve_config_path()
+            directory = resolve_config_relative_path(load_config(config_path).profiles.directory, config_path)
+            return str(directory) if directory is not None else None
         except Exception:
-            return "profiles"
+            return None
 
     def get_skill_roots(self) -> list[Path]:
         return default_skill_roots()
@@ -550,20 +553,35 @@ async def delete_skill(name: str) -> dict[str, str]:
 
 @app.get("/profiles")
 async def list_profiles() -> dict[str, Any]:
-    directory = Path(state.get_profile_directory())
-    store = ProfileStore(directory)
-    profiles: list[dict[str, Any]] = []
+    profile_directory = state.get_profile_directory()
+    profiles: list[dict[str, Any]] = [
+        _profile_payload(profile, "builtin")
+        for profile in list_builtin_profiles()
+    ]
     warnings: list[dict[str, str]] = []
+    if profile_directory is None:
+        return {"profiles": profiles, "warnings": warnings}
+    directory = Path(profile_directory)
+    store = ProfileStore(directory)
     if not directory.exists():
-        return {"profiles": [], "warnings": [{"name": str(directory), "error": "Profiles directory not found."}]}
-    for profile_dir in sorted((path for path in directory.iterdir() if path.is_dir()), key=lambda path: path.name):
-        if not (profile_dir / "profile.yaml").exists():
-            continue
+        return {
+            "profiles": profiles,
+            "warnings": [{"name": str(directory), "error": "Profiles directory not found."}],
+        }
+    for profile_path in sorted(directory.glob("*.md"), key=lambda path: path.name):
         try:
-            profiles.append(store.load(profile_dir.name).model_dump(mode="json"))
+            profiles.append(_profile_payload(store.load(profile_path.name), "user"))
         except Exception as exc:
-            warnings.append({"name": profile_dir.name, "error": str(exc)})
+            warnings.append({"name": profile_path.stem, "error": str(exc)})
     return {"profiles": profiles, "warnings": warnings}
+
+
+def _profile_payload(profile, source: str) -> dict[str, Any]:
+    return {
+        **profile.model_dump(mode="json"),
+        "id": f"{source}:{profile.name}",
+        "source": source,
+    }
 
 
 @app.get("/sandbox/status")

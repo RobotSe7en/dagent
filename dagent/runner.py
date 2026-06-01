@@ -14,7 +14,7 @@ from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
 from dagent.dag_builder import Dag
-from dagent.config import load_config
+from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
     CapabilityExecutor,
     DAGAgent as RuntimeDAGAgent,
@@ -27,7 +27,7 @@ from dagent.harness_runtime import (
 )
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
-from dagent.profiles import AgentProfile, ProfileStore
+from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
 from dagent.result import RunResult
 from dagent.review import ReviewDecision, ReviewLevel
@@ -55,8 +55,10 @@ class Runner:
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
+        profile_root: str | Path | None = None,
     ) -> None:
         self.workspace = Path(workspace)
+        self.profile_root = Path(profile_root) if profile_root is not None else None
         self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._runtime = _create_runtime(
@@ -66,10 +68,46 @@ class Runner:
             validator=validator,
             skills_provider=self._skill_provider,
             mcp_servers=mcp_servers,
+            profile_root=self.profile_root,
         )
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def from_config(
+        cls,
+        path: str | Path | None = None,
+        *,
+        workspace: str | Path = ".",
+        capabilities: Iterable[CapabilityLike] = (),
+        validator: str | AgentProfile | ValidatorAgent | None = None,
+        skill_roots: list[str | Path] | None = None,
+        mcp_servers: dict[str, dict[str, Any]] | None = None,
+        profile_root: str | Path | None = None,
+    ) -> "Runner":
+        config_path = resolve_config_path(path)
+        config = load_config(config_path)
+        resolved_mcp_servers = dict(config.mcp_servers)
+        if mcp_servers is not None:
+            resolved_mcp_servers.update(mcp_servers)
+        resolved_validator = validator
+        if resolved_validator is None and config.enable_result_validation:
+            resolved_validator = "validator_agent"
+        resolved_profile_root = (
+            Path(profile_root)
+            if profile_root is not None
+            else resolve_config_relative_path(config.profiles.directory, config_path)
+        )
+        return cls(
+            workspace=workspace,
+            provider=OpenAICompatibleProvider(config.provider),
+            capabilities=capabilities,
+            validator=resolved_validator,
+            skill_roots=skill_roots,
+            mcp_servers=resolved_mcp_servers,
+            profile_root=resolved_profile_root,
+        )
 
     @property
     def runtime(self) -> HarnessRuntime:
@@ -325,12 +363,12 @@ class Runner:
         capability_ids = self._resolve_capability_refs(agent.capabilities)
         runtime = _runtime_from_existing(
             self._runtime,
-            workspace=self.workspace,
             tool_profile=agent.profile,
             tool_max_steps=agent.max_steps,
             dag_profile="dag_agent",
             dag_max_cycles=6,
             visible_capability_ids=capability_ids,
+            profile_root=self.profile_root,
         )
         return runtime
 
@@ -338,12 +376,12 @@ class Runner:
         capability_ids = self._resolve_capability_refs(agent.capabilities)
         runtime = _runtime_from_existing(
             self._runtime,
-            workspace=self.workspace,
             tool_profile="conversation",
             tool_max_steps=8,
             dag_profile=agent.planner_profile,
             dag_max_cycles=agent.max_cycles,
             visible_capability_ids=capability_ids,
+            profile_root=self.profile_root,
         )
         return runtime
 
@@ -392,7 +430,7 @@ class Runner:
                 self._refresh_registered_agent_runtime_config(name, agent)
                 continue
             capability_ids = self._resolve_capability_refs(agent.capabilities)
-            profile = _resolve_profile(agent.profile, workspace_path=self.workspace, default_name=name or "agent")
+            profile = _resolve_profile(agent.profile, profile_root=self.profile_root)
             new_agent_configs[name] = {
                 "provider": self._runtime.provider,
                 "profile": profile,
@@ -446,24 +484,13 @@ def _create_runtime(
     dag_max_cycles: int = 6,
     skills_provider: SkillsCapabilityProvider | None = None,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
+    profile_root: str | Path | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
-    try:
-        config = load_config()
-    except FileNotFoundError:
-        if provider is None:
-            raise
-        config = None
-    if provider is not None:
-        resolved_provider = provider
-    else:
-        assert config is not None
-        resolved_provider = OpenAICompatibleProvider(config.provider)
-    resolved_mcp_servers: dict[str, dict[str, Any]] = {}
-    if config is not None:
-        resolved_mcp_servers.update(config.mcp_servers)
-    if mcp_servers is not None:
-        resolved_mcp_servers.update(mcp_servers)
+    if provider is None:
+        raise ValueError("No provider configured. Pass provider=... or use Runner.from_config(...).")
+    resolved_provider = provider
+    resolved_mcp_servers = dict(mcp_servers or {})
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skills_provider=skills_provider,
@@ -481,7 +508,7 @@ def _create_runtime(
     )
     runtime_tool_agent = RuntimeToolAgent(
         loop=capability_loop,
-        profile=_resolve_profile(tool_profile, workspace_path=workspace_path, default_name="conversation"),
+        profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
     )
     dag_executor = DAGExecutor(capability_executor=capability_executor)
@@ -493,9 +520,9 @@ def _create_runtime(
     )
     runtime_dag_agent = RuntimeDAGAgent(
         loop=dag_loop,
-        profile=_resolve_profile(dag_profile, workspace_path=workspace_path, default_name="dag_agent"),
+        profile=_resolve_profile(dag_profile, profile_root=profile_root),
     )
-    resolved_validator = _resolve_validator(validator, resolved_provider, workspace_path=workspace_path)
+    resolved_validator = _resolve_validator(validator, resolved_provider, profile_root=profile_root)
     return HarnessRuntime(
         provider=resolved_provider,
         tool_agent=runtime_tool_agent,
@@ -510,14 +537,13 @@ def _create_runtime(
 def _runtime_from_existing(
     base: HarnessRuntime,
     *,
-    workspace: str | Path,
     tool_profile: str | AgentProfile,
     tool_max_steps: int,
     dag_profile: str | AgentProfile,
     dag_max_cycles: int,
     visible_capability_ids: tuple[str, ...],
+    profile_root: str | Path | None,
 ) -> HarnessRuntime:
-    workspace_path = Path(workspace)
     tool_adapter = _tool_adapter(base.capability_catalog, visible_capability_ids)
     capability_loop = ToolAgentLoop(
         provider=base.provider,
@@ -526,7 +552,7 @@ def _runtime_from_existing(
     )
     runtime_tool_agent = RuntimeToolAgent(
         loop=capability_loop,
-        profile=_resolve_profile(tool_profile, workspace_path=workspace_path, default_name="conversation"),
+        profile=_resolve_profile(tool_profile, profile_root=profile_root),
         max_steps=tool_max_steps,
     )
     dag_executor = DAGExecutor(capability_executor=base.capability_executor)
@@ -538,7 +564,7 @@ def _runtime_from_existing(
     )
     runtime_dag_agent = RuntimeDAGAgent(
         loop=dag_loop,
-        profile=_resolve_profile(dag_profile, workspace_path=workspace_path, default_name="dag_agent"),
+        profile=_resolve_profile(dag_profile, profile_root=profile_root),
     )
     runtime = HarnessRuntime(
         provider=base.provider,
@@ -602,43 +628,26 @@ def _capability_parts(capability: CapabilityLike) -> tuple[CapabilityDefinition,
     return capability.definition, capability.handler, capability.supports_context
 
 
-def _resolve_provider_profile_directory(workspace_path: Path) -> Path:
-    workspace_profiles = workspace_path / "profiles"
-    if workspace_profiles.exists():
-        return workspace_profiles
-    return Path("profiles")
-
-
 def _resolve_profile(
     profile: str | AgentProfile,
     *,
-    workspace_path: Path,
-    default_name: str,
+    profile_root: str | Path | None,
 ) -> AgentProfile:
     if isinstance(profile, AgentProfile):
         return profile
-    profile_path = Path(profile)
-    if (profile_path / "profile.yaml").exists():
-        return ProfileStore(profile_path.parent).load(profile_path.name)
-    directory = _resolve_provider_profile_directory(workspace_path)
-    try:
-        return ProfileStore(directory).load(profile)
-    except Exception:
-        if profile != default_name:
-            raise
-        return AgentProfile(
-            name=default_name,
-            role=default_name,
-            layers=["agent.md"],
-            layer_contents={"agent.md": f"You are the {default_name}."},
-        )
+    if profile_root is not None:
+        try:
+            return ProfileStore(profile_root).load(profile)
+        except FileNotFoundError:
+            pass
+    return load_builtin_profile(str(profile))
 
 
 def _resolve_validator(
     validator: str | AgentProfile | ValidatorAgent | None,
     provider: ChatProvider,
     *,
-    workspace_path: Path,
+    profile_root: str | Path | None,
 ) -> ValidatorAgent | None:
     if validator is None:
         return None
@@ -647,6 +656,6 @@ def _resolve_validator(
     profile = (
         validator
         if isinstance(validator, AgentProfile)
-        else _resolve_profile(validator, workspace_path=workspace_path, default_name="validator_agent")
+        else _resolve_profile(validator, profile_root=profile_root)
     )
     return ValidatorAgent(provider=provider, profile=profile)

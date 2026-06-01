@@ -15,13 +15,12 @@ class PromptRequest:
     task_content: str
     tools: list[CapabilityDefinition] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
-    memory: str = ""
     context: str = ""
     variables: dict[str, Any] = field(default_factory=dict)
 
 
 class PromptBuilder:
-    """Builds provider messages from stable profile layers and dynamic context."""
+    """Builds provider messages from a profile prompt and dynamic context."""
 
     def build(self, request: PromptRequest) -> list[dict[str, str]]:
         return [
@@ -31,13 +30,11 @@ class PromptBuilder:
 
     def build_system_message(self, request: PromptRequest) -> dict[str, str]:
         system_sections = []
-        system_sections.extend(request.profile.render_layers())
+        system_sections.append(request.profile.render())
         if request.tools:
             system_sections.append(_tools_section(request.tools))
         if request.skills:
             system_sections.append(_skills_section(request.skills))
-        if request.memory:
-            system_sections.append(_named_section("Memory", request.memory))
         if request.context:
             system_sections.append(_named_section("Context", request.context))
 

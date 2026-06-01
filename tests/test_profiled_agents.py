@@ -14,13 +14,7 @@ def run(coro):
 def profile(role: str) -> AgentProfile:
     return AgentProfile(
         name=role,
-        role=role,
-        layers=["soul.md", "agent.md"],
-        layer_contents={
-            "soul.md": f"{role} soul",
-            "agent.md": f"{role} agent",
-        },
-        memory="profile memory",
+        content=f"{role} soul\n\n{role} agent",
     )
 
 

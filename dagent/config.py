@@ -39,19 +39,28 @@ class DagentConfig(BaseModel):
 
 
 class ProfilesConfig(BaseModel):
-    directory: str = "profiles"
-    conversation: str = "conversation"
-    dag_agent: str = "dag_agent"
-    validator_agent: str = "validator_agent"
-    feedback_learner: str = "feedback_learner"
+    directory: str | None = None
 
 
-def load_config(path: str | Path | None = None) -> DagentConfig:
-    config_path = Path(
+def resolve_config_path(path: str | Path | None = None) -> Path:
+    return Path(
         path
         or os.environ.get("DAGENT_CONFIG")
         or Path.cwd() / "config.yaml"
-    )
+    ).expanduser()
+
+
+def resolve_config_relative_path(value: str | Path | None, config_path: str | Path | None = None) -> Path | None:
+    if value is None:
+        return None
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return resolve_config_path(config_path).parent / candidate
+
+
+def load_config(path: str | Path | None = None) -> DagentConfig:
+    config_path = resolve_config_path(path)
     _load_dotenv(config_path.parent / ".env")
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):

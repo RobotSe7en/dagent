@@ -54,4 +54,5 @@ class DagAgent:
 def _default_profile_name(profile: str | AgentProfile) -> str:
     if isinstance(profile, AgentProfile):
         return profile.name
-    return Path(profile).name
+    path = Path(profile)
+    return path.stem if path.suffix == ".md" else path.name

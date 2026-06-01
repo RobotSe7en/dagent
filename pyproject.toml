@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "dagent"
 version = "0.1.0"
@@ -5,19 +9,19 @@ description = "Human-reviewed Agent DAG framework"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.115",
     "openai>=1.0",
     "pydantic>=2.0",
-    "python-multipart>=0.0.20",
     "pyyaml>=6.0",
-    "uvicorn[standard]>=0.32",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "fastapi>=0.115",
     "httpx[socks]>=0.28.1",
     "pytest-asyncio>=0.23",
     "pytest>=8.0",
+    "python-multipart>=0.0.20",
+    "uvicorn[standard]>=0.32",
 ]
 mcp = [
     "mcp>=1,<2",
@@ -26,3 +30,9 @@ mcp = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["dagent*"]
+
+[tool.setuptools.package-data]
+dagent = ["resources/profiles/*.md"]
