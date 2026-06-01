@@ -452,9 +452,7 @@ def test_dag_agent_execute_rejects_entry_observation_without_replanning() -> Non
 def _dag_agent_profile() -> AgentProfile:
     return AgentProfile(
         name="dag_agent",
-        role="dag_agent",
-        layers=["soul"],
-        layer_contents={"soul": "You are a DAG creator."},
+        content="You are a DAG creator.",
     )
 
 

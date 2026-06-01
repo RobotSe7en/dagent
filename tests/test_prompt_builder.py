@@ -6,12 +6,7 @@ from dagent.capabilities.tools.registry import Tool
 def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     profile = AgentProfile(
         name="dag_agent",
-        role="dag_agent",
-        layers=["soul.md", "agent.md"],
-        layer_contents={
-            "soul.md": "DAGAgent soul",
-            "agent.md": "DAGAgent agent instructions",
-        },
+        content="DAGAgent soul\n\nDAGAgent agent instructions",
     )
     tool = Tool(
         name="read_file",
@@ -26,7 +21,6 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
             task_content="Task {{ task_id }}: {{ user_request }}",
             tools=[tool],
             skills=["code_review"],
-            memory="Remember narrow boundaries.",
             context="Project context.",
             variables={"task_id": "t1", "user_request": "hello"},
         )
@@ -37,7 +31,7 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert "DAGAgent agent instructions" in messages[0]["content"]
     assert "read_file: Read a file." in messages[0]["content"]
     assert "code_review" in messages[0]["content"]
-    assert "Remember narrow boundaries." in messages[0]["content"]
+    assert "Project context." in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
 
 

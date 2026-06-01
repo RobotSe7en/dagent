@@ -3865,7 +3865,7 @@ function AgentDirectory({
               onClick={() => onSelect(profile.name)}
             >
               <strong>{profile.name}</strong>
-              <span>{profile.role}</span>
+              <span>{profile.source} · {profile.description || 'Markdown profile'}</span>
             </button>
           )) : <div className="empty-state compact">No profiles found.</div>}
         </div>
@@ -3884,30 +3884,23 @@ function AgentDirectory({
             <div className="detail-header">
               <div>
                 <h2>{selected.name}</h2>
-                <p>{selected.description || selected.role}</p>
+                <p>{selected.description || 'Markdown profile'}</p>
               </div>
-              <span className="risk-badge risk-low">{selected.output_format}</span>
             </div>
             <div className="metadata-grid">
-              <span>Role</span><strong>{selected.role}</strong>
-              <span>Layers</span><strong>{selected.layers.length}</strong>
-              <span>Memory file</span><strong>{selected.memory_file || 'none'}</strong>
+              <span>File</span><strong>{selected.name}.md</strong>
+              <span>Source</span><strong>{selected.source}</strong>
+              <span>Characters</span><strong>{selected.content.length}</strong>
             </div>
             <div className="profile-layer-list">
-              {selected.layers.map((layer) => (
-                <section key={layer} className="code-panel">
-                  <h3>{layer}</h3>
-                  <pre>{selected.layer_contents[layer] || '(empty)'}</pre>
-                </section>
-              ))}
               <section className="code-panel">
-                <h3>Memory</h3>
-                <pre>{selected.memory || '(empty)'}</pre>
+                <h3>Prompt</h3>
+                <pre>{selected.content || '(empty)'}</pre>
               </section>
             </div>
             <div className="readonly-note">Profiles are read-only in this MVP. Add or edit profile files on disk, then refresh.</div>
           </div>
-        ) : <div className="empty-state compact">Select a profile to inspect prompt layers.</div>}
+        ) : <div className="empty-state compact">Select a profile to inspect its prompt.</div>}
       </section>
     </section>
   );

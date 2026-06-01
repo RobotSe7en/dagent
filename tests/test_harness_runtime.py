@@ -1055,27 +1055,21 @@ def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
 def _conversation_profile() -> AgentProfile:
     return AgentProfile(
         name="conversation",
-        role="conversation",
-        layers=["soul"],
-        layer_contents={"soul": "You are a conversation agent."},
+        content="You are a conversation agent.",
     )
 
 
 def _dag_agent_profile() -> AgentProfile:
     return AgentProfile(
         name="dag_agent",
-        role="dag_agent",
-        layers=["soul"],
-        layer_contents={"soul": "You are a DAG creator."},
+        content="You are a DAG creator.",
     )
 
 
 def _validator_profile() -> AgentProfile:
     return AgentProfile(
         name="validator_agent",
-        role="validator_agent",
-        layers=["soul"],
-        layer_contents={"soul": "You are a validator agent."},
+        content="You are a validator agent.",
     )
 
 

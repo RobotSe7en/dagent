@@ -167,7 +167,7 @@ def test_runner_executes_builder_with_collected_capabilities(tmp_path: Path) -> 
         outputs=[note],
     )
 
-    runner = dagent.Runner(workspace=tmp_path)
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
@@ -194,7 +194,7 @@ def test_runner_executes_value_expr_dataflow(tmp_path: Path) -> None:
         url=search_node.output["url"],
     ).after(search_node)
 
-    runner = dagent.Runner(workspace=tmp_path)
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
@@ -210,7 +210,7 @@ def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
     dag = dagent.Dag("research", input=QueryInput)
     dag.capability_node("search", search, q=dag.input.query)
 
-    runner = dagent.Runner(workspace=tmp_path)
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(
         dag,
         input=QueryInput(query="dagent"),
@@ -280,16 +280,8 @@ def test_agent_node_defaults_to_tool_agent_max_steps(tmp_path: Path) -> None:
 
 
 def _profile_root(tmp_path: Path, name: str) -> str:
-    profile_dir = tmp_path / "profiles" / name
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "profile.yaml").write_text(
-        "\n".join([
-            f"name: {name}",
-            "role: agent",
-            "layers:",
-            "  - agent.md",
-        ]),
-        encoding="utf-8",
-    )
-    (profile_dir / "agent.md").write_text(f"You are {name}.", encoding="utf-8")
-    return str(profile_dir)
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_path = profile_dir / f"{name}.md"
+    profile_path.write_text(f"# {name}\n\nYou are {name}.", encoding="utf-8")
+    return str(profile_path)

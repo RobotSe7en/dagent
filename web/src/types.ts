@@ -245,13 +245,9 @@ export interface ValidationFeedbackEvent {
 
 export interface AgentProfile {
   name: string;
-  role: string;
   description: string;
-  layers: string[];
-  layer_contents: Record<string, string>;
-  memory_file?: string | null;
-  memory: string;
-  output_format: string;
+  content: string;
+  source: 'builtin' | 'user';
 }
 
 export interface ProfileWarning {

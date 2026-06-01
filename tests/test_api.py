@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
-from dagent.api.app import app, state
+from api.app import app, state
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.runner import Runner
 from dagent.capabilities.providers import ToolCapabilityProvider
@@ -667,22 +667,10 @@ def test_api_capability_status_endpoints() -> None:
     assert sandbox.json()["runner"] in {"local-dev", "container"}
 
 
-def test_api_profiles_lists_loaded_profile_layers(tmp_path, monkeypatch) -> None:
+def test_api_profiles_lists_markdown_profiles(tmp_path, monkeypatch) -> None:
     profile_dir = tmp_path / "profiles"
-    assistant_dir = profile_dir / "assistant"
-    assistant_dir.mkdir(parents=True)
-    (assistant_dir / "profile.yaml").write_text(
-        "name: assistant\n"
-        "role: helper\n"
-        "description: Helpful profile.\n"
-        "layers:\n"
-        "  - soul.md\n"
-        "memory_file: memory.md\n"
-        "output_format: text\n",
-        encoding="utf-8",
-    )
-    (assistant_dir / "soul.md").write_text("You are helpful.", encoding="utf-8")
-    (assistant_dir / "memory.md").write_text("Remember scope.", encoding="utf-8")
+    profile_dir.mkdir()
+    (profile_dir / "assistant.md").write_text("# Assistant\n\nYou are helpful.", encoding="utf-8")
     monkeypatch.setattr(state, "profile_directory", str(profile_dir))
     client = TestClient(app)
 
@@ -691,31 +679,21 @@ def test_api_profiles_lists_loaded_profile_layers(tmp_path, monkeypatch) -> None
     assert response.status_code == 200
     payload = response.json()
     assert payload["warnings"] == []
-    assert payload["profiles"] == [
-        {
-            "name": "assistant",
-            "role": "helper",
-            "description": "Helpful profile.",
-            "layers": ["soul.md"],
-            "layer_contents": {"soul.md": "You are helpful."},
-            "memory_file": "memory.md",
-            "memory": "Remember scope.",
-            "output_format": "text",
-        }
-    ]
+    profiles = {(profile["source"], profile["name"]): profile for profile in payload["profiles"]}
+    assert ("builtin", "conversation") in profiles
+    assert profiles[("user", "assistant")] == {
+        "name": "assistant",
+        "description": "Assistant",
+        "content": "# Assistant\n\nYou are helpful.",
+        "source": "user",
+    }
 
 
-def test_api_profiles_skips_invalid_profile_with_warning(tmp_path, monkeypatch) -> None:
+def test_api_profiles_warns_when_markdown_profile_cannot_be_loaded(tmp_path, monkeypatch) -> None:
     profile_dir = tmp_path / "profiles"
-    good_dir = profile_dir / "good"
-    bad_dir = profile_dir / "bad"
-    good_dir.mkdir(parents=True)
-    bad_dir.mkdir()
-    (good_dir / "profile.yaml").write_text(
-        "name: good\nrole: helper\nlayers: []\n",
-        encoding="utf-8",
-    )
-    (bad_dir / "profile.yaml").write_text("[not valid for a profile", encoding="utf-8")
+    profile_dir.mkdir()
+    (profile_dir / "good.md").write_text("# Good\n\nUse helpful answers.", encoding="utf-8")
+    (profile_dir / "bad.md").mkdir()
     monkeypatch.setattr(state, "profile_directory", str(profile_dir))
     client = TestClient(app)
 
@@ -723,7 +701,8 @@ def test_api_profiles_skips_invalid_profile_with_warning(tmp_path, monkeypatch) 
 
     assert response.status_code == 200
     payload = response.json()
-    assert [profile["name"] for profile in payload["profiles"]] == ["good"]
+    user_profiles = [profile for profile in payload["profiles"] if profile["source"] == "user"]
+    assert [profile["name"] for profile in user_profiles] == ["good"]
     assert len(payload["warnings"]) == 1
     assert payload["warnings"][0]["name"] == "bad"
 

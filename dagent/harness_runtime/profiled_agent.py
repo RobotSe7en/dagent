@@ -31,7 +31,6 @@ class ProfiledAgent:
                 PromptRequest(
                     profile=self.profile,
                     task_content=task_content,
-                    memory=self.profile.memory,
                     variables=prompt_values,
                 )
             )

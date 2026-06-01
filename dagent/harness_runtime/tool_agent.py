@@ -78,7 +78,6 @@ class ToolAgent:
                 task_content="",
                 tools=tools,
                 skills=list(capability_scope.skill_instructions),
-                memory=self.profile.memory,
             )
         )
 

@@ -368,7 +368,6 @@ class AgentCapabilityProvider:
                 profile=profile,
                 task_content="",
                 tools=loop.available_capabilities(),
-                memory=profile.memory,
                 context=_agent_runtime_context(context),
             )
         )
@@ -396,10 +395,8 @@ def _profile_from_config(agent_name: str, config: dict[str, Any]) -> AgentProfil
     system_prompt = str(config.get("system", ""))
     return AgentProfile(
         name=agent_name,
-        role="agent",
-        layers=["agent.md"],
-        layer_contents={"agent.md": system_prompt},
-        memory=str(config.get("memory", "")),
+        description="Agent capability",
+        content=system_prompt,
     )
 
 

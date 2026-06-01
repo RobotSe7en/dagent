@@ -23,10 +23,54 @@ Capability ids use the capability kind as their prefix. Python function tools us
 `tool.*` ids. The old `custom_tool.*` kind has been removed instead of kept as a
 compatibility alias.
 
+## Profiles
+
+Profiles are single Markdown files. A profile named `conversation` lives at
+built-in package resource `dagent/resources/profiles/conversation.md`; the file
+content is used as the system prompt. User profiles live in an explicit
+`profile_root`.
+
+```python
+from dagent import AgentProfile, ProfileStore
+
+
+profile = ProfileStore("profiles").load("conversation")
+custom = AgentProfile(
+    name="reviewer",
+    description="Review assistant",
+    content="# Reviewer\n\nReview code carefully.",
+)
+```
+
+Use built-in profiles by name:
+
+```python
+agent = dagent.ToolAgent(profile="conversation")
+```
+
+Use project profiles by passing a root to the runner:
+
+```python
+runner = dagent.Runner(provider=provider, profile_root="profiles")
+agent = dagent.ToolAgent(profile="reviewer")
+```
+
 ## Runner And Capabilities
 
-`Runner` owns the capability catalog. Tools, MCP servers, and skill roots can be
-registered at construction.
+`Runner` owns the capability catalog. Pass a provider explicitly, or create the
+runner through `Runner.from_config(...)`. Config files are an explicit entrypoint:
+`Runner(...)` does not read `config.yaml`.
+
+```python
+runner = dagent.Runner(provider=provider)
+configured = dagent.Runner.from_config("config.yaml")
+```
+
+`config.yaml` can define provider settings, MCP servers, result validation, and
+an optional user profile directory. If `profiles.directory` is omitted, built-in
+package profiles are used.
+
+Tools, MCP servers, and skill roots can be registered at construction.
 
 ```python
 import dagent
@@ -39,6 +83,7 @@ def search(q: str) -> str:
 
 runner = dagent.Runner(
     workspace=".",
+    provider=provider,
     capabilities=[search],
     mcp_servers={
         "fs": {
@@ -53,7 +98,7 @@ runner = dagent.Runner(
 Capabilities can also be added later:
 
 ```python
-runner = dagent.Runner(workspace=".")
+runner = dagent.Runner(provider=provider, workspace=".")
 runner.add_tool(search)
 runner.add_skill_root("team-skills")
 
@@ -116,7 +161,7 @@ def echo(text: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner(workspace=".", capabilities=[echo])
+    runner = dagent.Runner(provider=provider, workspace=".", capabilities=[echo])
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.echo"],
@@ -149,7 +194,7 @@ def search(q: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner(workspace=".", capabilities=[search])
+    runner = dagent.Runner(provider=provider, workspace=".", capabilities=[search])
     agent = dagent.DagAgent(
         capabilities=["tool.search"],
         review="careful",
@@ -204,7 +249,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner(workspace=".")
+    runner = dagent.Runner(provider=provider, workspace=".")
     run = await runner.run(dag, input="dagent sdk")
     print(run.status)
 
@@ -303,7 +348,7 @@ unknown artifact, or uses a malformed value expression.
 `Runner` exposes the skill store used by skill capabilities.
 
 ```python
-runner = dagent.Runner(workspace=".")
+runner = dagent.Runner(provider=provider, workspace=".")
 runner.add_skill_root("team-skills")
 
 installed = runner.skill_store.install(
@@ -320,4 +365,3 @@ print(runner.skill_store.view("writing/terse", file_path="scripts/example.py").c
 
 `SkillStore.install(...)` writes Markdown or zip skill packages into the managed
 root. `view(name, file_path=...)` reads linked files with path traversal checks.
-

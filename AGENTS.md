@@ -80,6 +80,15 @@ tests. Update or delete obsolete tests when the intended behavior has changed.
   architecture, project layout, and links.
 - Keep detailed Python SDK usage in `docs/python-sdk.md`.
 - Runnable example code belongs in `examples/`.
+- Keep the local FastAPI/WebUI backend in top-level `api/`. Do not put it
+  inside the installable `dagent` SDK package unless it becomes a deliberate
+  public server package.
+- Keep built-in agent profiles as one Markdown file per profile under
+  `dagent/resources/profiles/<name>.md`. User profile directories must be passed
+  explicitly through `profile_root`; do not reintroduce cwd `profiles/` fallback,
+  YAML profile manifests, layered prompt files, or profile memory files.
+- `Runner(...)` must use explicit SDK inputs. Do not make it read `config.yaml`
+  implicitly; configuration-file loading belongs in `Runner.from_config(...)`.
 - README quick start should show capability registration, ToolAgent, DagAgent,
   and static Dag usage. Do not put provider connectivity checks there.
 - Keep docs synchronized with the actual public exports from `dagent/__init__.py`.

@@ -312,9 +312,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
                 "provider": provider,
                 "profile": AgentProfile(
                     name="helper",
-                    role="agent",
-                    layers=["agent.md"],
-                    layer_contents={"agent.md": "You are a DAG node agent."},
+                    content="You are a DAG node agent.",
                 ),
                 "capability_executor": capability_executor,
                 "tool_adapter": tool_adapter,
@@ -397,9 +395,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
                 "provider": provider,
                 "profile": AgentProfile(
                     name="helper",
-                    role="agent",
-                    layers=["agent.md"],
-                    layer_contents={"agent.md": "You are a DAG node agent."},
+                    content="You are a DAG node agent.",
                 ),
                 "capability_executor": capability_executor,
                 "tool_adapter": tool_adapter,

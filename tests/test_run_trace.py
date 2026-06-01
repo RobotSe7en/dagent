@@ -132,9 +132,7 @@ def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
                 "provider": provider,
                 "profile": AgentProfile(
                     name="helper",
-                    role="agent",
-                    layers=["agent.md"],
-                    layer_contents={"agent.md": "You are a helper."},
+                    content="You are a helper.",
                 ),
                 "capability_executor": capability_executor,
                 "tool_adapter": CapabilityToolAdapter(

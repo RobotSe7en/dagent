@@ -271,10 +271,7 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     )
     profile = AgentProfile(
         name="helper",
-        role="agent",
-        layers=["agent.md"],
-        layer_contents={"agent.md": "You are a helper agent."},
-        memory="Remember project conventions.",
+        content="You are a helper agent.",
     )
     AgentCapabilityProvider(
         agents={
@@ -349,7 +346,6 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     first_system = provider.requests[0]["messages"][0]["content"]
     first_user = provider.requests[0]["messages"][1]["content"]
     assert "You are a helper agent." in first_system
-    assert "Remember project conventions." in first_system
     assert str(tmp_path) in first_system
     assert "source_doc" in first_system
     assert "requirements_doc" in first_system

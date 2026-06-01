@@ -39,11 +39,7 @@ class DagentConfig(BaseModel):
 
 
 class ProfilesConfig(BaseModel):
-    directory: str = "profiles"
-    conversation: str = "conversation"
-    dag_agent: str = "dag_agent"
-    validator_agent: str = "validator_agent"
-    feedback_learner: str = "feedback_learner"
+    directory: str | None = None
 
 
 def load_config(path: str | Path | None = None) -> DagentConfig:

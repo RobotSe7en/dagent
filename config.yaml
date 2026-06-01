@@ -5,9 +5,3 @@ provider:
   timeout_seconds: 60
   strip_thinking: false
 enable_result_validation: false
-profiles:
-  directory: "profiles"
-  conversation: "conversation"
-  dag_agent: "dag_agent"
-  validator_agent: "validator_agent"
-  feedback_learner: "feedback_learner"
