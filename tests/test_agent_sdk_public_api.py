@@ -25,6 +25,7 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "ProfileStore")
     assert hasattr(dagent, "ReviewLevel")
     assert hasattr(dagent, "RuntimeMode")
+    assert hasattr(dagent, "RunStreamEvent")
     assert hasattr(dagent, "SkillStore")
     assert hasattr(dagent, "validate_dag_spec")
     assert not hasattr(dagent, "DAgent")
@@ -99,6 +100,24 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "Conversation Agent" in system_message
+
+
+def test_runner_stream_yields_token_events_and_unified_done_result(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(dagent.ToolAgent(profile="conversation"), "hi")
+        ]
+
+    events = run(collect())
+
+    assert any(event.type == "token" and event.content == "<think>" for event in events)
+    assert events[-1].type == "done"
+    assert isinstance(events[-1].result, dagent.RunResult)
+    assert events[-1].result.output_text == "hello"
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:

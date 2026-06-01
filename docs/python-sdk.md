@@ -15,7 +15,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`, `DagAgent`,
 | Static DAGs | `Dag`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `RunResult`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Reviews and results | `RunResult`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload` |
 | Providers | `OpenAICompatibleProvider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, and `ToolCall` for custom providers and tests |
 
@@ -252,8 +252,9 @@ async def main():
     dagent.validate_dag_spec(dag.to_dag_spec())
 
     runner = dagent.Runner(provider=provider, workspace=".")
-    run = await runner.run(dag, input="dagent sdk")
-    print(run.status)
+    result = await runner.run(dag, input="dagent sdk")
+    print(result.status)
+    print(result.node_output("write_report"))
 
 
 asyncio.run(main())
@@ -344,6 +345,50 @@ dag.capability_node(
 
 Validation fails closed when a node reads from a non-upstream node, references an
 unknown artifact, or uses a malformed value expression.
+
+## Results And Streaming
+
+`Runner.run(...)` returns `RunResult` for every public target: `ToolAgent`,
+`DagAgent`, `Dag`, and `DAGSpec`.
+
+```python
+result = await runner.run(agent_or_dag, input)
+
+print(result.kind)         # "tool", "dynamic_dag", or "static_dag"
+print(result.status)
+print(result.output_text)
+print(result.trace)
+```
+
+For static DAGs, `RunResult` exposes the underlying `DAGRun` as `dag_run` and
+keeps DAG-oriented helpers on the same result object:
+
+```python
+result = await runner.run(dag, input="dagent", workspace_root="runs")
+
+print(result.workspace_path)
+print(result.node_output("write_report"))
+print(result.node_value("search"))
+print(result.artifact_state("report").status)
+```
+
+`DAGRun` remains a schema for API/storage boundaries and is available through
+`result.dag_run` or `result.raw`; it is not the primary return value from the
+public runner.
+
+Use `Runner.stream(...)` for an async stream of `RunStreamEvent` objects. The
+stream yields token/runtime events and finishes with a `done` event whose
+`result` is the same unified `RunResult`.
+
+```python
+async for event in runner.stream(agent_or_dag, input):
+    if event.type == "token":
+        print(event.content, end="")
+    elif event.type == "trace":
+        print(event.data["trace"])
+    elif event.type == "done":
+        print(event.result.output_text)
+```
 
 ## Skills
 

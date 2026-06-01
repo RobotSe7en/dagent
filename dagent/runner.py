@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, overload
@@ -29,12 +31,11 @@ from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
-from dagent.result import RunResult
+from dagent.result import RunResult, RunStreamEvent
 from dagent.review import ReviewDecision, ReviewLevel
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityNodePayload,
-    DAGRun,
     DAGSpec,
     RuntimeResponse,
 )
@@ -266,7 +267,7 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> DAGRun: ...
+    ) -> RunResult: ...
 
     async def run(
         self,
@@ -278,7 +279,7 @@ class Runner:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> RunResult | DAGRun:
+    ) -> RunResult:
         if isinstance(target, ToolAgent):
             if input is None:
                 raise TypeError("input is required for ToolAgent targets.")
@@ -290,7 +291,7 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
-            return self._run_result(runtime, response)
+            return self._run_result(runtime, response, kind="tool")
 
         if isinstance(target, DagAgent):
             if input is None:
@@ -303,14 +304,14 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
-            return self._run_result(runtime, response)
+            return self._run_result(runtime, response, kind="dynamic_dag")
 
         if isinstance(target, Dag):
             if review is not None:
                 raise TypeError("review is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
-            return await self._runtime.run_dag_spec(
+            dag_run = await self._runtime.run_dag_spec(
                 spec,
                 input=input,
                 workspace_root=workspace_root,
@@ -318,11 +319,12 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
+            return RunResult(dag_run, kind="static_dag")
 
         if isinstance(target, DAGSpec):
             if review is not None:
                 raise TypeError("review is not accepted for DAGSpec targets.")
-            return await self._runtime.run_dag_spec(
+            dag_run = await self._runtime.run_dag_spec(
                 self._resolve_spec_capability_metadata(target),
                 input=input,
                 workspace_root=workspace_root,
@@ -330,8 +332,66 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
+            return RunResult(dag_run, kind="static_dag")
 
         raise TypeError("Runner.run expects a ToolAgent, DagAgent, Dag, or DAGSpec target.")
+
+    async def stream(
+        self,
+        target: ToolAgent | DagAgent | Dag | DAGSpec,
+        input: Any = None,
+        *,
+        review: ReviewLevel | None = None,
+        workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+    ) -> AsyncIterator[RunStreamEvent]:
+        """Run a target and yield token/runtime events followed by a done event."""
+
+        queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
+
+        def emit_token(token: str) -> None:
+            queue.put_nowait(RunStreamEvent(type="token", data={"content": token}))
+
+        def emit_event(event: dict[str, Any]) -> None:
+            queue.put_nowait(_stream_event_from_runtime(event))
+
+        async def run_target() -> RunResult:
+            return await self.run(
+                target,
+                input,
+                review=review,
+                workspace_root=workspace_root,
+                artifact_uploads=artifact_uploads,
+                on_token=emit_token,
+                on_event=emit_event,
+            )
+
+        task = asyncio.create_task(run_target())
+        try:
+            while True:
+                if task.done() and queue.empty():
+                    break
+                try:
+                    yield await asyncio.wait_for(queue.get(), timeout=0.05)
+                except TimeoutError:
+                    continue
+
+            result = await task
+            yield RunStreamEvent(
+                type="done",
+                data={"status": result.status, "kind": result.kind},
+                result=result,
+            )
+        except Exception as exc:
+            yield RunStreamEvent(
+                type="error",
+                data={"error": str(exc), "error_type": type(exc).__name__},
+                error=exc,
+            )
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def resume(
         self,
@@ -354,10 +414,16 @@ class Runner:
         self._pending_runtimes.pop(decision.review_id, None)
         return self._run_result(runtime, response)
 
-    def _run_result(self, runtime: HarnessRuntime, response: RuntimeResponse) -> RunResult:
+    def _run_result(
+        self,
+        runtime: HarnessRuntime,
+        response: RuntimeResponse,
+        *,
+        kind: str | None = None,
+    ) -> RunResult:
         if response.pending_review is not None:
             self._pending_runtimes[response.pending_review.review_id] = runtime
-        return RunResult(response)
+        return RunResult(response, kind=kind)
 
     def _runtime_for_tool_agent(self, agent: ToolAgent) -> HarnessRuntime:
         capability_ids = self._resolve_capability_refs(agent.capabilities)
@@ -586,6 +652,13 @@ def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAda
         catalog,
         toolsets=[CapabilityToolset("builtin", tuple(capability_ids))],
     )
+
+
+def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
+    event_type = str(event.get("type") or "event")
+    if event_type not in {"dag", "event", "review", "status", "token", "trace"}:
+        event_type = "event"
+    return RunStreamEvent(type=event_type, data=dict(event))
 
 
 def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) -> CapabilityDefinition:

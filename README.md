@@ -207,16 +207,19 @@ async def main():
     dagent.validate_dag_spec(dag.to_dag_spec())
 
     runner = dagent.Runner.from_config("config.yaml", workspace=".")
-    run = await runner.run(dag, input=ResearchInput(query="dagent"))
-    print(run.status)
+    result = await runner.run(dag, input=ResearchInput(query="dagent"))
+    print(result.status)
+    print(result.node_output("render"))
 
 
 asyncio.run(main())
 ```
 
-Customize static DAGs with Pydantic graph inputs, typed tool return values,
-explicit `.after(...)` dependencies, artifact references, and per-node
-boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full SDK.
+`Runner.run(...)` always returns `RunResult`, including static `Dag` and
+`DAGSpec` runs. Customize static DAGs with Pydantic graph inputs, typed tool
+return values, explicit `.after(...)` dependencies, artifact references, and
+per-node boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full
+SDK.
 
 Run examples:
 
@@ -224,6 +227,7 @@ Run examples:
 uv run python -m examples.tool_agent
 uv run python -m examples.dynamic_dag_agent
 uv run python -m examples.static_dag
+uv run python -m examples.streaming
 uv run python -m examples.runtime_registration_and_skills
 ```
 
@@ -260,7 +264,7 @@ flowchart TD
   CE --> RT["RunTrace + Artifacts"]
   RT --> OBS["DAG Observation"]
   OBS --> DAL
-  HR --> RR["RuntimeResponse / DAGRun"]
+  HR --> RR["RunResult"]
 ```
 
 `Runner` is the public SDK entrypoint and owns the configured runtime, session,

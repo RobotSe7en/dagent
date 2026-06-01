@@ -17,7 +17,7 @@ from dagent.dag_builder import ArtifactRef, ArtifactValueRef, Dag, FormatRef, In
 from dagent.harness_runtime import ArtifactUpload, CapabilityScope, RuntimeMode, validate_dag_spec
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import OpenAICompatibleProvider
-from dagent.result import RunResult
+from dagent.result import RunResult, RunStreamEvent
 from dagent.review import ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
 from dagent.schemas import (
@@ -67,6 +67,7 @@ __all__ = [
     "ReviewHandle",
     "RiskLevel",
     "RunResult",
+    "RunStreamEvent",
     "RunTrace",
     "RuntimeMode",
     "RuntimeResponse",
