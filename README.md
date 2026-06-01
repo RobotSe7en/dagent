@@ -24,218 +24,258 @@ remain structured execution records.
 
 ## Core Ideas
 
-**1. Self-planning DAG, not a static pipeline.**
-The DAG agent generates an initial capability-node plan from the goal. After each
-executable layer, the planner receives a DAG observation and can return `NO_CHANGE`,
-a revised DAG, or the final answer.
+**1. Reviewable plans, not opaque loops.**
+Tasks that need orchestration become capability-node DAGs before execution. The
+plan is typed, inspectable, and can pause for human review before risky work runs.
 
-**2. Typed DAG nodes, direct capability payloads.**
-Every DAG node has a typed `payload`. Capability payloads wrap a
-`CapabilityInvocation` executed by `CapabilityExecutor`; start nodes are explicit
-payloads and do not carry fake invocations. The dynamic DAG planner currently emits
-direct, non-agent capability calls from enabled toolsets; `DAGSpec` runtime can execute
-agent capabilities, but the planner does not generate agent nodes yet.
+**2. Typed nodes with direct capability calls.**
+Every DAG node has a typed `payload`. Capability nodes wrap a
+`CapabilityInvocation`; start nodes are explicit and do not carry fake tool
+calls. The runtime executes capabilities through a shared `CapabilityExecutor`.
 
-**3. Three-level re-planning.**
-The current implementation covers three levels in one execution path: structured
-value resolution before a capability call, `NO_CHANGE`/parameter-level
-continuation after an observation, and DAG revision when the pending graph must
-change.
+**3. Structured parameter passing between nodes.**
+Static DAG arguments can reference graph input, upstream node results, and
+artifact paths. These references are structured `$expr` bindings in `DAGSpec`,
+resolved immediately before a capability call. A node that reads another node's
+output must explicitly depend on it.
 
-**4. Runner-owned runtime state.**
-Public `ToolAgent` and `DagAgent` instances are pure configuration. A `Runner`
-creates the runtime agent needed for each run, keeps the capability catalog, and
-preserves pending review state until `resume(...)` completes it.
+**4. Re-planning stays local.**
+After each executable DAG layer, the planner receives a DAG observation and can
+return `NO_CHANGE`, a revised PlanSpec, or a final answer. Completed node results
+stay as structured execution records instead of being rediscovered from chat
+history.
 
-**5. Structured task state, not transcript state.**
-DAG tasks store the current DAG, node results, execution records, runs, and pending
-review state. They do not store planner messages. Tool tasks similarly derive audit
-records from tool messages without owning the agent transcript.
+**5. Runner owns runtime state.**
+Public `ToolAgent`, `DagAgent`, and `Dag` objects are declarative configuration.
+`Runner` owns the provider, capability catalog, session state, review
+continuations, and execution dispatch.
 
-**6. Human review as a first-class checkpoint.**
-Medium/high-risk DAGs require explicit approval before execution. Re-planned DAGs can
-trigger a second review. The human is never bypassed.
+**6. Safety is part of execution, not prompting.**
+The DAG planner proposes work, but capability handlers enforce boundaries before
+side effects. Medium/high-risk work can require review; disabled or unknown
+capabilities fail closed; file boundaries reject path escape.
+
+## Quick Start
+
+Register tools, MCP servers, and skill roots on the runner:
+
+```python
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+runner = dagent.Runner(
+    workspace=".",
+    capabilities=[search],
+    mcp_servers={
+        "fs": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        },
+    },
+    skill_roots=["team-skills"],
+)
+```
+
+The same capability types can be added after runner construction:
+
+```python
+@dagent.tool
+def summarize(text: str) -> str:
+    return text.split(".")[0]
+
+
+runner = dagent.Runner(workspace=".")
+runner.add_tool(summarize)
+runner.add_mcp_server(
+    "fs",
+    {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    },
+)
+runner.add_skill_root("more-skills")
+runner.skill_store.install(
+    "Keep every answer compact.",
+    name="terse",
+    description="Compact response style.",
+    category="writing",
+)
+```
+
+Python tools are exposed as `tool.<name>` capabilities. MCP stdio server tools
+are exposed as `mcp.<server>.<tool>` and require the MCP optional extra. Skill
+roots are available through the built-in skill capabilities.
+
+Run a `ToolAgent` for bounded tool-loop work:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def echo(text: str) -> str:
+    return f"echo:{text}"
+
+
+async def main():
+    runner = dagent.Runner(workspace=".", capabilities=[echo])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
+
+    result = await runner.run(agent, "Use echo to respond with hello.")
+    print(result.output_text)
+
+
+asyncio.run(main())
+```
+
+Run a `DagAgent` when the model should plan a reviewable DAG:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+async def main():
+    runner = dagent.Runner(workspace=".", capabilities=[search])
+    agent = dagent.DagAgent(capabilities=["tool.search"], review="careful")
+
+    result = await runner.run(agent, "Research dagent and write a short note.")
+    if result.requires_review and result.review is not None:
+        result = await runner.resume(result.review.approve())
+
+    print(result.output_text)
+
+
+asyncio.run(main())
+```
+
+Build a static `Dag` when the graph shape belongs in code:
+
+```python
+import asyncio
+
+from pydantic import BaseModel
+
+import dagent
+
+
+class ResearchInput(BaseModel):
+    query: str
+    audience: str = "engineers"
+
+
+class SearchResult(BaseModel):
+    title: str
+    url: str
+
+
+@dagent.tool
+def search(q: str) -> SearchResult:
+    return SearchResult(title=f"found:{q}", url="https://example.test")
+
+
+@dagent.tool
+def render(title: str, url: str, audience: str) -> str:
+    return f"{title} for {audience}: {url}"
+
+
+async def main():
+    dag = dagent.Dag("research", input=ResearchInput)
+    found = dag.capability_node("search", search, q=dag.input.query)
+    dag.capability_node(
+        "render",
+        render,
+        title=found.output.title,
+        url=found.output.url,
+        audience=dag.input.audience,
+    ).after(found)
+
+    dagent.validate_dag_spec(dag.to_dag_spec())
+
+    runner = dagent.Runner(workspace=".")
+    run = await runner.run(dag, input=ResearchInput(query="dagent"))
+    print(run.status)
+
+
+asyncio.run(main())
+```
+
+Customize static DAGs with Pydantic graph inputs, typed tool return values,
+explicit `.after(...)` dependencies, artifact references, and per-node
+boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full SDK.
+
+Run examples:
+
+```bash
+uv run python -m examples.tool_agent
+uv run python -m examples.dynamic_dag_agent
+uv run python -m examples.static_dag
+uv run python -m examples.runtime_registration_and_skills
+```
+
+Run the test suite:
+
+```bash
+uv run --extra dev pytest
+```
+
+Detailed SDK docs live in the [Python SDK guide](docs/python-sdk.md).
 
 ---
 
 ## Architecture
 
-### Harness Runtime
-
 ```mermaid
 flowchart TD
-  U["User"] --> R["HarnessRuntime"]
-  R -->|"auto mode"| ROUTE["Route\ndag or tool"]
-  R -->|"tool mode"| TA["ToolAgent"]
-  R -->|"dag mode"| DA["DAGAgent"]
-  R -->|"dag_spec mode"| DA
+  U["User / SDK"] --> RUN["Runner"]
+  RUN --> HR["HarnessRuntime"]
+  HR -->|"tool mode"| TA["ToolAgent"]
+  HR -->|"dag mode"| DA["DAGAgent"]
+  HR -->|"dag_spec mode"| DS["DAGSpec"]
 
-  ROUTE -->|"tool"| TA
-  ROUTE -->|"dag"| DA
-
-  TA --> TM[("ToolAgent.messages\nsystem + user + assistant/tool")]
   TA --> TAL["ToolAgentLoop"]
-  TAL -->|"capability invocations"| T["CapabilityExecutor"]
-  TAL -->|"tool review needed"| TRV["Human Tool Review"]
-  TRV -->|"approve"| TEX["Execute reviewed tool"]
-  TRV -->|"reject"| TDENY["Append denied tool result"]
-  TEX --> TM
-  TDENY --> TM
-  TAL -->|"LoopOutcome"| R
+  TAL -->|"capability call"| CE["CapabilityExecutor"]
 
-  DA --> DM[("DAGAgent.messages\nsystem + user + DAG DSL + observations")]
   DA --> DAL["DAGAgentLoop"]
-  DAL -->|"run_dynamic"| D["Plan DAG\nPlanSpec DSL -> DAG"]
-  DAL -->|"run_static"| SD["Compile DAGSpec -> DAG"]
-
-  D -->|"review required"| UI["Human Review"]
-  D -->|"approved / auto safe"| E["DAGExecutor"]
-  SD --> E
-  UI -->|"approve / edit"| E
-  UI -->|"reject"| DENY["Append DAG observation:\nreview_denied"]
-  DENY --> DAL
-
-  E --> N["Execute Ready Layer"]
-  N --> T
-  N --> ER[("RuntimeTaskRecord\nDAG + RunTrace")]
-  N --> TR[("Trace DB\nplanned persistent run memory")]
-  N --> OBS["DAG observation"]
-  OBS --> DM
-  DM --> DAL
-  DAL -->|"Level 1\nvalue resolution"| E
-  DAL -->|"Level 2\nNO_CHANGE / param adjustment"| E
-  DAL -->|"Level 3\nrevised DAG"| UI2["Human Review\nif policy requires"]
-  UI2 -->|"approve / edit"| E
-  UI2 -->|"reject"| DENY
-  DAL -->|"final answer"| DR["LoopOutcome"]
-  DR --> R
-
-  R -->|"awaiting_review"| UIWAIT["Return pending_review"]
-  R -->|"done"| V["Result Validation\noptional LLM validator"]
-  V -->|"issues found"| RTRY["Retry with validation feedback"]
-  RTRY --> TA
-  RTRY --> DA
-  V -->|"passed / disabled"| O["Return final_answer\nto user"]
+  DAL -->|"PlanSpec DSL"| DAG["DAG"]
+  DS -->|"compile"| DAG
+  DAG --> RG["Review Gate"]
+  RG --> DE["DAGExecutor"]
+  DE -->|"ready layer"| CE
+  CE --> CAT["Capability Catalog"]
+  CE --> RT["RunTrace + Artifacts"]
+  RT --> OBS["DAG Observation"]
+  OBS --> DAL
+  HR --> RR["RuntimeResponse / DAGRun"]
 ```
 
-`Runner` is the public SDK entrypoint and owns the configured runtime, session, and
-capability catalog. `HarnessRuntime` is the lower-level control layer. It owns routing,
-session task state, review continuation lookup, optional result validation, retry
-feedback, and final result delivery. It does not own the model transcript.
+`Runner` is the public SDK entrypoint and owns the configured runtime, session,
+and capability catalog. `HarnessRuntime` is the lower-level control layer for
+routing, review continuations, optional result validation, and final response
+delivery.
 
-The internal runtime `ToolAgent` owns the tool-agent system prompt and tool-call message thread,
-then delegates bounded execution to `ToolAgentLoop`. Tool review approval replaces the
-pending tool marker with the real tool result; rejection replaces it with a denied tool
-result and lets the loop continue.
+`ToolAgent` delegates bounded tool-loop work to `ToolAgentLoop`. `DAGAgent`
+delegates dynamic planning and fixed `DAGSpec` execution to `DAGAgentLoop`.
+Both paths share `CapabilityExecutor`, so Python tools, MCP tools, skills,
+shell commands, file tools, memory, and agent capabilities go through the same
+catalog and boundary enforcement.
 
-The internal runtime `DAGAgent` owns the DAG planner system prompt and DAG message thread, then
-delegates DAG work to `DAGAgentLoop`. Dynamic DAG requests enter through `run_dynamic(...)`;
-fixed `DAGSpec` requests enter through `run_static(...)`. Both share `execute(record, ...)`,
-which drives `DAGExecutor` layer execution. `RuntimeTaskRecord` stores structured resume
-state only: DAG, the latest `RunTrace`, and pending review. It does not store
-`dag_messages`.
-
-Once review and validation pass, the runtime returns the loop's `final_answer` directly
-without a separate summarization step.
-
-### Three-Level Re-planning
-
-After each ready layer executes, `DAGAgentLoop` formats a DAG observation and appends it
-to `DAGAgent.messages`. The observation includes each recent node's id, capability
-function, arguments, status, and result/error content so the planner does not need to
-recover execution facts from transcript history. Re-planning is implemented as three
-levels:
-
-| Level | Current implementation | Meaning |
-|-------|------------------------|---------|
-| **1 - Value resolution** | `DAGExecutor` resolves structured `$expr` references from graph input, completed node results, and artifacts before each capability call. | Runtime values flow into downstream capability arguments without an LLM call. |
-| **2 - Local continuation / parameter reasoning** | The DAG LLM receives the latest observation and can return `NO_CHANGE` or a revised PlanSpec with changed arguments. | Keep the current DAG structure, or adjust pending node parameters based on observed results. |
-| **3 - DAG revision** | The DAG LLM returns a revised PlanSpec DSL; `_apply_replan()` invalidates changed/deleted nodes and downstream results, then review policy decides whether to pause. | Change pending graph structure when the original plan no longer fits. |
-
-In concrete response terms, the DAG LLM can return:
-
-| Response | Meaning |
-|----------|---------|
-| `NO_CHANGE` | Continue executing the current DAG. |
-| PlanSpec DSL | Replace or revise pending DAG work, subject to review policy. |
-| Natural-language answer | Finish the task and return `final_answer`. |
-
-The executor also resolves structured `$expr` references before a capability call.
-Unresolved node-output references fail closed before execution. `DAGSpec`
-artifacts are declared once on the spec, then referenced by node `inputs` and
-`outputs`; output artifacts may only have one producer, and consumers of produced
-artifacts must depend on the producer through explicit DAG edges. Capability
-arguments and boundary paths can reference artifact paths with artifact
-expressions.
-
-### When to Use DAG vs. Tool Mode
-
-| Task shape | Path |
-|------------|------|
-| Subtasks that can run in parallel | DAG |
-| Sequential steps with known structure, runtime values only | DAG |
-| Exploratory - next action depends on observation | `ToolAgent` |
-| Dynamic fan-out - node count unknown until runtime | `ToolAgent` |
-
-Forcing exploratory tasks into a DAG produces worse results than leaving them as
-sequential tool calls. In `auto` mode, `HarnessRuntime` makes this routing judgment
-before dispatching to `ToolAgent` or `DAGAgent`.
-
-### Run Trace
-
-Runtime execution is represented as one `RunTrace` tree. The root is the run; DAG work
-is represented by `dag_node` children; leaf capability calls are `capability_call`
-nodes with `{ invocation, result }`. Agent capabilities attach their inner loop as
-children, so DAG, agent, tool, skill, and MCP execution share the same shape.
-
-Current implementation:
-
-- `DAGExecutor.execute_next_ready_layer()` returns a cumulative `RunTrace`.
-- `ToolAgentLoop` and `AgentCapabilityProvider` also return `RunTrace`.
-- `DAGRun`, `LoopOutcome`, and `RuntimeResponse` expose `trace`; artifact state lives at
-  `trace.artifacts`.
-- The API and Web UI surface trace snapshots during the current process lifetime.
-
-Target architecture:
-
-- Persist run traces and compact result summaries into a Trace DB.
-- Use Trace DB as the long-term audit store and context boundary for future replanning,
-  instead of relying only on in-memory task state.
-
-Trace DB / execution records serve three purposes:
-
-1. **Audit log** - immutable record of what ran, with what inputs, and what it returned.
-2. **DAG observation source** - DAG observations include completed node outputs and recent
-   capability leaves so the planner can continue or repair the DAG.
-3. **Human review** - the WebUI surfaces the trace timeline alongside the DAG graph.
-
----
-
-## Safety Model
-
-The runtime is intentionally layered:
-
-- `HarnessRuntime` routes requests, manages runtime session state, applies human
-  review gates, optionally validates final results, and returns the loop's final answer.
-- DAG Agent proposes a DAG but does not grant permissions.
-- `DAGExecutor` validates the DAG, applies hard risk overrides, and blocks medium/high
-  risk DAGs until explicitly approved.
-- Each capability node is a bounded invocation - no nested agent loop inside a node unless an agent capability is explicitly configured.
-- `CapabilityExecutor` dispatches approved invocations, and capability handlers enforce boundaries before side effects.
-- Human review can be triggered by tool-mode capability calls, initial DAG creation, and DAG
-  revisions.
-- Optional result validation uses a separate `validator_agent` profile to check the
-  final answer against the original user request and execution context. If validation
-  finds issues, the runtime retries once with validator feedback.
-- Validation receives a bounded evidence view of tool/node execution results: each
-  result excerpt is capped, the full validation context has an overall budget, and
-  truncated evidence is explicitly marked.
-
-Boundary checks:
-
-- `read_only` nodes cannot write files
-- `allowed_paths` prevents path traversal and absolute path escape
-- disabled or unregistered capabilities fail closed
+`DAGExecutor` validates graph structure, resolves structured value expressions,
+executes ready layers, updates artifact state, and returns a cumulative
+`RunTrace`.
 
 ---
 
@@ -245,9 +285,8 @@ Boundary checks:
 dagent/
   api/              FastAPI app - task, DAG, run, and trace endpoints
   capabilities/     capability catalog, providers, adapters, and built-in handlers
-  harness_runtime/  runtime orchestration, ToolAgent, ToolAgentLoop, DAGAgent,
-                    DAGAgentLoop, validation,
-                    session state, event adapters, DAG execution
+  harness_runtime/  runtime orchestration, agent loops, validation, session state,
+                    event adapters, DAG execution
   providers/        OpenAI-compatible and mock chat providers
   schemas/          DAG, node, edge, trace, feedback, result/outcome contracts
   state/            prompt assembly
@@ -260,311 +299,7 @@ Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
 `PendingReview`, and validation result types live in `dagent/schemas`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 
-## Configuration
+## Documentation
 
-```yaml
-provider:
-  base_url: "https://api.minimaxi.com/v1"
-  model: "MiniMax-M2.1"
-  api_key_env: "MINIMAX_API_KEY"
-  timeout_seconds: 60
-  strip_thinking: false
-enable_result_validation: false
-profiles:
-  directory: "profiles"
-  conversation: "conversation"
-  dag_agent: "dag_agent"
-  validator_agent: "validator_agent"
-  feedback_learner: "feedback_learner"
-```
-
-Secrets in `.env` (git-ignored):
-
-```env
-MINIMAX_API_KEY=your-api-key
-```
-
-Override config path:
-
-```powershell
-$env:DAGENT_CONFIG="C:\path\to\config.yaml"
-```
-
-## Agent Profiles
-
-Each role has an editable profile directory:
-
-```text
-profiles/
-  conversation/       soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  dag_agent/          soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  validator_agent/    soul.md  guideline.md  agent.md  memory.md  profile.yaml
-  feedback_learner/   soul.md  guideline.md  agent.md  memory.md  profile.yaml
-```
-
-`profile.yaml` defines ordered prompt layers. Dynamic content such as tools, skills,
-memory, and per-request user messages is injected at runtime and never stored in
-profile files.
-
----
-
-## Development
-
-```powershell
-uv run --extra dev pytest
-```
-
-Real provider integration tests:
-
-```powershell
-$env:DAGENT_RUN_MINIMAX_TESTS="1"
-uv run --extra dev pytest tests/test_minimax_integration.py
-```
-
-Run API + frontend:
-
-```powershell
-uv run uvicorn dagent.api.app:app --host 127.0.0.1 --port 8001
-
-cd web && npm install && npm run dev
-```
-
-## Python SDK Quick Start
-
-Capability ids use the capability kind as their prefix. Python function tools now use
-`tool.*` ids; the old `custom_tool.*` kind has been removed instead of kept as a
-compatibility alias. Update existing DAG specs, API payloads, and agent capability
-lists from `custom_tool.name` to `tool.name`.
-
-### Current Public SDK Surface
-
-Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`, `DagAgent`,
-`Dag`, and `SkillStore`. The top-level `dagent` package currently exposes:
-
-| Area | Public SDK |
-|------|------------|
-| Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
-| Agents | `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
-| Profiles | `AgentProfile`, `ProfileStore` |
-| Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `RunResult`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
-| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload` |
-| Providers | `OpenAICompatibleProvider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, and `ToolCall` for custom providers and tests |
-
-Runnable examples live under [`examples/`](examples/):
-
-- [`examples/tool_agent.py`](examples/tool_agent.py): profile-backed tool loop.
-- [`examples/dynamic_dag_agent.py`](examples/dynamic_dag_agent.py): dynamic DAG planning and execution.
-- [`examples/static_dag.py`](examples/static_dag.py): user-built static DAG with artifacts.
-- [`examples/runtime_registration_and_skills.py`](examples/runtime_registration_and_skills.py): runtime tool/skill registration and `SkillStore`.
-
-Run any example from the repository root:
-
-```powershell
-uv run python -m examples.tool_agent
-```
-
-### Registering Capabilities
-
-`Runner` owns the capability catalog. Tools, MCP servers, and skill roots can be
-registered declaratively at construction. Leave `skill_roots` unset to use the
-default roots: local `skills/` plus the managed install root `~/.dagent/skills`.
-
-```python
-import dagent
-
-
-@dagent.tool
-def search(q: str) -> str:
-    """Search the web."""
-    return f"found:{q}"
-
-
-runner = dagent.Runner(
-    workspace=".",
-    capabilities=[search],                 # tool.* capabilities
-    mcp_servers={                          # stdio MCP servers -> mcp.<server>.<tool>
-        "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]},
-    },
-)
-```
-
-The same capability types can be registered incrementally at runtime. `add_mcp_server`
-connects to the server, discovers its tools, and returns the new `mcp.*`
-capability definitions:
-
-```python
-import dagent
-
-
-runner = dagent.Runner(workspace=".")
-
-mcp_definitions = runner.add_mcp_server(
-    "team_fs",
-    {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-    },
-)
-
-print([definition.id for definition in mcp_definitions])
-```
-
-MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently supports
-the stdio transport. `add_mcp_server` raises if the SDK is missing or the server
-fails to connect. Newly registered capabilities are visible to agents that do not
-pin an explicit `capabilities` list.
-
-Skill roots and managed skill installs are available through the same runner:
-
-```python
-import dagent
-
-
-runner = dagent.Runner(workspace=".")
-
-runner.add_skill_root("team-skills")  # extra root scanned by skill.list / skill.view
-
-installed = runner.skill_store.install(
-    "Keep every answer to one compact sentence.",
-    name="terse",
-    description="Compact response style.",
-    category="writing",
-)
-
-print(installed.skill.qualified_name)      # writing/terse
-print(runner.skill_store.view("writing/terse").content)
-
-print([definition.id for definition in runner.capabilities])
-```
-
-`SkillStore.install(...)` writes Markdown or zip skill packages into the managed
-root. Use `runner.skill_store.view(name, file_path="scripts/example.py")` to read
-linked files inside a skill package with the same path checks used by `skill.view`.
-
-Use `ToolAgent` for profile-backed tool-loop work:
-
-```python
-import asyncio
-
-import dagent
-
-
-@dagent.tool
-def echo(text: str) -> str:
-    """Echo text back to the agent."""
-    return f"echo:{text}"
-
-
-async def main():
-    runner = dagent.Runner(
-        workspace=".",
-        capabilities=[echo],
-    )
-    agent = dagent.ToolAgent(
-        profile="conversation",
-        capabilities=["tool.echo"],
-    )
-    result = await runner.run(agent, "Use echo to respond with hello.")
-
-    if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve())
-
-    print(result.output_text)
-
-
-asyncio.run(main())
-```
-
-Use `DagAgent` for dynamic DAG planning, execution, observation, and replanning:
-
-```python
-import asyncio
-
-import dagent
-
-
-@dagent.tool
-def search(q: str) -> str:
-    return f"found:{q}"
-
-
-async def main():
-    runner = dagent.Runner(
-        workspace=".",
-        capabilities=[search],
-    )
-    agent = dagent.DagAgent(
-        capabilities=["tool.search"],
-        review="careful",
-    )
-    result = await runner.run(agent, "Research X and write a concise report.")
-
-    if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve())
-
-    print(result.output_text)
-
-asyncio.run(main())
-```
-
-Use `Dag` and `Runner` for user-defined static DAG execution:
-
-```python
-import asyncio
-from pathlib import Path
-
-import dagent
-
-
-@dagent.tool
-def search(q: str) -> str:
-    return f"found:{q}"
-
-
-@dagent.tool(risk="medium", supports_context=True)
-def write_note(path: str, content: str, *, context, callbacks=None) -> str:
-    resolved = Path(context.workspace_path) / path
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding="utf-8")
-    return f"wrote:{path}"
-
-
-async def main():
-    dag = dagent.Dag("research_report", name="Research Report", input=str)
-    report = dag.artifact("report", "outputs/report.md")
-
-    search_node = dag.capability_node("search", search, q=dag.input)
-    dag.capability_node(
-        "write_report",
-        write_note,
-        path=report.path,
-        content=search_node.output,
-        outputs=[report],
-    ).after(search_node)
-
-    runner = dagent.Runner(workspace=".")
-    run = await runner.run(dag, input="dagent sdk")
-    print(run.status)
-
-asyncio.run(main())
-```
-
-## Quick Start
-
-Verify provider connection:
-
-```python
-import asyncio
-from dagent.config import load_config
-from dagent.providers import OpenAICompatibleProvider
-
-async def main():
-    config = load_config()
-    provider = OpenAICompatibleProvider(config.provider)
-    response = await provider.chat([{"role": "user", "content": "Reply with exactly: OK"}])
-    print(response.content)
-
-asyncio.run(main())
-```
+- [Python SDK guide](docs/python-sdk.md)
+- [Runnable examples](examples/README.md)
