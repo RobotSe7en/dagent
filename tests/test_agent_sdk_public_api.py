@@ -120,6 +120,20 @@ def test_runner_stream_yields_token_events_and_unified_done_result(tmp_path) -> 
     assert events[-1].result.output_text == "hello"
 
 
+def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+
+    assert result.output_text == "hello"
+    assert result.run_id is not None
+    assert result.raw_response is not None
+    assert result.requires_review is False
+    for legacy_name in ("final_answer", "output", "task_id", "awaiting_review", "raw"):
+        assert not hasattr(result, legacy_name)
+
+
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
     @dagent.tool
     def search(q: str) -> str:

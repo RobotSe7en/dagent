@@ -373,8 +373,8 @@ print(result.artifact_state("report").status)
 ```
 
 `DAGRun` remains a schema for API/storage boundaries and is available through
-`result.dag_run` or `result.raw`; it is not the primary return value from the
-public runner.
+`result.dag_run` or `result.raw_response`; it is not the primary return value
+from the public runner.
 
 Use `Runner.stream(...)` for an async stream of `RunStreamEvent` objects. The
 stream yields token/runtime events and finishes with a `done` event whose

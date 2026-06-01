@@ -24,10 +24,6 @@ class RunResult:
             object.__setattr__(self, "kind", _infer_kind(self.raw_response))
 
     @property
-    def raw(self) -> RuntimeResponse | DAGRun:
-        return self.raw_response
-
-    @property
     def dag_run(self) -> DAGRun | None:
         return self.raw_response if isinstance(self.raw_response, DAGRun) else None
 
@@ -36,18 +32,10 @@ class RunResult:
         return self.raw_response.status
 
     @property
-    def final_answer(self) -> str:
+    def output_text(self) -> str:
         if isinstance(self.raw_response, RuntimeResponse):
             return self.raw_response.final_answer
         return _dag_run_output_text(self.raw_response)
-
-    @property
-    def output_text(self) -> str:
-        return self.final_answer
-
-    @property
-    def output(self) -> str:
-        return self.final_answer
 
     @property
     def dag(self) -> DAG | None:
@@ -56,12 +44,6 @@ class RunResult:
     @property
     def trace(self) -> RunTrace | None:
         return self.raw_response.trace
-
-    @property
-    def task_id(self) -> str | None:
-        if isinstance(self.raw_response, RuntimeResponse):
-            return self.raw_response.task_id
-        return self.raw_response.run_id
 
     @property
     def run_id(self) -> str | None:
@@ -96,10 +78,6 @@ class RunResult:
     @property
     def requires_review(self) -> bool:
         return self.status == "awaiting_review" and self.pending_review is not None
-
-    @property
-    def awaiting_review(self) -> bool:
-        return self.requires_review
 
     @property
     def review(self) -> ReviewHandle | None:
