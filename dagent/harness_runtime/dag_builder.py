@@ -21,7 +21,11 @@ from dagent.schemas import (
     CapabilityInvocation,
     StartNodePayload,
 )
-from dagent.schemas.value import iter_node_output_exprs
+from dagent.schemas.value import (
+    ValueExpressionError,
+    iter_artifact_exprs,
+    iter_node_output_exprs,
+)
 
 
 class DAGCreationError(ValueError):
@@ -159,6 +163,7 @@ def validate_dag_spec(spec: DAGSpec) -> None:
                 f"Node '{node.id}' references unknown artifact(s): {joined}."
             )
 
+    _validate_dag_spec_value_expressions(spec)
     _validate_artifact_data_dependencies(spec)
 
     validate_dag(
@@ -168,7 +173,30 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             nodes=[node.model_copy(deep=True) for node in spec.nodes],
             edges=[edge.model_copy(deep=True) for edge in spec.edges],
         )
-    )
+            )
+
+
+def _validate_dag_spec_value_expressions(spec: DAGSpec) -> None:
+    artifact_ids = set(spec.artifacts)
+    for node in spec.nodes:
+        if not isinstance(node.payload, CapabilityNodePayload):
+            continue
+        invocation = node.payload.invocation
+        try:
+            artifact_refs = [
+                *iter_artifact_exprs(invocation.arguments),
+                *iter_artifact_exprs(invocation.boundary.allowed_paths),
+                *iter_artifact_exprs(invocation.boundary.allowed_commands),
+            ]
+        except ValueExpressionError as exc:
+            raise DAGValidationError(
+                f"Node '{node.id}' has invalid value expression: {exc}"
+            ) from exc
+        for ref in artifact_refs:
+            if ref.artifact_id not in artifact_ids:
+                raise DAGValidationError(
+                    f"Node '{node.id}' references unknown artifact '{ref.artifact_id}' in value expression."
+                )
 
 
 def _validate_artifact_data_dependencies(spec: DAGSpec) -> None:
@@ -316,11 +344,16 @@ def _validate_value_expression_dependencies(nodes: list[DAGNode], edges: list[DA
         if not isinstance(node.payload, CapabilityNodePayload):
             continue
         invocation = node.payload.invocation
-        refs = [
-            *iter_node_output_exprs(invocation.arguments),
-            *iter_node_output_exprs(invocation.boundary.allowed_paths),
-            *iter_node_output_exprs(invocation.boundary.allowed_commands),
-        ]
+        try:
+            refs = [
+                *iter_node_output_exprs(invocation.arguments),
+                *iter_node_output_exprs(invocation.boundary.allowed_paths),
+                *iter_node_output_exprs(invocation.boundary.allowed_commands),
+            ]
+        except ValueExpressionError as exc:
+            raise DAGValidationError(
+                f"Node '{node.id}' has invalid value expression: {exc}"
+            ) from exc
         upstream = upstream_ids(node.id)
         for ref in refs:
             if ref.node_id not in node_ids:

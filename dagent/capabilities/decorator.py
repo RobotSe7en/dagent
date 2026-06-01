@@ -6,7 +6,7 @@ import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+from typing import Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -54,6 +54,7 @@ def tool(
     """
 
     def decorate(func: Callable[..., Any]) -> CapabilityBinding:
+        type_hints = _type_hints_for(func)
         capability_name = name or func.__name__
         capability_id = id or f"tool.{capability_name}"
         definition = CapabilityDefinition(
@@ -61,8 +62,8 @@ def tool(
             name=capability_name,
             kind="tool",
             description=description or inspect.getdoc(func) or "",
-            parameters=parameters or _schema_from_signature(func),
-            output_schema=_output_schema_from_signature(func),
+            parameters=parameters or _schema_from_signature(func, type_hints),
+            output_schema=_output_schema_from_signature(func, type_hints),
             policy=CapabilityPolicy(
                 risk=risk,
                 requires_review=requires_review,
@@ -91,7 +92,7 @@ def tool(
                 if inspect.isawaitable(result):
                     result = await result
                 if isinstance(result, CapabilityResult):
-                    return result
+                    return _normalize_capability_result(result)
                 content, value = _content_and_value_from_result(result)
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,
@@ -155,7 +156,13 @@ def _content_and_value_from_result(result: Any) -> tuple[str, Any]:
     return value, value
 
 
-def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
+def _normalize_capability_result(result: CapabilityResult) -> CapabilityResult:
+    if result.status == "completed" and result.value is None:
+        return result.model_copy(update={"value": result.content})
+    return result
+
+
+def _schema_from_signature(func: Callable[..., Any], type_hints: dict[str, Any]) -> dict[str, Any]:
     signature = inspect.signature(func)
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -167,7 +174,7 @@ def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
             raise ValueError(f"Cannot infer schema for variadic parameter '{parameter.name}'.")
         if parameter.name in {"context", "callbacks"}:
             continue
-        schema = _schema_for_annotation(parameter.annotation)
+        schema = _schema_for_annotation(type_hints.get(parameter.name, parameter.annotation))
         if parameter.default is inspect.Parameter.empty:
             required.append(parameter.name)
         else:
@@ -182,9 +189,16 @@ def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
     return output
 
 
-def _output_schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
-    annotation = inspect.signature(func).return_annotation
+def _output_schema_from_signature(func: Callable[..., Any], type_hints: dict[str, Any]) -> dict[str, Any]:
+    annotation = type_hints.get("return", inspect.signature(func).return_annotation)
     return json_schema_for_type(annotation)
+
+
+def _type_hints_for(func: Callable[..., Any]) -> dict[str, Any]:
+    try:
+        return get_type_hints(func, include_extras=True)
+    except (NameError, TypeError, AttributeError):
+        return {}
 
 
 def _schema_for_annotation(annotation: Any) -> dict[str, Any]:

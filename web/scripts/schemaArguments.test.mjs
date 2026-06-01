@@ -24,7 +24,7 @@ const {
 } = await importTypeScript('../src/schemaArguments.ts');
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 const {
-  artifactPlaceholder,
+  artifactPathExpr,
   createUploadedFileArtifacts,
   isUploadedFileArtifact,
   removeArtifactBinding,
@@ -178,8 +178,14 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
   });
 });
 
-test('artifactPlaceholder builds executor artifact placeholder syntax', () => {
-  assert.equal(artifactPlaceholder('report'), '{{artifact.report.path}}');
+test('artifactPathExpr builds structured executor artifact value expressions', () => {
+  assert.deepEqual(artifactPathExpr('report'), {
+    $expr: {
+      type: 'artifact',
+      artifact_id: 'report',
+      field: 'path',
+    },
+  });
 });
 
 test('createUploadedFileArtifacts creates hidden file artifacts with workspace paths', () => {

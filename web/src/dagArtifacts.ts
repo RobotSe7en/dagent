@@ -1,4 +1,4 @@
-import type { Artifact, DagSpec } from './types';
+import type { Artifact, DagSpec, ValueBinding } from './types';
 
 export interface UploadSourceFile {
   name: string;
@@ -67,8 +67,14 @@ export function removeArtifactBinding(spec: DagSpec, artifactId: string): DagSpe
   };
 }
 
-export function artifactPlaceholder(artifactId: string): string {
-  return `{{artifact.${artifactId}.path}}`;
+export function artifactPathExpr(artifactId: string): ValueBinding {
+  return {
+    $expr: {
+      type: 'artifact',
+      artifact_id: artifactId,
+      field: 'path',
+    },
+  };
 }
 
 export function isUploadedFileArtifact(artifact: Artifact): boolean {

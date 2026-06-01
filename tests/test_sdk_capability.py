@@ -91,3 +91,49 @@ def test_tool_decorator_serializes_structured_results_and_failures() -> None:
         error="bad input",
         stop_reason="ValueError",
     )
+
+
+def test_tool_decorator_resolves_postponed_annotations() -> None:
+    namespace: dict[str, object] = {}
+    exec(
+        "\n".join([
+            "from __future__ import annotations",
+            "from pydantic import BaseModel",
+            "from dagent import tool",
+            "",
+            "class LookupResult(BaseModel):",
+            "    title: str",
+            "",
+            "@tool",
+            "def lookup(query: str) -> LookupResult:",
+            "    return LookupResult(title=query)",
+        ]),
+        namespace,
+    )
+
+    lookup = namespace["lookup"]
+
+    assert lookup.definition.parameters["properties"]["query"]["type"] == "string"
+    assert lookup.definition.output_schema["properties"]["title"]["type"] == "string"
+
+
+def test_tool_decorator_backfills_value_for_explicit_completed_result() -> None:
+    @tool
+    def explicit() -> CapabilityResult:
+        return CapabilityResult(
+            invocation_id="custom",
+            capability_id="tool.explicit",
+            kind="tool",
+            status="completed",
+            content="hello",
+        )
+
+    result = run(explicit.handler(
+        CapabilityInvocation(
+            capability_id=explicit.definition.id,
+            kind=explicit.definition.kind,
+        )
+    ))
+
+    assert result.content == "hello"
+    assert result.value == "hello"

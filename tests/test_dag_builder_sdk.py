@@ -19,6 +19,10 @@ class SearchResult(BaseModel):
     url: str
 
 
+class QueryInput(BaseModel):
+    query: str
+
+
 def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
     @dagent.tool
     def search(q: str) -> SearchResult:
@@ -75,6 +79,22 @@ def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
     assert spec.nodes[1].outputs == ["report"]
     assert [(edge.source, edge.target) for edge in spec.edges] == [("search", "write_report")]
     assert write_node.id == "write_report"
+
+
+def test_value_refs_support_common_path_field_names() -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return text
+
+    dag = dagent.Dag("path_refs")
+    source = dag.capability_node("source", echo, text="hello")
+
+    assert dag.input.path.as_expr() == {
+        "$expr": {"type": "graph_input", "path": ["path"]},
+    }
+    assert source.output.path.as_expr() == {
+        "$expr": {"type": "node_output", "node_id": "source", "field": "value", "path": ["path"]},
+    }
 
 
 def test_dag_builder_supports_fan_out_and_fan_in() -> None:
@@ -180,6 +200,25 @@ def test_runner_executes_value_expr_dataflow(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert result.trace.root.children[0].value == {"title": "found:dagent", "url": "https://example.test"}
     assert result.trace.root.children[1].output == "found:dagent <https://example.test>"
+
+
+def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    dag = dagent.Dag("research", input=QueryInput)
+    dag.capability_node("search", search, q=dag.input.query)
+
+    runner = dagent.Runner(workspace=tmp_path)
+    result = run(runner.run(
+        dag,
+        input=QueryInput(query="dagent"),
+        workspace_root=tmp_path / "runs",
+    ))
+
+    assert result.status == "completed"
+    assert result.trace.root.children[0].output == "found:dagent"
 
 
 def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> None:

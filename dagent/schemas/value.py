@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 ValuePathItem: TypeAlias = str | int
+
+
+class ValueExpressionError(ValueError):
+    """Raised when a value expression envelope is malformed."""
 
 
 class GraphInputExpr(BaseModel):
@@ -49,7 +53,7 @@ ValueExpr = Annotated[
 
 
 class ValueBinding(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True, extra="forbid")
 
     expr: ValueExpr = Field(alias="$expr")
 
@@ -59,9 +63,18 @@ def bind_value_expr(expr: ValueExpr | dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_value_binding(value: Any) -> ValueExpr | None:
-    if not isinstance(value, dict) or set(value) != {"$expr"}:
+    if isinstance(value, ValueBinding):
+        return value.expr
+    if not isinstance(value, dict):
         return None
-    return ValueBinding.model_validate(value).expr
+    if "$expr" not in value:
+        return None
+    if set(value) != {"$expr"}:
+        raise ValueExpressionError("value expression envelope must contain only '$expr'.")
+    try:
+        return ValueBinding.model_validate(value).expr
+    except ValidationError as exc:
+        raise ValueExpressionError(str(exc)) from exc
 
 
 def iter_value_exprs(value: Any):
@@ -83,4 +96,10 @@ def iter_value_exprs(value: Any):
 def iter_node_output_exprs(value: Any):
     for expr in iter_value_exprs(value):
         if isinstance(expr, NodeOutputExpr):
+            yield expr
+
+
+def iter_artifact_exprs(value: Any):
+    for expr in iter_value_exprs(value):
+        if isinstance(expr, ArtifactExpr):
             yield expr

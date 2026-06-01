@@ -349,7 +349,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`, `DagAgent`,
 | Profiles | `AgentProfile`, `ProfileStore` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
-| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload`, `ValueBinding`, `ValueExpr` |
+| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload` |
 | Providers | `OpenAICompatibleProvider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, and `ToolCall` for custom providers and tests |
 
 Runnable examples live under [`examples/`](examples/):

@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from dagent.harness_runtime.artifacts import (
     init_artifact_states,
     resolve_artifact_paths,
@@ -65,7 +67,7 @@ class DAGExecutor:
         self.artifacts = artifacts or {}
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
         self.spec_id = spec_id
-        self.graph_input = graph_input
+        self.graph_input = _normalize_graph_input(graph_input)
 
     async def execute_next_ready_layer(
         self,
@@ -473,6 +475,12 @@ def _resolve_value(
             )
             for item in value
         ]
+    return value
+
+
+def _normalize_graph_input(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
     return value
 
 

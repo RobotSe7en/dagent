@@ -2,10 +2,24 @@ export type RiskLevel = 'low' | 'medium' | 'high';
 export type BoundaryMode = 'read_only' | 'write_limited' | 'full';
 export type ReviewLevel = 'fast' | 'careful';
 
+export type ValuePathItem = string | number;
+
+export type ValueExpr =
+  | { type: 'graph_input'; path?: ValuePathItem[] }
+  | { type: 'node_output'; node_id: string; field?: 'value' | 'content' | 'status' | 'steps'; path?: ValuePathItem[] }
+  | { type: 'artifact'; artifact_id: string; field?: 'path' | 'paths' | 'absolute_path' | 'absolute_paths' }
+  | { type: 'format'; template: string; values?: Record<string, unknown> };
+
+export interface ValueBinding {
+  $expr: ValueExpr;
+}
+
+export type BoundaryValue = string | ValueBinding;
+
 export interface Boundary {
   mode: BoundaryMode;
-  allowed_paths?: unknown[];
-  allowed_commands?: unknown[];
+  allowed_paths?: BoundaryValue[];
+  allowed_commands?: BoundaryValue[];
 }
 
 export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'agent' | 'memory' | 'file';

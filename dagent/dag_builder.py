@@ -9,19 +9,21 @@ from dagent.agent import ToolAgent
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.schemas import (
     Artifact,
-    ArtifactExpr,
     Boundary,
     CapabilityInvocation,
     CapabilityKind,
     DAGEdge,
     DAGNode,
     DAGSpec,
+)
+from dagent.schemas.common import json_schema_for_type
+from dagent.schemas.value import (
+    ArtifactExpr,
     FormatExpr,
     GraphInputExpr,
     NodeOutputExpr,
+    bind_value_expr,
 )
-from dagent.schemas.common import json_schema_for_type
-from dagent.schemas.value import bind_value_expr
 
 
 ValuePathItem = str | int
@@ -33,10 +35,10 @@ ArtifactField = Literal["path", "paths", "absolute_path", "absolute_paths"]
 class InputRef:
     """Reference to the DAG run input."""
 
-    path: tuple[ValuePathItem, ...] = ()
+    _path: tuple[ValuePathItem, ...] = ()
 
     def __getitem__(self, item: ValuePathItem) -> "InputRef":
-        return replace(self, path=(*self.path, item))
+        return replace(self, _path=(*self._path, item))
 
     def __getattr__(self, name: str) -> "InputRef":
         if name.startswith("_"):
@@ -44,19 +46,19 @@ class InputRef:
         return self[name]
 
     def as_expr(self) -> dict[str, Any]:
-        return bind_value_expr(GraphInputExpr(type="graph_input", path=list(self.path)))
+        return bind_value_expr(GraphInputExpr(type="graph_input", path=list(self._path)))
 
 
 @dataclass(frozen=True)
 class NodeOutputRef:
     """Reference to a completed DAG node result."""
 
-    node_id: str
-    field: NodeOutputField = "value"
-    path: tuple[ValuePathItem, ...] = ()
+    _node_id: str
+    _field: NodeOutputField = "value"
+    _path: tuple[ValuePathItem, ...] = ()
 
     def __getitem__(self, item: ValuePathItem) -> "NodeOutputRef":
-        return replace(self, path=(*self.path, item))
+        return replace(self, _path=(*self._path, item))
 
     def __getattr__(self, name: str) -> "NodeOutputRef":
         if name.startswith("_"):
@@ -67,9 +69,9 @@ class NodeOutputRef:
         return bind_value_expr(
             NodeOutputExpr(
                 type="node_output",
-                node_id=self.node_id,
-                field=self.field,
-                path=list(self.path),
+                node_id=self._node_id,
+                field=self._field,
+                path=list(self._path),
             )
         )
 
@@ -78,15 +80,15 @@ class NodeOutputRef:
 class ArtifactValueRef:
     """Reference to a DAG artifact field."""
 
-    artifact_id: str
-    field: ArtifactField = "path"
+    _artifact_id: str
+    _field: ArtifactField = "path"
 
     def as_expr(self) -> dict[str, Any]:
         return bind_value_expr(
             ArtifactExpr(
                 type="artifact",
-                artifact_id=self.artifact_id,
-                field=self.field,
+                artifact_id=self._artifact_id,
+                field=self._field,
             )
         )
 

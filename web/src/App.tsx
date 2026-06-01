@@ -96,6 +96,7 @@ import type {
   SkillDetail,
   SkillFileDetail,
   SkillSummary,
+  BoundaryValue,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -109,7 +110,7 @@ import {
 } from './schemaArguments';
 import { pruneEdgesToNodeIds } from './dagEdges';
 import {
-  artifactPlaceholder,
+  artifactPathExpr,
   createUploadedFileArtifacts,
   isUploadedFileArtifact,
   removeArtifactBinding,
@@ -2754,7 +2755,7 @@ function OrchestrationNodeEditor({
       ? [...current.filter((id) => id !== artifactId), artifactId].sort()
       : current.filter((id) => id !== artifactId);
     if (field === 'inputs' && checked) {
-      const token = artifactPlaceholder(artifactId);
+      const token = artifactPathExpr(artifactId);
       const allowedPaths = boundary.allowed_paths ?? [];
       onPatch({
         [field]: next,
@@ -2764,7 +2765,7 @@ function OrchestrationNodeEditor({
             ...invocation,
             boundary: {
               ...boundary,
-              allowed_paths: allowedPaths.includes(token) ? allowedPaths : [...allowedPaths, token],
+              allowed_paths: addUniqueBoundaryValue(allowedPaths, token),
             },
           },
         },
@@ -2777,16 +2778,16 @@ function OrchestrationNodeEditor({
     patchInvocation({
       arguments: {
         ...(invocation.arguments ?? {}),
-        path: artifactPlaceholder(artifactId),
+        path: artifactPathExpr(artifactId),
       },
     });
   };
   const addAllowedPathFromArtifact = (artifactId: string) => {
-    const token = artifactPlaceholder(artifactId);
+    const token = artifactPathExpr(artifactId);
     patchInvocation({
       boundary: {
         ...boundary,
-        allowed_paths: [...(boundary.allowed_paths ?? []).filter((path) => path !== token), token],
+        allowed_paths: addUniqueBoundaryValue(boundary.allowed_paths ?? [], token),
       },
     });
   };
@@ -2888,17 +2889,17 @@ function OrchestrationNodeEditor({
           </label>
           <label>
             Allowed Paths
-            <input
-              value={(boundary.allowed_paths ?? []).join(', ')}
-              onChange={(event) => patchInvocation({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })}
+            <BoundaryValueEditor
+              values={boundary.allowed_paths ?? []}
+              onChange={(allowedPaths) => patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })}
             />
           </label>
         </div>
         <label>
           Allowed Commands
-          <input
-            value={(boundary.allowed_commands ?? []).join(', ')}
-            onChange={(event) => patchInvocation({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })}
+          <BoundaryValueEditor
+            values={boundary.allowed_commands ?? []}
+            onChange={(allowedCommands) => patchInvocation({ boundary: { ...boundary, allowed_commands: allowedCommands } })}
           />
         </label>
       </details>
@@ -4135,20 +4136,20 @@ function NodeEditor({
           </label>
           <label>
             Allowed Paths
-            <input
-              value={(boundary.allowed_paths ?? []).join(', ')}
-              onChange={(event) =>
-                patchInvocation({ boundary: { ...boundary, allowed_paths: splitCsv(event.target.value) } })
+            <BoundaryValueEditor
+              values={boundary.allowed_paths ?? []}
+              onChange={(allowedPaths) =>
+                patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })
               }
             />
           </label>
         </div>
         <label>
           Allowed Commands
-          <input
-            value={(boundary.allowed_commands ?? []).join(', ')}
-            onChange={(event) =>
-              patchInvocation({ boundary: { ...boundary, allowed_commands: splitCsv(event.target.value) } })
+          <BoundaryValueEditor
+            values={boundary.allowed_commands ?? []}
+            onChange={(allowedCommands) =>
+              patchInvocation({ boundary: { ...boundary, allowed_commands: allowedCommands } })
             }
           />
         </label>
@@ -4189,6 +4190,63 @@ function NodeExecutionLog({ logs }: { logs: TraceLogEvent[] }) {
       )}
     </section>
   );
+}
+
+function BoundaryValueEditor({
+  values,
+  onChange,
+}: {
+  values: BoundaryValue[];
+  onChange: (values: BoundaryValue[]) => void;
+}) {
+  const formatted = formatBoundaryValues(values);
+  const [draft, setDraft] = useState(formatted);
+  const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    setDraft(formatted);
+    setInvalid(false);
+  }, [formatted]);
+
+  return (
+    <textarea
+      className={invalid ? 'json-input invalid' : 'json-input'}
+      value={draft}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        const parsed = parseBoundaryValues(next);
+        setInvalid(parsed === null);
+        if (parsed !== null) {
+          onChange(parsed);
+        }
+      }}
+    />
+  );
+}
+
+function addUniqueBoundaryValue(values: BoundaryValue[], value: BoundaryValue): BoundaryValue[] {
+  const key = boundaryValueKey(value);
+  return [...values.filter((item) => boundaryValueKey(item) !== key), value];
+}
+
+function boundaryValueKey(value: BoundaryValue): string {
+  return typeof value === 'string'
+    ? `str:${value}`
+    : `expr:${JSON.stringify(value)}`;
+}
+
+function formatBoundaryValues(values: BoundaryValue[]): string {
+  return JSON.stringify(values, null, 2);
+}
+
+function parseBoundaryValues(value: string): BoundaryValue[] | null {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as BoundaryValue[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 function nodeDepths(dag: Dag): Map<string, number> {
