@@ -37,9 +37,10 @@ direct, non-agent capability calls from enabled toolsets; `DAGSpec` runtime can 
 agent capabilities, but the planner does not generate agent nodes yet.
 
 **3. Three-level re-planning.**
-The current implementation covers three levels in one execution path: placeholder
-injection before a tool call, `NO_CHANGE`/parameter-level continuation after an
-observation, and DAG revision when the pending graph must change.
+The current implementation covers three levels in one execution path: structured
+value resolution before a capability call, `NO_CHANGE`/parameter-level
+continuation after an observation, and DAG revision when the pending graph must
+change.
 
 **4. Runner-owned runtime state.**
 Public `ToolAgent` and `DagAgent` instances are pure configuration. A `Runner`
@@ -101,7 +102,7 @@ flowchart TD
   N --> OBS["DAG observation"]
   OBS --> DM
   DM --> DAL
-  DAL -->|"Level 1\nplaceholder injection"| E
+  DAL -->|"Level 1\nvalue resolution"| E
   DAL -->|"Level 2\nNO_CHANGE / param adjustment"| E
   DAL -->|"Level 3\nrevised DAG"| UI2["Human Review\nif policy requires"]
   UI2 -->|"approve / edit"| E
@@ -147,7 +148,7 @@ levels:
 
 | Level | Current implementation | Meaning |
 |-------|------------------------|---------|
-| **1 - Placeholder injection** | `DAGExecutor` resolves `{{node.output}}`-style placeholders from completed node results before each tool call. | Runtime values flow into downstream tool arguments without an LLM call. |
+| **1 - Value resolution** | `DAGExecutor` resolves structured `$expr` references from graph input, completed node results, and artifacts before each capability call. | Runtime values flow into downstream capability arguments without an LLM call. |
 | **2 - Local continuation / parameter reasoning** | The DAG LLM receives the latest observation and can return `NO_CHANGE` or a revised PlanSpec with changed arguments. | Keep the current DAG structure, or adjust pending node parameters based on observed results. |
 | **3 - DAG revision** | The DAG LLM returns a revised PlanSpec DSL; `_apply_replan()` invalidates changed/deleted nodes and downstream results, then review policy decides whether to pause. | Change pending graph structure when the original plan no longer fits. |
 
@@ -159,12 +160,13 @@ In concrete response terms, the DAG LLM can return:
 | PlanSpec DSL | Replace or revise pending DAG work, subject to review policy. |
 | Natural-language answer | Finish the task and return `final_answer`. |
 
-The executor also resolves placeholders from completed node outputs before a tool call.
-Unresolved placeholders fail closed before execution. `DAGSpec` artifacts are declared
-once on the spec, then referenced by node `inputs` and `outputs`; output artifacts may
-only have one producer, and consumers of produced artifacts must depend on the producer
-through explicit DAG edges. Capability arguments and boundary paths can reference
-artifact paths with `{{artifact.<id>.path}}`.
+The executor also resolves structured `$expr` references before a capability call.
+Unresolved node-output references fail closed before execution. `DAGSpec`
+artifacts are declared once on the spec, then referenced by node `inputs` and
+`outputs`; output artifacts may only have one producer, and consumers of produced
+artifacts must depend on the producer through explicit DAG edges. Capability
+arguments and boundary paths can reference artifact paths with artifact
+expressions.
 
 ### When to Use DAG vs. Tool Mode
 
@@ -343,11 +345,11 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`, `DagAgent`,
 |------|------------|
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
 | Agents | `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `NodeRef`, `ArtifactRef`, `validate_dag_spec` |
+| Static DAGs | `Dag`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
-| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload` |
+| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeMode`, `RuntimeResponse`, `ArtifactUpload`, `ValueBinding`, `ValueExpr` |
 | Providers | `OpenAICompatibleProvider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, and `ToolCall` for custom providers and tests |
 
 Runnable examples live under [`examples/`](examples/):
@@ -530,10 +532,10 @@ def write_note(path: str, content: str, *, context, callbacks=None) -> str:
 
 
 async def main():
-    dag = dagent.Dag("research_report", name="Research Report")
+    dag = dagent.Dag("research_report", name="Research Report", input=str)
     report = dag.artifact("report", "outputs/report.md")
 
-    search_node = dag.capability_node("search", search, q="dagent sdk")
+    search_node = dag.capability_node("search", search, q=dag.input)
     dag.capability_node(
         "write_report",
         write_note,
@@ -543,7 +545,7 @@ async def main():
     ).after(search_node)
 
     runner = dagent.Runner(workspace=".")
-    run = await runner.run(dag)
+    run = await runner.run(dag, input="dagent sdk")
     print(run.status)
 
 asyncio.run(main())

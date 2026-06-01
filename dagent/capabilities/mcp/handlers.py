@@ -31,7 +31,7 @@ def make_mcp_tool_handler(
             return _failed(invocation, sanitize_error(exc), "mcp_call_error")
         if bool(getattr(result, "isError", False)):
             return _failed(invocation, _mcp_content_text(result) or "MCP tool returned an error.", "mcp_error")
-        return _completed(invocation, _mcp_result_content(result), _mcp_artifacts(result))
+        return _completed(invocation, _mcp_result_content(result), _mcp_artifacts(result), _mcp_result_value(result))
 
     return execute
 
@@ -45,6 +45,13 @@ def _mcp_result_content(result: Any) -> str:
         {"result": text if text else structured, "structuredContent": structured},
         ensure_ascii=False,
     )
+
+
+def _mcp_result_value(result: Any) -> Any:
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return structured
+    return _mcp_content_text(result)
 
 
 def _mcp_content_text(result: Any) -> str:
@@ -69,13 +76,19 @@ def _mcp_artifacts(result: Any) -> list[dict[str, Any]]:
     return artifacts
 
 
-def _completed(invocation: CapabilityInvocation, content: str, artifacts: list[dict[str, Any]]) -> CapabilityResult:
+def _completed(
+    invocation: CapabilityInvocation,
+    content: str,
+    artifacts: list[dict[str, Any]],
+    value: Any,
+) -> CapabilityResult:
     return CapabilityResult(
         invocation_id=invocation.invocation_id,
         capability_id=invocation.capability_id,
         kind=invocation.kind,
         status="completed",
         content=content,
+        value=value,
         artifacts=artifacts,
         policy_decision=_policy_decision(invocation),
     )

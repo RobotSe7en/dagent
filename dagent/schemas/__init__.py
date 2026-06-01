@@ -32,6 +32,15 @@ from dagent.schemas.run_trace import (
     RunTraceNodeKind,
     RunTraceStatus,
 )
+from dagent.schemas.value import (
+    ArtifactExpr,
+    FormatExpr,
+    GraphInputExpr,
+    NodeOutputExpr,
+    ValueBinding,
+    ValueExpr,
+    ValuePathItem,
+)
 
 __all__ = [
     "Boundary",
@@ -68,6 +77,13 @@ __all__ = [
     "RunTraceNode",
     "RunTraceNodeKind",
     "RunTraceStatus",
+    "ArtifactExpr",
+    "FormatExpr",
+    "GraphInputExpr",
+    "NodeOutputExpr",
+    "ValueBinding",
+    "ValueExpr",
+    "ValuePathItem",
     "StartNodePayload",
     "ValidationIssue",
     "ValidationResult",

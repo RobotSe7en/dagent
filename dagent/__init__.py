@@ -13,7 +13,7 @@ from dagent.capabilities import (
     default_skill_roots,
 )
 from dagent.capabilities.decorator import CapabilityBinding, tool
-from dagent.dag_builder import ArtifactRef, Dag, NodeRef
+from dagent.dag_builder import ArtifactRef, ArtifactValueRef, Dag, FormatRef, InputRef, NodeOutputRef, NodeRef
 from dagent.harness_runtime import ArtifactUpload, CapabilityScope, RuntimeMode, validate_dag_spec
 from dagent.profiles import AgentProfile, ProfileStore
 from dagent.providers import OpenAICompatibleProvider
@@ -33,6 +33,8 @@ from dagent.schemas import (
     RiskLevel,
     RunTrace,
     RuntimeResponse,
+    ValueBinding,
+    ValueExpr,
 )
 
 __version__ = "0.1.0"
@@ -42,6 +44,7 @@ __all__ = [
     "AgentProfile",
     "ArtifactRef",
     "ArtifactUpload",
+    "ArtifactValueRef",
     "Boundary",
     "CapabilityBinding",
     "CapabilityDefinition",
@@ -54,6 +57,9 @@ __all__ = [
     "DAGSpec",
     "DagAgent",
     "Dag",
+    "FormatRef",
+    "InputRef",
+    "NodeOutputRef",
     "NodeRef",
     "OpenAICompatibleProvider",
     "PendingReview",
@@ -75,6 +81,8 @@ __all__ = [
     "SkillStoreError",
     "SkillView",
     "ToolAgent",
+    "ValueBinding",
+    "ValueExpr",
     "default_managed_skill_root",
     "default_skill_roots",
     "tool",

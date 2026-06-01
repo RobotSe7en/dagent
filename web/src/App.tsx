@@ -168,6 +168,7 @@ const defaultCustomCapability: CapabilityDefinition = {
     type: 'object',
     properties: {},
   },
+  output_schema: {},
   policy: defaultCapabilityPolicy,
   config: {
     template: 'result:{text}',

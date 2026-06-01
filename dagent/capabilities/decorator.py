@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_args, get_origin
 
+from pydantic import BaseModel
+
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.schemas import (
     CapabilityDefinition,
@@ -16,6 +18,7 @@ from dagent.schemas import (
     CapabilityResult,
     RiskLevel,
 )
+from dagent.schemas.common import json_schema_for_type
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,7 @@ def tool(
             kind="tool",
             description=description or inspect.getdoc(func) or "",
             parameters=parameters or _schema_from_signature(func),
+            output_schema=_output_schema_from_signature(func),
             policy=CapabilityPolicy(
                 risk=risk,
                 requires_review=requires_review,
@@ -88,12 +92,14 @@ def tool(
                     result = await result
                 if isinstance(result, CapabilityResult):
                     return result
+                content, value = _content_and_value_from_result(result)
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,
                     capability_id=invocation.capability_id,
                     kind=invocation.kind,
                     status="completed",
-                    content=_content_from_result(result),
+                    content=content,
+                    value=value,
                 )
             except Exception as exc:
                 return CapabilityResult(
@@ -129,16 +135,24 @@ def _invoke_function(
     return func(**arguments)
 
 
-def _content_from_result(result: Any) -> str:
+def _content_and_value_from_result(result: Any) -> tuple[str, Any]:
     if result is None:
-        return ""
+        return "", None
+    if isinstance(result, BaseModel):
+        value = result.model_dump(mode="json")
+        return result.model_dump_json(), value
     if isinstance(result, str):
-        return result
+        return result, result
     if isinstance(result, bytes):
-        return result.decode("utf-8", errors="replace")
-    if isinstance(result, (dict, list, tuple, bool, int, float)):
-        return json.dumps(result, ensure_ascii=False)
-    return str(result)
+        value = result.decode("utf-8", errors="replace")
+        return value, value
+    if isinstance(result, tuple):
+        value = list(result)
+        return json.dumps(value, ensure_ascii=False), value
+    if isinstance(result, (dict, list, bool, int, float)):
+        return json.dumps(result, ensure_ascii=False), result
+    value = str(result)
+    return value, value
 
 
 def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
@@ -168,9 +182,17 @@ def _schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
     return output
 
 
+def _output_schema_from_signature(func: Callable[..., Any]) -> dict[str, Any]:
+    annotation = inspect.signature(func).return_annotation
+    return json_schema_for_type(annotation)
+
+
 def _schema_for_annotation(annotation: Any) -> dict[str, Any]:
     if annotation is inspect.Parameter.empty:
         return {"type": "string"}
+    schema = json_schema_for_type(annotation)
+    if schema:
+        return schema
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin in {list, tuple, set}:

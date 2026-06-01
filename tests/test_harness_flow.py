@@ -363,6 +363,28 @@ def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
     assert plan.nodes[0].args == {"command": "dir", "cwd": "."}
 
 
+def test_parse_plan_spec_dsl_accepts_value_expr_args() -> None:
+    args = {
+        "text": {
+            "$expr": {
+                "type": "node_output",
+                "node_id": "inspect",
+                "field": "content",
+                "path": [],
+            }
+        }
+    }
+    plan = parse_plan_spec_dsl(
+        "\n".join([
+            "task: summarize",
+            'inspect = read_file(path="README.md")',
+            f"summarize = echo({args!r}) after inspect",
+        ])
+    )
+
+    assert plan.nodes[1].args == args
+
+
 def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
     plan = parse_plan_spec_dsl(
         """

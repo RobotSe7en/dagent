@@ -381,7 +381,11 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
     assert (tmp_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
 
-def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_path: Path) -> None:
+def _expr(payload: dict) -> dict:
+    return {"$expr": payload}
+
+
+def test_executor_resolves_artifact_exprs_in_arguments_and_boundary(tmp_path: Path) -> None:
     executor = DAGExecutor(
         capability_executor=_write_capability_executor(tmp_path),
         workspace_path=tmp_path,
@@ -398,10 +402,13 @@ def test_executor_resolves_artifact_placeholders_in_arguments_and_boundary(tmp_p
                 _node(
                     "write",
                     tool="write_note",
-                    args={"path": "{{artifact.note.path}}", "content": "hi"},
+                    args={
+                        "path": _expr({"type": "artifact", "artifact_id": "note", "field": "path"}),
+                        "content": "hi",
+                    },
                     boundary=Boundary(
                         mode="write_limited",
-                        allowed_paths=["{{artifact.note.path}}"],
+                        allowed_paths=[_expr({"type": "artifact", "artifact_id": "note", "field": "path"})],
                     ),
                     outputs=["note"],
                 )

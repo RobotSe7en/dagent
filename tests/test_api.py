@@ -821,12 +821,14 @@ def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
                             "capability_id": "tool.write_file",
                             "kind": "tool",
                             "arguments": {
-                                "path": "{{artifact.note.path}}",
+                                "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
                                 "content": "hello",
                             },
                             "boundary": {
                                 "mode": "write_limited",
-                                "allowed_paths": ["{{artifact.note.path}}"],
+                                "allowed_paths": [
+                                    {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                                ],
                             },
                         },
                     },
@@ -874,11 +876,13 @@ def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) ->
                             "capability_id": "tool.read_file",
                             "kind": "tool",
                             "arguments": {
-                                "path": "{{artifact.source.path}}",
+                                "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "path"}},
                             },
                             "boundary": {
                                 "mode": "read_only",
-                                "allowed_paths": ["{{artifact.source.path}}"],
+                                "allowed_paths": [
+                                    {"$expr": {"type": "artifact", "artifact_id": "source", "field": "path"}}
+                                ],
                             },
                         },
                     },
@@ -1032,12 +1036,14 @@ def test_api_dag_spec_run_stream_uses_requested_workspace_root(tmp_path: Path) -
                             "capability_id": "tool.write_file",
                             "kind": "tool",
                             "arguments": {
-                                "path": "{{artifact.note.path}}",
+                                "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
                                 "content": "hello",
                             },
                             "boundary": {
                                 "mode": "write_limited",
-                                "allowed_paths": ["{{artifact.note.path}}"],
+                                "allowed_paths": [
+                                    {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                                ],
                             },
                         },
                     },

@@ -21,6 +21,7 @@ from dagent.schemas import (
     CapabilityInvocation,
     StartNodePayload,
 )
+from dagent.schemas.value import iter_node_output_exprs
 
 
 class DAGCreationError(ValueError):
@@ -184,25 +185,15 @@ def _validate_artifact_data_dependencies(spec: DAGSpec) -> None:
                 f"Artifact '{artifact_id}' is produced by multiple nodes: {joined}."
             )
 
-    incoming: dict[str, list[str]] = defaultdict(list)
-    for edge in spec.edges:
-        incoming[edge.target].append(edge.source)
+    incoming = _incoming_edges(spec.edges)
 
     upstream_cache: dict[str, set[str]] = {}
 
     def upstream_ids(node_id: str) -> set[str]:
         if node_id in upstream_cache:
             return upstream_cache[node_id]
-        seen: set[str] = set()
-        stack = list(incoming.get(node_id, ()))
-        while stack:
-            source = stack.pop()
-            if source in seen:
-                continue
-            seen.add(source)
-            stack.extend(incoming.get(source, ()))
-        upstream_cache[node_id] = seen
-        return seen
+        upstream_cache[node_id] = _upstream_ids(node_id, incoming)
+        return upstream_cache[node_id]
 
     producer_by_artifact = {
         artifact_id: producer_ids[0]
@@ -219,6 +210,25 @@ def _validate_artifact_data_dependencies(spec: DAGSpec) -> None:
                     f"Node '{node.id}' reads artifact '{artifact_id}' and must depend "
                     f"on producer node '{producer_id}'."
                 )
+
+
+def _incoming_edges(edges: list[DAGEdge]) -> dict[str, list[str]]:
+    incoming: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        incoming[edge.target].append(edge.source)
+    return incoming
+
+
+def _upstream_ids(node_id: str, incoming: dict[str, list[str]]) -> set[str]:
+    seen: set[str] = set()
+    stack = list(incoming.get(node_id, ()))
+    while stack:
+        source = stack.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        stack.extend(incoming.get(source, ()))
+    return seen
 
 
 def _normalize_dag_spec_node(
@@ -281,6 +291,8 @@ def validate_dag(dag: DAG) -> None:
         connected_ids.add(edge.source)
         connected_ids.add(edge.target)
 
+    _validate_value_expression_dependencies(dag.nodes, dag.edges)
+
     if len(node_id_set) > 1:
         isolated_ids = node_id_set - connected_ids
         if isolated_ids:
@@ -288,6 +300,37 @@ def validate_dag(dag: DAG) -> None:
             raise DAGValidationError(f"Isolated node IDs: {isolated_list}.")
 
     _ensure_acyclic(node_id_set, [(edge.source, edge.target) for edge in dag.edges])
+
+
+def _validate_value_expression_dependencies(nodes: list[DAGNode], edges: list[DAGEdge]) -> None:
+    incoming = _incoming_edges(edges)
+    upstream_cache: dict[str, set[str]] = {}
+    node_ids = {node.id for node in nodes}
+
+    def upstream_ids(node_id: str) -> set[str]:
+        if node_id not in upstream_cache:
+            upstream_cache[node_id] = _upstream_ids(node_id, incoming)
+        return upstream_cache[node_id]
+
+    for node in nodes:
+        if not isinstance(node.payload, CapabilityNodePayload):
+            continue
+        invocation = node.payload.invocation
+        refs = [
+            *iter_node_output_exprs(invocation.arguments),
+            *iter_node_output_exprs(invocation.boundary.allowed_paths),
+            *iter_node_output_exprs(invocation.boundary.allowed_commands),
+        ]
+        upstream = upstream_ids(node.id)
+        for ref in refs:
+            if ref.node_id not in node_ids:
+                raise DAGValidationError(
+                    f"Node '{node.id}' reads output from unknown node '{ref.node_id}'."
+                )
+            if ref.node_id not in upstream:
+                raise DAGValidationError(
+                    f"Node '{node.id}' reads output from node '{ref.node_id}' and must depend on it."
+                )
 
 
 def strip_thinking_blocks(content: str) -> str:

@@ -56,6 +56,7 @@ class RunTraceNode(BaseModel):
     ref: dict[str, str] = Field(default_factory=dict)
     input: dict[str, Any] = Field(default_factory=dict)
     output: Any | None = None
+    value: Any | None = None
     error: RunTraceError | None = None
     capability_execution: CapabilityExecution | None = None
     children: list["RunTraceNode"] = Field(default_factory=list)
@@ -116,6 +117,7 @@ class RunTraceNode(BaseModel):
             },
             input=invocation.arguments,
             output=output,
+            value=result.value if result is not None else None,
             error=RunTraceError(message=error) if error else None,
             capability_execution=CapabilityExecution(invocation=invocation, result=result),
             ended_at=datetime.now(timezone.utc) if result is not None or error else None,

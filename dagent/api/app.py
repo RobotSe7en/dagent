@@ -62,6 +62,7 @@ class CapabilityTestRequest(BaseModel):
 
 class DAGSpecRunRequest(BaseModel):
     workspace_root: str | None = None
+    input: Any = None
 
 
 class MCPServerRequest(BaseModel):
@@ -272,6 +273,7 @@ async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -
 
     dag_run = await state.get_runtime().run_dag_spec(
         spec,
+        input=None if request is None else request.input,
         workspace_root=_workspace_root_from_request(request),
         artifact_uploads=_artifact_uploads_for_spec(spec_id),
     )
@@ -299,6 +301,7 @@ async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = 
         task = asyncio.create_task(
             state.get_runtime().run_dag_spec(
                 spec,
+                input=None if request is None else request.input,
                 workspace_root=workspace_root,
                 artifact_uploads=_artifact_uploads_for_spec(spec_id),
                 on_token=on_token,
