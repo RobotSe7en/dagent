@@ -328,13 +328,14 @@ def test_runner_from_config_loads_provider_and_profile_root(tmp_path) -> None:
             "  model: cfg-model",
             "  api_key: test-key",
             "profiles:",
-            f"  directory: {profiles}",
+            "  directory: profiles",
         ]),
         encoding="utf-8",
     )
 
     runner = dagent.Runner.from_config(config, workspace=tmp_path)
 
+    assert runner.profile_root == profiles
     assert runner.runtime.provider.config.model == "cfg-model"
     assert runner.runtime.tool_agent.profile.content.startswith("# Config Conversation")
 

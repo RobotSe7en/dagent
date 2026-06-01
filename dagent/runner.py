@@ -14,7 +14,7 @@ from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
 from dagent.dag_builder import Dag
-from dagent.config import load_config
+from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
     CapabilityExecutor,
     DAGAgent as RuntimeDAGAgent,
@@ -86,13 +86,19 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
     ) -> "Runner":
-        config = load_config(path)
+        config_path = resolve_config_path(path)
+        config = load_config(config_path)
         resolved_mcp_servers = dict(config.mcp_servers)
         if mcp_servers is not None:
             resolved_mcp_servers.update(mcp_servers)
         resolved_validator = validator
         if resolved_validator is None and config.enable_result_validation:
             resolved_validator = "validator_agent"
+        resolved_profile_root = (
+            Path(profile_root)
+            if profile_root is not None
+            else resolve_config_relative_path(config.profiles.directory, config_path)
+        )
         return cls(
             workspace=workspace,
             provider=OpenAICompatibleProvider(config.provider),
@@ -100,7 +106,7 @@ class Runner:
             validator=resolved_validator,
             skill_roots=skill_roots,
             mcp_servers=resolved_mcp_servers,
-            profile_root=profile_root if profile_root is not None else config.profiles.directory,
+            profile_root=resolved_profile_root,
         )
 
     @property
@@ -629,9 +635,6 @@ def _resolve_profile(
 ) -> AgentProfile:
     if isinstance(profile, AgentProfile):
         return profile
-    profile_path = Path(profile)
-    if profile_path.suffix == ".md" and profile_path.exists():
-        return ProfileStore(profile_path.parent).load(profile_path.name)
     if profile_root is not None:
         try:
             return ProfileStore(profile_root).load(profile)

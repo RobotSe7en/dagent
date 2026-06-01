@@ -671,6 +671,7 @@ def test_api_profiles_lists_markdown_profiles(tmp_path, monkeypatch) -> None:
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
     (profile_dir / "assistant.md").write_text("# Assistant\n\nYou are helpful.", encoding="utf-8")
+    (profile_dir / "conversation.md").write_text("# Custom Conversation\n\nUse project style.", encoding="utf-8")
     monkeypatch.setattr(state, "profile_directory", str(profile_dir))
     client = TestClient(app)
 
@@ -681,7 +682,10 @@ def test_api_profiles_lists_markdown_profiles(tmp_path, monkeypatch) -> None:
     assert payload["warnings"] == []
     profiles = {(profile["source"], profile["name"]): profile for profile in payload["profiles"]}
     assert ("builtin", "conversation") in profiles
+    assert profiles[("builtin", "conversation")]["id"] == "builtin:conversation"
+    assert profiles[("user", "conversation")]["id"] == "user:conversation"
     assert profiles[("user", "assistant")] == {
+        "id": "user:assistant",
         "name": "assistant",
         "description": "Assistant",
         "content": "# Assistant\n\nYou are helpful.",

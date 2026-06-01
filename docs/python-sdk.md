@@ -28,7 +28,8 @@ compatibility alias.
 Profiles are single Markdown files. A profile named `conversation` lives at
 built-in package resource `dagent/resources/profiles/conversation.md`; the file
 content is used as the system prompt. User profiles live in an explicit
-`profile_root`.
+`profile_root`. Profile references are names, not filesystem paths; pass the
+directory as `profile_root` and use `ToolAgent(profile="reviewer")`.
 
 ```python
 from dagent import AgentProfile, ProfileStore
@@ -67,7 +68,8 @@ configured = dagent.Runner.from_config("config.yaml")
 ```
 
 `config.yaml` can define provider settings, MCP servers, result validation, and
-an optional user profile directory. If `profiles.directory` is omitted, built-in
+an optional user profile directory. Relative `profiles.directory` values resolve
+from the config file directory. If `profiles.directory` is omitted, built-in
 package profiles are used.
 
 Tools, MCP servers, and skill roots can be registered at construction.

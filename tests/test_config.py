@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from dagent.config import load_config
+from dagent.config import load_config, resolve_config_relative_path
 
 
 def test_load_config_from_yaml(tmp_path: Path) -> None:
@@ -26,6 +26,12 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.timeout_seconds == 12
     assert config.provider.strip_thinking is False
     assert config.profiles.directory is None
+
+
+def test_resolve_config_relative_path_uses_config_directory(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+
+    assert resolve_config_relative_path("profiles", config_path) == tmp_path / "profiles"
 
 
 def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -> None:

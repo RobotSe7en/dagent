@@ -237,7 +237,7 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
     assert invocation.kind == "agent"
     assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 3}
 
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
     result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
     assert result.status == "completed"
 
@@ -258,7 +258,7 @@ def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path)
         prompt=dag.format("Draft from {result}", result=search_node.output),
     ).after(search_node)
 
-    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
     result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
@@ -284,4 +284,4 @@ def _profile_root(tmp_path: Path, name: str) -> str:
     profile_dir.mkdir(parents=True, exist_ok=True)
     profile_path = profile_dir / f"{name}.md"
     profile_path.write_text(f"# {name}\n\nYou are {name}.", encoding="utf-8")
-    return str(profile_path)
+    return name

@@ -419,7 +419,7 @@ export function App() {
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
-  const [selectedProfileName, setSelectedProfileName] = useState('');
+  const [selectedProfileId, setSelectedProfileId] = useState('');
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
@@ -453,7 +453,7 @@ export function App() {
       setProfileWarnings(nextProfiles.warnings);
       setSkills(nextSkills);
       setMcpServers(nextMcpServers);
-      setSelectedProfileName((current) => current || nextProfiles.profiles[0]?.name || '');
+      setSelectedProfileId((current) => current || nextProfiles.profiles[0]?.id || '');
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -1453,8 +1453,8 @@ export function App() {
           <AgentDirectory
             profiles={profiles}
             warnings={profileWarnings}
-            selectedName={selectedProfileName}
-            onSelect={setSelectedProfileName}
+            selectedId={selectedProfileId}
+            onSelect={setSelectedProfileId}
           />
         )}
       </main>
@@ -3843,15 +3843,15 @@ function formatEnvText(env: Record<string, string>): string {
 function AgentDirectory({
   profiles,
   warnings,
-  selectedName,
+  selectedId,
   onSelect,
 }: {
   profiles: AgentProfile[];
   warnings: ProfileWarning[];
-  selectedName: string;
-  onSelect: (name: string) => void;
+  selectedId: string;
+  onSelect: (id: string) => void;
 }) {
-  const selected = profiles.find((profile) => profile.name === selectedName) ?? profiles[0];
+  const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0];
   return (
     <section className="console-grid directory-grid">
       <aside className="console-sidebar">
@@ -3859,10 +3859,10 @@ function AgentDirectory({
         <div className="resource-list">
           {profiles.length ? profiles.map((profile) => (
             <button
-              key={profile.name}
-              className={selected?.name === profile.name ? 'resource-row active' : 'resource-row'}
+              key={profile.id}
+              className={selected?.id === profile.id ? 'resource-row active' : 'resource-row'}
               type="button"
-              onClick={() => onSelect(profile.name)}
+              onClick={() => onSelect(profile.id)}
             >
               <strong>{profile.name}</strong>
               <span>{profile.source} · {profile.description || 'Markdown profile'}</span>

@@ -34,7 +34,7 @@ from dagent import (
     default_skill_roots,
     validate_dag_spec,
 )
-from dagent.config import load_config
+from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
@@ -118,7 +118,9 @@ class ApiState:
         if self.profile_directory is not None:
             return self.profile_directory
         try:
-            return load_config().profiles.directory
+            config_path = resolve_config_path()
+            directory = resolve_config_relative_path(load_config(config_path).profiles.directory, config_path)
+            return str(directory) if directory is not None else None
         except Exception:
             return None
 
@@ -553,7 +555,7 @@ async def delete_skill(name: str) -> dict[str, str]:
 async def list_profiles() -> dict[str, Any]:
     profile_directory = state.get_profile_directory()
     profiles: list[dict[str, Any]] = [
-        {**profile.model_dump(mode="json"), "source": "builtin"}
+        _profile_payload(profile, "builtin")
         for profile in list_builtin_profiles()
     ]
     warnings: list[dict[str, str]] = []
@@ -568,10 +570,18 @@ async def list_profiles() -> dict[str, Any]:
         }
     for profile_path in sorted(directory.glob("*.md"), key=lambda path: path.name):
         try:
-            profiles.append({**store.load(profile_path.name).model_dump(mode="json"), "source": "user"})
+            profiles.append(_profile_payload(store.load(profile_path.name), "user"))
         except Exception as exc:
             warnings.append({"name": profile_path.stem, "error": str(exc)})
     return {"profiles": profiles, "warnings": warnings}
+
+
+def _profile_payload(profile, source: str) -> dict[str, Any]:
+    return {
+        **profile.model_dump(mode="json"),
+        "id": f"{source}:{profile.name}",
+        "source": source,
+    }
 
 
 @app.get("/sandbox/status")

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from dagent.profiles import ProfileStore, list_builtin_profiles, load_builtin_profile
 
 
@@ -16,6 +18,14 @@ def test_profile_store_loads_markdown_profile(tmp_path: Path) -> None:
     assert profile.name == "dag_agent"
     assert profile.description == "DAG Agent"
     assert profile.render() == "# DAG Agent\n\nGenerate compact PlanSpec DSL."
+
+
+def test_profile_store_rejects_path_like_profile_names(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path / "profiles")
+
+    for name in ("../outside", "nested/profile", "/tmp/profile.md", r"nested\profile", "profile.txt"):
+        with pytest.raises(ValueError):
+            store.load(name)
 
 
 def test_dag_agent_prompt_requires_internal_task_decomposition() -> None:
