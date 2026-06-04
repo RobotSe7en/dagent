@@ -171,6 +171,48 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
     runner.close()
 
 
+def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                for tool_name in config.get("tools", []):
+                    safe_name = tool_name.replace("-", "_")
+                    catalog.register(
+                        CapabilityDefinition(
+                            id=f"mcp.{name}.{safe_name}",
+                            name=f"mcp_{name}__{safe_name}",
+                            kind="mcp",
+                            config={"server": name, "tool": tool_name},
+                        ),
+                        lambda invocation: CapabilityResult(
+                            invocation_id=invocation.invocation_id,
+                            capability_id=invocation.capability_id,
+                            kind=invocation.kind,
+                            status="completed",
+                            content="ok",
+                        ),
+                    )
+
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([]),
+        mcp_servers={"mock": {"command": "fake", "tools": ["old"]}},
+    )
+
+    definitions = runner.replace_mcp_server("mock", {"command": "fake", "tools": ["new"]})
+
+    assert [definition.id for definition in definitions] == ["mcp.mock.new"]
+    assert runner.runtime.capability_catalog.get("mcp.mock.old") is None
+    assert runner.runtime.capability_catalog.get("mcp.mock.new") is not None
+    runner.close()
+
+
 def test_add_mcp_server_requires_mcp_sdk_when_unavailable(monkeypatch, tmp_path) -> None:
     runner = _runner(tmp_path)
     monkeypatch.setattr(runner_module.MCPServerManager, "available", False)

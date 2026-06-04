@@ -22,6 +22,7 @@ import type {
   MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
+import { normalizeStreamEvent } from './streamEvents';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -356,11 +357,9 @@ async function readStream(response: Response, handlers: StreamHandlers) {
     for (const frame of frames) {
       const line = frame.split('\n').find((item) => item.startsWith('data: '));
       if (!line) continue;
-      const event = JSON.parse(line.slice(6));
-      const eventType = event.type === 'status' && typeof event.data?.type === 'string'
-        ? event.data.type
-        : event.type;
-      const typedEvent = eventType === event.type ? event : { ...event, type: eventType };
+      const event = normalizeStreamEvent(JSON.parse(line.slice(6)));
+      const eventType = event.type;
+      const typedEvent = event;
       if (eventType === 'status') handlers.onStatus?.(event.message);
       if (eventType === 'dag') handlers.onDag?.(event.dag);
       if (eventType === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);

@@ -67,20 +67,25 @@ class Runner:
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
+        self._pending_runtimes: dict[str, HarnessRuntime] = {}
+        self._registered_agent_configs: dict[str, ToolAgent] = {}
+        self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
+        self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
+        self._mcp_server_managers: dict[str, Any] = {}
         self._runtime = _create_runtime(
             workspace=self.workspace,
             provider=provider,
             capabilities=capabilities,
             validator=validator,
             skills_provider=self._skill_provider,
-            mcp_servers=mcp_servers,
             profile_root=self.profile_root,
         )
-        self._pending_runtimes: dict[str, HarnessRuntime] = {}
-        self._registered_agent_configs: dict[str, ToolAgent] = {}
-        self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
-        self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
-        self._mcp_server_managers: dict[str, Any] = {}
+        try:
+            for name, config in dict(mcp_servers or {}).items():
+                self._add_mcp_server(name, config)
+        except Exception:
+            self.close()
+            raise
 
     @classmethod
     def from_config(
@@ -625,18 +630,15 @@ def _create_runtime(
     dag_profile: str | AgentProfile = "dag_agent",
     dag_max_cycles: int = 6,
     skills_provider: SkillsCapabilityProvider | None = None,
-    mcp_servers: dict[str, dict[str, Any]] | None = None,
     profile_root: str | Path | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     if provider is None:
         raise ValueError("No provider configured. Pass provider=... or use Runner.from_config(...).")
     resolved_provider = provider
-    resolved_mcp_servers = dict(mcp_servers or {})
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skills_provider=skills_provider,
-        mcp_servers=resolved_mcp_servers,
     )
     capability_executor = CapabilityExecutor(catalog)
     for capability in capabilities:
