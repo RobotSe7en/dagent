@@ -37,14 +37,20 @@ async def main() -> None:
         dag = dagent.Dag("research_report", name="Research Report", input=str)
         report = dag.artifact("report", "outputs/report.md")
 
-        search_node = dag.capability_node("search", search, q=dag.input)
-        dag.capability_node(
+        search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+        write_node = dagent.Node(
             "write_report",
-            write_note,
-            path=report.path,
-            content=search_node.output,
-            outputs=[report],
-        ).after(search_node)
+            target=write_note,
+            inputs={"path": report.path, "content": search_node.output},
+            artifact_outputs=[report],
+            boundary=dagent.Boundary(
+                mode="write_limited",
+                allowed_paths=[report.path.as_expr()],
+            ),
+        )
+        dag.add_node(search_node)
+        dag.add_node(write_node)
+        dag.add_edge(search_node, write_node)
 
         spec = dag.to_dag_spec()
         dagent.validate_dag_spec(spec)

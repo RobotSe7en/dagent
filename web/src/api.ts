@@ -4,7 +4,7 @@ import type {
   CapabilityKind,
   CapabilityResult,
   DagRun,
-  DagSpec,
+  UserDag,
   ProfileWarning,
   Dag,
   ReviewLevel,
@@ -97,25 +97,25 @@ export async function testCapability(
   return data.result;
 }
 
-export async function listDagSpecs(): Promise<DagSpec[]> {
-  const res = await fetch(`${API_BASE}/dag-specs`);
+export async function listDags(): Promise<UserDag[]> {
+  const res = await fetch(`${API_BASE}/dags`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dag_specs ?? [];
+  return data.dags ?? [];
 }
 
-export async function saveDagSpec(spec: DagSpec): Promise<DagSpec> {
-  const res = await fetch(`${API_BASE}/dag-specs`, {
+export async function saveDag(spec: UserDag): Promise<UserDag> {
+  const res = await fetch(`${API_BASE}/dags`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(spec),
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dag_spec;
+  return data.dag;
 }
 
-export async function uploadDagSpecArtifact(
+export async function uploadDagArtifact(
   specId: string,
   artifactId: string,
   files: File[],
@@ -126,7 +126,7 @@ export async function uploadDagSpecArtifact(
     body.append('files', file, uploadFormFilename(file, options));
   }
   const res = await fetch(
-    `${API_BASE}/dag-specs/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
+    `${API_BASE}/dags/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
     {
       method: 'POST',
       body,
@@ -320,7 +320,7 @@ export async function resumeDagReview(
   await readStream(response, handlers);
 }
 
-export async function runDagSpecStream(
+export async function runDagStream(
   specId: string,
   handlers: StreamHandlers,
   options: {
@@ -330,7 +330,7 @@ export async function runDagSpecStream(
   const body = options.workspaceRoot?.trim()
     ? JSON.stringify({ workspace_root: options.workspaceRoot.trim() })
     : undefined;
-  const response = await fetch(`${API_BASE}/dag-specs/${encodeURIComponent(specId)}/run/stream`, {
+  const response = await fetch(`${API_BASE}/dags/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body,

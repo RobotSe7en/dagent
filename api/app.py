@@ -40,6 +40,8 @@ from dagent.config import load_config, resolve_config_path, resolve_config_relat
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import list_builtin_profiles
+from dagent.schemas import Artifact, DAGEdge, DAGNode
+from dagent.schemas.value import ValueExpressionError, iter_artifact_exprs
 
 
 MessageTarget = Literal["auto", "tool", "dag"]
@@ -67,9 +69,35 @@ class CapabilityTestRequest(BaseModel):
     boundary: dict[str, Any] | None = None
 
 
-class DAGSpecRunRequest(BaseModel):
+class DAGRunRequest(BaseModel):
     workspace_root: str | None = None
     input: Any = None
+
+
+class UserDAGNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    target: str
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    artifact_inputs: list[str] = Field(default_factory=list)
+    artifact_outputs: list[str] = Field(default_factory=list)
+    title: str = ""
+    boundary: Boundary | None = None
+
+
+class UserDAG(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    version: int = 1
+    description: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    artifacts: dict[str, Artifact] = Field(default_factory=dict)
+    nodes: list[UserDAGNode] = Field(default_factory=list)
+    edges: list[DAGEdge] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MCPServerRequest(BaseModel):
@@ -89,9 +117,9 @@ class MCPServerRequest(BaseModel):
 class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
-        self.dag_specs: dict[str, DAGSpec] = {}
+        self.dags: dict[str, UserDAG] = {}
         self.dag_runs: dict[str, DAGRun] = {}
-        self.dag_spec_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
+        self.dag_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
@@ -193,53 +221,53 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 @app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
     state.close_runner()
-    state.dag_specs.clear()
+    state.dags.clear()
     state.dag_runs.clear()
-    state.dag_spec_artifact_uploads.clear()
+    state.dag_artifact_uploads.clear()
     state.custom_capabilities.clear()
     state.custom_mcp_servers.clear()
     return {"status": "ok"}
 
 
-@app.get("/dag-specs")
-async def list_dag_specs() -> dict[str, Any]:
+@app.get("/dags")
+async def list_dags() -> dict[str, Any]:
     return {
-        "dag_specs": [
-            spec.model_dump(mode="json")
-            for spec in sorted(state.dag_specs.values(), key=lambda item: item.id)
+        "dags": [
+            dag.model_dump(mode="json")
+            for dag in sorted(state.dags.values(), key=lambda item: item.id)
         ]
     }
 
 
-@app.post("/dag-specs")
-async def create_dag_spec(spec: DAGSpec) -> dict[str, Any]:
+@app.post("/dags")
+async def create_dag(dag: UserDAG) -> dict[str, Any]:
     try:
-        validate_dag_spec(spec)
+        validate_dag_spec(_compile_user_dag(dag))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    state.dag_specs[spec.id] = spec.model_copy(deep=True)
-    _prune_artifact_uploads(spec)
-    return {"dag_spec": spec.model_dump(mode="json")}
+    state.dags[dag.id] = dag.model_copy(deep=True)
+    _prune_dag_artifact_uploads(dag)
+    return {"dag": dag.model_dump(mode="json")}
 
 
-@app.get("/dag-specs/{spec_id}")
-async def get_dag_spec(spec_id: str) -> dict[str, Any]:
-    spec = state.dag_specs.get(spec_id)
-    if spec is None:
-        raise HTTPException(status_code=404, detail="DAGSpec not found.")
-    return {"dag_spec": spec.model_dump(mode="json")}
+@app.get("/dags/{dag_id}")
+async def get_dag(dag_id: str) -> dict[str, Any]:
+    dag = state.dags.get(dag_id)
+    if dag is None:
+        raise HTTPException(status_code=404, detail="DAG not found.")
+    return {"dag": dag.model_dump(mode="json")}
 
 
-@app.post("/dag-specs/{spec_id}/artifacts/{artifact_id}/upload")
-async def upload_dag_spec_artifact(
-    spec_id: str,
+@app.post("/dags/{dag_id}/artifacts/{artifact_id}/upload")
+async def upload_dag_artifact(
+    dag_id: str,
     artifact_id: str,
     files: list[UploadFile] = File(...),
 ) -> dict[str, Any]:
-    spec = state.dag_specs.get(spec_id)
-    if spec is None:
-        raise HTTPException(status_code=404, detail="DAGSpec not found.")
-    if artifact_id not in spec.artifacts:
+    dag = state.dags.get(dag_id)
+    if dag is None:
+        raise HTTPException(status_code=404, detail="DAG not found.")
+    if artifact_id not in dag.artifacts:
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if not files:
         raise HTTPException(status_code=400, detail="At least one file is required.")
@@ -253,45 +281,45 @@ async def upload_dag_spec_artifact(
                 content=content,
             )
         )
-    state.dag_spec_artifact_uploads.setdefault(spec_id, {})[artifact_id] = uploads
+    state.dag_artifact_uploads.setdefault(dag_id, {})[artifact_id] = uploads
     return {
         "artifact_id": artifact_id,
         "files": [upload.filename for upload in uploads],
     }
 
 
-@app.post("/dag-specs/{spec_id}/run")
-async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -> dict[str, Any]:
-    spec = state.dag_specs.get(spec_id)
-    if spec is None:
-        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+@app.post("/dags/{dag_id}/run")
+async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str, Any]:
+    dag = state.dags.get(dag_id)
+    if dag is None:
+        raise HTTPException(status_code=404, detail="DAG not found.")
 
     result = await state.get_runner().run(
-        spec,
+        _compile_user_dag(dag),
         input=None if request is None else request.input,
         workspace_root=_workspace_root_from_request(request),
-        artifact_uploads=_artifact_uploads_for_spec(spec_id),
+        artifact_uploads=_artifact_uploads_for_dag(dag_id),
     )
     _store_dag_run(result)
     return {"result": result.model_dump(mode="json")}
 
 
-@app.post("/dag-specs/{spec_id}/run/stream")
-async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = None) -> StreamingResponse:
-    spec = state.dag_specs.get(spec_id)
-    if spec is None:
-        raise HTTPException(status_code=404, detail="DAGSpec not found.")
+@app.post("/dags/{dag_id}/run/stream")
+async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> StreamingResponse:
+    dag = state.dags.get(dag_id)
+    if dag is None:
+        raise HTTPException(status_code=404, detail="DAG not found.")
     workspace_root = _workspace_root_from_request(request)
 
     async def events():
-        yield _sse({"type": "status", "message": "dag_spec_run_started"})
+        yield _sse({"type": "status", "message": "dag_run_started"})
         sent_error = False
         try:
             async for event in state.get_runner().stream(
-                spec,
+                _compile_user_dag(dag),
                 input=None if request is None else request.input,
                 workspace_root=workspace_root,
-                artifact_uploads=_artifact_uploads_for_spec(spec_id),
+                artifact_uploads=_artifact_uploads_for_dag(dag_id),
             ):
                 if event.type == "error":
                     sent_error = True
@@ -305,25 +333,101 @@ async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = 
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _workspace_root_from_request(request: DAGSpecRunRequest | None) -> str:
+def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
     if request is None or request.workspace_root is None or not request.workspace_root.strip():
         return ".dagent-runs"
     return request.workspace_root.strip()
 
 
-def _artifact_uploads_for_spec(spec_id: str) -> dict[str, list[ArtifactUpload]]:
+def _compile_user_dag(dag: UserDAG) -> DAGSpec:
+    return DAGSpec(
+        id=dag.id,
+        name=dag.name,
+        version=dag.version,
+        description=dag.description,
+        input_schema=dict(dag.input_schema),
+        artifacts={
+            artifact_id: artifact.model_copy(deep=True)
+            for artifact_id, artifact in dag.artifacts.items()
+        },
+        nodes=[
+            _dag_node_from_user_node(node)
+            for node in dag.nodes
+        ],
+        edges=[
+            edge.model_copy(deep=True)
+            for edge in dag.edges
+        ],
+        metadata=dict(dag.metadata),
+    )
+
+
+def _dag_node_from_user_node(node: UserDAGNode) -> DAGNode:
+    capability_id = node.target.strip()
+    if not capability_id:
+        raise ValueError(f"Node '{node.id}' target is required.")
+    kind, risk = _target_kind_and_risk(capability_id, node_id=node.id)
+    boundary = node.boundary or Boundary(mode="read_only", allowed_paths=["."])
+    output_ids = {str(artifact_id) for artifact_id in node.artifact_outputs}
+    explicit_input_ids = {str(artifact_id) for artifact_id in node.artifact_inputs}
+    inferred_input_ids = _artifact_ids_from_values(
+        node.inputs,
+        boundary.allowed_paths,
+        boundary.allowed_commands,
+    ) - output_ids
+    return DAGNode(
+        id=node.id,
+        title=node.title or node.id.replace("_", " ").capitalize(),
+        payload={
+            "type": "capability",
+            "invocation": CapabilityInvocation(
+                capability_id=capability_id,
+                kind=kind,  # type: ignore[arg-type]
+                arguments=dict(node.inputs),
+                boundary=boundary,
+                risk=risk,  # type: ignore[arg-type]
+            ),
+        },
+        inputs=sorted(explicit_input_ids | inferred_input_ids),
+        outputs=sorted(output_ids),
+    )
+
+
+def _target_kind_and_risk(capability_id: str, *, node_id: str) -> tuple[str, str]:
+    kind = capability_id.split(".", 1)[0]
+    if kind == "skill":
+        raise ValueError(
+            f"Node '{node_id}' cannot target skill capabilities directly; attach skills to an agent instead."
+        )
+    if kind not in {"tool", "mcp", "shell", "agent", "memory", "file"}:
+        raise ValueError(f"Cannot infer capability kind from target '{capability_id}'.")
+    return kind, "medium" if kind == "agent" else "low"
+
+
+def _artifact_ids_from_values(*values: Any) -> set[str]:
+    artifact_ids: set[str] = set()
+    try:
+        for value in values:
+            for expr in iter_artifact_exprs(value):
+                artifact_ids.add(expr.artifact_id)
+    except ValueExpressionError as exc:
+        raise ValueError(f"Invalid artifact value expression: {exc}") from exc
+    return artifact_ids
+
+
+def _artifact_uploads_for_dag(dag_id: str) -> dict[str, list[ArtifactUpload]]:
     return {
         artifact_id: list(uploads)
-        for artifact_id, uploads in state.dag_spec_artifact_uploads.get(spec_id, {}).items()
+        for artifact_id, uploads in state.dag_artifact_uploads.get(dag_id, {}).items()
     }
 
 
-def _prune_artifact_uploads(spec: DAGSpec) -> None:
-    uploads = state.dag_spec_artifact_uploads.get(spec.id)
+def _prune_dag_artifact_uploads(dag: UserDAG) -> None:
+    uploads = state.dag_artifact_uploads.get(dag.id)
     if not uploads:
         return
     for artifact_id in list(uploads):
-        if artifact_id not in spec.artifacts:
+        if artifact_id not in dag.artifacts:
             del uploads[artifact_id]
 
 

@@ -95,16 +95,26 @@ export interface Dag {
   edges: DagEdge[];
 }
 
-export interface DagSpec {
+export interface UserDag {
   id: string;
   name: string;
   version?: number;
   description?: string;
   input_schema?: Record<string, unknown>;
   artifacts?: Record<string, Artifact>;
-  nodes: DagNode[];
+  nodes: UserDagNode[];
   edges: DagEdge[];
   metadata?: Record<string, unknown>;
+}
+
+export interface UserDagNode {
+  id: string;
+  target: string;
+  inputs?: Record<string, unknown>;
+  artifact_inputs?: string[];
+  artifact_outputs?: string[];
+  title?: string;
+  boundary?: Boundary | null;
 }
 
 export interface Artifact {

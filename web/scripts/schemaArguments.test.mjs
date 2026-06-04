@@ -161,8 +161,19 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
       report: { id: 'report', paths: ['outputs/report.md'] },
     },
     nodes: [
-      { id: 'read', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['source'], outputs: ['report'] },
-      { id: 'review', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['report'] },
+      {
+        id: 'read',
+        target: 'tool.echo',
+        inputs: { path: artifactPathExpr('source') },
+        artifact_inputs: ['source'],
+        artifact_outputs: ['report'],
+      },
+      {
+        id: 'review',
+        target: 'tool.echo',
+        inputs: { path: artifactPathExpr('report') },
+        artifact_inputs: ['report'],
+      },
     ],
     edges: [],
   };
@@ -173,8 +184,8 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
       source: { id: 'source', paths: ['uploads/source.md'] },
     },
     nodes: [
-      { ...spec.nodes[0], inputs: ['source'], outputs: [] },
-      { ...spec.nodes[1], inputs: [] },
+      { ...spec.nodes[0], artifact_outputs: [] },
+      { ...spec.nodes[1], inputs: {}, artifact_inputs: [], artifact_outputs: [] },
     ],
   });
 });
@@ -270,30 +281,16 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     nodes: [
       {
         id: 'agent_1',
-        inputs: ['upload_source'],
-        outputs: ['report', 'missing_output'],
-        payload: {
-          type: 'capability',
-          invocation: {
-            capability_id: 'agent.capability',
-            kind: 'agent',
-            arguments: {},
-            risk: 'medium',
-          },
-        },
+        target: 'agent.capability',
+        inputs: {},
+        artifact_inputs: ['upload_source'],
+        artifact_outputs: ['report', 'missing_output'],
       },
       {
         id: 'broken',
-        inputs: ['missing_input'],
-        payload: {
-          type: 'capability',
-          invocation: {
-            capability_id: '',
-            kind: 'tool',
-            arguments: {},
-            risk: 'low',
-          },
-        },
+        target: '',
+        inputs: {},
+        artifact_inputs: ['missing_input'],
       },
     ],
     edges: [{ source: 'agent_1', target: 'broken', reason: 'test' }],
@@ -327,7 +324,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
   assert.equal(summary.canRun, false);
   assert.deepEqual(summary.issues.map((issue) => issue.message), [
     "Node 'agent_1' references unknown output artifact 'missing_output'.",
-    "Node 'broken' is missing a capability.",
+    "Node 'broken' is missing a target.",
     "Node 'broken' references unknown input artifact 'missing_input'.",
   ]);
 });

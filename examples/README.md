@@ -9,7 +9,7 @@ root with `uv run python -m examples.<module>`.
 | --- | --- |
 | Runner and tools | `dagent.Runner`, `dagent.tool`, `dagent.CapabilityBinding` |
 | Agents | `dagent.AutoAgent`, `dagent.ToolAgent`, `dagent.DagAgent` |
-| Static DAGs | `dagent.Dag`, `dagent.InputRef`, `dagent.NodeRef`, `dagent.NodeOutputRef`, `dagent.ArtifactRef`, `dagent.ArtifactValueRef`, `dagent.FormatRef`, `dagent.validate_dag_spec` |
+| Static DAGs | `dagent.Dag`, `dagent.Node`, `dagent.InputRef`, `dagent.NodeRef`, `dagent.NodeOutputRef`, `dagent.ArtifactRef`, `dagent.ArtifactValueRef`, `dagent.FormatRef`, `dagent.validate_dag_spec` |
 | Profiles | `dagent.AgentProfile`, `dagent.ProfileStore` |
 | Skills | `dagent.SkillStore`, `dagent.SkillEntry`, `dagent.SkillView`, skill store errors, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `dagent.RunResult`, `dagent.RunStreamEvent`, `dagent.ReviewHandle`, `dagent.ReviewDecision`, `dagent.ReviewLevel` |

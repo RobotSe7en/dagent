@@ -12,7 +12,7 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 |------|------------|
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
+| Static DAGs | `Dag`, `Node`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
@@ -310,14 +310,20 @@ async def main():
     dag = dagent.Dag("research_report", name="Research Report", input=str)
     report = dag.artifact("report", "outputs/report.md")
 
-    search_node = dag.capability_node("search", search, q=dag.input)
-    dag.capability_node(
+    search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+    write_node = dagent.Node(
         "write_report",
-        write_note,
-        path=report.path,
-        content=search_node.output,
-        outputs=[report],
-    ).after(search_node)
+        target=write_note,
+        inputs={"path": report.path, "content": search_node.output},
+        artifact_outputs=[report],
+        boundary=dagent.Boundary(
+            mode="write_limited",
+            allowed_paths=[report.path.as_expr()],
+        ),
+    )
+    dag.add_node(search_node)
+    dag.add_node(write_node)
+    dag.add_edge(search_node, write_node)
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
@@ -354,7 +360,7 @@ immediately before the capability call.
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
 
 Referencing a previous node output does not create an edge. Add the dependency
-explicitly with `.after(...)` or `dag.edge(...)`:
+explicitly with `.after(...)`, `dag.edge(...)`, or `dag.add_edge(...)`:
 
 ```python
 class SearchResult(BaseModel):
@@ -380,6 +386,24 @@ dag.capability_node(
     title=search_node.output.title,
     url=search_node.output.url,
 ).after(search_node)
+```
+
+The public `Node` form is equivalent, but uses `inputs` for capability
+arguments and `artifact_inputs` / `artifact_outputs` for artifact contracts:
+
+```python
+search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+render_node = dagent.Node(
+    "render",
+    target=render,
+    inputs={
+        "title": search_node.output.title,
+        "url": search_node.output.url,
+    },
+)
+dag.add_node(search_node)
+dag.add_node(render_node)
+dag.add_edge(search_node, render_node)
 ```
 
 Pydantic graph inputs are accepted at runtime and converted to JSON-like data

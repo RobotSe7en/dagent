@@ -265,14 +265,19 @@ def render(title: str, url: str, audience: str) -> str:
 
 async def main():
     dag = dagent.Dag("research", input=ResearchInput)
-    found = dag.capability_node("search", search, q=dag.input.query)
-    dag.capability_node(
+    found = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+    rendered = dagent.Node(
         "render",
-        render,
-        title=found.output.title,
-        url=found.output.url,
-        audience=dag.input.audience,
-    ).after(found)
+        target=render,
+        inputs={
+            "title": found.output.title,
+            "url": found.output.url,
+            "audience": dag.input.audience,
+        },
+    )
+    dag.add_node(found)
+    dag.add_node(rendered)
+    dag.add_edge(found, rendered)
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
