@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -327,6 +327,8 @@ class AgentCapabilityProvider:
             boundary=_agent_boundary(invocation, context),
             max_steps=max_steps,
             messages=messages,
+            skills=config.get("skills"),
+            capability_context=_agent_capability_context(context, config.get("skills")),
             on_token=callbacks.on_token,
             on_event=callbacks.on_event,
         )
@@ -375,6 +377,12 @@ class AgentCapabilityProvider:
             _agent_node_request(context, invocation),
         )
         return [system, user]
+
+
+def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> Any:
+    if context is None:
+        return None
+    return replace(context, skills=skills)
 
 
 def template_capability_handler(template: str):

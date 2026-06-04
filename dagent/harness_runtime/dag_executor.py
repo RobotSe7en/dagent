@@ -74,6 +74,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         initial_trace: RunTrace | None = None,
+        skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTrace:
@@ -92,6 +93,7 @@ class DAGExecutor:
                     normalized,
                     trace,
                     node_traces,
+                    skills=skills,
                     on_token=on_token,
                     on_event=on_event,
                 )
@@ -115,6 +117,7 @@ class DAGExecutor:
         trace: RunTrace,
         node_traces: dict[str, RunTraceNode],
         *,
+        skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -130,6 +133,7 @@ class DAGExecutor:
                     node,
                     dag,
                     parent_id=trace.root.id,
+                    skills=skills,
                     on_token=on_token,
                     on_event=on_event,
                 )
@@ -200,6 +204,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         parent_id: str,
+        skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTraceNode:
@@ -221,6 +226,7 @@ class DAGExecutor:
             node,
             dag,
             dag_node=dag_node,
+            skills=skills,
             on_token=on_token,
             on_event=on_event,
         )
@@ -231,6 +237,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         dag_node: RunTraceNode,
+        skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RunTraceNode:
@@ -243,7 +250,7 @@ class DAGExecutor:
         try:
             capability_result = await self.capability_executor.execute(
                 invocation,
-                context=self._execution_context(dag, node),
+                context=self._execution_context(dag, node, skills=skills),
                 callbacks=CapabilityExecutionCallbacks(
                     on_token=on_token,
                     on_event=_node_event_emitter(on_event, dag=dag, node=node, invocation=invocation),
@@ -305,7 +312,13 @@ class DAGExecutor:
         dag_node.ended_at = _now()
         return dag_node
 
-    def _execution_context(self, dag: DAG, node: DAGNode) -> CapabilityExecutionContext:
+    def _execution_context(
+        self,
+        dag: DAG,
+        node: DAGNode,
+        *,
+        skills: tuple[str, ...] | None = None,
+    ) -> CapabilityExecutionContext:
         input_artifacts: dict[str, list[Path]] = {}
         output_artifacts: dict[str, list[Path]] = {}
         if self.workspace_path is not None and self.artifacts:
@@ -323,6 +336,7 @@ class DAGExecutor:
             input_artifacts=input_artifacts,
             output_artifacts=output_artifacts,
             artifact_states=dict(self.artifact_states),
+            skills=skills,
         )
 
     def _enforce_review_gate(self, dag: DAG) -> None:

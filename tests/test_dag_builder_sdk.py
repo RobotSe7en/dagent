@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 import dagent
-from dagent.providers import ChatResponse, MockProvider
+from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import DAGSpec
 from dagent.harness_runtime.dag_builder import DAGValidationError
 
@@ -170,8 +170,15 @@ def test_runner_executes_builder_with_collected_capabilities(tmp_path: Path) -> 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
 
+    assert isinstance(result, dagent.RunResult)
+    assert result.kind == "static_dag"
+    assert result.dag_run is not None
+    assert result.run_id == result.dag_run.run_id
+    assert result.spec_id == "write_note"
     assert result.status == "completed"
-    assert result.trace.artifacts["note"].status == "created"
+    assert result.artifact_state("note").status == "created"
+    assert result.artifacts["note"].status == "created"
+    assert result.node_output("write") == "wrote:notes/output.txt"
     workspace = Path(result.workspace_path)
     assert (workspace / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
 
@@ -197,9 +204,10 @@ def test_runner_executes_value_expr_dataflow(tmp_path: Path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
 
+    assert isinstance(result, dagent.RunResult)
     assert result.status == "completed"
-    assert result.trace.root.children[0].value == {"title": "found:dagent", "url": "https://example.test"}
-    assert result.trace.root.children[1].output == "found:dagent <https://example.test>"
+    assert result.node_value("search") == {"title": "found:dagent", "url": "https://example.test"}
+    assert result.node_output("render") == "found:dagent <https://example.test>"
 
 
 def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
@@ -219,6 +227,50 @@ def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
 
     assert result.status == "completed"
     assert result.trace.root.children[0].output == "found:dagent"
+
+
+def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    dag = dagent.Dag("echo_dag", input=str)
+    dag.capability_node("echo", echo, text=dag.input)
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(dag, input="hello", workspace_root=tmp_path / "runs")
+        ]
+
+    events = run(collect())
+
+    trace_events = [event for event in events if event.type == "trace"]
+    assert trace_events
+    assert trace_events[-1].trace is not None
+    assert trace_events[-1].trace.status == "completed"
+    assert events[-1].type == "done"
+    assert isinstance(events[-1].result, dagent.RunResult)
+    assert events[-1].result.kind == "static_dag"
+    assert events[-1].result.node_output("echo") == "echo:hello"
+
+
+def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    dag = dagent.Dag("echo_spec", input=str)
+    dag.capability_node("echo", echo, text=dag.input)
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[echo])
+
+    result = run(runner.run(dag.to_dag_spec(), input="hello", workspace_root=tmp_path / "runs"))
+
+    assert isinstance(result, dagent.RunResult)
+    assert result.kind == "static_dag"
+    assert result.spec_id == "echo_spec"
+    assert result.node_output("echo") == "echo:hello"
 
 
 def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> None:
@@ -277,6 +329,52 @@ def test_agent_node_defaults_to_tool_agent_max_steps(tmp_path: Path) -> None:
 
     invocation = dag.to_dag_spec().nodes[0].payload.invocation
     assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 11}
+
+
+def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
+    skill_root = tmp_path / "skills"
+    for category, name in (("research", "market"), ("writing", "style")):
+        skill_dir = skill_root / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(content="researched"),
+        ChatResponse(tool_calls=[ToolCall(id="call_2", name="skills_list", arguments={})]),
+        ChatResponse(content="written"),
+    ])
+    researcher = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "researcher"),
+        capabilities=[],
+        skills=["research/market"],
+    )
+    writer = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "writer"),
+        capabilities=[],
+        skills=["writing/style"],
+    )
+    dag = dagent.Dag("agent_skill_flow")
+    research = dag.agent_node("research", researcher, prompt="Research.")
+    dag.agent_node("write", writer, prompt="Write.").after(research)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[skill_root],
+        profile_root=tmp_path / "profiles",
+    )
+
+    result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
+
+    assert result.status == "completed"
+    research_tool_content = provider.requests[1]["messages"][-1]["content"]
+    writer_tool_content = provider.requests[3]["messages"][-1]["content"]
+    assert "market" in research_tool_content
+    assert "style" not in research_tool_content
+    assert "style" in writer_tool_content
+    assert "market" not in writer_tool_content
 
 
 def _profile_root(tmp_path: Path, name: str) -> str:

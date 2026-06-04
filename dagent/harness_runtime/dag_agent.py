@@ -81,7 +81,6 @@ class DAGAgent:
                 profile=self.profile,
                 task_content="",
                 tools=tools,
-                skills=list(capability_scope.skill_instructions),
             )
         )
 
@@ -491,6 +490,7 @@ class DAGAgentLoop:
                     layer = await active_executor.execute_next_ready_layer(
                         record.dag,
                         initial_trace=trace,
+                        skills=record.capability_scope.skills,
                         on_token=on_token,
                         on_event=on_event,
                     )

@@ -51,7 +51,7 @@ async def main() -> None:
         runner.add_tool(summarize)
         runner.add_skill_root(skill_root)
 
-        agent = dagent.ToolAgent(profile="conversation")
+        agent = dagent.ToolAgent(profile="conversation", skills=["terse"])
         result = await runner.run(agent, "Summarize the text.")
 
         store = dagent.SkillStore(

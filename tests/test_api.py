@@ -7,8 +7,9 @@ from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
+import api.app as app_module
+import dagent.runner as runner_module
 from api.app import app, state
-from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.runner import Runner
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider, ToolCall
@@ -18,6 +19,15 @@ from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityRes
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
     assert not hasattr(state, "harness_runtime")
+    assert not hasattr(state, "custom_mcp_capability_ids")
+    assert not hasattr(state, "mcp_provider_factory")
+    assert not hasattr(app_module, "MCPCapabilityProvider")
+
+
+def test_api_does_not_keep_stream_payload_shims() -> None:
+    assert not hasattr(app_module, "_sdk_event_payloads")
+    assert not hasattr(app_module, "_runtime_event_payload")
+    assert not hasattr(app_module, "_runtime_response_payloads")
 
 
 def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
@@ -206,11 +216,12 @@ def test_api_installs_zip_skill_package(monkeypatch, tmp_path) -> None:
     assert script.json()["content"] == "print('ok')\n"
 
 
-def test_api_memory_mcp_server_reload_updates_runtime_catalog() -> None:
+def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> None:
     class FakeMCPProvider:
-        def __init__(self, servers):
+        def __init__(self, servers, *, manager=None):
             self.servers = servers
             self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
 
         def register_into(self, catalog):
             for name, config in self.servers.items():
@@ -236,22 +247,18 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog() -> None:
 
     state.close_runner()
     state.custom_mcp_servers.clear()
-    state.custom_mcp_capability_ids.clear()
     state.custom_mcp_errors.clear()
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
-    previous_factory = state.mcp_provider_factory
-    state.mcp_provider_factory = FakeMCPProvider
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     client = TestClient(app)
-    try:
-        create_response = client.post(
-            "/mcp/servers",
-            json={"name": "mock", "command": "fake", "risk": "low"},
-        )
-        capability_ids = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
-        delete_response = client.delete("/mcp/servers/mock")
-        capability_ids_after_delete = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
-    finally:
-        state.mcp_provider_factory = previous_factory
+
+    create_response = client.post(
+        "/mcp/servers",
+        json={"name": "mock", "command": "fake", "risk": "low"},
+    )
+    capability_ids = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
+    delete_response = client.delete("/mcp/servers/mock")
+    capability_ids_after_delete = {item["id"] for item in client.get("/capabilities").json()["capabilities"]}
 
     assert create_response.status_code == 200
     assert create_response.json()["server"]["status"] == "connected"
@@ -290,14 +297,14 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "mode": "auto"},
+        json={"message": "hello", "target": "auto"},
     )
 
     assert response.status_code == 200
     events = _sse_events(response.text)
     assert events[-1]["type"] == "done"
-    assert events[-1]["dag"] is None
-    assert events[-1]["final_answer"] == "hello there"
+    assert events[-1]["result"]["dag"] is None
+    assert events[-1]["result"]["output_text"] == "hello there"
 
 
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
@@ -305,7 +312,10 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
     managed_root = tmp_path / "managed-skills"
     monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
     monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
-    provider = MockProvider([ChatResponse(content="scoped answer")])
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(content="scoped answer"),
+    ])
     state.runner = _runner(provider, skill_roots=[managed_root])
     client = TestClient(app)
 
@@ -317,18 +327,24 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
         "/messages/stream",
         json={
             "message": "hello",
-            "mode": "tool",
+            "target": "tool",
             "capability_ids": ["tool.echo"],
-            "skill_names": ["brief"],
+            "skills": ["brief"],
         },
     )
 
     assert install_response.status_code == 200
     assert response.status_code == 200
-    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["echo"]
+    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
+        "echo",
+        "skills_list",
+        "skill_view",
+    ]
     system_content = provider.requests[0]["messages"][0]["content"]
-    assert "Use brief responses." in system_content
+    assert "Use brief responses." not in system_content
     assert "fail_tool" not in system_content
+    tool_content = provider.requests[1]["messages"][-1]["content"]
+    assert "brief" in tool_content
 
 
 def test_api_message_stream_rejects_unknown_capability_scope() -> None:
@@ -337,20 +353,32 @@ def test_api_message_stream_rejects_unknown_capability_scope() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "mode": "tool", "capability_ids": ["tool.missing"]},
+        json={"message": "hello", "target": "tool", "capability_ids": ["tool.missing"]},
     )
 
     assert response.status_code == 400
     assert "tool.missing" in response.json()["detail"]
 
 
-def test_api_message_stream_rejects_dag_spec_as_public_mode() -> None:
+def test_api_message_stream_rejects_runtime_mode_field() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "mode": "dag_spec"},
+        json={"message": "hello", "mode": "auto"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_api_message_stream_rejects_dag_spec_as_public_target() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json={"message": "hello", "target": "dag_spec"},
     )
 
     assert response.status_code == 422
@@ -368,10 +396,10 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo hello", "mode": "tool"},
+        json={"message": "echo hello", "target": "tool"},
     )
     events = _sse_events(response.text)
-    task_id = events[-1]["task_id"]
+    task_id = events[-1]["result"]["run_id"]
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
 
@@ -394,7 +422,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
+        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
     )
 
     assert response.status_code == 200
@@ -402,10 +430,10 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     event_types = [event["type"] for event in events]
     assert "dag" in event_types
     assert event_types[-1] == "done"
-    assert events[-1]["status"] == "awaiting_review"
-    assert events[-1]["pending_review"]["kind"] == "initial_dag"
-    assert events[-1]["dag"]["status"] == "review_required"
-    assert events[-1]["final_answer"] == ""
+    assert events[-1]["result"]["status"] == "awaiting_review"
+    assert events[-1]["result"]["pending_review"]["kind"] == "initial_dag"
+    assert events[-1]["result"]["dag"]["status"] == "review_required"
+    assert events[-1]["result"]["output_text"] == ""
 
 
 def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
@@ -420,7 +448,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "fast"},
+        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "fast"},
     )
 
     assert response.status_code == 200
@@ -429,8 +457,8 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
     assert "<think>planning dag</think>" in token_text
     assert any(event.get("type") == "trace" for event in events[:done_index])
-    assert events[-1]["status"] == "completed"
-    assert events[-1]["dag"]["status"] == "completed"
+    assert events[-1]["result"]["status"] == "completed"
+    assert events[-1]["result"]["dag"]["status"] == "completed"
 
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
@@ -446,7 +474,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "repair through DAG", "mode": "auto", "review_level": "fast"},
+        json={"message": "repair through DAG", "target": "auto", "review_level": "fast"},
     )
 
     assert response.status_code == 200
@@ -454,7 +482,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     dag_events = [event["dag"] for event in events if event["type"] == "dag"]
     assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
     assert any(dag["version"] == 2 and dag["status"] == "completed" for dag in dag_events)
-    assert events[-1]["status"] == "completed"
+    assert events[-1]["result"]["status"] == "completed"
 
 
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
@@ -469,13 +497,13 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "run a failing DAG", "mode": "dag", "review_level": "fast"},
+        json={"message": "run a failing DAG", "target": "dag", "review_level": "fast"},
     )
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    assert events[-1]["status"] == "failed"
-    assert events[-1]["dag"]["status"] == "failed"
+    assert events[-1]["result"]["status"] == "failed"
+    assert events[-1]["result"]["dag"]["status"] == "failed"
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
@@ -490,12 +518,12 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
 
     stream_response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
+        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
     )
     stream_events = _sse_events(stream_response.text)
-    task_id = stream_events[-1]["task_id"]
-    review_id = stream_events[-1]["pending_review"]["review_id"]
-    dag = stream_events[-1]["dag"]
+    task_id = stream_events[-1]["result"]["run_id"]
+    review_id = stream_events[-1]["result"]["pending_review"]["review_id"]
+    dag = stream_events[-1]["result"]["dag"]
     dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
@@ -505,8 +533,8 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
 
     assert resume_response.status_code == 200
     resume_events = _sse_events(resume_response.text)
-    assert resume_events[-1]["status"] == "completed"
-    assert resume_events[-1]["dag"]["status"] == "completed"
+    assert resume_events[-1]["result"]["status"] == "completed"
+    assert resume_events[-1]["result"]["dag"]["status"] == "completed"
     assert any(event.get("type") == "trace" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
@@ -531,11 +559,11 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
 
     stream_response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "mode": "auto", "review_level": "careful"},
+        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
     )
     stream_events = _sse_events(stream_response.text)
-    review_id = stream_events[-1]["pending_review"]["review_id"]
-    dag = stream_events[-1]["dag"]
+    review_id = stream_events[-1]["result"]["pending_review"]["review_id"]
+    dag = stream_events[-1]["result"]["dag"]
 
     resume_response = client.post(
         "/messages/resume",
@@ -547,7 +575,7 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
     token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
     assert "<think>observe</think>" in token_text
     assert "DAG agent final answer" not in token_text
-    assert events[-1]["final_answer"] == "DAG agent final answer"
+    assert events[-1]["result"]["output_text"] == "DAG agent final answer"
 
 
 def test_api_old_dag_lifecycle_routes_are_removed() -> None:
@@ -763,7 +791,7 @@ def test_api_dag_spec_create_run_and_artifacts() -> None:
 
     run_response = client.post("/dag-specs/write_note/run")
     assert run_response.status_code == 200
-    run_payload = run_response.json()["dag_run"]
+    run_payload = run_response.json()["result"]["dag_run"]
     assert run_payload["spec_id"] == "write_note"
     assert run_payload["status"] == "completed"
     assert run_payload["dag"]["status"] == "completed"
@@ -828,7 +856,7 @@ def test_api_dag_spec_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     )
 
     assert run_response.status_code == 200
-    run_payload = run_response.json()["dag_run"]
+    run_payload = run_response.json()["result"]["dag_run"]
     workspace_path = Path(run_payload["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
@@ -889,7 +917,7 @@ def test_api_dag_spec_artifact_upload_materializes_input_file(tmp_path: Path) ->
     )
 
     assert run_response.status_code == 200
-    run_payload = run_response.json()["dag_run"]
+    run_payload = run_response.json()["result"]["dag_run"]
     workspace_path = Path(run_payload["workspace_path"])
     assert run_payload["status"] == "completed"
     assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
@@ -939,7 +967,7 @@ def test_api_created_tool_capability_can_run_in_dag_spec() -> None:
     run_response = client.post("/dag-specs/tool_dag/run")
 
     assert run_response.status_code == 200
-    payload = run_response.json()["dag_run"]
+    payload = run_response.json()["result"]["dag_run"]
     assert payload["status"] == "completed"
     assert payload["trace"]["root"]["children"][0]["output"] == "upper:ok"
 
@@ -990,8 +1018,8 @@ def test_api_dag_spec_run_stream_returns_live_events_and_stores_run() -> None:
     assert events[0]["type"] == "status"
     assert any(event["type"] == "trace" for event in events)
     assert events[-1]["type"] == "done"
-    assert events[-1]["dag_run"]["status"] == "completed"
-    run_id = events[-1]["dag_run"]["run_id"]
+    assert events[-1]["result"]["dag_run"]["status"] == "completed"
+    run_id = events[-1]["result"]["dag_run"]["run_id"]
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
 
 
@@ -1044,7 +1072,7 @@ def test_api_dag_spec_run_stream_uses_requested_workspace_root(tmp_path: Path) -
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    dag_run = events[-1]["dag_run"]
+    dag_run = events[-1]["result"]["dag_run"]
     workspace_path = Path(dag_run["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
@@ -1086,7 +1114,7 @@ def test_api_dag_spec_run_fails_when_required_artifact_is_missing() -> None:
     run_response = client.post("/dag-specs/missing_output/run")
 
     assert run_response.status_code == 200
-    payload = run_response.json()["dag_run"]
+    payload = run_response.json()["result"]["dag_run"]
     assert payload["status"] == "failed"
     assert payload["trace"]["artifacts"]["note"]["status"] == "missing"
     assert payload["dag"]["status"] == "failed"

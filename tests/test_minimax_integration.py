@@ -20,9 +20,9 @@ async def test_minimax_dag_agent_generates_valid_dag() -> None:
         agent,
         "Create a low-risk plan that directly answers what dagent is without reading files.",
     )
-    record = runner.runtime.tasks[result.task_id]
+    record = runner.runtime.tasks[result.run_id]
 
-    assert record.dag.task_id == result.task_id
+    assert record.dag.task_id == result.run_id
     assert record.dag.nodes
     assert record.dag.status == "review_required"
 

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.dag_builder import strip_thinking_blocks
-from dagent.harness_runtime.capability_executor import CapabilityExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutionContext, CapabilityExecutor
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.task_record import ReviewContinuation
 from dagent.review import ReviewLevel, _review_policy
@@ -77,7 +77,6 @@ class ToolAgent:
                 profile=self.profile,
                 task_content="",
                 tools=tools,
-                skills=list(capability_scope.skill_instructions),
             )
         )
 
@@ -134,7 +133,13 @@ class ToolAgent:
         result: CapabilityResult | None = None
         if approved:
             try:
-                result = await self.loop.capability_executor.execute(invocation)
+                result = await self.loop.capability_executor.execute(
+                    invocation,
+                    context=CapabilityExecutionContext(
+                        task_id=state.task_id,
+                        skills=state.capability_scope.skills,
+                    ),
+                )
                 feed_content = _tool_content(result)
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
@@ -190,6 +195,7 @@ class ToolAgent:
             control_tool_names=control_tool_names,
             control_tool_handler=control_tool_handler,
             capability_ids=capability_scope.capability_ids,
+            skills=capability_scope.skills,
             on_token=on_token,
             on_event=on_event,
         )
@@ -284,6 +290,8 @@ class ToolAgentLoop:
         capability_ids: Sequence[str] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
+        skills: tuple[str, ...] | None = None,
+        capability_context: CapabilityExecutionContext | None = None,
     ) -> LoopOutcome:
         if max_steps < 1:
             raise ValueError("max_steps must be at least 1.")
@@ -295,6 +303,11 @@ class ToolAgentLoop:
         trace = RunTrace(run_id=run_id, root=RunTraceNode.run(run_id=run_id))
         control_events: list[dict[str, Any]] = []
         invocations: list[CapabilityInvocation] = []
+        execution_context = _execution_context(
+            capability_context,
+            task_id=run_id,
+            skills=skills,
+        )
 
         for step in range(1, max_steps + 1):
             tool_definitions = self._llm_tool_definitions(
@@ -455,7 +468,10 @@ class ToolAgentLoop:
                     )
                     continue
                 try:
-                    capability_result = await self.capability_executor.execute(invocation)
+                    capability_result = await self.capability_executor.execute(
+                        invocation,
+                        context=execution_context,
+                    )
                     tool_result = _tool_content(capability_result)
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
@@ -712,6 +728,16 @@ def _failed_capability_result(
         error=error,
         stop_reason=stop_reason,
     )
+
+
+def _execution_context(
+    context: CapabilityExecutionContext | None,
+    *,
+    task_id: str,
+    skills: tuple[str, ...] | None,
+) -> CapabilityExecutionContext:
+    base = context or CapabilityExecutionContext(task_id=task_id)
+    return replace(base, skills=skills)
 
 
 def _last_assistant_content(messages: list[dict[str, Any]]) -> str:

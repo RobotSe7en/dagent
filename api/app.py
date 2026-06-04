@@ -2,51 +2,57 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dagent import (
     ArtifactUpload,
+    AutoAgent,
     Boundary,
     CapabilityDefinition,
     CapabilityInvocation,
-    CapabilityScope,
     DAG,
     DAGRun,
     DAGSpec,
+    DagAgent,
     ProfileStore,
+    ReviewDecision,
     ReviewLevel,
     RiskLevel,
     Runner,
-    RuntimeMode,
+    RunResult,
     SkillAmbiguousError,
     SkillNotFoundError,
     SkillPermissionError,
     SkillStore,
     SkillStoreError,
     default_skill_roots,
+    ToolAgent,
     validate_dag_spec,
 )
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.capabilities.boundaries import infer_capability_boundary
-from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import list_builtin_profiles
 
 
+MessageTarget = Literal["auto", "tool", "dag"]
+
+
 class MessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message: str = Field(min_length=1)
-    mode: RuntimeMode = "auto"
+    target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
     capability_ids: list[str] | None = None
-    skill_names: list[str] = Field(default_factory=list)
+    skills: list[str] | None = None
 
 
 class ResumeReviewRequest(BaseModel):
@@ -89,9 +95,8 @@ class ApiState:
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
-        self.custom_mcp_capability_ids: set[str] = set()
+        self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
-        self.mcp_provider_factory = MCPCapabilityProvider
 
     def get_runner(self) -> Runner:
         if self.runner is None:
@@ -107,7 +112,7 @@ class ApiState:
         if self.runner is not None:
             self.runner.close()
         self.runner = None
-        self.custom_mcp_capability_ids.clear()
+        self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
 
     def get_runtime(self):
@@ -144,30 +149,17 @@ class ApiState:
     def reload_custom_mcp(self) -> None:
         if self.runner is None:
             return
-        runtime = self.runner.runtime
-        for capability_id in list(self.custom_mcp_capability_ids):
-            runtime.capability_catalog.delete(capability_id)
-        self.custom_mcp_capability_ids.clear()
+        runner = self.runner
+        for name in list(self.custom_mcp_registered_names):
+            runner.remove_mcp_server(name)
+        self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
-        if not self.custom_mcp_servers:
-            runtime.refresh_toolsets()
-            return
-        before_ids = set(runtime.capability_catalog.ids())
-        provider = self.mcp_provider_factory(self.custom_mcp_servers)
-        provider.register_into(runtime.capability_catalog)
-        after_ids = set(runtime.capability_catalog.ids())
-        self.custom_mcp_capability_ids = {
-            capability_id
-            for capability_id in after_ids - before_ids
-            if capability_id.startswith("mcp.")
-        }
-        manager = getattr(provider, "manager", None)
-        manager_errors = getattr(manager, "last_errors", {}) if manager is not None else {}
-        self.custom_mcp_errors = {
-            str(server): str(error)
-            for server, error in dict(manager_errors or {}).items()
-        }
-        runtime.refresh_toolsets()
+        for name, config in self.custom_mcp_servers.items():
+            try:
+                runner.add_mcp_server(name, config)
+                self.custom_mcp_registered_names.add(name)
+            except Exception as exc:
+                self.custom_mcp_errors[name] = str(exc)
 
 
 state = ApiState()
@@ -274,14 +266,14 @@ async def run_dag_spec(spec_id: str, request: DAGSpecRunRequest | None = None) -
     if spec is None:
         raise HTTPException(status_code=404, detail="DAGSpec not found.")
 
-    dag_run = await state.get_runtime().run_dag_spec(
+    result = await state.get_runner().run(
         spec,
         input=None if request is None else request.input,
         workspace_root=_workspace_root_from_request(request),
         artifact_uploads=_artifact_uploads_for_spec(spec_id),
     )
-    state.dag_runs[dag_run.run_id] = dag_run
-    return {"dag_run": dag_run.model_dump(mode="json")}
+    _store_dag_run(result)
+    return {"result": result.model_dump(mode="json")}
 
 
 @app.post("/dag-specs/{spec_id}/run/stream")
@@ -293,48 +285,22 @@ async def run_dag_spec_stream(spec_id: str, request: DAGSpecRunRequest | None = 
 
     async def events():
         yield _sse({"type": "status", "message": "dag_spec_run_started"})
-        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        def on_token(content: str) -> None:
-            event_queue.put_nowait({"type": "token", "content": content})
-
-        def on_event(event: dict[str, Any]) -> None:
-            event_queue.put_nowait(event)
-
-        task = asyncio.create_task(
-            state.get_runtime().run_dag_spec(
+        sent_error = False
+        try:
+            async for event in state.get_runner().stream(
                 spec,
                 input=None if request is None else request.input,
                 workspace_root=workspace_root,
                 artifact_uploads=_artifact_uploads_for_spec(spec_id),
-                on_token=on_token,
-                on_event=on_event,
-            )
-        )
-        try:
-            while not task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    continue
-                yield _sse(event)
-            while not event_queue.empty():
-                yield _sse(event_queue.get_nowait())
-            dag_run = await task
+            ):
+                if event.type == "error":
+                    sent_error = True
+                if event.type == "done" and event.result is not None:
+                    _store_dag_run(event.result)
+                yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
-            if not task.done():
-                task.cancel()
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        state.dag_runs[dag_run.run_id] = dag_run
-        yield _sse(
-            {
-                "type": "done",
-                "status": dag_run.status,
-                "dag_run": dag_run.model_dump(mode="json"),
-            }
-        )
+            if not sent_error:
+                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -398,7 +364,7 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     runtime = state.get_runtime()
     try:
-        _install_capability(runtime, definition)
+        runtime.register_capability(definition, _handler_for_definition(definition))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
@@ -413,7 +379,7 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
     if runtime.capability_catalog.get(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     try:
-        _replace_capability(runtime, definition)
+        runtime.replace_capability(definition, _handler_for_definition(definition))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
@@ -594,14 +560,6 @@ async def sandbox_status() -> dict[str, Any]:
     }
 
 
-def _install_capability(runtime, definition: CapabilityDefinition) -> None:
-    runtime.register_capability(definition, _handler_for_definition(definition))
-
-
-def _replace_capability(runtime, definition: CapabilityDefinition) -> None:
-    runtime.replace_capability(definition, _handler_for_definition(definition))
-
-
 def _handler_for_definition(definition: CapabilityDefinition):
     if definition.kind != "tool":
         raise HTTPException(
@@ -626,18 +584,29 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
     return {"capability": updated.model_dump(mode="json")}
 
 
-def _sync_runtime_toolsets(runtime) -> None:
-    runtime.refresh_toolsets()
-
-
-def _capability_scope_from_message(request: MessageRequest) -> CapabilityScope:
-    capability_ids = None
+def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagAgent:
+    skills = None if request.skills is None else tuple(_dedupe(request.skills))
+    capability_ids: tuple[str, ...] | None = None
     if request.capability_ids is not None:
         capability_ids = tuple(_validated_capability_ids(request.capability_ids))
-    skill_instructions = tuple(_skill_instruction(name) for name in _dedupe(request.skill_names))
-    return CapabilityScope(
-        capability_ids=capability_ids,
-        skill_instructions=skill_instructions,
+
+    if request.target == "auto":
+        return AutoAgent(
+            capabilities=capability_ids,
+            skills=skills,
+            review=request.review_level,
+        )
+    if request.target == "tool":
+        return ToolAgent(
+            profile="conversation",
+            capabilities=capability_ids,
+            skills=skills,
+            review=request.review_level,
+        )
+    return DagAgent(
+        capabilities=capability_ids,
+        skills=skills,
+        review=request.review_level,
     )
 
 
@@ -652,28 +621,6 @@ def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
             raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' is disabled.")
         validated.append(capability_id)
     return validated
-
-
-def _skill_instruction(name: str) -> str:
-    try:
-        view = state.skill_store().view(name)
-    except SkillStoreError as exc:
-        raise _skill_http_exception(exc) from exc
-    category = view.category
-    skill_name = view.name
-    qualified_name = f"{category}/{skill_name}" if category else skill_name
-    description = view.description
-    content = view.content.strip()
-    lines = [f"{qualified_name}: {description}".strip(), content]
-    lines.append(f"[Skill directory: {view.skill_dir}]")
-    linked_files = view.linked_files
-    if linked_files:
-        lines.append(f"[Linked files: {json.dumps(linked_files, ensure_ascii=False)}]")
-        if linked_files.get("scripts"):
-            lines.append("Run skill scripts with tool.run_command when needed; it uses the system shell.")
-    if description:
-        return "\n".join(line for line in lines if line).strip()
-    return "\n".join(line for line in [qualified_name, *lines[1:]] if line).strip()
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -724,59 +671,19 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
-    capability_scope = _capability_scope_from_message(request)
+    agent = _agent_from_message(request)
 
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_started"})
-        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        def on_token(content: str) -> None:
-            event_queue.put_nowait({"type": "token", "content": content})
-
-        def on_event(event: dict[str, Any]) -> None:
-            event_queue.put_nowait(event)
-
-        task = asyncio.create_task(
-            state.get_runtime().handle_message(
-                request.message,
-                mode=request.mode,
-                review_level=request.review_level,
-                capability_scope=capability_scope,
-                on_token=on_token,
-                on_event=on_event,
-            )
-        )
+        sent_error = False
         try:
-            while not task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    continue
-                yield _sse(event)
-            while not event_queue.empty():
-                yield _sse(event_queue.get_nowait())
-            result = await task
+            async for event in state.get_runner().stream(agent, request.message):
+                if event.type == "error":
+                    sent_error = True
+                yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
-            if not task.done():
-                task.cancel()
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        if result.dag is not None:
-            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
-        if result.pending_review is not None:
-            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        yield _sse(
-            {
-                "type": "done",
-                "status": result.status,
-                "task_id": result.task_id,
-                "dag": result.dag.model_dump(mode="json") if result.dag else None,
-                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "final_answer": result.final_answer,
-                "trace": result.trace.model_dump(mode="json") if result.trace else None,
-            }
-        )
+            if not sent_error:
+                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -785,61 +692,29 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
     async def events():
         yield _sse({"type": "status", "message": "harness_runtime_resumed"})
-        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        def on_token(content: str) -> None:
-            event_queue.put_nowait({"type": "token", "content": content})
-
-        def on_event(event: dict[str, Any]) -> None:
-            event_queue.put_nowait(event)
-
-        task = asyncio.create_task(
-            state.get_runtime().resume_review(
-                request.review_id,
-                dag=request.dag,
-                approved=request.approved,
-                review_level=request.review_level,
-                on_token=on_token,
-                on_event=on_event,
-            )
+        decision = ReviewDecision(
+            review_id=request.review_id,
+            approved=request.approved,
+            dag=request.dag,
+            review_level=request.review_level,
         )
+        sent_error = False
         try:
-            while not task.done():
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.05)
-                except asyncio.TimeoutError:
-                    continue
-                yield _sse(event)
-            while not event_queue.empty():
-                yield _sse(event_queue.get_nowait())
-            result = await task
+            async for event in state.get_runner().resume_stream(decision):
+                if event.type == "error":
+                    sent_error = True
+                yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
-            if not task.done():
-                task.cancel()
-            yield _sse({"type": "error", "message": str(exc)})
-            return
-
-        if result is None:
-            yield _sse({"type": "error", "message": "Review session not found."})
-            return
-
-        if result.dag is not None:
-            yield _sse({"type": "dag", "dag": result.dag.model_dump(mode="json")})
-        if result.pending_review is not None:
-            yield _sse({"type": "review", "review": _review_payload(result.pending_review)})
-        yield _sse(
-            {
-                "type": "done",
-                "status": result.status,
-                "task_id": result.task_id,
-                "dag": result.dag.model_dump(mode="json") if result.dag else None,
-                "pending_review": _review_payload(result.pending_review) if result.pending_review else None,
-                "final_answer": result.final_answer,
-                "trace": result.trace.model_dump(mode="json") if result.trace else None,
-            }
-        )
+            if not sent_error:
+                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _store_dag_run(result: RunResult) -> None:
+    dag_run = result.dag_run
+    if dag_run is not None and result.run_id is not None:
+        state.dag_runs[result.run_id] = dag_run
 
 
 @app.get("/tasks/{task_id}/trace")
@@ -854,23 +729,6 @@ async def get_task_trace(task_id: str) -> dict[str, Any]:
 
     raise HTTPException(status_code=404, detail="Task not found.")
 
-
-def _review_payload(review) -> dict[str, Any]:
-    payload = {
-        "review_id": review.review_id,
-        "kind": review.kind,
-        "message": review.message,
-        "payload": review.payload,
-    }
-    if review.proposed_dag is not None:
-        payload["dag"] = review.proposed_dag.model_dump(mode="json")
-    if review.capability_call is not None:
-        payload["capability_call"] = {
-            "invocation_id": review.capability_call["invocation_id"],
-            "capability_id": review.capability_call["capability_id"],
-            "arguments": review.capability_call["arguments"],
-        }
-    return payload
 
 
 def _configured_mcp_server_names() -> set[str]:

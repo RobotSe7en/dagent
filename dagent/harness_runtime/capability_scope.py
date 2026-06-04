@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class CapabilityScope:
-    """Restricts the capabilities and skill instructions visible to one run."""
+    """Restricts the capabilities and skills visible to one run."""
 
     capability_ids: tuple[str, ...] | None = None
-    skill_instructions: tuple[str, ...] = field(default_factory=tuple)
+    skills: tuple[str, ...] | None = None
 
 
 DEFAULT_CAPABILITY_SCOPE = CapabilityScope()

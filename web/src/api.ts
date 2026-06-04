@@ -22,6 +22,7 @@ import type {
   MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
+import { normalizeStreamEvent } from './streamEvents';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -237,46 +238,52 @@ export async function reloadMcpServers(): Promise<MCPServer[]> {
   return data.servers ?? [];
 }
 
-interface DonePayload {
-  status?: string;
-  task_id: string | null;
+interface ApiRunResult {
+  kind: 'tool' | 'dynamic_dag' | 'static_dag';
+  status: string;
+  run_id: string | null;
+  spec_id?: string | null;
+  workspace_path?: string | null;
+  output_text: string;
   dag: Dag | null;
-  pending_review?: ReviewEventPayload | null;
-  final_answer: string;
   trace?: RunTrace | null;
+  pending_review?: ReviewEventPayload | null;
+  dag_run?: DagRun | null;
 }
 
-interface DagRunDonePayload {
-  status?: string;
-  dag_run: DagRun;
+interface DonePayload {
+  type: 'done';
+  result: ApiRunResult;
+}
+
+interface StreamHandlers {
+  onStatus?: (status: string) => void;
+  onDag?: (dag: Dag) => void;
+  onTrace?: (event: TraceLogEvent) => void;
+  onCapability?: (event: CapabilityStreamEvent) => void;
+  onToken?: (content: string) => void;
+  onRetry?: (event: ValidationFeedbackEvent) => void;
+  onValidating?: (event: { type: 'validating'; message: string }) => void;
+  onDone?: (payload: DonePayload) => void;
+  onError?: (message: string) => void;
 }
 
 export interface ChatCapabilityScopePayload {
   capabilityIds: string[] | null;
-  skillNames: string[];
+  skills: string[];
 }
 
 export async function streamTask(
   message: string,
-  mode: 'auto' | 'tool' | 'dag',
+  target: 'auto' | 'tool' | 'dag',
   reviewLevel: ReviewLevel,
-  handlers: {
-    onStatus?: (status: string) => void;
-    onDag?: (dag: Dag) => void;
-    onTrace?: (event: TraceLogEvent) => void;
-    onCapability?: (event: CapabilityStreamEvent) => void;
-    onToken?: (content: string) => void;
-    onRetry?: (event: ValidationFeedbackEvent) => void;
-    onValidating?: (event: { type: 'validating'; message: string }) => void;
-    onDone?: (payload: DonePayload) => void;
-    onError?: (message: string) => void;
-  },
+  handlers: StreamHandlers,
   capabilityScope?: ChatCapabilityScopePayload,
 ): Promise<void> {
-  const body: Record<string, unknown> = { message, mode, review_level: reviewLevel };
+  const body: Record<string, unknown> = { message, target, review_level: reviewLevel };
   if (capabilityScope) {
     body.capability_ids = capabilityScope.capabilityIds;
-    body.skill_names = capabilityScope.skillNames;
+    body.skills = capabilityScope.skills;
   }
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
@@ -287,34 +294,7 @@ export async function streamTask(
     throw new Error(await errorMessage(response));
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const seenTraceIds = new Set<string>();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-    for (const frame of frames) {
-      const line = frame.split('\n').find((item) => item.startsWith('data: '));
-      if (!line) continue;
-      const event = JSON.parse(line.slice(6));
-      if (event.type === 'status') handlers.onStatus?.(event.message);
-      if (event.type === 'dag') handlers.onDag?.(event.dag);
-      if (event.type === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
-      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
-        handlers.onCapability?.(event);
-      }
-      if (event.type === 'token') handlers.onToken?.(event.content);
-      if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
-      if (event.type === 'validating') handlers.onValidating?.(event);
-      if (event.type === 'done') handlers.onDone?.(event);
-      if (event.type === 'error') handlers.onError?.(event.message);
-    }
-  }
+  await readStream(response, handlers);
 }
 
 export async function resumeDagReview(
@@ -322,17 +302,7 @@ export async function resumeDagReview(
   dag: Dag | null,
   reviewLevel: ReviewLevel,
   approved: boolean,
-  handlers: {
-    onStatus?: (status: string) => void;
-    onDag?: (dag: Dag) => void;
-    onTrace?: (event: TraceLogEvent) => void;
-    onCapability?: (event: CapabilityStreamEvent) => void;
-    onToken?: (content: string) => void;
-    onRetry?: (event: ValidationFeedbackEvent) => void;
-    onValidating?: (event: { type: 'validating'; message: string }) => void;
-    onDone?: (payload: DonePayload) => void;
-    onError?: (message: string) => void;
-  },
+  handlers: StreamHandlers,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
@@ -352,14 +322,7 @@ export async function resumeDagReview(
 
 export async function runDagSpecStream(
   specId: string,
-  handlers: {
-    onStatus?: (status: string) => void;
-    onTrace?: (event: TraceLogEvent) => void;
-    onCapability?: (event: CapabilityStreamEvent) => void;
-    onToken?: (content: string) => void;
-    onDone?: (payload: DagRunDonePayload) => void;
-    onError?: (message: string) => void;
-  },
+  handlers: StreamHandlers,
   options: {
     workspaceRoot?: string;
   } = {},
@@ -375,50 +338,10 @@ export async function runDagSpecStream(
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const seenTraceIds = new Set<string>();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split('\n\n');
-    buffer = frames.pop() ?? '';
-    for (const frame of frames) {
-      const line = frame.split('\n').find((item) => item.startsWith('data: '));
-      if (!line) continue;
-      const event = JSON.parse(line.slice(6));
-      if (event.type === 'status') handlers.onStatus?.(event.message);
-      if (event.type === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
-      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
-        handlers.onCapability?.(event);
-      }
-      if (event.type === 'token') handlers.onToken?.(event.content);
-      if (event.type === 'done') {
-        if (event.dag_run?.trace) emitTraceSnapshot(event.dag_run.trace, handlers.onTrace, seenTraceIds);
-        handlers.onDone?.(event);
-      }
-      if (event.type === 'error') handlers.onError?.(event.message);
-    }
-  }
+  await readStream(response, handlers);
 }
 
-async function readStream(
-  response: Response,
-  handlers: {
-    onStatus?: (status: string) => void;
-    onDag?: (dag: Dag) => void;
-    onTrace?: (event: TraceLogEvent) => void;
-    onCapability?: (event: CapabilityStreamEvent) => void;
-    onToken?: (content: string) => void;
-    onRetry?: (event: ValidationFeedbackEvent) => void;
-    onValidating?: (event: { type: 'validating'; message: string }) => void;
-    onDone?: (payload: DonePayload) => void;
-    onError?: (message: string) => void;
-  },
-) {
+async function readStream(response: Response, handlers: StreamHandlers) {
   const reader = response.body?.getReader();
   if (!reader) return;
   const decoder = new TextDecoder();
@@ -434,18 +357,24 @@ async function readStream(
     for (const frame of frames) {
       const line = frame.split('\n').find((item) => item.startsWith('data: '));
       if (!line) continue;
-      const event = JSON.parse(line.slice(6));
-      if (event.type === 'status') handlers.onStatus?.(event.message);
-      if (event.type === 'dag') handlers.onDag?.(event.dag);
-      if (event.type === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
-      if (event.type === 'capability_call' || event.type === 'capability_result' || event.type === 'capability_error') {
-        handlers.onCapability?.(event);
+      const event = normalizeStreamEvent(JSON.parse(line.slice(6)));
+      const eventType = event.type;
+      const typedEvent = event;
+      if (eventType === 'status') handlers.onStatus?.(event.message);
+      if (eventType === 'dag') handlers.onDag?.(event.dag);
+      if (eventType === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
+      if (eventType === 'capability_call' || eventType === 'capability_result' || eventType === 'capability_error') {
+        handlers.onCapability?.(typedEvent);
       }
-      if (event.type === 'token') handlers.onToken?.(event.content);
-      if (event.type === 'retry' || event.type === 'validation_passed') handlers.onRetry?.(event);
-      if (event.type === 'validating') handlers.onValidating?.(event);
-      if (event.type === 'done') handlers.onDone?.(event);
-      if (event.type === 'error') handlers.onError?.(event.message);
+      if (eventType === 'token') handlers.onToken?.(event.content);
+      if (eventType === 'retry' || eventType === 'validation_passed') handlers.onRetry?.(typedEvent);
+      if (eventType === 'validating') handlers.onValidating?.(typedEvent);
+      if (eventType === 'done') {
+        const trace = event.result?.trace ?? event.result?.dag_run?.trace;
+        emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
+        handlers.onDone?.(typedEvent);
+      }
+      if (eventType === 'error') handlers.onError?.(event.message);
     }
   }
 }
@@ -560,14 +489,7 @@ function clip(value: string): string {
 export async function resumeCapabilityReview(
   reviewId: string,
   approved: boolean,
-  handlers: {
-    onStatus?: (status: string) => void;
-    onToken?: (content: string) => void;
-    onRetry?: (event: ValidationFeedbackEvent) => void;
-    onValidating?: (event: { type: 'validating'; message: string }) => void;
-    onDone?: (payload: DonePayload) => void;
-    onError?: (message: string) => void;
-  },
+  handlers: StreamHandlers,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',

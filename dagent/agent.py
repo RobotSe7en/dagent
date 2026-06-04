@@ -15,6 +15,31 @@ CapabilityRef = CapabilityBinding | str
 
 
 @dataclass(frozen=True)
+class AutoAgent:
+    """Agent configuration that lets the runtime choose tool-loop or DAG execution."""
+
+    profile: str | AgentProfile = "conversation"
+    planner_profile: str | AgentProfile = "dag_agent"
+    name: str | None = None
+    max_steps: int = 8
+    max_cycles: int = 6
+    capabilities: Iterable[CapabilityRef] | None = None
+    skills: Iterable[str] | None = None
+    review: ReviewLevel = "fast"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
+        if self.max_steps < 1:
+            raise ValueError("max_steps must be at least 1.")
+        if self.max_cycles < 1:
+            raise ValueError("max_cycles must be at least 1.")
+        if self.capabilities is not None:
+            object.__setattr__(self, "capabilities", tuple(self.capabilities))
+        if self.skills is not None:
+            object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
+
+
+@dataclass(frozen=True)
 class ToolAgent:
     """Profile-backed tool-loop agent configuration."""
 
@@ -22,6 +47,7 @@ class ToolAgent:
     name: str | None = None
     max_steps: int = 8
     capabilities: Iterable[CapabilityRef] | None = None
+    skills: Iterable[str] | None = None
     review: ReviewLevel = "fast"
     description: str = ""
 
@@ -31,6 +57,8 @@ class ToolAgent:
             raise ValueError("max_steps must be at least 1.")
         if self.capabilities is not None:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
+        if self.skills is not None:
+            object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
 
 
 @dataclass(frozen=True)
@@ -41,6 +69,7 @@ class DagAgent:
     name: str | None = None
     max_cycles: int = 6
     capabilities: Iterable[CapabilityRef] | None = None
+    skills: Iterable[str] | None = None
     review: ReviewLevel = "fast"
 
     def __post_init__(self) -> None:
@@ -49,6 +78,8 @@ class DagAgent:
             raise ValueError("max_cycles must be at least 1.")
         if self.capabilities is not None:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
+        if self.skills is not None:
+            object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
 
 
 def _default_profile_name(profile: str | AgentProfile) -> str:

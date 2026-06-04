@@ -20,7 +20,6 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
             profile=profile,
             task_content="Task {{ task_id }}: {{ user_request }}",
             tools=[tool],
-            skills=["code_review"],
             context="Project context.",
             variables={"task_id": "t1", "user_request": "hello"},
         )
@@ -30,7 +29,6 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert "DAGAgent soul" in messages[0]["content"]
     assert "DAGAgent agent instructions" in messages[0]["content"]
     assert "read_file: Read a file." in messages[0]["content"]
-    assert "code_review" in messages[0]["content"]
     assert "Project context." in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
 

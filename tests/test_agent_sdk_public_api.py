@@ -18,22 +18,59 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "capability")
     assert not hasattr(dagent.capabilities, "capability")
     assert hasattr(dagent, "Runner")
+    assert hasattr(dagent, "AutoAgent")
     assert hasattr(dagent, "ToolAgent")
     assert hasattr(dagent, "DagAgent")
     assert hasattr(dagent, "ArtifactUpload")
     assert hasattr(dagent, "CapabilityScope")
     assert hasattr(dagent, "ProfileStore")
+    assert hasattr(dagent, "Provider")
     assert hasattr(dagent, "ReviewLevel")
-    assert hasattr(dagent, "RuntimeMode")
+    assert hasattr(dagent, "RunStreamEvent")
     assert hasattr(dagent, "SkillStore")
+    assert hasattr(dagent, "load_builtin_profile")
+    assert hasattr(dagent, "list_builtin_profiles")
     assert hasattr(dagent, "validate_dag_spec")
+    assert hasattr(dagent.Runner, "stream")
+    assert hasattr(dagent.Runner, "resume_stream")
     assert not hasattr(dagent, "DAgent")
+    assert not hasattr(dagent, "OpenAICompatibleProvider")
+    assert not hasattr(dagent, "ProviderConfig")
+    assert not hasattr(dagent, "RuntimeMode")
     assert not hasattr(dagent, "run_dag")
+
+
+def test_auto_agent_is_public_target_without_mode_field() -> None:
+    assert "mode" not in inspect.signature(dagent.AutoAgent).parameters
+
+
+def test_builtin_profiles_are_available_from_package_root() -> None:
+    profile = dagent.load_builtin_profile("conversation")
+
+    assert profile.name == "conversation"
+    assert "Conversation Agent" in profile.content
+    assert "conversation" in {item.name for item in dagent.list_builtin_profiles()}
+
+
+def test_provider_is_public_from_package_root() -> None:
+    provider = dagent.Provider(
+        base_url="https://example.test/v1",
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert provider.config.base_url == "https://example.test/v1"
+    assert provider.config.model == "test-model"
+    assert provider.config.api_key == "test-key"
+    assert "config" not in inspect.signature(dagent.Provider).parameters
 
 
 def test_tool_decorator_has_tool_only_signature() -> None:
     assert "kind" not in inspect.signature(dagent.tool).parameters
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
+    assert hasattr(dagent.Runner, "remove_mcp_server")
+    assert hasattr(dagent.Runner, "replace_mcp_server")
+    assert "manager" not in inspect.signature(dagent.Runner.replace_mcp_server).parameters
 
 
 def test_tool_decorator_matches_tool_default_kind() -> None:
@@ -99,6 +136,170 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "Conversation Agent" in system_message
+
+
+def test_runner_stream_yields_token_events_and_unified_done_result(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(dagent.ToolAgent(profile="conversation"), "hi")
+        ]
+
+    events = run(collect())
+
+    assert any(event.type == "token" and event.content == "<think>" for event in events)
+    assert events[-1].type == "done"
+    assert isinstance(events[-1].result, dagent.RunResult)
+    assert events[-1].result.output_text == "hello"
+    assert events[-1].data == {"status": "completed", "kind": "tool"}
+
+
+def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(dagent.ToolAgent(profile="conversation"), "hi")
+        ]
+
+    events = run(collect())
+    result = events[-1].result
+
+    assert result is not None
+    assert result.model_dump(mode="json")["output_text"] == "hello"
+    assert events[-1].model_dump(mode="json")["result"]["output_text"] == "hello"
+
+
+def test_runner_stream_yields_typed_status_events_and_errors(tmp_path) -> None:
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+    events: list[dagent.RunStreamEvent] = []
+
+    async def collect() -> None:
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation"), None):
+            events.append(event)
+
+    with pytest.raises(TypeError, match="input is required"):
+        run(collect())
+
+    assert events[-1].type == "error"
+    assert events[-1].message == "input is required for ToolAgent targets."
+    assert isinstance(events[-1].error, TypeError)
+
+
+def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(content="hello from tool"),
+    ])
+    agent = dagent.AutoAgent(capabilities=[], skills=[])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, "hi"))
+
+    assert result.kind == "tool"
+    assert result.output_text == "hello from tool"
+
+
+def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    provider = MockProvider([
+        ChatResponse(content="dag"),
+        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content="Report: found:X"),
+    ])
+    agent = dagent.AutoAgent(capabilities=[search], skills=[])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, "research X"))
+
+    assert result.kind == "dynamic_dag"
+    assert result.output_text == "Report: found:X"
+    assert result.dag is not None
+    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
+
+
+def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    _profile_root(tmp_path)
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+        ChatResponse(content="<think>checking</think>done"),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    first = run(runner.run(agent, "write hello"))
+    assert first.requires_review
+    assert first.review is not None
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.resume_stream(first.review.approve())]
+
+    events = run(collect())
+
+    assert any(event.type == "token" and event.content == "<think>" for event in events)
+    assert events[-1].type == "done"
+    assert events[-1].result is not None
+    assert events[-1].result.output_text == "done"
+
+
+def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    _profile_root(tmp_path)
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.stream(agent, "write hello")]
+
+    events = run(collect())
+
+    review_events = [event for event in events if event.type == "review"]
+    assert review_events
+    assert review_events[-1].review is not None
+    assert review_events[-1].review.kind == "capability_review"
+    assert review_events[-1].message == review_events[-1].review.message
+    assert events[-1].type == "done"
+    assert events[-1].result is not None
+    assert events[-1].result.requires_review
+    assert events[-1].result.model_dump(mode="json")["pending_review"]["kind"] == "capability_review"
+
+
+def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+
+    assert result.output_text == "hello"
+    assert result.run_id is not None
+    assert result.raw_response is not None
+    assert result.requires_review is False
+    for legacy_name in ("final_answer", "output", "task_id", "awaiting_review", "raw"):
+        assert not hasattr(result, legacy_name)
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
@@ -188,6 +389,46 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "search" in system_message
     assert "write" not in system_message
+
+
+def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_path) -> None:
+    skill_root = tmp_path / "skills"
+    for category, name in (("writing", "brief"), ("research", "market")):
+        skill_dir = skill_root / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(content="done"),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, skill_roots=[skill_root])
+
+    result = run(runner.run(agent, "list skills"))
+
+    assert result.output_text == "done"
+    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
+        "skills_list",
+        "skill_view",
+    ]
+    system_message = provider.requests[0]["messages"][0]["content"]
+    assert "Use brief." not in system_message
+    tool_content = provider.requests[1]["messages"][-1]["content"]
+    assert "brief" in tool_content
+    assert "market" not in tool_content
+
+
+def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="done")])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    run(runner.run(agent, "no tools"))
+
+    assert provider.requests[0]["tools"] == []
 
 
 def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities(tmp_path) -> None:

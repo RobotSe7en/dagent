@@ -1,6 +1,6 @@
 """Reviewable DAG agent runtime SDK."""
 
-from dagent.agent import DagAgent, ToolAgent
+from dagent.agent import AutoAgent, DagAgent, ToolAgent
 from dagent.capabilities import (
     SkillAmbiguousError,
     SkillEntry,
@@ -14,10 +14,10 @@ from dagent.capabilities import (
 )
 from dagent.capabilities.decorator import CapabilityBinding, tool
 from dagent.dag_builder import ArtifactRef, ArtifactValueRef, Dag, FormatRef, InputRef, NodeOutputRef, NodeRef
-from dagent.harness_runtime import ArtifactUpload, CapabilityScope, RuntimeMode, validate_dag_spec
-from dagent.profiles import AgentProfile, ProfileStore
-from dagent.providers import OpenAICompatibleProvider
-from dagent.result import RunResult
+from dagent.harness_runtime import ArtifactUpload, CapabilityScope, validate_dag_spec
+from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
+from dagent.providers import Provider
+from dagent.result import RunResult, RunStreamEvent
 from dagent.review import ReviewDecision, ReviewHandle, ReviewLevel
 from dagent.runner import Runner
 from dagent.schemas import (
@@ -43,6 +43,7 @@ __all__ = [
     "ArtifactRef",
     "ArtifactUpload",
     "ArtifactValueRef",
+    "AutoAgent",
     "Boundary",
     "CapabilityBinding",
     "CapabilityDefinition",
@@ -57,18 +58,20 @@ __all__ = [
     "Dag",
     "FormatRef",
     "InputRef",
+    "list_builtin_profiles",
+    "load_builtin_profile",
     "NodeOutputRef",
     "NodeRef",
-    "OpenAICompatibleProvider",
     "PendingReview",
     "ProfileStore",
+    "Provider",
     "ReviewLevel",
     "ReviewDecision",
     "ReviewHandle",
     "RiskLevel",
     "RunResult",
+    "RunStreamEvent",
     "RunTrace",
-    "RuntimeMode",
     "RuntimeResponse",
     "Runner",
     "SkillAmbiguousError",
