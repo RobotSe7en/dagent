@@ -5,7 +5,7 @@ import pytest
 from pydantic import BaseModel
 
 import dagent
-from dagent.providers import ChatResponse, MockProvider
+from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import DAGSpec
 from dagent.harness_runtime.dag_builder import DAGValidationError
 
@@ -246,7 +246,10 @@ def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Pa
 
     events = run(collect())
 
-    assert any(event.type == "trace" for event in events)
+    trace_events = [event for event in events if event.type == "trace"]
+    assert trace_events
+    assert trace_events[-1].trace is not None
+    assert trace_events[-1].trace.status == "completed"
     assert events[-1].type == "done"
     assert isinstance(events[-1].result, dagent.RunResult)
     assert events[-1].result.kind == "static_dag"
@@ -326,6 +329,52 @@ def test_agent_node_defaults_to_tool_agent_max_steps(tmp_path: Path) -> None:
 
     invocation = dag.to_dag_spec().nodes[0].payload.invocation
     assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 11}
+
+
+def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
+    skill_root = tmp_path / "skills"
+    for category, name in (("research", "market"), ("writing", "style")):
+        skill_dir = skill_root / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(content="researched"),
+        ChatResponse(tool_calls=[ToolCall(id="call_2", name="skills_list", arguments={})]),
+        ChatResponse(content="written"),
+    ])
+    researcher = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "researcher"),
+        capabilities=[],
+        skills=["research/market"],
+    )
+    writer = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "writer"),
+        capabilities=[],
+        skills=["writing/style"],
+    )
+    dag = dagent.Dag("agent_skill_flow")
+    research = dag.agent_node("research", researcher, prompt="Research.")
+    dag.agent_node("write", writer, prompt="Write.").after(research)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        skill_roots=[skill_root],
+        profile_root=tmp_path / "profiles",
+    )
+
+    result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
+
+    assert result.status == "completed"
+    research_tool_content = provider.requests[1]["messages"][-1]["content"]
+    writer_tool_content = provider.requests[3]["messages"][-1]["content"]
+    assert "market" in research_tool_content
+    assert "style" not in research_tool_content
+    assert "style" in writer_tool_content
+    assert "market" not in writer_tool_content
 
 
 def _profile_root(tmp_path: Path, name: str) -> str:

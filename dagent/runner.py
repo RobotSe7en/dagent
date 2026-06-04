@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from pathlib import Path
-from typing import Any, overload
+from typing import Any
 
-from dagent.agent import CapabilityRef, DagAgent, ToolAgent
+from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
@@ -18,6 +17,7 @@ from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
+    CapabilityScope,
     CapabilityExecutor,
     DAGAgent as RuntimeDAGAgent,
     DAGAgentLoop,
@@ -36,12 +36,17 @@ from dagent.review import ReviewDecision, ReviewLevel
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityNodePayload,
+    DAG,
     DAGSpec,
+    PendingReview,
+    RunTrace,
     RuntimeResponse,
 )
 
 
 CapabilityLike = CapabilityBinding
+RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
+SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 
 
 class Runner:
@@ -74,6 +79,8 @@ class Runner:
         self._pending_runtimes: dict[str, HarnessRuntime] = {}
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
+        self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
+        self._mcp_server_managers: dict[str, Any] = {}
 
     @classmethod
     def from_config(
@@ -123,6 +130,8 @@ class Runner:
             return
         self._runtime.capability_catalog.shutdown()
         self._pending_runtimes.clear()
+        self._mcp_server_capability_ids.clear()
+        self._mcp_server_managers.clear()
         self._closed = True
 
     def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
@@ -170,6 +179,24 @@ class Runner:
 
         return self._add_mcp_server(name, config)
 
+    def remove_mcp_server(self, name: str) -> None:
+        """Remove a dynamically registered MCP server and its capabilities."""
+
+        self._ensure_open()
+        self._remove_mcp_server_registration(name)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+
+    def replace_mcp_server(
+        self,
+        name: str,
+        config: dict[str, Any],
+    ) -> list[CapabilityDefinition]:
+        """Replace a dynamically registered MCP server configuration."""
+
+        self.remove_mcp_server(name)
+        return self.add_mcp_server(name, config)
+
     def _add_mcp_server(
         self,
         name: str,
@@ -178,6 +205,8 @@ class Runner:
         manager: Any | None = None,
     ) -> list[CapabilityDefinition]:
         self._ensure_open()
+        if name in self._mcp_server_capability_ids or name in self._mcp_server_managers:
+            raise ValueError(f"MCP server '{name}' is already registered.")
         if manager is None:
             available = MCPServerManager.available
         else:
@@ -202,9 +231,25 @@ class Runner:
             new_ids = sorted(set(catalog.ids()) - before)
             self._rollback_mcp_registration(catalog, new_ids, getattr(provider, "manager", manager))
             raise
+        self._mcp_server_capability_ids[name] = tuple(new_ids)
+        provider_manager = getattr(provider, "manager", manager)
+        if provider_manager is not None:
+            self._mcp_server_managers[name] = provider_manager
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
         return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
+
+    def _remove_mcp_server_registration(self, name: str) -> None:
+        catalog = self._runtime.capability_catalog
+        for capability_id in self._mcp_server_capability_ids.pop(name, ()):
+            catalog.delete(capability_id)
+        manager = self._mcp_server_managers.pop(name, None)
+        if manager is not None and hasattr(manager, "shutdown"):
+            catalog.remove_shutdown_hook(manager.shutdown)
+            try:
+                manager.shutdown()
+            except Exception:
+                pass
 
     def _rollback_mcp_registration(self, catalog: Any, capability_ids: list[str], manager: Any) -> None:
         for capability_id in capability_ids:
@@ -230,48 +275,9 @@ class Runner:
             updated = entry.definition.model_copy(update={"config": {**entry.definition.config, "roots": roots}})
             catalog.replace(updated, entry.handler, supports_context=entry.supports_context)
 
-    @overload
     async def run(
         self,
-        target: ToolAgent,
-        input: str,
-        *,
-        review: ReviewLevel | None = None,
-        workspace_root: str | Path = ".dagent-runs",
-        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> RunResult: ...
-
-    @overload
-    async def run(
-        self,
-        target: DagAgent,
-        input: str,
-        *,
-        review: ReviewLevel | None = None,
-        workspace_root: str | Path = ".dagent-runs",
-        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> RunResult: ...
-
-    @overload
-    async def run(
-        self,
-        target: Dag | DAGSpec,
-        input: Any = None,
-        *,
-        review: ReviewLevel | None = None,
-        workspace_root: str | Path = ".dagent-runs",
-        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-        on_token: TokenHandler | None = None,
-        on_event: LoopEventHandler | None = None,
-    ) -> RunResult: ...
-
-    async def run(
-        self,
-        target: ToolAgent | DagAgent | Dag | DAGSpec,
+        target: RunTarget,
         input: Any = None,
         *,
         review: ReviewLevel | None = None,
@@ -280,6 +286,20 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if isinstance(target, AutoAgent):
+            if input is None:
+                raise TypeError("input is required for AutoAgent targets.")
+            runtime = self._runtime_for_auto_agent(target)
+            response = await runtime.handle_message(
+                input,
+                mode="auto",
+                review_level=review or target.review,
+                capability_scope=CapabilityScope(skills=_agent_skills(target)),
+                on_token=on_token,
+                on_event=on_event,
+            )
+            return self._run_result(runtime, response)
+
         if isinstance(target, ToolAgent):
             if input is None:
                 raise TypeError("input is required for ToolAgent targets.")
@@ -288,6 +308,7 @@ class Runner:
                 input,
                 mode="tool",
                 review_level=review or target.review,
+                capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -301,6 +322,7 @@ class Runner:
                 input,
                 mode="dag",
                 review_level=review or target.review,
+                capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -334,11 +356,11 @@ class Runner:
             )
             return RunResult(dag_run, kind="static_dag")
 
-        raise TypeError("Runner.run expects a ToolAgent, DagAgent, Dag, or DAGSpec target.")
+        raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
 
     async def stream(
         self,
-        target: ToolAgent | DagAgent | Dag | DAGSpec,
+        target: RunTarget,
         input: Any = None,
         *,
         review: ReviewLevel | None = None,
@@ -347,26 +369,48 @@ class Runner:
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield token/runtime events followed by a done event."""
 
-        queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
-
-        def emit_token(token: str) -> None:
-            queue.put_nowait(RunStreamEvent(type="token", data={"content": token}))
-
-        def emit_event(event: dict[str, Any]) -> None:
-            queue.put_nowait(_stream_event_from_runtime(event))
-
-        async def run_target() -> RunResult:
+        async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
             return await self.run(
                 target,
                 input,
                 review=review,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
-                on_token=emit_token,
-                on_event=emit_event,
+                on_token=on_token,
+                on_event=on_event,
             )
 
-        task = asyncio.create_task(run_target())
+        async for event in self._stream_run(run_target):
+            yield event
+
+    async def resume_stream(
+        self,
+        decision: ReviewDecision,
+    ) -> AsyncIterator[RunStreamEvent]:
+        """Resume a pending review and yield stream events followed by a done event."""
+
+        async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
+            result = await self.resume(decision, on_token=on_token, on_event=on_event)
+            if result is None:
+                raise LookupError("Review session not found.")
+            return result
+
+        async for event in self._stream_run(run_target):
+            yield event
+
+    async def _stream_run(
+        self,
+        run_target: Callable[[TokenHandler, LoopEventHandler], Awaitable[RunResult]],
+    ) -> AsyncIterator[RunStreamEvent]:
+        queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
+
+        def emit_token(token: str) -> None:
+            queue.put_nowait(RunStreamEvent(type="token", content=token, data={"content": token}))
+
+        def emit_event(event: dict[str, Any]) -> None:
+            queue.put_nowait(_stream_event_from_runtime(event))
+
+        task = asyncio.create_task(run_target(emit_token, emit_event))
         try:
             while True:
                 if task.done() and queue.empty():
@@ -377,6 +421,8 @@ class Runner:
                     continue
 
             result = await task
+            if result.pending_review is not None:
+                yield _review_stream_event(result.pending_review)
             yield RunStreamEvent(
                 type="done",
                 data={"status": result.status, "kind": result.kind},
@@ -385,6 +431,7 @@ class Runner:
         except Exception as exc:
             yield RunStreamEvent(
                 type="error",
+                message=str(exc),
                 data={"error": str(exc), "error_type": type(exc).__name__},
                 error=exc,
             )
@@ -425,8 +472,21 @@ class Runner:
             self._pending_runtimes[response.pending_review.review_id] = runtime
         return RunResult(response, kind=kind)
 
+    def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
+        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
+        runtime = _runtime_from_existing(
+            self._runtime,
+            tool_profile=agent.profile,
+            tool_max_steps=agent.max_steps,
+            dag_profile=agent.planner_profile,
+            dag_max_cycles=agent.max_cycles,
+            visible_capability_ids=capability_ids,
+            profile_root=self.profile_root,
+        )
+        return runtime
+
     def _runtime_for_tool_agent(self, agent: ToolAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_capability_refs(agent.capabilities)
+        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
@@ -439,7 +499,7 @@ class Runner:
         return runtime
 
     def _runtime_for_dag_agent(self, agent: DagAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_capability_refs(agent.capabilities)
+        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile="conversation",
@@ -450,6 +510,16 @@ class Runner:
             profile_root=self.profile_root,
         )
         return runtime
+
+    def _resolve_agent_capability_refs(
+        self,
+        refs: Iterable[CapabilityRef] | None,
+        skills: Iterable[str] | None,
+        *,
+        register_bindings: bool = True,
+    ) -> tuple[str, ...]:
+        capability_ids = self._resolve_capability_refs(refs, register_bindings=register_bindings)
+        return _apply_skill_capabilities(capability_ids, skills)
 
     def _resolve_capability_refs(
         self,
@@ -495,13 +565,14 @@ class Runner:
                     raise ValueError(f"Agent capability 'agent.{name}' is already registered with different config.")
                 self._refresh_registered_agent_runtime_config(name, agent)
                 continue
-            capability_ids = self._resolve_capability_refs(agent.capabilities)
+            capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
             profile = _resolve_profile(agent.profile, profile_root=self.profile_root)
             new_agent_configs[name] = {
                 "provider": self._runtime.provider,
                 "profile": profile,
                 "description": agent.description,
                 "max_steps": agent.max_steps,
+                "skills": _agent_skills(agent),
                 "capability_executor": self._runtime.capability_executor,
                 "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
             }
@@ -519,7 +590,12 @@ class Runner:
         config = self._registered_agent_runtime_configs.get(name)
         if config is None:
             return
-        capability_ids = self._resolve_capability_refs(agent.capabilities, register_bindings=False)
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            agent.skills,
+            register_bindings=False,
+        )
+        config["skills"] = _agent_skills(agent)
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
@@ -654,11 +730,115 @@ def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAda
     )
 
 
+def _agent_skills(agent: AutoAgent | ToolAgent | DagAgent) -> tuple[str, ...] | None:
+    if agent.skills is None:
+        return None
+    return tuple(agent.skills)
+
+
+def _apply_skill_capabilities(
+    capability_ids: tuple[str, ...],
+    skills: Iterable[str] | None,
+) -> tuple[str, ...]:
+    ids = [capability_id for capability_id in capability_ids if capability_id not in SKILL_ACCESSOR_CAPABILITY_IDS]
+    skill_scope = None if skills is None else tuple(skills)
+    if skill_scope is None or skill_scope:
+        ids.extend(SKILL_ACCESSOR_CAPABILITY_IDS)
+    return tuple(dict.fromkeys(ids))
+
+
 def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
-    event_type = str(event.get("type") or "event")
-    if event_type not in {"dag", "event", "review", "status", "token", "trace"}:
-        event_type = "event"
-    return RunStreamEvent(type=event_type, data=dict(event))
+    data = dict(event)
+    event_type = str(data.get("type") or "status")
+
+    if event_type == "token":
+        content = str(data.get("content", ""))
+        return RunStreamEvent(type="token", content=content, data=data)
+
+    if event_type == "dag":
+        dag = _coerce_dag(data.get("dag"))
+        return RunStreamEvent(type="dag", data=data, dag=dag)
+
+    if event_type == "trace":
+        trace = _coerce_trace(data.get("trace"))
+        return RunStreamEvent(type="trace", data=data, trace=trace)
+
+    if event_type == "review":
+        review = _coerce_pending_review(data.get("review"))
+        return _review_stream_event(review, data=data) if review is not None else RunStreamEvent(type="review", data=data)
+
+    if event_type in {"capability_call", "capability_result", "capability_error"}:
+        return RunStreamEvent(
+            type=event_type,
+            content=str(data.get("content", "")),
+            message=str(data.get("message") or data.get("content") or ""),
+            data=data,
+        )
+
+    return RunStreamEvent(type="status", message=_status_message(data, event_type), data=data)
+
+
+def _review_stream_event(
+    review: PendingReview,
+    *,
+    data: dict[str, Any] | None = None,
+) -> RunStreamEvent:
+    payload = data or {
+        "review_id": review.review_id,
+        "kind": review.kind,
+        "message": review.message,
+        "capability_call": review.capability_call,
+        "payload": review.payload,
+    }
+    if review.proposed_dag is not None:
+        payload = {**payload, "dag": review.proposed_dag.model_dump(mode="json")}
+    return RunStreamEvent(
+        type="review",
+        message=review.message,
+        data=payload,
+        dag=review.proposed_dag,
+        review=review,
+    )
+
+
+def _coerce_dag(value: Any) -> DAG | None:
+    if value is None or isinstance(value, DAG):
+        return value
+    if isinstance(value, dict):
+        return DAG.model_validate(value)
+    return None
+
+
+def _coerce_trace(value: Any) -> RunTrace | None:
+    if value is None or isinstance(value, RunTrace):
+        return value
+    if isinstance(value, dict):
+        return RunTrace.model_validate(value)
+    return None
+
+
+def _coerce_pending_review(value: Any) -> PendingReview | None:
+    if value is None or isinstance(value, PendingReview):
+        return value
+    if not isinstance(value, dict):
+        return None
+    proposed_dag = _coerce_dag(value.get("proposed_dag") or value.get("dag"))
+    return PendingReview(
+        review_id=str(value["review_id"]),
+        kind=value["kind"],
+        message=str(value.get("message", "")),
+        proposed_dag=proposed_dag,
+        capability_call=value.get("capability_call"),
+        payload=dict(value.get("payload") or {}),
+    )
+
+
+def _status_message(data: dict[str, Any], event_type: str) -> str:
+    for key in ("message", "summary", "reason", "content"):
+        value = data.get(key)
+        if value:
+            return str(value)
+    return event_type
 
 
 def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) -> CapabilityDefinition:

@@ -106,6 +106,33 @@ class OpenAICompatibleProvider:
         )
 
 
+class Provider(OpenAICompatibleProvider):
+    """Public OpenAI-compatible provider SDK entrypoint."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float = 60,
+        strip_thinking: bool = False,
+        client: AsyncOpenAI | None = None,
+    ) -> None:
+        super().__init__(
+            ProviderConfig(
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout_seconds,
+                strip_thinking=strip_thinking,
+            ),
+            client=client,
+        )
+
+
 def _convert_tool_call(tool_call: Any) -> ToolCall:
     raw_arguments = tool_call.function.arguments or "{}"
     try:

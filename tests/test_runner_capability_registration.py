@@ -7,7 +7,7 @@ import pytest
 import dagent
 import dagent.runner as runner_module
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import CapabilityInvocation
+from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
 
 
 def run(coro):
@@ -119,6 +119,58 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     runner.close()
 
 
+def test_remove_mcp_server_unregisters_tools_and_shutdowns_manager(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    manager = FakeMCPManager()
+    runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+
+    runner.remove_mcp_server("mock-server")
+
+    assert runner.runtime.capability_catalog.get("mcp.mock_server.lookup") is None
+    assert manager.shutdown_calls == 1
+    runner.close()
+    assert manager.shutdown_calls == 1
+
+
+def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                for tool_name in config.get("tools", []):
+                    safe_name = tool_name.replace("-", "_")
+                    catalog.register(
+                        CapabilityDefinition(
+                            id=f"mcp.{name}.{safe_name}",
+                            name=f"mcp_{name}__{safe_name}",
+                            kind="mcp",
+                            config={"server": name, "tool": tool_name},
+                        ),
+                        lambda invocation: CapabilityResult(
+                            invocation_id=invocation.invocation_id,
+                            capability_id=invocation.capability_id,
+                            kind=invocation.kind,
+                            status="completed",
+                            content="ok",
+                        ),
+                    )
+
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_mcp_server("mock", {"command": "fake", "tools": ["old"]})
+
+    definitions = runner.replace_mcp_server("mock", {"command": "fake", "tools": ["new"]})
+
+    assert [definition.id for definition in definitions] == ["mcp.mock.new"]
+    assert runner.runtime.capability_catalog.get("mcp.mock.old") is None
+    assert runner.runtime.capability_catalog.get("mcp.mock.new") is not None
+    runner.close()
+
+
 def test_add_mcp_server_requires_mcp_sdk_when_unavailable(monkeypatch, tmp_path) -> None:
     runner = _runner(tmp_path)
     monkeypatch.setattr(runner_module.MCPServerManager, "available", False)
@@ -207,3 +259,7 @@ def test_runner_rejects_runtime_registration_after_close(tmp_path) -> None:
         runner.add_skill_root(tmp_path / "extra")
     with pytest.raises(RuntimeError, match="Runner is closed"):
         runner.add_mcp_server("mock-server", {"command": "fake"})
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.remove_mcp_server("mock-server")
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.replace_mcp_server("mock-server", {"command": "fake"})

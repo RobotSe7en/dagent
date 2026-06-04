@@ -86,7 +86,7 @@ def test_tool_agent_scope_can_disable_all_tools(tmp_path: Path) -> None:
     assert "## Available Tools" not in provider.requests[0]["messages"][0]["content"]
 
 
-def test_tool_agent_scope_filters_tools_and_injects_skill_prompt(tmp_path: Path) -> None:
+def test_tool_agent_scope_filters_tools_without_injecting_skill_prompt(tmp_path: Path) -> None:
     provider = MockProvider([ChatResponse(content="Done.")])
     agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
 
@@ -95,7 +95,7 @@ def test_tool_agent_scope_filters_tools_and_injects_skill_prompt(tmp_path: Path)
             "Use scoped context",
             capability_scope=CapabilityScope(
                 capability_ids=("tool.read_file",),
-                skill_instructions=("writing/summarize: Summarize.\nUse short bullets.",),
+                skills=("writing/summarize",),
             ),
         )
     )
@@ -103,7 +103,7 @@ def test_tool_agent_scope_filters_tools_and_injects_skill_prompt(tmp_path: Path)
     assert result.status == "completed"
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["read_file"]
     system_content = provider.requests[0]["messages"][0]["content"]
-    assert "Use short bullets." in system_content
+    assert "writing/summarize" not in system_content
     assert "write_file" not in system_content
 
 

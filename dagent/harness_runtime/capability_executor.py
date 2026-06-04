@@ -29,6 +29,7 @@ class CapabilityExecutionContext:
     input_artifacts: dict[str, list[str | Path]] = field(default_factory=dict)
     output_artifacts: dict[str, list[str | Path]] = field(default_factory=dict)
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
+    skills: tuple[str, ...] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -2,7 +2,7 @@
 
 from dagent.providers.base import ChatProvider, ChatResponse, ChatStreamEvent, ToolCall
 from dagent.providers.mock import MockProvider
-from dagent.providers.openai_compatible import OpenAICompatibleProvider
+from dagent.providers.openai_compatible import OpenAICompatibleProvider, Provider
 
 __all__ = [
     "ChatProvider",
@@ -10,5 +10,6 @@ __all__ = [
     "ChatStreamEvent",
     "MockProvider",
     "OpenAICompatibleProvider",
+    "Provider",
     "ToolCall",
 ]

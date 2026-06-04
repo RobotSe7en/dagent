@@ -330,6 +330,7 @@ class SkillsCapabilityProvider:
                 config={"roots": [str(root) for root in self.store.roots]},
             ),
             self._list,
+            supports_context=True,
         )
         catalog.register(
             CapabilityDefinition(
@@ -352,12 +353,19 @@ class SkillsCapabilityProvider:
                 config={"roots": [str(root) for root in self.store.roots]},
             ),
             self._view,
+            supports_context=True,
         )
 
-    def _list(self, invocation: CapabilityInvocation) -> CapabilityResult:
+    def _list(
+        self,
+        invocation: CapabilityInvocation,
+        *,
+        context: Any = None,
+        callbacks: Any = None,
+    ) -> CapabilityResult:
         category = invocation.arguments.get("category")
         try:
-            skills = self.store.list()
+            skills = _visible_skills(self.store.list(), _context_skills(context))
         except SkillStoreError as exc:
             return _failed(invocation, str(exc), _error_payload(exc))
         if category:
@@ -369,10 +377,30 @@ class SkillsCapabilityProvider:
         }
         return _completed(invocation, payload)
 
-    def _view(self, invocation: CapabilityInvocation) -> CapabilityResult:
+    def _view(
+        self,
+        invocation: CapabilityInvocation,
+        *,
+        context: Any = None,
+        callbacks: Any = None,
+    ) -> CapabilityResult:
+        name = str(invocation.arguments.get("name", ""))
+        visible_names = _context_skills(context)
         try:
+            if visible_names is not None:
+                visible = _visible_skills(self.store.list(), visible_names)
+                matches = _find_skill_matches(name, visible)
+                if not matches:
+                    return _failed(
+                        invocation,
+                        f"Skill '{name}' is not visible.",
+                        {"type": "skill_not_visible", "name": name},
+                    )
+                if len(matches) > 1:
+                    raise SkillAmbiguousError(name, matches)
+                name = matches[0].qualified_name
             view = self.store.view(
-                str(invocation.arguments.get("name", "")),
+                name,
                 file_path=invocation.arguments.get("file_path"),
             )
         except SkillStoreError as exc:
@@ -478,6 +506,31 @@ def _find_skill_matches(name: str, skills: list[SkillEntry]) -> list[SkillEntry]
         if query in candidates:
             matches.append(skill)
     return matches
+
+
+def _context_skills(context: Any) -> tuple[str, ...] | None:
+    value = getattr(context, "skills", None)
+    if value is None:
+        return None
+    return tuple(str(skill) for skill in value)
+
+
+def _visible_skills(skills: list[SkillEntry], visible_names: tuple[str, ...] | None) -> list[SkillEntry]:
+    if visible_names is None:
+        return skills
+    visible: list[SkillEntry] = []
+    seen_paths: set[Path] = set()
+    for name in visible_names:
+        matches = _find_skill_matches(name, skills)
+        if not matches:
+            raise SkillNotFoundError(name)
+        if len(matches) > 1:
+            raise SkillAmbiguousError(name, matches)
+        skill = matches[0]
+        if skill.skill_file not in seen_paths:
+            seen_paths.add(skill.skill_file)
+            visible.append(skill)
+    return visible
 
 
 def _resolve_skill_file(skill: SkillEntry, file_path: str) -> Path:

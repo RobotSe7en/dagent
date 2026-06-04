@@ -15,6 +15,7 @@ from dagent.capabilities.skills import (
     scan_skill_roots,
 )
 from dagent.harness_runtime import CapabilityExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutionContext
 from dagent.schemas import CapabilityInvocation
 
 
@@ -71,6 +72,47 @@ def test_skills_provider_registers_progressive_disclosure_tools(tmp_path) -> Non
     assert "Use concise summaries." in viewed["content"]
     assert reference["content"] == "Prefer short prose."
     assert reference["skill_dir"] == str(skill_dir.resolve())
+
+
+def test_skills_provider_filters_list_and_view_by_execution_context(tmp_path) -> None:
+    for category, name in (("writing", "brief"), ("research", "market")):
+        skill_dir = tmp_path / "skills" / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill.\n---\nUse {name}.",
+            encoding="utf-8",
+        )
+    catalog = CapabilityCatalog()
+    executor = CapabilityExecutor(catalog)
+    SkillsCapabilityProvider([tmp_path / "skills"]).register_into(catalog)
+    context = CapabilityExecutionContext(task_id="task_1", skills=("writing/brief",))
+
+    list_result = run(executor.execute(
+        CapabilityInvocation(capability_id="skill.list", kind="skill"),
+        context=context,
+    ))
+    allowed_view = run(executor.execute(
+        CapabilityInvocation(
+            capability_id="skill.view",
+            kind="skill",
+            arguments={"name": "writing/brief"},
+        ),
+        context=context,
+    ))
+    blocked_view = run(executor.execute(
+        CapabilityInvocation(
+            capability_id="skill.view",
+            kind="skill",
+            arguments={"name": "research/market"},
+        ),
+        context=context,
+    ))
+
+    listed = json.loads(list_result.content)
+    assert [skill["name"] for skill in listed["skills"]] == ["brief"]
+    assert allowed_view.status == "completed"
+    assert blocked_view.status == "failed"
+    assert "not visible" in (blocked_view.error or "")
 
 
 def test_skill_view_rejects_ambiguous_names_and_path_traversal(tmp_path) -> None:

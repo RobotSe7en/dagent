@@ -2,11 +2,11 @@
 
 > **Plan globally. Re-plan locally.**
 
-**dagent** is a *Dynamic DAG Agent* framework. It can run a request through a
-bounded tool-using agent, or through a planner that creates and executes a
-reviewable capability-node DAG. The runtime keeps those modes separate: each
-public agent object is declarative configuration, while `Runner` owns the runtime
-session, capability catalog, review continuations, and execution state.
+**dagent** is a *Dynamic DAG Agent* framework. It can automatically route a
+request, run it through a bounded tool-using agent, or use a planner that creates
+and executes a reviewable capability-node DAG. Each public agent object is
+declarative configuration, while `Runner` owns the runtime session, capability
+catalog, review continuations, and execution state.
 
 Traditional agent frameworks choose one of two extremes: a free-running ReAct loop with
 no structure, or a rigid static pipeline with no adaptability. dagent rejects both. Every
@@ -46,9 +46,9 @@ stay as structured execution records instead of being rediscovered from chat
 history.
 
 **5. Runner owns runtime state.**
-Public `ToolAgent`, `DagAgent`, and `Dag` objects are declarative configuration.
-`Runner` owns the provider, capability catalog, session state, review
-continuations, and execution dispatch.
+Public `AutoAgent`, `ToolAgent`, `DagAgent`, and `Dag` objects are declarative
+configuration. `Runner` owns the provider, capability catalog, session state,
+review continuations, and execution dispatch.
 
 **6. Safety is part of execution, not prompting.**
 The DAG planner proposes work, but capability handlers enforce boundaries before
@@ -57,7 +57,7 @@ capabilities fail closed; file boundaries reject path escape.
 
 ## Quick Start
 
-Register tools, MCP servers, and skill roots on the runner:
+Pass SDK configuration explicitly to the runner:
 
 ```python
 import dagent
@@ -68,9 +68,15 @@ def search(q: str) -> str:
     return f"found:{q}"
 
 
-runner = dagent.Runner.from_config(
-    "config.yaml",
+provider = dagent.Provider(
+    base_url="https://api.openai.com/v1",
+    model="your-model",
+    api_key_env="OPENAI_API_KEY",
+)
+
+runner = dagent.Runner(
     workspace=".",
+    provider=provider,
     capabilities=[search],
     mcp_servers={
         "fs": {
@@ -79,7 +85,15 @@ runner = dagent.Runner.from_config(
         },
     },
     skill_roots=["team-skills"],
+    profile_root="profiles",
 )
+```
+
+Use `Runner.from_config(...)` when provider settings, MCP servers, validation,
+or profile directories should come from a config file:
+
+```python
+runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[search])
 ```
 
 The same capability types can be added after runner construction:
@@ -90,7 +104,7 @@ def summarize(text: str) -> str:
     return text.split(".")[0]
 
 
-runner = dagent.Runner.from_config("config.yaml", workspace=".")
+runner = dagent.Runner(provider=provider, workspace=".")
 runner.add_tool(summarize)
 runner.add_mcp_server(
     "fs",
@@ -108,9 +122,60 @@ runner.skill_store.install(
 )
 ```
 
+Runtime MCP registrations can be replaced or removed without touching agent
+configuration:
+
+```python
+runner.replace_mcp_server(
+    "fs",
+    {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "docs"],
+    },
+)
+runner.remove_mcp_server("fs")
+```
+
 Python tools are exposed as `tool.<name>` capabilities. MCP stdio server tools
 are exposed as `mcp.<server>.<tool>` and require the MCP optional extra. Skill
-roots are available through the built-in skill capabilities.
+roots are available through the built-in `skill.list` and `skill.view`
+capabilities. Agents use `skills=[...]` to limit which concrete skills those
+accessors can see.
+
+Built-in profiles are packaged resources. Use them by name on agents, or read
+them directly when you need to inspect the prompt:
+
+```python
+agent = dagent.ToolAgent(profile="conversation")
+profile = dagent.load_builtin_profile("conversation")
+available = dagent.list_builtin_profiles()
+```
+
+Run an `AutoAgent` when the runtime should choose direct tool use or a dynamic
+DAG per request:
+
+```python
+import asyncio
+
+import dagent
+
+
+@dagent.tool
+def search(q: str) -> str:
+    return f"found:{q}"
+
+
+async def main():
+    runner = dagent.Runner(provider=provider, workspace=".", capabilities=[search])
+    agent = dagent.AutoAgent(capabilities=["tool.search"], skills=["writing/terse"])
+
+    result = await runner.run(agent, "Answer directly or plan if orchestration helps.")
+    print(result.kind)
+    print(result.output_text)
+
+
+asyncio.run(main())
+```
 
 Run a `ToolAgent` for bounded tool-loop work:
 
@@ -126,11 +191,16 @@ def echo(text: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[echo])
-    agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.echo"])
+    runner = dagent.Runner(provider=provider, workspace=".", capabilities=[echo])
+    agent = dagent.ToolAgent(
+        profile="conversation",
+        capabilities=["tool.echo"],
+        skills=["writing/terse"],
+    )
 
     result = await runner.run(agent, "Use echo to respond with hello.")
     print(result.output_text)
+    print(result.model_dump(mode="json"))
 
 
 asyncio.run(main())
@@ -150,7 +220,7 @@ def search(q: str) -> str:
 
 
 async def main():
-    runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[search])
+    runner = dagent.Runner(provider=provider, workspace=".", capabilities=[search])
     agent = dagent.DagAgent(capabilities=["tool.search"], review="careful")
 
     result = await runner.run(agent, "Research dagent and write a short note.")
@@ -206,7 +276,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner.from_config("config.yaml", workspace=".")
+    runner = dagent.Runner(provider=provider, workspace=".")
     result = await runner.run(dag, input=ResearchInput(query="dagent"))
     print(result.status)
     print(result.node_output("render"))
@@ -225,6 +295,7 @@ Run examples:
 
 ```bash
 uv run python -m examples.tool_agent
+uv run python -m examples.auto_agent
 uv run python -m examples.dynamic_dag_agent
 uv run python -m examples.static_dag
 uv run python -m examples.streaming
@@ -247,9 +318,11 @@ Detailed SDK docs live in the [Python SDK guide](docs/python-sdk.md).
 flowchart TD
   U["User / SDK"] --> RUN["Runner"]
   RUN --> HR["HarnessRuntime"]
-  HR -->|"tool mode"| TA["ToolAgent"]
-  HR -->|"dag mode"| DA["DAGAgent"]
-  HR -->|"dag_spec mode"| DS["DAGSpec"]
+  HR -->|"AutoAgent routes to tool"| TA["ToolAgent"]
+  HR -->|"ToolAgent target"| TA
+  HR -->|"AutoAgent routes to DAG"| DA["DAGAgent"]
+  HR -->|"DagAgent target"| DA
+  HR -->|"Dag / DAGSpec target"| DS["DAGSpec"]
 
   TA --> TAL["ToolAgentLoop"]
   TAL -->|"capability call"| CE["CapabilityExecutor"]
@@ -272,11 +345,12 @@ and capability catalog. `HarnessRuntime` is the lower-level control layer for
 routing, review continuations, optional result validation, and final response
 delivery.
 
-`ToolAgent` delegates bounded tool-loop work to `ToolAgentLoop`. `DAGAgent`
-delegates dynamic planning and fixed `DAGSpec` execution to `DAGAgentLoop`.
-Both paths share `CapabilityExecutor`, so Python tools, MCP tools, skills,
-shell commands, file tools, memory, and agent capabilities go through the same
-catalog and boundary enforcement.
+`AutoAgent` lets the runtime route each request to direct tool use or dynamic
+DAG planning. `ToolAgent` delegates bounded tool-loop work to `ToolAgentLoop`.
+`DAGAgent` delegates dynamic planning and fixed `DAGSpec` execution to
+`DAGAgentLoop`. Both paths share `CapabilityExecutor`, so Python tools, MCP
+tools, skill accessors, shell commands, file tools, memory, and agent
+capabilities go through the same catalog and boundary enforcement.
 
 `DAGExecutor` validates graph structure, resolves structured value expressions,
 executes ready layers, updates artifact state, and returns a cumulative

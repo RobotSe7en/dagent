@@ -27,10 +27,19 @@ async def main() -> None:
     async for event in runner.stream(agent, "Answer when ready."):
         if event.type == "token":
             print(event.content, end="")
+        elif event.type == "status":
+            print(event.message)
+        elif event.type == "trace" and event.trace is not None:
+            print(event.trace.status)
+        elif event.type == "review" and event.review is not None:
+            print(event.review.message)
         elif event.type == "done" and event.result is not None:
             print()
             print(event.result.kind)
             print(event.result.output_text)
+            print(event.result.model_dump(mode="json"))
+        elif event.type == "error":
+            print(event.message)
 
     runner.close()
 

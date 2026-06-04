@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Literal
 
 from dagent.review import ReviewHandle
@@ -10,6 +10,18 @@ from dagent.schemas import ArtifactState, DAG, DAGRun, PendingReview, RunTrace, 
 
 
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
+RunStreamEventType = Literal[
+    "token",
+    "status",
+    "dag",
+    "trace",
+    "review",
+    "capability_call",
+    "capability_result",
+    "capability_error",
+    "done",
+    "error",
+]
 
 
 @dataclass(frozen=True)
@@ -103,19 +115,50 @@ class RunResult:
     def node_value(self, node_id: str) -> Any:
         return _node_trace(self.trace, node_id).value
 
+    def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "status": self.status,
+            "run_id": self.run_id,
+            "output_text": self.output_text,
+            "dag": _dump(self.dag, mode=mode),
+            "trace": _dump(self.trace, mode=mode),
+            "dag_run": _dump(self.dag_run, mode=mode),
+            "spec_id": self.spec_id,
+            "workspace_path": self.workspace_path,
+            "events": _dump(self.events, mode=mode),
+            "pending_review": _dump(self.pending_review, mode=mode),
+            "requires_review": self.requires_review,
+            "artifacts": _dump(self.artifacts, mode=mode),
+        }
+
 
 @dataclass(frozen=True)
 class RunStreamEvent:
     """Public event yielded by ``Runner.stream``."""
 
-    type: str
+    type: RunStreamEventType
+    content: str = ""
+    message: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    dag: DAG | None = None
+    trace: RunTrace | None = None
+    review: PendingReview | None = None
     result: RunResult | None = None
     error: BaseException | None = None
 
-    @property
-    def content(self) -> str:
-        return str(self.data.get("content", ""))
+    def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "content": self.content,
+            "message": self.message,
+            "data": _dump(self.data, mode=mode),
+            "dag": _dump(self.dag, mode=mode),
+            "trace": _dump(self.trace, mode=mode),
+            "review": _dump(self.review, mode=mode),
+            "result": self.result.model_dump(mode=mode) if self.result is not None else None,
+            "error": str(self.error) if self.error is not None else None,
+        }
 
 
 def _infer_kind(raw: RuntimeResponse | DAGRun) -> RunResultKind:
@@ -146,3 +189,22 @@ def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:
             return node
         stack.extend(node.children)
     raise KeyError(f"Node '{node_id}' was not found in this run trace.")
+
+
+def _dump(value: Any, *, mode: Literal["python", "json"]) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode=mode)
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _dump(getattr(value, item.name), mode=mode)
+            for item in fields(value)
+        }
+    if isinstance(value, dict):
+        return {key: _dump(item, mode=mode) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_dump(item, mode=mode) for item in value]
+    if isinstance(value, tuple):
+        return [_dump(item, mode=mode) for item in value] if mode == "json" else tuple(
+            _dump(item, mode=mode) for item in value
+        )
+    return value

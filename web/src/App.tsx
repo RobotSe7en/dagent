@@ -316,7 +316,7 @@ type MessageTimelineItem =
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
-type RuntimeMode = 'auto' | 'tool' | 'dag';
+type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
@@ -381,11 +381,11 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto chooses for you.',
     },
   ]);
   const [draft, setDraft] = useState('');
-  const [mode, setMode] = useState<RuntimeMode>('auto');
+  const [target, setTarget] = useState<ChatTarget>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
   const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
   const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
@@ -1054,12 +1054,14 @@ export function App() {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
         },
         onDone: (payload) => {
-          setEditorRun(payload.dag_run);
-          syncEditorDag(payload.dag_run.dag);
-          setEditorMessage(`Run ${payload.dag_run.status}.`);
+          const dagRun = payload.result.dag_run;
+          if (!dagRun) return;
+          setEditorRun(dagRun);
+          syncEditorDag(dagRun.dag);
+          setEditorMessage(`Run ${dagRun.status}.`);
           setEditorRunTimeline((items) => appendRunTranscriptToken(
             items,
-            `\n\nRun ${payload.dag_run.status}.`,
+            `\n\nRun ${dagRun.status}.`,
           ));
         },
         onError: (message) => {
@@ -1090,16 +1092,16 @@ export function App() {
     ]);
     const capabilityScope = chatScopeMode === 'all'
       ? undefined
-      : { capabilityIds: selectedChatCapabilityIds, skillNames: selectedChatSkillNames };
+      : { capabilityIds: selectedChatCapabilityIds, skills: selectedChatSkillNames };
     appendTrace({
       type: 'model',
       label: 'runtime_started',
-      detail: `HarnessRuntime mode=${mode}; capabilities=${chatScopeLabel}.`,
+      detail: `Agent target=${target}; capabilities=${chatScopeLabel}.`,
       status: 'running',
     });
 
     try {
-      await streamTask(prompt, mode, reviewLevel, {
+      await streamTask(prompt, target, reviewLevel, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime request accepted.', status: 'running' }),
         onDag: (nextDag) => {
           flushQueuedTokensNow();
@@ -1113,20 +1115,21 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onDone: (payload) => {
+          const result = payload.result;
           flushQueuedTokensNow();
-          if (payload.dag) {
-            syncDag(payload.dag);
-            attachDagToLastAssistant(payload.dag);
-            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
-            appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${payload.dag.nodes.length} node(s).`, status: 'completed' });
+          if (result.dag) {
+            syncDag(result.dag);
+            attachDagToLastAssistant(result.dag);
+            if (shouldOpenDagReview(result.dag, result.pending_review)) setReviewOpen(true);
+            appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${result.dag.nodes.length} node(s).`, status: 'completed' });
           }
-          handlePendingReview(payload.pending_review);
-          enqueueFinalAnswer(payload.final_answer);
+          handlePendingReview(result.pending_review);
+          enqueueFinalAnswer(result.output_text);
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: payload.dag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
-            status: payload.status === 'failed' ? 'failed' : 'completed',
+            detail: result.dag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
+            status: result.status === 'failed' ? 'failed' : 'completed',
           });
         },
         onError: (message) => {
@@ -1185,14 +1188,15 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onDone: (payload) => {
+          const result = payload.result;
           flushQueuedTokensNow();
-          if (payload.dag) {
-            syncDag(payload.dag);
-            attachDagToLastAssistant(payload.dag);
-            if (shouldOpenDagReview(payload.dag, payload.pending_review)) setReviewOpen(true);
+          if (result.dag) {
+            syncDag(result.dag);
+            attachDagToLastAssistant(result.dag);
+            if (shouldOpenDagReview(result.dag, result.pending_review)) setReviewOpen(true);
           }
-          handlePendingReview(payload.pending_review);
-          enqueueFinalAnswer(payload.final_answer);
+          handlePendingReview(result.pending_review);
+          enqueueFinalAnswer(result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAG loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
@@ -1239,8 +1243,8 @@ export function App() {
         onValidating: appendValidating,
         onDone: (payload) => {
           flushQueuedTokensNow();
-          handlePendingReview(payload.pending_review);
-          enqueueFinalAnswer(payload.final_answer);
+          handlePendingReview(payload.result.pending_review);
+          enqueueFinalAnswer(payload.result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
@@ -1272,7 +1276,7 @@ export function App() {
     }
     setMessages([{
       role: 'assistant',
-      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto mode chooses for you.',
+      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto chooses for you.',
     }]);
     setDraft('');
     syncDag(emptyDag);
@@ -1344,12 +1348,12 @@ export function App() {
                   <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
                     <MessageSquarePlus size={18} />
                   </button>
-                  <div className="mode-switch" aria-label="Runtime mode">
-                    {(['auto', 'dag', 'tool'] as RuntimeMode[]).map((item) => (
+                  <div className="mode-switch" aria-label="Agent target">
+                    {(['auto', 'dag', 'tool'] as ChatTarget[]).map((item) => (
                       <button
                         key={item}
-                        className={mode === item ? 'active' : ''}
-                        onClick={() => setMode(item)}
+                        className={target === item ? 'active' : ''}
+                        onClick={() => setTarget(item)}
                         type="button"
                       >
                         {item}

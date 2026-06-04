@@ -14,7 +14,6 @@ class PromptRequest:
     profile: AgentProfile
     task_content: str
     tools: list[CapabilityDefinition] = field(default_factory=list)
-    skills: list[str] = field(default_factory=list)
     context: str = ""
     variables: dict[str, Any] = field(default_factory=dict)
 
@@ -33,8 +32,6 @@ class PromptBuilder:
         system_sections.append(request.profile.render())
         if request.tools:
             system_sections.append(_tools_section(request.tools))
-        if request.skills:
-            system_sections.append(_skills_section(request.skills))
         if request.context:
             system_sections.append(_named_section("Context", request.context))
 
@@ -52,13 +49,6 @@ def _tools_section(tools: list[CapabilityDefinition]) -> str:
     lines = ["## Available Tools"]
     for tool in tools:
         lines.append(f"- {tool.name}: {tool.description or 'No description.'}")
-    return "\n".join(lines)
-
-
-def _skills_section(skills: list[str]) -> str:
-    lines = ["## Skills"]
-    for skill in skills:
-        lines.append(f"- {skill.strip().replace(chr(10), chr(10) + '  ')}")
     return "\n".join(lines)
 
 
