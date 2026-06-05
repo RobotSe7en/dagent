@@ -218,10 +218,10 @@ export interface RunTrace {
 }
 
 export interface CapabilityStreamEvent {
-  type: 'capability_call' | 'capability_result' | 'capability_error';
+  type: 'capability.call.started' | 'capability.call.completed' | 'capability.call.failed';
   invocation_id: string;
   capability_id: string;
-  arguments: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
   content?: string;
 }
 
@@ -247,7 +247,7 @@ export interface ValidationIssue {
 }
 
 export interface ValidationFeedbackEvent {
-  type: 'retry' | 'validation_passed';
+  type: 'validation.retry' | 'validation.passed';
   passed?: boolean;
   reason?: string;
   summary: string;

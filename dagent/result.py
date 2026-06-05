@@ -6,21 +6,34 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Literal
 
 from dagent.review import ReviewHandle
-from dagent.schemas import ArtifactState, DAG, DAGRun, PendingReview, RunTrace, RunTraceNode, RuntimeResponse
+from dagent.schemas import (
+    ArtifactState,
+    DAG,
+    DAGRun,
+    PendingReview,
+    ReviewKind,
+    RunTrace,
+    RunTraceNode,
+    RuntimeResponse,
+    ValidationIssue,
+)
 
 
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
 RunStreamEventType = Literal[
-    "token",
-    "status",
-    "dag",
-    "trace",
-    "review",
-    "capability_call",
-    "capability_result",
-    "capability_error",
-    "done",
-    "error",
+    "run.status",
+    "run.completed",
+    "run.failed",
+    "response.output_text.delta",
+    "dag.updated",
+    "trace.updated",
+    "review.required",
+    "validation.started",
+    "validation.passed",
+    "validation.retry",
+    "capability.call.started",
+    "capability.call.completed",
+    "capability.call.failed",
 ]
 
 
@@ -134,30 +147,148 @@ class RunResult:
 
 
 @dataclass(frozen=True)
+class TextDeltaData:
+    delta: str
+
+
+@dataclass(frozen=True)
+class StatusData:
+    message: str
+
+
+@dataclass(frozen=True)
+class DagUpdatedData:
+    dag: DAG
+
+
+@dataclass(frozen=True)
+class TraceUpdatedData:
+    trace: RunTrace
+
+
+@dataclass(frozen=True)
+class ReviewRequiredData:
+    review_id: str
+    kind: ReviewKind
+    message: str
+    dag: DAG | None = None
+    capability_call: dict[str, Any] | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def to_pending_review(self) -> PendingReview:
+        return PendingReview(
+            review_id=self.review_id,
+            kind=self.kind,
+            message=self.message,
+            proposed_dag=self.dag,
+            capability_call=self.capability_call,
+            payload=dict(self.payload),
+        )
+
+    def to_handle(self) -> ReviewHandle:
+        return ReviewHandle(self.to_pending_review())
+
+
+@dataclass(frozen=True)
+class ValidationStartedData:
+    message: str
+
+
+@dataclass(frozen=True)
+class ValidationPassedData:
+    summary: str = ""
+    issues: list[ValidationIssue] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ValidationRetryData:
+    summary: str = ""
+    issues: list[ValidationIssue] = field(default_factory=list)
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class CapabilityCallStartedData:
+    invocation_id: str
+    capability_id: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CapabilityCallCompletedData:
+    invocation_id: str
+    capability_id: str
+    content: str = ""
+
+
+@dataclass(frozen=True)
+class CapabilityCallFailedData:
+    invocation_id: str
+    capability_id: str
+    content: str = ""
+
+
+@dataclass(frozen=True)
+class RunCompletedData:
+    result: RunResult
+
+
+@dataclass(frozen=True)
+class RunFailedData:
+    message: str
+    error_type: str
+
+
+RunStreamEventData = (
+    TextDeltaData
+    | StatusData
+    | DagUpdatedData
+    | TraceUpdatedData
+    | ReviewRequiredData
+    | ValidationStartedData
+    | ValidationPassedData
+    | ValidationRetryData
+    | CapabilityCallStartedData
+    | CapabilityCallCompletedData
+    | CapabilityCallFailedData
+    | RunCompletedData
+    | RunFailedData
+)
+
+
+@dataclass(frozen=True)
 class RunStreamEvent:
-    """Public event yielded by ``Runner.stream``."""
+    """Low-level typed event yielded by ``Runner.stream_events``."""
 
     type: RunStreamEventType
-    content: str = ""
-    message: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
-    dag: DAG | None = None
-    trace: RunTrace | None = None
-    review: PendingReview | None = None
-    result: RunResult | None = None
-    error: BaseException | None = None
+    data: RunStreamEventData
+    sequence: int = 0
+    run_id: str | None = None
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return {
             "type": self.type,
-            "content": self.content,
-            "message": self.message,
             "data": _dump(self.data, mode=mode),
-            "dag": _dump(self.dag, mode=mode),
-            "trace": _dump(self.trace, mode=mode),
-            "review": _dump(self.review, mode=mode),
+            "sequence": self.sequence,
+            "run_id": self.run_id,
+        }
+
+
+@dataclass(frozen=True)
+class RunStreamChunk:
+    """High-level stream item yielded by ``Runner.stream``."""
+
+    text: str = ""
+    review: ReviewHandle | None = None
+    result: RunResult | None = None
+    event: RunStreamEvent | None = None
+
+    def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "review": _dump(self.review.pending if self.review is not None else None, mode=mode),
             "result": self.result.model_dump(mode=mode) if self.result is not None else None,
-            "error": str(self.error) if self.error is not None else None,
+            "event": self.event.model_dump(mode=mode) if self.event is not None else None,
         }
 
 

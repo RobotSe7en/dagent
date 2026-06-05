@@ -90,11 +90,11 @@ export function appendRunTranscriptCapability(
   event: CapabilityStreamEvent,
 ): RunTranscriptItem[] {
   const next = [...timeline];
-  if (event.type === 'capability_result' || event.type === 'capability_error') {
+  if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
     const index = next.findIndex(
       (item) => item.type === 'capability'
         && item.event.invocation_id === event.invocation_id
-        && item.event.type === 'capability_call',
+        && item.event.type === 'capability.call.started',
     );
     if (index !== -1) {
       const item = next[index] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };

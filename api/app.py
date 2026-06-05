@@ -312,23 +312,28 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
     workspace_root = _workspace_root_from_request(request)
 
     async def events():
-        yield _sse({"type": "status", "message": "dag_run_started"})
+        yield _sse({"type": "run.status", "data": {"message": "dag_run_started"}, "sequence": 0, "run_id": None})
         sent_error = False
         try:
-            async for event in state.get_runner().stream(
+            async for event in state.get_runner().stream_events(
                 _compile_user_dag(dag),
                 input=None if request is None else request.input,
                 workspace_root=workspace_root,
                 artifact_uploads=_artifact_uploads_for_dag(dag_id),
             ):
-                if event.type == "error":
+                if event.type == "run.failed":
                     sent_error = True
-                if event.type == "done" and event.result is not None:
-                    _store_dag_run(event.result)
+                if event.type == "run.completed":
+                    _store_dag_run(event.data.result)
                 yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
             if not sent_error:
-                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
+                yield _sse({
+                    "type": "run.failed",
+                    "data": {"message": str(exc), "error_type": type(exc).__name__},
+                    "sequence": 0,
+                    "run_id": None,
+                })
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -778,16 +783,21 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
     agent = _agent_from_message(request)
 
     async def events():
-        yield _sse({"type": "status", "message": "harness_runtime_started"})
+        yield _sse({"type": "run.status", "data": {"message": "harness_runtime_started"}, "sequence": 0, "run_id": None})
         sent_error = False
         try:
-            async for event in state.get_runner().stream(agent, request.message):
-                if event.type == "error":
+            async for event in state.get_runner().stream_events(agent, request.message):
+                if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
             if not sent_error:
-                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
+                yield _sse({
+                    "type": "run.failed",
+                    "data": {"message": str(exc), "error_type": type(exc).__name__},
+                    "sequence": 0,
+                    "run_id": None,
+                })
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -795,7 +805,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 @app.post("/messages/resume")
 async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "status", "message": "harness_runtime_resumed"})
+        yield _sse({"type": "run.status", "data": {"message": "harness_runtime_resumed"}, "sequence": 0, "run_id": None})
         decision = ReviewDecision(
             review_id=request.review_id,
             approved=request.approved,
@@ -804,13 +814,18 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
         )
         sent_error = False
         try:
-            async for event in state.get_runner().resume_stream(decision):
-                if event.type == "error":
+            async for event in state.get_runner().resume_stream_events(decision):
+                if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
             if not sent_error:
-                yield _sse({"type": "error", "message": str(exc), "error": str(exc)})
+                yield _sse({
+                    "type": "run.failed",
+                    "data": {"message": str(exc), "error_type": type(exc).__name__},
+                    "sequence": 0,
+                    "run_id": None,
+                })
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

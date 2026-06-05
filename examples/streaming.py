@@ -1,4 +1,4 @@
-"""Stream runner events and read the final unified RunResult.
+"""Stream runner chunks and read the final unified RunResult.
 
 Run from the repository root:
 
@@ -24,22 +24,16 @@ async def main() -> None:
     )
     agent = dagent.ToolAgent(profile="conversation")
 
-    async for event in runner.stream(agent, "Answer when ready."):
-        if event.type == "token":
-            print(event.content, end="")
-        elif event.type == "status":
-            print(event.message)
-        elif event.type == "trace" and event.trace is not None:
-            print(event.trace.status)
-        elif event.type == "review" and event.review is not None:
-            print(event.review.message)
-        elif event.type == "done" and event.result is not None:
+    async for chunk in runner.stream(agent, "Answer when ready."):
+        if chunk.text:
+            print(chunk.text, end="")
+        if chunk.review:
+            print(chunk.review.message)
+        if chunk.result:
             print()
-            print(event.result.kind)
-            print(event.result.output_text)
-            print(event.result.model_dump(mode="json"))
-        elif event.type == "error":
-            print(event.message)
+            print(chunk.result.kind)
+            print(chunk.result.output_text)
+            print(chunk.result.model_dump(mode="json"))
 
     runner.close()
 

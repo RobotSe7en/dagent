@@ -36,7 +36,6 @@ const {
   appendRunTranscriptToken,
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
-const { normalizeStreamEvent } = await importTypeScript('../src/streamEvents.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -343,16 +342,15 @@ test('appendRunTranscriptToken streams consecutive text into one message', () =>
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
   const call = {
-    type: 'capability_call',
+    type: 'capability.call.started',
     invocation_id: 'invoke_1',
     capability_id: 'tool.read_file',
     arguments: { path: 'inputs/source.md' },
   };
   const result = {
-    type: 'capability_result',
+    type: 'capability.call.completed',
     invocation_id: 'invoke_1',
     capability_id: 'tool.read_file',
-    arguments: {},
     content: 'file contents',
   };
 
@@ -365,58 +363,4 @@ test('appendRunTranscriptCapability pairs capability results with prior calls', 
     event: call,
     result,
   });
-});
-
-test('normalizeStreamEvent flattens SDK-enveloped capability and validation events', () => {
-  assert.deepEqual(
-    normalizeStreamEvent({
-      type: 'status',
-      message: 'capability_call',
-      data: {
-        type: 'capability_call',
-        invocation_id: 'invoke_1',
-        capability_id: 'tool.read_file',
-        arguments: { path: 'README.md' },
-      },
-    }),
-    {
-      type: 'capability_call',
-      message: 'capability_call',
-      data: {
-        type: 'capability_call',
-        invocation_id: 'invoke_1',
-        capability_id: 'tool.read_file',
-        arguments: { path: 'README.md' },
-      },
-      invocation_id: 'invoke_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: 'README.md' },
-    },
-  );
-
-  assert.deepEqual(
-    normalizeStreamEvent({
-      type: 'status',
-      message: 'retry',
-      data: {
-        type: 'retry',
-        summary: 'Needs fixes.',
-        issues: [{ message: 'Missing output.' }],
-        reason: 'Add output.',
-      },
-    }),
-    {
-      type: 'retry',
-      message: 'retry',
-      data: {
-        type: 'retry',
-        summary: 'Needs fixes.',
-        issues: [{ message: 'Missing output.' }],
-        reason: 'Add output.',
-      },
-      summary: 'Needs fixes.',
-      issues: [{ message: 'Missing output.' }],
-      reason: 'Add output.',
-    },
-  );
 });

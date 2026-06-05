@@ -302,9 +302,10 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    assert events[-1]["type"] == "done"
-    assert events[-1]["result"]["dag"] is None
-    assert events[-1]["result"]["output_text"] == "hello there"
+    result = _stream_result(events[-1])
+    assert events[-1]["type"] == "run.completed"
+    assert result["dag"] is None
+    assert result["output_text"] == "hello there"
 
 
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
@@ -399,7 +400,7 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
         json={"message": "echo hello", "target": "tool"},
     )
     events = _sse_events(response.text)
-    task_id = events[-1]["result"]["run_id"]
+    task_id = _stream_result(events[-1])["run_id"]
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
 
@@ -428,12 +429,13 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     event_types = [event["type"] for event in events]
-    assert "dag" in event_types
-    assert event_types[-1] == "done"
-    assert events[-1]["result"]["status"] == "awaiting_review"
-    assert events[-1]["result"]["pending_review"]["kind"] == "initial_dag"
-    assert events[-1]["result"]["dag"]["status"] == "review_required"
-    assert events[-1]["result"]["output_text"] == ""
+    result = _stream_result(events[-1])
+    assert "dag.updated" in event_types
+    assert event_types[-1] == "run.completed"
+    assert result["status"] == "awaiting_review"
+    assert result["pending_review"]["kind"] == "initial_dag"
+    assert result["dag"]["status"] == "review_required"
+    assert result["output_text"] == ""
 
 
 def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
@@ -453,12 +455,17 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    done_index = next(index for index, event in enumerate(events) if event["type"] == "done")
-    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
+    done_index = next(index for index, event in enumerate(events) if event["type"] == "run.completed")
+    token_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.output_text.delta"
+    )
+    result = _stream_result(events[-1])
     assert "<think>planning dag</think>" in token_text
-    assert any(event.get("type") == "trace" for event in events[:done_index])
-    assert events[-1]["result"]["status"] == "completed"
-    assert events[-1]["result"]["dag"]["status"] == "completed"
+    assert any(event.get("type") == "trace.updated" for event in events[:done_index])
+    assert result["status"] == "completed"
+    assert result["dag"]["status"] == "completed"
 
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
@@ -479,10 +486,10 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    dag_events = [event["dag"] for event in events if event["type"] == "dag"]
+    dag_events = [event["data"]["dag"] for event in events if event["type"] == "dag.updated"]
     assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
     assert any(dag["version"] == 2 and dag["status"] == "completed" for dag in dag_events)
-    assert events[-1]["result"]["status"] == "completed"
+    assert _stream_result(events[-1])["status"] == "completed"
 
 
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
@@ -502,8 +509,9 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    assert events[-1]["result"]["status"] == "failed"
-    assert events[-1]["result"]["dag"]["status"] == "failed"
+    result = _stream_result(events[-1])
+    assert result["status"] == "failed"
+    assert result["dag"]["status"] == "failed"
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
@@ -521,9 +529,10 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
         json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
     )
     stream_events = _sse_events(stream_response.text)
-    task_id = stream_events[-1]["result"]["run_id"]
-    review_id = stream_events[-1]["result"]["pending_review"]["review_id"]
-    dag = stream_events[-1]["result"]["dag"]
+    stream_result = _stream_result(stream_events[-1])
+    task_id = stream_result["run_id"]
+    review_id = stream_result["pending_review"]["review_id"]
+    dag = stream_result["dag"]
     dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
@@ -533,9 +542,10 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
 
     assert resume_response.status_code == 200
     resume_events = _sse_events(resume_response.text)
-    assert resume_events[-1]["result"]["status"] == "completed"
-    assert resume_events[-1]["result"]["dag"]["status"] == "completed"
-    assert any(event.get("type") == "trace" for event in resume_events)
+    resume_result = _stream_result(resume_events[-1])
+    assert resume_result["status"] == "completed"
+    assert resume_result["dag"]["status"] == "completed"
+    assert any(event.get("type") == "trace.updated" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
     assert trace_response.status_code == 200
@@ -562,8 +572,9 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
         json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
     )
     stream_events = _sse_events(stream_response.text)
-    review_id = stream_events[-1]["result"]["pending_review"]["review_id"]
-    dag = stream_events[-1]["result"]["dag"]
+    stream_result = _stream_result(stream_events[-1])
+    review_id = stream_result["pending_review"]["review_id"]
+    dag = stream_result["dag"]
 
     resume_response = client.post(
         "/messages/resume",
@@ -572,10 +583,14 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
 
     assert resume_response.status_code == 200
     events = _sse_events(resume_response.text)
-    token_text = "".join(event.get("content", "") for event in events if event["type"] == "token")
+    token_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.output_text.delta"
+    )
     assert "<think>observe</think>" in token_text
     assert "DAG agent final answer" not in token_text
-    assert events[-1]["result"]["output_text"] == "DAG agent final answer"
+    assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"
 
 
 def test_api_old_task_and_dag_lifecycle_routes_are_removed() -> None:
@@ -992,11 +1007,12 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    assert events[0]["type"] == "status"
-    assert any(event["type"] == "trace" for event in events)
-    assert events[-1]["type"] == "done"
-    assert events[-1]["result"]["dag_run"]["status"] == "completed"
-    run_id = events[-1]["result"]["dag_run"]["run_id"]
+    result = _stream_result(events[-1])
+    assert events[0]["type"] == "run.status"
+    assert any(event["type"] == "trace.updated" for event in events)
+    assert events[-1]["type"] == "run.completed"
+    assert result["dag_run"]["status"] == "completed"
+    run_id = result["dag_run"]["run_id"]
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
 
 
@@ -1043,7 +1059,7 @@ def test_api_dag_run_stream_uses_requested_workspace_root(tmp_path: Path) -> Non
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    dag_run = events[-1]["result"]["dag_run"]
+    dag_run = _stream_result(events[-1])["dag_run"]
     workspace_path = Path(dag_run["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
@@ -1151,6 +1167,11 @@ def _sse_events(text: str) -> list[dict]:
         for line in text.splitlines()
         if line.startswith("data: ")
     ]
+
+
+def _stream_result(event: dict) -> dict:
+    assert event["type"] == "run.completed"
+    return event["data"]["result"]
 
 
 def _dag_node_trace(trace: dict, node_id: str) -> dict:

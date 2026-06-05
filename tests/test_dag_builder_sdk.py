@@ -366,19 +366,18 @@ def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Pa
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream(dag, input="hello", workspace_root=tmp_path / "runs")
+            async for event in runner.stream_events(dag, input="hello", workspace_root=tmp_path / "runs")
         ]
 
     events = run(collect())
 
-    trace_events = [event for event in events if event.type == "trace"]
+    trace_events = [event for event in events if event.type == "trace.updated"]
     assert trace_events
-    assert trace_events[-1].trace is not None
-    assert trace_events[-1].trace.status == "completed"
-    assert events[-1].type == "done"
-    assert isinstance(events[-1].result, dagent.RunResult)
-    assert events[-1].result.kind == "static_dag"
-    assert events[-1].result.node_output("echo") == "echo:hello"
+    assert trace_events[-1].data.trace.status == "completed"
+    assert events[-1].type == "run.completed"
+    assert isinstance(events[-1].data.result, dagent.RunResult)
+    assert events[-1].data.result.kind == "static_dag"
+    assert events[-1].data.result.node_output("echo") == "echo:hello"
 
 
 def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:

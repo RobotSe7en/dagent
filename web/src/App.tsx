@@ -800,12 +800,12 @@ export function App() {
   };
 
   const appendCapabilityMessage = (event: CapabilityStreamEvent) => {
-    if (event.type === 'capability_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
+    if (event.type === 'capability.call.completed' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
     updateLastAssistantText((message) => {
       const capabilityEvents = [...(message.capabilityEvents ?? []), event];
       const timeline = [...(message.timeline ?? [])];
-      if (event.type === 'capability_result' || event.type === 'capability_error') {
+      if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
         const idx = findMatchingCapabilityCall(timeline, event.invocation_id);
         if (idx !== -1) {
           const item = timeline[idx] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
@@ -1105,8 +1105,8 @@ export function App() {
               id: `${event.invocation_id}-${event.type}-${items.length}`,
               type: 'capability',
               label: event.capability_id,
-              detail: event.content || JSON.stringify(event.arguments),
-              status: event.type === 'capability_error' ? 'failed' : event.type === 'capability_result' ? 'completed' : 'running',
+              detail: event.content || JSON.stringify(event.arguments ?? {}),
+              status: event.type === 'capability.call.failed' ? 'failed' : event.type === 'capability.call.completed' ? 'completed' : 'running',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             },
           ]);
@@ -1773,7 +1773,7 @@ function ValidatingIndicator() {
 }
 
 function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
-  const passed = event.type === 'validation_passed' || event.passed === true;
+  const passed = event.type === 'validation.passed' || event.passed === true;
   return (
     <details className={`timeline-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
       <summary className="timeline-card-head">
@@ -1817,16 +1817,17 @@ function hasNonZeroExitCode(content?: string): boolean {
 }
 
 function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
-  const resultContent = result?.content || (event.type !== 'capability_call' ? event.content || '' : '');
-  const isError = result?.type === 'capability_error' || event.type === 'capability_error';
+  const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
+  const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const statusLabel = result
     ? (isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'capability_call' ? 'running' : event.type === 'capability_error' ? 'failed' : 'done');
+    : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
   const argsText = formatCapabilityArguments(event.arguments);
+  const eventClass = showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
   return (
-    <details className={`capability-event-card ${showError ? 'capability_error' : event.type}`}>
+    <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">
         <Wrench size={14} />
         <strong>{event.capability_id}</strong>
@@ -1851,14 +1852,15 @@ function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; 
 function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationId: string): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability_call') {
+    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability.call.started') {
       return i;
     }
   }
   return -1;
 }
 
-function formatCapabilityArguments(value: Record<string, unknown>) {
+function formatCapabilityArguments(value?: Record<string, unknown>) {
+  if (!value) return '';
   if (!Object.keys(value).length) return '';
   return JSON.stringify(value, null, 2);
 }

@@ -1234,7 +1234,7 @@ select {
   display: none;
 }
 
-.capability-event-card.capability_error {
+.capability-event-card.capability-event-error {
   border-color: #fca5a5;
   background: #fef2f2;
 }
@@ -1287,7 +1287,7 @@ select {
   letter-spacing: 0.04em;
 }
 
-.capability-event-card.capability_error .capability-event-head span {
+.capability-event-card.capability-event-error .capability-event-head span {
   border-color: #fca5a5;
   color: var(--accent-red);
   background: #fef2f2;
