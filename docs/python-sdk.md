@@ -3,6 +3,8 @@
 This guide covers the current public Python SDK. Runnable examples live in
 [`examples/`](../examples/).
 
+Install the PyPI package as `dagent-ai`; import it in Python as `dagent`.
+
 ## Public Surface
 
 Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
@@ -151,7 +153,7 @@ allowlist exposed through the built-in `skill.list` and `skill.view` tools.
 MCP tools become ordinary `mcp.<server>.<tool>` capability ids after server
 registration.
 
-MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently
+MCP requires the optional extra (`pip install "dagent-ai[mcp]"`) and currently
 supports stdio servers.
 
 `Runner` also exposes capability management for hosts (such as the WebUI backend)

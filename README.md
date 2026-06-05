@@ -57,6 +57,12 @@ capabilities fail closed; file boundaries reject path escape.
 
 ## Quick Start
 
+Install the PyPI package as `dagent-ai`; import it in Python as `dagent`:
+
+```bash
+pip install dagent-ai
+```
+
 Pass SDK configuration explicitly to the runner:
 
 ```python
