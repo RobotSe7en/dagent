@@ -82,33 +82,19 @@ def _completed(
     artifacts: list[dict[str, Any]],
     value: Any,
 ) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="completed",
-        content=content,
+    return CapabilityResult.completed(
+        invocation,
+        content,
         value=value,
         artifacts=artifacts,
-        policy_decision=_policy_decision(invocation),
+        policy_decision=invocation.boundary.policy_decision(),
     )
 
 
 def _failed(invocation: CapabilityInvocation, error: str, stop_reason: str) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="failed",
-        error=error,
+    return CapabilityResult.failed(
+        invocation,
+        error,
         stop_reason=stop_reason,
-        policy_decision=_policy_decision(invocation),
+        policy_decision=invocation.boundary.policy_decision(),
     )
-
-
-def _policy_decision(invocation: CapabilityInvocation) -> dict[str, Any]:
-    return {
-        "boundary_mode": invocation.boundary.mode,
-        "allowed_paths": invocation.boundary.allowed_paths or [],
-        "allowed_commands": invocation.boundary.allowed_commands or [],
-    }

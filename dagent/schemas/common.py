@@ -20,6 +20,13 @@ class Boundary(BaseModel):
     allowed_paths: list[BoundaryValue] = Field(default_factory=list)
     allowed_commands: list[BoundaryValue] = Field(default_factory=list)
 
+    def policy_decision(self) -> dict[str, Any]:
+        return {
+            "boundary_mode": self.mode,
+            "allowed_paths": list(self.allowed_paths),
+            "allowed_commands": list(self.allowed_commands),
+        }
+
 
 def json_schema_for_type(annotation: Any) -> dict[str, Any]:
     if annotation is None or annotation is inspect.Signature.empty:

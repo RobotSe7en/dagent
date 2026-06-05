@@ -4,7 +4,7 @@ import type {
   CapabilityKind,
   CapabilityResult,
   DagRun,
-  DagSpec,
+  UserDag,
   ProfileWarning,
   Dag,
   ReviewLevel,
@@ -22,7 +22,6 @@ import type {
   MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
-import { normalizeStreamEvent } from './streamEvents';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -97,25 +96,25 @@ export async function testCapability(
   return data.result;
 }
 
-export async function listDagSpecs(): Promise<DagSpec[]> {
-  const res = await fetch(`${API_BASE}/dag-specs`);
+export async function listDags(): Promise<UserDag[]> {
+  const res = await fetch(`${API_BASE}/dags`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dag_specs ?? [];
+  return data.dags ?? [];
 }
 
-export async function saveDagSpec(spec: DagSpec): Promise<DagSpec> {
-  const res = await fetch(`${API_BASE}/dag-specs`, {
+export async function saveDag(spec: UserDag): Promise<UserDag> {
+  const res = await fetch(`${API_BASE}/dags`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(spec),
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dag_spec;
+  return data.dag;
 }
 
-export async function uploadDagSpecArtifact(
+export async function uploadDagArtifact(
   specId: string,
   artifactId: string,
   files: File[],
@@ -126,7 +125,7 @@ export async function uploadDagSpecArtifact(
     body.append('files', file, uploadFormFilename(file, options));
   }
   const res = await fetch(
-    `${API_BASE}/dag-specs/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
+    `${API_BASE}/dags/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
     {
       method: 'POST',
       body,
@@ -251,9 +250,16 @@ interface ApiRunResult {
   dag_run?: DagRun | null;
 }
 
-interface DonePayload {
-  type: 'done';
+interface FinishedPayload {
+  type: 'run.finished';
   result: ApiRunResult;
+}
+
+interface StreamEnvelope {
+  type: string;
+  data?: Record<string, unknown>;
+  sequence?: number;
+  run_id?: string | null;
 }
 
 interface StreamHandlers {
@@ -263,8 +269,9 @@ interface StreamHandlers {
   onCapability?: (event: CapabilityStreamEvent) => void;
   onToken?: (content: string) => void;
   onRetry?: (event: ValidationFeedbackEvent) => void;
-  onValidating?: (event: { type: 'validating'; message: string }) => void;
-  onDone?: (payload: DonePayload) => void;
+  onValidating?: (event: { type: 'validation.started'; message: string }) => void;
+  onReview?: (review: ReviewEventPayload) => void;
+  onDone?: (payload: FinishedPayload) => void;
   onError?: (message: string) => void;
 }
 
@@ -320,17 +327,19 @@ export async function resumeDagReview(
   await readStream(response, handlers);
 }
 
-export async function runDagSpecStream(
+export async function runDagStream(
   specId: string,
   handlers: StreamHandlers,
   options: {
     workspaceRoot?: string;
+    input?: unknown;
   } = {},
 ): Promise<void> {
-  const body = options.workspaceRoot?.trim()
-    ? JSON.stringify({ workspace_root: options.workspaceRoot.trim() })
-    : undefined;
-  const response = await fetch(`${API_BASE}/dag-specs/${encodeURIComponent(specId)}/run/stream`, {
+  const payload: Record<string, unknown> = {};
+  if (options.workspaceRoot?.trim()) payload.workspace_root = options.workspaceRoot.trim();
+  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.input = options.input;
+  const body = Object.keys(payload).length ? JSON.stringify(payload) : undefined;
+  const response = await fetch(`${API_BASE}/dags/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body,
@@ -357,26 +366,86 @@ async function readStream(response: Response, handlers: StreamHandlers) {
     for (const frame of frames) {
       const line = frame.split('\n').find((item) => item.startsWith('data: '));
       if (!line) continue;
-      const event = normalizeStreamEvent(JSON.parse(line.slice(6)));
-      const eventType = event.type;
-      const typedEvent = event;
-      if (eventType === 'status') handlers.onStatus?.(event.message);
-      if (eventType === 'dag') handlers.onDag?.(event.dag);
-      if (eventType === 'trace') emitTraceSnapshot(event.trace, handlers.onTrace, seenTraceIds);
-      if (eventType === 'capability_call' || eventType === 'capability_result' || eventType === 'capability_error') {
-        handlers.onCapability?.(typedEvent);
+      const event = JSON.parse(line.slice(6)) as StreamEnvelope;
+      const data = isRecord(event.data) ? event.data : {};
+      if (event.type === 'run.status') handlers.onStatus?.(String(data.message ?? ''));
+      if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
+      if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
+      if (event.type === 'capability.call.started') {
+        handlers.onCapability?.({
+          type: 'capability.call.started',
+          invocation_id: String(data.invocation_id ?? ''),
+          capability_id: String(data.capability_id ?? ''),
+          arguments: isRecord(data.arguments) ? data.arguments : {},
+          ...capabilityContext(data),
+        });
       }
-      if (eventType === 'token') handlers.onToken?.(event.content);
-      if (eventType === 'retry' || eventType === 'validation_passed') handlers.onRetry?.(typedEvent);
-      if (eventType === 'validating') handlers.onValidating?.(typedEvent);
-      if (eventType === 'done') {
-        const trace = event.result?.trace ?? event.result?.dag_run?.trace;
+      if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
+        handlers.onCapability?.({
+          type: event.type,
+          invocation_id: String(data.invocation_id ?? ''),
+          capability_id: String(data.capability_id ?? ''),
+          content: String(data.content ?? ''),
+          ...capabilityContext(data),
+        });
+      }
+      if (event.type === 'response.output_text.delta') handlers.onToken?.(String(data.delta ?? ''));
+      if (event.type === 'validation.retry') {
+        handlers.onRetry?.({
+          type: 'validation.retry',
+          summary: String(data.summary ?? ''),
+          issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
+          reason: String(data.reason ?? ''),
+        });
+      }
+      if (event.type === 'validation.passed') {
+        handlers.onRetry?.({
+          type: 'validation.passed',
+          passed: true,
+          summary: String(data.summary ?? ''),
+          issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
+        });
+      }
+      if (event.type === 'validation.started') {
+        handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
+      }
+      if (event.type === 'review.required') {
+        handlers.onReview?.({
+          review_id: String(data.review_id ?? ''),
+          kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
+          message: String(data.message ?? ''),
+          dag: data.dag as Dag | undefined,
+          proposed_dag: (data.dag ?? null) as Dag | null,
+          capability_call: data.capability_call as ReviewEventPayload['capability_call'],
+          payload: isRecord(data.payload) ? data.payload : {},
+        });
+      }
+      if (event.type === 'run.finished' && data.result) {
+        const result = data.result as ApiRunResult;
+        const trace = result.trace ?? result.dag_run?.trace;
         emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
-        handlers.onDone?.(typedEvent);
+        handlers.onDone?.({ type: 'run.finished', result });
       }
-      if (eventType === 'error') handlers.onError?.(event.message);
+      if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));
     }
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function capabilityContext(data: Record<string, unknown>) {
+  return {
+    task_id: nullableString(data.task_id),
+    dag_id: nullableString(data.dag_id),
+    node_id: nullableString(data.node_id),
+    parent_capability_id: nullableString(data.parent_capability_id),
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 function emitTraceSnapshot(
@@ -499,10 +568,5 @@ export async function resumeCapabilityReview(
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage((response as unknown) as Response));
   }
-  await readStream(response, {
-    ...handlers,
-    onDag: undefined,
-    onTrace: undefined,
-    onCapability: undefined,
-  });
+  await readStream(response, handlers);
 }

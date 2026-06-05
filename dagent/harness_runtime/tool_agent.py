@@ -9,7 +9,11 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
-from dagent.harness_runtime.dag_builder import strip_thinking_blocks
+from dagent.harness_runtime.dag_builder import (
+    MAX_EXECUTION_CONTEXT_CHARS,
+    context_excerpt,
+    strip_thinking_blocks,
+)
 from dagent.harness_runtime.capability_executor import CapabilityExecutionContext, CapabilityExecutor
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.harness_runtime.task_record import ReviewContinuation
@@ -30,7 +34,6 @@ from dagent.schemas import (
 from dagent.state import PromptBuilder, PromptRequest
 
 
-MAX_EXECUTION_CONTEXT_CHARS = 16000
 MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
 
 
@@ -182,18 +185,13 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
-        control_tool_handler = (
-            self.loop.create_tool_guard(review_level, boundary, capability_scope.capability_ids)
-            if control_tool_names
-            else None
-        )
         outcome = await self.loop.run(
             "",
             boundary=boundary,
             max_steps=self.max_steps,
             messages=messages,
             control_tool_names=control_tool_names,
-            control_tool_handler=control_tool_handler,
+            review_level=review_level,
             capability_ids=capability_scope.capability_ids,
             skills=capability_scope.skills,
             on_token=on_token,
@@ -243,6 +241,8 @@ class ToolAgentLoop:
         review_level: ReviewLevel,
         boundary: Boundary,
         capability_ids: Sequence[str] | None = None,
+        *,
+        context: CapabilityExecutionContext | None = None,
     ) -> ControlToolHandler:
         policy = _review_policy(review_level)
 
@@ -262,7 +262,10 @@ class ToolAgentLoop:
             if not policy.reviews_tool(risk):
                 try:
                     result_content = _tool_content(
-                        await self.capability_executor.execute(invocation)
+                        await self.capability_executor.execute(
+                            invocation,
+                            context=context,
+                        )
                     )
                 except Exception as exc:
                     return ControlToolResult(
@@ -283,10 +286,9 @@ class ToolAgentLoop:
         *,
         boundary: Boundary,
         max_steps: int = 8,
-        allowed_tools: list[str] | None = None,
         messages: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
-        control_tool_handler: ControlToolHandler | None = None,
+        review_level: ReviewLevel | None = None,
         capability_ids: Sequence[str] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -308,12 +310,17 @@ class ToolAgentLoop:
             task_id=run_id,
             skills=skills,
         )
+        control_tool_handler: ControlToolHandler | None = None
+        if control_tool_names and review_level is not None:
+            control_tool_handler = self.create_tool_guard(
+                review_level,
+                boundary,
+                capability_ids,
+                context=execution_context,
+            )
 
         for step in range(1, max_steps + 1):
-            tool_definitions = self._llm_tool_definitions(
-                allowed_tools,
-                capability_ids=capability_ids,
-            )
+            tool_definitions = self._llm_tool_definitions(capability_ids=capability_ids)
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
@@ -378,7 +385,7 @@ class ToolAgentLoop:
                             RunTraceNode.capability_call(
                                 parent_id=trace.root.id,
                                 invocation=invocation,
-                                result=_failed_capability_result(invocation, str(exc), type(exc).__name__),
+                                result=CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__),
                                 error=str(exc),
                             )
                         )
@@ -406,7 +413,7 @@ class ToolAgentLoop:
                             result=(
                                 None
                                 if review_pending
-                                else _completed_capability_result(invocation, control_result.content)
+                                else CapabilityResult.completed(invocation, control_result.content)
                             ),
                             status="awaiting_review" if review_pending else None,
                             output=control_result.content,
@@ -447,26 +454,6 @@ class ToolAgentLoop:
                         )
                     continue
 
-                if allowed_tools is not None and tool_call.name not in allowed_tools:
-                    error_content = f"[ERROR] Tool '{tool_call.name}' is not allowed. Available tools: {', '.join(allowed_tools)}."
-                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
-                    loop_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": error_content,
-                        }
-                    )
-                    trace.root.children.append(
-                        RunTraceNode.capability_call(
-                            parent_id=trace.root.id,
-                            invocation=invocation,
-                            result=_failed_capability_result(invocation, error_content, "not_allowed"),
-                            error=error_content,
-                        )
-                    )
-                    continue
                 try:
                     capability_result = await self.capability_executor.execute(
                         invocation,
@@ -488,7 +475,7 @@ class ToolAgentLoop:
                         RunTraceNode.capability_call(
                             parent_id=trace.root.id,
                             invocation=invocation,
-                            result=_failed_capability_result(invocation, error_content, type(exc).__name__),
+                            result=CapabilityResult.failed(invocation, error_content, stop_reason=type(exc).__name__),
                             error=error_content,
                         )
                     )
@@ -524,22 +511,13 @@ class ToolAgentLoop:
 
     def _llm_tool_definitions(
         self,
-        allowed_tools: list[str] | None,
         *,
         capability_ids: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
-        allowed = set(allowed_tools) if allowed_tools is not None else None
-        definitions = self.tool_adapter.definitions(
+        return self.tool_adapter.definitions(
             self.enabled_toolsets,
             capability_ids=capability_ids,
         )
-        if allowed is None:
-            return definitions
-        return [
-            definition
-            for definition in definitions
-            if definition["function"]["name"] in allowed
-        ]
 
     async def _chat(
         self,
@@ -607,21 +585,21 @@ def _format_capability_execution_context(messages: list[dict[str, Any]]) -> str:
     for message in messages:
         if message.get("role") == "tool":
             name = message.get("name", "unknown")
-            content = _context_excerpt(
+            content = context_excerpt(
                 str(message.get("content", "")),
                 limit=MAX_TOOL_RESULT_CONTEXT_CHARS,
             )
             lines.append(f"  - {name}: {content}")
 
     if lines:
-        return _context_excerpt(
+        return context_excerpt(
             "Tool call results:\n" + "\n".join(lines),
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
 
     final_answer = _last_assistant_content(messages)
     if final_answer:
-        return _context_excerpt(
+        return context_excerpt(
             f"Assistant response:\n{final_answer}",
             limit=MAX_EXECUTION_CONTEXT_CHARS,
         )
@@ -704,32 +682,6 @@ def _reconcile_reviewed_trace_node(
             node.error = RunTraceError(message=result.error, code=result.stop_reason)
 
 
-def _completed_capability_result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="completed",
-        content=content,
-        value=content,
-    )
-
-
-def _failed_capability_result(
-    invocation: CapabilityInvocation,
-    error: str,
-    stop_reason: str,
-) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="failed",
-        error=error,
-        stop_reason=stop_reason,
-    )
-
-
 def _execution_context(
     context: CapabilityExecutionContext | None,
     *,
@@ -745,9 +697,3 @@ def _last_assistant_content(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "assistant" and message.get("content"):
             return str(message["content"])
     return ""
-
-
-def _context_excerpt(text: str, *, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"

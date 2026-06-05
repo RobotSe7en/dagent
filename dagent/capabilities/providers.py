@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,7 +45,7 @@ class ToolCapabilityProvider:
                 kind="tool",
                 description=tool.description,
                 parameters=tool.parameters or {"type": "object"},
-                policy=CapabilityPolicy(risk="medium" if tool.risk_fn is not None else tool.risk),
+                policy=CapabilityPolicy(risk=tool.risk),
                 config={
                     "tool_name": name,
                     "action": tool.action,
@@ -67,57 +66,6 @@ class ToolCapabilityProvider:
                     return _completed(invocation, content)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-
-            catalog.register(definition, handler)
-
-
-class ShellCapabilityProvider:
-    """Registers fixed shell commands as capabilities."""
-
-    def __init__(self, commands: dict[str, dict[str, Any]]) -> None:
-        self.commands = commands
-
-    def register_into(self, catalog: CapabilityCatalog) -> None:
-        for name, config in sorted(self.commands.items()):
-            command = str(config["command"])
-            definition = CapabilityDefinition(
-                id=f"shell.{name}",
-                name=name,
-                kind="shell",
-                description=str(config.get("description", "")),
-                parameters=config.get("parameters") or {"type": "object"},
-                policy=CapabilityPolicy(risk="high", sandbox_required=True),
-                config={"command": command},
-            )
-
-            def handler(invocation: CapabilityInvocation, *, command_template: str = command) -> CapabilityResult:
-                try:
-                    enforce_command_allowed(command_template, invocation.boundary)
-                    completed = subprocess.run(
-                        command_template,
-                        cwd=current_workspace_root(catalog.workspace_root),
-                        capture_output=True,
-                        text=True,
-                        shell=True,
-                        timeout=float(invocation.arguments.get("timeout_seconds", 30)),
-                    )
-                except Exception as exc:
-                    return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-                status = "completed" if completed.returncode == 0 else "failed"
-                content = completed.stdout or completed.stderr
-                return CapabilityResult(
-                    invocation_id=invocation.invocation_id,
-                    capability_id=invocation.capability_id,
-                    kind=invocation.kind,
-                    status=status,
-                    content=content,
-                    value=content if status == "completed" else None,
-                    error=None if status == "completed" else completed.stderr,
-                    stop_reason="completed" if status == "completed" else "nonzero_exit",
-                    stdout=completed.stdout,
-                    stderr=completed.stderr,
-                    policy_decision=_policy_decision(invocation.boundary),
-                )
 
             catalog.register(definition, handler)
 
@@ -155,71 +103,6 @@ class MemoryCapabilityProvider:
             if query.lower() in key.lower() or query.lower() in value.lower()
         ]
         return _completed(invocation, "\n".join(matches))
-
-
-class FileCapabilityProvider:
-    """Workspace-scoped file capabilities."""
-
-    def register_into(self, catalog: CapabilityCatalog) -> None:
-        def read(invocation: CapabilityInvocation) -> CapabilityResult:
-            try:
-                path = enforce_path_allowed(
-                    str(invocation.arguments["path"]),
-                    invocation.boundary,
-                    current_workspace_root(catalog.workspace_root),
-                )
-                return _completed(invocation, path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-
-        def write(invocation: CapabilityInvocation) -> CapabilityResult:
-            try:
-                enforce_action_allowed("write", invocation.boundary)
-                path = enforce_path_allowed(
-                    str(invocation.arguments["path"]),
-                    invocation.boundary,
-                    current_workspace_root(catalog.workspace_root),
-                )
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(invocation.arguments.get("content", "")), encoding="utf-8")
-                return _completed(invocation, f"wrote:{path}")
-            except Exception as exc:
-                return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-
-        catalog.register(
-            CapabilityDefinition(
-                id="file.read",
-                name="file_read",
-                kind="file",
-                description="Read a UTF-8 text file from the workspace.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path to read."},
-                    },
-                    "required": ["path"],
-                },
-            ),
-            read,
-        )
-        catalog.register(
-            CapabilityDefinition(
-                id="file.write",
-                name="file_write",
-                kind="file",
-                description="Write UTF-8 text to a workspace file.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "File path to write."},
-                        "content": {"type": "string", "description": "Text content to write."},
-                    },
-                    "required": ["path", "content"],
-                },
-                policy=CapabilityPolicy(risk="medium"),
-            ),
-            write,
-        )
 
 
 @dataclass
@@ -488,17 +371,20 @@ def _agent_result(
     stop_reason: str = "completed",
     trace: dict[str, Any] | None = None,
 ) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status=status,
-        content=content,
-        value=content if status == "completed" else None,
-        error=error,
+    policy_decision = invocation.boundary.policy_decision()
+    if status == "completed":
+        return CapabilityResult.completed(
+            invocation,
+            content,
+            trace=trace,
+            policy_decision=policy_decision,
+        )
+    return CapabilityResult.failed(
+        invocation,
+        error or "",
         stop_reason=stop_reason,
         trace=trace,
-        policy_decision=_policy_decision(invocation.boundary),
+        policy_decision=policy_decision,
     )
 
 
@@ -529,32 +415,17 @@ def _tool_capability_id(tool_name: str) -> str:
 
 
 def _completed(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="completed",
-        content=content,
-        value=content,
-        policy_decision=_policy_decision(invocation.boundary),
+    return CapabilityResult.completed(
+        invocation,
+        content,
+        policy_decision=invocation.boundary.policy_decision(),
     )
 
 
 def _failed(invocation: CapabilityInvocation, error: str, *, stop_reason: str) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="failed",
-        error=error,
+    return CapabilityResult.failed(
+        invocation,
+        error,
         stop_reason=stop_reason,
-        policy_decision=_policy_decision(invocation.boundary),
+        policy_decision=invocation.boundary.policy_decision(),
     )
-
-
-def _policy_decision(boundary: Boundary) -> dict[str, Any]:
-    return {
-        "boundary_mode": boundary.mode,
-        "allowed_paths": boundary.allowed_paths or [],
-        "allowed_commands": boundary.allowed_commands or [],
-    }

@@ -41,3 +41,31 @@ def test_prompt_builder_renders_user_message_template() -> None:
     )
 
     assert message == {"role": "user", "content": "Task t1: current question"}
+
+
+def test_prompt_builder_keeps_template_control_blocks_literal() -> None:
+    builder = PromptBuilder()
+    template = "Request:\n{% if context %}Context:\n{{ context }}\n\n{% endif %}Done."
+
+    message = builder.build_user_message(template, {"context": "details"})
+
+    assert message["content"] == "Request:\n{% if context %}Context:\ndetails\n\n{% endif %}Done."
+
+
+def test_prompt_builder_keeps_jinja_expressions_literal() -> None:
+    builder = PromptBuilder()
+    template = "Literal expression: {{ 7 * 6 }}"
+
+    message = builder.build_user_message(template, {})
+
+    assert message["content"] == template
+
+
+def test_prompt_builder_does_not_reparse_substituted_values() -> None:
+    builder = PromptBuilder()
+    message = builder.build_user_message(
+        "{{ payload }}",
+        {"payload": '{"a": 1} {% raw %} {{ not_a_var }}'},
+    )
+
+    assert message["content"] == '{"a": 1} {% raw %} {{ not_a_var }}'

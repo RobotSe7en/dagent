@@ -1,4 +1,4 @@
-import type { Artifact, DagSpec, ValueBinding } from './types';
+import type { Artifact, UserDag, ValueBinding } from './types';
 
 export interface UploadSourceFile {
   name: string;
@@ -53,7 +53,7 @@ export function upsertArtifact(
   return next;
 }
 
-export function removeArtifactBinding(spec: DagSpec, artifactId: string): DagSpec {
+export function removeArtifactBinding(spec: UserDag, artifactId: string): UserDag {
   const artifacts = { ...(spec.artifacts ?? {}) };
   delete artifacts[artifactId];
   return {
@@ -61,8 +61,9 @@ export function removeArtifactBinding(spec: DagSpec, artifactId: string): DagSpe
     artifacts,
     nodes: spec.nodes.map((node) => ({
       ...node,
-      ...(node.inputs ? { inputs: node.inputs.filter((id) => id !== artifactId) } : {}),
-      ...(node.outputs ? { outputs: node.outputs.filter((id) => id !== artifactId) } : {}),
+      inputs: removeArtifactValueRefs(node.inputs ?? {}, artifactId) as Record<string, unknown>,
+      artifact_inputs: (node.artifact_inputs ?? []).filter((id) => id !== artifactId),
+      artifact_outputs: (node.artifact_outputs ?? []).filter((id) => id !== artifactId),
     })),
   };
 }
@@ -144,6 +145,39 @@ function sanitizePathSegment(segment: string): string {
 
 function joinArtifactPath(root: string, relativePath: string): string {
   return [root, relativePath].filter(Boolean).join('/');
+}
+
+function removeArtifactValueRefs(value: unknown, artifactId: string): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => removeArtifactValueRefs(item, artifactId))
+      .filter((item) => item !== undefined);
+  }
+
+  const record = value as Record<string, unknown>;
+  const expr = record.$expr;
+  if (expr && typeof expr === 'object' && !Array.isArray(expr)) {
+    const typedExpr = expr as Record<string, unknown>;
+    if (typedExpr.type === 'artifact' && typedExpr.artifact_id === artifactId) {
+      return undefined;
+    }
+    if (typedExpr.type === 'format') {
+      return {
+        $expr: {
+          ...typedExpr,
+          values: removeArtifactValueRefs(typedExpr.values ?? {}, artifactId),
+        },
+      };
+    }
+    return record;
+  }
+
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, item]) => [key, removeArtifactValueRefs(item, artifactId)] as const)
+      .filter(([, item]) => item !== undefined),
+  );
 }
 
 function slugForId(value: string): string {

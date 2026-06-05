@@ -87,10 +87,6 @@ class CapabilityCatalog:
     def get_entry(self, capability_id: str) -> CapabilityEntry | None:
         return self._entries.get(capability_id)
 
-    def handler_for(self, capability_id: str) -> CapabilityHandler | None:
-        entry = self._entries.get(capability_id)
-        return entry.handler if entry is not None else None
-
     def get_by_name(self, name: str, *, kind: CapabilityKind | None = None) -> CapabilityDefinition | None:
         for entry in self._entries.values():
             definition = entry.definition

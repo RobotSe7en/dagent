@@ -50,6 +50,37 @@ def test_validator_agent_parses_validation_json() -> None:
     assert result.summary == "Result incomplete."
 
 
+def test_validator_agent_omits_empty_execution_context_section() -> None:
+    provider = MockProvider([
+        ChatResponse(content='{"passed": true, "issues": [], "summary": "ok"}')
+    ])
+    validator = ValidatorAgent(provider=provider, profile=profile("validator_agent"))
+
+    run(validator.validate(user_request="check", final_answer="some answer"))
+
+    prompt = provider.requests[0]["messages"][1]["content"]
+    assert "User request:\ncheck" in prompt
+    assert "Execution context:" not in prompt
+    assert "{%" not in prompt
+
+
+def test_validator_agent_includes_execution_context_section_when_present() -> None:
+    provider = MockProvider([
+        ChatResponse(content='{"passed": true, "issues": [], "summary": "ok"}')
+    ])
+    validator = ValidatorAgent(provider=provider, profile=profile("validator_agent"))
+
+    run(validator.validate(
+        user_request="check",
+        final_answer="some answer",
+        execution_context="node n1 completed",
+    ))
+
+    prompt = provider.requests[0]["messages"][1]["content"]
+    assert "Execution context:\nnode n1 completed" in prompt
+    assert "{%" not in prompt
+
+
 def test_feedback_learner_agent_returns_notes() -> None:
     provider = MockProvider([ChatResponse(content="Prefer narrow allowed_paths.")])
     learner = FeedbackLearnerAgent(provider=provider, profile=profile("feedback_learner"))

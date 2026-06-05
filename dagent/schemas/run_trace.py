@@ -88,6 +88,20 @@ class RunTraceNode(BaseModel):
             label=label or node_id,
         )
 
+    def upsert_child(self, child: "RunTraceNode") -> None:
+        """Replace a same-kind/ref child in place, or append it."""
+        for index, existing in enumerate(self.children):
+            if existing.kind == child.kind and existing.ref == child.ref:
+                self.children[index] = child
+                return
+        self.children.append(child)
+
+    def reparent_children(self) -> None:
+        """Rewrite each descendant's parent_id to match its actual parent."""
+        for child in self.children:
+            child.parent_id = self.id
+            child.reparent_children()
+
     @classmethod
     def capability_call(
         cls,
@@ -132,3 +146,31 @@ class RunTrace(BaseModel):
     @property
     def status(self) -> RunTraceStatus:
         return self.root.status
+
+    def dag_node_traces(self) -> dict[str, RunTraceNode]:
+        """Map ``node_id`` to its DAG-node child trace under the run root."""
+        return {
+            node.ref["node_id"]: node
+            for node in self.root.children
+            if node.kind == "dag_node" and node.ref.get("node_id")
+        }
+
+    def merge(self, incoming: "RunTrace") -> "RunTrace":
+        """Return a copy of this trace with ``incoming``'s new children folded in."""
+        merged = self.model_copy(deep=True)
+        seen_ids = {child.id for child in merged.root.children}
+        for child in incoming.root.children:
+            if child.id in seen_ids:
+                continue
+            copied = child.model_copy(deep=True)
+            copied.parent_id = merged.root.id
+            copied.reparent_children()
+            merged.root.children.append(copied)
+            seen_ids.add(copied.id)
+        merged.root.status = incoming.root.status
+        if incoming.root.output is not None:
+            merged.root.output = incoming.root.output
+        merged.root.error = incoming.root.error
+        merged.root.ended_at = incoming.root.ended_at
+        merged.artifacts.update(incoming.artifacts)
+        return merged

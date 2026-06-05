@@ -12,10 +12,10 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 |------|------------|
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
+| Static DAGs | `Dag`, `Node`, `InputRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `RunResult`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Reviews and results | `RunResult`, `RunStreamChunk`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeResponse`, `ArtifactUpload` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
@@ -153,6 +153,23 @@ registration.
 
 MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently
 supports stdio servers.
+
+`Runner` also exposes capability management for hosts (such as the WebUI backend)
+that build capabilities from raw definitions instead of `@dagent.tool` bindings:
+
+```python
+runner.register_capability(definition, handler, supports_context=False)
+runner.replace_capability(definition, handler)
+runner.set_capability_enabled("tool.search", False)
+result = await runner.test_capability("tool.search", {"q": "dagent"})
+runner.remove_capability("tool.search")
+
+for definition in runner.list_capabilities(kind="mcp"):
+    print(definition.id)
+
+runner.enable_validation = True
+trace = runner.task_trace(run_id)
+```
 
 ## Tools And Structured Results
 
@@ -310,14 +327,20 @@ async def main():
     dag = dagent.Dag("research_report", name="Research Report", input=str)
     report = dag.artifact("report", "outputs/report.md")
 
-    search_node = dag.capability_node("search", search, q=dag.input)
-    dag.capability_node(
+    search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+    write_node = dagent.Node(
         "write_report",
-        write_note,
-        path=report.path,
-        content=search_node.output,
-        outputs=[report],
-    ).after(search_node)
+        target=write_note,
+        inputs={"path": report.path, "content": search_node.output},
+        artifact_outputs=[report],
+        boundary=dagent.Boundary(
+            mode="write_limited",
+            allowed_paths=[report.path.as_expr()],
+        ),
+    )
+    dag.add_node(search_node)
+    dag.add_node(write_node)
+    dag.add_edge(search_node, write_node)
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
@@ -354,7 +377,7 @@ immediately before the capability call.
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
 
 Referencing a previous node output does not create an edge. Add the dependency
-explicitly with `.after(...)` or `dag.edge(...)`:
+explicitly with `dag.add_edge(...)`:
 
 ```python
 class SearchResult(BaseModel):
@@ -373,13 +396,18 @@ def render(title: str, url: str) -> str:
 
 
 dag = dagent.Dag("research", input=dict)
-search_node = dag.capability_node("search", search, q=dag.input.query)
-dag.capability_node(
+search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+render_node = dagent.Node(
     "render",
-    render,
-    title=search_node.output.title,
-    url=search_node.output.url,
-).after(search_node)
+    target=render,
+    inputs={
+        "title": search_node.output.title,
+        "url": search_node.output.url,
+    },
+)
+dag.add_node(search_node)
+dag.add_node(render_node)
+dag.add_edge(search_node, render_node)
 ```
 
 Pydantic graph inputs are accepted at runtime and converted to JSON-like data
@@ -394,7 +422,8 @@ class QueryInput(BaseModel):
 
 
 dag = dagent.Dag("research", input=QueryInput)
-search_node = dag.capability_node("search", search, q=dag.input.query)
+search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+dag.add_node(search_node)
 
 await runner.run(dag, input=QueryInput(query="dagent"))
 ```
@@ -404,13 +433,14 @@ Artifact references can be used in arguments and boundaries:
 ```python
 report = dag.artifact("report", "outputs/report.md")
 
-dag.capability_node(
+write_node = dagent.Node(
     "write_report",
-    write_note,
-    path=report.path,
+    target=write_note,
+    inputs={"path": report.path},
     boundary=dagent.Boundary(mode="write_limited", allowed_paths=[report.path.as_expr()]),
-    outputs=[report],
+    artifact_outputs=[report],
 )
+dag.add_node(write_node)
 ```
 
 Validation fails closed when a node reads from a non-upstream node, references an
@@ -446,35 +476,54 @@ print(result.artifact_state("report").status)
 `result.dag_run` or `result.raw_response`; it is not the primary return value
 from the public runner.
 
-Use `Runner.stream(...)` for an async stream of `RunStreamEvent` objects. The
-stream yields typed runtime events and finishes with a `done` event whose
-`result` is the same unified `RunResult`.
+Use `Runner.stream(...)` for an async stream of `RunStreamChunk` objects. Chunks
+surface the common values directly: generated text, pending reviews, and the
+final unified `RunResult`.
 
 ```python
-async for event in runner.stream(agent_or_dag, input):
-    if event.type == "token":
-        print(event.content, end="")
-    elif event.type == "trace" and event.trace is not None:
-        print(event.trace.status)
-    elif event.type == "review" and event.review is not None:
-        print(event.review.message)
-    elif event.type == "done" and event.result is not None:
-        print(event.result.output_text)
-        print(event.result.model_dump(mode="json"))
+async for chunk in runner.stream(agent_or_dag, input):
+    if chunk.text:
+        print(chunk.text, end="")
+    if chunk.review:
+        print(chunk.review.message)
+    if chunk.result:
+        print(chunk.result.output_text)
+        print(chunk.result.model_dump(mode="json"))
 ```
 
-Common stream event fields:
+Each chunk also carries the underlying `chunk.event` for callers that want the
+full event envelope.
+
+Use `Runner.stream_events(...)` when you want to forward, persist, or inspect the
+complete low-level event stream. Events use a uniform envelope:
+`type`, `data`, `sequence`, and `run_id`.
+
+```python
+async for event in runner.stream_events(agent_or_dag, input):
+    if event.type == "response.output_text.delta":
+        print(event.data.delta, end="")
+    elif event.type == "trace.updated":
+        print(event.data.trace.status)
+    elif event.type == "review.required":
+        print(event.data.message)
+    elif event.type == "run.finished":
+        print(event.data.result.output_text)
+```
+
+Common stream event payloads:
 
 | Event type | Primary fields |
 |------------|----------------|
-| `token` | `event.content` |
-| `status` | `event.message`, `event.data` |
-| `capability_call` / `capability_result` / `capability_error` | `event.content`, `event.data` |
-| `dag` | `event.dag` |
-| `trace` | `event.trace` |
-| `review` | `event.review`, `event.message` |
-| `done` | `event.result` |
-| `error` | `event.message`, `event.error` |
+| `response.output_text.delta` | `event.data.delta` |
+| `run.status` | `event.data.message` |
+| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional DAG context fields |
+| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional DAG context fields |
+| `dag.updated` | `event.data.dag` |
+| `trace.updated` | `event.data.trace` |
+| `review.required` | `event.data.message`, `event.data.to_handle()` |
+| `validation.started` / `validation.passed` / `validation.retry` | `event.data` |
+| `run.finished` | `event.data.result` |
+| `run.failed` | `event.data.message`, `event.data.error_type` |
 
 `RunStreamEvent.model_dump(mode="json")` returns a JSON-ready event payload. If
 the event has a result, the nested value is `RunResult.model_dump(mode="json")`.
@@ -486,11 +535,11 @@ event contract:
 first = await runner.run(agent, "Write the report.")
 
 if first.requires_review and first.review is not None:
-    async for event in runner.resume_stream(first.review.approve()):
-        if event.type == "token":
-            print(event.content, end="")
-        elif event.type == "done" and event.result is not None:
-            print(event.result.output_text)
+    async for chunk in runner.resume_stream(first.review.approve()):
+        if chunk.text:
+            print(chunk.text, end="")
+        if chunk.result:
+            print(chunk.result.output_text)
 ```
 
 ## Skills

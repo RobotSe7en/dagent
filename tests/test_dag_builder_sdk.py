@@ -23,6 +23,137 @@ class QueryInput(BaseModel):
     query: str
 
 
+def test_dag_builder_exposes_single_node_api() -> None:
+    assert not hasattr(dagent.Dag, "capability_node")
+    assert not hasattr(dagent.Dag, "agent_node")
+    assert not hasattr(dagent, "NodeRef")
+
+
+def test_dag_builder_adds_user_nodes_edges_and_artifact_contracts() -> None:
+    @dagent.tool
+    def search(q: str) -> SearchResult:
+        return SearchResult(title=f"found:{q}", url="https://example.test")
+
+    dag = dagent.Dag("research_report", name="Research Report", input=QueryInput)
+    source = dag.artifact("source", "inputs/source.md")
+    report = dag.artifact("report", "outputs/report.md")
+
+    research = dagent.Node(
+        "research",
+        target=search,
+        inputs={"q": dag.input.query},
+        artifact_inputs=[source],
+    )
+    write = dagent.Node(
+        "write",
+        target="tool.write_file",
+        inputs={
+            "path": report.path,
+            "content": research.output["title"],
+        },
+        artifact_outputs=[report],
+    )
+    review = dagent.Node(
+        "review",
+        target="tool.read_file",
+        inputs={"path": report.path},
+    )
+
+    dag.add_node(research)
+    dag.add_node(write)
+    dag.add_node(review)
+    dag.add_edge(research, write)
+    dag.add_edge(write, review)
+
+    spec = dag.to_dag_spec()
+
+    assert [node.id for node in spec.nodes] == ["research", "write", "review"]
+    assert spec.nodes[0].payload.invocation.capability_id == "tool.search"
+    assert spec.nodes[0].payload.invocation.arguments == {
+        "q": {"$expr": {"type": "graph_input", "path": ["query"]}},
+    }
+    assert spec.nodes[0].inputs == ["source"]
+    assert spec.nodes[1].payload.invocation.arguments == {
+        "path": {"$expr": {"type": "artifact", "artifact_id": "report", "field": "path"}},
+        "content": {
+            "$expr": {
+                "type": "node_output",
+                "node_id": "research",
+                "field": "value",
+                "path": ["title"],
+            }
+        },
+    }
+    assert spec.nodes[1].inputs == []
+    assert spec.nodes[1].outputs == ["report"]
+    assert spec.nodes[2].inputs == ["report"]
+    assert spec.nodes[2].outputs == []
+    assert [(edge.source, edge.target) for edge in spec.edges] == [
+        ("research", "write"),
+        ("write", "review"),
+    ]
+
+
+def test_dag_builder_user_node_can_target_tool_agent() -> None:
+    writer = dagent.ToolAgent(profile="conversation", name="writer", max_steps=3)
+    dag = dagent.Dag("agent_node")
+
+    draft = dagent.Node("draft", target=writer, inputs={"prompt": "Draft the report."})
+    dag.add_node(draft)
+
+    spec = dag.to_dag_spec()
+
+    assert spec.nodes[0].payload.invocation.capability_id == "agent.writer"
+    assert spec.nodes[0].payload.invocation.kind == "agent"
+    assert spec.nodes[0].payload.invocation.risk == "medium"
+    assert spec.nodes[0].payload.invocation.arguments == {"prompt": "Draft the report."}
+    assert draft.output.as_expr() == {
+        "$expr": {"type": "node_output", "node_id": "draft", "field": "value", "path": []}
+    }
+
+
+def test_dag_builder_user_node_infers_artifact_inputs_from_boundary() -> None:
+    dag = dagent.Dag("read_source")
+    source = dag.artifact("source", "inputs/source.md")
+
+    node = dagent.Node(
+        "read_source",
+        target="tool.read_file",
+        inputs={"path": "inputs/source.md"},
+        boundary=dagent.Boundary(
+            mode="read_only",
+            allowed_paths=[source.path.as_expr()],
+        ),
+    )
+    dag.add_node(node)
+
+    spec = dag.to_dag_spec()
+
+    assert spec.nodes[0].inputs == ["source"]
+
+
+def test_runner_executes_user_node_value_dataflow() -> None:
+    @dagent.tool
+    def source(text: str) -> dict[str, str]:
+        return {"summary": f"summary:{text}"}
+
+    @dagent.tool
+    def sink(content: str) -> str:
+        return f"sink:{content}"
+
+    dag = dagent.Dag("node_dataflow", input=str)
+    source_node = dagent.Node("source", target=source, inputs={"text": dag.input})
+    sink_node = dagent.Node("sink", target=sink, inputs={"content": source_node.output["summary"]})
+    dag.add_node(source_node)
+    dag.add_node(sink_node)
+    dag.add_edge(source_node, sink_node)
+
+    result = run(dagent.Runner(provider=MockProvider([]), capabilities=[source, sink]).run(dag, "hello"))
+
+    assert result.status == "completed"
+    assert result.node_value("sink") == "sink:summary:hello"
+
+
 def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
     @dagent.tool
     def search(q: str) -> SearchResult:
@@ -34,15 +165,20 @@ def test_dag_builder_creates_capability_nodes_edges_and_refs() -> None:
 
     dag = dagent.Dag("research_report", name="Research Report", input=str)
     report = dag.artifact("report", "outputs/report.md")
-    search_node = dag.capability_node("search", search, q=dag.input)
-    write_node = dag.capability_node(
+    search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+    write_node = dagent.Node(
         "write_report",
-        write_file,
-        path=report.path,
-        title=search_node.output["title"],
-        url=search_node.output["url"],
-        outputs=[report],
-    ).after(search_node)
+        target=write_file,
+        inputs={
+            "path": report.path,
+            "title": search_node.output["title"],
+            "url": search_node.output["url"],
+        },
+        artifact_outputs=[report],
+    )
+    dag.add_node(search_node)
+    dag.add_node(write_node)
+    dag.add_edge(search_node, write_node)
 
     spec = dag.to_dag_spec()
 
@@ -87,7 +223,8 @@ def test_value_refs_support_common_path_field_names() -> None:
         return text
 
     dag = dagent.Dag("path_refs")
-    source = dag.capability_node("source", echo, text="hello")
+    source = dagent.Node("source", target=echo, inputs={"text": "hello"})
+    dag.add_node(source)
 
     assert dag.input.path.as_expr() == {
         "$expr": {"type": "graph_input", "path": ["path"]},
@@ -103,11 +240,17 @@ def test_dag_builder_supports_fan_out_and_fan_in() -> None:
         return text
 
     dag = dagent.Dag("fan")
-    root = dag.capability_node("root", echo, text="start")
-    a = dag.capability_node("a", echo, text=root.output).after(root)
-    b = dag.capability_node("b", echo, text=root.output).after(root)
-    c = dag.capability_node("c", echo, text=root.output).after(root)
-    dag.capability_node("join", echo, text=a.output).after(a, b, c)
+    root = dagent.Node("root", target=echo, inputs={"text": "start"})
+    a = dagent.Node("a", target=echo, inputs={"text": root.output})
+    b = dagent.Node("b", target=echo, inputs={"text": root.output})
+    c = dagent.Node("c", target=echo, inputs={"text": root.output})
+    join = dagent.Node("join", target=echo, inputs={"text": a.output})
+    for node in (root, a, b, c, join):
+        dag.add_node(node)
+    for node in (a, b, c):
+        dag.add_edge(root, node)
+    for node in (a, b, c):
+        dag.add_edge(node, join)
 
     spec = dag.to_dag_spec()
 
@@ -127,13 +270,13 @@ def test_dag_builder_rejects_duplicate_nodes_and_unknown_edges() -> None:
         return text
 
     dag = dagent.Dag("bad")
-    dag.capability_node("echo", echo, text="one")
+    dag.add_node(dagent.Node("echo", target=echo, inputs={"text": "one"}))
 
     with pytest.raises(ValueError, match="already exists"):
-        dag.capability_node("echo", echo, text="two")
+        dag.add_node(dagent.Node("echo", target=echo, inputs={"text": "two"}))
 
     with pytest.raises(ValueError, match="Unknown node"):
-        dag.edge("missing", "echo")
+        dag.add_edge("missing", "echo")
 
 
 def test_dag_builder_requires_explicit_edge_for_node_output_ref() -> None:
@@ -142,8 +285,10 @@ def test_dag_builder_requires_explicit_edge_for_node_output_ref() -> None:
         return text
 
     dag = dagent.Dag("missing_edge")
-    source = dag.capability_node("source", echo, text="hello")
-    dag.capability_node("sink", echo, text=source.output)
+    source = dagent.Node("source", target=echo, inputs={"text": "hello"})
+    sink = dagent.Node("sink", target=echo, inputs={"text": source.output})
+    dag.add_node(source)
+    dag.add_node(sink)
 
     with pytest.raises(DAGValidationError, match="must depend"):
         dagent.validate_dag_spec(dag.to_dag_spec())
@@ -159,13 +304,12 @@ def test_runner_executes_builder_with_collected_capabilities(tmp_path: Path) -> 
 
     dag = dagent.Dag("write_note")
     note = dag.artifact("note", "notes/output.txt")
-    dag.capability_node(
+    dag.add_node(dagent.Node(
         "write",
-        write_note,
-        path="notes/output.txt",
-        content="hi",
-        outputs=[note],
-    )
+        target=write_note,
+        inputs={"path": "notes/output.txt", "content": "hi"},
+        artifact_outputs=[note],
+    ))
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, workspace_root=tmp_path / "runs"))
@@ -193,13 +337,18 @@ def test_runner_executes_value_expr_dataflow(tmp_path: Path) -> None:
         return f"{title} <{url}>"
 
     dag = dagent.Dag("research", input=str)
-    search_node = dag.capability_node("search", search, q=dag.input)
-    dag.capability_node(
+    search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+    render_node = dagent.Node(
         "render",
-        render,
-        title=search_node.output["title"],
-        url=search_node.output["url"],
-    ).after(search_node)
+        target=render,
+        inputs={
+            "title": search_node.output["title"],
+            "url": search_node.output["url"],
+        },
+    )
+    dag.add_node(search_node)
+    dag.add_node(render_node)
+    dag.add_edge(search_node, render_node)
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
@@ -216,7 +365,7 @@ def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
         return f"found:{q}"
 
     dag = dagent.Dag("research", input=QueryInput)
-    dag.capability_node("search", search, q=dag.input.query)
+    dag.add_node(dagent.Node("search", target=search, inputs={"q": dag.input.query}))
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(
@@ -235,25 +384,61 @@ def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Pa
         return f"echo:{text}"
 
     dag = dagent.Dag("echo_dag", input=str)
-    dag.capability_node("echo", echo, text=dag.input)
+    dag.add_node(dagent.Node("echo", target=echo, inputs={"text": dag.input}))
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
 
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream(dag, input="hello", workspace_root=tmp_path / "runs")
+            async for event in runner.stream_events(dag, input="hello", workspace_root=tmp_path / "runs")
         ]
 
     events = run(collect())
 
-    trace_events = [event for event in events if event.type == "trace"]
+    trace_events = [event for event in events if event.type == "trace.updated"]
     assert trace_events
-    assert trace_events[-1].trace is not None
-    assert trace_events[-1].trace.status == "completed"
-    assert events[-1].type == "done"
-    assert isinstance(events[-1].result, dagent.RunResult)
-    assert events[-1].result.kind == "static_dag"
-    assert events[-1].result.node_output("echo") == "echo:hello"
+    assert trace_events[-1].data.trace.status == "completed"
+    assert events[-1].type == "run.finished"
+    assert isinstance(events[-1].data.result, dagent.RunResult)
+    assert events[-1].data.result.kind == "static_dag"
+    assert events[-1].data.result.node_output("echo") == "echo:hello"
+
+
+def test_runner_stream_static_dag_capability_events_keep_node_context(tmp_path: Path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+        ChatResponse(content="done"),
+    ])
+    writer = dagent.ToolAgent(
+        profile=_profile_root(tmp_path, "writer"),
+        capabilities=[echo],
+    )
+    dag = dagent.Dag("agent_tool_events")
+    dag.add_node(dagent.Node("draft", target=writer, inputs={"prompt": "Use echo."}))
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.stream_events(dag, workspace_root=tmp_path / "runs")]
+
+    events = run(collect())
+
+    started = next(event for event in events if event.type == "capability.call.started")
+    completed = next(event for event in events if event.type == "capability.call.completed")
+    assert started.data.invocation_id == "call_1"
+    assert started.data.capability_id == "tool.echo"
+    assert started.data.arguments == {"text": "hi"}
+    assert started.data.task_id is not None
+    assert started.data.dag_id is not None
+    assert started.data.node_id == "draft"
+    assert started.data.parent_capability_id == "agent.writer"
+    assert completed.data.task_id == started.data.task_id
+    assert completed.data.dag_id == started.data.dag_id
+    assert completed.data.node_id == "draft"
+    assert completed.data.parent_capability_id == "agent.writer"
 
 
 def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:
@@ -262,7 +447,7 @@ def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:
         return f"echo:{text}"
 
     dag = dagent.Dag("echo_spec", input=str)
-    dag.capability_node("echo", echo, text=dag.input)
+    dag.add_node(dagent.Node("echo", target=echo, inputs={"text": dag.input}))
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[echo])
 
     result = run(runner.run(dag.to_dag_spec(), input="hello", workspace_root=tmp_path / "runs"))
@@ -279,7 +464,12 @@ def test_agent_node_generates_agent_capability_invocation(tmp_path: Path) -> Non
         profile=_profile_root(tmp_path, "writer"),
     )
     dag = dagent.Dag("agent_flow")
-    draft = dag.agent_node("draft", writer, prompt="Draft the report.", max_steps=3)
+    draft = dagent.Node(
+        "draft",
+        target=writer,
+        inputs={"prompt": "Draft the report.", "max_steps": 3},
+    )
+    dag.add_node(draft)
 
     spec = dag.to_dag_spec()
 
@@ -303,12 +493,15 @@ def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path)
     writer = dagent.ToolAgent(profile=_profile_root(tmp_path, "writer"))
 
     dag = dagent.Dag("agent_flow", input=str)
-    search_node = dag.capability_node("search", search, q=dag.input)
-    draft = dag.agent_node(
+    search_node = dagent.Node("search", target=search, inputs={"q": dag.input})
+    draft = dagent.Node(
         "draft",
-        writer,
-        prompt=dag.format("Draft from {result}", result=search_node.output),
-    ).after(search_node)
+        target=writer,
+        inputs={"prompt": dag.format("Draft from {result}", result=search_node.output)},
+    )
+    dag.add_node(search_node)
+    dag.add_node(draft)
+    dag.add_edge(search_node, draft)
 
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
     result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
@@ -318,17 +511,18 @@ def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path)
     assert "Draft from found:dagent" in provider.requests[0]["messages"][1]["content"]
 
 
-def test_agent_node_defaults_to_tool_agent_max_steps(tmp_path: Path) -> None:
+def test_agent_node_keeps_tool_agent_config_out_of_node_inputs(tmp_path: Path) -> None:
     writer = dagent.ToolAgent(
         profile=_profile_root(tmp_path, "writer"),
         max_steps=11,
     )
     dag = dagent.Dag("agent_flow")
 
-    dag.agent_node("draft", writer, prompt="Draft the report.")
+    dag.add_node(dagent.Node("draft", target=writer, inputs={"prompt": "Draft the report."}))
 
     invocation = dag.to_dag_spec().nodes[0].payload.invocation
-    assert invocation.arguments == {"prompt": "Draft the report.", "max_steps": 11}
+    assert invocation.arguments == {"prompt": "Draft the report."}
+    assert dag.agents == [writer]
 
 
 def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
@@ -357,8 +551,11 @@ def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
         skills=["writing/style"],
     )
     dag = dagent.Dag("agent_skill_flow")
-    research = dag.agent_node("research", researcher, prompt="Research.")
-    dag.agent_node("write", writer, prompt="Write.").after(research)
+    research = dagent.Node("research", target=researcher, inputs={"prompt": "Research."})
+    write = dagent.Node("write", target=writer, inputs={"prompt": "Write."})
+    dag.add_node(research)
+    dag.add_node(write)
+    dag.add_edge(research, write)
     runner = dagent.Runner(
         workspace=tmp_path,
         provider=provider,

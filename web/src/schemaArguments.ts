@@ -14,13 +14,7 @@ export interface SchemaArgumentField {
 export function visibleCapabilitiesForPicker<T extends { id: string; enabled?: boolean }>(
   capabilities: T[],
 ): T[] {
-  const enabled = capabilities.filter((capability) => capability.enabled !== false);
-  const ids = new Set(enabled.map((capability) => capability.id));
-  return enabled.filter((capability) => {
-    if (capability.id === 'file.read' && ids.has('tool.read_file')) return false;
-    if (capability.id === 'file.write' && ids.has('tool.write_file')) return false;
-    return true;
-  });
+  return capabilities.filter((capability) => capability.enabled !== false);
 }
 
 export function ensureSchemaArguments(

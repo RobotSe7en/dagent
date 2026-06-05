@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.providers import (
-    FileCapabilityProvider,
     MemoryCapabilityProvider,
     ToolCapabilityProvider,
 )
@@ -25,6 +24,5 @@ def create_default_capability_catalog(
     catalog = CapabilityCatalog(workspace_root=workspace_root)
     ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
     MemoryCapabilityProvider().register_into(catalog)
-    FileCapabilityProvider().register_into(catalog)
     (skills_provider or SkillsCapabilityProvider(skill_roots)).register_into(catalog)
     return catalog

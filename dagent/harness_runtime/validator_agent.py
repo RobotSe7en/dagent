@@ -25,33 +25,34 @@ class ValidatorAgent:
         final_answer: str,
         execution_context: str = "",
     ) -> ValidationResult:
+        response_schema = json.dumps(
+            {
+                "passed": True,
+                "issues": [
+                    {"message": "specific issue when passed is false", "node_id": None}
+                ],
+                "summary": "brief assessment",
+            },
+            ensure_ascii=False,
+        )
+        sections = [f"User request:\n{user_request}"]
+        if execution_context:
+            sections.append(f"Execution context:\n{execution_context}")
+        sections.extend(
+            [
+                f"Final answer given to user:\n{final_answer or '(no answer provided)'}",
+                (
+                    "Validate whether the final answer sufficiently addresses "
+                    "the user's request."
+                ),
+                f"Return ONLY one JSON object with this shape:\n{response_schema}",
+                "Do not include Markdown fences, explanations, or text outside the JSON object.",
+            ]
+        )
+
         try:
             payload = await self.agent.run_json(
-                task_content=(
-                    "User request:\n{{ user_request }}\n\n"
-                    "{% if execution_context %}"
-                    "Execution context:\n{{ execution_context }}\n\n"
-                    "{% endif %}"
-                    "Final answer given to user:\n{{ final_answer }}\n\n"
-                    "Validate whether the final answer sufficiently addresses "
-                    "the user's request.\n\n"
-                    "Return ONLY one JSON object with this shape:\n"
-                    "{{ response_schema }}\n\n"
-                    "Do not include Markdown fences, explanations, or text outside the JSON object."
-                ),
-                user_request=user_request,
-                final_answer=final_answer or "(no answer provided)",
-                execution_context=execution_context,
-                response_schema=json.dumps(
-                    {
-                        "passed": True,
-                        "issues": [
-                            {"message": "specific issue when passed is false", "node_id": None}
-                        ],
-                        "summary": "brief assessment",
-                    },
-                    ensure_ascii=False,
-                ),
+                task_content="\n\n".join(sections),
             )
         except ValueError as exc:
             logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)

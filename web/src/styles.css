@@ -1234,7 +1234,7 @@ select {
   display: none;
 }
 
-.capability-event-card.capability_error {
+.capability-event-card.capability-event-error {
   border-color: #fca5a5;
   background: #fef2f2;
 }
@@ -1287,7 +1287,7 @@ select {
   letter-spacing: 0.04em;
 }
 
-.capability-event-card.capability_error .capability-event-head span {
+.capability-event-card.capability-event-error .capability-event-head span {
   border-color: #fca5a5;
   color: var(--accent-red);
   background: #fef2f2;
@@ -2093,6 +2093,15 @@ button:disabled {
   display: grid;
   gap: 8px;
   padding: 10px;
+}
+
+.run-input-panel textarea {
+  min-height: 90px;
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .run-section h3 {

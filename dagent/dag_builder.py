@@ -23,6 +23,7 @@ from dagent.schemas.value import (
     GraphInputExpr,
     NodeOutputExpr,
     bind_value_expr,
+    iter_artifact_exprs,
 )
 
 
@@ -133,12 +134,27 @@ class ArtifactRef:
         return ArtifactValueRef(self.id, "absolute_paths")
 
 
-class NodeRef:
-    """Reference to a node inside a user-built DAG."""
+class Node:
+    """User-facing DAG node definition."""
 
-    def __init__(self, dag: "Dag", node_id: str) -> None:
-        self._dag = dag
-        self.id = node_id
+    def __init__(
+        self,
+        id: str,
+        *,
+        target: CapabilityBinding | ToolAgent | str,
+        inputs: dict[str, Any] | None = None,
+        artifact_inputs: list[ArtifactRef | str] | None = None,
+        artifact_outputs: list[ArtifactRef | str] | None = None,
+        title: str | None = None,
+        boundary: Boundary | None = None,
+    ) -> None:
+        self.id = id
+        self.target = target
+        self.inputs = dict(inputs or {})
+        self.artifact_inputs = list(artifact_inputs or [])
+        self.artifact_outputs = list(artifact_outputs or [])
+        self.title = title
+        self.boundary = boundary
 
     @property
     def output(self) -> NodeOutputRef:
@@ -156,16 +172,6 @@ class NodeRef:
     def steps(self) -> NodeOutputRef:
         return NodeOutputRef(self.id, "steps")
 
-    def after(self, *parents: "NodeRef | str") -> "NodeRef":
-        for parent in parents:
-            self._dag.edge(parent, self)
-        return self
-
-    def then(self, *children: "NodeRef | str") -> "NodeRef":
-        for child in children:
-            self._dag.edge(self, child)
-        return self
-
 
 class Dag:
     """Builder for static DAGSpec definitions."""
@@ -178,12 +184,15 @@ class Dag:
         description: str = "",
         version: int = 1,
         input: Any = None,
+        input_schema: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.id = id
         self.name = name or id
         self.description = description
         self.version = version
-        self.input_schema = json_schema_for_type(input)
+        self.input_schema = dict(input_schema) if input_schema is not None else json_schema_for_type(input)
+        self.metadata = dict(metadata or {})
         self.input = InputRef()
         self._nodes: dict[str, DAGNode] = {}
         self._edges: list[DAGEdge] = []
@@ -212,79 +221,49 @@ class Dag:
         )
         return ArtifactRef(id)
 
-    def capability_node(
-        self,
-        id: str,
-        capability: CapabilityBinding | str,
-        *,
-        node_title: str | None = None,
-        inputs: list[ArtifactRef | str] | None = None,
-        outputs: list[ArtifactRef | str] | None = None,
-        boundary: Boundary | None = None,
-        **arguments: Any,
-    ) -> NodeRef:
-        if isinstance(capability, CapabilityBinding):
-            capability_id = capability.definition.id
-            kind = capability.definition.kind
-            risk = capability.definition.policy.risk
-            self._capabilities[capability_id] = capability
-        elif isinstance(capability, str):
-            capability_id = capability
-            kind = _capability_kind_from_id(capability_id)
-            risk = "low"
-        else:
-            raise TypeError("capability_node expects a CapabilityBinding or capability id string.")
-        return self._add_capability_node(
-            id,
-            capability_id=capability_id,
-            kind=kind,
-            risk=risk,
-            arguments=_normalize_arguments(arguments),
-            title=node_title,
-            inputs=inputs,
-            outputs=outputs,
-            boundary=boundary,
-        )
+    def add_artifact(self, artifact: Artifact) -> ArtifactRef:
+        if artifact.id in self._artifacts:
+            raise ValueError(f"Artifact '{artifact.id}' already exists.")
+        self._artifacts[artifact.id] = artifact.model_copy(deep=True)
+        return ArtifactRef(artifact.id)
 
-    def agent_node(
-        self,
-        id: str,
-        agent: ToolAgent,
-        *,
-        prompt: Any,
-        max_steps: int | None = None,
-        node_title: str | None = None,
-        inputs: list[ArtifactRef | str] | None = None,
-        outputs: list[ArtifactRef | str] | None = None,
-        boundary: Boundary | None = None,
-    ) -> NodeRef:
-        if not isinstance(agent, ToolAgent):
-            raise TypeError("agent_node expects a dagent.ToolAgent.")
-        agent_name = agent.name or ""
-        existing = self._agents.get(agent_name)
-        if existing is not None and existing != agent:
-            raise ValueError(f"Agent '{agent_name}' already exists with different config.")
-        capability_id = f"agent.{agent_name}"
-        resolved_max_steps = agent.max_steps if max_steps is None else max_steps
-        if resolved_max_steps < 1:
-            raise ValueError("max_steps must be at least 1.")
-        self._agents[agent_name] = agent
-        return self._add_capability_node(
-            id,
-            capability_id=capability_id,
-            kind="agent",
-            risk="medium",
-            arguments=_normalize_arguments({"prompt": prompt, "max_steps": resolved_max_steps}),
-            title=node_title,
-            inputs=inputs,
-            outputs=outputs,
-            boundary=boundary,
+    def add_node(self, node: Node) -> Node:
+        if not isinstance(node, Node):
+            raise TypeError("add_node expects a dagent.Node.")
+        if node.id in self._nodes:
+            raise ValueError(f"Node '{node.id}' already exists.")
+        capability_id, kind, risk = self._target_invocation_metadata(node.target)
+        arguments = _normalize_arguments(node.inputs)
+        boundary = node.boundary or Boundary(mode="read_only", allowed_paths=["."])
+        output_ids = set(_artifact_ids(node.artifact_outputs))
+        explicit_input_ids = set(_artifact_ids(node.artifact_inputs))
+        inferred_input_ids = _artifact_ids_from_values(
+            arguments,
+            boundary.allowed_paths,
+            boundary.allowed_commands,
+        ) - output_ids
+        self._nodes[node.id] = DAGNode(
+            id=node.id,
+            title=node.title or _title_from_id(node.id),
+            payload={
+                "type": "capability",
+                "invocation": CapabilityInvocation(
+                    capability_id=capability_id,
+                    kind=kind,  # type: ignore[arg-type]
+                    arguments=arguments,
+                    boundary=boundary,
+                    risk=risk,  # type: ignore[arg-type]
+                ),
+            },
+            inputs=sorted(explicit_input_ids | inferred_input_ids),
+            outputs=sorted(output_ids),
         )
+        return node
 
-    def edge(
+    def add_edge(
         self,
-        source: NodeRef | str,
-        target: NodeRef | str,
+        source: Node | str,
+        target: Node | str,
         *,
         reason: str = "",
     ) -> "Dag":
@@ -307,6 +286,7 @@ class Dag:
             artifacts=dict(self._artifacts),
             nodes=list(self._nodes.values()),
             edges=list(self._edges),
+            metadata=dict(self.metadata),
         )
 
     @property
@@ -320,50 +300,40 @@ class Dag:
     def format(self, template: str, **values: Any) -> FormatRef:
         return FormatRef(template, values)
 
-    def _add_capability_node(
-        self,
-        id: str,
-        *,
-        capability_id: str,
-        kind: str,
-        risk: str,
-        arguments: dict[str, Any],
-        title: str | None,
-        inputs: list[ArtifactRef | str] | None,
-        outputs: list[ArtifactRef | str] | None,
-        boundary: Boundary | None,
-    ) -> NodeRef:
-        if id in self._nodes:
-            raise ValueError(f"Node '{id}' already exists.")
-        self._nodes[id] = DAGNode(
-            id=id,
-            title=title or _title_from_id(id),
-            payload={
-                "type": "capability",
-                "invocation": CapabilityInvocation(
-                    capability_id=capability_id,
-                    kind=kind,  # type: ignore[arg-type]
-                    arguments=arguments,
-                    boundary=boundary or Boundary(mode="read_only", allowed_paths=["."]),
-                    risk=risk,  # type: ignore[arg-type]
-                ),
-            },
-            inputs=_artifact_ids(inputs),
-            outputs=_artifact_ids(outputs),
-        )
-        return NodeRef(self, id)
-
     def _ensure_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             raise ValueError(f"Unknown node '{node_id}'.")
+
+    def _target_invocation_metadata(
+        self,
+        target: CapabilityBinding | ToolAgent | str,
+    ) -> tuple[str, str, str]:
+        if isinstance(target, CapabilityBinding):
+            capability_id = target.definition.id
+            self._capabilities[capability_id] = target
+            return capability_id, target.definition.kind, target.definition.policy.risk
+        if isinstance(target, ToolAgent):
+            agent_name = target.name or ""
+            existing = self._agents.get(agent_name)
+            if existing is not None and existing != target:
+                raise ValueError(f"Agent '{agent_name}' already exists with different config.")
+            self._agents[agent_name] = target
+            return f"agent.{agent_name}", "agent", "medium"
+        if isinstance(target, str):
+            kind = _capability_kind_from_id(target)
+            if kind == "skill":
+                raise ValueError("Node target cannot be a skill capability; attach skills to an agent instead.")
+            risk = "medium" if kind == "agent" else "low"
+            return target, kind, risk
+        raise TypeError("Node target must be a CapabilityBinding, ToolAgent, or capability id string.")
 
 
 def _artifact_ids(values: list[ArtifactRef | str] | None) -> list[str]:
     return [value.id if isinstance(value, ArtifactRef) else str(value) for value in values or []]
 
 
-def _node_id(value: NodeRef | str) -> str:
-    return value.id if isinstance(value, NodeRef) else str(value)
+def _node_id(value: Node | str) -> str:
+    return value.id if isinstance(value, Node) else str(value)
 
 
 def _normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -371,7 +341,7 @@ def _normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_value(value: Any) -> Any:
-    if isinstance(value, NodeRef):
+    if isinstance(value, Node):
         return value.output.as_expr()
     if isinstance(value, ArtifactRef):
         return value.path.as_expr()
@@ -386,12 +356,20 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+def _artifact_ids_from_values(*values: Any) -> set[str]:
+    return {
+        expr.artifact_id
+        for value in values
+        for expr in iter_artifact_exprs(value)
+    }
+
+
 def _title_from_id(node_id: str) -> str:
     return node_id.replace("_", " ").capitalize()
 
 
 def _capability_kind_from_id(capability_id: str) -> CapabilityKind:
     kind = capability_id.split(".", 1)[0]
-    if kind in {"tool", "mcp", "skill", "shell", "agent", "memory", "file"}:
+    if kind in {"tool", "mcp", "skill", "agent", "memory"}:
         return kind  # type: ignore[return-value]
     raise ValueError(f"Cannot infer capability kind from id '{capability_id}'.")

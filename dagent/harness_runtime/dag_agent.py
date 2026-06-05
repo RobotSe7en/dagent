@@ -23,7 +23,9 @@ from dagent.harness_runtime.dag_executor import (
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
     DAGValidationError,
+    MAX_EXECUTION_CONTEXT_CHARS,
     compile_dag_spec,
+    context_excerpt,
     dag_from_model_output,
     validate_dag,
 )
@@ -52,7 +54,6 @@ from dagent.schemas.node import NodeStatus
 from dagent.state import PromptBuilder, PromptRequest
 
 
-MAX_EXECUTION_CONTEXT_CHARS = 16000
 MAX_NODE_RESULT_CONTEXT_CHARS = 4000
 MAX_CAPABILITY_ARGS_CONTEXT_CHARS = 2000
 
@@ -100,7 +101,6 @@ class DAGAgent:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
-        force_review: bool = False,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -116,7 +116,6 @@ class DAGAgent:
             messages=self.messages,
             build_user_message=self.build_request_user_message,
             runtime_mode=runtime_mode,
-            force_review=force_review,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -242,7 +241,6 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
         runtime_mode: str = "auto",
-        force_review: bool = False,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -262,7 +260,6 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             entry_observation=request,
-            force_review=force_review,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -461,7 +458,6 @@ class DAGAgentLoop:
         replan: bool = True,
         dag_executor: DAGExecutor | None = None,
         entry_observation: str | None = None,
-        force_review: bool = False,
     ) -> RunTrace | None:
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
@@ -575,7 +571,7 @@ class DAGAgentLoop:
 
             # Apply the new DAG
             try:
-                self._apply_replan(record, response, force_review=force_review)
+                self._apply_replan(record, response)
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
@@ -662,7 +658,7 @@ class DAGAgentLoop:
         active_executor = dag_executor or self.dag_executor
         for node_id, node_trace in active_executor.partial_node_traces.items():
             if node_id in current_node_ids:
-                _replace_or_append_trace_child(trace.root, node_trace)
+                trace.root.upsert_child(node_trace)
                 _node_by_id(record.dag, node_id).status = _node_status_from_trace(node_trace.status)
         for failed_id in _failed_node_ids_from_trace(trace, valid_node_ids=current_node_ids):
             _node_by_id(record.dag, failed_id).status = "failed"
@@ -676,8 +672,6 @@ class DAGAgentLoop:
         self,
         record: RuntimeTaskRecord,
         next_dag: DAG,
-        *,
-        force_review: bool = False,
     ) -> None:
         is_initial = not _has_real_nodes(record.dag)
         prepared = next_dag.model_copy(deep=True)
@@ -687,10 +681,7 @@ class DAGAgentLoop:
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
         changed = _changed_node_ids(record.dag, prepared)
-        needs_review = bool(changed) and (
-            (is_initial and force_review)
-            or _review_policy(record.review_level).reviews_dag_changes()
-        )
+        needs_review = bool(changed) and _review_policy(record.review_level).reviews_dag_changes()
         if needs_review:
             prepared.status = "review_required"
         else:
@@ -854,7 +845,7 @@ def _format_dag_observation(
         return "\n\n".join(sections)
 
     completed = [
-        f"- {node_id}: {_context_excerpt(str(node_trace.output or '').strip(), limit=MAX_NODE_RESULT_CONTEXT_CHARS)}"
+        f"- {node_id}: {context_excerpt(str(node_trace.output or '').strip(), limit=MAX_NODE_RESULT_CONTEXT_CHARS)}"
         for node_id, node_trace in _completed_node_traces(record).items()
     ]
     if completed:
@@ -868,7 +859,7 @@ def _format_dag_observation(
     if executions:
         sections.append("Node executions:\n" + "\n".join(executions))
 
-    return _context_excerpt(
+    return context_excerpt(
         "\n\n".join(sections),
         limit=MAX_EXECUTION_CONTEXT_CHARS,
     )
@@ -900,7 +891,7 @@ def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str
         for node_id, node_trace in node_traces.items():
             status = node_trace.status
             response = (
-                _context_excerpt(
+                context_excerpt(
                     str(node_trace.output or "").strip(),
                     limit=MAX_NODE_RESULT_CONTEXT_CHARS,
                 )
@@ -909,7 +900,7 @@ def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str
             lines.append(f"  - {node_id} ({status}): {response}")
     if not lines:
         return ""
-    return _context_excerpt(
+    return context_excerpt(
         "\n".join(lines),
         limit=MAX_EXECUTION_CONTEXT_CHARS,
     )
@@ -1082,21 +1073,7 @@ def _trace_output(trace: RunTrace) -> str:
 
 
 def _node_traces_by_id(trace: RunTrace | None) -> dict[str, RunTraceNode]:
-    if trace is None:
-        return {}
-    return {
-        node.ref["node_id"]: node
-        for node in trace.root.children
-        if node.kind == "dag_node" and node.ref.get("node_id")
-    }
-
-
-def _replace_or_append_trace_child(parent: RunTraceNode, child: RunTraceNode) -> None:
-    for index, existing in enumerate(parent.children):
-        if existing.kind == child.kind and existing.ref == child.ref:
-            parent.children[index] = child
-            return
-    parent.children.append(child)
+    return {} if trace is None else trace.dag_node_traces()
 
 
 def _dag_node_ids(dag: DAG) -> set[str]:
@@ -1164,7 +1141,7 @@ def _format_recent_capability_executions(trace: RunTrace | None, *, limit: int) 
         if node.kind == "capability_call" and node.capability_execution is not None:
             invocation = node.capability_execution.invocation
             result = node.capability_execution.result
-            args = _context_excerpt(
+            args = context_excerpt(
                 json.dumps(invocation.arguments, ensure_ascii=False, sort_keys=True),
                 limit=MAX_CAPABILITY_ARGS_CONTEXT_CHARS,
             )
@@ -1207,7 +1184,7 @@ def _capability_execution_content(node: RunTraceNode) -> str:
         str(node.output or ""),
         node.error.message if node.error else "",
     ])
-    return _context_excerpt(
+    return context_excerpt(
         "\n".join(_unique_nonempty(parts)),
         limit=MAX_NODE_RESULT_CONTEXT_CHARS,
     )
@@ -1278,9 +1255,3 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
     return dumped
-
-
-def _context_excerpt(text: str, *, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"

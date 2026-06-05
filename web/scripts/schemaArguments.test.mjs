@@ -36,7 +36,6 @@ const {
   appendRunTranscriptToken,
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
-const { normalizeStreamEvent } = await importTypeScript('../src/streamEvents.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -79,18 +78,16 @@ test('buildSchemaArgumentFields marks schema fields as fixed before extra fields
   assert.equal(fields[2].valueType, 'number');
 });
 
-test('visibleCapabilitiesForPicker hides lower-level file duplicates when tool equivalents exist', () => {
+test('visibleCapabilitiesForPicker keeps enabled capabilities and drops disabled ones', () => {
   const capabilities = [
-    { id: 'file.read', name: 'file_read', kind: 'file', enabled: true },
     { id: 'tool.read_file', name: 'read_file', kind: 'tool', enabled: true },
-    { id: 'file.write', name: 'file_write', kind: 'file', enabled: true },
-    { id: 'tool.write_file', name: 'write_file', kind: 'tool', enabled: true },
+    { id: 'tool.write_file', name: 'write_file', kind: 'tool', enabled: false },
     { id: 'agent.conversation', name: 'conversation', kind: 'agent', enabled: true },
   ];
 
   assert.deepEqual(
     visibleCapabilitiesForPicker(capabilities).map((capability) => capability.id),
-    ['tool.read_file', 'tool.write_file', 'agent.conversation'],
+    ['tool.read_file', 'agent.conversation'],
   );
 });
 
@@ -161,8 +158,19 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
       report: { id: 'report', paths: ['outputs/report.md'] },
     },
     nodes: [
-      { id: 'read', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['source'], outputs: ['report'] },
-      { id: 'review', payload: { type: 'capability', invocation: { capability_id: 'tool.echo', kind: 'tool', arguments: {} } }, inputs: ['report'] },
+      {
+        id: 'read',
+        target: 'tool.echo',
+        inputs: { path: artifactPathExpr('source') },
+        artifact_inputs: ['source'],
+        artifact_outputs: ['report'],
+      },
+      {
+        id: 'review',
+        target: 'tool.echo',
+        inputs: { path: artifactPathExpr('report') },
+        artifact_inputs: ['report'],
+      },
     ],
     edges: [],
   };
@@ -173,8 +181,8 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
       source: { id: 'source', paths: ['uploads/source.md'] },
     },
     nodes: [
-      { ...spec.nodes[0], inputs: ['source'], outputs: [] },
-      { ...spec.nodes[1], inputs: [] },
+      { ...spec.nodes[0], artifact_outputs: [] },
+      { ...spec.nodes[1], inputs: {}, artifact_inputs: [], artifact_outputs: [] },
     ],
   });
 });
@@ -270,30 +278,16 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     nodes: [
       {
         id: 'agent_1',
-        inputs: ['upload_source'],
-        outputs: ['report', 'missing_output'],
-        payload: {
-          type: 'capability',
-          invocation: {
-            capability_id: 'agent.capability',
-            kind: 'agent',
-            arguments: {},
-            risk: 'medium',
-          },
-        },
+        target: 'agent.capability',
+        inputs: {},
+        artifact_inputs: ['upload_source'],
+        artifact_outputs: ['report', 'missing_output'],
       },
       {
         id: 'broken',
-        inputs: ['missing_input'],
-        payload: {
-          type: 'capability',
-          invocation: {
-            capability_id: '',
-            kind: 'tool',
-            arguments: {},
-            risk: 'low',
-          },
-        },
+        target: '',
+        inputs: {},
+        artifact_inputs: ['missing_input'],
       },
     ],
     edges: [{ source: 'agent_1', target: 'broken', reason: 'test' }],
@@ -327,7 +321,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
   assert.equal(summary.canRun, false);
   assert.deepEqual(summary.issues.map((issue) => issue.message), [
     "Node 'agent_1' references unknown output artifact 'missing_output'.",
-    "Node 'broken' is missing a capability.",
+    "Node 'broken' is missing a target.",
     "Node 'broken' references unknown input artifact 'missing_input'.",
   ]);
 });
@@ -346,16 +340,15 @@ test('appendRunTranscriptToken streams consecutive text into one message', () =>
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
   const call = {
-    type: 'capability_call',
+    type: 'capability.call.started',
     invocation_id: 'invoke_1',
     capability_id: 'tool.read_file',
     arguments: { path: 'inputs/source.md' },
   };
   const result = {
-    type: 'capability_result',
+    type: 'capability.call.completed',
     invocation_id: 'invoke_1',
     capability_id: 'tool.read_file',
-    arguments: {},
     content: 'file contents',
   };
 
@@ -368,58 +361,4 @@ test('appendRunTranscriptCapability pairs capability results with prior calls', 
     event: call,
     result,
   });
-});
-
-test('normalizeStreamEvent flattens SDK-enveloped capability and validation events', () => {
-  assert.deepEqual(
-    normalizeStreamEvent({
-      type: 'status',
-      message: 'capability_call',
-      data: {
-        type: 'capability_call',
-        invocation_id: 'invoke_1',
-        capability_id: 'tool.read_file',
-        arguments: { path: 'README.md' },
-      },
-    }),
-    {
-      type: 'capability_call',
-      message: 'capability_call',
-      data: {
-        type: 'capability_call',
-        invocation_id: 'invoke_1',
-        capability_id: 'tool.read_file',
-        arguments: { path: 'README.md' },
-      },
-      invocation_id: 'invoke_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: 'README.md' },
-    },
-  );
-
-  assert.deepEqual(
-    normalizeStreamEvent({
-      type: 'status',
-      message: 'retry',
-      data: {
-        type: 'retry',
-        summary: 'Needs fixes.',
-        issues: [{ message: 'Missing output.' }],
-        reason: 'Add output.',
-      },
-    }),
-    {
-      type: 'retry',
-      message: 'retry',
-      data: {
-        type: 'retry',
-        summary: 'Needs fixes.',
-        issues: [{ message: 'Missing output.' }],
-        reason: 'Add output.',
-      },
-      summary: 'Needs fixes.',
-      issues: [{ message: 'Missing output.' }],
-      reason: 'Add output.',
-    },
-  );
 });

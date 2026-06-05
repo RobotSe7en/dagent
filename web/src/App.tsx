@@ -52,7 +52,7 @@ import {
   getValidationStatus,
   installSkill,
   listCapabilities,
-  listDagSpecs,
+  listDags,
   listMcpServers,
   listProfiles,
   listSkills,
@@ -60,14 +60,14 @@ import {
   resetSession,
   resumeCapabilityReview,
   resumeDagReview,
-  runDagSpecStream,
-  saveDagSpec,
+  runDagStream,
+  saveDag,
   setCapabilityEnabled,
   setValidationEnabled as apiSetValidation,
   streamTask,
   testCapability,
   updateMcpServer,
-  uploadDagSpecArtifact,
+  uploadDagArtifact,
 } from './api';
 import type {
   AgentProfile,
@@ -81,7 +81,7 @@ import type {
   DagEdge,
   DagNode,
   DagRun,
-  DagSpec,
+  UserDag,
   ProfileWarning,
   ReviewEventPayload,
   ValidationFeedbackEvent,
@@ -97,6 +97,7 @@ import type {
   SkillFileDetail,
   SkillSummary,
   BoundaryValue,
+  UserDagNode,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -134,7 +135,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
-const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'agent', 'memory', 'file'];
+const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
 const defaultWorkspaceRoot = '.dagent-runs';
 const directoryInputProps = {
   directory: '',
@@ -207,7 +208,7 @@ function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvoca
     arguments: invocation.arguments ?? {},
     boundary: {
       mode: invocation.boundary?.mode ?? 'read_only',
-      allowed_paths: invocation.boundary?.allowed_paths ?? [],
+      allowed_paths: invocation.boundary?.allowed_paths ?? ['.'],
       allowed_commands: invocation.boundary?.allowed_commands ?? [],
     },
     risk: invocation.risk ?? 'low',
@@ -232,7 +233,67 @@ function normalizeNode(node: DagNode): DagNode {
   };
 }
 
-function createEmptyDagSpec(): DagSpec {
+function normalizeUserDagNode(node: UserDagNode): UserDagNode {
+  return {
+    id: node.id,
+    target: node.target ?? '',
+    inputs: node.inputs ?? {},
+    artifact_inputs: node.artifact_inputs ?? [],
+    artifact_outputs: node.artifact_outputs ?? [],
+    title: node.title ?? '',
+    boundary: node.boundary ?? null,
+  };
+}
+
+function capabilityKindFromTarget(target: string): CapabilityKind {
+  const prefix = target.split('.', 1)[0] as CapabilityKind;
+  return capabilityKinds.includes(prefix) ? prefix : 'tool';
+}
+
+function riskFromTarget(target: string): RiskLevel {
+  return target.startsWith('agent.') ? 'medium' : 'low';
+}
+
+function dagNodeFromUserNode(node: UserDagNode): DagNode {
+  const normalized = normalizeUserDagNode(node);
+  return normalizeNode({
+    id: normalized.id,
+    title: normalized.title,
+    payload: {
+      type: 'capability',
+      invocation: {
+        capability_id: normalized.target,
+        kind: capabilityKindFromTarget(normalized.target),
+        arguments: normalized.inputs ?? {},
+        boundary: normalized.boundary ?? {
+          mode: 'read_only',
+          allowed_paths: ['.'],
+          allowed_commands: [],
+        },
+        risk: riskFromTarget(normalized.target),
+      },
+    },
+    inputs: normalized.artifact_inputs ?? [],
+    outputs: normalized.artifact_outputs ?? [],
+    status: 'planned',
+  });
+}
+
+function userNodeFromDagNode(node: DagNode & { payload: CapabilityNodePayload }): UserDagNode {
+  const normalized = normalizeNode(node) as DagNode & { payload: CapabilityNodePayload };
+  const invocation = normalizeInvocation(normalized.payload.invocation);
+  return {
+    id: normalized.id,
+    title: normalized.title ?? '',
+    target: invocation.capability_id,
+    inputs: invocation.arguments ?? {},
+    artifact_inputs: normalized.inputs ?? [],
+    artifact_outputs: normalized.outputs ?? [],
+    boundary: invocation.boundary ?? null,
+  };
+}
+
+function createEmptyUserDag(): UserDag {
   return {
     id: `custom_dag_${Date.now()}`,
     name: 'Untitled DAG',
@@ -246,22 +307,19 @@ function createEmptyDagSpec(): DagSpec {
   };
 }
 
-function dagFromSpec(spec: DagSpec): Dag {
+function runtimeDagFromUserDag(spec: UserDag): Dag {
   return {
     dag_id: spec.id,
     task_id: spec.id,
     version: spec.version ?? 1,
     status: 'draft',
-    nodes: (spec.nodes ?? []).map(normalizeNode),
+    nodes: (spec.nodes ?? []).map(dagNodeFromUserNode),
     edges: spec.edges ?? [],
   };
 }
 
-function specFromDag(spec: DagSpec, dag: Dag): DagSpec {
-  const nodes = dag.nodes.filter(isCapabilityNode).map((node) => ({
-    ...normalizeNode(node),
-    status: 'planned' as const,
-  }));
+function userDagFromRuntimeDag(spec: UserDag, dag: Dag): UserDag {
+  const nodes = dag.nodes.filter(isCapabilityNode).map(userNodeFromDagNode);
   const nodeIds = new Set(nodes.map((node) => node.id));
   return {
     ...spec,
@@ -271,17 +329,20 @@ function specFromDag(spec: DagSpec, dag: Dag): DagSpec {
   };
 }
 
-function validateDagSpecDraft(spec: DagSpec): string | null {
-  if (!spec.id.trim()) return 'DAGSpec id is required.';
-  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(spec.id)) return 'DAGSpec id must start with a letter and use letters, numbers, _ or -.';
-  if (!spec.name.trim()) return 'DAGSpec name is required.';
+function validateUserDagDraft(spec: UserDag): string | null {
+  if (!spec.id.trim()) return 'DAG id is required.';
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(spec.id)) return 'DAG id must start with a letter and use letters, numbers, _ or -.';
+  if (!spec.name.trim()) return 'DAG name is required.';
   const nodeIds = new Set<string>();
   for (const node of spec.nodes) {
     if (!node.id.trim()) return 'Every node needs an id.';
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(node.id)) return `Node '${node.id}' has an invalid id.`;
     if (nodeIds.has(node.id)) return `Node '${node.id}' is duplicated.`;
     nodeIds.add(node.id);
-    if (!isCapabilityNode(node) || !node.payload.invocation.capability_id) return `Node '${node.id}' needs a capability.`;
+    const target = node.target.trim();
+    const kind = capabilityKindFromTarget(target);
+    if (!target) return `Node '${node.id}' needs a target.`;
+    if (kind === 'skill') return `Node '${node.id}' cannot target a skill directly; use an agent target.`;
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -289,6 +350,21 @@ function validateDagSpecDraft(spec: DagSpec): string | null {
     }
   }
   return null;
+}
+
+type ParsedDagRunInput =
+  | { ok: true; hasInput: false }
+  | { ok: true; hasInput: true; value: unknown }
+  | { ok: false; message: string };
+
+function parseDagRunInput(value: string): ParsedDagRunInput {
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true, hasInput: false };
+  try {
+    return { ok: true, hasInput: true, value: JSON.parse(trimmed) };
+  } catch {
+    return { ok: false, message: 'DAG input must be valid JSON.' };
+  }
 }
 
 function capabilityDisplayName(capability: CapabilityDefinition): string {
@@ -407,9 +483,9 @@ export function App() {
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
-  const [dagSpecs, setDagSpecs] = useState<DagSpec[]>([]);
-  const [editorSpec, setEditorSpec] = useState<DagSpec>(() => createEmptyDagSpec());
-  const [editorDag, setEditorDag] = useState<Dag>(() => dagFromSpec(editorSpec));
+  const [savedDags, setSavedDags] = useState<UserDag[]>([]);
+  const [editorUserDag, setEditorUserDag] = useState<UserDag>(() => createEmptyUserDag());
+  const [editorDag, setEditorDag] = useState<Dag>(() => runtimeDagFromUserDag(editorUserDag));
   const [editorSelectedId, setEditorSelectedId] = useState('');
   const [editorTrace, setEditorTrace] = useState<TraceLogEvent[]>([]);
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
@@ -417,6 +493,7 @@ export function App() {
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
+  const [editorRunInputText, setEditorRunInputText] = useState('');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -442,13 +519,13 @@ export function App() {
     try {
       const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers] = await Promise.all([
         listCapabilities(),
-        listDagSpecs(),
+        listDags(),
         listProfiles(),
         listSkills(),
         listMcpServers(),
       ]);
       setCapabilities(nextCapabilities);
-      setDagSpecs(nextSpecs);
+      setSavedDags(nextSpecs);
       setProfiles(nextProfiles.profiles);
       setProfileWarnings(nextProfiles.warnings);
       setSkills(nextSkills);
@@ -537,27 +614,27 @@ export function App() {
     );
   }, []);
 
-  const setEditorSpecAndDag = useCallback((spec: DagSpec) => {
+  const setEditorUserDagAndRuntimeDag = useCallback((spec: UserDag) => {
     const normalizedSpec = {
       ...spec,
       version: spec.version ?? 1,
       description: spec.description ?? '',
       input_schema: spec.input_schema ?? {},
       artifacts: spec.artifacts ?? {},
-      nodes: (spec.nodes ?? []).map(normalizeNode),
+      nodes: (spec.nodes ?? []).map(normalizeUserDagNode),
       edges: spec.edges ?? [],
       metadata: spec.metadata ?? {},
     };
-    setEditorSpec(normalizedSpec);
-    syncEditorDag(dagFromSpec(normalizedSpec));
+    setEditorUserDag(normalizedSpec);
+    syncEditorDag(runtimeDagFromUserDag(normalizedSpec));
     setEditorTrace([]);
     setEditorRun(null);
     setEditorRunTimeline([]);
     setEditorMessage('');
   }, [syncEditorDag]);
 
-  const patchEditorSpec = (patch: Partial<DagSpec>) => {
-    setEditorSpec((current) => ({
+  const patchEditorUserDag = (patch: Partial<UserDag>) => {
+    setEditorUserDag((current) => ({
       ...current,
       ...patch,
     }));
@@ -570,7 +647,7 @@ export function App() {
     const nextArtifactId = artifact.id.trim();
     if (!nextArtifactId) return;
     const normalizedArtifact = { ...artifact, id: nextArtifactId };
-    const nextArtifacts = upsertArtifact(editorSpec.artifacts ?? {}, normalizedArtifact, previousId);
+    const nextArtifacts = upsertArtifact(editorUserDag.artifacts ?? {}, normalizedArtifact, previousId);
     const nextNodes = previousId && previousId !== nextArtifactId
       ? editorDag.nodes.map((node) => ({
           ...node,
@@ -579,23 +656,23 @@ export function App() {
         }))
       : editorDag.nodes;
     const nextSpec = {
-      ...specFromDag(editorSpec, { ...editorDag, nodes: nextNodes }),
+      ...userDagFromRuntimeDag(editorUserDag, { ...editorDag, nodes: nextNodes }),
       artifacts: nextArtifacts,
     };
-    setEditorSpec(nextSpec);
-    syncEditorDag(dagFromSpec(nextSpec));
+    setEditorUserDag(nextSpec);
+    syncEditorDag(runtimeDagFromUserDag(nextSpec));
   };
 
   const deleteEditorArtifact = (artifactId: string) => {
-    const nextSpec = removeArtifactBinding(specFromDag(editorSpec, editorDag), artifactId);
-    setEditorSpec(nextSpec);
-    syncEditorDag(dagFromSpec(nextSpec));
+    const nextSpec = removeArtifactBinding(userDagFromRuntimeDag(editorUserDag, editorDag), artifactId);
+    setEditorUserDag(nextSpec);
+    syncEditorDag(runtimeDagFromUserDag(nextSpec));
   };
 
   const updateEditorDag = (updater: (current: Dag) => Dag) => {
     const nextDag = updater(editorDag);
     syncEditorDag(nextDag);
-    setEditorSpec((current) => specFromDag(current, nextDag));
+    setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
   };
 
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
@@ -739,12 +816,12 @@ export function App() {
   };
 
   const appendCapabilityMessage = (event: CapabilityStreamEvent) => {
-    if (event.type === 'capability_result' && event.content?.startsWith('[PENDING_REVIEW]')) return;
+    if (event.type === 'capability.call.completed' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
     updateLastAssistantText((message) => {
       const capabilityEvents = [...(message.capabilityEvents ?? []), event];
       const timeline = [...(message.timeline ?? [])];
-      if (event.type === 'capability_result' || event.type === 'capability_error') {
+      if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
         const idx = findMatchingCapabilityCall(timeline, event.invocation_id);
         if (idx !== -1) {
           const item = timeline[idx] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
@@ -771,7 +848,7 @@ export function App() {
           reason: 'User dependency.',
         }));
       setEditorDag((current) => ({ ...current, edges: nextDagEdges }));
-      setEditorSpec((current) => specFromDag(current, { ...editorDag, edges: nextDagEdges }));
+      setEditorUserDag((current) => userDagFromRuntimeDag(current, { ...editorDag, edges: nextDagEdges }));
       return next;
     });
   }, [editorDag]);
@@ -828,7 +905,7 @@ export function App() {
                 arguments: ensureSchemaArguments({}, firstCapability?.parameters),
                 boundary: {
                   mode: 'read_only',
-                  allowed_paths: [],
+                  allowed_paths: ['.'],
                   allowed_commands: [],
                 },
                 risk: 'low',
@@ -852,13 +929,14 @@ export function App() {
     }));
   };
 
-  const newEditorSpec = () => {
-    setEditorSpecAndDag(createEmptyDagSpec());
+  const newEditorUserDag = () => {
+    setEditorUserDagAndRuntimeDag(createEmptyUserDag());
     setEditorWorkspaceRoot(defaultWorkspaceRoot);
+    setEditorRunInputText('');
   };
 
-  const loadEditorSpec = (spec: DagSpec) => {
-    setEditorSpecAndDag(spec);
+  const loadEditorUserDag = (spec: UserDag) => {
+    setEditorUserDagAndRuntimeDag(spec);
   };
 
   const addEditorNode = (capability?: CapabilityDefinition) => {
@@ -879,7 +957,7 @@ export function App() {
               arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
               boundary: {
                 mode: 'read_only',
-                allowed_paths: [],
+                allowed_paths: ['.'],
                 allowed_commands: [],
               },
               risk: capabilityRisk(selectedCapability),
@@ -928,19 +1006,19 @@ export function App() {
     }));
   };
 
-  const persistEditorSpec = async (): Promise<boolean> => {
-    const spec = specFromDag(editorSpec, editorDag);
-    const validation = validateDagSpecDraft(spec);
+  const persistEditorUserDag = async (): Promise<boolean> => {
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const validation = validateUserDagDraft(spec);
     if (validation) {
       setEditorMessage(validation);
       return false;
     }
-    setEditorMessage('Saving DAGSpec...');
+    setEditorMessage('Saving DAG...');
     try {
-      const saved = await saveDagSpec(spec);
-      setEditorSpecAndDag(saved);
+      const saved = await saveDag(spec);
+      setEditorUserDagAndRuntimeDag(saved);
       await refreshConsoleData();
-      setEditorMessage(`Saved ${saved.name || 'DAGSpec'}.`);
+      setEditorMessage(`Saved ${saved.name || 'DAG'}.`);
       return true;
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
@@ -951,17 +1029,17 @@ export function App() {
   const uploadEditorArtifact = async (artifactId: string, fileList: FileList | null) => {
     const files = Array.from(fileList ?? []);
     if (!files.length) return;
-    const spec = specFromDag(editorSpec, editorDag);
-    const validation = validateDagSpecDraft(spec);
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const validation = validateUserDagDraft(spec);
     if (validation) {
       setEditorMessage(validation);
       return;
     }
     setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
     try {
-      const saved = await saveDagSpec(spec);
-      setEditorSpecAndDag(saved);
-      await uploadDagSpecArtifact(saved.id, artifactId, files);
+      const saved = await saveDag(spec);
+      setEditorUserDagAndRuntimeDag(saved);
+      await uploadDagArtifact(saved.id, artifactId, files);
       await refreshConsoleData();
       setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`);
     } catch (exc) {
@@ -972,7 +1050,7 @@ export function App() {
   const uploadEditorFiles = async (fileList: FileList | null) => {
     const files = Array.from(fileList ?? []);
     if (!files.length) return;
-    const spec = specFromDag(editorSpec, editorDag);
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const uploadRoot = uploadBatchRoot(files);
     const uploadDraft = createUploadedFileArtifacts(uploadSourceFiles(files), {
       artifacts: spec.artifacts ?? {},
@@ -982,17 +1060,17 @@ export function App() {
       ...spec,
       artifacts: uploadDraft.artifacts,
     };
-    const validation = validateDagSpecDraft(nextSpec);
+    const validation = validateUserDagDraft(nextSpec);
     if (validation) {
       setEditorMessage(validation);
       return;
     }
     setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
     try {
-      const saved = await saveDagSpec(nextSpec);
-      setEditorSpecAndDag(saved);
+      const saved = await saveDag(nextSpec);
+      setEditorUserDagAndRuntimeDag(saved);
       for (let index = 0; index < uploadDraft.uploads.length; index += 1) {
-        await uploadDagSpecArtifact(
+        await uploadDagArtifact(
           saved.id,
           uploadDraft.uploads[index].artifact.id,
           [files[index]],
@@ -1008,18 +1086,23 @@ export function App() {
 
   const runEditorSpec = async () => {
     if (editorRunning) return;
-    const spec = specFromDag(editorSpec, editorDag);
-    const saved = await persistEditorSpec();
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const parsedInput = parseDagRunInput(editorRunInputText);
+    if (!parsedInput.ok) {
+      setEditorMessage(parsedInput.message);
+      return;
+    }
+    const saved = await persistEditorUserDag();
     if (!saved) return;
-    const validation = validateDagSpecDraft(spec);
+    const validation = validateUserDagDraft(spec);
     if (validation) return;
     setEditorRunning(true);
     setEditorTrace([]);
     setEditorRun(null);
     setEditorRunTimeline([]);
-    setEditorMessage(`Running ${spec.name || 'DAGSpec'}...`);
+    setEditorMessage(`Running ${spec.name || 'DAG'}...`);
     try {
-      await runDagSpecStream(spec.id, {
+      await runDagStream(spec.id, {
         onStatus: (status) => {
           setEditorTrace((items) => [
             ...items,
@@ -1027,7 +1110,7 @@ export function App() {
               id: crypto.randomUUID(),
               type: 'model',
               label: status,
-              detail: 'DAGSpec run event.',
+              detail: 'DAG run event.',
               status: 'running',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             },
@@ -1044,14 +1127,17 @@ export function App() {
               id: `${event.invocation_id}-${event.type}-${items.length}`,
               type: 'capability',
               label: event.capability_id,
-              detail: event.content || JSON.stringify(event.arguments),
-              status: event.type === 'capability_error' ? 'failed' : event.type === 'capability_result' ? 'completed' : 'running',
+              detail: event.content || JSON.stringify(event.arguments ?? {}),
+              status: event.type === 'capability.call.failed' ? 'failed' : event.type === 'capability.call.completed' ? 'completed' : 'running',
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             },
           ]);
         },
         onToken: (content) => {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
+        },
+        onReview: (review) => {
+          setEditorMessage(review.message);
         },
         onDone: (payload) => {
           const dagRun = payload.result.dag_run;
@@ -1068,7 +1154,10 @@ export function App() {
           setEditorMessage(message);
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
-      }, { workspaceRoot: editorWorkspaceRoot });
+      }, {
+        workspaceRoot: editorWorkspaceRoot,
+        ...(parsedInput.hasInput ? { input: parsedInput.value } : {}),
+      });
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {
@@ -1114,6 +1203,10 @@ export function App() {
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: (review) => {
+          handlePendingReview(review);
+          if (review.kind !== 'capability_review') setReviewOpen(true);
+        },
         onDone: (payload) => {
           const result = payload.result;
           flushQueuedTokensNow();
@@ -1187,6 +1280,10 @@ export function App() {
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: (review) => {
+          handlePendingReview(review);
+          if (review.kind !== 'capability_review') setReviewOpen(true);
+        },
         onDone: (payload) => {
           const result = payload.result;
           flushQueuedTokensNow();
@@ -1238,9 +1335,12 @@ export function App() {
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
+        onTrace: appendRuntimeTrace,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: handlePendingReview,
         onDone: (payload) => {
           flushQueuedTokensNow();
           handlePendingReview(payload.result.pending_review);
@@ -1416,8 +1516,8 @@ export function App() {
         ) : activeWorkspace === 'orchestration' ? (
           <OrchestrationWorkspace
             capabilities={capabilities}
-            dagSpecs={dagSpecs}
-            spec={editorSpec}
+            savedDags={savedDags}
+            spec={editorUserDag}
             dag={editorDag}
             nodes={editorNodes}
             edges={editorEdges}
@@ -1428,10 +1528,12 @@ export function App() {
             message={editorMessage}
             running={editorRunning}
             workspaceRoot={editorWorkspaceRoot}
-            onNew={newEditorSpec}
-            onLoad={loadEditorSpec}
-            onPatchSpec={patchEditorSpec}
+            runInputText={editorRunInputText}
+            onNew={newEditorUserDag}
+            onLoad={loadEditorUserDag}
+            onPatchDag={patchEditorUserDag}
             onWorkspaceRootChange={setEditorWorkspaceRoot}
+            onRunInputTextChange={setEditorRunInputText}
             onUpsertArtifact={upsertEditorArtifact}
             onDeleteArtifact={deleteEditorArtifact}
             onUploadArtifact={uploadEditorArtifact}
@@ -1439,7 +1541,7 @@ export function App() {
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
-            onSave={() => void persistEditorSpec()}
+            onSave={() => void persistEditorUserDag()}
             onRun={() => void runEditorSpec()}
             onNodesChange={onEditorNodesChange}
             onEdgesChange={onEditorEdgesChange}
@@ -1712,7 +1814,7 @@ function ValidatingIndicator() {
 }
 
 function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
-  const passed = event.type === 'validation_passed' || event.passed === true;
+  const passed = event.type === 'validation.passed' || event.passed === true;
   return (
     <details className={`timeline-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
       <summary className="timeline-card-head">
@@ -1756,16 +1858,17 @@ function hasNonZeroExitCode(content?: string): boolean {
 }
 
 function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
-  const resultContent = result?.content || (event.type !== 'capability_call' ? event.content || '' : '');
-  const isError = result?.type === 'capability_error' || event.type === 'capability_error';
+  const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
+  const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const statusLabel = result
     ? (isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'capability_call' ? 'running' : event.type === 'capability_error' ? 'failed' : 'done');
+    : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
   const argsText = formatCapabilityArguments(event.arguments);
+  const eventClass = showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
   return (
-    <details className={`capability-event-card ${showError ? 'capability_error' : event.type}`}>
+    <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">
         <Wrench size={14} />
         <strong>{event.capability_id}</strong>
@@ -1790,14 +1893,15 @@ function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; 
 function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationId: string): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability_call') {
+    if (item.type === 'capability' && item.event.invocation_id === invocationId && item.event.type === 'capability.call.started') {
       return i;
     }
   }
   return -1;
 }
 
-function formatCapabilityArguments(value: Record<string, unknown>) {
+function formatCapabilityArguments(value?: Record<string, unknown>) {
+  if (!value) return '';
   if (!Object.keys(value).length) return '';
   return JSON.stringify(value, null, 2);
 }
@@ -2262,7 +2366,7 @@ function ArtifactEditorPanel({
 
 function OrchestrationWorkspace({
   capabilities,
-  dagSpecs,
+  savedDags,
   spec,
   dag,
   nodes,
@@ -2274,10 +2378,12 @@ function OrchestrationWorkspace({
   message,
   running,
   workspaceRoot,
+  runInputText,
   onNew,
   onLoad,
-  onPatchSpec,
+  onPatchDag,
   onWorkspaceRootChange,
+  onRunInputTextChange,
   onUpsertArtifact,
   onDeleteArtifact,
   onUploadArtifact,
@@ -2293,8 +2399,8 @@ function OrchestrationWorkspace({
   onSelectNode,
 }: {
   capabilities: CapabilityDefinition[];
-  dagSpecs: DagSpec[];
-  spec: DagSpec;
+  savedDags: UserDag[];
+  spec: UserDag;
   dag: Dag;
   nodes: Node[];
   edges: Edge[];
@@ -2305,10 +2411,12 @@ function OrchestrationWorkspace({
   message: string;
   running: boolean;
   workspaceRoot: string;
+  runInputText: string;
   onNew: () => void;
-  onLoad: (spec: DagSpec) => void;
-  onPatchSpec: (patch: Partial<DagSpec>) => void;
+  onLoad: (spec: UserDag) => void;
+  onPatchDag: (patch: Partial<UserDag>) => void;
   onWorkspaceRootChange: (workspaceRoot: string) => void;
+  onRunInputTextChange: (value: string) => void;
   onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
   onDeleteArtifact: (artifactId: string) => void;
   onUploadArtifact: (artifactId: string, files: FileList | null) => void;
@@ -2328,7 +2436,7 @@ function OrchestrationWorkspace({
   const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
-  const runSummary = buildRunDialogSummary(specFromDag(spec, dag));
+  const runSummary = buildRunDialogSummary(userDagFromRuntimeDag(spec, dag));
   const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
   const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
   const selectNode = (id: string) => {
@@ -2365,7 +2473,7 @@ function OrchestrationWorkspace({
   return (
     <section className="console-grid orchestration-grid">
       <aside className="console-sidebar">
-        <PaneTitle icon={<FileText size={18} />} title="DAGSpecs" />
+        <PaneTitle icon={<FileText size={18} />} title="DAGs" />
         <div className="sidebar-actions">
           <button className="secondary-button compact-button" onClick={onNew} type="button">
             <Plus size={16} />
@@ -2383,11 +2491,11 @@ function OrchestrationWorkspace({
         <div className="spec-meta-form">
           <label>
             Name
-            <input value={spec.name} onChange={(event) => onPatchSpec({ name: event.target.value })} />
+            <input value={spec.name} onChange={(event) => onPatchDag({ name: event.target.value })} />
           </label>
           <label>
             Description
-            <textarea value={spec.description ?? ''} onChange={(event) => onPatchSpec({ description: event.target.value })} />
+            <textarea value={spec.description ?? ''} onChange={(event) => onPatchDag({ description: event.target.value })} />
           </label>
           <label>
             Workspace Root
@@ -2402,24 +2510,24 @@ function OrchestrationWorkspace({
           onUploadFiles={onUploadFiles}
         />
         <div className="resource-list">
-          {dagSpecs.length ? dagSpecs.map((item) => (
+          {savedDags.length ? savedDags.map((item) => (
             <button
               key={item.id}
               className={item.id === spec.id ? 'resource-row active' : 'resource-row'}
               type="button"
               onClick={() => onLoad(item)}
             >
-              <strong>{item.name || 'Untitled DAGSpec'}</strong>
+              <strong>{item.name || 'Untitled DAG'}</strong>
               <span>{item.nodes.length} nodes</span>
             </button>
-          )) : <div className="empty-state compact">No saved DAGSpecs in this process.</div>}
+          )) : <div className="empty-state compact">No saved DAGs in this process.</div>}
         </div>
       </aside>
       <section className="flow-workbench">
         <div className="workbench-toolbar">
           <div>
-            <strong>{spec.name || 'Untitled DAGSpec'}</strong>
-            <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAGSpec')}</span>
+            <strong>{spec.name || 'Untitled DAG'}</strong>
+            <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAG')}</span>
           </div>
           <select
             onChange={(event) => {
@@ -2511,13 +2619,15 @@ function OrchestrationWorkspace({
         </aside>
       ) : null}
       {runDialogOpen ? (
-        <RunDagSpecDialog
+        <RunDagDialog
           specName={spec.name}
           summary={runSummary}
           run={run}
           timeline={runTimeline}
           running={running}
           message={message}
+          inputText={runInputText}
+          onInputTextChange={onRunInputTextChange}
           onStart={onRun}
           onClose={() => setRunDialogOpen(false)}
         />
@@ -2526,13 +2636,15 @@ function OrchestrationWorkspace({
   );
 }
 
-function RunDagSpecDialog({
+function RunDagDialog({
   specName,
   summary,
   run,
   timeline,
   running,
   message,
+  inputText,
+  onInputTextChange,
   onStart,
   onClose,
 }: {
@@ -2542,6 +2654,8 @@ function RunDagSpecDialog({
   timeline: RunTranscriptItem[];
   running: boolean;
   message: string;
+  inputText: string;
+  onInputTextChange: (value: string) => void;
   onStart: () => void;
   onClose: () => void;
 }) {
@@ -2549,7 +2663,7 @@ function RunDagSpecDialog({
   const hasStarted = running || Boolean(run) || timeline.length > 0;
   const startLabel = run ? 'Run Again' : 'Start Run';
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run DAGSpec">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run DAG">
       <div className="run-dialog">
         <header className="modal-header">
           <div>
@@ -2582,6 +2696,7 @@ function RunDagSpecDialog({
               <details className="run-context-details">
                 <summary>Run Context</summary>
                 <div className="run-context-body">
+                  <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
                   <RunPreflightPanel summary={summary} />
                 </div>
               </details>
@@ -2591,11 +2706,37 @@ function RunDagSpecDialog({
               ) : null}
             </>
           ) : (
-            <RunPreflightPanel summary={summary} />
+            <>
+              <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
+              <RunPreflightPanel summary={summary} />
+            </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function RunInputPanel({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <section className="run-section run-input-panel">
+      <h3>Input JSON</h3>
+      <textarea
+        value={value}
+        disabled={disabled}
+        spellCheck={false}
+        placeholder='{"query":"dagent"}'
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </section>
   );
 }
 
@@ -2747,7 +2888,7 @@ function OrchestrationNodeEditor({
   const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent' && capability.enabled);
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
-    allowed_paths: [],
+    allowed_paths: ['.'],
     allowed_commands: [],
   };
   const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
@@ -4039,7 +4180,7 @@ function NodeEditor({
   const invocation = node.payload.invocation;
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
-    allowed_paths: [],
+    allowed_paths: ['.'],
     allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>

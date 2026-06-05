@@ -265,14 +265,19 @@ def render(title: str, url: str, audience: str) -> str:
 
 async def main():
     dag = dagent.Dag("research", input=ResearchInput)
-    found = dag.capability_node("search", search, q=dag.input.query)
-    dag.capability_node(
+    found = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+    rendered = dagent.Node(
         "render",
-        render,
-        title=found.output.title,
-        url=found.output.url,
-        audience=dag.input.audience,
-    ).after(found)
+        target=render,
+        inputs={
+            "title": found.output.title,
+            "url": found.output.url,
+            "audience": dag.input.audience,
+        },
+    )
+    dag.add_node(found)
+    dag.add_node(rendered)
+    dag.add_edge(found, rendered)
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
@@ -287,7 +292,7 @@ asyncio.run(main())
 
 `Runner.run(...)` always returns `RunResult`, including static `Dag` and
 `DAGSpec` runs. Customize static DAGs with Pydantic graph inputs, typed tool
-return values, explicit `.after(...)` dependencies, artifact references, and
+return values, explicit `dag.add_edge(...)` dependencies, artifact references, and
 per-node boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full
 SDK.
 

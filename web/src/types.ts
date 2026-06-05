@@ -22,7 +22,7 @@ export interface Boundary {
   allowed_commands?: BoundaryValue[];
 }
 
-export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'agent' | 'memory' | 'file';
+export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'agent' | 'memory';
 
 export interface CapabilityInvocation {
   invocation_id?: string;
@@ -95,16 +95,26 @@ export interface Dag {
   edges: DagEdge[];
 }
 
-export interface DagSpec {
+export interface UserDag {
   id: string;
   name: string;
   version?: number;
   description?: string;
   input_schema?: Record<string, unknown>;
   artifacts?: Record<string, Artifact>;
-  nodes: DagNode[];
+  nodes: UserDagNode[];
   edges: DagEdge[];
   metadata?: Record<string, unknown>;
+}
+
+export interface UserDagNode {
+  id: string;
+  target: string;
+  inputs?: Record<string, unknown>;
+  artifact_inputs?: string[];
+  artifact_outputs?: string[];
+  title?: string;
+  boundary?: Boundary | null;
 }
 
 export interface Artifact {
@@ -208,11 +218,15 @@ export interface RunTrace {
 }
 
 export interface CapabilityStreamEvent {
-  type: 'capability_call' | 'capability_result' | 'capability_error';
+  type: 'capability.call.started' | 'capability.call.completed' | 'capability.call.failed';
   invocation_id: string;
   capability_id: string;
-  arguments: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
   content?: string;
+  task_id?: string | null;
+  dag_id?: string | null;
+  node_id?: string | null;
+  parent_capability_id?: string | null;
 }
 
 export interface CapabilityCallPayload {
@@ -237,7 +251,7 @@ export interface ValidationIssue {
 }
 
 export interface ValidationFeedbackEvent {
-  type: 'retry' | 'validation_passed';
+  type: 'validation.retry' | 'validation.passed';
   passed?: boolean;
   reason?: string;
   summary: string;

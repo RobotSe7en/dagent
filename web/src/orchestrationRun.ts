@@ -1,4 +1,4 @@
-import type { Artifact, CapabilityStreamEvent, DagNode, DagSpec, RiskLevel } from './types';
+import type { Artifact, CapabilityStreamEvent, RiskLevel, UserDag, UserDagNode } from './types';
 
 export interface RunArtifactSummary {
   id: string;
@@ -32,7 +32,7 @@ export type RunTranscriptItem =
   | { type: 'text'; content: string }
   | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
 
-export function buildRunDialogSummary(spec: DagSpec): RunDialogSummary {
+export function buildRunDialogSummary(spec: UserDag): RunDialogSummary {
   const artifacts = spec.artifacts ?? {};
   const inputIds = new Set<string>();
   const outputIds = new Set<string>();
@@ -40,19 +40,20 @@ export function buildRunDialogSummary(spec: DagSpec): RunDialogSummary {
   const riskyNodes: RunRiskSummary[] = [];
 
   for (const node of spec.nodes ?? []) {
-    const invocation = node.payload.type === 'capability' ? node.payload.invocation : null;
-    if (!invocation?.capability_id) {
-      issues.push({ nodeId: node.id, message: `Node '${node.id}' is missing a capability.` });
+    const target = node.target?.trim() ?? '';
+    const risk = riskFromTarget(target);
+    if (!target) {
+      issues.push({ nodeId: node.id, message: `Node '${node.id}' is missing a target.` });
     }
-    if (invocation?.risk && invocation.risk !== 'low') {
+    if (target && risk !== 'low') {
       riskyNodes.push({
         id: node.id,
-        capabilityId: invocation.capability_id,
-        risk: invocation.risk,
+        capabilityId: target,
+        risk,
       });
     }
-    collectArtifactReferences(node, 'inputs', artifacts, inputIds, issues);
-    collectArtifactReferences(node, 'outputs', artifacts, outputIds, issues);
+    collectArtifactReferences(node, 'artifact_inputs', 'input', artifacts, inputIds, issues);
+    collectArtifactReferences(node, 'artifact_outputs', 'output', artifacts, outputIds, issues);
   }
 
   if (!(spec.nodes ?? []).length) {
@@ -89,11 +90,11 @@ export function appendRunTranscriptCapability(
   event: CapabilityStreamEvent,
 ): RunTranscriptItem[] {
   const next = [...timeline];
-  if (event.type === 'capability_result' || event.type === 'capability_error') {
+  if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
     const index = next.findIndex(
       (item) => item.type === 'capability'
         && item.event.invocation_id === event.invocation_id
-        && item.event.type === 'capability_call',
+        && item.event.type === 'capability.call.started',
     );
     if (index !== -1) {
       const item = next[index] as { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
@@ -105,8 +106,9 @@ export function appendRunTranscriptCapability(
 }
 
 function collectArtifactReferences(
-  node: DagNode,
-  field: 'inputs' | 'outputs',
+  node: UserDagNode,
+  field: 'artifact_inputs' | 'artifact_outputs',
+  label: 'input' | 'output',
   artifacts: Record<string, Artifact>,
   ids: Set<string>,
   issues: RunDialogIssue[],
@@ -117,10 +119,14 @@ function collectArtifactReferences(
     } else {
       issues.push({
         nodeId: node.id,
-        message: `Node '${node.id}' references unknown ${field === 'inputs' ? 'input' : 'output'} artifact '${artifactId}'.`,
+        message: `Node '${node.id}' references unknown ${label} artifact '${artifactId}'.`,
       });
     }
   }
+}
+
+function riskFromTarget(target: string): RiskLevel {
+  return target.startsWith('agent.') ? 'medium' : 'low';
 }
 
 function summarizeArtifacts(ids: Set<string>, artifacts: Record<string, Artifact>): RunArtifactSummary[] {

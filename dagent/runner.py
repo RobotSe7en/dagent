@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
+from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
@@ -31,20 +33,40 @@ from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
-from dagent.result import RunResult, RunStreamEvent
+from dagent.result import (
+    CapabilityCallCompletedData,
+    CapabilityCallFailedData,
+    CapabilityCallStartedData,
+    DagUpdatedData,
+    ReviewRequiredData,
+    RunFailedData,
+    RunFinishedData,
+    RunResult,
+    RunStreamChunk,
+    RunStreamEvent,
+    StatusData,
+    TextDeltaData,
+    TraceUpdatedData,
+    ValidationPassedData,
+    ValidationRetryData,
+    ValidationStartedData,
+)
 from dagent.review import ReviewDecision, ReviewLevel
 from dagent.schemas import (
+    Boundary,
     CapabilityDefinition,
+    CapabilityInvocation,
     CapabilityNodePayload,
+    CapabilityResult,
     DAG,
     DAGSpec,
     PendingReview,
     RunTrace,
     RuntimeResponse,
+    ValidationIssue,
 )
 
 
-CapabilityLike = CapabilityBinding
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 
@@ -57,7 +79,7 @@ class Runner:
         *,
         workspace: str | Path = ".",
         provider: ChatProvider | None = None,
-        capabilities: Iterable[CapabilityLike] = (),
+        capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
@@ -93,7 +115,7 @@ class Runner:
         path: str | Path | None = None,
         *,
         workspace: str | Path = ".",
-        capabilities: Iterable[CapabilityLike] = (),
+        capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
@@ -139,7 +161,7 @@ class Runner:
         self._mcp_server_managers.clear()
         self._closed = True
 
-    def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
+    def add_tool(self, capability: CapabilityBinding) -> CapabilityDefinition:
         """Register a single ``@dagent.tool`` binding."""
 
         self._ensure_open()
@@ -147,8 +169,111 @@ class Runner:
         self._refresh_registered_agent_runtime_configs()
         return definition
 
-    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> list[CapabilityDefinition]:
+    def add_tools(self, capabilities: Iterable[CapabilityBinding]) -> list[CapabilityDefinition]:
         return [self.add_tool(capability) for capability in capabilities]
+
+    def register_capability(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> CapabilityDefinition:
+        """Register a raw capability definition with an executable handler."""
+
+        self._ensure_open()
+        registered = self._runtime.register_capability(
+            definition, handler, supports_context=supports_context
+        )
+        self._refresh_registered_agent_runtime_configs()
+        return registered
+
+    def replace_capability(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> CapabilityDefinition:
+        """Replace an already-registered capability definition and handler."""
+
+        self._ensure_open()
+        replaced = self._runtime.replace_capability(
+            definition, handler, supports_context=supports_context
+        )
+        self._refresh_registered_agent_runtime_configs()
+        return replaced
+
+    def remove_capability(self, capability_id: str) -> None:
+        """Remove a registered capability by id."""
+
+        self._ensure_open()
+        self._runtime.capability_catalog.delete(capability_id)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+
+    def list_capabilities(
+        self,
+        *,
+        kind: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[CapabilityDefinition]:
+        """List registered capability definitions."""
+
+        return self._runtime.capability_catalog.list(kind=kind, enabled_only=enabled_only)  # type: ignore[arg-type]
+
+    def get_capability(self, capability_id: str) -> CapabilityDefinition | None:
+        """Return a registered capability definition, or ``None``."""
+
+        return self._runtime.capability_catalog.get(capability_id)
+
+    def set_capability_enabled(self, capability_id: str, enabled: bool) -> CapabilityDefinition:
+        """Enable or disable a registered capability."""
+
+        self._ensure_open()
+        updated = self._runtime.capability_catalog.set_enabled(capability_id, enabled)
+        self._runtime.refresh_toolsets()
+        return updated
+
+    async def test_capability(
+        self,
+        capability_id: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        boundary: Boundary | None = None,
+    ) -> CapabilityResult:
+        """Execute a single capability once for inspection/testing."""
+
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise KeyError(f"Capability '{capability_id}' is not registered.")
+        resolved_arguments = dict(arguments or {})
+        resolved_boundary = (
+            boundary
+            if boundary is not None
+            else infer_capability_boundary(definition, resolved_arguments)
+        )
+        invocation = CapabilityInvocation(
+            capability_id=capability_id,
+            kind=definition.kind,
+            arguments=resolved_arguments,
+            boundary=resolved_boundary,
+        )
+        return await self._runtime.capability_executor.execute(invocation)
+
+    @property
+    def enable_validation(self) -> bool:
+        return self._runtime.enable_validation
+
+    @enable_validation.setter
+    def enable_validation(self, value: bool) -> None:
+        self._runtime.enable_validation = bool(value)
+
+    def task_trace(self, task_id: str) -> RunTrace | None:
+        """Return the cumulative run trace for a completed/awaiting task."""
+
+        record = self._runtime.tasks.get(task_id)
+        return record.trace if record is not None else None
 
     @property
     def skill_store(self) -> SkillStore:
@@ -371,8 +496,28 @@ class Runner:
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+    ) -> AsyncIterator[RunStreamChunk]:
+        """Run a target and yield high-level stream chunks."""
+
+        async for event in self.stream_events(
+            target,
+            input,
+            review=review,
+            workspace_root=workspace_root,
+            artifact_uploads=artifact_uploads,
+        ):
+            yield _chunk_from_event(event)
+
+    async def stream_events(
+        self,
+        target: RunTarget,
+        input: Any = None,
+        *,
+        review: ReviewLevel | None = None,
+        workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
-        """Run a target and yield token/runtime events followed by a done event."""
+        """Run a target and yield low-level typed events."""
 
         async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -391,8 +536,17 @@ class Runner:
     async def resume_stream(
         self,
         decision: ReviewDecision,
+    ) -> AsyncIterator[RunStreamChunk]:
+        """Resume a pending review and yield high-level stream chunks."""
+
+        async for event in self.resume_stream_events(decision):
+            yield _chunk_from_event(event)
+
+    async def resume_stream_events(
+        self,
+        decision: ReviewDecision,
     ) -> AsyncIterator[RunStreamEvent]:
-        """Resume a pending review and yield stream events followed by a done event."""
+        """Resume a pending review and yield low-level typed events."""
 
         async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
             result = await self.resume(decision, on_token=on_token, on_event=on_event)
@@ -408,12 +562,21 @@ class Runner:
         run_target: Callable[[TokenHandler, LoopEventHandler], Awaitable[RunResult]],
     ) -> AsyncIterator[RunStreamEvent]:
         queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
+        sequence = 0
+
+        def with_sequence(event: RunStreamEvent) -> RunStreamEvent:
+            nonlocal sequence
+            sequence += 1
+            return replace(event, sequence=sequence)
 
         def emit_token(token: str) -> None:
-            queue.put_nowait(RunStreamEvent(type="token", content=token, data={"content": token}))
+            queue.put_nowait(with_sequence(RunStreamEvent(
+                type="response.output_text.delta",
+                data=TextDeltaData(delta=token),
+            )))
 
         def emit_event(event: dict[str, Any]) -> None:
-            queue.put_nowait(_stream_event_from_runtime(event))
+            queue.put_nowait(with_sequence(_stream_event_from_runtime(event)))
 
         task = asyncio.create_task(run_target(emit_token, emit_event))
         try:
@@ -427,18 +590,18 @@ class Runner:
 
             result = await task
             if result.pending_review is not None:
-                yield _review_stream_event(result.pending_review)
+                yield with_sequence(_review_stream_event(result.pending_review))
             yield RunStreamEvent(
-                type="done",
-                data={"status": result.status, "kind": result.kind},
-                result=result,
+                type="run.finished",
+                data=RunFinishedData(result=result),
+                sequence=sequence + 1,
+                run_id=result.run_id,
             )
         except Exception as exc:
             yield RunStreamEvent(
-                type="error",
-                message=str(exc),
-                data={"error": str(exc), "error_type": type(exc).__name__},
-                error=exc,
+                type="run.failed",
+                data=RunFailedData(message=str(exc), error_type=type(exc).__name__),
+                sequence=sequence + 1,
             )
             raise
         finally:
@@ -619,11 +782,56 @@ class Runner:
         return resolved
 
 
+def _assemble_runtime(
+    *,
+    provider: ChatProvider,
+    capability_executor: CapabilityExecutor,
+    catalog: Any,
+    tool_adapter: CapabilityToolAdapter,
+    tool_profile: str | AgentProfile,
+    tool_max_steps: int,
+    dag_profile: str | AgentProfile,
+    dag_max_cycles: int,
+    validator: ValidatorAgent | None,
+    enable_validation: bool,
+    max_validation_retries: int,
+    profile_root: str | Path | None,
+) -> HarnessRuntime:
+    runtime_tool_agent = RuntimeToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=capability_executor,
+            tool_adapter=tool_adapter,
+        ),
+        profile=_resolve_profile(tool_profile, profile_root=profile_root),
+        max_steps=tool_max_steps,
+    )
+    runtime_dag_agent = RuntimeDAGAgent(
+        loop=DAGAgentLoop(
+            provider=provider,
+            dag_executor=DAGExecutor(capability_executor=capability_executor),
+            tool_adapter=tool_adapter,
+            max_cycles=dag_max_cycles,
+        ),
+        profile=_resolve_profile(dag_profile, profile_root=profile_root),
+    )
+    return HarnessRuntime(
+        provider=provider,
+        tool_agent=runtime_tool_agent,
+        dag_agent=runtime_dag_agent,
+        validator=validator,
+        enable_validation=enable_validation,
+        max_validation_retries=max_validation_retries,
+        capability_catalog=catalog,
+        capability_executor=capability_executor,
+    )
+
+
 def _create_runtime(
     *,
     workspace: str | Path,
     provider: ChatProvider | None,
-    capabilities: Iterable[CapabilityLike],
+    capabilities: Iterable[CapabilityBinding],
     tool_profile: str | AgentProfile = "conversation",
     validator: str | AgentProfile | ValidatorAgent | None = None,
     tool_max_steps: int = 8,
@@ -635,7 +843,6 @@ def _create_runtime(
     workspace_path = Path(workspace)
     if provider is None:
         raise ValueError("No provider configured. Pass provider=... or use Runner.from_config(...).")
-    resolved_provider = provider
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skills_provider=skills_provider,
@@ -644,37 +851,20 @@ def _create_runtime(
     for capability in capabilities:
         _register_capability_parts(catalog, capability)
 
-    tool_adapter = _tool_adapter(catalog, tuple(sorted(catalog.ids())))
-    capability_loop = ToolAgentLoop(
-        provider=resolved_provider,
+    resolved_validator = _resolve_validator(validator, provider, profile_root=profile_root)
+    return _assemble_runtime(
+        provider=provider,
         capability_executor=capability_executor,
-        tool_adapter=tool_adapter,
-    )
-    runtime_tool_agent = RuntimeToolAgent(
-        loop=capability_loop,
-        profile=_resolve_profile(tool_profile, profile_root=profile_root),
-        max_steps=tool_max_steps,
-    )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
-    dag_loop = DAGAgentLoop(
-        provider=resolved_provider,
-        dag_executor=dag_executor,
-        tool_adapter=tool_adapter,
-        max_cycles=dag_max_cycles,
-    )
-    runtime_dag_agent = RuntimeDAGAgent(
-        loop=dag_loop,
-        profile=_resolve_profile(dag_profile, profile_root=profile_root),
-    )
-    resolved_validator = _resolve_validator(validator, resolved_provider, profile_root=profile_root)
-    return HarnessRuntime(
-        provider=resolved_provider,
-        tool_agent=runtime_tool_agent,
-        dag_agent=runtime_dag_agent,
+        catalog=catalog,
+        tool_adapter=_tool_adapter(catalog, tuple(sorted(catalog.ids()))),
+        tool_profile=tool_profile,
+        tool_max_steps=tool_max_steps,
+        dag_profile=dag_profile,
+        dag_max_cycles=dag_max_cycles,
         validator=resolved_validator,
         enable_validation=resolved_validator is not None,
-        capability_catalog=catalog,
-        capability_executor=capability_executor,
+        max_validation_retries=1,
+        profile_root=profile_root,
     )
 
 
@@ -688,37 +878,19 @@ def _runtime_from_existing(
     visible_capability_ids: tuple[str, ...],
     profile_root: str | Path | None,
 ) -> HarnessRuntime:
-    tool_adapter = _tool_adapter(base.capability_catalog, visible_capability_ids)
-    capability_loop = ToolAgentLoop(
+    runtime = _assemble_runtime(
         provider=base.provider,
         capability_executor=base.capability_executor,
-        tool_adapter=tool_adapter,
-    )
-    runtime_tool_agent = RuntimeToolAgent(
-        loop=capability_loop,
-        profile=_resolve_profile(tool_profile, profile_root=profile_root),
-        max_steps=tool_max_steps,
-    )
-    dag_executor = DAGExecutor(capability_executor=base.capability_executor)
-    dag_loop = DAGAgentLoop(
-        provider=base.provider,
-        dag_executor=dag_executor,
-        tool_adapter=tool_adapter,
-        max_cycles=dag_max_cycles,
-    )
-    runtime_dag_agent = RuntimeDAGAgent(
-        loop=dag_loop,
-        profile=_resolve_profile(dag_profile, profile_root=profile_root),
-    )
-    runtime = HarnessRuntime(
-        provider=base.provider,
-        tool_agent=runtime_tool_agent,
-        dag_agent=runtime_dag_agent,
+        catalog=base.capability_catalog,
+        tool_adapter=_tool_adapter(base.capability_catalog, visible_capability_ids),
+        tool_profile=tool_profile,
+        tool_max_steps=tool_max_steps,
+        dag_profile=dag_profile,
+        dag_max_cycles=dag_max_cycles,
         validator=base.validator,
         enable_validation=base.enable_validation,
         max_validation_retries=base.max_validation_retries,
-        capability_catalog=base.capability_catalog,
-        capability_executor=base.capability_executor,
+        profile_root=profile_root,
     )
     runtime.session = base.session
     runtime.tasks = base.tasks
@@ -751,56 +923,129 @@ def _apply_skill_capabilities(
 
 def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
     data = dict(event)
-    event_type = str(data.get("type") or "status")
-
-    if event_type == "token":
-        content = str(data.get("content", ""))
-        return RunStreamEvent(type="token", content=content, data=data)
+    event_type = str(data.get("type") or "run.status")
 
     if event_type == "dag":
         dag = _coerce_dag(data.get("dag"))
-        return RunStreamEvent(type="dag", data=data, dag=dag)
+        if dag is None:
+            return RunStreamEvent(type="run.status", data=StatusData(message="DAG update was empty."))
+        return RunStreamEvent(type="dag.updated", data=DagUpdatedData(dag=dag))
 
     if event_type == "trace":
         trace = _coerce_trace(data.get("trace"))
-        return RunStreamEvent(type="trace", data=data, trace=trace)
+        if trace is None:
+            return RunStreamEvent(type="run.status", data=StatusData(message="Trace update was empty."))
+        return RunStreamEvent(type="trace.updated", data=TraceUpdatedData(trace=trace))
 
     if event_type == "review":
         review = _coerce_pending_review(data.get("review"))
-        return _review_stream_event(review, data=data) if review is not None else RunStreamEvent(type="review", data=data)
+        if review is not None:
+            return _review_stream_event(review)
+        return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
 
-    if event_type in {"capability_call", "capability_result", "capability_error"}:
+    if event_type == "capability_call":
         return RunStreamEvent(
-            type=event_type,
-            content=str(data.get("content", "")),
-            message=str(data.get("message") or data.get("content") or ""),
-            data=data,
+            type="capability.call.started",
+            data=CapabilityCallStartedData(
+                invocation_id=str(data.get("invocation_id", "")),
+                capability_id=str(data.get("capability_id", "")),
+                arguments=dict(data.get("arguments") or {}),
+                **_capability_event_context(data),
+            ),
         )
 
-    return RunStreamEvent(type="status", message=_status_message(data, event_type), data=data)
+    if event_type == "capability_result":
+        return RunStreamEvent(
+            type="capability.call.completed",
+            data=CapabilityCallCompletedData(
+                invocation_id=str(data.get("invocation_id", "")),
+                capability_id=str(data.get("capability_id", "")),
+                content=str(data.get("content", "")),
+                **_capability_event_context(data),
+            ),
+        )
+
+    if event_type == "capability_error":
+        return RunStreamEvent(
+            type="capability.call.failed",
+            data=CapabilityCallFailedData(
+                invocation_id=str(data.get("invocation_id", "")),
+                capability_id=str(data.get("capability_id", "")),
+                content=str(data.get("content") or data.get("message") or ""),
+                **_capability_event_context(data),
+            ),
+        )
+
+    if event_type == "validating":
+        return RunStreamEvent(
+            type="validation.started",
+            data=ValidationStartedData(message=_status_message(data, event_type)),
+        )
+
+    if event_type == "validation_passed":
+        return RunStreamEvent(
+            type="validation.passed",
+            data=ValidationPassedData(
+                summary=str(data.get("summary", "")),
+                issues=_validation_issues(data.get("issues")),
+            ),
+        )
+
+    if event_type == "retry":
+        return RunStreamEvent(
+            type="validation.retry",
+            data=ValidationRetryData(
+                summary=str(data.get("summary", "")),
+                issues=_validation_issues(data.get("issues")),
+                reason=str(data.get("reason", "")),
+            ),
+        )
+
+    return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
 
 
 def _review_stream_event(
     review: PendingReview,
-    *,
-    data: dict[str, Any] | None = None,
 ) -> RunStreamEvent:
-    payload = data or {
-        "review_id": review.review_id,
-        "kind": review.kind,
-        "message": review.message,
-        "capability_call": review.capability_call,
-        "payload": review.payload,
-    }
-    if review.proposed_dag is not None:
-        payload = {**payload, "dag": review.proposed_dag.model_dump(mode="json")}
     return RunStreamEvent(
-        type="review",
-        message=review.message,
-        data=payload,
-        dag=review.proposed_dag,
-        review=review,
+        type="review.required",
+        data=ReviewRequiredData(
+            review_id=review.review_id,
+            kind=review.kind,
+            message=review.message,
+            dag=review.proposed_dag,
+            capability_call=review.capability_call,
+            payload=dict(review.payload),
+        ),
     )
+
+
+def _chunk_from_event(event: RunStreamEvent) -> RunStreamChunk:
+    if isinstance(event.data, TextDeltaData):
+        return RunStreamChunk(text=event.data.delta, event=event)
+    if isinstance(event.data, ReviewRequiredData):
+        return RunStreamChunk(review=event.data.to_handle(), event=event)
+    if isinstance(event.data, RunFinishedData):
+        return RunStreamChunk(result=event.data.result, event=event)
+    return RunStreamChunk(event=event)
+
+
+def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        key: str(data[key]) if data.get(key) is not None else None
+        for key in ("task_id", "dag_id", "node_id", "parent_capability_id")
+    }
+
+
+def _validation_issues(value: Any) -> list[ValidationIssue]:
+    issues = []
+    for item in value or []:
+        if isinstance(item, dict):
+            issues.append(ValidationIssue(
+                message=str(item.get("message", "")),
+                node_id=item.get("node_id"),
+            ))
+    return issues
 
 
 def _coerce_dag(value: Any) -> DAG | None:
@@ -843,7 +1088,7 @@ def _status_message(data: dict[str, Any], event_type: str) -> str:
     return event_type
 
 
-def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) -> CapabilityDefinition:
+def _register_capability(runtime: HarnessRuntime, capability: CapabilityBinding) -> CapabilityDefinition:
     definition, handler, supports_context = _capability_parts(capability)
     _register_capability_parts(
         runtime.capability_catalog,
@@ -857,7 +1102,7 @@ def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) ->
 
 def _register_capability_parts(
     catalog,
-    capability: CapabilityLike,
+    capability: CapabilityBinding,
     *,
     expected_handler: CapabilityHandler | None = None,
     expected_supports_context: bool | None = None,
@@ -877,7 +1122,7 @@ def _register_capability_parts(
     catalog.register(definition, handler, supports_context=supports_context)
 
 
-def _capability_parts(capability: CapabilityLike) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
+def _capability_parts(capability: CapabilityBinding) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
     if not isinstance(capability, CapabilityBinding):
         raise TypeError("Expected a capability created with @dagent.tool.")
     return capability.definition, capability.handler, capability.supports_context
