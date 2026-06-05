@@ -12,7 +12,7 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 |------|------------|
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `Node`, `InputRef`, `NodeRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
+| Static DAGs | `Dag`, `Node`, `InputRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunStreamChunk`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
@@ -360,7 +360,7 @@ immediately before the capability call.
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
 
 Referencing a previous node output does not create an edge. Add the dependency
-explicitly with `.after(...)`, `dag.edge(...)`, or `dag.add_edge(...)`:
+explicitly with `dag.edge(...)` or `dag.add_edge(...)`:
 
 ```python
 class SearchResult(BaseModel):
@@ -379,19 +379,6 @@ def render(title: str, url: str) -> str:
 
 
 dag = dagent.Dag("research", input=dict)
-search_node = dag.capability_node("search", search, q=dag.input.query)
-dag.capability_node(
-    "render",
-    render,
-    title=search_node.output.title,
-    url=search_node.output.url,
-).after(search_node)
-```
-
-The public `Node` form is equivalent, but uses `inputs` for capability
-arguments and `artifact_inputs` / `artifact_outputs` for artifact contracts:
-
-```python
 search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
 render_node = dagent.Node(
     "render",
@@ -418,7 +405,8 @@ class QueryInput(BaseModel):
 
 
 dag = dagent.Dag("research", input=QueryInput)
-search_node = dag.capability_node("search", search, q=dag.input.query)
+search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
+dag.add_node(search_node)
 
 await runner.run(dag, input=QueryInput(query="dagent"))
 ```
@@ -428,13 +416,14 @@ Artifact references can be used in arguments and boundaries:
 ```python
 report = dag.artifact("report", "outputs/report.md")
 
-dag.capability_node(
+write_node = dagent.Node(
     "write_report",
-    write_note,
-    path=report.path,
+    target=write_note,
+    inputs={"path": report.path},
     boundary=dagent.Boundary(mode="write_limited", allowed_paths=[report.path.as_expr()]),
-    outputs=[report],
+    artifact_outputs=[report],
 )
+dag.add_node(write_node)
 ```
 
 Validation fails closed when a node reads from a non-upstream node, references an
@@ -500,7 +489,7 @@ async for event in runner.stream_events(agent_or_dag, input):
         print(event.data.trace.status)
     elif event.type == "review.required":
         print(event.data.message)
-    elif event.type == "run.completed":
+    elif event.type == "run.finished":
         print(event.data.result.output_text)
 ```
 
@@ -510,13 +499,13 @@ Common stream event payloads:
 |------------|----------------|
 | `response.output_text.delta` | `event.data.delta` |
 | `run.status` | `event.data.message` |
-| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments` |
-| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content` |
+| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional DAG context fields |
+| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional DAG context fields |
 | `dag.updated` | `event.data.dag` |
 | `trace.updated` | `event.data.trace` |
 | `review.required` | `event.data.message`, `event.data.to_handle()` |
 | `validation.started` / `validation.passed` / `validation.retry` | `event.data` |
-| `run.completed` | `event.data.result` |
+| `run.finished` | `event.data.result` |
 | `run.failed` | `event.data.message`, `event.data.error_type` |
 
 `RunStreamEvent.model_dump(mode="json")` returns a JSON-ready event payload. If

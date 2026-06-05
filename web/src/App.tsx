@@ -208,7 +208,7 @@ function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvoca
     arguments: invocation.arguments ?? {},
     boundary: {
       mode: invocation.boundary?.mode ?? 'read_only',
-      allowed_paths: invocation.boundary?.allowed_paths ?? [],
+      allowed_paths: invocation.boundary?.allowed_paths ?? ['.'],
       allowed_commands: invocation.boundary?.allowed_commands ?? [],
     },
     risk: invocation.risk ?? 'low',
@@ -267,7 +267,7 @@ function dagNodeFromUserNode(node: UserDagNode): DagNode {
         arguments: normalized.inputs ?? {},
         boundary: normalized.boundary ?? {
           mode: 'read_only',
-          allowed_paths: [],
+          allowed_paths: ['.'],
           allowed_commands: [],
         },
         risk: riskFromTarget(normalized.target),
@@ -350,6 +350,21 @@ function validateUserDagDraft(spec: UserDag): string | null {
     }
   }
   return null;
+}
+
+type ParsedDagRunInput =
+  | { ok: true; hasInput: false }
+  | { ok: true; hasInput: true; value: unknown }
+  | { ok: false; message: string };
+
+function parseDagRunInput(value: string): ParsedDagRunInput {
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true, hasInput: false };
+  try {
+    return { ok: true, hasInput: true, value: JSON.parse(trimmed) };
+  } catch {
+    return { ok: false, message: 'DAG input must be valid JSON.' };
+  }
 }
 
 function capabilityDisplayName(capability: CapabilityDefinition): string {
@@ -478,6 +493,7 @@ export function App() {
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
+  const [editorRunInputText, setEditorRunInputText] = useState('');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -889,7 +905,7 @@ export function App() {
                 arguments: ensureSchemaArguments({}, firstCapability?.parameters),
                 boundary: {
                   mode: 'read_only',
-                  allowed_paths: [],
+                  allowed_paths: ['.'],
                   allowed_commands: [],
                 },
                 risk: 'low',
@@ -916,6 +932,7 @@ export function App() {
   const newEditorUserDag = () => {
     setEditorUserDagAndRuntimeDag(createEmptyUserDag());
     setEditorWorkspaceRoot(defaultWorkspaceRoot);
+    setEditorRunInputText('');
   };
 
   const loadEditorUserDag = (spec: UserDag) => {
@@ -940,7 +957,7 @@ export function App() {
               arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
               boundary: {
                 mode: 'read_only',
-                allowed_paths: [],
+                allowed_paths: ['.'],
                 allowed_commands: [],
               },
               risk: capabilityRisk(selectedCapability),
@@ -1070,6 +1087,11 @@ export function App() {
   const runEditorSpec = async () => {
     if (editorRunning) return;
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const parsedInput = parseDagRunInput(editorRunInputText);
+    if (!parsedInput.ok) {
+      setEditorMessage(parsedInput.message);
+      return;
+    }
     const saved = await persistEditorUserDag();
     if (!saved) return;
     const validation = validateUserDagDraft(spec);
@@ -1114,6 +1136,9 @@ export function App() {
         onToken: (content) => {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
         },
+        onReview: (review) => {
+          setEditorMessage(review.message);
+        },
         onDone: (payload) => {
           const dagRun = payload.result.dag_run;
           if (!dagRun) return;
@@ -1129,7 +1154,10 @@ export function App() {
           setEditorMessage(message);
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
-      }, { workspaceRoot: editorWorkspaceRoot });
+      }, {
+        workspaceRoot: editorWorkspaceRoot,
+        ...(parsedInput.hasInput ? { input: parsedInput.value } : {}),
+      });
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {
@@ -1175,6 +1203,10 @@ export function App() {
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: (review) => {
+          handlePendingReview(review);
+          if (review.kind !== 'capability_review') setReviewOpen(true);
+        },
         onDone: (payload) => {
           const result = payload.result;
           flushQueuedTokensNow();
@@ -1248,6 +1280,10 @@ export function App() {
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: (review) => {
+          handlePendingReview(review);
+          if (review.kind !== 'capability_review') setReviewOpen(true);
+        },
         onDone: (payload) => {
           const result = payload.result;
           flushQueuedTokensNow();
@@ -1299,9 +1335,12 @@ export function App() {
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
+        onTrace: appendRuntimeTrace,
+        onCapability: appendCapabilityMessage,
         onToken: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: handlePendingReview,
         onDone: (payload) => {
           flushQueuedTokensNow();
           handlePendingReview(payload.result.pending_review);
@@ -1489,10 +1528,12 @@ export function App() {
             message={editorMessage}
             running={editorRunning}
             workspaceRoot={editorWorkspaceRoot}
+            runInputText={editorRunInputText}
             onNew={newEditorUserDag}
             onLoad={loadEditorUserDag}
             onPatchDag={patchEditorUserDag}
             onWorkspaceRootChange={setEditorWorkspaceRoot}
+            onRunInputTextChange={setEditorRunInputText}
             onUpsertArtifact={upsertEditorArtifact}
             onDeleteArtifact={deleteEditorArtifact}
             onUploadArtifact={uploadEditorArtifact}
@@ -2337,10 +2378,12 @@ function OrchestrationWorkspace({
   message,
   running,
   workspaceRoot,
+  runInputText,
   onNew,
   onLoad,
   onPatchDag,
   onWorkspaceRootChange,
+  onRunInputTextChange,
   onUpsertArtifact,
   onDeleteArtifact,
   onUploadArtifact,
@@ -2368,10 +2411,12 @@ function OrchestrationWorkspace({
   message: string;
   running: boolean;
   workspaceRoot: string;
+  runInputText: string;
   onNew: () => void;
   onLoad: (spec: UserDag) => void;
   onPatchDag: (patch: Partial<UserDag>) => void;
   onWorkspaceRootChange: (workspaceRoot: string) => void;
+  onRunInputTextChange: (value: string) => void;
   onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
   onDeleteArtifact: (artifactId: string) => void;
   onUploadArtifact: (artifactId: string, files: FileList | null) => void;
@@ -2581,6 +2626,8 @@ function OrchestrationWorkspace({
           timeline={runTimeline}
           running={running}
           message={message}
+          inputText={runInputText}
+          onInputTextChange={onRunInputTextChange}
           onStart={onRun}
           onClose={() => setRunDialogOpen(false)}
         />
@@ -2596,6 +2643,8 @@ function RunDagDialog({
   timeline,
   running,
   message,
+  inputText,
+  onInputTextChange,
   onStart,
   onClose,
 }: {
@@ -2605,6 +2654,8 @@ function RunDagDialog({
   timeline: RunTranscriptItem[];
   running: boolean;
   message: string;
+  inputText: string;
+  onInputTextChange: (value: string) => void;
   onStart: () => void;
   onClose: () => void;
 }) {
@@ -2645,6 +2696,7 @@ function RunDagDialog({
               <details className="run-context-details">
                 <summary>Run Context</summary>
                 <div className="run-context-body">
+                  <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
                   <RunPreflightPanel summary={summary} />
                 </div>
               </details>
@@ -2654,11 +2706,37 @@ function RunDagDialog({
               ) : null}
             </>
           ) : (
-            <RunPreflightPanel summary={summary} />
+            <>
+              <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
+              <RunPreflightPanel summary={summary} />
+            </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function RunInputPanel({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <section className="run-section run-input-panel">
+      <h3>Input JSON</h3>
+      <textarea
+        value={value}
+        disabled={disabled}
+        spellCheck={false}
+        placeholder='{"query":"dagent"}'
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </section>
   );
 }
 
@@ -2810,7 +2888,7 @@ function OrchestrationNodeEditor({
   const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent' && capability.enabled);
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
-    allowed_paths: [],
+    allowed_paths: ['.'],
     allowed_commands: [],
   };
   const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
@@ -4102,7 +4180,7 @@ function NodeEditor({
   const invocation = node.payload.invocation;
   const boundary = invocation.boundary ?? {
     mode: 'read_only' as BoundaryMode,
-    allowed_paths: [],
+    allowed_paths: ['.'],
     allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>

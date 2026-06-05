@@ -32,10 +32,14 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "load_builtin_profile")
     assert hasattr(dagent, "list_builtin_profiles")
     assert hasattr(dagent, "validate_dag_spec")
+    assert hasattr(dagent, "Node")
     assert hasattr(dagent.Runner, "stream")
     assert hasattr(dagent.Runner, "stream_events")
     assert hasattr(dagent.Runner, "resume_stream")
     assert hasattr(dagent.Runner, "resume_stream_events")
+    assert not hasattr(dagent, "NodeRef")
+    assert not hasattr(dagent.Dag, "capability_node")
+    assert not hasattr(dagent.Dag, "agent_node")
     assert not hasattr(dagent, "DAgent")
     assert not hasattr(dagent, "OpenAICompatibleProvider")
     assert not hasattr(dagent, "ProviderConfig")
@@ -158,7 +162,7 @@ def test_runner_stream_yields_chunks_and_unified_result(tmp_path) -> None:
     assert isinstance(chunks[-1].result, dagent.RunResult)
     assert chunks[-1].result.output_text == "hello"
     assert chunks[-1].event is not None
-    assert chunks[-1].event.type == "run.completed"
+    assert chunks[-1].event.type == "run.finished"
 
 
 def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
@@ -265,7 +269,7 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     assert chunks[-1].result is not None
     assert chunks[-1].result.output_text == "done"
     assert chunks[-1].event is not None
-    assert chunks[-1].event.type == "run.completed"
+    assert chunks[-1].event.type == "run.finished"
 
 
 def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
@@ -292,7 +296,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert review_events
     assert review_events[-1].data.kind == "capability_review"
     assert review_events[-1].data.message == "Review capability call: tool.write"
-    assert events[-1].type == "run.completed"
+    assert events[-1].type == "run.finished"
     assert events[-1].data.result.requires_review
     assert events[-1].data.result.model_dump(mode="json")["pending_review"]["kind"] == "capability_review"
 
@@ -476,7 +480,7 @@ def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities
     ])
     writer = dagent.ToolAgent(profile="writer")
     dag = dagent.Dag("agent_flow")
-    dag.agent_node("draft", writer, prompt="Draft the report.")
+    dag.add_node(dagent.Node("draft", target=writer, inputs={"prompt": "Draft the report."}))
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     run(runner.run(dag, workspace_root=tmp_path / "runs"))

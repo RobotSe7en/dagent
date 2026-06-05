@@ -250,8 +250,8 @@ interface ApiRunResult {
   dag_run?: DagRun | null;
 }
 
-interface DonePayload {
-  type: 'run.completed';
+interface FinishedPayload {
+  type: 'run.finished';
   result: ApiRunResult;
 }
 
@@ -270,7 +270,8 @@ interface StreamHandlers {
   onToken?: (content: string) => void;
   onRetry?: (event: ValidationFeedbackEvent) => void;
   onValidating?: (event: { type: 'validation.started'; message: string }) => void;
-  onDone?: (payload: DonePayload) => void;
+  onReview?: (review: ReviewEventPayload) => void;
+  onDone?: (payload: FinishedPayload) => void;
   onError?: (message: string) => void;
 }
 
@@ -331,11 +332,13 @@ export async function runDagStream(
   handlers: StreamHandlers,
   options: {
     workspaceRoot?: string;
+    input?: unknown;
   } = {},
 ): Promise<void> {
-  const body = options.workspaceRoot?.trim()
-    ? JSON.stringify({ workspace_root: options.workspaceRoot.trim() })
-    : undefined;
+  const payload: Record<string, unknown> = {};
+  if (options.workspaceRoot?.trim()) payload.workspace_root = options.workspaceRoot.trim();
+  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.input = options.input;
+  const body = Object.keys(payload).length ? JSON.stringify(payload) : undefined;
   const response = await fetch(`${API_BASE}/dags/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -374,6 +377,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           invocation_id: String(data.invocation_id ?? ''),
           capability_id: String(data.capability_id ?? ''),
           arguments: isRecord(data.arguments) ? data.arguments : {},
+          ...capabilityContext(data),
         });
       }
       if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
@@ -382,6 +386,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           invocation_id: String(data.invocation_id ?? ''),
           capability_id: String(data.capability_id ?? ''),
           content: String(data.content ?? ''),
+          ...capabilityContext(data),
         });
       }
       if (event.type === 'response.output_text.delta') handlers.onToken?.(String(data.delta ?? ''));
@@ -404,11 +409,22 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       if (event.type === 'validation.started') {
         handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
       }
-      if (event.type === 'run.completed' && data.result) {
+      if (event.type === 'review.required') {
+        handlers.onReview?.({
+          review_id: String(data.review_id ?? ''),
+          kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
+          message: String(data.message ?? ''),
+          dag: data.dag as Dag | undefined,
+          proposed_dag: (data.dag ?? null) as Dag | null,
+          capability_call: data.capability_call as ReviewEventPayload['capability_call'],
+          payload: isRecord(data.payload) ? data.payload : {},
+        });
+      }
+      if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
         const trace = result.trace ?? result.dag_run?.trace;
         emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
-        handlers.onDone?.({ type: 'run.completed', result });
+        handlers.onDone?.({ type: 'run.finished', result });
       }
       if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));
     }
@@ -417,6 +433,19 @@ async function readStream(response: Response, handlers: StreamHandlers) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function capabilityContext(data: Record<string, unknown>) {
+  return {
+    task_id: nullableString(data.task_id),
+    dag_id: nullableString(data.dag_id),
+    node_id: nullableString(data.node_id),
+    parent_capability_id: nullableString(data.parent_capability_id),
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 function emitTraceSnapshot(
@@ -539,10 +568,5 @@ export async function resumeCapabilityReview(
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage((response as unknown) as Response));
   }
-  await readStream(response, {
-    ...handlers,
-    onDag: undefined,
-    onTrace: undefined,
-    onCapability: undefined,
-  });
+  await readStream(response, handlers);
 }

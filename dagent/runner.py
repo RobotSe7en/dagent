@@ -38,8 +38,8 @@ from dagent.result import (
     CapabilityCallStartedData,
     DagUpdatedData,
     ReviewRequiredData,
-    RunCompletedData,
     RunFailedData,
+    RunFinishedData,
     RunResult,
     RunStreamChunk,
     RunStreamEvent,
@@ -486,8 +486,8 @@ class Runner:
             if result.pending_review is not None:
                 yield with_sequence(_review_stream_event(result.pending_review))
             yield RunStreamEvent(
-                type="run.completed",
-                data=RunCompletedData(result=result),
+                type="run.finished",
+                data=RunFinishedData(result=result),
                 sequence=sequence + 1,
                 run_id=result.run_id,
             )
@@ -810,12 +810,6 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
     data = dict(event)
     event_type = str(data.get("type") or "run.status")
 
-    if event_type == "token":
-        return RunStreamEvent(
-            type="response.output_text.delta",
-            data=TextDeltaData(delta=str(data.get("content", ""))),
-        )
-
     if event_type == "dag":
         dag = _coerce_dag(data.get("dag"))
         if dag is None:
@@ -841,6 +835,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
                 invocation_id=str(data.get("invocation_id", "")),
                 capability_id=str(data.get("capability_id", "")),
                 arguments=dict(data.get("arguments") or {}),
+                **_capability_event_context(data),
             ),
         )
 
@@ -851,6 +846,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
                 invocation_id=str(data.get("invocation_id", "")),
                 capability_id=str(data.get("capability_id", "")),
                 content=str(data.get("content", "")),
+                **_capability_event_context(data),
             ),
         )
 
@@ -861,6 +857,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
                 invocation_id=str(data.get("invocation_id", "")),
                 capability_id=str(data.get("capability_id", "")),
                 content=str(data.get("content") or data.get("message") or ""),
+                **_capability_event_context(data),
             ),
         )
 
@@ -913,9 +910,16 @@ def _chunk_from_event(event: RunStreamEvent) -> RunStreamChunk:
         return RunStreamChunk(text=event.data.delta, event=event)
     if isinstance(event.data, ReviewRequiredData):
         return RunStreamChunk(review=event.data.to_handle(), event=event)
-    if isinstance(event.data, RunCompletedData):
+    if isinstance(event.data, RunFinishedData):
         return RunStreamChunk(result=event.data.result, event=event)
     return RunStreamChunk(event=event)
+
+
+def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        key: str(data[key]) if data.get(key) is not None else None
+        for key in ("task_id", "dag_id", "node_id", "parent_capability_id")
+    }
 
 
 def _validation_issues(value: Any) -> list[ValidationIssue]:

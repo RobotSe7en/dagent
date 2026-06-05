@@ -28,6 +28,8 @@ def test_api_does_not_keep_stream_payload_shims() -> None:
     assert not hasattr(app_module, "_sdk_event_payloads")
     assert not hasattr(app_module, "_runtime_event_payload")
     assert not hasattr(app_module, "_runtime_response_payloads")
+    assert not hasattr(app_module, "_dag_node_from_user_node")
+    assert not hasattr(app_module, "_target_kind_and_risk")
 
 
 def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
@@ -303,7 +305,7 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
-    assert events[-1]["type"] == "run.completed"
+    assert events[-1]["type"] == "run.finished"
     assert result["dag"] is None
     assert result["output_text"] == "hello there"
 
@@ -431,7 +433,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     event_types = [event["type"] for event in events]
     result = _stream_result(events[-1])
     assert "dag.updated" in event_types
-    assert event_types[-1] == "run.completed"
+    assert event_types[-1] == "run.finished"
     assert result["status"] == "awaiting_review"
     assert result["pending_review"]["kind"] == "initial_dag"
     assert result["dag"]["status"] == "review_required"
@@ -455,7 +457,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    done_index = next(index for index, event in enumerate(events) if event["type"] == "run.completed")
+    done_index = next(index for index, event in enumerate(events) if event["type"] == "run.finished")
     token_text = "".join(
         event["data"]["delta"]
         for event in events
@@ -1010,7 +1012,7 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
     result = _stream_result(events[-1])
     assert events[0]["type"] == "run.status"
     assert any(event["type"] == "trace.updated" for event in events)
-    assert events[-1]["type"] == "run.completed"
+    assert events[-1]["type"] == "run.finished"
     assert result["dag_run"]["status"] == "completed"
     run_id = result["dag_run"]["run_id"]
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
@@ -1101,6 +1103,32 @@ def test_api_dag_run_fails_when_required_artifact_is_missing() -> None:
     assert payload["dag"]["status"] == "failed"
 
 
+def test_api_dag_run_returns_400_for_unknown_target() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "unknown_target",
+            "name": "Unknown target",
+            "nodes": [
+                {
+                    "id": "answer",
+                    "target": "tool.missing",
+                    "inputs": {"text": "ok"},
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    run_response = client.post("/dags/unknown_target/run")
+
+    assert run_response.status_code == 400
+    assert "tool.missing" in run_response.json()["detail"]
+
+
 def test_api_dag_validation_and_missing_resources() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
@@ -1170,7 +1198,7 @@ def _sse_events(text: str) -> list[dict]:
 
 
 def _stream_result(event: dict) -> dict:
-    assert event["type"] == "run.completed"
+    assert event["type"] == "run.finished"
     return event["data"]["result"]
 
 

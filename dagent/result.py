@@ -22,7 +22,7 @@ from dagent.schemas import (
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
 RunStreamEventType = Literal[
     "run.status",
-    "run.completed",
+    "run.finished",
     "run.failed",
     "response.output_text.delta",
     "dag.updated",
@@ -212,6 +212,10 @@ class CapabilityCallStartedData:
     invocation_id: str
     capability_id: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    task_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,10 @@ class CapabilityCallCompletedData:
     invocation_id: str
     capability_id: str
     content: str = ""
+    task_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -226,10 +234,14 @@ class CapabilityCallFailedData:
     invocation_id: str
     capability_id: str
     content: str = ""
+    task_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
 
 
 @dataclass(frozen=True)
-class RunCompletedData:
+class RunFinishedData:
     result: RunResult
 
 
@@ -251,7 +263,7 @@ RunStreamEventData = (
     | CapabilityCallStartedData
     | CapabilityCallCompletedData
     | CapabilityCallFailedData
-    | RunCompletedData
+    | RunFinishedData
     | RunFailedData
 )
 

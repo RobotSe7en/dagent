@@ -37,7 +37,7 @@ export const initialDag: Dag = {
           arguments: { path: 'README.md' },
           boundary: {
             mode: 'read_only',
-            allowed_paths: [],
+            allowed_paths: ['.'],
             allowed_commands: [],
           },
           risk: 'low',

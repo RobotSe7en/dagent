@@ -20,7 +20,9 @@ from dagent import (
     DAG,
     DAGRun,
     DAGSpec,
+    Dag,
     DagAgent,
+    Node,
     ProfileStore,
     ReviewDecision,
     ReviewLevel,
@@ -40,8 +42,7 @@ from dagent.config import load_config, resolve_config_path, resolve_config_relat
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import list_builtin_profiles
-from dagent.schemas import Artifact, DAGEdge, DAGNode
-from dagent.schemas.value import ValueExpressionError, iter_artifact_exprs
+from dagent.schemas import Artifact, DAGEdge
 
 
 MessageTarget = Literal["auto", "tool", "dag"]
@@ -294,12 +295,15 @@ async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str
     if dag is None:
         raise HTTPException(status_code=404, detail="DAG not found.")
 
-    result = await state.get_runner().run(
-        _compile_user_dag(dag),
-        input=None if request is None else request.input,
-        workspace_root=_workspace_root_from_request(request),
-        artifact_uploads=_artifact_uploads_for_dag(dag_id),
-    )
+    try:
+        result = await state.get_runner().run(
+            _compile_user_dag(dag),
+            input=None if request is None else request.input,
+            workspace_root=_workspace_root_from_request(request),
+            artifact_uploads=_artifact_uploads_for_dag(dag_id),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _store_dag_run(result)
     return {"result": result.model_dump(mode="json")}
 
@@ -323,7 +327,7 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
             ):
                 if event.type == "run.failed":
                     sent_error = True
-                if event.type == "run.completed":
+                if event.type == "run.finished":
                     _store_dag_run(event.data.result)
                 yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
@@ -345,79 +349,29 @@ def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
 
 
 def _compile_user_dag(dag: UserDAG) -> DAGSpec:
-    return DAGSpec(
-        id=dag.id,
+    builder = Dag(
+        dag.id,
         name=dag.name,
-        version=dag.version,
         description=dag.description,
+        version=dag.version,
         input_schema=dict(dag.input_schema),
-        artifacts={
-            artifact_id: artifact.model_copy(deep=True)
-            for artifact_id, artifact in dag.artifacts.items()
-        },
-        nodes=[
-            _dag_node_from_user_node(node)
-            for node in dag.nodes
-        ],
-        edges=[
-            edge.model_copy(deep=True)
-            for edge in dag.edges
-        ],
         metadata=dict(dag.metadata),
     )
-
-
-def _dag_node_from_user_node(node: UserDAGNode) -> DAGNode:
-    capability_id = node.target.strip()
-    if not capability_id:
-        raise ValueError(f"Node '{node.id}' target is required.")
-    kind, risk = _target_kind_and_risk(capability_id, node_id=node.id)
-    boundary = node.boundary or Boundary(mode="read_only", allowed_paths=["."])
-    output_ids = {str(artifact_id) for artifact_id in node.artifact_outputs}
-    explicit_input_ids = {str(artifact_id) for artifact_id in node.artifact_inputs}
-    inferred_input_ids = _artifact_ids_from_values(
-        node.inputs,
-        boundary.allowed_paths,
-        boundary.allowed_commands,
-    ) - output_ids
-    return DAGNode(
-        id=node.id,
-        title=node.title or node.id.replace("_", " ").capitalize(),
-        payload={
-            "type": "capability",
-            "invocation": CapabilityInvocation(
-                capability_id=capability_id,
-                kind=kind,  # type: ignore[arg-type]
-                arguments=dict(node.inputs),
-                boundary=boundary,
-                risk=risk,  # type: ignore[arg-type]
-            ),
-        },
-        inputs=sorted(explicit_input_ids | inferred_input_ids),
-        outputs=sorted(output_ids),
-    )
-
-
-def _target_kind_and_risk(capability_id: str, *, node_id: str) -> tuple[str, str]:
-    kind = capability_id.split(".", 1)[0]
-    if kind == "skill":
-        raise ValueError(
-            f"Node '{node_id}' cannot target skill capabilities directly; attach skills to an agent instead."
-        )
-    if kind not in {"tool", "mcp", "shell", "agent", "memory", "file"}:
-        raise ValueError(f"Cannot infer capability kind from target '{capability_id}'.")
-    return kind, "medium" if kind == "agent" else "low"
-
-
-def _artifact_ids_from_values(*values: Any) -> set[str]:
-    artifact_ids: set[str] = set()
-    try:
-        for value in values:
-            for expr in iter_artifact_exprs(value):
-                artifact_ids.add(expr.artifact_id)
-    except ValueExpressionError as exc:
-        raise ValueError(f"Invalid artifact value expression: {exc}") from exc
-    return artifact_ids
+    for artifact in dag.artifacts.values():
+        builder.add_artifact(artifact)
+    for node in dag.nodes:
+        builder.add_node(Node(
+            node.id,
+            target=node.target.strip(),
+            inputs=dict(node.inputs),
+            artifact_inputs=list(node.artifact_inputs),
+            artifact_outputs=list(node.artifact_outputs),
+            title=node.title or None,
+            boundary=node.boundary,
+        ))
+    for edge in dag.edges:
+        builder.add_edge(edge.source, edge.target, reason=edge.reason)
+    return builder.to_dag_spec()
 
 
 def _artifact_uploads_for_dag(dag_id: str) -> dict[str, list[ArtifactUpload]]:

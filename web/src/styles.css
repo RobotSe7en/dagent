@@ -2095,6 +2095,15 @@ button:disabled {
   padding: 10px;
 }
 
+.run-input-panel textarea {
+  min-height: 90px;
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .run-section h3 {
   display: flex;
   align-items: center;

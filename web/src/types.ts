@@ -223,6 +223,10 @@ export interface CapabilityStreamEvent {
   capability_id: string;
   arguments?: Record<string, unknown>;
   content?: string;
+  task_id?: string | null;
+  dag_id?: string | null;
+  node_id?: string | null;
+  parent_capability_id?: string | null;
 }
 
 export interface CapabilityCallPayload {
