@@ -393,3 +393,7 @@ Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
 
 - [Python SDK guide](docs/python-sdk.md)
 - [Runnable examples](examples/README.md)
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
