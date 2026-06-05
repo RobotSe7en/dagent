@@ -666,36 +666,22 @@ def _error_payload(exc: SkillStoreError) -> dict[str, Any]:
 
 
 def _completed(invocation: CapabilityInvocation, payload: dict[str, Any]) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="completed",
-        content=json.dumps(payload, ensure_ascii=False),
+    return CapabilityResult.completed(
+        invocation,
+        json.dumps(payload, ensure_ascii=False),
         value=payload,
-        policy_decision=_policy_decision(invocation),
+        policy_decision=invocation.boundary.policy_decision(),
     )
 
 
 def _failed(invocation: CapabilityInvocation, error: str, payload: dict[str, Any]) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="failed",
-        error=error,
-        content=json.dumps(payload, ensure_ascii=False),
+    return CapabilityResult.failed(
+        invocation,
+        error,
         stop_reason="skill_error",
-        policy_decision=_policy_decision(invocation),
+        content=json.dumps(payload, ensure_ascii=False),
+        policy_decision=invocation.boundary.policy_decision(),
     )
-
-
-def _policy_decision(invocation: CapabilityInvocation) -> dict[str, Any]:
-    return {
-        "boundary_mode": invocation.boundary.mode,
-        "allowed_paths": invocation.boundary.allowed_paths or [],
-        "allowed_commands": invocation.boundary.allowed_commands or [],
-    }
 
 
 __all__ = [

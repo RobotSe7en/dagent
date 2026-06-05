@@ -43,10 +43,6 @@ class ReviewHandle:
     pending: PendingReview
 
     @property
-    def id(self) -> str:
-        return self.pending.review_id
-
-    @property
     def review_id(self) -> str:
         return self.pending.review_id
 
@@ -77,7 +73,7 @@ class ReviewHandle:
         review_level: ReviewLevel | None = None,
     ) -> ReviewDecision:
         return ReviewDecision(
-            review_id=self.id,
+            review_id=self.review_id,
             approved=True,
             dag=dag or self.dag,
             review_level=review_level,
@@ -89,7 +85,7 @@ class ReviewHandle:
         review_level: ReviewLevel | None = None,
     ) -> ReviewDecision:
         return ReviewDecision(
-            review_id=self.id,
+            review_id=self.review_id,
             approved=False,
             review_level=review_level,
         )

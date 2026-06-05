@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from dagent.schemas.dag import DAG
 from dagent.schemas.capability import CapabilityInvocation
@@ -13,26 +14,25 @@ from dagent.schemas.run_trace import RunTrace
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
 LoopStatus = Literal["completed", "awaiting_review", "failed"]
 
-@dataclass
-class PendingReview:
+
+class PendingReview(BaseModel):
     review_id: str
     kind: ReviewKind
     message: str
     proposed_dag: DAG | None = None
     capability_call: dict[str, Any] | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class LoopOutcome:
+class LoopOutcome(BaseModel):
     """Common contract between loops and runtime orchestration."""
 
     status: LoopStatus
     execution_context: str = ""
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     final_answer: str = ""
-    events: list[dict[str, Any]] = field(default_factory=list)
-    invocations: list[CapabilityInvocation] = field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    invocations: list[CapabilityInvocation] = Field(default_factory=list)
     dag: DAG | None = None
     trace: RunTrace | None = None
     task_id: str | None = None
@@ -41,25 +41,22 @@ class LoopOutcome:
     pending_review: PendingReview | None = None
 
 
-@dataclass(frozen=True)
-class RuntimeResponse:
+class RuntimeResponse(BaseModel):
     status: LoopStatus
     final_answer: str
     dag: DAG | None = None
     trace: RunTrace | None = None
     task_id: str | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
     pending_review: PendingReview | None = None
 
 
-@dataclass(frozen=True)
-class ValidationIssue:
+class ValidationIssue(BaseModel):
     message: str
     node_id: str | None = None
 
 
-@dataclass(frozen=True)
-class ValidationResult:
+class ValidationResult(BaseModel):
     passed: bool
-    issues: list[ValidationIssue] = field(default_factory=list)
+    issues: list[ValidationIssue] = Field(default_factory=list)
     summary: str = ""

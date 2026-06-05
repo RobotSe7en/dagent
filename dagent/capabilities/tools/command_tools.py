@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from dagent.schemas import Boundary
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
@@ -42,11 +41,6 @@ def run_command(
     return formatted
 
 
-def _infer_command_boundary(args: dict) -> Boundary:
-    cwd = str(args.get("cwd") or ".")
-    return Boundary(mode="write_limited", allowed_paths=[cwd])
-
-
 def register_command_tools(registry: ToolRegistry) -> None:
     registry.register(
         name="run_command",
@@ -55,7 +49,6 @@ def register_command_tools(registry: ToolRegistry) -> None:
         path_args=("cwd",),
         command_args=("command",),
         risk="high",
-        boundary_fn=_infer_command_boundary,
         default_args={"cwd": ".", "timeout_seconds": 30},
         description=(
             "Run a shell command in a bounded working directory. "

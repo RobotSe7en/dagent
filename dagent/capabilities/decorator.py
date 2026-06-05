@@ -6,7 +6,7 @@ import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, get_type_hints
 
 from pydantic import BaseModel
 
@@ -204,26 +204,4 @@ def _type_hints_for(func: Callable[..., Any]) -> dict[str, Any]:
 def _schema_for_annotation(annotation: Any) -> dict[str, Any]:
     if annotation is inspect.Parameter.empty:
         return {"type": "string"}
-    schema = json_schema_for_type(annotation)
-    if schema:
-        return schema
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-    if origin in {list, tuple, set}:
-        item_schema = _schema_for_annotation(args[0]) if args else {}
-        return {"type": "array", "items": item_schema}
-    if origin is dict:
-        return {"type": "object"}
-    if annotation is str:
-        return {"type": "string"}
-    if annotation is int:
-        return {"type": "integer"}
-    if annotation is float:
-        return {"type": "number"}
-    if annotation is bool:
-        return {"type": "boolean"}
-    if annotation in {dict, Any}:
-        return {"type": "object"}
-    if annotation in {list, tuple, set}:
-        return {"type": "array"}
-    return {"type": "string"}
+    return json_schema_for_type(annotation) or {"type": "string"}

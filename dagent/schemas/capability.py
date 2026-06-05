@@ -14,10 +14,8 @@ CapabilityKind = Literal[
     "tool",
     "mcp",
     "skill",
-    "shell",
     "agent",
     "memory",
-    "file",
 ]
 CapabilityStatus = Literal["completed", "failed"]
 
@@ -51,6 +49,9 @@ class CapabilityInvocation(BaseModel):
     risk: RiskLevel = "low"
 
 
+_VALUE_MIRRORS_CONTENT = object()
+
+
 class CapabilityResult(BaseModel):
     invocation_id: str
     capability_id: str
@@ -66,8 +67,40 @@ class CapabilityResult(BaseModel):
     policy_decision: dict[str, Any] = Field(default_factory=dict)
     trace: dict[str, Any] | None = None
 
+    @classmethod
+    def completed(
+        cls,
+        invocation: "CapabilityInvocation",
+        content: str = "",
+        *,
+        value: Any = _VALUE_MIRRORS_CONTENT,
+        **fields: Any,
+    ) -> "CapabilityResult":
+        return cls(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content=content,
+            value=content if value is _VALUE_MIRRORS_CONTENT else value,
+            **fields,
+        )
 
-class CapabilityRuntime(BaseModel):
-    sandbox: str = "local"
-    workspace_id: str | None = None
-    session_id: str | None = None
+    @classmethod
+    def failed(
+        cls,
+        invocation: "CapabilityInvocation",
+        error: str,
+        *,
+        stop_reason: str,
+        **fields: Any,
+    ) -> "CapabilityResult":
+        return cls(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="failed",
+            error=error,
+            stop_reason=stop_reason,
+            **fields,
+        )

@@ -276,7 +276,7 @@ def test_dag_builder_rejects_duplicate_nodes_and_unknown_edges() -> None:
         dag.add_node(dagent.Node("echo", target=echo, inputs={"text": "two"}))
 
     with pytest.raises(ValueError, match="Unknown node"):
-        dag.edge("missing", "echo")
+        dag.add_edge("missing", "echo")
 
 
 def test_dag_builder_requires_explicit_edge_for_node_output_ref() -> None:

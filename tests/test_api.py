@@ -619,7 +619,7 @@ def test_api_capability_list_create_and_test() -> None:
 
     assert list_response.status_code == 200
     capability_ids = {item["id"] for item in list_response.json()["capabilities"]}
-    assert {"tool.echo", "memory.write", "file.write"}.issubset(capability_ids)
+    assert {"tool.echo", "memory.write", "tool.write_file"}.issubset(capability_ids)
 
     create_response = client.post(
         "/capabilities",

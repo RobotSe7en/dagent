@@ -10,6 +10,7 @@ from typing import Any
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
+from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
@@ -52,8 +53,11 @@ from dagent.result import (
 )
 from dagent.review import ReviewDecision, ReviewLevel
 from dagent.schemas import (
+    Boundary,
     CapabilityDefinition,
+    CapabilityInvocation,
     CapabilityNodePayload,
+    CapabilityResult,
     DAG,
     DAGSpec,
     PendingReview,
@@ -63,7 +67,6 @@ from dagent.schemas import (
 )
 
 
-CapabilityLike = CapabilityBinding
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 
@@ -76,7 +79,7 @@ class Runner:
         *,
         workspace: str | Path = ".",
         provider: ChatProvider | None = None,
-        capabilities: Iterable[CapabilityLike] = (),
+        capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
@@ -112,7 +115,7 @@ class Runner:
         path: str | Path | None = None,
         *,
         workspace: str | Path = ".",
-        capabilities: Iterable[CapabilityLike] = (),
+        capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
@@ -158,7 +161,7 @@ class Runner:
         self._mcp_server_managers.clear()
         self._closed = True
 
-    def add_tool(self, capability: CapabilityLike) -> CapabilityDefinition:
+    def add_tool(self, capability: CapabilityBinding) -> CapabilityDefinition:
         """Register a single ``@dagent.tool`` binding."""
 
         self._ensure_open()
@@ -166,8 +169,111 @@ class Runner:
         self._refresh_registered_agent_runtime_configs()
         return definition
 
-    def add_tools(self, capabilities: Iterable[CapabilityLike]) -> list[CapabilityDefinition]:
+    def add_tools(self, capabilities: Iterable[CapabilityBinding]) -> list[CapabilityDefinition]:
         return [self.add_tool(capability) for capability in capabilities]
+
+    def register_capability(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> CapabilityDefinition:
+        """Register a raw capability definition with an executable handler."""
+
+        self._ensure_open()
+        registered = self._runtime.register_capability(
+            definition, handler, supports_context=supports_context
+        )
+        self._refresh_registered_agent_runtime_configs()
+        return registered
+
+    def replace_capability(
+        self,
+        definition: CapabilityDefinition,
+        handler: CapabilityHandler,
+        *,
+        supports_context: bool = False,
+    ) -> CapabilityDefinition:
+        """Replace an already-registered capability definition and handler."""
+
+        self._ensure_open()
+        replaced = self._runtime.replace_capability(
+            definition, handler, supports_context=supports_context
+        )
+        self._refresh_registered_agent_runtime_configs()
+        return replaced
+
+    def remove_capability(self, capability_id: str) -> None:
+        """Remove a registered capability by id."""
+
+        self._ensure_open()
+        self._runtime.capability_catalog.delete(capability_id)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+
+    def list_capabilities(
+        self,
+        *,
+        kind: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[CapabilityDefinition]:
+        """List registered capability definitions."""
+
+        return self._runtime.capability_catalog.list(kind=kind, enabled_only=enabled_only)  # type: ignore[arg-type]
+
+    def get_capability(self, capability_id: str) -> CapabilityDefinition | None:
+        """Return a registered capability definition, or ``None``."""
+
+        return self._runtime.capability_catalog.get(capability_id)
+
+    def set_capability_enabled(self, capability_id: str, enabled: bool) -> CapabilityDefinition:
+        """Enable or disable a registered capability."""
+
+        self._ensure_open()
+        updated = self._runtime.capability_catalog.set_enabled(capability_id, enabled)
+        self._runtime.refresh_toolsets()
+        return updated
+
+    async def test_capability(
+        self,
+        capability_id: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        boundary: Boundary | None = None,
+    ) -> CapabilityResult:
+        """Execute a single capability once for inspection/testing."""
+
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise KeyError(f"Capability '{capability_id}' is not registered.")
+        resolved_arguments = dict(arguments or {})
+        resolved_boundary = (
+            boundary
+            if boundary is not None
+            else infer_capability_boundary(definition, resolved_arguments)
+        )
+        invocation = CapabilityInvocation(
+            capability_id=capability_id,
+            kind=definition.kind,
+            arguments=resolved_arguments,
+            boundary=resolved_boundary,
+        )
+        return await self._runtime.capability_executor.execute(invocation)
+
+    @property
+    def enable_validation(self) -> bool:
+        return self._runtime.enable_validation
+
+    @enable_validation.setter
+    def enable_validation(self, value: bool) -> None:
+        self._runtime.enable_validation = bool(value)
+
+    def task_trace(self, task_id: str) -> RunTrace | None:
+        """Return the cumulative run trace for a completed/awaiting task."""
+
+        record = self._runtime.tasks.get(task_id)
+        return record.trace if record is not None else None
 
     @property
     def skill_store(self) -> SkillStore:
@@ -676,11 +782,56 @@ class Runner:
         return resolved
 
 
+def _assemble_runtime(
+    *,
+    provider: ChatProvider,
+    capability_executor: CapabilityExecutor,
+    catalog: Any,
+    tool_adapter: CapabilityToolAdapter,
+    tool_profile: str | AgentProfile,
+    tool_max_steps: int,
+    dag_profile: str | AgentProfile,
+    dag_max_cycles: int,
+    validator: ValidatorAgent | None,
+    enable_validation: bool,
+    max_validation_retries: int,
+    profile_root: str | Path | None,
+) -> HarnessRuntime:
+    runtime_tool_agent = RuntimeToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=capability_executor,
+            tool_adapter=tool_adapter,
+        ),
+        profile=_resolve_profile(tool_profile, profile_root=profile_root),
+        max_steps=tool_max_steps,
+    )
+    runtime_dag_agent = RuntimeDAGAgent(
+        loop=DAGAgentLoop(
+            provider=provider,
+            dag_executor=DAGExecutor(capability_executor=capability_executor),
+            tool_adapter=tool_adapter,
+            max_cycles=dag_max_cycles,
+        ),
+        profile=_resolve_profile(dag_profile, profile_root=profile_root),
+    )
+    return HarnessRuntime(
+        provider=provider,
+        tool_agent=runtime_tool_agent,
+        dag_agent=runtime_dag_agent,
+        validator=validator,
+        enable_validation=enable_validation,
+        max_validation_retries=max_validation_retries,
+        capability_catalog=catalog,
+        capability_executor=capability_executor,
+    )
+
+
 def _create_runtime(
     *,
     workspace: str | Path,
     provider: ChatProvider | None,
-    capabilities: Iterable[CapabilityLike],
+    capabilities: Iterable[CapabilityBinding],
     tool_profile: str | AgentProfile = "conversation",
     validator: str | AgentProfile | ValidatorAgent | None = None,
     tool_max_steps: int = 8,
@@ -692,7 +843,6 @@ def _create_runtime(
     workspace_path = Path(workspace)
     if provider is None:
         raise ValueError("No provider configured. Pass provider=... or use Runner.from_config(...).")
-    resolved_provider = provider
     catalog = create_default_capability_catalog(
         workspace_root=workspace_path,
         skills_provider=skills_provider,
@@ -701,37 +851,20 @@ def _create_runtime(
     for capability in capabilities:
         _register_capability_parts(catalog, capability)
 
-    tool_adapter = _tool_adapter(catalog, tuple(sorted(catalog.ids())))
-    capability_loop = ToolAgentLoop(
-        provider=resolved_provider,
+    resolved_validator = _resolve_validator(validator, provider, profile_root=profile_root)
+    return _assemble_runtime(
+        provider=provider,
         capability_executor=capability_executor,
-        tool_adapter=tool_adapter,
-    )
-    runtime_tool_agent = RuntimeToolAgent(
-        loop=capability_loop,
-        profile=_resolve_profile(tool_profile, profile_root=profile_root),
-        max_steps=tool_max_steps,
-    )
-    dag_executor = DAGExecutor(capability_executor=capability_executor)
-    dag_loop = DAGAgentLoop(
-        provider=resolved_provider,
-        dag_executor=dag_executor,
-        tool_adapter=tool_adapter,
-        max_cycles=dag_max_cycles,
-    )
-    runtime_dag_agent = RuntimeDAGAgent(
-        loop=dag_loop,
-        profile=_resolve_profile(dag_profile, profile_root=profile_root),
-    )
-    resolved_validator = _resolve_validator(validator, resolved_provider, profile_root=profile_root)
-    return HarnessRuntime(
-        provider=resolved_provider,
-        tool_agent=runtime_tool_agent,
-        dag_agent=runtime_dag_agent,
+        catalog=catalog,
+        tool_adapter=_tool_adapter(catalog, tuple(sorted(catalog.ids()))),
+        tool_profile=tool_profile,
+        tool_max_steps=tool_max_steps,
+        dag_profile=dag_profile,
+        dag_max_cycles=dag_max_cycles,
         validator=resolved_validator,
         enable_validation=resolved_validator is not None,
-        capability_catalog=catalog,
-        capability_executor=capability_executor,
+        max_validation_retries=1,
+        profile_root=profile_root,
     )
 
 
@@ -745,37 +878,19 @@ def _runtime_from_existing(
     visible_capability_ids: tuple[str, ...],
     profile_root: str | Path | None,
 ) -> HarnessRuntime:
-    tool_adapter = _tool_adapter(base.capability_catalog, visible_capability_ids)
-    capability_loop = ToolAgentLoop(
+    runtime = _assemble_runtime(
         provider=base.provider,
         capability_executor=base.capability_executor,
-        tool_adapter=tool_adapter,
-    )
-    runtime_tool_agent = RuntimeToolAgent(
-        loop=capability_loop,
-        profile=_resolve_profile(tool_profile, profile_root=profile_root),
-        max_steps=tool_max_steps,
-    )
-    dag_executor = DAGExecutor(capability_executor=base.capability_executor)
-    dag_loop = DAGAgentLoop(
-        provider=base.provider,
-        dag_executor=dag_executor,
-        tool_adapter=tool_adapter,
-        max_cycles=dag_max_cycles,
-    )
-    runtime_dag_agent = RuntimeDAGAgent(
-        loop=dag_loop,
-        profile=_resolve_profile(dag_profile, profile_root=profile_root),
-    )
-    runtime = HarnessRuntime(
-        provider=base.provider,
-        tool_agent=runtime_tool_agent,
-        dag_agent=runtime_dag_agent,
+        catalog=base.capability_catalog,
+        tool_adapter=_tool_adapter(base.capability_catalog, visible_capability_ids),
+        tool_profile=tool_profile,
+        tool_max_steps=tool_max_steps,
+        dag_profile=dag_profile,
+        dag_max_cycles=dag_max_cycles,
         validator=base.validator,
         enable_validation=base.enable_validation,
         max_validation_retries=base.max_validation_retries,
-        capability_catalog=base.capability_catalog,
-        capability_executor=base.capability_executor,
+        profile_root=profile_root,
     )
     runtime.session = base.session
     runtime.tasks = base.tasks
@@ -973,7 +1088,7 @@ def _status_message(data: dict[str, Any], event_type: str) -> str:
     return event_type
 
 
-def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) -> CapabilityDefinition:
+def _register_capability(runtime: HarnessRuntime, capability: CapabilityBinding) -> CapabilityDefinition:
     definition, handler, supports_context = _capability_parts(capability)
     _register_capability_parts(
         runtime.capability_catalog,
@@ -987,7 +1102,7 @@ def _register_capability(runtime: HarnessRuntime, capability: CapabilityLike) ->
 
 def _register_capability_parts(
     catalog,
-    capability: CapabilityLike,
+    capability: CapabilityBinding,
     *,
     expected_handler: CapabilityHandler | None = None,
     expected_supports_context: bool | None = None,
@@ -1007,7 +1122,7 @@ def _register_capability_parts(
     catalog.register(definition, handler, supports_context=supports_context)
 
 
-def _capability_parts(capability: CapabilityLike) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
+def _capability_parts(capability: CapabilityBinding) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:
     if not isinstance(capability, CapabilityBinding):
         raise TypeError("Expected a capability created with @dagent.tool.")
     return capability.definition, capability.handler, capability.supports_context

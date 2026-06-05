@@ -292,7 +292,7 @@ asyncio.run(main())
 
 `Runner.run(...)` always returns `RunResult`, including static `Dag` and
 `DAGSpec` runs. Customize static DAGs with Pydantic graph inputs, typed tool
-return values, explicit `.after(...)` dependencies, artifact references, and
+return values, explicit `dag.add_edge(...)` dependencies, artifact references, and
 per-node boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full
 SDK.
 

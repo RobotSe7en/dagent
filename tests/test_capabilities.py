@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from dagent.capabilities import CapabilityCatalog, create_default_capability_catalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
@@ -22,6 +23,14 @@ def _result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
         status="completed",
         content=content,
     )
+
+
+def test_capability_kind_rejects_removed_file_and_shell_kinds() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityDefinition(id="file.read", name="file_read", kind="file")
+
+    with pytest.raises(ValidationError):
+        CapabilityInvocation(capability_id="shell.say_hello", kind="shell")
 
 
 def test_capability_catalog_replaces_definition_and_handler_atomically() -> None:
@@ -95,23 +104,23 @@ def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> No
 def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
-        CapabilityDefinition(id="file.read", name="file_read", kind="file"),
+        CapabilityDefinition(id="tool.read_file", name="read_file", kind="tool"),
         lambda invocation: _result(invocation, "read"),
     )
     adapter = CapabilityToolAdapter(
         catalog,
-        toolsets=[CapabilityToolset(name="builtin", capability_ids=("file.read",))],
+        toolsets=[CapabilityToolset(name="builtin", capability_ids=("tool.read_file",))],
     )
 
     invocation = adapter.invocation_from_tool_call(
-        ToolCall(id="call_1", name="file_read", arguments={"path": "README.md"}),
+        ToolCall(id="call_1", name="read_file", arguments={"path": "README.md"}),
         Boundary(mode="read_only", allowed_paths=["."]),
         enabled_toolsets=("builtin",),
     )
 
     assert invocation.invocation_id == "call_1"
-    assert invocation.capability_id == "file.read"
-    assert invocation.kind == "file"
+    assert invocation.capability_id == "tool.read_file"
+    assert invocation.kind == "tool"
     assert invocation.arguments == {"path": "README.md"}
     assert invocation.boundary.mode == "read_only"
 
@@ -119,8 +128,8 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
 def test_capability_tool_adapter_rejects_name_collisions() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
-        CapabilityDefinition(id="file.read", name="read", kind="file"),
-        lambda invocation: _result(invocation, "file"),
+        CapabilityDefinition(id="tool.read", name="read", kind="tool"),
+        lambda invocation: _result(invocation, "tool"),
     )
     catalog.register(
         CapabilityDefinition(id="memory.read", name="read", kind="memory"),
@@ -128,7 +137,7 @@ def test_capability_tool_adapter_rejects_name_collisions() -> None:
     )
     adapter = CapabilityToolAdapter(
         catalog,
-        toolsets=[CapabilityToolset(name="builtin", capability_ids=("file.read", "memory.read"))],
+        toolsets=[CapabilityToolset(name="builtin", capability_ids=("tool.read", "memory.read"))],
     )
 
     with pytest.raises(ValueError, match="LLM tool name collision"):

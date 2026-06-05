@@ -22,7 +22,7 @@ export interface Boundary {
   allowed_commands?: BoundaryValue[];
 }
 
-export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'shell' | 'agent' | 'memory' | 'file';
+export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'agent' | 'memory';
 
 export interface CapabilityInvocation {
   invocation_id?: string;

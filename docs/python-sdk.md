@@ -154,6 +154,23 @@ registration.
 MCP requires the optional extra (`pip install "dagent[mcp]"`) and currently
 supports stdio servers.
 
+`Runner` also exposes capability management for hosts (such as the WebUI backend)
+that build capabilities from raw definitions instead of `@dagent.tool` bindings:
+
+```python
+runner.register_capability(definition, handler, supports_context=False)
+runner.replace_capability(definition, handler)
+runner.set_capability_enabled("tool.search", False)
+result = await runner.test_capability("tool.search", {"q": "dagent"})
+runner.remove_capability("tool.search")
+
+for definition in runner.list_capabilities(kind="mcp"):
+    print(definition.id)
+
+runner.enable_validation = True
+trace = runner.task_trace(run_id)
+```
+
 ## Tools And Structured Results
 
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce tool
@@ -360,7 +377,7 @@ immediately before the capability call.
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
 
 Referencing a previous node output does not create an edge. Add the dependency
-explicitly with `dag.edge(...)` or `dag.add_edge(...)`:
+explicitly with `dag.add_edge(...)`:
 
 ```python
 class SearchResult(BaseModel):

@@ -366,6 +366,15 @@ def _validate_value_expression_dependencies(nodes: list[DAGNode], edges: list[DA
                 )
 
 
+MAX_EXECUTION_CONTEXT_CHARS = 16000
+
+
+def context_excerpt(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n[TRUNCATED after {limit} chars]"
+
+
 def strip_thinking_blocks(content: str) -> str:
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.IGNORECASE | re.DOTALL)
     return re.sub(r"<think>.*", "", content, flags=re.IGNORECASE | re.DOTALL)

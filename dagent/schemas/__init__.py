@@ -12,7 +12,6 @@ from dagent.schemas.capability import (
     CapabilityKind,
     CapabilityPolicy,
     CapabilityResult,
-    CapabilityRuntime,
     CapabilityStatus,
 )
 from dagent.schemas.results import (
@@ -57,7 +56,6 @@ __all__ = [
     "CapabilityKind",
     "CapabilityPolicy",
     "CapabilityResult",
-    "CapabilityRuntime",
     "CapabilityStatus",
     "NodePayload",
     "NodePayloadType",

@@ -6,13 +6,12 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
-    FileCapabilityProvider,
     MemoryCapabilityProvider,
-    ShellCapabilityProvider,
     ToolCapabilityProvider,
     _agent_boundary,
 )
 from dagent.capabilities.skills import SkillsCapabilityProvider
+from dagent.capabilities.tools.file_tools import create_file_tool_registry
 import dagent.capabilities as capabilities_module
 import dagent.capabilities.providers as providers_module
 import dagent.capabilities.skills as skills_module
@@ -80,37 +79,11 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.policy_decision["boundary_mode"] == "read_only"
 
 
-def test_shell_provider_executes_fixed_command() -> None:
-    registry = CapabilityCatalog()
-    executor = CapabilityExecutor(registry)
-    ShellCapabilityProvider(
-        commands={
-            "say_hello": {
-                "command": "python -c \"print('hello')\"",
-                "description": "Print hello.",
-            }
-        }
-    ).register_into(registry)
-
-    result = run(executor.execute(
-        CapabilityInvocation(
-            capability_id="shell.say_hello",
-            kind="shell",
-            arguments={},
-            boundary=Boundary(mode="read_only"),
-        )
-    ))
-
-    assert result.status == "completed"
-    assert result.stdout.strip() == "hello"
-    assert result.content.strip() == "hello"
-
-
-def test_memory_and_file_providers_are_explicit_capabilities(tmp_path) -> None:
+def test_memory_and_file_tool_capabilities_are_explicit(tmp_path) -> None:
     registry = CapabilityCatalog(workspace_root=tmp_path)
     executor = CapabilityExecutor(registry)
     MemoryCapabilityProvider().register_into(registry)
-    FileCapabilityProvider().register_into(registry)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(registry)
 
     write_memory = run(executor.execute(
         CapabilityInvocation(
@@ -128,8 +101,8 @@ def test_memory_and_file_providers_are_explicit_capabilities(tmp_path) -> None:
     ))
     write_file = run(executor.execute(
         CapabilityInvocation(
-            capability_id="file.write",
-            kind="file",
+            capability_id="tool.write_file",
+            kind="tool",
             arguments={"path": "notes.txt", "content": "hello"},
             boundary=Boundary(mode="write_limited", allowed_paths=["."]),
         )

@@ -133,35 +133,27 @@ class Provider(OpenAICompatibleProvider):
         )
 
 
-def _convert_tool_call(tool_call: Any) -> ToolCall:
-    raw_arguments = tool_call.function.arguments or "{}"
+def _parse_tool_arguments(raw_arguments: str | None) -> dict[str, Any]:
     try:
-        arguments = json.loads(raw_arguments)
+        arguments = json.loads(raw_arguments or "{}")
     except json.JSONDecodeError:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        arguments = {}
+        return {}
+    return arguments if isinstance(arguments, dict) else {}
 
+
+def _convert_tool_call(tool_call: Any) -> ToolCall:
     return ToolCall(
         id=tool_call.id,
         name=tool_call.function.name,
-        arguments=arguments,
+        arguments=_parse_tool_arguments(tool_call.function.arguments),
     )
 
 
 def _convert_streamed_tool_call(tool_call: dict[str, str]) -> ToolCall:
-    raw_arguments = tool_call["arguments"] or "{}"
-    try:
-        arguments = json.loads(raw_arguments)
-    except json.JSONDecodeError:
-        arguments = {}
-    if not isinstance(arguments, dict):
-        arguments = {}
-
     return ToolCall(
         id=tool_call["id"],
         name=tool_call["name"],
-        arguments=arguments,
+        arguments=_parse_tool_arguments(tool_call["arguments"]),
     )
 
 

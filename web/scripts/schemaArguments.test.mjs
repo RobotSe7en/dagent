@@ -78,18 +78,16 @@ test('buildSchemaArgumentFields marks schema fields as fixed before extra fields
   assert.equal(fields[2].valueType, 'number');
 });
 
-test('visibleCapabilitiesForPicker hides lower-level file duplicates when tool equivalents exist', () => {
+test('visibleCapabilitiesForPicker keeps enabled capabilities and drops disabled ones', () => {
   const capabilities = [
-    { id: 'file.read', name: 'file_read', kind: 'file', enabled: true },
     { id: 'tool.read_file', name: 'read_file', kind: 'tool', enabled: true },
-    { id: 'file.write', name: 'file_write', kind: 'file', enabled: true },
-    { id: 'tool.write_file', name: 'write_file', kind: 'tool', enabled: true },
+    { id: 'tool.write_file', name: 'write_file', kind: 'tool', enabled: false },
     { id: 'agent.conversation', name: 'conversation', kind: 'agent', enabled: true },
   ];
 
   assert.deepEqual(
     visibleCapabilitiesForPicker(capabilities).map((capability) => capability.id),
-    ['tool.read_file', 'tool.write_file', 'agent.conversation'],
+    ['tool.read_file', 'agent.conversation'],
   );
 });
 

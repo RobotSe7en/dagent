@@ -104,7 +104,11 @@ class RuntimeTaskRecord:
         if loop_outcome.dag is not None:
             self.dag = loop_outcome.dag
         if loop_outcome.trace is not None:
-            self.trace = merge_run_traces(self.trace, loop_outcome.trace)
+            self.trace = (
+                loop_outcome.trace
+                if self.trace is None
+                else self.trace.merge(loop_outcome.trace)
+            )
         if loop_outcome.spec_id is not None:
             self.spec_id = loop_outcome.spec_id
         if loop_outcome.workspace_path is not None:
@@ -125,30 +129,3 @@ def pending_review_invocation(
             if invocation.invocation_id == invocation_id:
                 return invocation
     return task_invocations[-1] if task_invocations else None
-
-
-def merge_run_traces(current: RunTrace | None, incoming: RunTrace) -> RunTrace:
-    if current is None:
-        return incoming
-    merged = current.model_copy(deep=True)
-    seen_ids = {child.id for child in merged.root.children}
-    for child in incoming.root.children:
-        if child.id in seen_ids:
-            continue
-        copied = child.model_copy(deep=True)
-        copied.parent_id = merged.root.id
-        _reparent_trace_children(copied)
-        merged.root.children.append(copied)
-        seen_ids.add(copied.id)
-    merged.root.status = incoming.root.status
-    merged.root.output = incoming.root.output if incoming.root.output is not None else merged.root.output
-    merged.root.error = incoming.root.error
-    merged.root.ended_at = incoming.root.ended_at
-    merged.artifacts.update(incoming.artifacts)
-    return merged
-
-
-def _reparent_trace_children(parent) -> None:
-    for child in parent.children:
-        child.parent_id = parent.id
-        _reparent_trace_children(child)

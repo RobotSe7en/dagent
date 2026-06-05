@@ -67,7 +67,7 @@ tests. Update or delete obsolete tests when the intended behavior has changed.
   input, upstream node output, node content/status/steps, artifacts, and format
   strings.
 - A node that reads another node's output must explicitly depend on that node via
-  `.after(...)` or `dag.edge(...)`.
+  `dag.add_edge(...)`.
 - Pydantic graph inputs and Pydantic tool return values are the preferred simple
   path for typed parameter passing.
 - Do not infer DAG edges implicitly from value references. Validation should fail

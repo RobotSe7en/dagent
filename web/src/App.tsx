@@ -135,7 +135,7 @@ const riskClass: Record<RiskLevel, string> = {
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
-const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'shell', 'agent', 'memory', 'file'];
+const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
 const defaultWorkspaceRoot = '.dagent-runs';
 const directoryInputProps = {
   directory: '',

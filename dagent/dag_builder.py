@@ -267,15 +267,6 @@ class Dag:
         *,
         reason: str = "",
     ) -> "Dag":
-        return self.edge(source, target, reason=reason)
-
-    def edge(
-        self,
-        source: Node | str,
-        target: Node | str,
-        *,
-        reason: str = "",
-    ) -> "Dag":
         source_id = _node_id(source)
         target_id = _node_id(target)
         self._ensure_node(source_id)
@@ -379,6 +370,6 @@ def _title_from_id(node_id: str) -> str:
 
 def _capability_kind_from_id(capability_id: str) -> CapabilityKind:
     kind = capability_id.split(".", 1)[0]
-    if kind in {"tool", "mcp", "skill", "shell", "agent", "memory", "file"}:
+    if kind in {"tool", "mcp", "skill", "agent", "memory"}:
         return kind  # type: ignore[return-value]
     raise ValueError(f"Cannot infer capability kind from id '{capability_id}'.")

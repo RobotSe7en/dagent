@@ -68,10 +68,6 @@ def load_config(path: str | Path | None = None) -> DagentConfig:
     return DagentConfig.model_validate(data)
 
 
-def dump_config(config: DagentConfig) -> dict[str, Any]:
-    return config.model_dump()
-
-
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
         return

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict, deque
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from dagent.schemas import (
     DAG,
     DAGNode,
     RunTrace,
+    RunTraceError,
     RunTraceNode,
     StartNodePayload,
 )
@@ -85,7 +87,7 @@ class DAGExecutor:
         self._enforce_review_gate(normalized)
         normalized.status = "running"
         trace = _copy_or_create_trace(initial_trace, normalized)
-        node_traces = _node_traces_by_id(trace)
+        node_traces = trace.dag_node_traces()
 
         try:
             with self.capability_executor.workspace_context(self.workspace_path):
@@ -102,7 +104,7 @@ class DAGExecutor:
             _emit_trace_snapshot(on_event, trace)
             raise
 
-        completed = _all_nodes_completed(normalized, _node_traces_by_id(trace))
+        completed = _all_nodes_completed(normalized, trace.dag_node_traces())
         trace.root.status = "completed" if completed else "running"
         if completed:
             trace.root.ended_at = _now()
@@ -143,14 +145,14 @@ class DAGExecutor:
         )
         for result in batch_results:
             if isinstance(result, RunTraceNode):
-                _replace_or_append_child(trace.root, result)
+                trace.root.upsert_child(result)
                 node_id = result.ref.get("node_id")
                 if node_id:
                     node_traces[node_id] = result
 
         for node_id, partial in self.partial_node_traces.items():
             if node_id not in node_traces:
-                _replace_or_append_child(trace.root, partial)
+                trace.root.upsert_child(partial)
                 node_traces[node_id] = partial
 
         for result in batch_results:
@@ -258,7 +260,7 @@ class DAGExecutor:
             )
         except Exception as exc:
             node.status = "failed"
-            failed_result = _failed_capability_result(invocation, str(exc), type(exc).__name__)
+            failed_result = CapabilityResult.failed(invocation, str(exc), stop_reason=type(exc).__name__)
             capability_node = RunTraceNode.capability_call(
                 parent_id=dag_node.id,
                 invocation=invocation,
@@ -586,38 +588,6 @@ def _copy_or_create_trace(trace: RunTrace | None, dag: DAG) -> RunTrace:
     return RunTrace(run_id=dag.task_id, root=root)
 
 
-def _node_traces_by_id(trace: RunTrace) -> dict[str, RunTraceNode]:
-    return {
-        node.ref["node_id"]: node
-        for node in trace.root.children
-        if node.kind == "dag_node" and node.ref.get("node_id")
-    }
-
-
-def _replace_or_append_child(parent: RunTraceNode, child: RunTraceNode) -> None:
-    child_ref = child.ref
-    for index, existing in enumerate(parent.children):
-        if existing.kind == child.kind and existing.ref == child_ref:
-            parent.children[index] = child
-            return
-    parent.children.append(child)
-
-
-def _failed_capability_result(
-    invocation: CapabilityInvocation,
-    error: str,
-    stop_reason: str,
-) -> CapabilityResult:
-    return CapabilityResult(
-        invocation_id=invocation.invocation_id,
-        capability_id=invocation.capability_id,
-        kind=invocation.kind,
-        status="failed",
-        error=error,
-        stop_reason=stop_reason,
-    )
-
-
 def _attach_child_trace(
     capability_node: RunTraceNode,
     capability_result: CapabilityResult,
@@ -633,23 +603,13 @@ def _attach_child_trace(
         output=child_trace.root.output,
         children=child_trace.root.children,
     )
-    _reparent(agent_loop)
+    agent_loop.reparent_children()
     capability_node.children.append(agent_loop)
 
 
-def _reparent(parent: RunTraceNode) -> None:
-    for child in parent.children:
-        child.parent_id = parent.id
-        _reparent(child)
-
-
-def _error(message: str, code: str):
-    from dagent.schemas import RunTraceError
-
+def _error(message: str, code: str) -> RunTraceError:
     return RunTraceError(message=message, code=code)
 
 
-def _now():
-    from datetime import datetime, timezone
-
+def _now() -> datetime:
     return datetime.now(timezone.utc)

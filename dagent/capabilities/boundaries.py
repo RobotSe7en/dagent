@@ -19,9 +19,7 @@ def infer_capability_boundary(
     paths = [_boundary_path_value(checked_args.get(path_arg)) for path_arg in path_args] or ["."]
     action = str(config.get("action") or "read")
 
-    if action == "write":
-        return Boundary(mode="write_limited", allowed_paths=paths)
-    if action == "command":
+    if action in {"write", "command"}:
         return Boundary(mode="write_limited", allowed_paths=paths)
     return Boundary(mode="read_only", allowed_paths=paths)
 

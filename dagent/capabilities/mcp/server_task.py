@@ -73,14 +73,6 @@ class MCPServerTask:
         async with self._rpc_lock:
             return await self._session.call_tool(tool_name, arguments=arguments)
 
-    async def list_tools(self) -> list[Any]:
-        if self._session is None:
-            raise RuntimeError(f"MCP server '{self.name}' is not connected.")
-        async with self._rpc_lock:
-            result = await self._session.list_tools()
-        self.tools = list(getattr(result, "tools", []) or [])
-        return self.tools
-
     async def shutdown(self) -> None:
         self._stop.set()
         if self._task is not None:

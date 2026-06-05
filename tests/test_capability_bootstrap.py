@@ -17,7 +17,7 @@ def test_create_default_rejects_both_skill_roots_and_provider(tmp_path) -> None:
 def test_default_capability_catalog_registers_base_capabilities(tmp_path) -> None:
     catalog = create_default_capability_catalog(workspace_root=tmp_path)
 
-    assert {"tool.read_file", "memory.write", "memory.search", "file.read", "file.write"}.issubset(
+    assert {"tool.read_file", "tool.write_file", "memory.write", "memory.search"}.issubset(
         catalog.ids()
     )
     assert "tool.dag_start" not in catalog.ids()
@@ -26,8 +26,8 @@ def test_default_capability_catalog_registers_base_capabilities(tmp_path) -> Non
 def test_default_file_capabilities_publish_argument_schemas(tmp_path) -> None:
     catalog = create_default_capability_catalog(workspace_root=tmp_path)
 
-    read_definition = catalog.get("file.read")
-    write_definition = catalog.get("file.write")
+    read_definition = catalog.get("tool.read_file")
+    write_definition = catalog.get("tool.write_file")
 
     assert read_definition is not None
     assert write_definition is not None
@@ -39,23 +39,23 @@ def test_default_file_capabilities_publish_argument_schemas(tmp_path) -> None:
 
 def test_default_capability_catalog_uses_workspace_root_for_file_capabilities(tmp_path) -> None:
     catalog = create_default_capability_catalog(workspace_root=tmp_path)
-    write_entry = catalog.get_entry("file.write")
-    read_entry = catalog.get_entry("file.read")
+    write_entry = catalog.get_entry("tool.write_file")
+    read_entry = catalog.get_entry("tool.read_file")
     assert write_entry is not None
     assert read_entry is not None
 
     write_result = write_entry.handler(
         CapabilityInvocation(
-            capability_id="file.write",
-            kind="file",
+            capability_id="tool.write_file",
+            kind="tool",
             arguments={"path": "notes.txt", "content": "saved"},
             boundary=Boundary(mode="write_limited", allowed_paths=["."]),
         )
     )
     read_result = read_entry.handler(
         CapabilityInvocation(
-            capability_id="file.read",
-            kind="file",
+            capability_id="tool.read_file",
+            kind="tool",
             arguments={"path": "notes.txt"},
             boundary=Boundary(mode="read_only", allowed_paths=["."]),
         )

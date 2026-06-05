@@ -3,6 +3,7 @@
 .tmp_pytest/
 __pycache__/
 *.py[cod]
+*.egg-info/
 *.log
 .env
 web/node_modules/

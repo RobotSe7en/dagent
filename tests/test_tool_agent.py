@@ -1,10 +1,12 @@
 import asyncio
+import inspect
 from pathlib import Path
 
 import pytest
 
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.decorator import tool
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import ToolAgent, ToolAgentLoop, ReviewContinuation
 from dagent.harness_runtime import CapabilityExecutor
@@ -34,6 +36,10 @@ def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
         catalog,
         toolsets=[CapabilityToolset("builtin", tuple(sorted(catalog.ids())))],
     )
+
+
+def test_tool_agent_loop_run_does_not_accept_control_tool_handler() -> None:
+    assert "control_tool_handler" not in inspect.signature(ToolAgentLoop.run).parameters
 
 
 def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
@@ -105,6 +111,46 @@ def test_tool_agent_scope_filters_tools_without_injecting_skill_prompt(tmp_path:
     system_content = provider.requests[0]["messages"][0]["content"]
     assert "writing/summarize" not in system_content
     assert "write_file" not in system_content
+
+
+def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path) -> None:
+    seen_task_ids: list[str | None] = []
+
+    @tool(risk="medium", supports_context=True)
+    def needs_context(text: str, *, context=None, callbacks=None) -> str:
+        seen_task_ids.append(context.task_id if context is not None else None)
+        return f"ok:{text}"
+
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    catalog.register(needs_context.definition, needs_context.handler, supports_context=True)
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="needs_context",
+                        arguments={"text": "hello"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Done."),
+        ]
+    )
+    agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=CapabilityExecutor(catalog),
+            tool_adapter=_tool_adapter(catalog),
+        ),
+        profile=_profile(),
+    )
+
+    result = run(agent.run("Use context", review_level="fast"))
+
+    assert result.status == "completed"
+    assert seen_task_ids
+    assert seen_task_ids[0] is not None
 
 
 def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) -> None:
@@ -353,15 +399,15 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
 def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_path: Path) -> None:
     catalog = CapabilityCatalog(workspace_root=tmp_path)
     definition = CapabilityDefinition(
-        id="file.read",
-        name="file.read",
-        kind="file",
+        id="memory.read",
+        name="memory.read",
+        kind="memory",
         policy=CapabilityPolicy(risk="medium"),
     )
     catalog.register(definition, _capability_result("file content"))
     adapter = CapabilityToolAdapter(
         catalog,
-        toolsets=[CapabilityToolset("builtin", ("file.read",))],
+        toolsets=[CapabilityToolset("builtin", ("memory.read",))],
     )
     provider = MockProvider(
         [
@@ -369,8 +415,8 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="file_read",
-                        arguments={"path": "notes.txt"},
+                        name="memory_read",
+                        arguments={"key": "notes"},
                     )
                 ]
             ),
@@ -403,7 +449,7 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
     assert agent.messages[3] == {
         "role": "tool",
         "tool_call_id": "call_1",
-        "name": "file_read",
+        "name": "memory_read",
         "content": "file content",
     }
 

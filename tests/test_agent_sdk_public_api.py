@@ -534,7 +534,7 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
     assert first.requires_review
     assert first.review is not None
 
-    missing_dag = dagent.ReviewDecision(review_id=first.review.id, approved=True)
+    missing_dag = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
     assert run(runner.resume(missing_dag)) is None
 
     resumed = run(runner.resume(first.review.approve()))
