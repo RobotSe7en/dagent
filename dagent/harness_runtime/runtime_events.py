@@ -6,88 +6,70 @@ from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.schemas import DAG
 
 
-class _ThinkTagFilter:
-    """Streaming filter that selectively forwards tokens based on <think> blocks.
-
-    Two modes (controlled by ``keep``):
-
-    * ``keep="inside"``: forward only tokens inside ``<think>...</think>``
-      (including the tags themselves). Used during loop execution so the user
-      sees model reasoning while the final answer is returned in the done payload.
-
-    * ``keep="outside"``: forward only tokens outside ``<think>...</think>``.
-      Useful for answer streams that should hide model reasoning.
-    """
+class _ResponseTokenSplitter:
+    """Forward raw tokens and derive reasoning/content token events."""
 
     _OPEN = "<think>"
     _CLOSE = "</think>"
 
-    def __init__(self, downstream: TokenHandler, *, keep: str = "inside") -> None:
-        assert keep in {"inside", "outside"}
-        self._downstream = downstream
-        self._keep = keep
+    def __init__(
+        self,
+        *,
+        on_raw: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> None:
+        self._on_raw = on_raw
+        self._on_event = on_event
         self._buf = ""
         self._inside = False
 
-    def _should_emit(self) -> bool:
-        return (self._keep == "inside") == self._inside
-
     def __call__(self, token: str) -> None:
+        if self._on_raw is not None:
+            self._on_raw(token)
         self._buf += token
+        self._drain()
+
+    def flush(self) -> None:
+        if self._buf:
+            self._emit_current_channel(self._buf)
+        self._buf = ""
+        self._inside = False
+
+    def _emit_current_channel(self, delta: str) -> None:
+        if not delta or self._on_event is None:
+            return
+        self._on_event({
+            "type": "response_token",
+            "channel": "reasoning" if self._inside else "content",
+            "delta": delta,
+        })
+
+    def _drain(self) -> None:
         while self._buf:
-            if not self._inside:
-                idx = self._buf.lower().find(self._OPEN)
-                if idx == -1:
-                    # No opening tag. Keep a small tail in case a tag is
-                    # split across tokens, but only if '<' is present in
-                    # the tail; otherwise the tail cannot start a tag.
-                    keep = len(self._OPEN) - 1
-                    if len(self._buf) > keep and "<" not in self._buf[-keep:]:
-                        # No chance of a partial tag; flush everything.
-                        if self._should_emit():
-                            self._downstream(self._buf)
-                        self._buf = ""
-                    else:
-                        safe = self._buf[:-keep] if len(self._buf) > keep else ""
-                        if safe and self._should_emit():
-                            self._downstream(safe)
-                        self._buf = self._buf[len(safe):]
-                    return
-                # Text before <think>
-                before = self._buf[:idx]
-                if before and self._should_emit():
-                    self._downstream(before)
-                # Emit the tag itself if keeping inside.
-                tag_end = idx + len(self._OPEN)
-                self._inside = True
-                if self._should_emit():
-                    self._downstream(self._buf[idx:tag_end])
-                self._buf = self._buf[tag_end:]
-            else:
-                idx = self._buf.lower().find(self._CLOSE)
-                if idx == -1:
-                    safe_len = len(self._buf) - (len(self._CLOSE) - 1)
-                    if safe_len > 0 and "<" not in self._buf[-max(len(self._CLOSE) - 1, 0):]:
-                        # No partial close tag possible; flush all.
-                        if self._should_emit():
-                            self._downstream(self._buf)
-                        self._buf = ""
-                    elif safe_len > 0:
-                        safe = self._buf[:safe_len]
-                        if self._should_emit():
-                            self._downstream(safe)
-                        self._buf = self._buf[safe_len:]
-                    return
-                # Text inside think + closing tag
-                tag_end = idx + len(self._CLOSE)
-                inside_text = self._buf[:idx]
-                if inside_text and self._should_emit():
-                    self._downstream(inside_text)
-                # Closing tag; about to leave inside.
-                if self._should_emit():
-                    self._downstream(self._buf[idx:tag_end])
-                self._buf = self._buf[tag_end:]
-                self._inside = False
+            tag = self._CLOSE if self._inside else self._OPEN
+            idx = self._buf.lower().find(tag)
+            if idx != -1:
+                self._emit_current_channel(self._buf[:idx])
+                self._buf = self._buf[idx + len(tag):]
+                self._inside = not self._inside
+                continue
+
+            keep = _partial_tag_suffix_len(self._buf, tag)
+            safe = self._buf[:-keep] if keep else self._buf
+            if safe:
+                self._emit_current_channel(safe)
+                self._buf = self._buf[len(safe):]
+            return
+
+
+def _partial_tag_suffix_len(text: str, tag: str) -> int:
+    lower_text = text.lower()
+    lower_tag = tag.lower()
+    max_len = min(len(lower_text), len(lower_tag) - 1)
+    for length in range(max_len, 0, -1):
+        if lower_text.endswith(lower_tag[:length]):
+            return length
+    return 0
 
 
 def _dag_event_emitter(on_event: LoopEventHandler | None):

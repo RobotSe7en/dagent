@@ -670,79 +670,99 @@ def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
     assert result.final_answer == "hello world"
 
 
-def test_think_tag_filter_keep_inside_only_forwards_think_blocks() -> None:
-    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
+def test_response_token_splitter_derives_reasoning_and_content_channels() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
 
-    collected: list[str] = []
-    filt = _ThinkTagFilter(collected.append, keep="inside")
+    raw: list[str] = []
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
 
-    # Simulate tokens arriving in chunks
     for token in ["<", "think", ">reason", "ing about", " it</", "think>", " The answer is 42."]:
-        filt(token)
+        splitter(token)
+    splitter.flush()
 
-    result = "".join(collected)
-    assert "<think>" in result
-    assert "reasoning about it" in result
-    assert "</think>" in result
-    assert "The answer is 42" not in result
-
-
-def test_think_tag_filter_keep_inside_no_think_emits_nothing() -> None:
-    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
-
-    collected: list[str] = []
-    filt = _ThinkTagFilter(collected.append, keep="inside")
-
-    filt("Hello world, this is a normal response.")
-
-    assert "".join(collected) == ""
+    assert "".join(raw) == "<think>reasoning about it</think> The answer is 42."
+    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
+    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    assert reasoning == "reasoning about it"
+    assert content == " The answer is 42."
 
 
-def test_think_tag_filter_keep_outside_strips_thinking() -> None:
-    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
+def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
 
-    collected: list[str] = []
-    filt = _ThinkTagFilter(collected.append, keep="outside")
+    raw: list[str] = []
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
+
+    splitter("Hello world, this is a normal response.")
+    splitter.flush()
+
+    assert "".join(raw) == "Hello world, this is a normal response."
+    assert events == [{
+        "type": "response_token",
+        "channel": "content",
+        "delta": "Hello world, this is a normal response.",
+    }]
+
+
+def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
 
     for token in ["<think>", "internal reasoning", "</think>", "The final answer."]:
-        filt(token)
+        splitter(token)
+    splitter.flush()
 
-    result = "".join(collected)
-    assert "internal reasoning" not in result
-    assert "<think>" not in result
-    assert "The final answer." in result
-
-
-def test_think_tag_filter_keep_outside_passes_all_when_no_think() -> None:
-    from dagent.harness_runtime.runtime_events import _ThinkTagFilter
-
-    collected: list[str] = []
-    filt = _ThinkTagFilter(collected.append, keep="outside")
-
-    filt("Hello world, no thinking here.")
-
-    assert "Hello world" in "".join(collected)
+    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
+    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    assert reasoning == "internal reasoning"
+    assert content == "The final answer."
 
 
-def test_harness_runtime_tool_mode_only_streams_thinking_tokens() -> None:
+def test_response_token_splitter_flushes_short_answer_suffix() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+
+    splitter("<think>internal</think>好")
+    splitter.flush()
+
+    assert events[-1] == {
+        "type": "response_token",
+        "channel": "content",
+        "delta": "好",
+    }
+
+
+def test_harness_runtime_tool_mode_streams_raw_and_derived_token_events() -> None:
     provider = MockProvider([
         ChatResponse(content="<think>reasoning</think>The answer."),  # ToolAgentLoop
     ])
     runtime = _runtime(provider)
 
     streamed: list[str] = []
+    events: list[dict] = []
     result = run(runtime.handle_message(
         "hello",
         mode="tool",
         on_token=streamed.append,
+        on_event=events.append,
     ))
 
     full = "".join(streamed)
-    # Thinking should be streamed
-    assert "<think>" in full
-    assert "reasoning" in full
-    assert "</think>" in full
-    # The answer from ToolAgentLoop is returned in final_answer, not streamed.
+    assert full == "<think>reasoning</think>The answer."
+    assert [
+        (event["channel"], event["delta"])
+        for event in events
+        if event.get("type") == "response_token"
+    ] == [
+        ("reasoning", "reasoning"),
+        ("content", "The answer."),
+    ]
     assert result.final_answer == "The answer."
 
 

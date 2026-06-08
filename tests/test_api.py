@@ -458,13 +458,25 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     done_index = next(index for index, event in enumerate(events) if event["type"] == "run.finished")
-    token_text = "".join(
+    raw_text = "".join(
         event["data"]["delta"]
         for event in events
-        if event["type"] == "response.output_text.delta"
+        if event["type"] == "response.raw.delta"
+    )
+    reasoning_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.reasoning.delta"
+    )
+    content_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.content.delta"
     )
     result = _stream_result(events[-1])
-    assert "<think>planning dag</think>" in token_text
+    assert "<think>planning dag</think>" in raw_text
+    assert reasoning_text == "planning dag"
+    assert _dag_agent_dsl() in content_text
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
     assert result["status"] == "completed"
     assert result["dag"]["status"] == "completed"
@@ -559,7 +571,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     assert capability["status"] == "completed"
 
 
-def test_api_resume_review_returns_final_answer_without_streaming_answer_text() -> None:
+def test_api_resume_review_streams_answer_text_once() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
@@ -585,13 +597,24 @@ def test_api_resume_review_returns_final_answer_without_streaming_answer_text() 
 
     assert resume_response.status_code == 200
     events = _sse_events(resume_response.text)
-    token_text = "".join(
+    raw_text = "".join(
         event["data"]["delta"]
         for event in events
-        if event["type"] == "response.output_text.delta"
+        if event["type"] == "response.raw.delta"
     )
-    assert "<think>observe</think>" in token_text
-    assert "DAG agent final answer" not in token_text
+    reasoning_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.reasoning.delta"
+    )
+    content_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.content.delta"
+    )
+    assert "<think>observe</think>DAG agent final answer" in raw_text
+    assert reasoning_text == "observe"
+    assert content_text == "DAG agent final answer"
     assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"
 
 

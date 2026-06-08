@@ -24,7 +24,7 @@ from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import (
-    _ThinkTagFilter,
+    _ResponseTokenSplitter,
     _dag_event_emitter,
 )
 from dagent.review import ReviewLevel
@@ -278,11 +278,11 @@ class HarnessRuntime:
         if state is None:
             return None
         if state.kind == "capability_review":
-            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            response_tokens = _response_token_stream(on_token, on_event)
             initial_outcome = await self.tool_agent.resume_review(
                 state,
                 approved=approved,
-                on_token=thinking_only,
+                on_token=response_tokens,
                 on_event=on_event,
             )
             if initial_outcome is None:
@@ -296,7 +296,7 @@ class HarnessRuntime:
                     feedback,
                     review_level=state.review_level,
                     capability_scope=state.capability_scope,
-                    on_token=thinking_only,
+                    on_token=response_tokens,
                     on_event=on_event,
                 )
 
@@ -320,14 +320,14 @@ class HarnessRuntime:
             return None
         task_id = state.task_id
         record = self.tasks[task_id]
-        thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+        response_tokens = _response_token_stream(on_token, on_event)
         initial_outcome = await self.dag_agent.resume_review(
             state,
             record=record,
             dag=dag,
             approved=approved,
             review_level=review_level,
-            on_token=thinking_only,
+            on_token=response_tokens,
             on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
         )
@@ -354,7 +354,7 @@ class HarnessRuntime:
                 review_level=review_level or state.review_level,
                 runtime_mode=record.runtime_mode,
                 capability_scope=record.capability_scope,
-                on_token=thinking_only,
+                on_token=response_tokens,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -415,40 +415,38 @@ class HarnessRuntime:
         if mode == "dag":
             if not isinstance(request, str):
                 raise TypeError("DAG message execution requires a string request.")
-            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            response_tokens = _response_token_stream(on_token, on_event)
             return await self.dag_agent.run(
                 request,
                 task_id=None,
                 review_level=review_level,
                 runtime_mode=str(mode),
                 capability_scope=capability_scope,
-                on_token=thinking_only,
+                on_token=response_tokens,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
         elif mode == "tool":
             if not isinstance(request, str):
                 raise TypeError("Tool execution requires a string request.")
-            # Tool mode: only stream <think> blocks from the loop.
-            # The final answer is returned in the done payload.
-            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            response_tokens = _response_token_stream(on_token, on_event)
             return await self.tool_agent.run(
                 request,
                 review_level=review_level,
                 capability_scope=capability_scope,
-                on_token=thinking_only,
+                on_token=response_tokens,
                 on_event=on_event,
             )
         elif mode == "dag_spec":
             if not isinstance(request, DAGSpec):
                 raise TypeError("DAGSpec execution requires a DAGSpec request.")
-            thinking_only = _ThinkTagFilter(on_token, keep="inside") if on_token else None
+            response_tokens = _response_token_stream(on_token, on_event)
             return await self.dag_agent.loop.run_static(
                 request,
                 graph_input=graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
-                on_token=thinking_only,
+                on_token=response_tokens,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -548,6 +546,15 @@ def _fallback_final_answer(loop_outcome: LoopOutcome) -> str:
     if loop_outcome.status == "completed":
         return "The task completed, but no final answer was produced."
     return "The task did not complete, and no final answer was produced."
+
+
+def _response_token_stream(
+    on_token: TokenHandler | None,
+    on_event: LoopEventHandler | None,
+) -> TokenHandler | None:
+    if on_token is None and on_event is None:
+        return None
+    return _ResponseTokenSplitter(on_raw=on_token, on_event=on_event)
 
 
 def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeResponse:

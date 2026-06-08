@@ -481,6 +481,7 @@ export function App() {
   const tokenQueueRef = useRef<string[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
+  const contentStreamedRef = useRef(false);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -748,10 +749,21 @@ export function App() {
     ensureTokenTimer();
   };
 
+  const enqueueContentToken = (content: string) => {
+    if (!content) return;
+    contentStreamedRef.current = true;
+    enqueueAssistantToken(content);
+  };
+
   const enqueueFinalAnswer = (finalAnswer: string) => {
     if (!finalAnswer) return;
     tokenQueueRef.current.push(finalAnswer);
     ensureTokenTimer();
+  };
+
+  const enqueueFinalAnswerIfMissing = (finalAnswer: string) => {
+    if (contentStreamedRef.current) return;
+    enqueueFinalAnswer(finalAnswer);
   };
 
   const waitForTokenQueue = () => {
@@ -1133,7 +1145,7 @@ export function App() {
             },
           ]);
         },
-        onToken: (content) => {
+        onContent: (content) => {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
         },
         onReview: (review) => {
@@ -1172,6 +1184,7 @@ export function App() {
     setError(null);
     setTrace([]);
     tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
     stopTokenTimer();
     setStreaming(true);
     setMessages((items) => [
@@ -1200,7 +1213,8 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onToken: enqueueAssistantToken,
+        onReasoning: enqueueAssistantToken,
+        onContent: target === 'tool' ? enqueueContentToken : undefined,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
@@ -1217,7 +1231,7 @@ export function App() {
             appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${result.dag.nodes.length} node(s).`, status: 'completed' });
           }
           handlePendingReview(result.pending_review);
-          enqueueFinalAnswer(result.output_text);
+          enqueueFinalAnswerIfMissing(result.output_text);
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
@@ -1242,6 +1256,7 @@ export function App() {
 
   const stopStream = () => {
     tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
     stopTokenTimer();
     resolveTokenDrain();
     setStreaming(false);
@@ -1253,6 +1268,7 @@ export function App() {
     setError(null);
     setReviewOpen(false);
     tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
     stopTokenTimer();
     setStreaming(true);
     setMessages((items) => [
@@ -1277,7 +1293,7 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onToken: enqueueAssistantToken,
+        onReasoning: enqueueAssistantToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
@@ -1293,7 +1309,7 @@ export function App() {
             if (shouldOpenDagReview(result.dag, result.pending_review)) setReviewOpen(true);
           }
           handlePendingReview(result.pending_review);
-          enqueueFinalAnswer(result.output_text);
+          enqueueFinalAnswerIfMissing(result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAG loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
@@ -1324,6 +1340,7 @@ export function App() {
     setCapabilityReview(null);
     setError(null);
     tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
     stopTokenTimer();
     setStreaming(true);
     setMessages((items) => [
@@ -1337,14 +1354,15 @@ export function App() {
         onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onToken: enqueueAssistantToken,
+        onReasoning: enqueueAssistantToken,
+        onContent: enqueueContentToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: handlePendingReview,
         onDone: (payload) => {
           flushQueuedTokensNow();
           handlePendingReview(payload.result.pending_review);
-          enqueueFinalAnswer(payload.result.output_text);
+          enqueueFinalAnswerIfMissing(payload.result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
         },
         onError: (message) => {
@@ -1384,6 +1402,7 @@ export function App() {
     setError(null);
     setReviewOpen(false);
     tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
     stopTokenTimer();
   };
 

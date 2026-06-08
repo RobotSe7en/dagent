@@ -24,7 +24,7 @@ async def main() -> None:
     )
     agent = dagent.ToolAgent(profile="conversation")
 
-    async for chunk in runner.stream(agent, "Answer when ready."):
+    async for chunk in runner.stream(agent, "Answer when ready.", text_stream="content"):
         if chunk.text:
             print(chunk.text, end="")
         if chunk.review:

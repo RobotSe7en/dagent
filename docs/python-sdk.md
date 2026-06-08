@@ -480,10 +480,13 @@ from the public runner.
 
 Use `Runner.stream(...)` for an async stream of `RunStreamChunk` objects. Chunks
 surface the common values directly: generated text, pending reviews, and the
-final unified `RunResult`.
+final unified `RunResult`. By default, `chunk.text` contains the raw provider
+token stream. Pass `text_stream="content"`, `text_stream="reasoning"`, or
+`text_stream="none"` to choose which low-level token channel is surfaced as
+`chunk.text`.
 
 ```python
-async for chunk in runner.stream(agent_or_dag, input):
+async for chunk in runner.stream(agent_or_dag, input, text_stream="content"):
     if chunk.text:
         print(chunk.text, end="")
     if chunk.review:
@@ -502,8 +505,10 @@ complete low-level event stream. Events use a uniform envelope:
 
 ```python
 async for event in runner.stream_events(agent_or_dag, input):
-    if event.type == "response.output_text.delta":
+    if event.type == "response.content.delta":
         print(event.data.delta, end="")
+    elif event.type == "response.raw.delta":
+        pass  # Optional raw model delta logging.
     elif event.type == "trace.updated":
         print(event.data.trace.status)
     elif event.type == "review.required":
@@ -516,7 +521,9 @@ Common stream event payloads:
 
 | Event type | Primary fields |
 |------------|----------------|
-| `response.output_text.delta` | `event.data.delta` |
+| `response.raw.delta` | `event.data.delta`, complete provider token stream |
+| `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
+| `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
 | `run.status` | `event.data.message` |
 | `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional DAG context fields |
 | `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional DAG context fields |
