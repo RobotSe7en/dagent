@@ -157,12 +157,32 @@ def test_runner_stream_yields_chunks_and_unified_result(tmp_path) -> None:
 
     chunks = run(collect())
 
-    assert any(chunk.text == "<think>" for chunk in chunks)
+    assert [chunk.text for chunk in chunks if chunk.text] == ["<think>checking</think>hello"]
     assert chunks[-1].result is not None
     assert isinstance(chunks[-1].result, dagent.RunResult)
     assert chunks[-1].result.output_text == "hello"
     assert chunks[-1].event is not None
     assert chunks[-1].event.type == "run.finished"
+
+
+def test_runner_stream_text_stream_selects_token_channel(tmp_path) -> None:
+    async def collect(text_stream: str) -> list[str]:
+        provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
+        runner = dagent.Runner(workspace=tmp_path, provider=provider)
+        return [
+            chunk.text
+            async for chunk in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                "hi",
+                text_stream=text_stream,
+            )
+            if chunk.text
+        ]
+
+    assert run(collect("raw")) == ["<think>checking</think>hello"]
+    assert run(collect("reasoning")) == ["checking"]
+    assert run(collect("content")) == ["hello"]
+    assert run(collect("none")) == []
 
 
 def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
@@ -180,12 +200,31 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
 
     assert result is not None
     assert result.model_dump(mode="json")["output_text"] == "hello"
-    assert events[0].model_dump(mode="json") == {
-        "type": "response.output_text.delta",
-        "data": {"delta": "<think>"},
-        "sequence": 1,
-        "run_id": None,
-    }
+    token_events = [
+        event.model_dump(mode="json")
+        for event in events
+        if event.type.startswith("response.")
+    ]
+    assert token_events == [
+        {
+            "type": "response.raw.delta",
+            "data": {"delta": "<think>checking</think>hello"},
+            "sequence": 1,
+            "run_id": None,
+        },
+        {
+            "type": "response.reasoning.delta",
+            "data": {"delta": "checking"},
+            "sequence": 2,
+            "run_id": None,
+        },
+        {
+            "type": "response.content.delta",
+            "data": {"delta": "hello"},
+            "sequence": 3,
+            "run_id": None,
+        },
+    ]
     assert events[-1].model_dump(mode="json")["data"]["result"]["output_text"] == "hello"
 
 
@@ -265,11 +304,43 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
 
     chunks = run(collect())
 
-    assert any(chunk.text == "<think>" for chunk in chunks)
+    assert [chunk.text for chunk in chunks if chunk.text] == ["<think>checking</think>done"]
     assert chunks[-1].result is not None
     assert chunks[-1].result.output_text == "done"
     assert chunks[-1].event is not None
     assert chunks[-1].event.type == "run.finished"
+
+
+def test_runner_resume_stream_text_stream_selects_content_channel(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    _profile_root(tmp_path)
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+        ChatResponse(content="<think>checking</think>done"),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    first = run(runner.run(agent, "write hello"))
+    assert first.review is not None
+
+    async def collect() -> list[dagent.RunStreamChunk]:
+        return [
+            chunk
+            async for chunk in runner.resume_stream(first.review.approve(), text_stream="content")
+        ]
+
+    chunks = run(collect())
+
+    assert [chunk.text for chunk in chunks if chunk.text] == ["done"]
+    assert chunks[-1].result is not None
+    assert chunks[-1].result.output_text == "done"
 
 
 def test_runner_stream_yields_typed_review_event(tmp_path) -> None:

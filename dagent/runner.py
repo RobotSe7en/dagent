@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
@@ -68,6 +68,7 @@ from dagent.schemas import (
 
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
+TextStream = Literal["raw", "reasoning", "content", "none"]
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 
 
@@ -496,6 +497,7 @@ class Runner:
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+        text_stream: TextStream = "raw",
     ) -> AsyncIterator[RunStreamChunk]:
         """Run a target and yield high-level stream chunks."""
 
@@ -506,7 +508,7 @@ class Runner:
             workspace_root=workspace_root,
             artifact_uploads=artifact_uploads,
         ):
-            yield _chunk_from_event(event)
+            yield _chunk_from_event(event, text_stream=text_stream)
 
     async def stream_events(
         self,
@@ -536,11 +538,13 @@ class Runner:
     async def resume_stream(
         self,
         decision: ReviewDecision,
+        *,
+        text_stream: TextStream = "raw",
     ) -> AsyncIterator[RunStreamChunk]:
         """Resume a pending review and yield high-level stream chunks."""
 
         async for event in self.resume_stream_events(decision):
-            yield _chunk_from_event(event)
+            yield _chunk_from_event(event, text_stream=text_stream)
 
     async def resume_stream_events(
         self,
@@ -571,7 +575,7 @@ class Runner:
 
         def emit_token(token: str) -> None:
             queue.put_nowait(with_sequence(RunStreamEvent(
-                type="response.output_text.delta",
+                type="response.raw.delta",
                 data=TextDeltaData(delta=token),
             )))
 
@@ -1001,6 +1005,15 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             ),
         )
 
+    if event_type == "response_token":
+        channel = str(data.get("channel") or "")
+        if channel in {"reasoning", "content"}:
+            return RunStreamEvent(
+                type=f"response.{channel}.delta",
+                data=TextDeltaData(delta=str(data.get("delta", ""))),
+            )
+        return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
+
     return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
 
 
@@ -1020,14 +1033,22 @@ def _review_stream_event(
     )
 
 
-def _chunk_from_event(event: RunStreamEvent) -> RunStreamChunk:
-    if isinstance(event.data, TextDeltaData):
+def _chunk_from_event(event: RunStreamEvent, *, text_stream: TextStream = "raw") -> RunStreamChunk:
+    if (
+        isinstance(event.data, TextDeltaData)
+        and text_stream != "none"
+        and event.type == _text_stream_event_type(text_stream)
+    ):
         return RunStreamChunk(text=event.data.delta, event=event)
     if isinstance(event.data, ReviewRequiredData):
         return RunStreamChunk(review=event.data.to_handle(), event=event)
     if isinstance(event.data, RunFinishedData):
         return RunStreamChunk(result=event.data.result, event=event)
     return RunStreamChunk(event=event)
+
+
+def _text_stream_event_type(text_stream: TextStream) -> str:
+    return f"response.{text_stream}.delta"
 
 
 def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:

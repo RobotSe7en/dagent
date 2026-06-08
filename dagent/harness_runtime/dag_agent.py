@@ -816,7 +816,14 @@ async def _chat_for_dag(
             on_token(event.content)
         elif event.type == "done":
             response = event.response
+    _flush_token_handler(on_token)
     return response or ChatResponse(content=content)
+
+
+def _flush_token_handler(on_token: Callable[[str], None] | None) -> None:
+    flush = getattr(on_token, "flush", None)
+    if callable(flush):
+        flush()
 
 
 # ------------------------------------------------------------------

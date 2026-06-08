@@ -535,6 +535,7 @@ class ToolAgentLoop:
                 on_token(event.content)
             elif event.type == "done":
                 response = event.response
+        _flush_token_handler(on_token)
         return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
@@ -638,6 +639,12 @@ def _exception_message(exc: Exception) -> str:
     if isinstance(exc, KeyError) and exc.args:
         return str(exc.args[0])
     return str(exc)
+
+
+def _flush_token_handler(on_token: TokenHandler | None) -> None:
+    flush = getattr(on_token, "flush", None)
+    if callable(flush):
+        flush()
 
 
 def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:

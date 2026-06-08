@@ -202,8 +202,8 @@ wheels = [
 ]
 
 [[package]]
-name = "dagent"
-version = "0.1.0"
+name = "dagent-ai"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "openai" },
