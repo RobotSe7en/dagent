@@ -12,9 +12,9 @@ from dagent.schemas import (
     DAGRun,
     PendingReview,
     ReviewKind,
+    RunState,
     RunTrace,
     RunTraceNode,
-    RuntimeResponse,
     ValidationIssue,
 )
 
@@ -41,66 +41,57 @@ RunStreamEventType = Literal[
 
 @dataclass(frozen=True)
 class RunResult:
-    """Stable public wrapper around all runner execution results."""
+    """Stable public SDK result for agent and DAG runs."""
 
-    raw_response: RuntimeResponse | DAGRun
-    kind: RunResultKind | None = None
-
-    def __post_init__(self) -> None:
-        if self.kind is None:
-            object.__setattr__(self, "kind", _infer_kind(self.raw_response))
+    state: RunState
+    output_text: str = ""
+    messages: list[dict[str, Any]] = field(default_factory=list)
 
     @property
-    def dag_run(self) -> DAGRun | None:
-        return self.raw_response if isinstance(self.raw_response, DAGRun) else None
+    def kind(self) -> RunResultKind:
+        return self.state.kind
 
     @property
     def status(self) -> str:
-        return self.raw_response.status
+        return self.state.status
 
     @property
-    def output_text(self) -> str:
-        if isinstance(self.raw_response, RuntimeResponse):
-            return self.raw_response.final_answer
-        return _dag_run_output_text(self.raw_response)
-
-    @property
-    def dag(self) -> DAG | None:
-        return self.raw_response.dag
-
-    @property
-    def trace(self) -> RunTrace | None:
-        return self.raw_response.trace
-
-    @property
-    def run_id(self) -> str | None:
-        if isinstance(self.raw_response, DAGRun):
-            return self.raw_response.run_id
-        return self.raw_response.task_id
-
-    @property
-    def spec_id(self) -> str | None:
-        if isinstance(self.raw_response, DAGRun):
-            return self.raw_response.spec_id
-        return None
-
-    @property
-    def workspace_path(self) -> str | None:
-        if isinstance(self.raw_response, DAGRun):
-            return self.raw_response.workspace_path
-        return None
-
-    @property
-    def events(self) -> list[dict[str, Any]]:
-        if isinstance(self.raw_response, RuntimeResponse):
-            return self.raw_response.events
-        return []
+    def run_id(self) -> str:
+        return self.state.run_id
 
     @property
     def pending_review(self) -> PendingReview | None:
-        if isinstance(self.raw_response, RuntimeResponse):
-            return self.raw_response.pending_review
-        return None
+        return self.state.pending_review
+
+    @property
+    def dag_run(self) -> DAGRun | None:
+        if self.kind != "static_dag":
+            return None
+        if self.state.dag is None or self.state.trace is None:
+            return None
+        return DAGRun(
+            run_id=self.run_id,
+            spec_id=self.state.spec_id,
+            workspace_path=self.state.workspace_path or "",
+            dag=self.state.dag,
+            trace=self.state.trace,
+        )
+
+    @property
+    def dag(self) -> DAG | None:
+        return self.state.dag
+
+    @property
+    def trace(self) -> RunTrace | None:
+        return self.state.trace
+
+    @property
+    def spec_id(self) -> str | None:
+        return self.state.spec_id
+
+    @property
+    def workspace_path(self) -> str | None:
+        return self.state.workspace_path
 
     @property
     def requires_review(self) -> bool:
@@ -132,19 +123,9 @@ class RunResult:
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return {
-            "kind": self.kind,
-            "status": self.status,
-            "run_id": self.run_id,
             "output_text": self.output_text,
-            "dag": _dump(self.dag, mode=mode),
-            "trace": _dump(self.trace, mode=mode),
-            "dag_run": _dump(self.dag_run, mode=mode),
-            "spec_id": self.spec_id,
-            "workspace_path": self.workspace_path,
-            "events": _dump(self.events, mode=mode),
-            "pending_review": _dump(self.pending_review, mode=mode),
-            "requires_review": self.requires_review,
-            "artifacts": _dump(self.artifacts, mode=mode),
+            "messages": _dump(self.messages, mode=mode),
+            "state": _dump(self.state, mode=mode),
         }
 
 
@@ -214,7 +195,7 @@ class CapabilityCallStartedData:
     invocation_id: str
     capability_id: str
     arguments: dict[str, Any] = field(default_factory=dict)
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -225,7 +206,7 @@ class CapabilityCallCompletedData:
     invocation_id: str
     capability_id: str
     content: str = ""
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -236,7 +217,7 @@ class CapabilityCallFailedData:
     invocation_id: str
     capability_id: str
     content: str = ""
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -304,24 +285,6 @@ class RunStreamChunk:
             "result": self.result.model_dump(mode=mode) if self.result is not None else None,
             "event": self.event.model_dump(mode=mode) if self.event is not None else None,
         }
-
-
-def _infer_kind(raw: RuntimeResponse | DAGRun) -> RunResultKind:
-    if isinstance(raw, DAGRun):
-        return "static_dag"
-    if raw.dag is not None:
-        return "dynamic_dag"
-    return "tool"
-
-
-def _dag_run_output_text(run: DAGRun) -> str:
-    if run.trace.root.output:
-        return str(run.trace.root.output)
-    if run.status == "completed":
-        return "DAG execution completed."
-    if run.status == "failed":
-        return "DAG execution failed."
-    return f"DAG execution {run.status}."
 
 
 def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:

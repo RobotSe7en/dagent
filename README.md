@@ -175,7 +175,9 @@ async def main():
     runner = dagent.Runner(provider=provider, workspace=".", capabilities=[search])
     agent = dagent.AutoAgent(capabilities=["tool.search"], skills=["writing/terse"])
 
-    result = await runner.run(agent, "Answer directly or plan if orchestration helps.")
+    messages = [{"role": "user", "content": "Answer directly or plan if orchestration helps."}]
+    result = await runner.run(agent, messages=messages)
+    messages += result.messages
     print(result.kind)
     print(result.output_text)
 
@@ -204,7 +206,9 @@ async def main():
         skills=["writing/terse"],
     )
 
-    result = await runner.run(agent, "Use echo to respond with hello.")
+    messages = [{"role": "user", "content": "Use echo to respond with hello."}]
+    result = await runner.run(agent, messages=messages)
+    messages += result.messages
     print(result.output_text)
     print(result.model_dump(mode="json"))
 
@@ -229,9 +233,11 @@ async def main():
     runner = dagent.Runner(provider=provider, workspace=".", capabilities=[search])
     agent = dagent.DagAgent(capabilities=["tool.search"], review="careful")
 
-    result = await runner.run(agent, "Research dagent and write a short note.")
+    messages = [{"role": "user", "content": "Research dagent and write a short note."}]
+    result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve())
+        result = await runner.resume(result.review.approve(), state=result.state)
+    messages += result.messages
 
     print(result.output_text)
 
@@ -288,7 +294,7 @@ async def main():
     dagent.validate_dag_spec(dag.to_dag_spec())
 
     runner = dagent.Runner(provider=provider, workspace=".")
-    result = await runner.run(dag, input=ResearchInput(query="dagent"))
+    result = await runner.run(dag, graph_input=ResearchInput(query="dagent"))
     print(result.status)
     print(result.node_output("render"))
 
@@ -297,7 +303,10 @@ asyncio.run(main())
 ```
 
 `Runner.run(...)` always returns `RunResult`, including static `Dag` and
-`DAGSpec` runs. Customize static DAGs with Pydantic graph inputs, typed tool
+`DAGSpec` runs. Agent targets accept OpenAI-compatible `messages`; append
+`result.messages` to your conversation and persist `result.state` when you need
+to resume reviews or continue dagent's internal thread later. Static DAGs use
+`graph_input`. Customize static DAGs with Pydantic graph inputs, typed tool
 return values, explicit `dag.add_edge(...)` dependencies, artifact references, and
 per-node boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full
 SDK.
@@ -385,7 +394,7 @@ web/                React + Vite frontend
 tests/              pytest suite
 ```
 
-Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
+Key runtime contracts such as `RunState`, `RunTrace`, `LoopOutcome`,
 `PendingReview`, and validation result types live in `dagent/schemas`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 

@@ -46,7 +46,10 @@ async def main() -> None:
         capabilities=["tool.echo"],
     )
 
-    result = await runner.run(agent, "Use echo to respond with hello.")
+    result = await runner.run(
+        agent,
+        messages=[{"role": "user", "content": "Use echo to respond with hello."}],
+    )
 
     print(result.status)
     print(result.output_text)

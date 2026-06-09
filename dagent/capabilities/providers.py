@@ -219,21 +219,21 @@ class AgentCapabilityProvider:
             self.session_store.save(
                 task_id=context.task_id,
                 node_id=context.node.id,
-                messages=outcome.messages,
+                messages=outcome.state.internal_messages,
             )
-        if outcome.status == "completed":
+        if outcome.state.status == "completed":
             return _agent_result(
                 invocation,
                 status="completed",
-                content=outcome.final_answer,
-                trace=outcome.trace.model_dump(mode="json") if outcome.trace is not None else None,
+                content=outcome.output_text,
+                trace=outcome.state.trace.model_dump(mode="json") if outcome.state.trace is not None else None,
             )
         return _agent_result(
             invocation,
             status="failed",
-            error=outcome.final_answer or outcome.execution_context or outcome.status,
-            stop_reason=outcome.status,
-            trace=outcome.trace.model_dump(mode="json") if outcome.trace is not None else None,
+            error=outcome.output_text or outcome.execution_context or outcome.state.status,
+            stop_reason=outcome.state.status,
+            trace=outcome.state.trace.model_dump(mode="json") if outcome.state.trace is not None else None,
         )
 
     def _messages_for_invocation(

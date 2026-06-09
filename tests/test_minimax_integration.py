@@ -18,9 +18,14 @@ async def test_minimax_dag_agent_generates_valid_dag() -> None:
 
     result = await runner.run(
         agent,
-        "Create a low-risk plan that directly answers what dagent is without reading files.",
+        messages=[
+            {
+                "role": "user",
+                "content": "Create a low-risk plan that directly answers what dagent is without reading files.",
+            }
+        ],
     )
-    record = runner.runtime.tasks[result.run_id]
+    record = runner.runtime.runs[result.run_id]
 
     assert record.dag.task_id == result.run_id
     assert record.dag.nodes
@@ -34,7 +39,12 @@ async def test_minimax_harness_executes_safe_dag() -> None:
 
     result = await runner.run(
         agent,
-        "Create and execute a safe plan that answers in one sentence: dagent is a human-reviewed DAG agent framework.",
+        messages=[
+            {
+                "role": "user",
+                "content": "Create and execute a safe plan that answers in one sentence: dagent is a human-reviewed DAG agent framework.",
+            }
+        ],
     )
     if result.trace is None:
         assert result.dag is not None

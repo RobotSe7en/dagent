@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
@@ -15,8 +15,12 @@ from dagent.harness_runtime.dag_builder import (
     strip_thinking_blocks,
 )
 from dagent.harness_runtime.capability_executor import CapabilityExecutionContext, CapabilityExecutor
-from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
-from dagent.harness_runtime.task_record import ReviewContinuation
+from dagent.harness_runtime.capability_scope import (
+    CapabilityScope,
+    DEFAULT_CAPABILITY_SCOPE,
+    capability_scope_from_state,
+    capability_scope_to_state,
+)
 from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
@@ -27,6 +31,7 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
+    RunState,
     RunTrace,
     RunTraceError,
     RunTraceNode,
@@ -43,7 +48,6 @@ class ControlToolResult:
 
     content: str
     stop_reason: str | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
     needs_review: bool = False
     review_payload: dict[str, Any] | None = None
 
@@ -70,7 +74,7 @@ class ToolAgent:
         self.max_steps = max_steps
         self.tools = self.loop.available_capabilities()
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
-        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.messages: list[dict[str, Any]] = []
         self.trace: RunTrace | None = None
 
     def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
@@ -83,19 +87,19 @@ class ToolAgent:
             )
         )
 
-    def _messages_for_scope(self, capability_scope: CapabilityScope) -> list[dict[str, Any]]:
-        messages = list(self.messages)
+    def _provider_messages(
+        self,
+        messages: list[dict[str, Any]],
+        capability_scope: CapabilityScope,
+    ) -> list[dict[str, Any]]:
         system_message = self._build_system_message(capability_scope)
-        if messages and messages[0].get("role") == "system":
-            messages[0] = dict(system_message)
-        else:
-            messages.insert(0, dict(system_message))
-        return messages
+        return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
         self,
         message: str,
         *,
+        run_id: str | None = None,
         review_level: ReviewLevel = "fast",
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
@@ -103,17 +107,39 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Append a user turn to the tool-agent thread and run the bounded loop."""
         boundary = Boundary(mode="read_only", allowed_paths=["."])
-        self.messages = self._messages_for_scope(capability_scope)
-        self.messages.append(
-            self.prompt_builder.build_user_message(
-                "{{ user_message }}",
-                {"user_message": message},
-            )
+        return await self.run_messages(
+            [
+                self.prompt_builder.build_user_message(
+                    "{{ user_message }}",
+                    {"user_message": message},
+                )
+            ],
+            run_id=run_id,
+            review_level=review_level,
+            capability_scope=capability_scope,
+            boundary=boundary,
+            on_token=on_token,
+            on_event=on_event,
         )
+
+    async def run_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        run_id: str | None = None,
+        review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        boundary: Boundary | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Run a tool-agent thread from OpenAI-compatible messages."""
+        self.messages = [dict(message) for message in messages]
         return await self._continue_messages(
             self.messages,
+            run_id=run_id,
             review_level=review_level,
-            boundary=boundary,
+            boundary=boundary or Boundary(mode="read_only", allowed_paths=["."]),
             capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
@@ -121,16 +147,18 @@ class ToolAgent:
 
     async def resume_review(
         self,
-        state: ReviewContinuation,
+        state: RunState,
         *,
         approved: bool,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome | None:
         """Resume a reviewed tool call and continue the tool-agent loop."""
+        pending_review = state.pending_review
         invocation = state.pending_invocation
-        if state.kind != "capability_review" or invocation is None:
+        if pending_review is None or pending_review.kind != "capability_review" or invocation is None:
             return None
+        capability_scope = capability_scope_from_state(state.capability_scope)
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         result: CapabilityResult | None = None
@@ -139,8 +167,8 @@ class ToolAgent:
                 result = await self.loop.capability_executor.execute(
                     invocation,
                     context=CapabilityExecutionContext(
-                        task_id=state.task_id,
-                        skills=state.capability_scope.skills,
+                        task_id=state.run_id,
+                        skills=capability_scope.skills,
                     ),
                 )
                 feed_content = _tool_content(result)
@@ -160,23 +188,33 @@ class ToolAgent:
             tool_name=self.loop.tool_adapter.function_name_for_capability(
                 invocation.capability_id,
                 enabled_toolsets=self.loop.enabled_toolsets,
-                capability_ids=state.capability_scope.capability_ids,
+                capability_ids=capability_scope.capability_ids,
             ),
             content=feed_content,
         )
-        return await self._continue_messages(
+        reviewed_trace = self.trace
+        outcome = await self._continue_messages(
             self.messages,
+            run_id=state.run_id,
             review_level=state.review_level,
             boundary=invocation.boundary,
-            capability_scope=state.capability_scope,
+            capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
         )
+        if reviewed_trace is not None and outcome.state.trace is not None:
+            next_state = outcome.state.model_copy(
+                update={"trace": reviewed_trace.merge(outcome.state.trace)}
+            )
+            outcome = outcome.model_copy(update={"state": next_state})
+            self.trace = next_state.trace
+        return outcome
 
     async def _continue_messages(
         self,
         messages: list[dict[str, Any]],
         *,
+        run_id: str | None = None,
         review_level: ReviewLevel,
         boundary: Boundary,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
@@ -185,20 +223,26 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
+        provider_messages = self._provider_messages(messages, capability_scope)
         outcome = await self.loop.run(
             "",
+            run_id=run_id,
             boundary=boundary,
             max_steps=self.max_steps,
-            messages=messages,
+            messages=provider_messages,
             control_tool_names=control_tool_names,
             review_level=review_level,
             capability_ids=capability_scope.capability_ids,
+            capability_scope=capability_scope,
             skills=capability_scope.skills,
             on_token=on_token,
             on_event=on_event,
         )
-        self.messages = list(outcome.messages)
-        self.trace = outcome.trace
+        internal_messages = _strip_system_message(outcome.state.internal_messages)
+        state = outcome.state.model_copy(update={"internal_messages": internal_messages})
+        outcome = outcome.model_copy(update={"state": state})
+        self.messages = list(internal_messages)
+        self.trace = state.trace
         return outcome
 
     def reviewable_tool_names(self, capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE) -> set[str]:
@@ -284,12 +328,14 @@ class ToolAgentLoop:
         self,
         user_message: str,
         *,
+        run_id: str | None = None,
         boundary: Boundary,
         max_steps: int = 8,
         messages: list[dict[str, Any]] | None = None,
         control_tool_names: set[str] | None = None,
         review_level: ReviewLevel | None = None,
         capability_ids: Sequence[str] | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
         skills: tuple[str, ...] | None = None,
@@ -301,13 +347,17 @@ class ToolAgentLoop:
         loop_messages = list(messages or [])
         if user_message:
             loop_messages.append({"role": "user", "content": user_message})
-        run_id = f"tool_run_{uuid4().hex}"
-        trace = RunTrace(run_id=run_id, root=RunTraceNode.run(run_id=run_id))
-        control_events: list[dict[str, Any]] = []
+        resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
+        trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
         invocations: list[CapabilityInvocation] = []
         execution_context = _execution_context(
             capability_context,
-            task_id=run_id,
+            task_id=resolved_run_id,
+            skills=skills,
+        )
+        state_scope = _state_capability_scope(
+            capability_scope,
+            capability_ids=capability_ids,
             skills=skills,
         )
         control_tool_handler: ControlToolHandler | None = None
@@ -344,13 +394,16 @@ class ToolAgentLoop:
                 trace.root.status = "completed"
                 trace.root.output = strip_thinking_blocks(response.content).strip()
                 return LoopOutcome(
-                    status="completed",
+                    state=_tool_run_state(
+                        run_id=resolved_run_id,
+                        status="completed",
+                        messages=loop_messages,
+                        trace=trace,
+                        invocations=invocations,
+                        capability_scope=state_scope,
+                    ),
                     execution_context=_format_capability_execution_context(loop_messages),
-                    final_answer=strip_thinking_blocks(response.content).strip(),
-                    messages=loop_messages,
-                    events=control_events,
-                    invocations=invocations,
-                    trace=trace,
+                    output_text=strip_thinking_blocks(response.content).strip(),
                 )
 
             for tool_call in response.tool_calls:
@@ -390,7 +443,6 @@ class ToolAgentLoop:
                             )
                         )
                         raise
-                    control_events.extend(control_result.events)
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -432,25 +484,32 @@ class ToolAgentLoop:
                             payload=control_result.review_payload or {},
                         )
                         return LoopOutcome(
-                            status="awaiting_review",
+                            state=_tool_run_state(
+                                run_id=resolved_run_id,
+                                status="awaiting_review",
+                                messages=loop_messages,
+                                trace=trace,
+                                invocations=invocations,
+                                pending_review=pending_review,
+                                pending_invocation=invocation,
+                                capability_scope=state_scope,
+                            ),
                             execution_context=_format_capability_execution_context(loop_messages),
-                            messages=loop_messages,
-                            events=control_events,
-                            invocations=invocations,
-                            trace=trace,
-                            pending_review=pending_review,
                         )
                     if control_result.stop_reason:
                         trace.root.status = "failed"
                         trace.root.output = control_result.content
                         return LoopOutcome(
-                            status="failed",
+                            state=_tool_run_state(
+                                run_id=resolved_run_id,
+                                status="failed",
+                                messages=loop_messages,
+                                trace=trace,
+                                invocations=invocations,
+                                capability_scope=state_scope,
+                            ),
                             execution_context=_format_capability_execution_context(loop_messages),
-                            final_answer=control_result.content,
-                            messages=loop_messages,
-                            events=control_events,
-                            invocations=invocations,
-                            trace=trace,
+                            output_text=control_result.content,
                         )
                     continue
 
@@ -501,12 +560,15 @@ class ToolAgentLoop:
 
         trace.root.status = "failed"
         return LoopOutcome(
-            status="failed",
+            state=_tool_run_state(
+                run_id=resolved_run_id,
+                status="failed",
+                messages=loop_messages,
+                trace=trace,
+                invocations=invocations,
+                capability_scope=state_scope,
+            ),
             execution_context=_format_capability_execution_context(loop_messages),
-            messages=loop_messages,
-            events=control_events,
-            invocations=invocations,
-            trace=trace,
         )
 
     def _llm_tool_definitions(
@@ -626,6 +688,53 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
+
+
+def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if messages and messages[0].get("role") == "system":
+        return [dict(message) for message in messages[1:]]
+    return [dict(message) for message in messages]
+
+
+def _tool_run_state(
+    *,
+    run_id: str,
+    status: str,
+    messages: list[dict[str, Any]],
+    trace: RunTrace,
+    invocations: list[CapabilityInvocation],
+    pending_review: PendingReview | None = None,
+    pending_invocation: CapabilityInvocation | None = None,
+    capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+) -> RunState:
+    return RunState(
+        run_id=run_id,
+        kind="tool",
+        status=status,  # type: ignore[arg-type]
+        internal_messages=[dict(message) for message in messages],
+        trace=trace,
+        invocations=list(invocations),
+        pending_review=pending_review,
+        pending_invocation=pending_invocation,
+        capability_scope=capability_scope_to_state(capability_scope),
+        runtime_mode="tool",
+    )
+
+
+def _state_capability_scope(
+    capability_scope: CapabilityScope,
+    *,
+    capability_ids: Sequence[str] | None,
+    skills: tuple[str, ...] | None,
+) -> CapabilityScope:
+    if capability_scope != DEFAULT_CAPABILITY_SCOPE:
+        return capability_scope
+    if capability_ids is None and skills is None:
+        return capability_scope
+    return CapabilityScope(
+        capability_ids=None if capability_ids is None else tuple(capability_ids),
+        skills=skills,
+    )
 
 
 def _tool_content(result: CapabilityResult) -> str:

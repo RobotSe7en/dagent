@@ -31,8 +31,8 @@ from dagent.schemas import (
     DAGSpec,
     PendingReview,
     RiskLevel,
+    RunState,
     RunTrace,
-    RuntimeResponse,
 )
 
 __version__ = "0.2.2"
@@ -70,10 +70,10 @@ __all__ = [
     "ReviewHandle",
     "RiskLevel",
     "RunResult",
+    "RunState",
     "RunStreamChunk",
     "RunStreamEvent",
     "RunTrace",
-    "RuntimeResponse",
     "Runner",
     "SkillAmbiguousError",
     "SkillEntry",

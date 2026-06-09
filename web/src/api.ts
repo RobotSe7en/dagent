@@ -237,17 +237,22 @@ export async function reloadMcpServers(): Promise<MCPServer[]> {
   return data.servers ?? [];
 }
 
-interface ApiRunResult {
+export interface ApiRunState {
+  run_id?: string | null;
   kind: 'tool' | 'dynamic_dag' | 'static_dag';
   status: string;
-  run_id: string | null;
-  spec_id?: string | null;
-  workspace_path?: string | null;
-  output_text: string;
-  dag: Dag | null;
+  internal_messages: Array<Record<string, unknown>>;
+  dag?: Dag | null;
   trace?: RunTrace | null;
   pending_review?: ReviewEventPayload | null;
-  dag_run?: DagRun | null;
+  spec_id?: string | null;
+  workspace_path?: string | null;
+}
+
+interface ApiRunResult {
+  output_text: string;
+  messages: Array<Record<string, unknown>>;
+  state?: ApiRunState | null;
 }
 
 interface FinishedPayload {
@@ -288,12 +293,18 @@ export async function streamTask(
   reviewLevel: ReviewLevel,
   handlers: StreamHandlers,
   capabilityScope?: ChatCapabilityScopePayload,
+  state?: ApiRunState | null,
 ): Promise<void> {
-  const body: Record<string, unknown> = { message, target, review_level: reviewLevel };
+  const body: Record<string, unknown> = {
+    messages: [{ role: 'user', content: message }],
+    target,
+    review_level: reviewLevel,
+  };
   if (capabilityScope) {
     body.capability_ids = capabilityScope.capabilityIds;
     body.skills = capabilityScope.skills;
   }
+  if (state) body.state = state;
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -312,6 +323,7 @@ export async function resumeDagReview(
   reviewLevel: ReviewLevel,
   approved: boolean,
   handlers: StreamHandlers,
+  state?: ApiRunState | null,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
@@ -321,6 +333,7 @@ export async function resumeDagReview(
       dag: approved ? dag : null,
       approved,
       review_level: reviewLevel,
+      state,
     }),
   });
   if (!response.ok || !response.body) {
@@ -339,7 +352,7 @@ export async function runDagStream(
 ): Promise<void> {
   const payload: Record<string, unknown> = {};
   if (options.workspaceRoot?.trim()) payload.workspace_root = options.workspaceRoot.trim();
-  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.input = options.input;
+  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.graph_input = options.input;
   const body = Object.keys(payload).length ? JSON.stringify(payload) : undefined;
   const response = await fetch(`${API_BASE}/dags/${encodeURIComponent(specId)}/run/stream`, {
     method: 'POST',
@@ -426,7 +439,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       }
       if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
-        const trace = result.trace ?? result.dag_run?.trace;
+        const trace = result.state?.trace ?? undefined;
         emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
         handlers.onDone?.({ type: 'run.finished', result });
       }
@@ -441,7 +454,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function capabilityContext(data: Record<string, unknown>) {
   return {
-    task_id: nullableString(data.task_id),
+    run_id: nullableString(data.run_id),
     dag_id: nullableString(data.dag_id),
     node_id: nullableString(data.node_id),
     parent_capability_id: nullableString(data.parent_capability_id),
@@ -563,11 +576,12 @@ export async function resumeCapabilityReview(
   reviewId: string,
   approved: boolean,
   handlers: StreamHandlers,
+  state?: ApiRunState | null,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ review_id: reviewId, approved }),
+    body: JSON.stringify({ review_id: reviewId, approved, state }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage((response as unknown) as Response));

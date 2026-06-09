@@ -106,10 +106,10 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
 
     outcome = run(loop.run("say hi", boundary=Boundary(mode="read_only")))
 
-    assert outcome.trace is not None
-    assert outcome.trace.root.kind == "run"
-    model_call = outcome.trace.root.children[0]
-    capability = outcome.trace.root.children[1]
+    assert outcome.state.trace is not None
+    assert outcome.state.trace.root.kind == "run"
+    model_call = outcome.state.trace.root.children[0]
+    capability = outcome.state.trace.root.children[1]
     assert model_call.kind == "model_call"
     assert capability.kind == "capability_call"
     assert capability.capability_execution is not None

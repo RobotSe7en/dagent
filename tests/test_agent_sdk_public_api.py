@@ -12,6 +12,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def user_messages(content: str) -> list[dict[str, str]]:
+    return [{"role": "user", "content": content}]
+
+
 def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "tool")
     assert hasattr(dagent.capabilities, "tool")
@@ -45,6 +49,7 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "ProviderConfig")
     assert not hasattr(dagent, "RuntimeMode")
     assert not hasattr(dagent, "run_dag")
+    assert not hasattr(dagent.schemas, "RunMessage")
 
 
 def test_auto_agent_is_public_target_without_mode_field() -> None:
@@ -126,7 +131,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
         profile_root=tmp_path / "profiles",
     )
 
-    result = run(runner.run(agent, "hi"))
+    result = run(runner.run(agent, messages=user_messages("hi")))
 
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
@@ -138,7 +143,7 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
 
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
@@ -152,7 +157,10 @@ def test_runner_stream_yields_chunks_and_unified_result(tmp_path) -> None:
     async def collect() -> list[dagent.RunStreamChunk]:
         return [
             chunk
-            async for chunk in runner.stream(dagent.ToolAgent(profile="conversation"), "hi")
+            async for chunk in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
         ]
 
     chunks = run(collect())
@@ -173,7 +181,7 @@ def test_runner_stream_text_stream_selects_token_channel(tmp_path) -> None:
             chunk.text
             async for chunk in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
-                "hi",
+                messages=user_messages("hi"),
                 text_stream=text_stream,
             )
             if chunk.text
@@ -192,7 +200,10 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream_events(dagent.ToolAgent(profile="conversation"), "hi")
+            async for event in runner.stream_events(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
         ]
 
     events = run(collect())
@@ -233,14 +244,14 @@ def test_runner_stream_yields_typed_status_events_and_errors(tmp_path) -> None:
     events: list[dagent.RunStreamEvent] = []
 
     async def collect() -> None:
-        async for event in runner.stream_events(dagent.ToolAgent(profile="conversation"), None):
+        async for event in runner.stream_events(dagent.ToolAgent(profile="conversation")):
             events.append(event)
 
-    with pytest.raises(TypeError, match="input is required"):
+    with pytest.raises(TypeError, match="messages is required"):
         run(collect())
 
     assert events[-1].type == "run.failed"
-    assert events[-1].data.message == "input is required for ToolAgent targets."
+    assert events[-1].data.message == "messages is required for ToolAgent targets."
     assert events[-1].data.error_type == "TypeError"
 
 
@@ -252,7 +263,7 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     agent = dagent.AutoAgent(capabilities=[], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, "hi"))
+    result = run(runner.run(agent, messages=user_messages("hi")))
 
     assert result.kind == "tool"
     assert result.output_text == "hello from tool"
@@ -271,7 +282,7 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     agent = dagent.AutoAgent(capabilities=[search], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(agent, "research X"))
+    result = run(runner.run(agent, messages=user_messages("research X")))
 
     assert result.kind == "dynamic_dag"
     assert result.output_text == "Report: found:X"
@@ -295,7 +306,7 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, "write hello"))
+    first = run(runner.run(agent, messages=user_messages("write hello")))
     assert first.requires_review
     assert first.review is not None
 
@@ -327,7 +338,7 @@ def test_runner_resume_stream_text_stream_selects_content_channel(tmp_path) -> N
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, "write hello"))
+    first = run(runner.run(agent, messages=user_messages("write hello")))
     assert first.review is not None
 
     async def collect() -> list[dagent.RunStreamChunk]:
@@ -359,7 +370,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamEvent]:
-        return [event async for event in runner.stream_events(agent, "write hello")]
+        return [event async for event in runner.stream_events(agent, messages=user_messages("write hello"))]
 
     events = run(collect())
 
@@ -369,7 +380,8 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert review_events[-1].data.message == "Review capability call: tool.write"
     assert events[-1].type == "run.finished"
     assert events[-1].data.result.requires_review
-    assert events[-1].data.result.model_dump(mode="json")["pending_review"]["kind"] == "capability_review"
+    dumped = events[-1].data.result.model_dump(mode="json")
+    assert dumped["state"]["pending_review"]["kind"] == "capability_review"
 
 
 def test_runner_stream_chunk_exposes_review_without_event_type_branching(tmp_path) -> None:
@@ -388,7 +400,7 @@ def test_runner_stream_chunk_exposes_review_without_event_type_branching(tmp_pat
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamChunk]:
-        return [chunk async for chunk in runner.stream(agent, "write hello")]
+        return [chunk async for chunk in runner.stream(agent, messages=user_messages("write hello"))]
 
     chunks = run(collect())
 
@@ -403,14 +415,34 @@ def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
 
     assert result.output_text == "hello"
     assert result.run_id is not None
-    assert result.raw_response is not None
+    assert result.state is not None
     assert result.requires_review is False
     for legacy_name in ("final_answer", "output", "task_id", "awaiting_review", "raw"):
         assert not hasattr(result, legacy_name)
+    assert not hasattr(dagent.RunResult, "from_dag_run")
+    assert hasattr(dagent.Runner, "run_trace")
+    assert not hasattr(dagent.Runner, "task_trace")
+
+
+def test_capability_stream_events_use_run_id_not_task_id(tmp_path) -> None:
+    from dagent.runner import _stream_event_from_runtime
+
+    started = _stream_event_from_runtime({
+        "type": "capability_call",
+        "invocation_id": "call_1",
+        "capability_id": "tool.echo",
+        "arguments": {"text": "ok"},
+        "task_id": "run_1",
+        "dag_id": "dag_1",
+        "node_id": "answer",
+    })
+
+    assert started.data.run_id == "run_1"
+    assert not hasattr(started.data, "task_id")
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
@@ -434,7 +466,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         capabilities=[search],
     )
 
-    result = run(runner.run(agent, "research X"))
+    result = run(runner.run(agent, messages=user_messages("research X")))
 
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
@@ -454,7 +486,7 @@ def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
     )
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    result = run(runner.run(agent, "hi"))
+    result = run(runner.run(agent, messages=user_messages("hi")))
 
     assert result.output_text == "hello"
     assert runner.runtime.capability_catalog.get("tool.search") is not None
@@ -470,7 +502,7 @@ def test_runner_rejects_unknown_agent_capability_id(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     with pytest.raises(KeyError, match="tool.missing"):
-        run(runner.run(agent, "hi"))
+        run(runner.run(agent, messages=user_messages("hi")))
 
 
 def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
@@ -495,7 +527,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
         profile_root=tmp_path / "profiles",
     )
 
-    run(runner.run(agent, "hi"))
+    run(runner.run(agent, messages=user_messages("hi")))
 
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "search" in system_message
@@ -518,7 +550,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
     runner = dagent.Runner(workspace=tmp_path, provider=provider, skill_roots=[skill_root])
 
-    result = run(runner.run(agent, "list skills"))
+    result = run(runner.run(agent, messages=user_messages("list skills")))
 
     assert result.output_text == "done"
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
@@ -537,7 +569,7 @@ def test_runner_agent_empty_skills_disables_skill_tools(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    run(runner.run(agent, "no tools"))
+    run(runner.run(agent, messages=user_messages("no tools")))
 
     assert provider.requests[0]["tools"] == []
 
@@ -555,7 +587,7 @@ def test_runner_default_agent_capabilities_exclude_registered_agent_capabilities
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     run(runner.run(dag, workspace_root=tmp_path / "runs"))
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "hi"))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
 
     assert result.output_text == "hello"
     assert "writer" not in _tool_names(provider.requests[-1])
@@ -577,7 +609,7 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, "write hello"))
+    first = run(runner.run(agent, messages=user_messages("write hello")))
     assert first.requires_review
     assert first.review is not None
 
@@ -587,7 +619,73 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     assert resumed.output_text == "done"
 
 
-def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) -> None:
+def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+        ChatResponse(content="done"),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    first_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+
+    first = run(first_runner.run(agent, messages=user_messages("write hello")))
+    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first_runner.close()
+
+    second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+    resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+
+    assert resumed is not None
+    assert resumed.output_text == "done"
+    assert [message["role"] for message in resumed.messages] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert resumed.messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert resumed.messages[1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "write",
+        "content": "wrote:hello",
+    }
+    assert resumed.messages[-1]["content"] == "done"
+
+
+def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
+    _profile_root(tmp_path, "planner")
+    provider = MockProvider([
+        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content="Report: found:X"),
+    ])
+
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
+    first_runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    first = run(first_runner.run(agent, messages=user_messages("research X")))
+    assert first.requires_review
+    assert first.review is not None
+    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first_runner.close()
+
+    second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
+    resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+
+    assert resumed is not None
+    assert resumed.output_text == "Report: found:X"
+
+
+def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
         ChatResponse(content='task: research\nlookup = search(q="X")'),
@@ -601,7 +699,7 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
     agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
-    first = run(runner.run(agent, "research X"))
+    first = run(runner.run(agent, messages=user_messages("research X")))
     assert first.requires_review
     assert first.review is not None
 
@@ -612,8 +710,6 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"
-    resume_system_message = provider.requests[-1]["messages"][0]["content"]
-    assert "You are a planner profile." in resume_system_message
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:

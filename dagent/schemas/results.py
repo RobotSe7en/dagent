@@ -13,6 +13,16 @@ from dagent.schemas.run_trace import RunTrace
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
 LoopStatus = Literal["completed", "awaiting_review", "failed"]
+RunStateKind = Literal["tool", "dynamic_dag", "static_dag"]
+ReviewLevelValue = Literal["fast", "careful"]
+RuntimeModeValue = Literal["auto", "tool", "dag", "dag_spec"]
+
+
+class RunCapabilityScope(BaseModel):
+    """Serializable capability visibility for a resumable run."""
+
+    capability_ids: tuple[str, ...] | None = None
+    skills: tuple[str, ...] | None = None
 
 
 class PendingReview(BaseModel):
@@ -24,31 +34,32 @@ class PendingReview(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class RunState(BaseModel):
+    """Serializable run state for display and cross-request resume."""
+
+    run_id: str
+    kind: RunStateKind
+    status: LoopStatus
+    internal_messages: list[dict[str, Any]] = Field(default_factory=list)
+    dag: DAG | None = None
+    trace: RunTrace | None = None
+    invocations: list[CapabilityInvocation] = Field(default_factory=list)
+    pending_review: PendingReview | None = None
+    pending_invocation: CapabilityInvocation | None = None
+    user_request: str = ""
+    review_level: ReviewLevelValue = "fast"
+    runtime_mode: RuntimeModeValue = "auto"
+    capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
+    spec_id: str | None = None
+    workspace_path: str | None = None
+
+
 class LoopOutcome(BaseModel):
     """Common contract between loops and runtime orchestration."""
 
-    status: LoopStatus
+    state: RunState
+    output_text: str = ""
     execution_context: str = ""
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    final_answer: str = ""
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    invocations: list[CapabilityInvocation] = Field(default_factory=list)
-    dag: DAG | None = None
-    trace: RunTrace | None = None
-    task_id: str | None = None
-    spec_id: str | None = None
-    workspace_path: str | None = None
-    pending_review: PendingReview | None = None
-
-
-class RuntimeResponse(BaseModel):
-    status: LoopStatus
-    final_answer: str
-    dag: DAG | None = None
-    trace: RunTrace | None = None
-    task_id: str | None = None
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    pending_review: PendingReview | None = None
 
 
 class ValidationIssue(BaseModel):

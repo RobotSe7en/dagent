@@ -56,7 +56,11 @@ async def main() -> None:
         dagent.validate_dag_spec(spec)
 
         runner = dagent.Runner(workspace=workspace, provider=MockProvider([]))
-        result = await runner.run(dag, input="dagent sdk", workspace_root=Path(workspace) / "runs")
+        result = await runner.run(
+            dag,
+            graph_input="dagent sdk",
+            workspace_root=Path(workspace) / "runs",
+        )
         output_path = Path(result.workspace_path) / "outputs" / "report.md"
 
         print(result.status)

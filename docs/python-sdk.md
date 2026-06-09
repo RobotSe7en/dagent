@@ -17,8 +17,8 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 | Static DAGs | `Dag`, `Node`, `InputRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `RunResult`, `RunStreamChunk`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
-| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunTrace`, `RuntimeResponse`, `ArtifactUpload` |
+| Reviews and results | `RunResult`, `RunState`, `RunStreamChunk`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunState`, `RunTrace`, `ArtifactUpload` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
 Capability ids use the capability kind as their prefix. Python function tools use
@@ -170,7 +170,7 @@ for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 
 runner.enable_validation = True
-trace = runner.task_trace(run_id)
+trace = runner.run_trace(run_id)
 ```
 
 ## Tools And Structured Results
@@ -225,7 +225,9 @@ async def main():
         skills=["research/briefing"],
     )
 
-    result = await runner.run(agent, "Answer directly or plan if orchestration helps.")
+    messages = [{"role": "user", "content": "Answer directly or plan if orchestration helps."}]
+    result = await runner.run(agent, messages=messages)
+    messages += result.messages
     print(result.kind)
     print(result.output_text)
 
@@ -257,9 +259,11 @@ async def main():
         skills=["writing/terse"],
     )
 
-    result = await runner.run(agent, "Use echo to respond with hello.")
+    messages = [{"role": "user", "content": "Use echo to respond with hello."}]
+    result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve())
+        result = await runner.resume(result.review.approve(), state=result.state)
+    messages += result.messages
 
     print(result.output_text)
 
@@ -291,9 +295,11 @@ async def main():
         review="careful",
     )
 
-    result = await runner.run(agent, "Research X and write a concise report.")
+    messages = [{"role": "user", "content": "Research X and write a concise report."}]
+    result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve())
+        result = await runner.resume(result.review.approve(), state=result.state)
+    messages += result.messages
 
     print(result.output_text)
 
@@ -347,7 +353,7 @@ async def main():
     dagent.validate_dag_spec(dag.to_dag_spec())
 
     runner = dagent.Runner(provider=provider, workspace=".")
-    result = await runner.run(dag, input="dagent sdk")
+    result = await runner.run(dag, graph_input="dagent sdk")
     print(result.status)
     print(result.node_output("write_report"))
 
@@ -363,7 +369,7 @@ immediately before the capability call.
 
 | SDK expression | Runtime value |
 | --- | --- |
-| `dag.input` | Whole `Runner.run(dag, input=...)` value |
+| `dag.input` | Whole `Runner.run(dag, graph_input=...)` value |
 | `dag.input.query` | `input["query"]` |
 | `dag.input["query"]` | `input["query"]` |
 | `node.output` | Previous node `CapabilityResult.value` |
@@ -427,7 +433,7 @@ dag = dagent.Dag("research", input=QueryInput)
 search_node = dagent.Node("search", target=search, inputs={"q": dag.input.query})
 dag.add_node(search_node)
 
-await runner.run(dag, input=QueryInput(query="dagent"))
+await runner.run(dag, graph_input=QueryInput(query="dagent"))
 ```
 
 Artifact references can be used in arguments and boundaries:
@@ -454,7 +460,8 @@ unknown artifact, or uses a malformed value expression.
 `ToolAgent`, `DagAgent`, `Dag`, and `DAGSpec`.
 
 ```python
-result = await runner.run(agent_or_dag, input)
+messages = [{"role": "user", "content": "Write the report."}]
+result = await runner.run(agent, messages=messages)
 
 print(result.kind)         # "tool", "dynamic_dag", or "static_dag"
 print(result.status)
@@ -462,11 +469,23 @@ print(result.output_text)
 print(result.trace)
 ```
 
-For static DAGs, `RunResult` exposes the underlying `DAGRun` as `dag_run` and
-keeps DAG-oriented helpers on the same result object:
+For agent targets, `result.messages` contains only the messages generated by the
+current run. Append them to your caller-maintained conversation. `result.state`
+contains dagent's resumable internal thread, DAG, trace, pending review, and
+static DAG metadata.
 
 ```python
-result = await runner.run(dag, input="dagent", workspace_root="runs")
+messages += result.messages
+saved_state = result.state
+
+messages.append({"role": "user", "content": "Continue with one more detail."})
+result = await runner.run(agent, messages=messages, state=saved_state)
+```
+
+For static DAGs, DAG-oriented helpers are available on the same result object:
+
+```python
+result = await runner.run(dag, graph_input="dagent", workspace_root="runs")
 
 print(result.workspace_path)
 print(result.node_output("write_report"))
@@ -474,9 +493,9 @@ print(result.node_value("search"))
 print(result.artifact_state("report").status)
 ```
 
-`DAGRun` remains a schema for API/storage boundaries and is available through
-`result.dag_run` or `result.raw_response`; it is not the primary return value
-from the public runner.
+`DAGRun` remains a schema for API projections and is available through
+`result.dag_run` for static DAG runs; it is not dumped as a top-level
+`RunResult` field.
 
 Use `Runner.stream(...)` for an async stream of `RunStreamChunk` objects. Chunks
 surface the common values directly: generated text, pending reviews, and the
@@ -486,7 +505,7 @@ token stream. Pass `text_stream="content"`, `text_stream="reasoning"`, or
 `chunk.text`.
 
 ```python
-async for chunk in runner.stream(agent_or_dag, input, text_stream="content"):
+async for chunk in runner.stream(agent, messages=messages, text_stream="content"):
     if chunk.text:
         print(chunk.text, end="")
     if chunk.review:
@@ -504,7 +523,7 @@ complete low-level event stream. Events use a uniform envelope:
 `type`, `data`, `sequence`, and `run_id`.
 
 ```python
-async for event in runner.stream_events(agent_or_dag, input):
+async for event in runner.stream_events(agent, messages=messages):
     if event.type == "response.content.delta":
         print(event.data.delta, end="")
     elif event.type == "response.raw.delta":
@@ -525,8 +544,8 @@ Common stream event payloads:
 | `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
 | `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
 | `run.status` | `event.data.message` |
-| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional DAG context fields |
-| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional DAG context fields |
+| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
+| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |
 | `dag.updated` | `event.data.dag` |
 | `trace.updated` | `event.data.trace` |
 | `review.required` | `event.data.message`, `event.data.to_handle()` |
@@ -541,10 +560,10 @@ Use `Runner.resume_stream(...)` to continue a pending review with the same
 event contract:
 
 ```python
-first = await runner.run(agent, "Write the report.")
+first = await runner.run(agent, messages=[{"role": "user", "content": "Write the report."}])
 
 if first.requires_review and first.review is not None:
-    async for chunk in runner.resume_stream(first.review.approve()):
+    async for chunk in runner.resume_stream(first.review.approve(), state=first.state):
         if chunk.text:
             print(chunk.text, end="")
         if chunk.result:

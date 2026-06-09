@@ -523,17 +523,17 @@ def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Pa
     outcome = run(loop.run_static(spec, workspace_root=tmp_path / "runs"))
 
     assert isinstance(outcome, LoopOutcome)
-    assert outcome.status == "completed"
-    assert outcome.task_id is not None
-    assert outcome.spec_id == "write_note"
-    assert outcome.workspace_path is not None
-    workspace_path = Path(outcome.workspace_path)
+    assert outcome.state.status == "completed"
+    assert outcome.state.run_id is not None
+    assert outcome.state.spec_id == "write_note"
+    assert outcome.state.workspace_path is not None
+    workspace_path = Path(outcome.state.workspace_path)
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
-    assert outcome.dag is not None
-    assert outcome.dag.status == "completed"
-    assert outcome.trace is not None
-    assert outcome.trace.artifacts["note"].status == "created"
-    assert dag_node_trace(outcome.trace, "write").children[0].capability_execution.result.content.startswith("wrote:")
+    assert outcome.state.dag is not None
+    assert outcome.state.dag.status == "completed"
+    assert outcome.state.trace is not None
+    assert outcome.state.trace.artifacts["note"].status == "created"
+    assert dag_node_trace(outcome.state.trace, "write").children[0].capability_execution.result.content.startswith("wrote:")
 
 
 def test_dag_agent_loop_run_static_respects_enabled_toolsets(tmp_path: Path) -> None:
@@ -584,12 +584,12 @@ def test_dag_agent_loop_run_static_preserves_partial_state_on_failure(tmp_path: 
 
     outcome = run(loop.run_static(spec, workspace_root=tmp_path / "runs"))
 
-    assert outcome.status == "failed"
-    assert outcome.trace is not None
-    assert dag_node_trace(outcome.trace, "write").status == "completed"
-    assert dag_node_trace(outcome.trace, "fail").status == "failed"
-    assert outcome.dag is not None
-    statuses = {node.id: node.status for node in outcome.dag.nodes}
+    assert outcome.state.status == "failed"
+    assert outcome.state.trace is not None
+    assert dag_node_trace(outcome.state.trace, "write").status == "completed"
+    assert dag_node_trace(outcome.state.trace, "fail").status == "failed"
+    assert outcome.state.dag is not None
+    statuses = {node.id: node.status for node in outcome.state.dag.nodes}
     assert statuses["write"] == "completed"
     assert statuses["fail"] == "failed"
 

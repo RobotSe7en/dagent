@@ -14,6 +14,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def user_messages(content: str) -> list[dict[str, str]]:
+    return [{"role": "user", "content": content}]
+
+
 class FakeMCPManager:
     available = True
 
@@ -107,7 +111,7 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     assert [definition.id for definition in definitions] == ["mcp.mock_server.lookup"]
     assert any(definition.id == "mcp.mock_server.lookup" for definition in runner.capabilities)
 
-    result = run(runner.run(dagent.ToolAgent(profile="conversation"), "lookup x"))
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("lookup x")))
     assert result.output_text == "done"
     assert any(tool["function"]["name"] == "mcp_mock_server__lookup" for tool in provider.requests[0]["tools"])
 
@@ -159,6 +163,7 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
                         ),
                     )
 
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     runner = _runner(tmp_path)
     runner.add_mcp_server("mock", {"command": "fake", "tools": ["old"]})
@@ -198,6 +203,7 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
                         ),
                     )
 
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     runner = dagent.Runner(
         workspace=tmp_path,

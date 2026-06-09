@@ -52,7 +52,10 @@ async def main() -> None:
         runner.add_skill_root(skill_root)
 
         agent = dagent.ToolAgent(profile="conversation", skills=["terse"])
-        result = await runner.run(agent, "Summarize the text.")
+        result = await runner.run(
+            agent,
+            messages=[{"role": "user", "content": "Summarize the text."}],
+        )
 
         store = dagent.SkillStore(
             roots=[skill_root],
