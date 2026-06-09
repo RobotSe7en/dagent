@@ -61,6 +61,7 @@ from dagent.schemas import (
     DAG,
     DAGSpec,
     PendingReview,
+    RunState,
     RunTrace,
     RuntimeResponse,
     ValidationIssue,
@@ -409,8 +410,10 @@ class Runner:
     async def run(
         self,
         target: RunTarget,
-        input: Any = None,
         *,
+        messages: list[dict[str, Any]] | None = None,
+        state: RunState | None = None,
+        graph_input: Any = None,
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
@@ -418,11 +421,13 @@ class Runner:
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
         if isinstance(target, AutoAgent):
-            if input is None:
-                raise TypeError("input is required for AutoAgent targets.")
+            if graph_input is not None:
+                raise TypeError("graph_input is not accepted for AutoAgent targets.")
+            run_messages = _require_messages(messages, "AutoAgent")
             runtime = self._runtime_for_auto_agent(target)
-            response = await runtime.handle_message(
-                input,
+            response = await runtime.handle_messages(
+                run_messages,
+                run_state=state,
                 mode="auto",
                 review_level=review or target.review,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
@@ -432,11 +437,13 @@ class Runner:
             return self._run_result(runtime, response)
 
         if isinstance(target, ToolAgent):
-            if input is None:
-                raise TypeError("input is required for ToolAgent targets.")
+            if graph_input is not None:
+                raise TypeError("graph_input is not accepted for ToolAgent targets.")
+            run_messages = _require_messages(messages, "ToolAgent")
             runtime = self._runtime_for_tool_agent(target)
-            response = await runtime.handle_message(
-                input,
+            response = await runtime.handle_messages(
+                run_messages,
+                run_state=state,
                 mode="tool",
                 review_level=review or target.review,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
@@ -446,11 +453,13 @@ class Runner:
             return self._run_result(runtime, response, kind="tool")
 
         if isinstance(target, DagAgent):
-            if input is None:
-                raise TypeError("input is required for DagAgent targets.")
+            if graph_input is not None:
+                raise TypeError("graph_input is not accepted for DagAgent targets.")
+            run_messages = _require_messages(messages, "DagAgent")
             runtime = self._runtime_for_dag_agent(target)
-            response = await runtime.handle_message(
-                input,
+            response = await runtime.handle_messages(
+                run_messages,
+                run_state=state,
                 mode="dag",
                 review_level=review or target.review,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
@@ -462,38 +471,48 @@ class Runner:
         if isinstance(target, Dag):
             if review is not None:
                 raise TypeError("review is not accepted for Dag targets.")
+            if messages is not None:
+                raise TypeError("messages is not accepted for Dag targets.")
+            if state is not None:
+                raise TypeError("state is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
             dag_run = await self._runtime.run_dag_spec(
                 spec,
-                input=input,
+                graph_input=graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
             )
-            return RunResult(dag_run, kind="static_dag")
+            return RunResult.from_dag_run(dag_run)
 
         if isinstance(target, DAGSpec):
             if review is not None:
                 raise TypeError("review is not accepted for DAGSpec targets.")
+            if messages is not None:
+                raise TypeError("messages is not accepted for DAGSpec targets.")
+            if state is not None:
+                raise TypeError("state is not accepted for DAGSpec targets.")
             dag_run = await self._runtime.run_dag_spec(
                 self._resolve_spec_capability_metadata(target),
-                input=input,
+                graph_input=graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
             )
-            return RunResult(dag_run, kind="static_dag")
+            return RunResult.from_dag_run(dag_run)
 
         raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
 
     async def stream(
         self,
         target: RunTarget,
-        input: Any = None,
         *,
+        messages: list[dict[str, Any]] | None = None,
+        state: RunState | None = None,
+        graph_input: Any = None,
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
@@ -503,7 +522,9 @@ class Runner:
 
         async for event in self.stream_events(
             target,
-            input,
+            messages=messages,
+            state=state,
+            graph_input=graph_input,
             review=review,
             workspace_root=workspace_root,
             artifact_uploads=artifact_uploads,
@@ -513,8 +534,10 @@ class Runner:
     async def stream_events(
         self,
         target: RunTarget,
-        input: Any = None,
         *,
+        messages: list[dict[str, Any]] | None = None,
+        state: RunState | None = None,
+        graph_input: Any = None,
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
@@ -524,7 +547,9 @@ class Runner:
         async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
             return await self.run(
                 target,
-                input,
+                messages=messages,
+                state=state,
+                graph_input=graph_input,
                 review=review,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
@@ -539,21 +564,24 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
+        state: RunState | None = None,
         text_stream: TextStream = "raw",
     ) -> AsyncIterator[RunStreamChunk]:
         """Resume a pending review and yield high-level stream chunks."""
 
-        async for event in self.resume_stream_events(decision):
+        async for event in self.resume_stream_events(decision, state=state):
             yield _chunk_from_event(event, text_stream=text_stream)
 
     async def resume_stream_events(
         self,
         decision: ReviewDecision,
+        *,
+        state: RunState | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield low-level typed events."""
 
         async def run_target(on_token: TokenHandler, on_event: LoopEventHandler) -> RunResult:
-            result = await self.resume(decision, on_token=on_token, on_event=on_event)
+            result = await self.resume(decision, state=state, on_token=on_token, on_event=on_event)
             if result is None:
                 raise LookupError("Review session not found.")
             return result
@@ -616,12 +644,14 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
+        state: RunState | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
         runtime = self._pending_runtimes.get(decision.review_id, self._runtime)
         response = await runtime.resume_review(
             decision.review_id,
+            run_state=state,
             dag=decision.dag,
             approved=decision.approved,
             review_level=decision.review_level,
@@ -642,7 +672,7 @@ class Runner:
     ) -> RunResult:
         if response.pending_review is not None:
             self._pending_runtimes[response.pending_review.review_id] = runtime
-        return RunResult(response, kind=kind)
+        return RunResult.from_runtime_response(response, kind=kind)  # type: ignore[arg-type]
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
         capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
@@ -906,6 +936,17 @@ def _tool_adapter(catalog, capability_ids: tuple[str, ...]) -> CapabilityToolAda
         catalog,
         toolsets=[CapabilityToolset("builtin", tuple(capability_ids))],
     )
+
+
+def _require_messages(
+    messages: list[dict[str, Any]] | None,
+    target_name: str,
+) -> list[dict[str, Any]]:
+    if messages is None:
+        raise TypeError(f"messages is required for {target_name} targets.")
+    if not any(message.get("role") == "user" for message in messages):
+        raise ValueError("messages must contain at least one user message.")
+    return [dict(message) for message in messages]
 
 
 def _agent_skills(agent: AutoAgent | ToolAgent | DagAgent) -> tuple[str, ...] | None:

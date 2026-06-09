@@ -37,7 +37,10 @@ async def main() -> None:
         capabilities=["tool.search"],
     )
 
-    result = await runner.run(agent, "Research dagent.")
+    result = await runner.run(
+        agent,
+        messages=[{"role": "user", "content": "Research dagent."}],
+    )
 
     print(result.status)
     print(result.output_text)

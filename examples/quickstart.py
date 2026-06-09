@@ -30,7 +30,10 @@ async def main() -> None:
         workspace=Path(__file__).resolve().parents[0],
         provider=provider,
     )
-    async for chunk in runner.stream(agent, "你好"):
+    async for chunk in runner.stream(
+        agent,
+        messages=[{"role": "user", "content": "当前目录有哪些文件？"}],
+    ):
         print(chunk, end="\n\n")
     runner.close()
 

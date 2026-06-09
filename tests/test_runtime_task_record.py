@@ -20,6 +20,7 @@ def test_runtime_task_record_fields_are_only_resume_state() -> None:
         "spec_id",
         "workspace_path",
         "capability_scope",
+        "internal_messages",
     }
 
 

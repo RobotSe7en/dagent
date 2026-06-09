@@ -28,6 +28,7 @@ from dagent import (
     RiskLevel,
     Runner,
     RunResult,
+    RunState,
     SkillAmbiguousError,
     SkillNotFoundError,
     SkillPermissionError,
@@ -49,7 +50,8 @@ MessageTarget = Literal["auto", "tool", "dag"]
 class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    message: str = Field(min_length=1)
+    messages: list[dict[str, Any]] = Field(min_length=1)
+    state: RunState | None = None
     target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
     capability_ids: list[str] | None = None
@@ -61,6 +63,7 @@ class ResumeReviewRequest(BaseModel):
     dag: DAG | None = None
     approved: bool = True
     review_level: ReviewLevel | None = None
+    state: RunState | None = None
 
 
 class CapabilityTestRequest(BaseModel):
@@ -70,7 +73,7 @@ class CapabilityTestRequest(BaseModel):
 
 class DAGRunRequest(BaseModel):
     workspace_root: str | None = None
-    input: Any = None
+    graph_input: Any = None
 
 
 class UserDAGNode(BaseModel):
@@ -290,7 +293,7 @@ async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str
     try:
         result = await state.get_runner().run(
             _compile_user_dag(dag),
-            input=None if request is None else request.input,
+            graph_input=None if request is None else request.graph_input,
             workspace_root=_workspace_root_from_request(request),
             artifact_uploads=_artifact_uploads_for_dag(dag_id),
         )
@@ -313,7 +316,7 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
         try:
             async for event in state.get_runner().stream_events(
                 _compile_user_dag(dag),
-                input=None if request is None else request.input,
+                graph_input=None if request is None else request.graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=_artifact_uploads_for_dag(dag_id),
             ):
@@ -718,7 +721,11 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
         yield _sse({"type": "run.status", "data": {"message": "harness_runtime_started"}, "sequence": 0, "run_id": None})
         sent_error = False
         try:
-            async for event in state.get_runner().stream_events(agent, request.message):
+            async for event in state.get_runner().stream_events(
+                agent,
+                messages=request.messages,
+                state=request.state,
+            ):
                 if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))
@@ -746,7 +753,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
         )
         sent_error = False
         try:
-            async for event in state.get_runner().resume_stream_events(decision):
+            async for event in state.get_runner().resume_stream_events(decision, state=request.state):
                 if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))

@@ -70,7 +70,7 @@ class ToolAgent:
         self.max_steps = max_steps
         self.tools = self.loop.available_capabilities()
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
-        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.messages: list[dict[str, Any]] = []
         self.trace: RunTrace | None = None
 
     def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
@@ -83,14 +83,13 @@ class ToolAgent:
             )
         )
 
-    def _messages_for_scope(self, capability_scope: CapabilityScope) -> list[dict[str, Any]]:
-        messages = list(self.messages)
+    def _provider_messages(
+        self,
+        messages: list[dict[str, Any]],
+        capability_scope: CapabilityScope,
+    ) -> list[dict[str, Any]]:
         system_message = self._build_system_message(capability_scope)
-        if messages and messages[0].get("role") == "system":
-            messages[0] = dict(system_message)
-        else:
-            messages.insert(0, dict(system_message))
-        return messages
+        return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
         self,
@@ -103,17 +102,36 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Append a user turn to the tool-agent thread and run the bounded loop."""
         boundary = Boundary(mode="read_only", allowed_paths=["."])
-        self.messages = self._messages_for_scope(capability_scope)
-        self.messages.append(
-            self.prompt_builder.build_user_message(
-                "{{ user_message }}",
-                {"user_message": message},
-            )
+        return await self.run_messages(
+            [
+                self.prompt_builder.build_user_message(
+                    "{{ user_message }}",
+                    {"user_message": message},
+                )
+            ],
+            review_level=review_level,
+            capability_scope=capability_scope,
+            boundary=boundary,
+            on_token=on_token,
+            on_event=on_event,
         )
+
+    async def run_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        review_level: ReviewLevel = "fast",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        boundary: Boundary | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> LoopOutcome:
+        """Run a tool-agent thread from OpenAI-compatible messages."""
+        self.messages = [dict(message) for message in messages]
         return await self._continue_messages(
             self.messages,
             review_level=review_level,
-            boundary=boundary,
+            boundary=boundary or Boundary(mode="read_only", allowed_paths=["."]),
             capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
@@ -185,11 +203,12 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
+        provider_messages = self._provider_messages(messages, capability_scope)
         outcome = await self.loop.run(
             "",
             boundary=boundary,
             max_steps=self.max_steps,
-            messages=messages,
+            messages=provider_messages,
             control_tool_names=control_tool_names,
             review_level=review_level,
             capability_ids=capability_scope.capability_ids,
@@ -197,7 +216,9 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
-        self.messages = list(outcome.messages)
+        internal_messages = _strip_system_message(outcome.messages)
+        outcome = outcome.model_copy(update={"messages": internal_messages})
+        self.messages = list(internal_messages)
         self.trace = outcome.trace
         return outcome
 
@@ -626,6 +647,12 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
+
+
+def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if messages and messages[0].get("role") == "system":
+        return [dict(message) for message in messages[1:]]
+    return [dict(message) for message in messages]
 
 
 def _tool_content(result: CapabilityResult) -> str:

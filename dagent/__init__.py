@@ -31,6 +31,7 @@ from dagent.schemas import (
     DAGSpec,
     PendingReview,
     RiskLevel,
+    RunState,
     RunTrace,
     RuntimeResponse,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "ReviewHandle",
     "RiskLevel",
     "RunResult",
+    "RunState",
     "RunStreamChunk",
     "RunStreamEvent",
     "RunTrace",

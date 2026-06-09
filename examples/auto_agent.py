@@ -39,7 +39,10 @@ async def main() -> None:
         skills=[],
     )
 
-    result = await runner.run(agent, "Research dagent.")
+    result = await runner.run(
+        agent,
+        messages=[{"role": "user", "content": "Research dagent."}],
+    )
 
     print(result.kind)
     print(result.status)

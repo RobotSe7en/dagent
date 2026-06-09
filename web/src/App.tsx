@@ -69,6 +69,7 @@ import {
   updateMcpServer,
   uploadDagArtifact,
 } from './api';
+import type { ApiRunState } from './api';
 import type {
   AgentProfile,
   BoundaryMode,
@@ -460,6 +461,7 @@ export function App() {
       content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto chooses for you.',
     },
   ]);
+  const [runState, setRunState] = useState<ApiRunState | null>(null);
   const [draft, setDraft] = useState('');
   const [target, setTarget] = useState<ChatTarget>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
@@ -1152,8 +1154,16 @@ export function App() {
           setEditorMessage(review.message);
         },
         onDone: (payload) => {
-          const dagRun = payload.result.dag_run;
-          if (!dagRun) return;
+          const runState = payload.result.state;
+          if (!runState?.dag || !runState.trace || !payload.result.run_id) return;
+          const dagRun = {
+            run_id: payload.result.run_id,
+            spec_id: runState.spec_id ?? null,
+            workspace_path: runState.workspace_path ?? '',
+            dag: runState.dag,
+            trace: runState.trace,
+            status: runState.trace.root.status === 'failed' ? 'failed' : 'completed',
+          } as const;
           setEditorRun(dagRun);
           syncEditorDag(dagRun.dag);
           setEditorMessage(`Run ${dagRun.status}.`);
@@ -1223,19 +1233,22 @@ export function App() {
         },
         onDone: (payload) => {
           const result = payload.result;
+          const resultDag = result.state?.dag ?? null;
+          const resultReview = result.review ?? result.state?.pending_review ?? null;
+          setRunState(result.state ?? null);
           flushQueuedTokensNow();
-          if (result.dag) {
-            syncDag(result.dag);
-            attachDagToLastAssistant(result.dag);
-            if (shouldOpenDagReview(result.dag, result.pending_review)) setReviewOpen(true);
-            appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${result.dag.nodes.length} node(s).`, status: 'completed' });
+          if (resultDag) {
+            syncDag(resultDag);
+            attachDagToLastAssistant(resultDag);
+            if (shouldOpenDagReview(resultDag, resultReview)) setReviewOpen(true);
+            appendTrace({ type: 'dag', label: 'dag_generated', detail: `Generated ${resultDag.nodes.length} node(s).`, status: 'completed' });
           }
-          handlePendingReview(result.pending_review);
+          handlePendingReview(resultReview);
           enqueueFinalAnswerIfMissing(result.output_text);
           appendTrace({
             type: 'model',
             label: 'runtime_completed',
-            detail: result.dag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
+            detail: resultDag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
             status: result.status === 'failed' ? 'failed' : 'completed',
           });
         },
@@ -1243,7 +1256,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope);
+      }, capabilityScope, runState);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1302,13 +1315,16 @@ export function App() {
         },
         onDone: (payload) => {
           const result = payload.result;
+          const resultDag = result.state?.dag ?? null;
+          const resultReview = result.review ?? result.state?.pending_review ?? null;
+          setRunState(result.state ?? null);
           flushQueuedTokensNow();
-          if (result.dag) {
-            syncDag(result.dag);
-            attachDagToLastAssistant(result.dag);
-            if (shouldOpenDagReview(result.dag, result.pending_review)) setReviewOpen(true);
+          if (resultDag) {
+            syncDag(resultDag);
+            attachDagToLastAssistant(resultDag);
+            if (shouldOpenDagReview(resultDag, resultReview)) setReviewOpen(true);
           }
-          handlePendingReview(result.pending_review);
+          handlePendingReview(resultReview);
           enqueueFinalAnswerIfMissing(result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'DAG loop completed the request.', status: 'completed' });
         },
@@ -1316,7 +1332,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      });
+      }, runState);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1360,8 +1376,10 @@ export function App() {
         onValidating: appendValidating,
         onReview: handlePendingReview,
         onDone: (payload) => {
+          const resultReview = payload.result.review ?? payload.result.state?.pending_review ?? null;
+          setRunState(payload.result.state ?? null);
           flushQueuedTokensNow();
-          handlePendingReview(payload.result.pending_review);
+          handlePendingReview(resultReview);
           enqueueFinalAnswerIfMissing(payload.result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
         },
@@ -1369,7 +1387,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      });
+      }, runState);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);

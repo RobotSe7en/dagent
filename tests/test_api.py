@@ -299,14 +299,14 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "target": "auto"},
+        json=_message_request("hello", target="auto"),
     )
 
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
     assert events[-1]["type"] == "run.finished"
-    assert result["dag"] is None
+    assert _result_dag(result) is None
     assert result["output_text"] == "hello there"
 
 
@@ -328,12 +328,12 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
     )
     response = client.post(
         "/messages/stream",
-        json={
-            "message": "hello",
-            "target": "tool",
-            "capability_ids": ["tool.echo"],
-            "skills": ["brief"],
-        },
+        json=_message_request(
+            "hello",
+            target="tool",
+            capability_ids=["tool.echo"],
+            skills=["brief"],
+        ),
     )
 
     assert install_response.status_code == 200
@@ -356,7 +356,7 @@ def test_api_message_stream_rejects_unknown_capability_scope() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "target": "tool", "capability_ids": ["tool.missing"]},
+        json=_message_request("hello", target="tool", capability_ids=["tool.missing"]),
     )
 
     assert response.status_code == 400
@@ -369,7 +369,7 @@ def test_api_message_stream_rejects_runtime_mode_field() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "mode": "auto"},
+        json=_message_request("hello", mode="auto"),
     )
 
     assert response.status_code == 422
@@ -381,7 +381,7 @@ def test_api_message_stream_rejects_dag_spec_as_public_target() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "hello", "target": "dag_spec"},
+        json=_message_request("hello", target="dag_spec"),
     )
 
     assert response.status_code == 422
@@ -399,7 +399,7 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo hello", "target": "tool"},
+        json=_message_request("echo hello", target="tool"),
     )
     events = _sse_events(response.text)
     task_id = _stream_result(events[-1])["run_id"]
@@ -425,7 +425,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
+        json=_message_request("echo ok through a DAG", target="auto", review_level="careful"),
     )
 
     assert response.status_code == 200
@@ -435,8 +435,8 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     assert "dag.updated" in event_types
     assert event_types[-1] == "run.finished"
     assert result["status"] == "awaiting_review"
-    assert result["pending_review"]["kind"] == "initial_dag"
-    assert result["dag"]["status"] == "review_required"
+    assert _result_review(result)["kind"] == "initial_dag"
+    assert _result_dag(result)["status"] == "review_required"
     assert result["output_text"] == ""
 
 
@@ -452,7 +452,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "fast"},
+        json=_message_request("echo ok through a DAG", target="auto", review_level="fast"),
     )
 
     assert response.status_code == 200
@@ -479,7 +479,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert _dag_agent_dsl() in content_text
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
     assert result["status"] == "completed"
-    assert result["dag"]["status"] == "completed"
+    assert _result_dag(result)["status"] == "completed"
 
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
@@ -495,7 +495,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "repair through DAG", "target": "auto", "review_level": "fast"},
+        json=_message_request("repair through DAG", target="auto", review_level="fast"),
     )
 
     assert response.status_code == 200
@@ -518,14 +518,14 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
 
     response = client.post(
         "/messages/stream",
-        json={"message": "run a failing DAG", "target": "dag", "review_level": "fast"},
+        json=_message_request("run a failing DAG", target="dag", review_level="fast"),
     )
 
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
     assert result["status"] == "failed"
-    assert result["dag"]["status"] == "failed"
+    assert _result_dag(result)["status"] == "failed"
 
 
 def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
@@ -540,13 +540,13 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
 
     stream_response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
+        json=_message_request("echo ok through a DAG", target="auto", review_level="careful"),
     )
     stream_events = _sse_events(stream_response.text)
     stream_result = _stream_result(stream_events[-1])
     task_id = stream_result["run_id"]
-    review_id = stream_result["pending_review"]["review_id"]
-    dag = stream_result["dag"]
+    review_id = _result_review(stream_result)["review_id"]
+    dag = _result_dag(stream_result)
     dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
@@ -558,7 +558,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     resume_events = _sse_events(resume_response.text)
     resume_result = _stream_result(resume_events[-1])
     assert resume_result["status"] == "completed"
-    assert resume_result["dag"]["status"] == "completed"
+    assert _result_dag(resume_result)["status"] == "completed"
     assert any(event.get("type") == "trace.updated" for event in resume_events)
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
@@ -583,12 +583,12 @@ def test_api_resume_review_streams_answer_text_once() -> None:
 
     stream_response = client.post(
         "/messages/stream",
-        json={"message": "echo ok through a DAG", "target": "auto", "review_level": "careful"},
+        json=_message_request("echo ok through a DAG", target="auto", review_level="careful"),
     )
     stream_events = _sse_events(stream_response.text)
     stream_result = _stream_result(stream_events[-1])
-    review_id = stream_result["pending_review"]["review_id"]
-    dag = stream_result["dag"]
+    review_id = _result_review(stream_result)["review_id"]
+    dag = _result_dag(stream_result)
 
     resume_response = client.post(
         "/messages/resume",
@@ -832,7 +832,7 @@ def test_api_dag_create_run_and_artifacts() -> None:
 
     run_response = client.post("/dags/write_note/run")
     assert run_response.status_code == 200
-    run_payload = run_response.json()["result"]["dag_run"]
+    run_payload = _result_dag_run(run_response.json()["result"])
     assert run_payload["spec_id"] == "write_note"
     assert run_payload["status"] == "completed"
     assert run_payload["dag"]["status"] == "completed"
@@ -891,7 +891,7 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     )
 
     assert run_response.status_code == 200
-    run_payload = run_response.json()["result"]["dag_run"]
+    run_payload = _result_dag_run(run_response.json()["result"])
     workspace_path = Path(run_payload["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
@@ -946,7 +946,7 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
     )
 
     assert run_response.status_code == 200
-    run_payload = run_response.json()["result"]["dag_run"]
+    run_payload = _result_dag_run(run_response.json()["result"])
     workspace_path = Path(run_payload["workspace_path"])
     assert run_payload["status"] == "completed"
     assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
@@ -990,7 +990,7 @@ def test_api_created_tool_capability_can_run_in_dag() -> None:
     run_response = client.post("/dags/tool_dag/run")
 
     assert run_response.status_code == 200
-    payload = run_response.json()["result"]["dag_run"]
+    payload = _result_dag_run(run_response.json()["result"])
     assert payload["status"] == "completed"
     assert payload["trace"]["root"]["children"][0]["output"] == "upper:ok"
 
@@ -1036,8 +1036,9 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
     assert events[0]["type"] == "run.status"
     assert any(event["type"] == "trace.updated" for event in events)
     assert events[-1]["type"] == "run.finished"
-    assert result["dag_run"]["status"] == "completed"
-    run_id = result["dag_run"]["run_id"]
+    dag_run = _result_dag_run(result)
+    assert dag_run["status"] == "completed"
+    run_id = dag_run["run_id"]
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
 
 
@@ -1084,7 +1085,7 @@ def test_api_dag_run_stream_uses_requested_workspace_root(tmp_path: Path) -> Non
 
     assert response.status_code == 200
     events = _sse_events(response.text)
-    dag_run = _stream_result(events[-1])["dag_run"]
+    dag_run = _result_dag_run(_stream_result(events[-1]))
     workspace_path = Path(dag_run["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
@@ -1120,7 +1121,7 @@ def test_api_dag_run_fails_when_required_artifact_is_missing() -> None:
     run_response = client.post("/dags/missing_output/run")
 
     assert run_response.status_code == 200
-    payload = run_response.json()["result"]["dag_run"]
+    payload = _result_dag_run(run_response.json()["result"])
     assert payload["status"] == "failed"
     assert payload["trace"]["artifacts"]["note"]["status"] == "missing"
     assert payload["dag"]["status"] == "failed"
@@ -1212,6 +1213,13 @@ def _dag_agent_dsl() -> str:
     return 'task: mock\nanswer = echo(text="ok")\n'
 
 
+def _message_request(message: str, **fields) -> dict:
+    return {
+        "messages": [{"role": "user", "content": message}],
+        **fields,
+    }
+
+
 def _sse_events(text: str) -> list[dict]:
     return [
         json.loads(line.removeprefix("data: "))
@@ -1223,6 +1231,32 @@ def _sse_events(text: str) -> list[dict]:
 def _stream_result(event: dict) -> dict:
     assert event["type"] == "run.finished"
     return event["data"]["result"]
+
+
+def _result_review(result: dict) -> dict | None:
+    return result.get("review")
+
+
+def _result_dag(result: dict) -> dict | None:
+    state_payload = result.get("state") or {}
+    return state_payload.get("dag")
+
+
+def _result_trace(result: dict) -> dict | None:
+    state_payload = result.get("state") or {}
+    return state_payload.get("trace")
+
+
+def _result_dag_run(result: dict) -> dict:
+    state_payload = result["state"]
+    return {
+        "run_id": result["run_id"],
+        "spec_id": state_payload.get("spec_id"),
+        "workspace_path": state_payload.get("workspace_path") or "",
+        "dag": state_payload["dag"],
+        "trace": state_payload["trace"],
+        "status": result["status"],
+    }
 
 
 def _dag_node_trace(trace: dict, node_id: str) -> dict:

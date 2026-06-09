@@ -148,7 +148,10 @@ def test_runner_executes_user_node_value_dataflow() -> None:
     dag.add_node(sink_node)
     dag.add_edge(source_node, sink_node)
 
-    result = run(dagent.Runner(provider=MockProvider([]), capabilities=[source, sink]).run(dag, "hello"))
+    result = run(dagent.Runner(provider=MockProvider([]), capabilities=[source, sink]).run(
+        dag,
+        graph_input="hello",
+    ))
 
     assert result.status == "completed"
     assert result.node_value("sink") == "sink:summary:hello"
@@ -351,7 +354,7 @@ def test_runner_executes_value_expr_dataflow(tmp_path: Path) -> None:
     dag.add_edge(search_node, render_node)
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
-    result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
+    result = run(runner.run(dag, graph_input="dagent", workspace_root=tmp_path / "runs"))
 
     assert isinstance(result, dagent.RunResult)
     assert result.status == "completed"
@@ -370,7 +373,7 @@ def test_runner_resolves_pydantic_graph_input(tmp_path: Path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     result = run(runner.run(
         dag,
-        input=QueryInput(query="dagent"),
+        graph_input=QueryInput(query="dagent"),
         workspace_root=tmp_path / "runs",
     ))
 
@@ -390,7 +393,7 @@ def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Pa
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream_events(dag, input="hello", workspace_root=tmp_path / "runs")
+            async for event in runner.stream_events(dag, graph_input="hello", workspace_root=tmp_path / "runs")
         ]
 
     events = run(collect())
@@ -450,7 +453,7 @@ def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:
     dag.add_node(dagent.Node("echo", target=echo, inputs={"text": dag.input}))
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[echo])
 
-    result = run(runner.run(dag.to_dag_spec(), input="hello", workspace_root=tmp_path / "runs"))
+    result = run(runner.run(dag.to_dag_spec(), graph_input="hello", workspace_root=tmp_path / "runs"))
 
     assert isinstance(result, dagent.RunResult)
     assert result.kind == "static_dag"
@@ -504,7 +507,7 @@ def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path)
     dag.add_edge(search_node, draft)
 
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
-    result = run(runner.run(dag, input="dagent", workspace_root=tmp_path / "runs"))
+    result = run(runner.run(dag, graph_input="dagent", workspace_root=tmp_path / "runs"))
 
     assert result.status == "completed"
     assert draft.output.as_expr() == {"$expr": {"type": "node_output", "node_id": "draft", "field": "value", "path": []}}

@@ -13,6 +13,7 @@ from dagent.harness_runtime.task_record import (
     pending_review_invocation,
 )
 from dagent.schemas import LoopOutcome, CapabilityInvocation
+from dagent.schemas import RunState
 
 
 class HarnessRuntimeSession:
@@ -45,6 +46,7 @@ class HarnessRuntimeSession:
             review_level=review_level,
             pending_invocation=pending_review_invocation(loop_outcome, task_invocations),
             capability_scope=capability_scope,
+            messages=list(loop_outcome.messages),
         )
 
     def get_review_continuation(self, review_id: str) -> ReviewContinuation | None:
@@ -61,6 +63,16 @@ class HarnessRuntimeSession:
         ]
         for review_id in stale_review_ids:
             self._review_continuations.pop(review_id, None)
+
+    def hydrate_run_state(self, state: RunState) -> RuntimeTaskRecord:
+        if not state.run_id:
+            raise ValueError("RunState.run_id is required to resume a run.")
+        record = RuntimeTaskRecord.from_run_state(state)
+        self.tasks[record.task_id] = record
+        if state.review_continuation is not None:
+            continuation = ReviewContinuation.from_run_state(state.review_continuation)
+            self._review_continuations[continuation.review_id] = continuation
+        return record
 
     def save_loop_outcome(
         self,

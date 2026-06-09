@@ -446,7 +446,7 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
     resumed = run(agent.resume_review(state, approved=True))
 
     assert resumed.status == "completed"
-    assert agent.messages[3] == {
+    assert agent.messages[2] == {
         "role": "tool",
         "tool_call_id": "call_1",
         "name": "memory_read",

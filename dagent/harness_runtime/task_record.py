@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from dagent.review import ReviewLevel
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
@@ -11,6 +11,9 @@ from dagent.schemas import (
     DAG,
     CapabilityInvocation,
     PendingReview,
+    RunCapabilityScope,
+    RunReviewContinuation,
+    RunState,
     ReviewKind,
     RunTrace,
 )
@@ -32,6 +35,32 @@ class ReviewContinuation:
     invocations: list[CapabilityInvocation] = field(default_factory=list)
     pending_invocation: CapabilityInvocation | None = None
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE
+    messages: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_run_state(cls, state: RunReviewContinuation) -> "ReviewContinuation":
+        return cls(
+            review_id=state.review_id,
+            task_id=state.task_id,
+            kind=state.kind,
+            user_request=state.user_request,
+            review_level=state.review_level,
+            invocations=list(state.invocations),
+            pending_invocation=state.pending_invocation,
+            capability_scope=capability_scope_from_state(state.capability_scope),
+        )
+
+    def to_run_state(self) -> RunReviewContinuation:
+        return RunReviewContinuation(
+            review_id=self.review_id,
+            task_id=self.task_id,
+            kind=self.kind,
+            user_request=self.user_request,
+            review_level=self.review_level,
+            invocations=list(self.invocations),
+            pending_invocation=self.pending_invocation,
+            capability_scope=capability_scope_to_state(self.capability_scope),
+        )
 
 
 @dataclass
@@ -47,6 +76,7 @@ class RuntimeTaskRecord:
     spec_id: str | None = None
     workspace_path: str | None = None
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE
+    internal_messages: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def dag_task(
@@ -113,6 +143,53 @@ class RuntimeTaskRecord:
             self.spec_id = loop_outcome.spec_id
         if loop_outcome.workspace_path is not None:
             self.workspace_path = loop_outcome.workspace_path
+        self.internal_messages = list(loop_outcome.messages)
+
+    @classmethod
+    def from_run_state(cls, state: RunState) -> "RuntimeTaskRecord":
+        mode: RuntimeTaskMode = "tool" if state.kind == "tool" else "dag"
+        return cls(
+            task_id=state.run_id or "",
+            mode=mode,
+            user_request=state.user_request,
+            review_level=state.review_level,
+            pending_review=state.pending_review,
+            dag=state.dag,
+            trace=state.trace,
+            runtime_mode=state.runtime_mode,
+            spec_id=state.spec_id,
+            workspace_path=state.workspace_path,
+            capability_scope=capability_scope_from_state(state.capability_scope),
+            internal_messages=list(state.internal_messages),
+        )
+
+    def to_run_state(
+        self,
+        *,
+        kind: Literal["tool", "dynamic_dag", "static_dag"],
+        status: Literal["completed", "awaiting_review", "failed"],
+        review_continuation: "ReviewContinuation | None" = None,
+    ) -> RunState:
+        return RunState(
+            run_id=self.task_id,
+            kind=kind,
+            status=status,
+            internal_messages=list(self.internal_messages),
+            dag=self.dag,
+            trace=self.trace,
+            pending_review=self.pending_review,
+            review_continuation=(
+                review_continuation.to_run_state()
+                if review_continuation is not None
+                else None
+            ),
+            user_request=self.user_request,
+            review_level=self.review_level,
+            runtime_mode=self.runtime_mode,  # type: ignore[arg-type]
+            capability_scope=capability_scope_to_state(self.capability_scope),
+            spec_id=self.spec_id,
+            workspace_path=self.workspace_path,
+        )
 
 
 def pending_review_invocation(
@@ -129,3 +206,17 @@ def pending_review_invocation(
             if invocation.invocation_id == invocation_id:
                 return invocation
     return task_invocations[-1] if task_invocations else None
+
+
+def capability_scope_to_state(scope: CapabilityScope) -> RunCapabilityScope:
+    return RunCapabilityScope(
+        capability_ids=scope.capability_ids,
+        skills=scope.skills,
+    )
+
+
+def capability_scope_from_state(scope: RunCapabilityScope) -> CapabilityScope:
+    return CapabilityScope(
+        capability_ids=scope.capability_ids,
+        skills=scope.skills,
+    )

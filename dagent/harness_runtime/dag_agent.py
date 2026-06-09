@@ -73,7 +73,7 @@ class DAGAgent:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.tools = self.loop.available_capabilities()
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
-        self.messages: list[dict[str, Any]] = [dict(self.system_message)]
+        self.messages: list[dict[str, Any]] = []
 
     def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
@@ -85,14 +85,13 @@ class DAGAgent:
             )
         )
 
-    def _messages_for_scope(self, capability_scope: CapabilityScope) -> list[dict[str, Any]]:
-        messages = list(self.messages)
+    def _provider_messages(
+        self,
+        messages: list[dict[str, Any]],
+        capability_scope: CapabilityScope,
+    ) -> list[dict[str, Any]]:
         system_message = self._build_system_message(capability_scope)
-        if messages and messages[0].get("role") == "system":
-            messages[0] = dict(system_message)
-        else:
-            messages.insert(0, dict(system_message))
-        return messages
+        return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
         self,
@@ -106,20 +105,48 @@ class DAGAgent:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
+        return await self.run_messages(
+            [{"role": "user", "content": request}],
+            task_id=task_id,
+            review_level=review_level,
+            runtime_mode=runtime_mode,
+            capability_scope=capability_scope,
+            on_token=on_token,
+            on_event=on_event,
+            on_dag=on_dag,
+        )
+
+    async def run_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        task_id: str | None = None,
+        review_level: ReviewLevel = "fast",
+        runtime_mode: str = "auto",
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        on_dag: Callable[[DAG], None] | None = None,
+    ) -> LoopOutcome:
+        request = _last_user_content(messages)
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        self.messages = self._messages_for_scope(capability_scope)
-        return await self.loop.run_dynamic(
+        self.messages = _messages_before_last_user(messages)
+        provider_messages = self._provider_messages(self.messages, capability_scope)
+        outcome = await self.loop.run_dynamic(
             request,
             task_id=resolved_task_id,
             review_level=review_level,
             capability_scope=capability_scope,
-            messages=self.messages,
+            messages=provider_messages,
             build_user_message=self.build_request_user_message,
             runtime_mode=runtime_mode,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
         )
+        internal_messages = _strip_system_message(provider_messages)
+        self.messages = internal_messages
+        return outcome.model_copy(update={"messages": internal_messages})
 
     async def resume_review(
         self,
@@ -133,19 +160,25 @@ class DAGAgent:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
-        self.messages = self._messages_for_scope(state.capability_scope)
-        return await self.loop.resume_review(
+        self.messages = [dict(message) for message in record.internal_messages]
+        provider_messages = self._provider_messages(self.messages, state.capability_scope)
+        outcome = await self.loop.resume_review(
             state,
             record,
             dag,
             approved=approved,
             review_level=review_level,
-            messages=self.messages,
+            messages=provider_messages,
             build_user_message=self.build_request_user_message,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
         )
+        if outcome is None:
+            return None
+        internal_messages = _strip_system_message(provider_messages)
+        self.messages = internal_messages
+        return outcome.model_copy(update={"messages": internal_messages})
 
     async def execute(
         self,
@@ -158,7 +191,7 @@ class DAGAgent:
     ) -> RunTrace | None:
         return await self.loop.execute(
             record,
-            messages=self.messages,
+            messages=self._provider_messages(self.messages, record.capability_scope),
             build_user_message=self.build_request_user_message,
             on_token=on_token,
             on_event=on_event,
@@ -983,6 +1016,26 @@ def _dag_loop_outcome(
         workspace_path=workspace_path,
         pending_review=pending_review,
     )
+
+
+def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if messages and messages[0].get("role") == "system":
+        return [dict(message) for message in messages[1:]]
+    return [dict(message) for message in messages]
+
+
+def _last_user_content(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "")
+    raise ValueError("messages must contain at least one user message.")
+
+
+def _messages_before_last_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") == "user":
+            return [dict(message) for message in messages[:index]]
+    raise ValueError("messages must contain at least one user message.")
 
 
 def _emit_dag(on_dag: Callable[[DAG], None] | None, dag: DAG) -> None:
