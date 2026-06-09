@@ -783,14 +783,14 @@ def _dag_run_from_state(run_id: str) -> DAGRun | None:
     )
 
 
-@app.get("/tasks/{task_id}/trace")
-async def get_task_trace(task_id: str) -> dict[str, Any]:
+@app.get("/runs/{run_id}/trace")
+async def get_run_trace(run_id: str) -> dict[str, Any]:
     if state.runner is not None:
-        trace = state.runner.task_trace(task_id)
+        trace = state.runner.run_trace(run_id)
         if trace is not None:
-            return {"task_id": task_id, "trace": trace.model_dump(mode="json")}
+            return {"run_id": run_id, "trace": trace.model_dump(mode="json")}
 
-    raise HTTPException(status_code=404, detail="Task not found.")
+    raise HTTPException(status_code=404, detail="Run not found.")
 
 
 

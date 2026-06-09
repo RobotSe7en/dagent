@@ -90,7 +90,6 @@ class Runner:
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
-        self._pending_runtimes: dict[str, HarnessRuntime] = {}
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
@@ -157,7 +156,6 @@ class Runner:
         if self._closed:
             return
         self._runtime.capability_catalog.shutdown()
-        self._pending_runtimes.clear()
         self._mcp_server_capability_ids.clear()
         self._mcp_server_managers.clear()
         self._closed = True
@@ -270,10 +268,10 @@ class Runner:
     def enable_validation(self, value: bool) -> None:
         self._runtime.enable_validation = bool(value)
 
-    def task_trace(self, task_id: str) -> RunTrace | None:
-        """Return the cumulative run trace for a completed/awaiting task."""
+    def run_trace(self, run_id: str) -> RunTrace | None:
+        """Return the cumulative run trace for a completed/awaiting run."""
 
-        state = self._runtime.runs.get(task_id)
+        state = self._runtime.runs.get(run_id)
         return state.trace if state is not None else None
 
     def run_state(self, run_id: str) -> RunState | None:
@@ -430,7 +428,7 @@ class Runner:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
             run_messages = _require_messages(messages, "AutoAgent")
             runtime = self._runtime_for_auto_agent(target)
-            result = await runtime.handle_messages(
+            return await runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="auto",
@@ -439,14 +437,13 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
-            return self._track_pending_runtime(runtime, result)
 
         if isinstance(target, ToolAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for ToolAgent targets.")
             run_messages = _require_messages(messages, "ToolAgent")
             runtime = self._runtime_for_tool_agent(target)
-            result = await runtime.handle_messages(
+            return await runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="tool",
@@ -455,14 +452,13 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
-            return self._track_pending_runtime(runtime, result)
 
         if isinstance(target, DagAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for DagAgent targets.")
             run_messages = _require_messages(messages, "DagAgent")
             runtime = self._runtime_for_dag_agent(target)
-            result = await runtime.handle_messages(
+            return await runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="dag",
@@ -471,7 +467,6 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
-            return self._track_pending_runtime(runtime, result)
 
         if isinstance(target, Dag):
             if review is not None:
@@ -651,8 +646,7 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
-        runtime = self._pending_runtimes.get(decision.review_id, self._runtime)
-        result = await runtime.resume_review(
+        return await self._runtime.resume_review(
             decision.review_id,
             run_state=state,
             dag=decision.dag,
@@ -661,19 +655,6 @@ class Runner:
             on_token=on_token,
             on_event=on_event,
         )
-        if result is None:
-            return None
-        self._pending_runtimes.pop(decision.review_id, None)
-        return self._track_pending_runtime(runtime, result)
-
-    def _track_pending_runtime(
-        self,
-        runtime: HarnessRuntime,
-        result: RunResult,
-    ) -> RunResult:
-        if result.pending_review is not None:
-            self._pending_runtimes[result.pending_review.review_id] = runtime
-        return result
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
         capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)

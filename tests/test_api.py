@@ -252,6 +252,7 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
     state.custom_mcp_servers.clear()
     state.custom_mcp_errors.clear()
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     client = TestClient(app)
 
@@ -389,7 +390,7 @@ def test_api_message_stream_rejects_dag_spec_as_public_target() -> None:
     assert response.status_code == 422
 
 
-def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
+def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(
             content="",
@@ -404,11 +405,12 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
         json=_message_request("echo hello", target="tool"),
     )
     events = _sse_events(response.text)
-    task_id = _result_run_id(_stream_result(events[-1]))
+    run_id = _result_run_id(_stream_result(events[-1]))
 
-    trace_response = client.get(f"/tasks/{task_id}/trace")
+    trace_response = client.get(f"/runs/{run_id}/trace")
 
     assert trace_response.status_code == 200
+    assert trace_response.json()["run_id"] == run_id
     trace = trace_response.json()["trace"]
     capability = _capability_trace(trace, "tool.echo")
     assert capability["input"] == {"text": "hello"}
@@ -530,7 +532,7 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     assert _result_dag(result)["status"] == "failed"
 
 
-def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -> None:
+def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
@@ -546,7 +548,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     )
     stream_events = _sse_events(stream_response.text)
     stream_result = _stream_result(stream_events[-1])
-    task_id = _result_run_id(stream_result)
+    run_id = _result_run_id(stream_result)
     review_id = _result_review(stream_result)["review_id"]
     dag = _result_dag(stream_result)
     dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
@@ -563,14 +565,24 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     assert _result_dag(resume_result)["status"] == "completed"
     assert any(event.get("type") == "trace.updated" for event in resume_events)
 
-    trace_response = client.get(f"/tasks/{task_id}/trace")
+    trace_response = client.get(f"/runs/{run_id}/trace")
     assert trace_response.status_code == 200
+    assert trace_response.json()["run_id"] == run_id
     trace = trace_response.json()["trace"]
     answer = _dag_node_trace(trace, "answer")
     capability = _capability_trace(answer, "tool.echo")
     assert capability["input"] == {"text": "reviewed"}
     assert capability["output"] == "echo:reviewed"
     assert capability["status"] == "completed"
+
+
+def test_api_legacy_tasks_trace_route_is_not_available() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="done")]))
+    client = TestClient(app)
+
+    response = client.get("/tasks/run_1/trace")
+
+    assert response.status_code == 404
 
 
 def test_api_resume_review_streams_answer_text_once() -> None:

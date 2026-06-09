@@ -163,6 +163,7 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
                         ),
                     )
 
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     runner = _runner(tmp_path)
     runner.add_mcp_server("mock", {"command": "fake", "tools": ["old"]})
@@ -202,6 +203,7 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
                         ),
                     )
 
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
     monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
     runner = dagent.Runner(
         workspace=tmp_path,

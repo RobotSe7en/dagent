@@ -170,7 +170,7 @@ for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 
 runner.enable_validation = True
-trace = runner.task_trace(run_id)
+trace = runner.run_trace(run_id)
 ```
 
 ## Tools And Structured Results

@@ -424,6 +424,8 @@ def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     for legacy_name in ("final_answer", "output", "task_id", "awaiting_review", "raw"):
         assert not hasattr(result, legacy_name)
     assert not hasattr(dagent.RunResult, "from_dag_run")
+    assert hasattr(dagent.Runner, "run_trace")
+    assert not hasattr(dagent.Runner, "task_trace")
 
 
 def test_capability_stream_events_use_run_id_not_task_id(tmp_path) -> None:
@@ -656,7 +658,34 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     assert resumed.messages[-1]["content"] == "done"
 
 
-def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) -> None:
+def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
+    _profile_root(tmp_path, "planner")
+    provider = MockProvider([
+        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content="Report: found:X"),
+    ])
+
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    agent = dagent.DagAgent(planner_profile="planner", capabilities=[search], review="careful")
+    first_runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    first = run(first_runner.run(agent, messages=user_messages("research X")))
+    assert first.requires_review
+    assert first.review is not None
+    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first_runner.close()
+
+    second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
+    resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+
+    assert resumed is not None
+    assert resumed.output_text == "Report: found:X"
+
+
+def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
         ChatResponse(content='task: research\nlookup = search(q="X")'),
@@ -681,8 +710,6 @@ def test_runner_invalid_dag_resume_does_not_consume_pending_runtime(tmp_path) ->
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"
-    resume_system_message = provider.requests[-1]["messages"][0]["content"]
-    assert "You are a planner profile." in resume_system_message
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
