@@ -30,7 +30,7 @@ from dagent.harness_runtime.dag_builder import (
     validate_dag,
 )
 from dagent.review import ReviewLevel, _review_policy
-from dagent.harness_runtime.task_record import ReviewContinuation, RuntimeTaskRecord
+from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
@@ -48,6 +48,7 @@ from dagent.schemas import (
     RunTrace,
     RunTraceNode,
     RunTraceStatus,
+    RunState,
     StartNodePayload,
 )
 from dagent.schemas.node import NodeStatus
@@ -146,13 +147,13 @@ class DAGAgent:
         )
         internal_messages = _strip_system_message(provider_messages)
         self.messages = internal_messages
-        return outcome.model_copy(update={"messages": internal_messages})
+        state = outcome.state.model_copy(update={"internal_messages": internal_messages})
+        return outcome.model_copy(update={"state": state})
 
     async def resume_review(
         self,
-        state: ReviewContinuation,
+        state: RunState,
         *,
-        record: RuntimeTaskRecord,
         dag: DAG | None = None,
         approved: bool = True,
         review_level: ReviewLevel | None = None,
@@ -160,11 +161,13 @@ class DAGAgent:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
-        self.messages = [dict(message) for message in record.internal_messages]
-        provider_messages = self._provider_messages(self.messages, state.capability_scope)
+        self.messages = [dict(message) for message in state.internal_messages]
+        provider_messages = self._provider_messages(
+            self.messages,
+            capability_scope_from_state(state.capability_scope),
+        )
         outcome = await self.loop.resume_review(
             state,
-            record,
             dag,
             approved=approved,
             review_level=review_level,
@@ -178,11 +181,12 @@ class DAGAgent:
             return None
         internal_messages = _strip_system_message(provider_messages)
         self.messages = internal_messages
-        return outcome.model_copy(update={"messages": internal_messages})
+        next_state = outcome.state.model_copy(update={"internal_messages": internal_messages})
+        return outcome.model_copy(update={"state": next_state})
 
     async def execute(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         *,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -191,7 +195,10 @@ class DAGAgent:
     ) -> RunTrace | None:
         return await self.loop.execute(
             record,
-            messages=self._provider_messages(self.messages, record.capability_scope),
+            messages=self._provider_messages(
+                self.messages,
+                capability_scope_from_state(record.capability_scope),
+            ),
             build_user_message=self.build_request_user_message,
             on_token=on_token,
             on_event=on_event,
@@ -280,13 +287,15 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
-        record = RuntimeTaskRecord.dag_task(
-            task_id=resolved_task_id,
+        record = RunState(
+            run_id=resolved_task_id,
+            kind="dynamic_dag",
+            status="completed",
             user_request=request,
             dag=_seed_dag(resolved_task_id),
             review_level=review_level,
-            runtime_mode=runtime_mode,
-            capability_scope=capability_scope,
+            runtime_mode=runtime_mode,  # type: ignore[arg-type]
+            capability_scope=capability_scope_to_state(capability_scope),
         )
         result = await self.execute(
             record,
@@ -332,14 +341,17 @@ class DAGAgentLoop:
                 status="created",
             )
         dag.status = "approved"
-        record = RuntimeTaskRecord.dag_task(
-            task_id=run_id,
+        record = RunState(
+            run_id=run_id,
+            kind="static_dag",
+            status="completed",
             user_request=f"Run DAGSpec {spec.id}",
             dag=dag,
             review_level="fast",
             runtime_mode="dag_spec",
             spec_id=spec.id,
             workspace_path=str(workspace),
+            capability_scope=capability_scope_to_state(DEFAULT_CAPABILITY_SCOPE),
         )
         _emit_dag(on_dag, dag)
 
@@ -373,19 +385,18 @@ class DAGAgentLoop:
             trace.artifacts = dict(dag_executor.artifact_states)
         _emit_dag(on_dag, record.dag)
         return _dag_loop_outcome(
+            record=record,
             status="completed" if trace.status == "completed" else "failed",
             final_response=dag_run_fallback_message(record, trace),
             dag=record.dag,
             trace=trace,
-            task_id=run_id,
             spec_id=spec.id,
             workspace_path=str(workspace),
         )
 
     async def resume_review(
         self,
-        state: ReviewContinuation,
-        record: RuntimeTaskRecord,
+        state: RunState,
         dag: DAG | None,
         *,
         approved: bool,
@@ -396,12 +407,14 @@ class DAGAgentLoop:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome | None:
-        if state.kind not in {"initial_dag", "dag_replan"}:
+        pending_review = state.pending_review
+        if pending_review is None or pending_review.kind not in {"initial_dag", "dag_replan"}:
             return None
-        task_id = state.task_id
-        if record.task_id != task_id:
+        record = state
+        task_id = state.run_id
+        if record.run_id != task_id:
             raise ValueError(
-                f"Review state for task '{task_id}' cannot resume task '{record.task_id}'."
+                f"Review state for task '{task_id}' cannot resume task '{record.run_id}'."
             )
         if (
             record.dag.status == "completed"
@@ -410,11 +423,11 @@ class DAGAgentLoop:
         ):
             trace = record.trace
             return _dag_loop_outcome(
+                record=record,
                 status="completed" if trace.status == "completed" else "failed",
                 final_response=_trace_output(trace) or dag_run_fallback_message(record, trace),
                 dag=record.dag,
                 trace=trace,
-                task_id=task_id,
             )
         if review_level is not None:
             record.review_level = review_level
@@ -435,13 +448,6 @@ class DAGAgentLoop:
                 on_token=on_token,
                 on_event=on_event,
                 on_dag=on_dag,
-                extra_events=[
-                    {
-                        "kind": "review_denied",
-                        "task_id": task_id,
-                        "review_kind": state.kind,
-                    }
-                ],
             )
             return outcome
 
@@ -480,7 +486,7 @@ class DAGAgentLoop:
 
     async def execute(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         *,
         messages: list[dict[str, Any]] | None = None,
         build_user_message: Callable[..., dict[str, str]] | None = None,
@@ -552,7 +558,7 @@ class DAGAgentLoop:
 
                 pending_observation = _format_dag_observation(
                     kind="layer_failed" if layer_failed else ("dag_executed" if layer.status == "completed" else "layer_completed"),
-                    task_id=record.task_id,
+                    task_id=record.run_id,
                     record=record,
                     last_error=layer_error if layer_failed else "",
                     failed_node_id=failed_node_id if layer_failed else None,
@@ -573,20 +579,20 @@ class DAGAgentLoop:
             # Ask LLM for the next step: continue, replan, or finish.
             try:
                 response = await self._request_dag(
-                    task_id=record.task_id,
+                    task_id=record.run_id,
                     user_message=build_user_message(
                         prompt=pending_observation,
-                        task_id=record.task_id,
+                        task_id=record.run_id,
                     ),
                     messages=messages,
                     allow_no_change=_has_real_nodes(record.dag),
                     on_token=on_token,
-                    capability_scope=record.capability_scope,
+                    capability_scope=capability_scope_from_state(record.capability_scope),
                 )
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
-                    task_id=record.task_id,
+                    task_id=record.run_id,
                     record=record,
                     validation_error=str(exc),
                 )
@@ -608,7 +614,7 @@ class DAGAgentLoop:
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
-                    task_id=record.task_id,
+                    task_id=record.run_id,
                     record=record,
                     validation_error=str(exc),
                 )
@@ -624,7 +630,7 @@ class DAGAgentLoop:
 
     async def _continue_from_observation(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         observation: str,
         *,
         messages: list[dict[str, Any]],
@@ -632,7 +638,6 @@ class DAGAgentLoop:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
-        extra_events: list[dict[str, Any]] | None = None,
     ) -> LoopOutcome:
         result = await self.execute(
             record,
@@ -643,7 +648,7 @@ class DAGAgentLoop:
             on_event=on_event,
             on_dag=on_dag,
         )
-        return self._finalize_run(record, result, extra_events=extra_events)
+        return self._finalize_run(record, result)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -651,42 +656,38 @@ class DAGAgentLoop:
 
     def _finalize_run(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         result: RunTrace | None,
-        *,
-        extra_events: list[dict[str, Any]] | None = None,
     ) -> LoopOutcome:
         if record.pending_review is not None:
             return _dag_loop_outcome(
+                record=record,
                 status="awaiting_review",
                 final_response=record.pending_review.message,
                 dag=record.pending_review.proposed_dag,
                 trace=result,
-                task_id=record.task_id,
                 pending_review=record.pending_review,
-                extra_events=extra_events,
             )
         message = _trace_output(result) or dag_run_fallback_message(record, result)
         outcome_dag = record.dag if _has_real_nodes(record.dag) else None
         return _dag_loop_outcome(
+            record=record,
             status="completed" if result.status == "completed" else "failed",
             final_response=message,
             dag=outcome_dag,
             trace=result,
-            task_id=record.task_id,
-            extra_events=extra_events,
         )
 
     def _absorb_partial_results(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         trace: RunTrace | None,
         on_dag: Callable[[DAG], None] | None = None,
         *,
         dag_executor: DAGExecutor | None = None,
     ) -> RunTrace:
         if trace is None:
-            trace = _empty_run_trace(run_id=record.task_id, dag=record.dag)
+            trace = _empty_run_trace(run_id=record.run_id, dag=record.dag)
         current_node_ids = _dag_node_ids(record.dag)
         active_executor = dag_executor or self.dag_executor
         for node_id, node_trace in active_executor.partial_node_traces.items():
@@ -703,12 +704,12 @@ class DAGAgentLoop:
 
     def _apply_replan(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         next_dag: DAG,
     ) -> None:
         is_initial = not _has_real_nodes(record.dag)
         prepared = next_dag.model_copy(deep=True)
-        prepared.task_id = record.task_id
+        prepared.task_id = record.run_id
         prepared.dag_id = record.dag.dag_id
         prepared.version = record.dag.version + 1
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
@@ -746,7 +747,7 @@ class DAGAgentLoop:
 
     def _finalize(
         self,
-        record: RuntimeTaskRecord,
+        record: RunState,
         trace: RunTrace | None,
         on_dag: Callable[[DAG], None] | None,
     ) -> RunTrace | None:
@@ -754,7 +755,7 @@ class DAGAgentLoop:
             record.dag.status = "review_required"
             _emit_dag(on_dag, record.dag)
             return None
-        trace = trace or record.trace or _empty_run_trace(run_id=record.task_id, dag=record.dag)
+        trace = trace or record.trace or _empty_run_trace(run_id=record.run_id, dag=record.dag)
         node_traces = _node_traces_by_id(trace)
         dag_node_ids = _dag_node_ids(record.dag)
         all_nodes_completed = bool(dag_node_ids) and all(
@@ -867,7 +868,7 @@ def _format_dag_observation(
     *,
     kind: str,
     task_id: str | None,
-    record: RuntimeTaskRecord | None = None,
+    record: RunState | None = None,
     last_error: str = "",
     failed_node_id: str | None = None,
     validation_error: str = "",
@@ -875,7 +876,7 @@ def _format_dag_observation(
 ) -> str:
     sections = [
         f"DAG observation: {kind}",
-        f"Task id: {task_id or (record.task_id if record else '<new>')}",
+        f"Task id: {task_id or (record.run_id if record else '<new>')}",
     ]
     if validation_error:
         sections.append(f"Validation error:\n{validation_error}")
@@ -946,7 +947,7 @@ def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str
     )
 
 
-def dag_run_fallback_message(record: RuntimeTaskRecord, trace: RunTrace) -> str:
+def dag_run_fallback_message(record: RunState, trace: RunTrace) -> str:
     node_traces = _node_traces_by_id(trace)
     lines = [
         "DAG execution completed." if trace.status == "completed" else "DAG execution stopped before completion.",
@@ -970,17 +971,15 @@ def dag_run_fallback_message(record: RuntimeTaskRecord, trace: RunTrace) -> str:
 
 def _dag_loop_outcome(
     *,
+    record: RunState,
     status: LoopStatus,
     final_response: str,
     dag: DAG | None = None,
     trace: RunTrace | None = None,
-    task_id: str | None = None,
     spec_id: str | None = None,
     workspace_path: str | None = None,
     pending_review: PendingReview | None = None,
-    extra_events: list[dict[str, Any]] | None = None,
 ) -> LoopOutcome:
-    events: list[dict[str, Any]] = list(extra_events or [])
     invocations: list[CapabilityInvocation] = []
     if dag is not None:
         invocations = [
@@ -988,33 +987,20 @@ def _dag_loop_outcome(
             for node in dag.nodes
             if isinstance(node.payload, CapabilityNodePayload)
         ]
-    if task_id and dag:
-        if (
-            status == "awaiting_review"
-            and pending_review
-            and pending_review.kind == "initial_dag"
-        ):
-            events.append({"kind": "dag_created", "task_id": task_id, "dag": dag})
-        elif (
-            status == "awaiting_review"
-            and pending_review
-            and pending_review.kind == "dag_replan"
-        ):
-            events.append({"kind": "change_review_requested", "task_id": task_id, "dag": dag})
-        else:
-            events.append({"kind": "dag_executed", "task_id": task_id, "dag": dag})
+    state = record.model_copy(update={
+        "status": status,
+        "dag": dag,
+        "trace": trace,
+        "invocations": invocations,
+        "pending_review": pending_review,
+        "pending_invocation": None,
+        "spec_id": spec_id if spec_id is not None else record.spec_id,
+        "workspace_path": workspace_path if workspace_path is not None else record.workspace_path,
+    })
     return LoopOutcome(
-        status=status,
+        state=state,
         execution_context=format_dag_execution_context(dag, trace),
-        final_answer=final_response,
-        events=events,
-        invocations=invocations,
-        dag=dag,
-        trace=trace,
-        task_id=task_id,
-        spec_id=spec_id,
-        workspace_path=workspace_path,
-        pending_review=pending_review,
+        output_text=final_response,
     )
 
 
@@ -1067,7 +1053,7 @@ def _mark_planned_artifacts_failed(
             )
 
 
-def _completed_node_traces(record: RuntimeTaskRecord) -> dict[str, RunTraceNode]:
+def _completed_node_traces(record: RunState) -> dict[str, RunTraceNode]:
     trace = record.trace
     if trace is None:
         return {}
@@ -1118,11 +1104,11 @@ def _empty_run_trace(*, run_id: str, dag: DAG) -> RunTrace:
 
 
 def _set_trace_output(
-    record: RuntimeTaskRecord,
+    record: RunState,
     trace: RunTrace | None,
     output: str,
 ) -> RunTrace:
-    trace = trace or record.trace or _empty_run_trace(run_id=record.task_id, dag=record.dag)
+    trace = trace or record.trace or _empty_run_trace(run_id=record.run_id, dag=record.dag)
     trace.root.output = output
     record.trace = trace
     return trace
@@ -1159,7 +1145,7 @@ def _has_real_nodes(dag: DAG) -> bool:
     return any(not isinstance(node.payload, StartNodePayload) for node in dag.nodes)
 
 
-def _dag_completed(record: RuntimeTaskRecord) -> bool:
+def _dag_completed(record: RunState) -> bool:
     trace = record.trace
     node_traces = _node_traces_by_id(trace) if trace is not None else {}
     return all(
@@ -1266,7 +1252,7 @@ def _indent_block(text: str, *, prefix: str) -> list[str]:
     return [f"{prefix}{line}" if line else prefix.rstrip() for line in text.splitlines()]
 
 
-def _invalidate_node_results(record: RuntimeTaskRecord, node_id: str) -> None:
+def _invalidate_node_results(record: RunState, node_id: str) -> None:
     trace = record.trace
     for affected_id in _downstream_node_ids(record.dag, node_id):
         if trace is not None:

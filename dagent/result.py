@@ -15,7 +15,6 @@ from dagent.schemas import (
     RunState,
     RunTrace,
     RunTraceNode,
-    RuntimeResponse,
     ValidationIssue,
 )
 
@@ -44,67 +43,51 @@ RunStreamEventType = Literal[
 class RunResult:
     """Stable public SDK result for agent and DAG runs."""
 
-    kind: RunResultKind
-    status: str
-    run_id: str | None = None
+    state: RunState
     output_text: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
-    state: RunState | None = None
-    events: list[dict[str, Any]] = field(default_factory=list)
-    pending_review: PendingReview | None = None
-
-    @classmethod
-    def from_runtime_response(
-        cls,
-        response: RuntimeResponse,
-        *,
-        kind: RunResultKind | None = None,
-    ) -> "RunResult":
-        resolved_kind = kind or _infer_runtime_kind(response)
-        pending_review = (
-            response.state.pending_review
-            if response.state is not None and response.state.pending_review is not None
-            else response.pending_review
-        )
-        return cls(
-            kind=resolved_kind,
-            status=response.status,
-            run_id=response.state.run_id if response.state is not None else response.task_id,
-            output_text=response.final_answer,
-            messages=list(response.messages),
-            state=response.state,
-            events=list(response.events),
-            pending_review=pending_review,
-        )
 
     @classmethod
     def from_dag_run(cls, run: DAGRun) -> "RunResult":
         status = "failed" if run.status == "failed" else "completed"
         return cls(
-            kind="static_dag",
-            status=status,
-            run_id=run.run_id,
-            output_text=_dag_run_output_text(run),
             state=RunState(
                 run_id=run.run_id,
                 kind="static_dag",
-                status=status,
+                status=status,  # type: ignore[arg-type]
                 dag=run.dag,
                 trace=run.trace,
                 spec_id=run.spec_id,
                 workspace_path=run.workspace_path,
                 runtime_mode="dag_spec",
             ),
+            output_text=_dag_run_output_text(run),
         )
 
     @property
+    def kind(self) -> RunResultKind:
+        return self.state.kind
+
+    @property
+    def status(self) -> str:
+        return self.state.status
+
+    @property
+    def run_id(self) -> str:
+        return self.state.run_id
+
+    @property
+    def pending_review(self) -> PendingReview | None:
+        return self.state.pending_review
+
+    @property
     def dag_run(self) -> DAGRun | None:
-        if self.kind != "static_dag" or self.state is None:
+        if self.kind != "static_dag":
             return None
         if self.state.dag is None or self.state.trace is None:
             return None
         return DAGRun(
-            run_id=self.run_id or self.state.run_id or "",
+            run_id=self.run_id,
             spec_id=self.state.spec_id,
             workspace_path=self.state.workspace_path or "",
             dag=self.state.dag,
@@ -113,19 +96,19 @@ class RunResult:
 
     @property
     def dag(self) -> DAG | None:
-        return self.state.dag if self.state is not None else None
+        return self.state.dag
 
     @property
     def trace(self) -> RunTrace | None:
-        return self.state.trace if self.state is not None else None
+        return self.state.trace
 
     @property
     def spec_id(self) -> str | None:
-        return self.state.spec_id if self.state is not None else None
+        return self.state.spec_id
 
     @property
     def workspace_path(self) -> str | None:
-        return self.state.workspace_path if self.state is not None else None
+        return self.state.workspace_path
 
     @property
     def requires_review(self) -> bool:
@@ -157,14 +140,9 @@ class RunResult:
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return {
-            "kind": self.kind,
-            "status": self.status,
-            "run_id": self.run_id,
             "output_text": self.output_text,
             "messages": _dump(self.messages, mode=mode),
-            "review": _dump(self.pending_review, mode=mode),
             "state": _dump(self.state, mode=mode),
-            "requires_review": self.requires_review,
         }
 
 
@@ -324,14 +302,6 @@ class RunStreamChunk:
             "result": self.result.model_dump(mode=mode) if self.result is not None else None,
             "event": self.event.model_dump(mode=mode) if self.event is not None else None,
         }
-
-
-def _infer_runtime_kind(response: RuntimeResponse) -> RunResultKind:
-    if response.state is not None:
-        return response.state.kind
-    if response.dag is not None:
-        return "dynamic_dag"
-    return "tool"
 
 
 def _dag_run_output_text(run: DAGRun) -> str:

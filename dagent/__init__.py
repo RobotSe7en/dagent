@@ -33,7 +33,6 @@ from dagent.schemas import (
     RiskLevel,
     RunState,
     RunTrace,
-    RuntimeResponse,
 )
 
 __version__ = "0.2.2"
@@ -75,7 +74,6 @@ __all__ = [
     "RunStreamChunk",
     "RunStreamEvent",
     "RunTrace",
-    "RuntimeResponse",
     "Runner",
     "SkillAmbiguousError",
     "SkillEntry",

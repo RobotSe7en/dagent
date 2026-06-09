@@ -250,12 +250,8 @@ export interface ApiRunState {
 }
 
 interface ApiRunResult {
-  kind: 'tool' | 'dynamic_dag' | 'static_dag';
-  status: string;
-  run_id: string | null;
   output_text: string;
   messages: Array<Record<string, unknown>>;
-  review?: ReviewEventPayload | null;
   state?: ApiRunState | null;
 }
 

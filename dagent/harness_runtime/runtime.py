@@ -18,7 +18,12 @@ from dagent.harness_runtime.tool_agent import (
 )
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.harness_runtime.capability_executor import CapabilityExecutor
-from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
+from dagent.harness_runtime.capability_scope import (
+    CapabilityScope,
+    DEFAULT_CAPABILITY_SCOPE,
+    capability_scope_from_state,
+    capability_scope_to_state,
+)
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
@@ -29,13 +34,11 @@ from dagent.harness_runtime.runtime_events import (
 )
 from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
+from dagent.result import RunResult
 from dagent.schemas import (
     DAG,
-    DAGRun,
     DAGSpec,
     LoopOutcome,
-    RuntimeResponse,
-    CapabilityInvocation,
     CapabilityDefinition,
     RunState,
 )
@@ -85,7 +88,7 @@ class HarnessRuntime:
         self.enable_validation = enable_validation
         self.max_validation_retries = max_validation_retries
         self.session = HarnessRuntimeSession()
-        self.tasks = self.session.tasks
+        self.runs = self.session.runs
         if capability_catalog is None and capability_executor is not None:
             capability_catalog = capability_executor.catalog
         self.capability_catalog = capability_catalog or CapabilityCatalog()
@@ -166,7 +169,7 @@ class HarnessRuntime:
             on_event({"type": "validating", "message": "Validating result quality..."})
         validation = await self.validator.validate(
             user_request=user_request,
-            final_answer=loop_outcome.final_answer,
+            final_answer=loop_outcome.output_text,
             execution_context=loop_outcome.execution_context,
         )
         if validation.passed:
@@ -210,7 +213,7 @@ class HarnessRuntime:
             if loop_outcome is None or feedback is not None:
                 loop_outcome = await run_once(feedback)
 
-            if loop_outcome.status == "awaiting_review":
+            if loop_outcome.state.status == "awaiting_review":
                 return loop_outcome
 
             passed, validation_feedback = await self._validate_loop_outcome(
@@ -236,7 +239,7 @@ class HarnessRuntime:
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> RuntimeResponse:
+    ) -> RunResult:
         user_request = _last_user_content(messages)
         loop_messages = _messages_for_run_state(run_state, user_request) if run_state else messages
         # 1. Route
@@ -289,66 +292,62 @@ class HarnessRuntime:
         review_level: ReviewLevel | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> RuntimeResponse | None:
+    ) -> RunResult | None:
         if run_state is not None:
             self.session.hydrate_run_state(run_state)
-        review_state = self.session.get_review_continuation(review_id)
-        if review_state is None:
+        state = self.session.get_review_state(review_id)
+        if state is None or state.pending_review is None:
             return None
-        if review_state.kind == "capability_review":
+        pending_review = state.pending_review
+        capability_scope = capability_scope_from_state(state.capability_scope)
+        input_messages = list(state.internal_messages)
+        if pending_review.kind == "capability_review":
             response_tokens = _response_token_stream(on_token, on_event)
-            record = self.tasks.get(review_state.task_id)
-            input_messages = list(record.internal_messages) if record is not None else list(review_state.messages)
-            if record is not None:
-                self.tool_agent.messages = [dict(message) for message in record.internal_messages]
-                self.tool_agent.trace = record.trace
+            self.tool_agent.messages = [dict(message) for message in state.internal_messages]
+            self.tool_agent.trace = state.trace
             initial_outcome = await self.tool_agent.resume_review(
-                review_state,
+                state,
                 approved=approved,
                 on_token=response_tokens,
                 on_event=on_event,
             )
             if initial_outcome is None:
                 return None
-            self.session.discard_review_continuation(review_id)
+            self.session.discard_review(review_id)
 
             async def run_once(feedback: str | None) -> LoopOutcome:
                 if feedback is None:
                     raise RuntimeError("Tool review validation retry requires feedback.")
                 return await self.tool_agent.run(
                     feedback,
-                    review_level=review_state.review_level,
-                    capability_scope=review_state.capability_scope,
+                    run_id=state.run_id,
+                    review_level=state.review_level,
+                    capability_scope=capability_scope,
                     on_token=response_tokens,
                     on_event=on_event,
                 )
 
             outcome = await self._run_with_review_and_validation(
-                review_state.user_request,
+                state.user_request,
                 run_once=run_once,
                 initial_loop_outcome=initial_outcome,
                 on_event=on_event,
             )
             return self._finish_loop_outcome(
                 outcome,
-                review_state.user_request,
+                state.user_request,
                 "tool",
-                review_state.review_level,
-                extra_invocations=review_state.invocations,
-                task_id=review_state.task_id,
-                capability_scope=review_state.capability_scope,
+                state.review_level,
+                runtime_mode=state.runtime_mode,
+                capability_scope=capability_scope,
                 input_messages=input_messages,
             )
 
         if approved and dag is None:
             return None
-        task_id = review_state.task_id
-        record = self.tasks[task_id]
-        input_messages = list(record.internal_messages)
         response_tokens = _response_token_stream(on_token, on_event)
         initial_outcome = await self.dag_agent.resume_review(
-            review_state,
-            record=record,
+            state,
             dag=dag,
             approved=approved,
             review_level=review_level,
@@ -358,16 +357,15 @@ class HarnessRuntime:
         )
         if initial_outcome is None:
             return None
-        self.session.discard_review_continuations_for_task(task_id)
-        if initial_outcome.status == "awaiting_review":
+        self.session.discard_review(review_id)
+        if initial_outcome.state.status == "awaiting_review":
             return self._finish_loop_outcome(
                 initial_outcome,
-                record.user_request,
+                state.user_request,
                 "dag",
-                review_level or review_state.review_level,
-                task_id=task_id,
-                runtime_mode=record.runtime_mode,
-                capability_scope=record.capability_scope,
+                review_level or state.review_level,
+                runtime_mode=state.runtime_mode,
+                capability_scope=capability_scope,
                 input_messages=input_messages,
             )
 
@@ -376,29 +374,28 @@ class HarnessRuntime:
                 raise RuntimeError("DAG review validation retry requires feedback.")
             return await self.dag_agent.run(
                 feedback,
-                task_id=record.task_id,
-                review_level=review_level or review_state.review_level,
-                runtime_mode=record.runtime_mode,
-                capability_scope=record.capability_scope,
+                task_id=state.run_id,
+                review_level=review_level or state.review_level,
+                runtime_mode=state.runtime_mode,
+                capability_scope=capability_scope,
                 on_token=response_tokens,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
 
         outcome = await self._run_with_review_and_validation(
-            record.user_request,
+            state.user_request,
             run_once=run_once,
             initial_loop_outcome=initial_outcome,
             on_event=on_event,
         )
         return self._finish_loop_outcome(
             outcome,
-            record.user_request,
+            state.user_request,
             "dag",
-            review_level or review_state.review_level,
-            task_id=task_id,
-            runtime_mode=record.runtime_mode,
-            capability_scope=record.capability_scope,
+            review_level or state.review_level,
+            runtime_mode=state.runtime_mode,
+            capability_scope=capability_scope,
             input_messages=input_messages,
         )
 
@@ -507,72 +504,35 @@ class HarnessRuntime:
         mode: Literal["tool", "dag"],
         review_level: ReviewLevel,
         *,
-        extra_invocations: list[CapabilityInvocation] | None = None,
-        task_id: str | None = None,
         runtime_mode: str | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         input_messages: list[dict[str, Any]] | None = None,
-    ) -> RuntimeResponse:
-        invocations = [*(extra_invocations or []), *outcome.invocations]
-        if outcome.status == "awaiting_review":
-            record = self.session.save_loop_outcome(
-                task_id=task_id,
-                mode=mode,
-                user_request=user_request,
-                review_level=review_level,
-                loop_outcome=outcome,
-                invocations=invocations,
-                runtime_mode=runtime_mode,
-                capability_scope=capability_scope,
-            )
-            continuation = self.session.get_review_continuation(outcome.pending_review.review_id) if outcome.pending_review else None
-            state = record.to_run_state(
-                kind=_state_kind_for_mode(mode),
-                status=outcome.status,
-                review_continuation=continuation,
-            )
-            return RuntimeResponse(
-                status=outcome.status,
-                final_answer="",
-                messages=[],
-                state=state,
-                dag=outcome.dag,
-                trace=record.trace or outcome.trace,
-                task_id=record.task_id,
-                events=outcome.events,
-                pending_review=outcome.pending_review,
-            )
-
-        record = self.session.save_loop_outcome(
-            task_id=task_id,
-            mode=mode,
-            user_request=user_request,
-            review_level=review_level,
-            loop_outcome=outcome,
-            invocations=invocations,
-            runtime_mode=runtime_mode,
-            capability_scope=capability_scope,
+    ) -> RunResult:
+        final_answer = (
+            ""
+            if outcome.state.status == "awaiting_review"
+            else outcome.output_text.strip() or _fallback_output_text(outcome)
         )
-        final_answer = outcome.final_answer.strip() or _fallback_final_answer(outcome)
-        state = record.to_run_state(
-            kind=_state_kind_for_mode(mode),
-            status=outcome.status,
-        )
-        return RuntimeResponse(
-            status=outcome.status,
-            final_answer=final_answer,
+        state = outcome.state.model_copy(update={
+            "kind": _state_kind_for_mode(mode),
+            "status": outcome.state.status,
+            "user_request": user_request,
+            "review_level": review_level,
+            "runtime_mode": runtime_mode or mode,
+            "capability_scope": capability_scope_to_state(capability_scope),
+            "pending_review": outcome.state.pending_review,
+            "pending_invocation": outcome.state.pending_invocation,
+        })
+        state = self.session.save_run_state(state)
+        return RunResult(
+            state=state,
+            output_text=final_answer,
             messages=_public_messages(
                 outcome,
                 input_messages=input_messages,
-                kind=_state_kind_for_mode(mode),
-                final_answer=final_answer,
+                kind=state.kind,
+                output_text=final_answer,
             ),
-            state=state,
-            dag=outcome.dag,
-            trace=record.trace or outcome.trace,
-            task_id=record.task_id,
-            events=outcome.events,
-            pending_review=outcome.pending_review,
         )
 
     async def run_dag_spec(
@@ -584,7 +544,7 @@ class HarnessRuntime:
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
-    ) -> DAGRun:
+    ) -> RunResult:
         outcome = await self._execute_loop(
             spec,
             mode="dag_spec",
@@ -595,30 +555,20 @@ class HarnessRuntime:
             artifact_uploads=artifact_uploads,
             graph_input=graph_input,
         )
-        record = self.session.save_loop_outcome(
-            task_id=outcome.task_id,
-            mode="dag",
-            user_request=f"Run DAGSpec {spec.id}",
-            review_level="fast",
-            loop_outcome=outcome,
-            runtime_mode="dag_spec",
-        )
-        trace = record.trace or outcome.trace
-        if trace is None:
-            raise RuntimeError(f"DAGSpec run '{record.task_id}' completed without a run trace.")
-        return DAGRun(
-            run_id=record.task_id,
-            spec_id=record.spec_id or spec.id,
-            workspace_path=record.workspace_path or "",
-            dag=record.dag,
-            trace=trace,
+        state = self.session.save_run_state(outcome.state)
+        if state.trace is None:
+            raise RuntimeError(f"DAGSpec run '{state.run_id}' completed without a run trace.")
+        return RunResult(
+            state=state,
+            output_text=outcome.output_text.strip() or _fallback_output_text(outcome),
+            messages=[],
         )
 
 
-def _fallback_final_answer(loop_outcome: LoopOutcome) -> str:
+def _fallback_output_text(loop_outcome: LoopOutcome) -> str:
     if loop_outcome.execution_context.strip():
         return loop_outcome.execution_context.strip()
-    if loop_outcome.status == "completed":
+    if loop_outcome.state.status == "completed":
         return "The task completed, but no final answer was produced."
     return "The task did not complete, and no final answer was produced."
 
@@ -645,14 +595,15 @@ def _public_messages(
     *,
     input_messages: list[dict[str, Any]] | None,
     kind: Literal["tool", "dynamic_dag"],
-    final_answer: str,
+    output_text: str,
 ) -> list[dict[str, Any]]:
-    if outcome.status != "completed":
+    if outcome.state.status != "completed":
         return []
     if kind == "dynamic_dag":
-        return [{"role": "assistant", "content": final_answer}] if final_answer else []
+        return [{"role": "assistant", "content": output_text}] if output_text else []
     input_count = len(input_messages or [])
-    generated = outcome.messages[input_count:] if input_count <= len(outcome.messages) else []
+    internal_messages = outcome.state.internal_messages
+    generated = internal_messages[input_count:] if input_count <= len(internal_messages) else []
     return [
         dict(message)
         for message in generated
@@ -667,18 +618,6 @@ def _response_token_stream(
     if on_token is None and on_event is None:
         return None
     return _ResponseTokenSplitter(on_raw=on_token, on_event=on_event)
-
-
-def _gate_result_for_task(loop_outcome: LoopOutcome, task_id: str) -> RuntimeResponse:
-    return RuntimeResponse(
-        status="awaiting_review",
-        final_answer="",
-        dag=loop_outcome.dag,
-        trace=loop_outcome.trace,
-        task_id=task_id,
-        events=loop_outcome.events,
-        pending_review=loop_outcome.pending_review,
-    )
 
 
 def _capability_registration_parts(

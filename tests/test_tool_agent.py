@@ -8,7 +8,7 @@ from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.decorator import tool
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.harness_runtime import ToolAgent, ToolAgentLoop, ReviewContinuation
+from dagent.harness_runtime import ToolAgent, ToolAgentLoop
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.profiles import AgentProfile
@@ -53,9 +53,9 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
         )
     )
 
-    assert result.status == "completed"
-    assert result.final_answer == "Done."
-    assert result.messages[-1] == {"role": "assistant", "content": "Done."}
+    assert result.state.status == "completed"
+    assert result.output_text == "Done."
+    assert result.state.internal_messages[-1] == {"role": "assistant", "content": "Done."}
 
 
 def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
@@ -71,9 +71,9 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
         )
     )
 
-    assert result.status == "completed"
+    assert result.state.status == "completed"
     assert tokens == ["<think>checking</think>\nDone."]
-    assert result.final_answer == "Done."
+    assert result.output_text == "Done."
 
 
 def test_tool_agent_scope_can_disable_all_tools(tmp_path: Path) -> None:
@@ -87,7 +87,7 @@ def test_tool_agent_scope_can_disable_all_tools(tmp_path: Path) -> None:
         )
     )
 
-    assert result.status == "completed"
+    assert result.state.status == "completed"
     assert provider.requests[0]["tools"] == []
     assert "## Available Tools" not in provider.requests[0]["messages"][0]["content"]
 
@@ -106,7 +106,7 @@ def test_tool_agent_scope_filters_tools_without_injecting_skill_prompt(tmp_path:
         )
     )
 
-    assert result.status == "completed"
+    assert result.state.status == "completed"
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["read_file"]
     system_content = provider.requests[0]["messages"][0]["content"]
     assert "writing/summarize" not in system_content
@@ -148,7 +148,7 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
 
     result = run(agent.run("Use context", review_level="fast"))
 
-    assert result.status == "completed"
+    assert result.state.status == "completed"
     assert seen_task_ids
     assert seen_task_ids[0] is not None
 
@@ -177,11 +177,11 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
         )
     )
 
-    assert result.status == "completed"
-    assert result.invocations == []
-    assert result.final_answer == "Recovered without writing."
+    assert result.state.status == "completed"
+    assert result.state.invocations == []
+    assert result.output_text == "Recovered without writing."
     assert not (tmp_path / "notes.txt").exists()
-    tool_message = next(message for message in result.messages if message["role"] == "tool")
+    tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")
     assert tool_message["role"] == "tool"
     assert tool_message["name"] == "write_file"
     assert "[TOOL_ERROR]" in tool_message["content"]
@@ -215,14 +215,14 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
         )
     )
 
-    assert result.status == "completed"
-    assert result.final_answer == "I read it."
-    assert result.messages[1]["role"] == "assistant"
-    assert result.messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
-    assert result.messages[1]["tool_calls"][0]["function"]["arguments"] == (
+    assert result.state.status == "completed"
+    assert result.output_text == "I read it."
+    assert result.state.internal_messages[1]["role"] == "assistant"
+    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["arguments"] == (
         '{"path": "notes.txt"}'
     )
-    assert result.messages[2] == {
+    assert result.state.internal_messages[2] == {
         "role": "tool",
         "tool_call_id": "call_1",
         "name": "read_file",
@@ -318,7 +318,7 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
         )
     )
 
-    assert result.status == "completed"
+    assert result.state.status == "completed"
     assert [event["type"] for event in events] == ["capability_call", "capability_result"]
     assert events[0] == {
         "type": "capability_call",
@@ -361,8 +361,8 @@ def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
         )
     )
 
-    assert result.status == "failed"
-    assert result.final_answer == ""
+    assert result.state.status == "failed"
+    assert result.output_text == ""
     assert len(provider.requests) == 1
 
 
@@ -390,8 +390,8 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
         )
     )
 
-    assert result.status == "completed"
-    tool_msg = result.messages[2]
+    assert result.state.status == "completed"
+    tool_msg = result.state.internal_messages[2]
     assert tool_msg["role"] == "tool"
     assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]
 
@@ -433,19 +433,11 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
     )
 
     first = run(agent.run("Read notes", review_level="careful"))
-    state = ReviewContinuation(
-        review_id=first.pending_review.review_id,
-        task_id="task_1",
-        kind="capability_review",
-        user_request="Read notes",
-        review_level="careful",
-        invocations=first.invocations,
-        pending_invocation=first.invocations[0],
-    )
+    state = first.state.model_copy(update={"user_request": "Read notes", "review_level": "careful"})
 
     resumed = run(agent.resume_review(state, approved=True))
 
-    assert resumed.status == "completed"
+    assert resumed.state.status == "completed"
     assert agent.messages[2] == {
         "role": "tool",
         "tool_call_id": "call_1",

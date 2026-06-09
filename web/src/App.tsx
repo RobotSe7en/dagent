@@ -1155,9 +1155,9 @@ export function App() {
         },
         onDone: (payload) => {
           const runState = payload.result.state;
-          if (!runState?.dag || !runState.trace || !payload.result.run_id) return;
+          if (!runState?.dag || !runState.trace || !runState.run_id) return;
           const dagRun = {
-            run_id: payload.result.run_id,
+            run_id: runState.run_id,
             spec_id: runState.spec_id ?? null,
             workspace_path: runState.workspace_path ?? '',
             dag: runState.dag,
@@ -1234,7 +1234,7 @@ export function App() {
         onDone: (payload) => {
           const result = payload.result;
           const resultDag = result.state?.dag ?? null;
-          const resultReview = result.review ?? result.state?.pending_review ?? null;
+          const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
           flushQueuedTokensNow();
           if (resultDag) {
@@ -1249,7 +1249,7 @@ export function App() {
             type: 'model',
             label: 'runtime_completed',
             detail: resultDag ? 'DAG loop completed the request.' : 'Capability loop completed the request.',
-            status: result.status === 'failed' ? 'failed' : 'completed',
+            status: result.state?.status === 'failed' ? 'failed' : 'completed',
           });
         },
         onError: (message) => {
@@ -1316,7 +1316,7 @@ export function App() {
         onDone: (payload) => {
           const result = payload.result;
           const resultDag = result.state?.dag ?? null;
-          const resultReview = result.review ?? result.state?.pending_review ?? null;
+          const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
           flushQueuedTokensNow();
           if (resultDag) {
@@ -1376,7 +1376,7 @@ export function App() {
         onValidating: appendValidating,
         onReview: handlePendingReview,
         onDone: (payload) => {
-          const resultReview = payload.result.review ?? payload.result.state?.pending_review ?? null;
+          const resultReview = payload.result.state?.pending_review ?? null;
           setRunState(payload.result.state ?? null);
           flushQueuedTokensNow();
           handlePendingReview(resultReview);

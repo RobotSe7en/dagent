@@ -394,7 +394,7 @@ web/                React + Vite frontend
 tests/              pytest suite
 ```
 
-Key runtime contracts such as `RunTrace`, `LoopOutcome`, `RuntimeResponse`,
+Key runtime contracts such as `RunState`, `RunTrace`, `LoopOutcome`,
 `PendingReview`, and validation result types live in `dagent/schemas`.
 `harness_runtime` owns behavior; `schemas` owns shared data contracts.
 

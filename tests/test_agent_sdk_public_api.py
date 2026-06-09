@@ -379,7 +379,8 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert review_events[-1].data.message == "Review capability call: tool.write"
     assert events[-1].type == "run.finished"
     assert events[-1].data.result.requires_review
-    assert events[-1].data.result.model_dump(mode="json")["review"]["kind"] == "capability_review"
+    dumped = events[-1].data.result.model_dump(mode="json")
+    assert dumped["state"]["pending_review"]["kind"] == "capability_review"
 
 
 def test_runner_stream_chunk_exposes_review_without_event_type_branching(tmp_path) -> None:

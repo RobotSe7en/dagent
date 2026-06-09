@@ -13,7 +13,7 @@ root with `uv run python -m examples.<module>`.
 | Profiles | `dagent.AgentProfile`, `dagent.ProfileStore` |
 | Skills | `dagent.SkillStore`, `dagent.SkillEntry`, `dagent.SkillView`, skill store errors, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `dagent.RunResult`, `dagent.RunState`, `dagent.RunStreamChunk`, `dagent.RunStreamEvent`, `dagent.ReviewHandle`, `dagent.ReviewDecision`, `dagent.ReviewLevel` |
-| Runtime schemas | `dagent.Boundary`, `dagent.CapabilityDefinition`, `dagent.CapabilityInvocation`, `dagent.CapabilityPolicy`, `dagent.CapabilityResult`, `dagent.DAG`, `dagent.DAGSpec`, `dagent.DAGRun`, `dagent.PendingReview`, `dagent.RunTrace`, `dagent.RuntimeResponse`, `dagent.RiskLevel`, `dagent.ArtifactUpload`, `dagent.CapabilityScope` |
+| Runtime schemas | `dagent.Boundary`, `dagent.CapabilityDefinition`, `dagent.CapabilityInvocation`, `dagent.CapabilityPolicy`, `dagent.CapabilityResult`, `dagent.DAG`, `dagent.DAGSpec`, `dagent.DAGRun`, `dagent.PendingReview`, `dagent.RunState`, `dagent.RunTrace`, `dagent.RiskLevel`, `dagent.ArtifactUpload`, `dagent.CapabilityScope` |
 | Providers | `dagent.Provider`; test/provider helpers from `dagent.providers` include `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` |
 
 ## Files

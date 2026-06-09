@@ -19,14 +19,8 @@ from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
 from dagent.schemas import (
     LoopOutcome,
-    RuntimeResponse,
     ValidationIssue,
     ValidationResult,
-)
-from dagent.harness_runtime.task_record import (
-    ReviewContinuation,
-    RuntimeTaskMode,
-    RuntimeTaskRecord,
 )
 
 __all__ = [
@@ -48,13 +42,9 @@ __all__ = [
     "format_validation_feedback",
     "FeedbackLearnerAgent",
     "FeedbackLearning",
-    "RuntimeResponse",
     "HarnessRuntime",
     "CapabilityExecutionError",
     "CapabilityExecutor",
     "RuntimeMode",
-    "RuntimeTaskRecord",
-    "RuntimeTaskMode",
-    "ReviewContinuation",
     "validate_dag_spec",
 ]

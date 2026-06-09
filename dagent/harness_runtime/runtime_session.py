@@ -1,135 +1,54 @@
-"""Session-scoped state helpers for the harness runtime."""
+"""Session-scoped run state helpers for the harness runtime."""
 
 from __future__ import annotations
 
-from uuid import uuid4
-
-from dagent.review import ReviewLevel
-from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
-from dagent.harness_runtime.task_record import (
-    ReviewContinuation,
-    RuntimeTaskMode,
-    RuntimeTaskRecord,
-    pending_review_invocation,
-)
-from dagent.schemas import LoopOutcome, CapabilityInvocation
 from dagent.schemas import RunState
 
 
 class HarnessRuntimeSession:
-    """Mutable task and review state owned by a harness session."""
+    """Mutable in-process index for resumable run states."""
 
     def __init__(self) -> None:
-        self.tasks: dict[str, RuntimeTaskRecord] = {}
-        self._review_continuations: dict[str, ReviewContinuation] = {}
+        self.runs: dict[str, RunState] = {}
+        self._review_index: dict[str, str] = {}
 
-    def store_review_continuation(
-        self,
-        *,
-        task_id: str,
-        user_request: str,
-        review_level: ReviewLevel,
-        loop_outcome: LoopOutcome,
-        invocations: list[CapabilityInvocation] | None = None,
-        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
-    ) -> None:
-        review = loop_outcome.pending_review
-        if review is None:
-            return
-        task_invocations = invocations if invocations is not None else loop_outcome.invocations
-        self._review_continuations[review.review_id] = ReviewContinuation(
-            review_id=review.review_id,
-            task_id=task_id,
-            kind=review.kind,
-            user_request=user_request,
-            invocations=task_invocations,
-            review_level=review_level,
-            pending_invocation=pending_review_invocation(loop_outcome, task_invocations),
-            capability_scope=capability_scope,
-            messages=list(loop_outcome.messages),
-        )
+    def hydrate_run_state(self, state: RunState) -> RunState:
+        return self.save_run_state(state)
 
-    def get_review_continuation(self, review_id: str) -> ReviewContinuation | None:
-        return self._review_continuations.get(review_id)
+    def save_run_state(self, state: RunState) -> RunState:
+        stored = state.model_copy(deep=True)
+        existing = self.runs.get(stored.run_id)
+        if (
+            existing is not None
+            and existing.trace is not None
+            and stored.trace is not None
+            and existing.trace is not stored.trace
+        ):
+            stored = stored.model_copy(update={"trace": existing.trace.merge(stored.trace)})
+        self.runs[stored.run_id] = stored
+        self.discard_reviews_for_run(stored.run_id)
+        if stored.pending_review is not None:
+            self._review_index[stored.pending_review.review_id] = stored.run_id
+        return stored.model_copy(deep=True)
 
-    def discard_review_continuation(self, review_id: str) -> None:
-        self._review_continuations.pop(review_id, None)
+    def get_review_state(self, review_id: str) -> RunState | None:
+        run_id = self._review_index.get(review_id)
+        if run_id is not None:
+            return self.runs.get(run_id)
+        for state in self.runs.values():
+            if state.pending_review is not None and state.pending_review.review_id == review_id:
+                self._review_index[review_id] = state.run_id
+                return state
+        return None
 
-    def discard_review_continuations_for_task(self, task_id: str) -> None:
+    def discard_review(self, review_id: str) -> None:
+        self._review_index.pop(review_id, None)
+
+    def discard_reviews_for_run(self, run_id: str) -> None:
         stale_review_ids = [
             review_id
-            for review_id, continuation in self._review_continuations.items()
-            if continuation.task_id == task_id
+            for review_id, indexed_run_id in self._review_index.items()
+            if indexed_run_id == run_id
         ]
         for review_id in stale_review_ids:
-            self._review_continuations.pop(review_id, None)
-
-    def hydrate_run_state(self, state: RunState) -> RuntimeTaskRecord:
-        if not state.run_id:
-            raise ValueError("RunState.run_id is required to resume a run.")
-        record = RuntimeTaskRecord.from_run_state(state)
-        self.tasks[record.task_id] = record
-        if state.review_continuation is not None:
-            continuation = ReviewContinuation.from_run_state(state.review_continuation)
-            self._review_continuations[continuation.review_id] = continuation
-        return record
-
-    def save_loop_outcome(
-        self,
-        *,
-        task_id: str | None,
-        mode: RuntimeTaskMode,
-        user_request: str,
-        review_level: ReviewLevel,
-        loop_outcome: LoopOutcome,
-        invocations: list[CapabilityInvocation] | None = None,
-        runtime_mode: str | None = None,
-        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
-    ) -> RuntimeTaskRecord:
-        resolved_task_id = task_id or loop_outcome.task_id or f"task_{uuid4().hex}"
-        record = self.tasks.get(resolved_task_id)
-        if record is None:
-            if mode == "dag" and loop_outcome.dag is not None:
-                record = RuntimeTaskRecord.dag_task(
-                    task_id=resolved_task_id,
-                    user_request=user_request,
-                    dag=loop_outcome.dag,
-                    review_level=review_level,
-                    runtime_mode=runtime_mode or "auto",
-                    spec_id=loop_outcome.spec_id,
-                    workspace_path=loop_outcome.workspace_path,
-                    capability_scope=capability_scope,
-                )
-            else:
-                if mode == "tool":
-                    record = RuntimeTaskRecord.tool_task(
-                        task_id=resolved_task_id,
-                        user_request=user_request,
-                        review_level=review_level,
-                        capability_scope=capability_scope,
-                    )
-                else:
-                    record = RuntimeTaskRecord(
-                        task_id=resolved_task_id,
-                        mode=mode,
-                        user_request=user_request,
-                        review_level=review_level,
-                        runtime_mode=runtime_mode or "auto",
-                        capability_scope=capability_scope,
-                    )
-        record.apply_outcome(
-            loop_outcome,
-            review_level=review_level,
-            capability_scope=capability_scope,
-        )
-        self.tasks[resolved_task_id] = record
-        if loop_outcome.status == "awaiting_review":
-            self.store_review_continuation(
-                task_id=record.task_id,
-                user_request=user_request,
-                review_level=review_level,
-                loop_outcome=loop_outcome,
-                invocations=invocations,
-                capability_scope=capability_scope,
-            )
-        return record
+            self._review_index.pop(review_id, None)

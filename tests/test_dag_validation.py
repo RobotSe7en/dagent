@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor, RuntimeTaskRecord
+from dagent.harness_runtime import DAGAgent, DAGAgentLoop, DAGExecutor
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
@@ -15,7 +15,7 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation
+from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation, RunState
 from dagent.schemas.dag import PlanSpec
 from dagent.capabilities.tools.registry import ToolRegistry
 
@@ -31,6 +31,17 @@ def make_node(node_id: str) -> DAGNode:
                 arguments={"text": node_id},
             ),
         ),
+    )
+
+
+def dag_state(*, task_id: str, user_request: str, dag: DAG) -> RunState:
+    return RunState(
+        run_id=task_id,
+        kind="dynamic_dag",
+        status="completed",
+        user_request=user_request,
+        dag=dag,
+        runtime_mode="dag",
     )
 
 
@@ -395,7 +406,7 @@ def test_dag_agent_execute_rejects_capability_outside_enabled_toolset() -> None:
             )
         ],
     )
-    record = RuntimeTaskRecord.dag_task(
+    record = dag_state(
         task_id="task_1",
         user_request="write",
         dag=dag,
@@ -433,7 +444,7 @@ def test_dag_agent_execute_rejects_entry_observation_without_replanning() -> Non
             )
         ],
     )
-    record = RuntimeTaskRecord.dag_task(
+    record = dag_state(
         task_id="task_1",
         user_request="plan",
         dag=dag,

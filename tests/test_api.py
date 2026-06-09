@@ -402,7 +402,7 @@ def test_api_trace_endpoint_reads_tool_mode_run_trace() -> None:
         json=_message_request("echo hello", target="tool"),
     )
     events = _sse_events(response.text)
-    task_id = _stream_result(events[-1])["run_id"]
+    task_id = _result_run_id(_stream_result(events[-1]))
 
     trace_response = client.get(f"/tasks/{task_id}/trace")
 
@@ -434,7 +434,7 @@ def test_api_message_stream_creates_dag_and_waits_for_review() -> None:
     result = _stream_result(events[-1])
     assert "dag.updated" in event_types
     assert event_types[-1] == "run.finished"
-    assert result["status"] == "awaiting_review"
+    assert _result_status(result) == "awaiting_review"
     assert _result_review(result)["kind"] == "initial_dag"
     assert _result_dag(result)["status"] == "review_required"
     assert result["output_text"] == ""
@@ -478,7 +478,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert reasoning_text == "planning dag"
     assert _dag_agent_dsl() in content_text
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
-    assert result["status"] == "completed"
+    assert _result_status(result) == "completed"
     assert _result_dag(result)["status"] == "completed"
 
 
@@ -503,7 +503,7 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     dag_events = [event["data"]["dag"] for event in events if event["type"] == "dag.updated"]
     assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
     assert any(dag["version"] == 2 and dag["status"] == "completed" for dag in dag_events)
-    assert _stream_result(events[-1])["status"] == "completed"
+    assert _result_status(_stream_result(events[-1])) == "completed"
 
 
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
@@ -524,7 +524,7 @@ def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
-    assert result["status"] == "failed"
+    assert _result_status(result) == "failed"
     assert _result_dag(result)["status"] == "failed"
 
 
@@ -544,7 +544,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     )
     stream_events = _sse_events(stream_response.text)
     stream_result = _stream_result(stream_events[-1])
-    task_id = stream_result["run_id"]
+    task_id = _result_run_id(stream_result)
     review_id = _result_review(stream_result)["review_id"]
     dag = _result_dag(stream_result)
     dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
@@ -557,7 +557,7 @@ def test_api_resume_executes_reviewed_dag_and_trace_endpoint_reads_run_trace() -
     assert resume_response.status_code == 200
     resume_events = _sse_events(resume_response.text)
     resume_result = _stream_result(resume_events[-1])
-    assert resume_result["status"] == "completed"
+    assert _result_status(resume_result) == "completed"
     assert _result_dag(resume_result)["status"] == "completed"
     assert any(event.get("type") == "trace.updated" for event in resume_events)
 
@@ -1234,7 +1234,18 @@ def _stream_result(event: dict) -> dict:
 
 
 def _result_review(result: dict) -> dict | None:
-    return result.get("review")
+    state_payload = result.get("state") or {}
+    return state_payload.get("pending_review")
+
+
+def _result_run_id(result: dict) -> str | None:
+    state_payload = result.get("state") or {}
+    return state_payload.get("run_id")
+
+
+def _result_status(result: dict) -> str | None:
+    state_payload = result.get("state") or {}
+    return state_payload.get("status")
 
 
 def _result_dag(result: dict) -> dict | None:
@@ -1250,12 +1261,12 @@ def _result_trace(result: dict) -> dict | None:
 def _result_dag_run(result: dict) -> dict:
     state_payload = result["state"]
     return {
-        "run_id": result["run_id"],
+        "run_id": state_payload["run_id"],
         "spec_id": state_payload.get("spec_id"),
         "workspace_path": state_payload.get("workspace_path") or "",
         "dag": state_payload["dag"],
         "trace": state_payload["trace"],
-        "status": result["status"],
+        "status": state_payload["status"],
     }
 
 

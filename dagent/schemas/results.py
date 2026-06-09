@@ -43,30 +43,18 @@ class PendingReview(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class RunReviewContinuation(BaseModel):
-    """Serializable review continuation needed to resume an interrupted run."""
-
-    review_id: str
-    task_id: str
-    kind: ReviewKind
-    user_request: str
-    review_level: ReviewLevelValue = "fast"
-    invocations: list[CapabilityInvocation] = Field(default_factory=list)
-    pending_invocation: CapabilityInvocation | None = None
-    capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
-
-
 class RunState(BaseModel):
-    """Serializable SDK state for web display and cross-request resume."""
+    """Serializable run state for display and cross-request resume."""
 
-    run_id: str | None = None
+    run_id: str
     kind: RunStateKind
     status: LoopStatus
     internal_messages: list[dict[str, Any]] = Field(default_factory=list)
     dag: DAG | None = None
     trace: RunTrace | None = None
+    invocations: list[CapabilityInvocation] = Field(default_factory=list)
     pending_review: PendingReview | None = None
-    review_continuation: RunReviewContinuation | None = None
+    pending_invocation: CapabilityInvocation | None = None
     user_request: str = ""
     review_level: ReviewLevelValue = "fast"
     runtime_mode: RuntimeModeValue = "auto"
@@ -78,30 +66,9 @@ class RunState(BaseModel):
 class LoopOutcome(BaseModel):
     """Common contract between loops and runtime orchestration."""
 
-    status: LoopStatus
+    state: RunState
+    output_text: str = ""
     execution_context: str = ""
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    final_answer: str = ""
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    invocations: list[CapabilityInvocation] = Field(default_factory=list)
-    dag: DAG | None = None
-    trace: RunTrace | None = None
-    task_id: str | None = None
-    spec_id: str | None = None
-    workspace_path: str | None = None
-    pending_review: PendingReview | None = None
-
-
-class RuntimeResponse(BaseModel):
-    status: LoopStatus
-    final_answer: str
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    state: RunState | None = None
-    dag: DAG | None = None
-    trace: RunTrace | None = None
-    task_id: str | None = None
-    events: list[dict[str, Any]] = Field(default_factory=list)
-    pending_review: PendingReview | None = None
 
 
 class ValidationIssue(BaseModel):
