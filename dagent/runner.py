@@ -276,6 +276,12 @@ class Runner:
         state = self._runtime.runs.get(task_id)
         return state.trace if state is not None else None
 
+    def run_state(self, run_id: str) -> RunState | None:
+        """Return a saved run state by id."""
+
+        state = self._runtime.runs.get(run_id)
+        return None if state is None else state.model_copy(deep=True)
+
     @property
     def skill_store(self) -> SkillStore:
         """The filesystem-backed store powering skill discovery and installation."""
@@ -977,12 +983,6 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             return RunStreamEvent(type="run.status", data=StatusData(message="Trace update was empty."))
         return RunStreamEvent(type="trace.updated", data=TraceUpdatedData(trace=trace))
 
-    if event_type == "review":
-        review = _coerce_pending_review(data.get("review"))
-        if review is not None:
-            return _review_stream_event(review)
-        return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
-
     if event_type == "capability_call":
         return RunStreamEvent(
             type="capability.call.started",
@@ -1089,9 +1089,15 @@ def _text_stream_event_type(text_stream: TextStream) -> str:
 
 def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:
     return {
-        key: str(data[key]) if data.get(key) is not None else None
-        for key in ("task_id", "dag_id", "node_id", "parent_capability_id")
+        "run_id": _nullable_event_string(data.get("run_id") or data.get("task_id")),
+        "dag_id": _nullable_event_string(data.get("dag_id")),
+        "node_id": _nullable_event_string(data.get("node_id")),
+        "parent_capability_id": _nullable_event_string(data.get("parent_capability_id")),
     }
+
+
+def _nullable_event_string(value: Any) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _validation_issues(value: Any) -> list[ValidationIssue]:
@@ -1119,22 +1125,6 @@ def _coerce_trace(value: Any) -> RunTrace | None:
     if isinstance(value, dict):
         return RunTrace.model_validate(value)
     return None
-
-
-def _coerce_pending_review(value: Any) -> PendingReview | None:
-    if value is None or isinstance(value, PendingReview):
-        return value
-    if not isinstance(value, dict):
-        return None
-    proposed_dag = _coerce_dag(value.get("proposed_dag") or value.get("dag"))
-    return PendingReview(
-        review_id=str(value["review_id"]),
-        kind=value["kind"],
-        message=str(value.get("message", "")),
-        proposed_dag=proposed_dag,
-        capability_call=value.get("capability_call"),
-        payload=dict(value.get("payload") or {}),
-    )
 
 
 def _status_message(data: dict[str, Any], event_type: str) -> str:

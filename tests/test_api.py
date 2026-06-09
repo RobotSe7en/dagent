@@ -19,6 +19,7 @@ from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityRes
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
     assert not hasattr(state, "harness_runtime")
+    assert not hasattr(state, "dag_runs")
     assert not hasattr(state, "custom_mcp_capability_ids")
     assert not hasattr(state, "mcp_provider_factory")
     assert not hasattr(app_module, "MCPCapabilityProvider")
@@ -305,6 +306,7 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
+    _assert_result_shape(result)
     assert events[-1]["type"] == "run.finished"
     assert _result_dag(result) is None
     assert result["output_text"] == "hello there"
@@ -832,7 +834,9 @@ def test_api_dag_create_run_and_artifacts() -> None:
 
     run_response = client.post("/dags/write_note/run")
     assert run_response.status_code == 200
-    run_payload = _result_dag_run(run_response.json()["result"])
+    result = run_response.json()["result"]
+    _assert_result_shape(result)
+    run_payload = _result_dag_run(result)
     assert run_payload["spec_id"] == "write_note"
     assert run_payload["status"] == "completed"
     assert run_payload["dag"]["status"] == "completed"
@@ -1231,6 +1235,10 @@ def _sse_events(text: str) -> list[dict]:
 def _stream_result(event: dict) -> dict:
     assert event["type"] == "run.finished"
     return event["data"]["result"]
+
+
+def _assert_result_shape(result: dict) -> None:
+    assert set(result) == {"output_text", "messages", "state"}
 
 
 def _result_review(result: dict) -> dict | None:

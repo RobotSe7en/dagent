@@ -47,3 +47,32 @@ def test_session_indexes_pending_review_from_run_state() -> None:
     cleared = state.model_copy(update={"status": "completed", "pending_review": None})
     session.save_run_state(cleared)
     assert session.get_review_state("review_1") is None
+
+
+def test_session_replaces_trace_without_implicit_merge() -> None:
+    session = HarnessRuntimeSession()
+    old_trace = RunTrace(
+        run_id="task_1",
+        root=RunTraceNode.run(run_id="task_1", status="completed"),
+    )
+    old_trace.root.children.append(RunTraceNode.dag_node(parent_id=old_trace.root.id, node_id="old"))
+    new_trace = RunTrace(
+        run_id="task_1",
+        root=RunTraceNode.run(run_id="task_1", status="completed"),
+    )
+    session.save_run_state(RunState(
+        run_id="task_1",
+        kind="dynamic_dag",
+        status="completed",
+        trace=old_trace,
+    ))
+
+    saved = session.save_run_state(RunState(
+        run_id="task_1",
+        kind="dynamic_dag",
+        status="completed",
+        trace=new_trace,
+    ))
+
+    assert saved.trace is not None
+    assert saved.trace.root.children == []

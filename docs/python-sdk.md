@@ -493,7 +493,7 @@ print(result.node_value("search"))
 print(result.artifact_state("report").status)
 ```
 
-`DAGRun` remains a schema for API/storage boundaries and is available through
+`DAGRun` remains a schema for API projections and is available through
 `result.dag_run` for static DAG runs; it is not dumped as a top-level
 `RunResult` field.
 
@@ -544,8 +544,8 @@ Common stream event payloads:
 | `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
 | `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
 | `run.status` | `event.data.message` |
-| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional DAG context fields |
-| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional DAG context fields |
+| `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
+| `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |
 | `dag.updated` | `event.data.dag` |
 | `trace.updated` | `event.data.trace` |
 | `review.required` | `event.data.message`, `event.data.to_handle()` |

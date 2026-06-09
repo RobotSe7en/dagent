@@ -1162,7 +1162,7 @@ export function App() {
             workspace_path: runState.workspace_path ?? '',
             dag: runState.dag,
             trace: runState.trace,
-            status: runState.trace.root.status === 'failed' ? 'failed' : 'completed',
+            status: dagRunStatus(runState.status),
           } as const;
           setEditorRun(dagRun);
           syncEditorDag(dagRun.dag);
@@ -1407,6 +1407,7 @@ export function App() {
       setValidationError(null);
       setDagReview(null);
       setCapabilityReview(null);
+      setRunState(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -1806,6 +1807,13 @@ function splitThinking(content: string): Array<{ type: 'answer' | 'think'; conte
     cursor = closeIndex + '</think>'.length;
   }
   return parts.length ? parts : [{ type: 'answer', content }];
+}
+
+function dagRunStatus(status: string): 'planned' | 'running' | 'completed' | 'failed' {
+  if (status === 'failed') return 'failed';
+  if (status === 'running') return 'running';
+  if (status === 'planned') return 'planned';
+  return 'completed';
 }
 
 function StatusBadge({ status }: { status: Dag['status'] }) {

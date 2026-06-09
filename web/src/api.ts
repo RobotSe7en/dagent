@@ -454,7 +454,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function capabilityContext(data: Record<string, unknown>) {
   return {
-    task_id: nullableString(data.task_id),
+    run_id: nullableString(data.run_id),
     dag_id: nullableString(data.dag_id),
     node_id: nullableString(data.node_id),
     parent_capability_id: nullableString(data.parent_capability_id),

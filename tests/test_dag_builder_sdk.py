@@ -434,11 +434,11 @@ def test_runner_stream_static_dag_capability_events_keep_node_context(tmp_path: 
     assert started.data.invocation_id == "call_1"
     assert started.data.capability_id == "tool.echo"
     assert started.data.arguments == {"text": "hi"}
-    assert started.data.task_id is not None
+    assert started.data.run_id is not None
     assert started.data.dag_id is not None
     assert started.data.node_id == "draft"
     assert started.data.parent_capability_id == "agent.writer"
-    assert completed.data.task_id == started.data.task_id
+    assert completed.data.run_id == started.data.run_id
     assert completed.data.dag_id == started.data.dag_id
     assert completed.data.node_id == "draft"
     assert completed.data.parent_capability_id == "agent.writer"

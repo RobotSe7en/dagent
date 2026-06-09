@@ -12,19 +12,8 @@ class HarnessRuntimeSession:
         self.runs: dict[str, RunState] = {}
         self._review_index: dict[str, str] = {}
 
-    def hydrate_run_state(self, state: RunState) -> RunState:
-        return self.save_run_state(state)
-
     def save_run_state(self, state: RunState) -> RunState:
         stored = state.model_copy(deep=True)
-        existing = self.runs.get(stored.run_id)
-        if (
-            existing is not None
-            and existing.trace is not None
-            and stored.trace is not None
-            and existing.trace is not stored.trace
-        ):
-            stored = stored.model_copy(update={"trace": existing.trace.merge(stored.trace)})
         self.runs[stored.run_id] = stored
         self.discard_reviews_for_run(stored.run_id)
         if stored.pending_review is not None:

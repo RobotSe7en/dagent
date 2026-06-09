@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from dagent.schemas.dag import DAG
 from dagent.schemas.capability import CapabilityInvocation
@@ -16,15 +16,6 @@ LoopStatus = Literal["completed", "awaiting_review", "failed"]
 RunStateKind = Literal["tool", "dynamic_dag", "static_dag"]
 ReviewLevelValue = Literal["fast", "careful"]
 RuntimeModeValue = Literal["auto", "tool", "dag", "dag_spec"]
-
-
-class RunMessage(BaseModel):
-    """OpenAI-compatible message stored by dagent run state."""
-
-    model_config = ConfigDict(extra="allow")
-
-    role: str
-    content: Any = None
 
 
 class RunCapabilityScope(BaseModel):

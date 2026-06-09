@@ -49,6 +49,7 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "ProviderConfig")
     assert not hasattr(dagent, "RuntimeMode")
     assert not hasattr(dagent, "run_dag")
+    assert not hasattr(dagent.schemas, "RunMessage")
 
 
 def test_auto_agent_is_public_target_without_mode_field() -> None:
@@ -422,6 +423,24 @@ def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     assert result.requires_review is False
     for legacy_name in ("final_answer", "output", "task_id", "awaiting_review", "raw"):
         assert not hasattr(result, legacy_name)
+    assert not hasattr(dagent.RunResult, "from_dag_run")
+
+
+def test_capability_stream_events_use_run_id_not_task_id(tmp_path) -> None:
+    from dagent.runner import _stream_event_from_runtime
+
+    started = _stream_event_from_runtime({
+        "type": "capability_call",
+        "invocation_id": "call_1",
+        "capability_id": "tool.echo",
+        "arguments": {"text": "ok"},
+        "task_id": "run_1",
+        "dag_id": "dag_1",
+        "node_id": "answer",
+    })
+
+    assert started.data.run_id == "run_1"
+    assert not hasattr(started.data, "task_id")
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
@@ -622,6 +641,18 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
 
     assert resumed is not None
     assert resumed.output_text == "done"
+    assert [message["role"] for message in resumed.messages] == [
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert resumed.messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert resumed.messages[1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "write",
+        "content": "wrote:hello",
+    }
     assert resumed.messages[-1]["content"] == "done"
 
 

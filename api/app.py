@@ -27,7 +27,6 @@ from dagent import (
     ReviewLevel,
     RiskLevel,
     Runner,
-    RunResult,
     RunState,
     SkillAmbiguousError,
     SkillNotFoundError,
@@ -120,7 +119,6 @@ class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
         self.dags: dict[str, UserDAG] = {}
-        self.dag_runs: dict[str, DAGRun] = {}
         self.dag_artifact_uploads: dict[str, dict[str, list[ArtifactUpload]]] = {}
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
@@ -218,7 +216,6 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
 async def reset_session() -> dict[str, str]:
     state.close_runner()
     state.dags.clear()
-    state.dag_runs.clear()
     state.dag_artifact_uploads.clear()
     state.custom_capabilities.clear()
     state.custom_mcp_servers.clear()
@@ -299,7 +296,6 @@ async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _store_dag_run(result)
     return {"result": result.model_dump(mode="json")}
 
 
@@ -322,8 +318,6 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
             ):
                 if event.type == "run.failed":
                     sent_error = True
-                if event.type == "run.finished":
-                    _store_dag_run(event.data.result)
                 yield _sse(event.model_dump(mode="json"))
         except Exception as exc:
             if not sent_error:
@@ -387,7 +381,7 @@ def _prune_dag_artifact_uploads(dag: UserDAG) -> None:
 
 @app.get("/dag-runs/{run_id}")
 async def get_dag_run(run_id: str) -> dict[str, Any]:
-    dag_run = state.dag_runs.get(run_id)
+    dag_run = _dag_run_from_state(run_id)
     if dag_run is None:
         raise HTTPException(status_code=404, detail="DAGRun not found.")
     return {"dag_run": dag_run.model_dump(mode="json")}
@@ -395,7 +389,7 @@ async def get_dag_run(run_id: str) -> dict[str, Any]:
 
 @app.get("/dag-runs/{run_id}/artifacts")
 async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
-    dag_run = state.dag_runs.get(run_id)
+    dag_run = _dag_run_from_state(run_id)
     if dag_run is None:
         raise HTTPException(status_code=404, detail="DAGRun not found.")
     return {
@@ -769,10 +763,24 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _store_dag_run(result: RunResult) -> None:
-    dag_run = result.dag_run
-    if dag_run is not None and result.run_id is not None:
-        state.dag_runs[result.run_id] = dag_run
+def _dag_run_from_state(run_id: str) -> DAGRun | None:
+    if state.runner is None:
+        return None
+    run_state = state.runner.run_state(run_id)
+    if (
+        run_state is None
+        or run_state.kind != "static_dag"
+        or run_state.dag is None
+        or run_state.trace is None
+    ):
+        return None
+    return DAGRun(
+        run_id=run_state.run_id,
+        spec_id=run_state.spec_id,
+        workspace_path=run_state.workspace_path or "",
+        dag=run_state.dag,
+        trace=run_state.trace,
+    )
 
 
 @app.get("/tasks/{task_id}/trace")

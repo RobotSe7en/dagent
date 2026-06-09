@@ -294,7 +294,7 @@ class HarnessRuntime:
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
         if run_state is not None:
-            self.session.hydrate_run_state(run_state)
+            self.session.save_run_state(run_state)
         state = self.session.get_review_state(review_id)
         if state is None or state.pending_review is None:
             return None
@@ -303,6 +303,7 @@ class HarnessRuntime:
         input_messages = list(state.internal_messages)
         if pending_review.kind == "capability_review":
             response_tokens = _response_token_stream(on_token, on_event)
+            input_messages = _messages_before_pending_capability_call(state)
             self.tool_agent.messages = [dict(message) for message in state.internal_messages]
             self.tool_agent.trace = state.trace
             initial_outcome = await self.tool_agent.resume_review(
@@ -314,18 +315,32 @@ class HarnessRuntime:
             if initial_outcome is None:
                 return None
             self.session.discard_review(review_id)
+            retry_outcome = initial_outcome
 
             async def run_once(feedback: str | None) -> LoopOutcome:
+                nonlocal retry_outcome
                 if feedback is None:
                     raise RuntimeError("Tool review validation retry requires feedback.")
-                return await self.tool_agent.run(
-                    feedback,
+                retry_messages = [
+                    *[dict(message) for message in retry_outcome.state.internal_messages],
+                    {"role": "user", "content": feedback},
+                ]
+                previous_trace = retry_outcome.state.trace
+                next_outcome = await self.tool_agent.run_messages(
+                    retry_messages,
                     run_id=state.run_id,
                     review_level=state.review_level,
                     capability_scope=capability_scope,
                     on_token=response_tokens,
                     on_event=on_event,
                 )
+                if previous_trace is not None and next_outcome.state.trace is not None:
+                    next_state = next_outcome.state.model_copy(
+                        update={"trace": previous_trace.merge(next_outcome.state.trace)}
+                    )
+                    next_outcome = next_outcome.model_copy(update={"state": next_state})
+                retry_outcome = next_outcome
+                return retry_outcome
 
             outcome = await self._run_with_review_and_validation(
                 state.user_request,
@@ -333,7 +348,7 @@ class HarnessRuntime:
                 initial_loop_outcome=initial_outcome,
                 on_event=on_event,
             )
-            return self._finish_loop_outcome(
+            result = self._finish_loop_outcome(
                 outcome,
                 state.user_request,
                 "tool",
@@ -341,6 +356,11 @@ class HarnessRuntime:
                 runtime_mode=state.runtime_mode,
                 capability_scope=capability_scope,
                 input_messages=input_messages,
+            )
+            return RunResult(
+                state=result.state,
+                output_text=result.output_text,
+                messages=_public_messages_for_capability_resume(state, result.state),
             )
 
         if approved and dag is None:
@@ -369,11 +389,18 @@ class HarnessRuntime:
                 input_messages=input_messages,
             )
 
+        retry_outcome = initial_outcome
+
         async def run_once(feedback: str | None) -> LoopOutcome:
+            nonlocal retry_outcome
             if feedback is None:
                 raise RuntimeError("DAG review validation retry requires feedback.")
-            return await self.dag_agent.run(
-                feedback,
+            retry_messages = [
+                *[dict(message) for message in retry_outcome.state.internal_messages],
+                {"role": "user", "content": feedback},
+            ]
+            retry_outcome = await self.dag_agent.run_messages(
+                retry_messages,
                 task_id=state.run_id,
                 review_level=review_level or state.review_level,
                 runtime_mode=state.runtime_mode,
@@ -382,6 +409,7 @@ class HarnessRuntime:
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
+            return retry_outcome
 
         outcome = await self._run_with_review_and_validation(
             state.user_request,
@@ -586,6 +614,16 @@ def _messages_for_run_state(state: RunState, user_request: str) -> list[dict[str
     return messages
 
 
+def _messages_before_pending_capability_call(state: RunState) -> list[dict[str, Any]]:
+    invocation = state.pending_invocation
+    if invocation is None:
+        return [dict(message) for message in state.internal_messages]
+    index = _assistant_tool_call_index(state.internal_messages, invocation.invocation_id)
+    if index is None:
+        return [dict(message) for message in state.internal_messages]
+    return [dict(message) for message in state.internal_messages[:index]]
+
+
 def _state_kind_for_mode(mode: Literal["tool", "dag"]) -> Literal["tool", "dynamic_dag"]:
     return "tool" if mode == "tool" else "dynamic_dag"
 
@@ -609,6 +647,66 @@ def _public_messages(
         for message in generated
         if message.get("role") in {"assistant", "tool"}
     ]
+
+
+def _public_messages_for_capability_resume(
+    pending_state: RunState,
+    final_state: RunState,
+) -> list[dict[str, Any]]:
+    if final_state.status != "completed" or pending_state.pending_invocation is None:
+        return []
+    invocation_id = pending_state.pending_invocation.invocation_id
+    messages = final_state.internal_messages
+    assistant_index = _assistant_tool_call_index(messages, invocation_id)
+    if assistant_index is None:
+        return _public_messages(
+            LoopOutcome(state=final_state),
+            input_messages=_messages_before_pending_capability_call(pending_state),
+            kind="tool",
+            output_text="",
+        )
+
+    generated: list[dict[str, Any]] = [dict(messages[assistant_index])]
+    tool_index = _tool_result_index(messages, invocation_id, start=assistant_index + 1)
+    if tool_index is not None:
+        generated.append(dict(messages[tool_index]))
+    final_assistant = _last_assistant_message(messages, start=(tool_index or assistant_index) + 1)
+    if final_assistant is not None:
+        generated.append(final_assistant)
+    return generated
+
+
+def _assistant_tool_call_index(messages: list[dict[str, Any]], invocation_id: str) -> int | None:
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if isinstance(tool_call, dict) and tool_call.get("id") == invocation_id:
+                return index
+    return None
+
+
+def _tool_result_index(
+    messages: list[dict[str, Any]],
+    invocation_id: str,
+    *,
+    start: int,
+) -> int | None:
+    for index, message in enumerate(messages[start:], start=start):
+        if message.get("role") == "tool" and message.get("tool_call_id") == invocation_id:
+            return index
+    return None
+
+
+def _last_assistant_message(
+    messages: list[dict[str, Any]],
+    *,
+    start: int,
+) -> dict[str, Any] | None:
+    for message in reversed(messages[start:]):
+        if message.get("role") == "assistant":
+            return dict(message)
+    return None
 
 
 def _response_token_stream(

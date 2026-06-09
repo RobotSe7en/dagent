@@ -47,23 +47,6 @@ class RunResult:
     output_text: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
 
-    @classmethod
-    def from_dag_run(cls, run: DAGRun) -> "RunResult":
-        status = "failed" if run.status == "failed" else "completed"
-        return cls(
-            state=RunState(
-                run_id=run.run_id,
-                kind="static_dag",
-                status=status,  # type: ignore[arg-type]
-                dag=run.dag,
-                trace=run.trace,
-                spec_id=run.spec_id,
-                workspace_path=run.workspace_path,
-                runtime_mode="dag_spec",
-            ),
-            output_text=_dag_run_output_text(run),
-        )
-
     @property
     def kind(self) -> RunResultKind:
         return self.state.kind
@@ -212,7 +195,7 @@ class CapabilityCallStartedData:
     invocation_id: str
     capability_id: str
     arguments: dict[str, Any] = field(default_factory=dict)
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -223,7 +206,7 @@ class CapabilityCallCompletedData:
     invocation_id: str
     capability_id: str
     content: str = ""
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -234,7 +217,7 @@ class CapabilityCallFailedData:
     invocation_id: str
     capability_id: str
     content: str = ""
-    task_id: str | None = None
+    run_id: str | None = None
     dag_id: str | None = None
     node_id: str | None = None
     parent_capability_id: str | None = None
@@ -302,16 +285,6 @@ class RunStreamChunk:
             "result": self.result.model_dump(mode=mode) if self.result is not None else None,
             "event": self.event.model_dump(mode=mode) if self.event is not None else None,
         }
-
-
-def _dag_run_output_text(run: DAGRun) -> str:
-    if run.trace.root.output:
-        return str(run.trace.root.output)
-    if run.status == "completed":
-        return "DAG execution completed."
-    if run.status == "failed":
-        return "DAG execution failed."
-    return f"DAG execution {run.status}."
 
 
 def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:

@@ -107,6 +107,8 @@ def test_tool_agent_scope_filters_tools_without_injecting_skill_prompt(tmp_path:
     )
 
     assert result.state.status == "completed"
+    assert result.state.capability_scope.capability_ids == ("tool.read_file",)
+    assert result.state.capability_scope.skills == ("writing/summarize",)
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["read_file"]
     system_content = provider.requests[0]["messages"][0]["content"]
     assert "writing/summarize" not in system_content

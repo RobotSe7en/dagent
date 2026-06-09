@@ -411,11 +411,9 @@ class DAGAgentLoop:
         if pending_review is None or pending_review.kind not in {"initial_dag", "dag_replan"}:
             return None
         record = state
-        task_id = state.run_id
-        if record.run_id != task_id:
-            raise ValueError(
-                f"Review state for task '{task_id}' cannot resume task '{record.run_id}'."
-            )
+        if record.dag is None:
+            raise ValueError("DAG review state requires a DAG.")
+        task_id = record.run_id
         if (
             record.dag.status == "completed"
             and record.trace is not None

@@ -192,7 +192,8 @@ class ToolAgent:
             ),
             content=feed_content,
         )
-        return await self._continue_messages(
+        reviewed_trace = self.trace
+        outcome = await self._continue_messages(
             self.messages,
             run_id=state.run_id,
             review_level=state.review_level,
@@ -201,6 +202,13 @@ class ToolAgent:
             on_token=on_token,
             on_event=on_event,
         )
+        if reviewed_trace is not None and outcome.state.trace is not None:
+            next_state = outcome.state.model_copy(
+                update={"trace": reviewed_trace.merge(outcome.state.trace)}
+            )
+            outcome = outcome.model_copy(update={"state": next_state})
+            self.trace = next_state.trace
+        return outcome
 
     async def _continue_messages(
         self,
@@ -225,6 +233,7 @@ class ToolAgent:
             control_tool_names=control_tool_names,
             review_level=review_level,
             capability_ids=capability_scope.capability_ids,
+            capability_scope=capability_scope,
             skills=capability_scope.skills,
             on_token=on_token,
             on_event=on_event,
@@ -326,6 +335,7 @@ class ToolAgentLoop:
         control_tool_names: set[str] | None = None,
         review_level: ReviewLevel | None = None,
         capability_ids: Sequence[str] | None = None,
+        capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
         skills: tuple[str, ...] | None = None,
@@ -343,6 +353,11 @@ class ToolAgentLoop:
         execution_context = _execution_context(
             capability_context,
             task_id=resolved_run_id,
+            skills=skills,
+        )
+        state_scope = _state_capability_scope(
+            capability_scope,
+            capability_ids=capability_ids,
             skills=skills,
         )
         control_tool_handler: ControlToolHandler | None = None
@@ -385,6 +400,7 @@ class ToolAgentLoop:
                         messages=loop_messages,
                         trace=trace,
                         invocations=invocations,
+                        capability_scope=state_scope,
                     ),
                     execution_context=_format_capability_execution_context(loop_messages),
                     output_text=strip_thinking_blocks(response.content).strip(),
@@ -476,6 +492,7 @@ class ToolAgentLoop:
                                 invocations=invocations,
                                 pending_review=pending_review,
                                 pending_invocation=invocation,
+                                capability_scope=state_scope,
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
                         )
@@ -489,6 +506,7 @@ class ToolAgentLoop:
                                 messages=loop_messages,
                                 trace=trace,
                                 invocations=invocations,
+                                capability_scope=state_scope,
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
                             output_text=control_result.content,
@@ -548,6 +566,7 @@ class ToolAgentLoop:
                 messages=loop_messages,
                 trace=trace,
                 invocations=invocations,
+                capability_scope=state_scope,
             ),
             execution_context=_format_capability_execution_context(loop_messages),
         )
@@ -686,6 +705,7 @@ def _tool_run_state(
     invocations: list[CapabilityInvocation],
     pending_review: PendingReview | None = None,
     pending_invocation: CapabilityInvocation | None = None,
+    capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
 ) -> RunState:
     return RunState(
         run_id=run_id,
@@ -696,8 +716,24 @@ def _tool_run_state(
         invocations=list(invocations),
         pending_review=pending_review,
         pending_invocation=pending_invocation,
-        capability_scope=capability_scope_to_state(DEFAULT_CAPABILITY_SCOPE),
+        capability_scope=capability_scope_to_state(capability_scope),
         runtime_mode="tool",
+    )
+
+
+def _state_capability_scope(
+    capability_scope: CapabilityScope,
+    *,
+    capability_ids: Sequence[str] | None,
+    skills: tuple[str, ...] | None,
+) -> CapabilityScope:
+    if capability_scope != DEFAULT_CAPABILITY_SCOPE:
+        return capability_scope
+    if capability_ids is None and skills is None:
+        return capability_scope
+    return CapabilityScope(
+        capability_ids=None if capability_ids is None else tuple(capability_ids),
+        skills=skills,
     )
 
 
