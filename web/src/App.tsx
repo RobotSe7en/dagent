@@ -1228,7 +1228,6 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          handlePendingReview(review);
           if (review.kind !== 'capability_review') setReviewOpen(true);
         },
         onDone: (payload) => {
@@ -1310,7 +1309,6 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          handlePendingReview(review);
           if (review.kind !== 'capability_review') setReviewOpen(true);
         },
         onDone: (payload) => {
@@ -1374,7 +1372,6 @@ export function App() {
         onContent: enqueueContentToken,
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
-        onReview: handlePendingReview,
         onDone: (payload) => {
           const resultReview = payload.result.state?.pending_review ?? null;
           setRunState(payload.result.state ?? null);

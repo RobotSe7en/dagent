@@ -166,25 +166,11 @@ class TraceUpdatedData:
 
 @dataclass(frozen=True)
 class ReviewRequiredData:
+    """Signals that a run is awaiting review; full review data lives in ``run.finished`` state."""
+
     review_id: str
     kind: ReviewKind
     message: str
-    dag: DAG | None = None
-    capability_call: dict[str, Any] | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
-
-    def to_pending_review(self) -> PendingReview:
-        return PendingReview(
-            review_id=self.review_id,
-            kind=self.kind,
-            message=self.message,
-            proposed_dag=self.dag,
-            capability_call=self.capability_call,
-            payload=dict(self.payload),
-        )
-
-    def to_handle(self) -> ReviewHandle:
-        return ReviewHandle(self.to_pending_review())
 
 
 @dataclass(frozen=True)

@@ -429,10 +429,6 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           review_id: String(data.review_id ?? ''),
           kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
           message: String(data.message ?? ''),
-          dag: data.dag as Dag | undefined,
-          proposed_dag: (data.dag ?? null) as Dag | null,
-          capability_call: data.capability_call as ReviewEventPayload['capability_call'],
-          payload: isRecord(data.payload) ? data.payload : {},
         });
       }
       if (event.type === 'run.finished' && data.result) {

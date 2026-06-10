@@ -1040,9 +1040,6 @@ def _review_stream_event(
             review_id=review.review_id,
             kind=review.kind,
             message=review.message,
-            dag=review.proposed_dag,
-            capability_call=review.capability_call,
-            payload=dict(review.payload),
         ),
     )
 
