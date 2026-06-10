@@ -360,11 +360,14 @@ class HarnessRuntime:
                 input_messages=input_messages,
             )
 
-        if approved and dag is None:
+        submitted_dag = dag
+        if approved and submitted_dag is None:
+            submitted_dag = pending_review.proposed_dag
+        if approved and submitted_dag is None:
             return None
         initial_outcome = await self.dag_agent.resume_review(
             state,
-            dag=dag,
+            dag=submitted_dag,
             approved=approved,
             review_level=review_level,
             on_token=on_token,

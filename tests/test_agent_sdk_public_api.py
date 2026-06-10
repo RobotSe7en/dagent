@@ -333,6 +333,24 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
     assert events[-1].model_dump(mode="json")["data"]["result"]["output_text"] == "hello"
 
 
+def test_run_result_model_validate_round_trips_current_payload_and_rejects_legacy_fields(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("hi")))
+    restored = dagent.RunResult.model_validate(result.model_dump(mode="json"))
+
+    assert restored.output_text == "hello"
+    assert restored.run_id == result.run_id
+    assert restored.state == result.state
+    with pytest.raises(ValueError, match="unsupported RunResult field"):
+        dagent.RunResult.model_validate({
+            "output": "hello",
+            "output_text": "hello",
+            "state": result.state.model_dump(mode="json"),
+        })
+
+
 def test_runner_stream_failed_event_is_terminal(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     events: list[dagent.RunStreamEvent] = []
@@ -763,6 +781,26 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     assert resumed.messages[-1]["content"] == "done"
 
 
+def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+
+    first = run(runner.run(agent, messages=user_messages("write hello")))
+
+    with pytest.raises(ValueError, match="use Runner.resume"):
+        run(runner.run(agent, messages=user_messages("continue"), state=first.state))
+
+
 def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
@@ -784,10 +822,32 @@ def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> No
     first_runner.close()
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
-    resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+    decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
+    resumed = run(second_runner.resume(decision, state=saved_state))
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"
+
+
+def test_runner_resume_rejects_mismatched_serialized_review_state(tmp_path) -> None:
+    @dagent.tool(risk="medium")
+    def write(text: str) -> str:
+        return f"wrote:{text}"
+
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+        ),
+    ])
+    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
+
+    first = run(runner.run(agent, messages=user_messages("write hello")))
+    decision = dagent.ReviewDecision(review_id="review_other", approved=True)
+
+    with pytest.raises(ValueError, match="does not match decision"):
+        run(runner.resume(decision, state=first.state))
 
 
 def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_path) -> None:
@@ -836,10 +896,8 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
     assert first.requires_review
     assert first.review is not None
 
-    missing_dag = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
-    assert run(runner.resume(missing_dag)) is None
-
-    resumed = run(runner.resume(first.review.approve()))
+    decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
+    resumed = run(runner.resume(decision))
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"

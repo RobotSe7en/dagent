@@ -423,6 +423,9 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if state is not None:
+            _ensure_run_state_can_continue(state)
+
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
@@ -610,6 +613,8 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
+        if state is not None:
+            decision = _decision_for_resume_state(decision, state)
         return await self._runtime.resume_review(
             decision.review_id,
             run_state=state,
@@ -893,6 +898,39 @@ def _require_messages(
     if not any(message.get("role") == "user" for message in messages):
         raise ValueError("messages must contain at least one user message.")
     return [dict(message) for message in messages]
+
+
+def _ensure_run_state_can_continue(state: RunState) -> None:
+    if state.status == "awaiting_review" or state.pending_review is not None:
+        raise ValueError(
+            "Run state is awaiting review; use Runner.resume(..., state=...) "
+            "to continue the pending review."
+        )
+
+
+def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> ReviewDecision:
+    pending_review = state.pending_review
+    if state.status != "awaiting_review" or pending_review is None:
+        raise ValueError("resume state must be awaiting review with a pending review.")
+    if pending_review.review_id != decision.review_id:
+        raise ValueError(
+            f"resume state review_id '{pending_review.review_id}' does not match "
+            f"decision review_id '{decision.review_id}'."
+        )
+    if (
+        decision.approved
+        and decision.dag is None
+        and pending_review.kind in {"initial_dag", "dag_replan"}
+    ):
+        if pending_review.proposed_dag is None:
+            raise ValueError("Approved DAG review requires a submitted or pending proposed DAG.")
+        return ReviewDecision(
+            review_id=decision.review_id,
+            approved=True,
+            dag=pending_review.proposed_dag,
+            review_level=decision.review_level,
+        )
+    return decision
 
 
 def _agent_skills(agent: AutoAgent | ToolAgent | DagAgent) -> tuple[str, ...] | None:

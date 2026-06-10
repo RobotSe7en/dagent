@@ -262,7 +262,7 @@ async def main():
     messages = [{"role": "user", "content": "Use echo to respond with hello."}]
     result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve(), state=result.state)
+        result = await runner.resume(result.review.approve())
     messages += result.messages
 
     print(result.output_text)
@@ -298,7 +298,7 @@ async def main():
     messages = [{"role": "user", "content": "Research X and write a concise report."}]
     result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve(), state=result.state)
+        result = await runner.resume(result.review.approve())
     messages += result.messages
 
     print(result.output_text)
@@ -485,6 +485,24 @@ messages.append({"role": "user", "content": "Continue with one more detail."})
 result = await runner.run(agent, messages=messages, state=saved_state)
 ```
 
+If you persist the full result payload, restore the current SDK shape with
+`RunResult.model_validate(...)` and pass the restored state back to the matching
+entry point. Use `run(..., state=...)` for normal continuation. If the saved
+state is awaiting review, continue that checkpoint with `resume(..., state=...)`;
+`run(..., state=...)` rejects awaiting-review states so review gates cannot be
+accidentally bypassed.
+
+```python
+saved_payload = result.model_dump(mode="json")
+restored = dagent.RunResult.model_validate(saved_payload)
+
+if restored.requires_review and restored.review is not None:
+    result = await runner.resume(restored.review.approve(), state=restored.state)
+else:
+    messages.append({"role": "user", "content": "Continue."})
+    result = await runner.run(agent, messages=messages, state=restored.state)
+```
+
 For static DAGs, DAG-oriented helpers are available on the same result object:
 
 ```python
@@ -560,8 +578,8 @@ UIs from that, not from the signal event.
 
 `RunStreamEvent.model_dump(mode="json")` returns a JSON-ready event payload. If
 the event has a result, the nested value is `RunResult.model_dump(mode="json")`.
-The `run.finished` payload carries the complete `state` — keep it if you need to
-resume the run from another process after a restart.
+The `run.finished` payload carries the complete `state`; restore it with
+`RunResult.model_validate(...)` if you need to continue from saved JSON.
 
 Use `Runner.resume_stream(...)` to continue a pending review with the same
 event contract; its `run.started` carries the resumed run's id:
@@ -570,11 +588,22 @@ event contract; its `run.started` carries the resumed run's id:
 first = await runner.run(agent, messages=[{"role": "user", "content": "Write the report."}])
 
 if first.requires_review and first.review is not None:
-    async for event in runner.resume_stream(first.review.approve(), state=first.state):
+    async for event in runner.resume_stream(first.review.approve()):
         if event.type == "response.content.delta":
             print(event.data.delta, end="")
         elif event.type == "run.finished":
             print(event.data.result.output_text)
+```
+
+For a pending review restored after a restart, pass the saved state to
+`resume_stream(...)`:
+
+```python
+restored = dagent.RunResult.model_validate(saved_payload)
+
+if restored.requires_review and restored.review is not None:
+    async for event in runner.resume_stream(restored.review.approve(), state=restored.state):
+        ...
 ```
 
 ## Skills

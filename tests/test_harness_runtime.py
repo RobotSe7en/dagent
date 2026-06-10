@@ -414,7 +414,7 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
 
 
-def test_harness_runtime_preserves_dag_review_when_approved_without_submitted_dag() -> None:
+def test_harness_runtime_approves_pending_dag_review_without_resubmitting_dag() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
         ChatResponse(content="Here is the final answer."),
@@ -422,12 +422,10 @@ def test_harness_runtime_preserves_dag_review_when_approved_without_submitted_da
     runtime = _runtime(provider)
 
     result = run(run_message(runtime, "What files are here?", mode="dag", review_level="careful"))
-    missing_dag = run(runtime.resume_review(result.pending_review.review_id, approved=True))
-    resumed = run(runtime.resume_review(result.pending_review.review_id, dag=result.dag))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=True))
 
     assert result.status == "awaiting_review"
     assert result.pending_review is not None
-    assert missing_dag is None
     assert resumed is not None
     assert resumed.status == "completed"
     assert resumed.output_text == "Here is the final answer."
