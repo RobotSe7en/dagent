@@ -348,7 +348,7 @@ class HarnessRuntime:
                 initial_loop_outcome=initial_outcome,
                 on_event=on_event,
             )
-            result = self._finish_loop_outcome(
+            return self._finish_loop_outcome(
                 outcome,
                 state.user_request,
                 "tool",
@@ -356,11 +356,6 @@ class HarnessRuntime:
                 runtime_mode=state.runtime_mode,
                 capability_scope=capability_scope,
                 input_messages=input_messages,
-            )
-            return RunResult(
-                state=result.state,
-                output_text=result.output_text,
-                messages=_public_messages_for_capability_resume(state, result.state),
             )
 
         if approved and dag is None:
@@ -544,6 +539,7 @@ class HarnessRuntime:
         state = outcome.state.model_copy(update={
             "kind": _state_kind_for_mode(mode),
             "status": outcome.state.status,
+            "input_message_count": len(input_messages or []),
             "user_request": user_request,
             "review_level": review_level,
             "runtime_mode": runtime_mode or mode,
@@ -552,16 +548,7 @@ class HarnessRuntime:
             "pending_invocation": outcome.state.pending_invocation,
         })
         state = self.session.save_run_state(state)
-        return RunResult(
-            state=state,
-            output_text=final_answer,
-            messages=_public_messages(
-                outcome,
-                input_messages=input_messages,
-                kind=state.kind,
-                output_text=final_answer,
-            ),
-        )
+        return RunResult(state=state, output_text=final_answer)
 
     async def run_dag_spec(
         self,
@@ -589,7 +576,6 @@ class HarnessRuntime:
         return RunResult(
             state=state,
             output_text=outcome.output_text.strip() or _fallback_output_text(outcome),
-            messages=[],
         )
 
 
@@ -628,54 +614,6 @@ def _state_kind_for_mode(mode: Literal["tool", "dag"]) -> Literal["tool", "dynam
     return "tool" if mode == "tool" else "dynamic_dag"
 
 
-def _public_messages(
-    outcome: LoopOutcome,
-    *,
-    input_messages: list[dict[str, Any]] | None,
-    kind: Literal["tool", "dynamic_dag"],
-    output_text: str,
-) -> list[dict[str, Any]]:
-    if outcome.state.status != "completed":
-        return []
-    if kind == "dynamic_dag":
-        return [{"role": "assistant", "content": output_text}] if output_text else []
-    input_count = len(input_messages or [])
-    internal_messages = outcome.state.internal_messages
-    generated = internal_messages[input_count:] if input_count <= len(internal_messages) else []
-    return [
-        dict(message)
-        for message in generated
-        if message.get("role") in {"assistant", "tool"}
-    ]
-
-
-def _public_messages_for_capability_resume(
-    pending_state: RunState,
-    final_state: RunState,
-) -> list[dict[str, Any]]:
-    if final_state.status != "completed" or pending_state.pending_invocation is None:
-        return []
-    invocation_id = pending_state.pending_invocation.invocation_id
-    messages = final_state.internal_messages
-    assistant_index = _assistant_tool_call_index(messages, invocation_id)
-    if assistant_index is None:
-        return _public_messages(
-            LoopOutcome(state=final_state),
-            input_messages=_messages_before_pending_capability_call(pending_state),
-            kind="tool",
-            output_text="",
-        )
-
-    generated: list[dict[str, Any]] = [dict(messages[assistant_index])]
-    tool_index = _tool_result_index(messages, invocation_id, start=assistant_index + 1)
-    if tool_index is not None:
-        generated.append(dict(messages[tool_index]))
-    final_assistant = _last_assistant_message(messages, start=(tool_index or assistant_index) + 1)
-    if final_assistant is not None:
-        generated.append(final_assistant)
-    return generated
-
-
 def _assistant_tool_call_index(messages: list[dict[str, Any]], invocation_id: str) -> int | None:
     for index, message in enumerate(messages):
         if message.get("role") != "assistant":
@@ -686,27 +624,6 @@ def _assistant_tool_call_index(messages: list[dict[str, Any]], invocation_id: st
     return None
 
 
-def _tool_result_index(
-    messages: list[dict[str, Any]],
-    invocation_id: str,
-    *,
-    start: int,
-) -> int | None:
-    for index, message in enumerate(messages[start:], start=start):
-        if message.get("role") == "tool" and message.get("tool_call_id") == invocation_id:
-            return index
-    return None
-
-
-def _last_assistant_message(
-    messages: list[dict[str, Any]],
-    *,
-    start: int,
-) -> dict[str, Any] | None:
-    for message in reversed(messages[start:]):
-        if message.get("role") == "assistant":
-            return dict(message)
-    return None
 
 
 def _response_token_stream(

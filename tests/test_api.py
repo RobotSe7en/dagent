@@ -1240,7 +1240,7 @@ def _stream_result(event: dict) -> dict:
 
 
 def _assert_result_shape(result: dict) -> None:
-    assert set(result) == {"output_text", "messages", "state"}
+    assert set(result) == {"output_text", "state"}
 
 
 def _result_review(result: dict) -> dict | None:

@@ -180,7 +180,11 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
     )
 
     assert result.state.status == "completed"
-    assert result.state.invocations == []
+    assert not [
+        node
+        for node in result.state.trace.root.children
+        if node.kind == "capability_call"
+    ]
     assert result.output_text == "Recovered without writing."
     assert not (tmp_path / "notes.txt").exists()
     tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")

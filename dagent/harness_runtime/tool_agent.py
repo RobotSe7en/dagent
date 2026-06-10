@@ -349,7 +349,6 @@ class ToolAgentLoop:
             loop_messages.append({"role": "user", "content": user_message})
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
-        invocations: list[CapabilityInvocation] = []
         execution_context = _execution_context(
             capability_context,
             task_id=resolved_run_id,
@@ -399,7 +398,6 @@ class ToolAgentLoop:
                         status="completed",
                         messages=loop_messages,
                         trace=trace,
-                        invocations=invocations,
                         capability_scope=state_scope,
                     ),
                     execution_context=_format_capability_execution_context(loop_messages),
@@ -425,7 +423,6 @@ class ToolAgentLoop:
                         }
                     )
                     continue
-                invocations.append(invocation)
                 self._emit_capability_event(on_event, invocation, "capability_call")
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
@@ -489,7 +486,6 @@ class ToolAgentLoop:
                                 status="awaiting_review",
                                 messages=loop_messages,
                                 trace=trace,
-                                invocations=invocations,
                                 pending_review=pending_review,
                                 pending_invocation=invocation,
                                 capability_scope=state_scope,
@@ -505,7 +501,6 @@ class ToolAgentLoop:
                                 status="failed",
                                 messages=loop_messages,
                                 trace=trace,
-                                invocations=invocations,
                                 capability_scope=state_scope,
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
@@ -565,7 +560,6 @@ class ToolAgentLoop:
                 status="failed",
                 messages=loop_messages,
                 trace=trace,
-                invocations=invocations,
                 capability_scope=state_scope,
             ),
             execution_context=_format_capability_execution_context(loop_messages),
@@ -702,7 +696,6 @@ def _tool_run_state(
     status: str,
     messages: list[dict[str, Any]],
     trace: RunTrace,
-    invocations: list[CapabilityInvocation],
     pending_review: PendingReview | None = None,
     pending_invocation: CapabilityInvocation | None = None,
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
@@ -713,7 +706,6 @@ def _tool_run_state(
         status=status,  # type: ignore[arg-type]
         internal_messages=[dict(message) for message in messages],
         trace=trace,
-        invocations=list(invocations),
         pending_review=pending_review,
         pending_invocation=pending_invocation,
         capability_scope=capability_scope_to_state(capability_scope),

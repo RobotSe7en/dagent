@@ -674,6 +674,34 @@ def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> No
     assert resumed.output_text == "Report: found:X"
 
 
+def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="The project color is blue."),
+        ChatResponse(content="It is blue."),
+    ])
+    agent = dagent.ToolAgent(profile="conversation")
+    first_runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    messages = user_messages("Remember that the project color is blue.")
+    first = run(first_runner.run(agent, messages=messages))
+    messages += first.messages
+    saved_state = dagent.RunState.model_validate(first.state.model_dump(mode="json"))
+    first_runner.close()
+
+    assert [message["role"] for message in first.messages] == ["assistant"]
+    assert first.messages[0]["content"] == "The project color is blue."
+
+    second_runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    messages.append({"role": "user", "content": "What color did I mention?"})
+    second = run(second_runner.run(agent, messages=messages, state=saved_state))
+    second_runner.close()
+
+    assert second.output_text == "It is blue."
+    assert [message["role"] for message in second.messages] == ["assistant"]
+    assert second.messages[0]["content"] == "It is blue."
+    assert second.state.input_message_count == len(second.state.internal_messages) - 1
+
+
 def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([

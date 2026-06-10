@@ -44,7 +44,6 @@ from dagent.schemas import (
     PendingReview,
     CapabilityDefinition,
     CapabilityNodePayload,
-    CapabilityInvocation,
     RunTrace,
     RunTraceNode,
     RunTraceStatus,
@@ -978,18 +977,10 @@ def _dag_loop_outcome(
     workspace_path: str | None = None,
     pending_review: PendingReview | None = None,
 ) -> LoopOutcome:
-    invocations: list[CapabilityInvocation] = []
-    if dag is not None:
-        invocations = [
-            node.payload.invocation
-            for node in dag.nodes
-            if isinstance(node.payload, CapabilityNodePayload)
-        ]
     state = record.model_copy(update={
         "status": status,
         "dag": dag,
         "trace": trace,
-        "invocations": invocations,
         "pending_review": pending_review,
         "pending_invocation": None,
         "spec_id": spec_id if spec_id is not None else record.spec_id,
