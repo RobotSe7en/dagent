@@ -75,8 +75,14 @@ def _partial_tag_suffix_len(text: str, tag: str) -> int:
 def _dag_event_emitter(on_event: LoopEventHandler | None):
     if on_event is None:
         return None
+    last_payload: dict | None = None
 
     def emit(dag: DAG) -> None:
-        on_event({"type": "dag", "dag": dag.model_dump(mode="json")})
+        nonlocal last_payload
+        payload = dag.model_dump(mode="json")
+        if payload == last_payload:
+            return
+        last_payload = payload
+        on_event({"type": "dag", "dag": payload})
 
     return emit

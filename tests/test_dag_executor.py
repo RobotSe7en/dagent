@@ -91,6 +91,37 @@ def test_executor_runs_ordered_dag_and_records_trace() -> None:
     assert capability_trace(result, "b").capability_execution.result.content == "echo:b"
 
 
+def test_executor_skips_trace_snapshot_when_layer_makes_no_progress() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag = DAG(dag_id="dag_1", task_id="task_1", nodes=[node("a")])
+    events: list[dict] = []
+
+    first = run(executor.execute_next_ready_layer(dag, on_event=events.append))
+    assert len([event for event in events if event["type"] == "trace"]) == 1
+
+    run(executor.execute_next_ready_layer(dag, initial_trace=first, on_event=events.append))
+
+    assert len([event for event in events if event["type"] == "trace"]) == 1
+
+
+def test_dag_event_emitter_skips_identical_consecutive_dags() -> None:
+    from dagent.harness_runtime.runtime_events import _dag_event_emitter
+
+    events: list[dict] = []
+    emit = _dag_event_emitter(events.append)
+    dag = DAG(dag_id="dag_1", task_id="task_1", nodes=[node("a")])
+
+    emit(dag)
+    emit(dag.model_copy(deep=True))
+    completed = dag.model_copy(deep=True)
+    completed.status = "completed"
+    emit(completed)
+
+    assert len(events) == 2
+    assert events[0]["dag"]["status"] != "completed"
+    assert events[1]["dag"]["status"] == "completed"
+
+
 def test_risk_override_promotes_write_file_to_medium() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(

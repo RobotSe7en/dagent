@@ -107,10 +107,11 @@ class DAGExecutor:
         completed = _all_nodes_completed(normalized, trace.dag_node_traces())
         trace.root.status = "completed" if completed else "running"
         if completed:
-            trace.root.ended_at = _now()
+            if trace.root.ended_at is None:
+                trace.root.ended_at = _now()
             normalized.status = "completed"
         trace.artifacts = dict(self.artifact_states)
-        _emit_trace_snapshot(on_event, trace)
+        _emit_trace_snapshot(on_event, trace, previous=initial_trace)
         return trace
 
     async def _execute_next_ready_layer(
@@ -375,9 +376,15 @@ def _node_event_emitter(
 def _emit_trace_snapshot(
     on_event: Callable[[dict[str, Any]], None] | None,
     trace: RunTrace,
+    *,
+    previous: RunTrace | None = None,
 ) -> None:
-    if on_event is not None:
-        on_event({"type": "trace", "trace": trace.model_dump(mode="json")})
+    if on_event is None:
+        return
+    payload = trace.model_dump(mode="json")
+    if previous is not None and payload == previous.model_dump(mode="json"):
+        return
+    on_event({"type": "trace", "trace": payload})
 
 
 def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
