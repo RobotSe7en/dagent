@@ -30,7 +30,6 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "ProfileStore")
     assert hasattr(dagent, "Provider")
     assert hasattr(dagent, "ReviewLevel")
-    assert hasattr(dagent, "RunStreamChunk")
     assert hasattr(dagent, "RunStreamEvent")
     assert hasattr(dagent, "SkillStore")
     assert hasattr(dagent, "load_builtin_profile")
@@ -38,9 +37,10 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "validate_dag_spec")
     assert hasattr(dagent, "Node")
     assert hasattr(dagent.Runner, "stream")
-    assert hasattr(dagent.Runner, "stream_events")
     assert hasattr(dagent.Runner, "resume_stream")
-    assert hasattr(dagent.Runner, "resume_stream_events")
+    assert not hasattr(dagent, "RunStreamChunk")
+    assert not hasattr(dagent.Runner, "stream_events")
+    assert not hasattr(dagent.Runner, "resume_stream_events")
     assert not hasattr(dagent, "NodeRef")
     assert not hasattr(dagent.Dag, "capability_node")
     assert not hasattr(dagent.Dag, "agent_node")
@@ -150,45 +150,92 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
     assert "Conversation Agent" in system_message
 
 
-def test_runner_stream_yields_chunks_and_unified_result(tmp_path) -> None:
+def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
     provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
 
-    async def collect() -> list[dagent.RunStreamChunk]:
+    async def collect() -> list[dagent.RunStreamEvent]:
         return [
-            chunk
-            async for chunk in runner.stream(
+            event
+            async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
                 messages=user_messages("hi"),
             )
         ]
 
-    chunks = run(collect())
+    events = run(collect())
 
-    assert [chunk.text for chunk in chunks if chunk.text] == ["hello"]
-    assert chunks[-1].result is not None
-    assert isinstance(chunks[-1].result, dagent.RunResult)
-    assert chunks[-1].result.output_text == "hello"
-    assert all(chunk.text or chunk.result is not None for chunk in chunks)
+    assert [event.type for event in events] == [
+        "run.started",
+        "response.started",
+        "response.reasoning.delta",
+        "response.content.delta",
+        "response.finished",
+        "run.finished",
+    ]
+    assert events[0].data.kind == "tool"
+    assert events[0].run_id is not None
+    result = events[-1].data.result
+    assert isinstance(result, dagent.RunResult)
+    assert result.output_text == "hello"
+    assert events[0].run_id == result.run_id
+    assert all(event.run_id == result.run_id for event in events)
+    assert [event.sequence for event in events] == list(range(1, len(events) + 1))
 
 
-def test_runner_stream_text_stream_selects_token_channel(tmp_path) -> None:
-    async def collect(text_stream: str) -> list[str]:
-        provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
-        runner = dagent.Runner(workspace=tmp_path, provider=provider)
+def test_runner_stream_brackets_each_model_call_with_response_boundaries(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
         return [
-            chunk.text
-            async for chunk in runner.stream(
+            event
+            async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
                 messages=user_messages("hi"),
-                text_stream=text_stream,
             )
-            if chunk.text
         ]
 
-    assert run(collect("reasoning")) == ["checking"]
-    assert run(collect("content")) == ["hello"]
-    assert run(collect("none")) == []
+    events = run(collect())
+
+    started = next(event for event in events if event.type == "response.started")
+    finished = next(event for event in events if event.type == "response.finished")
+    deltas = [event for event in events if event.type.endswith(".delta")]
+    assert started.data.response_id
+    assert started.data.response_id == finished.data.response_id
+    assert started.data.model_step == 1
+    assert started.data.run_id == events[0].run_id
+    assert all(event.data.response_id == started.data.response_id for event in deltas)
+    reasoning = "".join(
+        event.data.delta for event in events if event.type == "response.reasoning.delta"
+    )
+    content = "".join(
+        event.data.delta for event in events if event.type == "response.content.delta"
+    )
+    assert reasoning == "checking"
+    assert content == "hello"
+
+
+def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="<think>checking</think>\n\nhello world")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
+        ]
+
+    events = run(collect())
+
+    content = "".join(
+        event.data.delta for event in events if event.type == "response.content.delta"
+    )
+    assert content == "hello world"
+    assert content == events[-1].data.result.output_text
 
 
 def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
@@ -198,7 +245,7 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream_events(
+            async for event in runner.stream(
                 dagent.ToolAgent(profile="conversation"),
                 messages=user_messages("hi"),
             )
@@ -209,23 +256,43 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
 
     assert result is not None
     assert result.model_dump(mode="json")["output_text"] == "hello"
-    token_events = [
+    run_id = events[0].run_id
+    response_id = next(
+        event.data.response_id for event in events if event.type == "response.started"
+    )
+    delta_events = [
         event.model_dump(mode="json")
         for event in events
-        if event.type.startswith("response.")
+        if event.type.endswith(".delta")
     ]
-    assert token_events == [
+    assert delta_events == [
         {
             "type": "response.reasoning.delta",
-            "data": {"delta": "checking"},
-            "sequence": 1,
-            "run_id": None,
+            "data": {
+                "delta": "checking",
+                "response_id": response_id,
+                "model_step": 1,
+                "run_id": run_id,
+                "dag_id": None,
+                "node_id": None,
+                "parent_capability_id": None,
+            },
+            "sequence": 3,
+            "run_id": run_id,
         },
         {
             "type": "response.content.delta",
-            "data": {"delta": "hello"},
-            "sequence": 2,
-            "run_id": None,
+            "data": {
+                "delta": "hello",
+                "response_id": response_id,
+                "model_step": 1,
+                "run_id": run_id,
+                "dag_id": None,
+                "node_id": None,
+                "parent_capability_id": None,
+            },
+            "sequence": 4,
+            "run_id": run_id,
         },
     ]
     assert events[-1].model_dump(mode="json")["data"]["result"]["output_text"] == "hello"
@@ -236,7 +303,7 @@ def test_runner_stream_yields_typed_status_events_and_errors(tmp_path) -> None:
     events: list[dagent.RunStreamEvent] = []
 
     async def collect() -> None:
-        async for event in runner.stream_events(dagent.ToolAgent(profile="conversation")):
+        async for event in runner.stream(dagent.ToolAgent(profile="conversation")):
             events.append(event)
 
     with pytest.raises(TypeError, match="messages is required"):
@@ -302,46 +369,19 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     assert first.requires_review
     assert first.review is not None
 
-    async def collect() -> list[dagent.RunStreamChunk]:
-        return [chunk async for chunk in runner.resume_stream(first.review.approve())]
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.resume_stream(first.review.approve())]
 
-    chunks = run(collect())
+    events = run(collect())
 
-    assert [chunk.text for chunk in chunks if chunk.text] == ["done"]
-    assert chunks[-1].result is not None
-    assert chunks[-1].result.output_text == "done"
-
-
-def test_runner_resume_stream_text_stream_selects_content_channel(tmp_path) -> None:
-    @dagent.tool(risk="medium")
-    def write(text: str) -> str:
-        return f"wrote:{text}"
-
-    _profile_root(tmp_path)
-    provider = MockProvider([
-        ChatResponse(
-            content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
-        ),
-        ChatResponse(content="<think>checking</think>done"),
-    ])
-    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
-
-    first = run(runner.run(agent, messages=user_messages("write hello")))
-    assert first.review is not None
-
-    async def collect() -> list[dagent.RunStreamChunk]:
-        return [
-            chunk
-            async for chunk in runner.resume_stream(first.review.approve(), text_stream="content")
-        ]
-
-    chunks = run(collect())
-
-    assert [chunk.text for chunk in chunks if chunk.text] == ["done"]
-    assert chunks[-1].result is not None
-    assert chunks[-1].result.output_text == "done"
+    assert events[0].type == "run.started"
+    assert events[0].run_id == first.run_id
+    assert [
+        event.data.delta for event in events if event.type == "response.content.delta"
+    ] == ["done"]
+    assert events[-1].type == "run.finished"
+    assert events[-1].data.result.output_text == "done"
+    assert events[-1].run_id == first.run_id
 
 
 def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
@@ -360,7 +400,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamEvent]:
-        return [event async for event in runner.stream_events(agent, messages=user_messages("write hello"))]
+        return [event async for event in runner.stream(agent, messages=user_messages("write hello"))]
 
     events = run(collect())
 
@@ -369,35 +409,20 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert review_events[-1].data.kind == "capability_review"
     assert review_events[-1].data.message == "Review capability call: tool.write"
     assert events[-1].type == "run.finished"
-    assert events[-1].data.result.requires_review
-    dumped = events[-1].data.result.model_dump(mode="json")
-    assert dumped["state"]["pending_review"]["kind"] == "capability_review"
-
-
-def test_runner_stream_chunk_exposes_review_through_result(tmp_path) -> None:
-    @dagent.tool(risk="medium")
-    def write(text: str) -> str:
-        return f"wrote:{text}"
-
-    _profile_root(tmp_path)
-    provider = MockProvider([
-        ChatResponse(
-            content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
-        ),
-    ])
-    agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
-    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
-
-    async def collect() -> list[dagent.RunStreamChunk]:
-        return [chunk async for chunk in runner.stream(agent, messages=user_messages("write hello"))]
-
-    chunks = run(collect())
-
-    assert chunks[-1].result is not None
-    assert chunks[-1].result.requires_review
-    assert chunks[-1].result.review is not None
-    assert chunks[-1].result.review.kind == "capability_review"
+    result = events[-1].data.result
+    assert result.requires_review
+    assert result.review is not None
+    assert result.review.kind == "capability_review"
+    dumped = result.model_dump(mode="json")
+    pending_review = dumped["state"]["pending_review"]
+    assert pending_review["kind"] == "capability_review"
+    assert pending_review["review_id"] == review_events[-1].data.review_id
+    assert pending_review["capability_call"] == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.write",
+        "arguments": {"text": "hello"},
+    }
+    assert pending_review["payload"] == {"capability_id": "tool.write", "risk": "medium"}
 
 
 def test_run_result_public_surface_uses_single_names(tmp_path) -> None:

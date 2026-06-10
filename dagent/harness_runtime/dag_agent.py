@@ -31,6 +31,7 @@ from dagent.harness_runtime.dag_builder import (
 )
 from dagent.review import ReviewLevel, _review_policy
 from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
+from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
@@ -246,12 +247,21 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         user_message: dict[str, str],
         allow_no_change: bool = True,
+        model_step: int | None = None,
         on_token: Callable[[str], None] | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
     ) -> DAG | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages.append(dict(user_message))
-        response = await _chat_for_dag(self.provider, messages, on_token=on_token)
+        response = await _chat_for_dag(
+            self.provider,
+            messages,
+            run_id=resolved_task_id,
+            model_step=model_step,
+            on_token=on_token,
+            on_event=on_event,
+        )
         messages.append({"role": "assistant", "content": response.content})
         result = dag_from_model_output(
             response.content,
@@ -311,6 +321,7 @@ class DAGAgentLoop:
         self,
         spec: DAGSpec,
         *,
+        run_id: str | None = None,
         graph_input: Any = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
@@ -318,7 +329,7 @@ class DAGAgentLoop:
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
     ) -> LoopOutcome:
-        run_id = f"dag_run_{uuid4().hex}"
+        run_id = run_id or f"dag_run_{uuid4().hex}"
         dag = compile_dag_spec(
             spec,
             task_id=run_id,
@@ -583,7 +594,9 @@ class DAGAgentLoop:
                     ),
                     messages=messages,
                     allow_no_change=_has_real_nodes(record.dag),
+                    model_step=cycle,
                     on_token=on_token,
+                    on_event=on_event,
                     capability_scope=capability_scope_from_state(record.capability_scope),
                 )
             except Exception as exc:
@@ -834,27 +847,32 @@ async def _chat_for_dag(
     provider: ChatProvider,
     messages: list[dict[str, Any]],
     *,
+    run_id: str | None = None,
+    model_step: int | None = None,
     on_token: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> ChatResponse:
-    if on_token is None or not hasattr(provider, "stream_chat"):
+    if (on_token is None and on_event is None) or not hasattr(provider, "stream_chat"):
         return await provider.chat(messages)
 
+    splitter = _ResponseTokenSplitter(
+        on_raw=on_token,
+        on_event=on_event,
+        run_id=run_id,
+        model_step=model_step,
+    )
     content = ""
     response: ChatResponse | None = None
-    async for event in provider.stream_chat(messages):
-        if event.type == "token" and event.content:
-            content += event.content
-            on_token(event.content)
-        elif event.type == "done":
-            response = event.response
-    _flush_token_handler(on_token)
+    try:
+        async for event in provider.stream_chat(messages):
+            if event.type == "token" and event.content:
+                content += event.content
+                splitter(event.content)
+            elif event.type == "done":
+                response = event.response
+    finally:
+        splitter.finish()
     return response or ChatResponse(content=content)
-
-
-def _flush_token_handler(on_token: Callable[[str], None] | None) -> None:
-    flush = getattr(on_token, "flush", None)
-    if callable(flush):
-        flush()
 
 
 # ------------------------------------------------------------------

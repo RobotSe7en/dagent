@@ -21,6 +21,11 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_from_state,
     capability_scope_to_state,
 )
+from dagent.harness_runtime.runtime_events import (
+    LoopEventHandler,
+    TokenHandler,
+    _ResponseTokenSplitter,
+)
 from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
@@ -53,8 +58,6 @@ class ControlToolResult:
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
-TokenHandler = Callable[[str], None]
-LoopEventHandler = Callable[[dict[str, Any]], None]
 
 
 class ToolAgent:
@@ -373,7 +376,10 @@ class ToolAgentLoop:
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
+                run_id=run_id,
+                step=step,
                 on_token=on_token,
+                on_event=on_event,
             )
 
             assistant_message = self._assistant_message(response)
@@ -578,18 +584,29 @@ class ToolAgentLoop:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]],
+        run_id: str | None,
+        step: int,
         on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
     ) -> ChatResponse:
-        if on_token is None or not hasattr(self.provider, "stream_chat"):
+        if (on_token is None and on_event is None) or not hasattr(self.provider, "stream_chat"):
             return await self.provider.chat(messages, tools=tools)
 
+        splitter = _ResponseTokenSplitter(
+            on_raw=on_token,
+            on_event=on_event,
+            run_id=run_id,
+            model_step=step,
+        )
         response: ChatResponse | None = None
-        async for event in self.provider.stream_chat(messages, tools=tools):
-            if event.type == "token" and event.content:
-                on_token(event.content)
-            elif event.type == "done":
-                response = event.response
-        _flush_token_handler(on_token)
+        try:
+            async for event in self.provider.stream_chat(messages, tools=tools):
+                if event.type == "token" and event.content:
+                    splitter(event.content)
+                elif event.type == "done":
+                    response = event.response
+        finally:
+            splitter.finish()
         return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
@@ -738,12 +755,6 @@ def _exception_message(exc: Exception) -> str:
     if isinstance(exc, KeyError) and exc.args:
         return str(exc.args[0])
     return str(exc)
-
-
-def _flush_token_handler(on_token: TokenHandler | None) -> None:
-    flush = getattr(on_token, "flush", None)
-    if callable(flush):
-        flush()
 
 
 def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:

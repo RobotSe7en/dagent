@@ -325,20 +325,32 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     )
 
     assert result.state.status == "completed"
-    assert [event["type"] for event in events] == ["capability_call", "capability_result"]
-    assert events[0] == {
+    assert [event["type"] for event in events] == [
+        "response_started",
+        "response_finished",
+        "capability_call",
+        "capability_result",
+        "response_started",
+        "response_token",
+        "response_finished",
+    ]
+    capability_events = [event for event in events if event["type"].startswith("capability_")]
+    assert capability_events[0] == {
         "type": "capability_call",
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
     }
-    assert events[1] == {
+    assert capability_events[1] == {
         "type": "capability_result",
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
         "content": "hello from file",
     }
+    assert events[0]["model_step"] == 1
+    assert events[4]["model_step"] == 2
+    assert events[0]["response_id"] != events[4]["response_id"]
 
 
 def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:

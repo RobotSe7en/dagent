@@ -382,7 +382,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       if (!line) continue;
       const event = JSON.parse(line.slice(6)) as StreamEnvelope;
       const data = isRecord(event.data) ? event.data : {};
-      if (event.type === 'run.status') handlers.onStatus?.(String(data.message ?? ''));
+      if (event.type === 'run.started') handlers.onStatus?.('run_started');
       if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
       if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
       if (event.type === 'capability.call.started') {

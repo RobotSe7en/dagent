@@ -393,7 +393,7 @@ def test_runner_stream_static_dag_done_result_is_unified_run_result(tmp_path: Pa
     async def collect() -> list[dagent.RunStreamEvent]:
         return [
             event
-            async for event in runner.stream_events(dag, graph_input="hello", workspace_root=tmp_path / "runs")
+            async for event in runner.stream(dag, graph_input="hello", workspace_root=tmp_path / "runs")
         ]
 
     events = run(collect())
@@ -425,7 +425,7 @@ def test_runner_stream_static_dag_capability_events_keep_node_context(tmp_path: 
     runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
 
     async def collect() -> list[dagent.RunStreamEvent]:
-        return [event async for event in runner.stream_events(dag, workspace_root=tmp_path / "runs")]
+        return [event async for event in runner.stream(dag, workspace_root=tmp_path / "runs")]
 
     events = run(collect())
 
@@ -442,6 +442,50 @@ def test_runner_stream_static_dag_capability_events_keep_node_context(tmp_path: 
     assert completed.data.dag_id == started.data.dag_id
     assert completed.data.node_id == "draft"
     assert completed.data.parent_capability_id == "agent.writer"
+
+
+def test_runner_stream_parallel_agent_nodes_keep_response_attribution(tmp_path: Path) -> None:
+    @dagent.tool
+    def seed() -> str:
+        return "go"
+
+    provider = MockProvider([
+        ChatResponse(content="<think>alpha</think>draft alpha"),
+        ChatResponse(content="<think>beta</think>draft beta"),
+    ])
+    alpha = dagent.ToolAgent(profile=_profile_root(tmp_path, "alpha"))
+    beta = dagent.ToolAgent(profile=_profile_root(tmp_path, "beta"))
+    dag = dagent.Dag("parallel_agents")
+    dag.add_node(dagent.Node("seed", target=seed))
+    dag.add_node(dagent.Node("draft_alpha", target=alpha, inputs={"prompt": "Draft alpha."}))
+    dag.add_node(dagent.Node("draft_beta", target=beta, inputs={"prompt": "Draft beta."}))
+    dag.add_edge("seed", "draft_alpha")
+    dag.add_edge("seed", "draft_beta")
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.stream(dag, workspace_root=tmp_path / "runs")]
+
+    events = run(collect())
+
+    responses: dict[str, list[dagent.RunStreamEvent]] = {}
+    for event in events:
+        if event.type.startswith("response."):
+            responses.setdefault(event.data.response_id, []).append(event)
+
+    assert len(responses) == 2
+    node_ids = set()
+    contents = set()
+    for grouped in responses.values():
+        assert [grouped[0].type, grouped[-1].type] == ["response.started", "response.finished"]
+        group_node_ids = {event.data.node_id for event in grouped}
+        assert len(group_node_ids) == 1
+        node_ids.update(group_node_ids)
+        contents.add("".join(
+            event.data.delta for event in grouped if event.type == "response.content.delta"
+        ))
+    assert node_ids == {"draft_alpha", "draft_beta"}
+    assert contents == {"draft alpha", "draft beta"}
 
 
 def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:

@@ -1039,7 +1039,8 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
-    assert events[0]["type"] == "run.status"
+    assert events[0]["type"] == "run.started"
+    assert events[0]["run_id"] == result["state"]["run_id"]
     assert any(event["type"] == "trace.updated" for event in events)
     assert events[-1]["type"] == "run.finished"
     dag_run = _result_dag_run(result)

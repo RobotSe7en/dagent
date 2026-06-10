@@ -689,17 +689,27 @@ def test_response_token_splitter_derives_reasoning_and_content_channels() -> Non
 
     raw: list[str] = []
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=raw.append,
+        on_event=events.append,
+        run_id="run_1",
+        model_step=2,
+    )
 
     for token in ["<", "think", ">reason", "ing about", " it</", "think>", " The answer is 42."]:
         splitter(token)
-    splitter.flush()
+    splitter.finish()
 
     assert "".join(raw) == "<think>reasoning about it</think> The answer is 42."
-    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
-    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    assert events[0]["type"] == "response_started"
+    assert events[-1]["type"] == "response_finished"
+    assert all(event["response_id"] == splitter.response_id for event in events)
+    assert all(event["model_step"] == 2 for event in events)
+    assert all(event["run_id"] == "run_1" for event in events)
+    reasoning = "".join(event["delta"] for event in events if event.get("channel") == "reasoning")
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
     assert reasoning == "reasoning about it"
-    assert content == " The answer is 42."
+    assert content == "The answer is 42."
 
 
 def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
@@ -710,14 +720,20 @@ def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
     splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
 
     splitter("Hello world, this is a normal response.")
-    splitter.flush()
+    splitter.finish()
 
     assert "".join(raw) == "Hello world, this is a normal response."
-    assert events == [{
+    assert [event["type"] for event in events] == [
+        "response_started",
+        "response_token",
+        "response_finished",
+    ]
+    assert events[1] == {
         "type": "response_token",
         "channel": "content",
         "delta": "Hello world, this is a normal response.",
-    }]
+        "response_id": splitter.response_id,
+    }
 
 
 def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
@@ -728,10 +744,10 @@ def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
 
     for token in ["<think>", "internal reasoning", "</think>", "The final answer."]:
         splitter(token)
-    splitter.flush()
+    splitter.finish()
 
-    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
-    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    reasoning = "".join(event["delta"] for event in events if event.get("channel") == "reasoning")
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
     assert reasoning == "internal reasoning"
     assert content == "The final answer."
 
@@ -743,13 +759,40 @@ def test_response_token_splitter_flushes_short_answer_suffix() -> None:
     splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
 
     splitter("<think>internal</think>好")
-    splitter.flush()
+    splitter.finish()
 
-    assert events[-1] == {
+    assert events[-2] == {
         "type": "response_token",
         "channel": "content",
         "delta": "好",
+        "response_id": splitter.response_id,
     }
+    assert events[-1]["type"] == "response_finished"
+
+
+def test_response_token_splitter_strips_whitespace_between_think_and_answer() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+
+    for token in ["<think>internal</think>", "\n", "\n  ", "The answer.", " More."]:
+        splitter(token)
+    splitter.finish()
+
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
+    assert content == "The answer. More."
+
+
+def test_response_token_splitter_brackets_response_without_tokens() -> None:
+    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter.finish()
+    splitter.finish()
+
+    assert [event["type"] for event in events] == ["response_started", "response_finished"]
 
 
 def test_harness_runtime_tool_mode_streams_raw_and_derived_token_events() -> None:

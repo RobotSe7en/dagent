@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
@@ -38,13 +38,14 @@ from dagent.result import (
     CapabilityCallFailedData,
     CapabilityCallStartedData,
     DagUpdatedData,
+    ResponseFinishedData,
+    ResponseStartedData,
     ReviewRequiredData,
     RunFailedData,
     RunFinishedData,
     RunResult,
-    RunStreamChunk,
+    RunStartedData,
     RunStreamEvent,
-    StatusData,
     TextDeltaData,
     TraceUpdatedData,
     ValidationPassedData,
@@ -68,7 +69,6 @@ from dagent.schemas import (
 
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
-TextStream = Literal["reasoning", "content", "none"]
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
 
 
@@ -514,35 +514,8 @@ class Runner:
         review: ReviewLevel | None = None,
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
-        text_stream: TextStream = "content",
-    ) -> AsyncIterator[RunStreamChunk]:
-        """Run a target and yield high-level stream chunks."""
-
-        async for event in self.stream_events(
-            target,
-            messages=messages,
-            state=state,
-            graph_input=graph_input,
-            review=review,
-            workspace_root=workspace_root,
-            artifact_uploads=artifact_uploads,
-        ):
-            chunk = _chunk_from_event(event, text_stream=text_stream)
-            if chunk is not None:
-                yield chunk
-
-    async def stream_events(
-        self,
-        target: RunTarget,
-        *,
-        messages: list[dict[str, Any]] | None = None,
-        state: RunState | None = None,
-        graph_input: Any = None,
-        review: ReviewLevel | None = None,
-        workspace_root: str | Path = ".dagent-runs",
-        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
-        """Run a target and yield low-level typed events."""
+        """Run a target and yield typed stream events."""
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -564,22 +537,8 @@ class Runner:
         decision: ReviewDecision,
         *,
         state: RunState | None = None,
-        text_stream: TextStream = "content",
-    ) -> AsyncIterator[RunStreamChunk]:
-        """Resume a pending review and yield high-level stream chunks."""
-
-        async for event in self.resume_stream_events(decision, state=state):
-            chunk = _chunk_from_event(event, text_stream=text_stream)
-            if chunk is not None:
-                yield chunk
-
-    async def resume_stream_events(
-        self,
-        decision: ReviewDecision,
-        *,
-        state: RunState | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
-        """Resume a pending review and yield low-level typed events."""
+        """Resume a pending review and yield typed stream events."""
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             result = await self.resume(decision, state=state, on_event=on_event)
@@ -596,14 +555,21 @@ class Runner:
     ) -> AsyncIterator[RunStreamEvent]:
         queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
         sequence = 0
+        run_id: str | None = None
 
         def with_sequence(event: RunStreamEvent) -> RunStreamEvent:
             nonlocal sequence
             sequence += 1
-            return replace(event, sequence=sequence)
+            return replace(event, sequence=sequence, run_id=event.run_id or run_id)
 
         def emit_event(event: dict[str, Any]) -> None:
-            queue.put_nowait(with_sequence(_stream_event_from_runtime(event)))
+            nonlocal run_id
+            stream_event = _stream_event_from_runtime(event)
+            if stream_event is None:
+                return
+            if stream_event.type == "run.started" and stream_event.run_id is not None:
+                run_id = stream_event.run_id
+            queue.put_nowait(with_sequence(stream_event))
 
         task = asyncio.create_task(run_target(emit_event))
         try:
@@ -617,7 +583,9 @@ class Runner:
 
             result = await task
             if result.pending_review is not None:
-                yield with_sequence(_review_stream_event(result.pending_review))
+                yield with_sequence(
+                    _review_stream_event(result.pending_review, run_id=result.run_id)
+                )
             yield RunStreamEvent(
                 type="run.finished",
                 data=RunFinishedData(result=result),
@@ -629,6 +597,7 @@ class Runner:
                 type="run.failed",
                 data=RunFailedData(message=str(exc), error_type=type(exc).__name__),
                 sequence=sequence + 1,
+                run_id=run_id,
             )
             raise
         finally:
@@ -945,20 +914,52 @@ def _apply_skill_capabilities(
     return tuple(dict.fromkeys(ids))
 
 
-def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
+def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent | None:
+    """Map a runtime event payload onto the typed protocol; unknown events are dropped."""
     data = dict(event)
-    event_type = str(data.get("type") or "run.status")
+    event_type = str(data.get("type") or "")
+
+    if event_type == "run_started":
+        return RunStreamEvent(
+            type="run.started",
+            data=RunStartedData(kind=str(data.get("kind") or "tool")),  # type: ignore[arg-type]
+            run_id=_nullable_event_string(data.get("run_id")),
+        )
+
+    if event_type == "response_started":
+        return RunStreamEvent(
+            type="response.started",
+            data=ResponseStartedData(**_response_event_context(data)),
+        )
+
+    if event_type == "response_token":
+        channel = str(data.get("channel") or "")
+        if channel not in {"reasoning", "content"}:
+            return None
+        return RunStreamEvent(
+            type=f"response.{channel}.delta",  # type: ignore[arg-type]
+            data=TextDeltaData(
+                delta=str(data.get("delta", "")),
+                **_response_event_context(data),
+            ),
+        )
+
+    if event_type == "response_finished":
+        return RunStreamEvent(
+            type="response.finished",
+            data=ResponseFinishedData(**_response_event_context(data)),
+        )
 
     if event_type == "dag":
         dag = _coerce_dag(data.get("dag"))
         if dag is None:
-            return RunStreamEvent(type="run.status", data=StatusData(message="DAG update was empty."))
+            return None
         return RunStreamEvent(type="dag.updated", data=DagUpdatedData(dag=dag))
 
     if event_type == "trace":
         trace = _coerce_trace(data.get("trace"))
         if trace is None:
-            return RunStreamEvent(type="run.status", data=StatusData(message="Trace update was empty."))
+            return None
         return RunStreamEvent(type="trace.updated", data=TraceUpdatedData(trace=trace))
 
     if event_type == "capability_call":
@@ -997,7 +998,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
     if event_type == "validating":
         return RunStreamEvent(
             type="validation.started",
-            data=ValidationStartedData(message=_status_message(data, event_type)),
+            data=ValidationStartedData(message=str(data.get("message", ""))),
         )
 
     if event_type == "validation_passed":
@@ -1019,20 +1020,13 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             ),
         )
 
-    if event_type == "response_token":
-        channel = str(data.get("channel") or "")
-        if channel in {"reasoning", "content"}:
-            return RunStreamEvent(
-                type=f"response.{channel}.delta",
-                data=TextDeltaData(delta=str(data.get("delta", ""))),
-            )
-        return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
-
-    return RunStreamEvent(type="run.status", data=StatusData(message=_status_message(data, event_type)))
+    return None
 
 
 def _review_stream_event(
     review: PendingReview,
+    *,
+    run_id: str | None = None,
 ) -> RunStreamEvent:
     return RunStreamEvent(
         type="review.required",
@@ -1041,23 +1035,20 @@ def _review_stream_event(
             kind=review.kind,
             message=review.message,
         ),
+        run_id=run_id,
     )
 
 
-def _chunk_from_event(event: RunStreamEvent, *, text_stream: TextStream) -> RunStreamChunk | None:
-    if (
-        isinstance(event.data, TextDeltaData)
-        and text_stream != "none"
-        and event.type == _text_stream_event_type(text_stream)
-    ):
-        return RunStreamChunk(text=event.data.delta)
-    if isinstance(event.data, RunFinishedData):
-        return RunStreamChunk(result=event.data.result)
-    return None
-
-
-def _text_stream_event_type(text_stream: TextStream) -> str:
-    return f"response.{text_stream}.delta"
+def _response_event_context(data: dict[str, Any]) -> dict[str, Any]:
+    model_step = data.get("model_step")
+    return {
+        "response_id": str(data.get("response_id", "")),
+        "model_step": int(model_step) if model_step is not None else None,
+        "run_id": _nullable_event_string(data.get("run_id") or data.get("task_id")),
+        "dag_id": _nullable_event_string(data.get("dag_id")),
+        "node_id": _nullable_event_string(data.get("node_id")),
+        "parent_capability_id": _nullable_event_string(data.get("parent_capability_id")),
+    }
 
 
 def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:
@@ -1098,14 +1089,6 @@ def _coerce_trace(value: Any) -> RunTrace | None:
     if isinstance(value, dict):
         return RunTrace.model_validate(value)
     return None
-
-
-def _status_message(data: dict[str, Any], event_type: str) -> str:
-    for key in ("message", "summary", "reason", "content"):
-        value = data.get(key)
-        if value:
-            return str(value)
-    return event_type
 
 
 def _register_capability(runtime: HarnessRuntime, capability: CapabilityBinding) -> CapabilityDefinition:

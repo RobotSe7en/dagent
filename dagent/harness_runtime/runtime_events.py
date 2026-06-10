@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
-from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
+from collections.abc import Callable
+from typing import Any
+from uuid import uuid4
+
 from dagent.schemas import DAG
 
 
+TokenHandler = Callable[[str], None]
+LoopEventHandler = Callable[[dict[str, Any]], None]
+
+
 class _ResponseTokenSplitter:
-    """Forward raw tokens and derive reasoning/content token events."""
+    """Stream exactly one model call: raw tokens, channel deltas, and boundaries.
+
+    Creating the splitter emits ``response_started``; ``finish()`` flushes any
+    buffered text and emits ``response_finished``. Every emitted event carries
+    the splitter's identity fields (``response_id``, and ``model_step`` /
+    ``run_id`` when known), so events from concurrent model calls stay
+    attributable. Whitespace between ``</think>`` and the answer is dropped
+    from the content channel so streamed content matches ``output_text``.
+    """
 
     _OPEN = "<think>"
     _CLOSE = "</think>"
@@ -17,11 +32,22 @@ class _ResponseTokenSplitter:
         *,
         on_raw: TokenHandler | None,
         on_event: LoopEventHandler | None,
+        run_id: str | None = None,
+        model_step: int | None = None,
     ) -> None:
         self._on_raw = on_raw
         self._on_event = on_event
         self._buf = ""
         self._inside = False
+        self._strip_content_whitespace = False
+        self._finished = False
+        self.response_id = f"resp_{uuid4().hex}"
+        self._identity: dict[str, Any] = {"response_id": self.response_id}
+        if model_step is not None:
+            self._identity["model_step"] = model_step
+        if run_id is not None:
+            self._identity["run_id"] = run_id
+        self._emit({"type": "response_started"})
 
     def __call__(self, token: str) -> None:
         if self._on_raw is not None:
@@ -29,16 +55,28 @@ class _ResponseTokenSplitter:
         self._buf += token
         self._drain()
 
-    def flush(self) -> None:
+    def finish(self) -> None:
+        if self._finished:
+            return
         if self._buf:
             self._emit_current_channel(self._buf)
         self._buf = ""
         self._inside = False
+        self._finished = True
+        self._emit({"type": "response_finished"})
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        if self._on_event is not None:
+            self._on_event({**event, **self._identity})
 
     def _emit_current_channel(self, delta: str) -> None:
-        if not delta or self._on_event is None:
+        if not self._inside and self._strip_content_whitespace:
+            delta = delta.lstrip()
+            if delta:
+                self._strip_content_whitespace = False
+        if not delta:
             return
-        self._on_event({
+        self._emit({
             "type": "response_token",
             "channel": "reasoning" if self._inside else "content",
             "delta": delta,
@@ -52,6 +90,8 @@ class _ResponseTokenSplitter:
                 self._emit_current_channel(self._buf[:idx])
                 self._buf = self._buf[idx + len(tag):]
                 self._inside = not self._inside
+                if not self._inside:
+                    self._strip_content_whitespace = True
                 continue
 
             keep = _partial_tag_suffix_len(self._buf, tag)

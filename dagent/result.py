@@ -21,20 +21,22 @@ from dagent.schemas import (
 
 RunResultKind = Literal["tool", "dynamic_dag", "static_dag"]
 RunStreamEventType = Literal[
-    "run.status",
-    "run.finished",
-    "run.failed",
+    "run.started",
+    "response.started",
     "response.reasoning.delta",
     "response.content.delta",
-    "dag.updated",
-    "trace.updated",
-    "review.required",
-    "validation.started",
-    "validation.passed",
-    "validation.retry",
+    "response.finished",
     "capability.call.started",
     "capability.call.completed",
     "capability.call.failed",
+    "dag.updated",
+    "trace.updated",
+    "validation.started",
+    "validation.passed",
+    "validation.retry",
+    "review.required",
+    "run.finished",
+    "run.failed",
 ]
 
 
@@ -146,13 +148,45 @@ class RunResult:
 
 
 @dataclass(frozen=True)
-class TextDeltaData:
-    delta: str
+class RunStartedData:
+    """First stream event of every run; the envelope ``run_id`` is already final."""
+
+    kind: RunResultKind
 
 
 @dataclass(frozen=True)
-class StatusData:
-    message: str
+class ResponseStartedData:
+    """Marks the start of one model call; ``response_id`` keys its deltas."""
+
+    response_id: str
+    model_step: int | None = None
+    run_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TextDeltaData:
+    delta: str
+    response_id: str
+    model_step: int | None = None
+    run_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ResponseFinishedData:
+    """Marks the end of the model call identified by ``response_id``."""
+
+    response_id: str
+    model_step: int | None = None
+    run_id: str | None = None
+    dag_id: str | None = None
+    node_id: str | None = None
+    parent_capability_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,8 +271,10 @@ class RunFailedData:
 
 
 RunStreamEventData = (
-    TextDeltaData
-    | StatusData
+    RunStartedData
+    | ResponseStartedData
+    | TextDeltaData
+    | ResponseFinishedData
     | DagUpdatedData
     | TraceUpdatedData
     | ReviewRequiredData
@@ -255,7 +291,7 @@ RunStreamEventData = (
 
 @dataclass(frozen=True)
 class RunStreamEvent:
-    """Low-level typed event yielded by ``Runner.stream_events``."""
+    """Typed event yielded by ``Runner.stream`` and ``Runner.resume_stream``."""
 
     type: RunStreamEventType
     data: RunStreamEventData
@@ -268,20 +304,6 @@ class RunStreamEvent:
             "data": _dump(self.data, mode=mode),
             "sequence": self.sequence,
             "run_id": self.run_id,
-        }
-
-
-@dataclass(frozen=True)
-class RunStreamChunk:
-    """High-level stream item yielded by ``Runner.stream``: text deltas and the final result."""
-
-    text: str = ""
-    result: RunResult | None = None
-
-    def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
-        return {
-            "text": self.text,
-            "result": self.result.model_dump(mode=mode) if self.result is not None else None,
         }
 
 

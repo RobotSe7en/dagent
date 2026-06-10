@@ -307,10 +307,9 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
     workspace_root = _workspace_root_from_request(request)
 
     async def events():
-        yield _sse({"type": "run.status", "data": {"message": "dag_run_started"}, "sequence": 0, "run_id": None})
         sent_error = False
         try:
-            async for event in state.get_runner().stream_events(
+            async for event in state.get_runner().stream(
                 _compile_user_dag(dag),
                 graph_input=None if request is None else request.graph_input,
                 workspace_root=workspace_root,
@@ -712,10 +711,9 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
     agent = _agent_from_message(request)
 
     async def events():
-        yield _sse({"type": "run.status", "data": {"message": "harness_runtime_started"}, "sequence": 0, "run_id": None})
         sent_error = False
         try:
-            async for event in state.get_runner().stream_events(
+            async for event in state.get_runner().stream(
                 agent,
                 messages=request.messages,
                 state=request.state,
@@ -738,7 +736,6 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 @app.post("/messages/resume")
 async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
     async def events():
-        yield _sse({"type": "run.status", "data": {"message": "harness_runtime_resumed"}, "sequence": 0, "run_id": None})
         decision = ReviewDecision(
             review_id=request.review_id,
             approved=request.approved,
@@ -747,7 +744,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
         )
         sent_error = False
         try:
-            async for event in state.get_runner().resume_stream_events(decision, state=request.state):
+            async for event in state.get_runner().resume_stream(decision, state=request.state):
                 if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))

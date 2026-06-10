@@ -1,8 +1,8 @@
-"""Stream runner chunks and read the final unified RunResult.
+"""Stream typed run events and read the final unified RunResult.
 
 Run from the repository root:
 
-    uv run python -m examples.streaming
+    uv run python -m examples.quickstart
 """
 
 from __future__ import annotations
@@ -30,11 +30,15 @@ async def main() -> None:
         workspace=Path(__file__).resolve().parents[0],
         provider=provider,
     )
-    async for chunk in runner.stream(
+    async for event in runner.stream(
         agent,
         messages=[{"role": "user", "content": "当前目录有哪些文件？"}],
     ):
-        print(chunk, end="\n\n")
+        if event.type == "response.content.delta":
+            print(event.data.delta, end="")
+        elif event.type == "run.finished":
+            print()
+            print(event.data.result.output_text)
     runner.close()
 
 

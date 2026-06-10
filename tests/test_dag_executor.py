@@ -461,14 +461,22 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
     result = run(executor.execute_next_ready_layer(dag, on_event=events.append))
 
     assert dag_node_trace(result, "agent_node").output == "done"
-    assert events[0]["type"] == "capability_call"
-    assert events[0]["capability_id"] == "tool.echo"
-    assert events[0]["parent_capability_id"] == "agent.helper"
-    assert events[0]["task_id"] == "run_1"
-    assert events[0]["dag_id"] == "dag_1"
-    assert events[0]["node_id"] == "agent_node"
-    assert events[1]["type"] == "capability_result"
-    assert events[1]["content"] == "echo:hi"
+    capability_events = [event for event in events if event["type"].startswith("capability_")]
+    assert capability_events[0]["type"] == "capability_call"
+    assert capability_events[0]["capability_id"] == "tool.echo"
+    assert capability_events[0]["parent_capability_id"] == "agent.helper"
+    assert capability_events[0]["task_id"] == "run_1"
+    assert capability_events[0]["dag_id"] == "dag_1"
+    assert capability_events[0]["node_id"] == "agent_node"
+    assert capability_events[1]["type"] == "capability_result"
+    assert capability_events[1]["content"] == "echo:hi"
+    response_events = [event for event in events if event["type"].startswith("response_")]
+    assert response_events
+    for event in response_events:
+        assert event["task_id"] == "run_1"
+        assert event["dag_id"] == "dag_1"
+        assert event["node_id"] == "agent_node"
+        assert event["parent_capability_id"] == "agent.helper"
 
 
 def test_executor_can_run_one_ready_layer_at_a_time() -> None:

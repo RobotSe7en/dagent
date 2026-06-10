@@ -17,7 +17,7 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 | Static DAGs | `Dag`, `Node`, `InputRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `RunResult`, `RunState`, `RunStreamChunk`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
+| Reviews and results | `RunResult`, `RunState`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunState`, `RunTrace`, `ArtifactUpload` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
@@ -497,29 +497,17 @@ print(result.artifact_state("report").status)
 `result.dag_run` for static DAG runs; it is not dumped as a top-level
 `RunResult` field.
 
-Use `Runner.stream(...)` for an async stream of `RunStreamChunk` objects. Chunks
-carry generated text deltas and the final unified `RunResult`; other events are
-not surfaced as chunks. By default, `chunk.text` contains the content token
-channel. Pass `text_stream="reasoning"` or `text_stream="none"` to switch or
-suppress the text channel. Pending reviews are read from the final result.
+`Runner.stream(...)` is the single streaming entry point. It runs the target and
+yields typed `RunStreamEvent` objects with a uniform envelope: `type`, `data`,
+`sequence`, and `run_id`. The stream opens with `run.started` — its envelope
+`run_id` is the final run id, so consumers never wait for the stream tail to
+correlate events — and always settles with exactly one `run.finished` or
+`run.failed`.
+
+To consume only the generated text, filter on `response.content.delta`:
 
 ```python
-async for chunk in runner.stream(agent, messages=messages):
-    if chunk.text:
-        print(chunk.text, end="")
-    if chunk.result:
-        if chunk.result.requires_review:
-            print(chunk.result.review.message)
-        print(chunk.result.output_text)
-        print(chunk.result.model_dump(mode="json"))
-```
-
-Use `Runner.stream_events(...)` when you want to forward, persist, or inspect the
-complete low-level event stream. Events use a uniform envelope:
-`type`, `data`, `sequence`, and `run_id`.
-
-```python
-async for event in runner.stream_events(agent, messages=messages):
+async for event in runner.stream(agent, messages=messages):
     if event.type == "response.content.delta":
         print(event.data.delta, end="")
     elif event.type == "trace.updated":
@@ -530,24 +518,39 @@ async for event in runner.stream_events(agent, messages=messages):
         print(event.data.result.output_text)
 ```
 
-Common stream event payloads:
+The full event protocol:
 
 | Event type | Primary fields |
 |------------|----------------|
+| `run.started` | `event.data.kind`; envelope `run_id` is the final run id |
+| `response.started` | response identity fields (see below) |
 | `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
 | `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
-| `run.status` | `event.data.message` |
+| `response.finished` | response identity fields |
 | `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
 | `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |
 | `dag.updated` | `event.data.dag`, emitted only when the DAG changed |
 | `trace.updated` | `event.data.trace`, emitted only when the trace changed |
-| `review.required` | `event.data.review_id`, `event.data.kind`, `event.data.message` |
 | `validation.started` / `validation.passed` / `validation.retry` | `event.data` |
+| `review.required` | `event.data.review_id`, `event.data.kind`, `event.data.message` |
 | `run.finished` | `event.data.result` |
 | `run.failed` | `event.data.message`, `event.data.error_type` |
 
-`review.required` is a lightweight signal; the full pending review, including any
-proposed DAG, arrives in the `run.finished` result as `state.pending_review`.
+Every model call is bracketed by `response.started` and `response.finished`, and
+each call uses an isolated token splitter, so parallel DAG nodes never bleed
+tokens into each other. All `response.*` events carry the same identity fields:
+`response_id` (the stable per-call key), `model_step`, and — when the call runs
+inside a DAG node — `run_id`, `dag_id`, `node_id`, and `parent_capability_id`.
+Group deltas by `response_id`, not by ordering or `model_step`: under parallel
+nodes, retries, and resume, only `response_id` is unique. Whitespace between
+`</think>` and the answer is dropped from the content channel, so concatenated
+`response.content.delta` text matches `RunResult.output_text`.
+
+`review.required` is a lightweight signal carrying only `review_id`, `kind`, and
+`message`. The contract: the `run.finished` event that follows carries the full
+pending review in `event.data.result.state.pending_review`, including
+`capability_call`, any `proposed_dag`, and the review `payload` — build review
+UIs from that, not from the signal event.
 
 `RunStreamEvent.model_dump(mode="json")` returns a JSON-ready event payload. If
 the event has a result, the nested value is `RunResult.model_dump(mode="json")`.
@@ -555,17 +558,17 @@ The `run.finished` payload carries the complete `state` — keep it if you need 
 resume the run from another process after a restart.
 
 Use `Runner.resume_stream(...)` to continue a pending review with the same
-event contract:
+event contract; its `run.started` carries the resumed run's id:
 
 ```python
 first = await runner.run(agent, messages=[{"role": "user", "content": "Write the report."}])
 
 if first.requires_review and first.review is not None:
-    async for chunk in runner.resume_stream(first.review.approve(), state=first.state):
-        if chunk.text:
-            print(chunk.text, end="")
-        if chunk.result:
-            print(chunk.result.output_text)
+    async for event in runner.resume_stream(first.review.approve(), state=first.state):
+        if event.type == "response.content.delta":
+            print(event.data.delta, end="")
+        elif event.type == "run.finished":
+            print(event.data.result.output_text)
 ```
 
 ## Skills
