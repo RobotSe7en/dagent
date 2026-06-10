@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any, Literal
 from pathlib import Path
+from uuid import uuid4
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.harness_runtime.tool_agent import (
@@ -28,10 +29,7 @@ from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
-from dagent.harness_runtime.runtime_events import (
-    _ResponseTokenSplitter,
-    _dag_event_emitter,
-)
+from dagent.harness_runtime.runtime_events import _dag_event_emitter
 from dagent.review import ReviewLevel
 from dagent.providers import ChatProvider
 from dagent.result import RunResult
@@ -246,11 +244,14 @@ class HarnessRuntime:
         resolved_mode = mode
         if mode == "auto":
             resolved_mode = await self._route(user_request)
+        run_id = _new_run_id_for_mode(resolved_mode)
+        _emit_run_started(on_event, run_id=run_id, kind=_state_kind_for_mode(resolved_mode))
 
         async def run_once(feedback: str | None) -> LoopOutcome:
             if feedback is None:
                 return await self._execute_loop(
                     user_request,
+                    run_id=run_id,
                     mode=resolved_mode,
                     review_level=review_level,
                     capability_scope=capability_scope,
@@ -260,6 +261,7 @@ class HarnessRuntime:
                 )
             return await self._execute_loop(
                 feedback,
+                run_id=run_id,
                 mode=resolved_mode,
                 review_level=review_level,
                 capability_scope=capability_scope,
@@ -301,15 +303,15 @@ class HarnessRuntime:
         pending_review = state.pending_review
         capability_scope = capability_scope_from_state(state.capability_scope)
         input_messages = list(state.internal_messages)
+        _emit_run_started(on_event, run_id=state.run_id, kind=state.kind)
         if pending_review.kind == "capability_review":
-            response_tokens = _response_token_stream(on_token, on_event)
             input_messages = _messages_before_pending_capability_call(state)
             self.tool_agent.messages = [dict(message) for message in state.internal_messages]
             self.tool_agent.trace = state.trace
             initial_outcome = await self.tool_agent.resume_review(
                 state,
                 approved=approved,
-                on_token=response_tokens,
+                on_token=on_token,
                 on_event=on_event,
             )
             if initial_outcome is None:
@@ -331,7 +333,7 @@ class HarnessRuntime:
                     run_id=state.run_id,
                     review_level=state.review_level,
                     capability_scope=capability_scope,
-                    on_token=response_tokens,
+                    on_token=on_token,
                     on_event=on_event,
                 )
                 if previous_trace is not None and next_outcome.state.trace is not None:
@@ -348,7 +350,7 @@ class HarnessRuntime:
                 initial_loop_outcome=initial_outcome,
                 on_event=on_event,
             )
-            result = self._finish_loop_outcome(
+            return self._finish_loop_outcome(
                 outcome,
                 state.user_request,
                 "tool",
@@ -357,21 +359,18 @@ class HarnessRuntime:
                 capability_scope=capability_scope,
                 input_messages=input_messages,
             )
-            return RunResult(
-                state=result.state,
-                output_text=result.output_text,
-                messages=_public_messages_for_capability_resume(state, result.state),
-            )
 
-        if approved and dag is None:
+        submitted_dag = dag
+        if approved and submitted_dag is None:
+            submitted_dag = pending_review.proposed_dag
+        if approved and submitted_dag is None:
             return None
-        response_tokens = _response_token_stream(on_token, on_event)
         initial_outcome = await self.dag_agent.resume_review(
             state,
-            dag=dag,
+            dag=submitted_dag,
             approved=approved,
             review_level=review_level,
-            on_token=response_tokens,
+            on_token=on_token,
             on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
         )
@@ -405,7 +404,7 @@ class HarnessRuntime:
                 review_level=review_level or state.review_level,
                 runtime_mode=state.runtime_mode,
                 capability_scope=capability_scope,
-                on_token=response_tokens,
+                on_token=on_token,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -454,6 +453,7 @@ class HarnessRuntime:
         self,
         request: str | DAGSpec,
         *,
+        run_id: str,
         mode: _LoopExecutionMode,
         review_level: ReviewLevel,
         on_token: TokenHandler | None,
@@ -468,57 +468,57 @@ class HarnessRuntime:
         if mode == "dag":
             if not isinstance(request, str):
                 raise TypeError("DAG message execution requires a string request.")
-            response_tokens = _response_token_stream(on_token, on_event)
             if messages is not None:
                 return await self.dag_agent.run_messages(
                     messages,
-                    task_id=None,
+                    task_id=run_id,
                     review_level=review_level,
                     runtime_mode=str(mode),
                     capability_scope=capability_scope,
-                    on_token=response_tokens,
+                    on_token=on_token,
                     on_event=on_event,
                     on_dag=_dag_event_emitter(on_event),
                 )
             return await self.dag_agent.run(
                 request,
-                task_id=None,
+                task_id=run_id,
                 review_level=review_level,
                 runtime_mode=str(mode),
                 capability_scope=capability_scope,
-                on_token=response_tokens,
+                on_token=on_token,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
         elif mode == "tool":
             if not isinstance(request, str):
                 raise TypeError("Tool execution requires a string request.")
-            response_tokens = _response_token_stream(on_token, on_event)
             if messages is not None:
                 return await self.tool_agent.run_messages(
                     messages,
+                    run_id=run_id,
                     review_level=review_level,
                     capability_scope=capability_scope,
-                    on_token=response_tokens,
+                    on_token=on_token,
                     on_event=on_event,
                 )
             return await self.tool_agent.run(
                 request,
+                run_id=run_id,
                 review_level=review_level,
                 capability_scope=capability_scope,
-                on_token=response_tokens,
+                on_token=on_token,
                 on_event=on_event,
             )
         elif mode == "dag_spec":
             if not isinstance(request, DAGSpec):
                 raise TypeError("DAGSpec execution requires a DAGSpec request.")
-            response_tokens = _response_token_stream(on_token, on_event)
             return await self.dag_agent.loop.run_static(
                 request,
+                run_id=run_id,
                 graph_input=graph_input,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
-                on_token=response_tokens,
+                on_token=on_token,
                 on_event=on_event,
                 on_dag=_dag_event_emitter(on_event),
             )
@@ -544,6 +544,7 @@ class HarnessRuntime:
         state = outcome.state.model_copy(update={
             "kind": _state_kind_for_mode(mode),
             "status": outcome.state.status,
+            "input_message_count": len(input_messages or []),
             "user_request": user_request,
             "review_level": review_level,
             "runtime_mode": runtime_mode or mode,
@@ -552,16 +553,7 @@ class HarnessRuntime:
             "pending_invocation": outcome.state.pending_invocation,
         })
         state = self.session.save_run_state(state)
-        return RunResult(
-            state=state,
-            output_text=final_answer,
-            messages=_public_messages(
-                outcome,
-                input_messages=input_messages,
-                kind=state.kind,
-                output_text=final_answer,
-            ),
-        )
+        return RunResult(state=state, output_text=final_answer)
 
     async def run_dag_spec(
         self,
@@ -573,8 +565,11 @@ class HarnessRuntime:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        run_id = _new_run_id_for_mode("dag_spec")
+        _emit_run_started(on_event, run_id=run_id, kind="static_dag")
         outcome = await self._execute_loop(
             spec,
+            run_id=run_id,
             mode="dag_spec",
             review_level="fast",
             on_token=on_token,
@@ -589,7 +584,6 @@ class HarnessRuntime:
         return RunResult(
             state=state,
             output_text=outcome.output_text.strip() or _fallback_output_text(outcome),
-            messages=[],
         )
 
 
@@ -628,52 +622,22 @@ def _state_kind_for_mode(mode: Literal["tool", "dag"]) -> Literal["tool", "dynam
     return "tool" if mode == "tool" else "dynamic_dag"
 
 
-def _public_messages(
-    outcome: LoopOutcome,
+def _new_run_id_for_mode(mode: _LoopExecutionMode) -> str:
+    if mode == "tool":
+        return f"tool_run_{uuid4().hex}"
+    if mode == "dag_spec":
+        return f"dag_run_{uuid4().hex}"
+    return f"task_{uuid4().hex}"
+
+
+def _emit_run_started(
+    on_event: LoopEventHandler | None,
     *,
-    input_messages: list[dict[str, Any]] | None,
-    kind: Literal["tool", "dynamic_dag"],
-    output_text: str,
-) -> list[dict[str, Any]]:
-    if outcome.state.status != "completed":
-        return []
-    if kind == "dynamic_dag":
-        return [{"role": "assistant", "content": output_text}] if output_text else []
-    input_count = len(input_messages or [])
-    internal_messages = outcome.state.internal_messages
-    generated = internal_messages[input_count:] if input_count <= len(internal_messages) else []
-    return [
-        dict(message)
-        for message in generated
-        if message.get("role") in {"assistant", "tool"}
-    ]
-
-
-def _public_messages_for_capability_resume(
-    pending_state: RunState,
-    final_state: RunState,
-) -> list[dict[str, Any]]:
-    if final_state.status != "completed" or pending_state.pending_invocation is None:
-        return []
-    invocation_id = pending_state.pending_invocation.invocation_id
-    messages = final_state.internal_messages
-    assistant_index = _assistant_tool_call_index(messages, invocation_id)
-    if assistant_index is None:
-        return _public_messages(
-            LoopOutcome(state=final_state),
-            input_messages=_messages_before_pending_capability_call(pending_state),
-            kind="tool",
-            output_text="",
-        )
-
-    generated: list[dict[str, Any]] = [dict(messages[assistant_index])]
-    tool_index = _tool_result_index(messages, invocation_id, start=assistant_index + 1)
-    if tool_index is not None:
-        generated.append(dict(messages[tool_index]))
-    final_assistant = _last_assistant_message(messages, start=(tool_index or assistant_index) + 1)
-    if final_assistant is not None:
-        generated.append(final_assistant)
-    return generated
+    run_id: str,
+    kind: str,
+) -> None:
+    if on_event is not None:
+        on_event({"type": "run_started", "run_id": run_id, "kind": kind})
 
 
 def _assistant_tool_call_index(messages: list[dict[str, Any]], invocation_id: str) -> int | None:
@@ -686,36 +650,6 @@ def _assistant_tool_call_index(messages: list[dict[str, Any]], invocation_id: st
     return None
 
 
-def _tool_result_index(
-    messages: list[dict[str, Any]],
-    invocation_id: str,
-    *,
-    start: int,
-) -> int | None:
-    for index, message in enumerate(messages[start:], start=start):
-        if message.get("role") == "tool" and message.get("tool_call_id") == invocation_id:
-            return index
-    return None
-
-
-def _last_assistant_message(
-    messages: list[dict[str, Any]],
-    *,
-    start: int,
-) -> dict[str, Any] | None:
-    for message in reversed(messages[start:]):
-        if message.get("role") == "assistant":
-            return dict(message)
-    return None
-
-
-def _response_token_stream(
-    on_token: TokenHandler | None,
-    on_event: LoopEventHandler | None,
-) -> TokenHandler | None:
-    if on_token is None and on_event is None:
-        return None
-    return _ResponseTokenSplitter(on_raw=on_token, on_event=on_event)
 
 
 def _capability_registration_parts(

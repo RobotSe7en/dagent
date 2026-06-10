@@ -23,6 +23,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
+from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.schemas import (
     Artifact,
@@ -107,10 +108,11 @@ class DAGExecutor:
         completed = _all_nodes_completed(normalized, trace.dag_node_traces())
         trace.root.status = "completed" if completed else "running"
         if completed:
-            trace.root.ended_at = _now()
+            if trace.root.ended_at is None:
+                trace.root.ended_at = _now()
             normalized.status = "completed"
         trace.artifacts = dict(self.artifact_states)
-        _emit_trace_snapshot(on_event, trace)
+        _emit_trace_snapshot(on_event, trace, previous=initial_trace)
         return trace
 
     async def _execute_next_ready_layer(
@@ -249,13 +251,27 @@ class DAGExecutor:
         if not invocation.capability_id:
             raise CapabilityExecutionError(f"Node '{node.id}' has no capability id.")
 
+        node_event_emitter = _node_event_emitter(on_event, dag=dag, node=node, invocation=invocation)
+        token_stream = None
+        if invocation.kind != "agent":
+            token_stream = response_token_stream(
+                on_raw=on_token,
+                on_event=node_event_emitter,
+                context=ResponseStreamContext.create(
+                    run_id=dag.task_id,
+                    dag_id=dag.dag_id,
+                    node_id=node.id,
+                    parent_capability_id=invocation.capability_id,
+                ),
+            )
+
         try:
             capability_result = await self.capability_executor.execute(
                 invocation,
                 context=self._execution_context(dag, node, skills=skills),
                 callbacks=CapabilityExecutionCallbacks(
-                    on_token=on_token,
-                    on_event=_node_event_emitter(on_event, dag=dag, node=node, invocation=invocation),
+                    on_token=token_stream or on_token,
+                    on_event=node_event_emitter,
                 ),
             )
         except Exception as exc:
@@ -265,7 +281,6 @@ class DAGExecutor:
                 parent_id=dag_node.id,
                 invocation=invocation,
                 result=failed_result,
-                output="",
                 error=str(exc),
             )
             dag_node.children.append(capability_node)
@@ -274,12 +289,14 @@ class DAGExecutor:
             dag_node.ended_at = _now()
             self.partial_node_traces[node.id] = dag_node
             raise
+        finally:
+            if token_stream is not None:
+                token_stream.finish()
 
         capability_node = RunTraceNode.capability_call(
             parent_id=dag_node.id,
             invocation=invocation,
             result=capability_result,
-            output=capability_result.content,
             error=capability_result.error,
         )
         _attach_child_trace(capability_node, capability_result)
@@ -363,10 +380,14 @@ def _node_event_emitter(
 
     def emit(event: dict[str, Any]) -> None:
         payload = dict(event)
-        payload.setdefault("task_id", dag.task_id)
-        payload.setdefault("dag_id", dag.dag_id)
-        payload.setdefault("node_id", node.id)
-        payload.setdefault("parent_capability_id", invocation.capability_id)
+        if payload.get("run_id") is None:
+            payload["run_id"] = dag.task_id
+        if payload.get("dag_id") is None:
+            payload["dag_id"] = dag.dag_id
+        if payload.get("node_id") is None:
+            payload["node_id"] = node.id
+        if payload.get("parent_capability_id") is None:
+            payload["parent_capability_id"] = invocation.capability_id
         on_event(payload)
 
     return emit
@@ -375,9 +396,15 @@ def _node_event_emitter(
 def _emit_trace_snapshot(
     on_event: Callable[[dict[str, Any]], None] | None,
     trace: RunTrace,
+    *,
+    previous: RunTrace | None = None,
 ) -> None:
-    if on_event is not None:
-        on_event({"type": "trace", "trace": trace.model_dump(mode="json")})
+    if on_event is None:
+        return
+    payload = trace.model_dump(mode="json")
+    if previous is not None and payload == previous.model_dump(mode="json"):
+        return
+    on_event({"type": "trace", "trace": payload})
 
 
 def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
@@ -531,7 +558,7 @@ def _node_output_value(expr: NodeOutputExpr, node_traces: dict[str, RunTraceNode
             f"Cannot resolve output for node '{expr.node_id}' before it completes."
         )
     if expr.field == "value":
-        value = trace.value
+        value = trace.value if trace.value is not None else trace.output
     elif expr.field == "content":
         value = trace.output
     elif expr.field == "status":

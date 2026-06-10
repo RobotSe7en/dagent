@@ -190,7 +190,7 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert record.kind == "tool"
     assert record.trace is not None
     assert record.trace.status == "completed"
-    assert record.trace.root.output == "hello"
+    assert record.trace.root.output is None
 
 
 def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
@@ -414,7 +414,7 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
 
 
-def test_harness_runtime_preserves_dag_review_when_approved_without_submitted_dag() -> None:
+def test_harness_runtime_approves_pending_dag_review_without_resubmitting_dag() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
         ChatResponse(content="Here is the final answer."),
@@ -422,12 +422,10 @@ def test_harness_runtime_preserves_dag_review_when_approved_without_submitted_da
     runtime = _runtime(provider)
 
     result = run(run_message(runtime, "What files are here?", mode="dag", review_level="careful"))
-    missing_dag = run(runtime.resume_review(result.pending_review.review_id, approved=True))
-    resumed = run(runtime.resume_review(result.pending_review.review_id, dag=result.dag))
+    resumed = run(runtime.resume_review(result.pending_review.review_id, approved=True))
 
     assert result.status == "awaiting_review"
     assert result.pending_review is not None
-    assert missing_dag is None
     assert resumed is not None
     assert resumed.status == "completed"
     assert resumed.output_text == "Here is the final answer."
@@ -685,71 +683,135 @@ def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
 
 
 def test_response_token_splitter_derives_reasoning_and_content_channels() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     raw: list[str] = []
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
+    context = ResponseStreamContext.create(run_id="run_1", model_step=2)
+    splitter = _ResponseTokenSplitter(
+        on_raw=raw.append,
+        on_event=events.append,
+        context=context,
+    )
 
     for token in ["<", "think", ">reason", "ing about", " it</", "think>", " The answer is 42."]:
         splitter(token)
-    splitter.flush()
+    splitter.finish()
 
     assert "".join(raw) == "<think>reasoning about it</think> The answer is 42."
-    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
-    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    assert events[0]["type"] == "response_started"
+    assert events[-1]["type"] == "response_finished"
+    assert all(event["response_id"] == splitter.response_id for event in events)
+    assert all(event["model_step"] == 2 for event in events)
+    assert all(event["run_id"] == "run_1" for event in events)
+    reasoning = "".join(event["delta"] for event in events if event.get("channel") == "reasoning")
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
     assert reasoning == "reasoning about it"
-    assert content == " The answer is 42."
+    assert content == "The answer is 42."
 
 
 def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     raw: list[str] = []
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=raw.append,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     splitter("Hello world, this is a normal response.")
-    splitter.flush()
+    splitter.finish()
 
     assert "".join(raw) == "Hello world, this is a normal response."
-    assert events == [{
+    assert [event["type"] for event in events] == [
+        "response_started",
+        "response_token",
+        "response_finished",
+    ]
+    assert events[1] == {
         "type": "response_token",
         "channel": "content",
         "delta": "Hello world, this is a normal response.",
-    }]
+        "response_id": splitter.response_id,
+    }
 
 
 def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     for token in ["<think>", "internal reasoning", "</think>", "The final answer."]:
         splitter(token)
-    splitter.flush()
+    splitter.finish()
 
-    reasoning = "".join(event["delta"] for event in events if event["channel"] == "reasoning")
-    content = "".join(event["delta"] for event in events if event["channel"] == "content")
+    reasoning = "".join(event["delta"] for event in events if event.get("channel") == "reasoning")
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
     assert reasoning == "internal reasoning"
     assert content == "The final answer."
 
 
 def test_response_token_splitter_flushes_short_answer_suffix() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     splitter("<think>internal</think>好")
-    splitter.flush()
+    splitter.finish()
 
-    assert events[-1] == {
+    assert events[-2] == {
         "type": "response_token",
         "channel": "content",
         "delta": "好",
+        "response_id": splitter.response_id,
     }
+    assert events[-1]["type"] == "response_finished"
+
+
+def test_response_token_splitter_strips_whitespace_between_think_and_answer() -> None:
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
+
+    for token in ["<think>internal</think>", "\n", "\n  ", "The answer.", " More."]:
+        splitter(token)
+    splitter.finish()
+
+    content = "".join(event["delta"] for event in events if event.get("channel") == "content")
+    assert content == "The answer. More."
+
+
+def test_response_token_splitter_brackets_response_without_tokens() -> None:
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
+
+    events: list[dict] = []
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
+    splitter.start()
+    splitter.finish()
+    splitter.finish()
+
+    assert [event["type"] for event in events] == ["response_started", "response_finished"]
 
 
 def test_harness_runtime_tool_mode_streams_raw_and_derived_token_events() -> None:

@@ -413,8 +413,8 @@ def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     assert trace_response.json()["run_id"] == run_id
     trace = trace_response.json()["trace"]
     capability = _capability_trace(trace, "tool.echo")
-    assert capability["input"] == {"text": "hello"}
-    assert capability["output"] == "echo:hello"
+    assert capability["capability_execution"]["invocation"]["arguments"] == {"text": "hello"}
+    assert capability["capability_execution"]["result"]["content"] == "echo:hello"
     assert capability["capability_execution"]["result"]["status"] == "completed"
 
 
@@ -462,11 +462,6 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     done_index = next(index for index, event in enumerate(events) if event["type"] == "run.finished")
-    raw_text = "".join(
-        event["data"]["delta"]
-        for event in events
-        if event["type"] == "response.raw.delta"
-    )
     reasoning_text = "".join(
         event["data"]["delta"]
         for event in events
@@ -478,7 +473,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
         if event["type"] == "response.content.delta"
     )
     result = _stream_result(events[-1])
-    assert "<think>planning dag</think>" in raw_text
+    assert not any(event["type"] == "response.raw.delta" for event in events)
     assert reasoning_text == "planning dag"
     assert _dag_agent_dsl() in content_text
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
@@ -571,8 +566,8 @@ def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace
     trace = trace_response.json()["trace"]
     answer = _dag_node_trace(trace, "answer")
     capability = _capability_trace(answer, "tool.echo")
-    assert capability["input"] == {"text": "reviewed"}
-    assert capability["output"] == "echo:reviewed"
+    assert capability["capability_execution"]["invocation"]["arguments"] == {"text": "reviewed"}
+    assert capability["capability_execution"]["result"]["content"] == "echo:reviewed"
     assert capability["status"] == "completed"
 
 
@@ -611,11 +606,6 @@ def test_api_resume_review_streams_answer_text_once() -> None:
 
     assert resume_response.status_code == 200
     events = _sse_events(resume_response.text)
-    raw_text = "".join(
-        event["data"]["delta"]
-        for event in events
-        if event["type"] == "response.raw.delta"
-    )
     reasoning_text = "".join(
         event["data"]["delta"]
         for event in events
@@ -626,7 +616,7 @@ def test_api_resume_review_streams_answer_text_once() -> None:
         for event in events
         if event["type"] == "response.content.delta"
     )
-    assert "<think>observe</think>DAG agent final answer" in raw_text
+    assert not any(event["type"] == "response.raw.delta" for event in events)
     assert reasoning_text == "observe"
     assert content_text == "DAG agent final answer"
     assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"
@@ -1049,7 +1039,8 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     result = _stream_result(events[-1])
-    assert events[0]["type"] == "run.status"
+    assert events[0]["type"] == "run.started"
+    assert events[0]["run_id"] == result["state"]["run_id"]
     assert any(event["type"] == "trace.updated" for event in events)
     assert events[-1]["type"] == "run.finished"
     dag_run = _result_dag_run(result)
@@ -1250,7 +1241,7 @@ def _stream_result(event: dict) -> dict:
 
 
 def _assert_result_shape(result: dict) -> None:
-    assert set(result) == {"output_text", "messages", "state"}
+    assert set(result) == {"output_text", "state"}
 
 
 def _result_review(result: dict) -> dict | None:

@@ -41,9 +41,9 @@ class RunState(BaseModel):
     kind: RunStateKind
     status: LoopStatus
     internal_messages: list[dict[str, Any]] = Field(default_factory=list)
+    input_message_count: int = 0
     dag: DAG | None = None
     trace: RunTrace | None = None
-    invocations: list[CapabilityInvocation] = Field(default_factory=list)
     pending_review: PendingReview | None = None
     pending_invocation: CapabilityInvocation | None = None
     user_request: str = ""

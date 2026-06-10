@@ -22,6 +22,12 @@ import type {
   MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
+import {
+  responseDeltaPayload,
+  runStartedPayload,
+  type ResponseDeltaStreamEvent,
+  type RunStartedStreamEvent,
+} from './streamProtocol';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -251,7 +257,6 @@ export interface ApiRunState {
 
 interface ApiRunResult {
   output_text: string;
-  messages: Array<Record<string, unknown>>;
   state?: ApiRunState | null;
 }
 
@@ -268,13 +273,12 @@ interface StreamEnvelope {
 }
 
 interface StreamHandlers {
-  onStatus?: (status: string) => void;
+  onStarted?: (event: RunStartedStreamEvent) => void;
   onDag?: (dag: Dag) => void;
   onTrace?: (event: TraceLogEvent) => void;
   onCapability?: (event: CapabilityStreamEvent) => void;
-  onRawToken?: (content: string) => void;
-  onReasoning?: (content: string) => void;
-  onContent?: (content: string) => void;
+  onReasoning?: (event: ResponseDeltaStreamEvent) => void;
+  onContent?: (event: ResponseDeltaStreamEvent) => void;
   onRetry?: (event: ValidationFeedbackEvent) => void;
   onValidating?: (event: { type: 'validation.started'; message: string }) => void;
   onReview?: (review: ReviewEventPayload) => void;
@@ -383,7 +387,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       if (!line) continue;
       const event = JSON.parse(line.slice(6)) as StreamEnvelope;
       const data = isRecord(event.data) ? event.data : {};
-      if (event.type === 'run.status') handlers.onStatus?.(String(data.message ?? ''));
+      if (event.type === 'run.started') handlers.onStarted?.(runStartedPayload(data));
       if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
       if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
       if (event.type === 'capability.call.started') {
@@ -404,9 +408,8 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           ...capabilityContext(data),
         });
       }
-      if (event.type === 'response.raw.delta') handlers.onRawToken?.(String(data.delta ?? ''));
-      if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(String(data.delta ?? ''));
-      if (event.type === 'response.content.delta') handlers.onContent?.(String(data.delta ?? ''));
+      if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(responseDeltaPayload(data));
+      if (event.type === 'response.content.delta') handlers.onContent?.(responseDeltaPayload(data));
       if (event.type === 'validation.retry') {
         handlers.onRetry?.({
           type: 'validation.retry',
@@ -431,16 +434,10 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           review_id: String(data.review_id ?? ''),
           kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
           message: String(data.message ?? ''),
-          dag: data.dag as Dag | undefined,
-          proposed_dag: (data.dag ?? null) as Dag | null,
-          capability_call: data.capability_call as ReviewEventPayload['capability_call'],
-          payload: isRecord(data.payload) ? data.payload : {},
         });
       }
       if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
-        const trace = result.state?.trace ?? undefined;
-        emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
         handlers.onDone?.({ type: 'run.finished', result });
       }
       if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));
@@ -536,12 +533,13 @@ function TraceLogEventFromNode(
 }
 
 function tracePayload(node: RunTraceNode): Record<string, unknown> {
+  const execution = node.capability_execution;
   return {
     ...node.ref,
-    input: node.input,
-    output: node.output,
+    input: execution?.invocation.arguments ?? node.input,
+    output: node.output ?? execution?.result?.content,
     error: node.error?.message,
-    result: node.capability_execution?.result,
+    result: execution?.result,
   };
 }
 

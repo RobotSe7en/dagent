@@ -36,6 +36,11 @@ const {
   appendRunTranscriptToken,
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
+const {
+  responseDeltaPayload,
+  runStartedPayload,
+  shouldStreamChatContent,
+} = await importTypeScript('../src/streamProtocol.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {
@@ -361,4 +366,33 @@ test('appendRunTranscriptCapability pairs capability results with prior calls', 
     event: call,
     result,
   });
+});
+
+test('responseDeltaPayload preserves native response identity fields', () => {
+  assert.deepEqual(responseDeltaPayload({
+    delta: 'hello',
+    response_id: 'resp_1',
+    model_step: '2',
+    run_id: 'run_1',
+    dag_id: 'dag_1',
+    node_id: 'answer',
+    parent_capability_id: 'tool.echo',
+  }), {
+    delta: 'hello',
+    response_id: 'resp_1',
+    model_step: 2,
+    run_id: 'run_1',
+    dag_id: 'dag_1',
+    node_id: 'answer',
+    parent_capability_id: 'tool.echo',
+  });
+  assert.throws(() => responseDeltaPayload({ delta: 'hello' }), /Missing response_id/);
+});
+
+test('runStartedPayload and shouldStreamChatContent use resolved run kind', () => {
+  assert.deepEqual(runStartedPayload({ kind: 'dynamic_dag' }), { kind: 'dynamic_dag' });
+  assert.throws(() => runStartedPayload({ kind: 'legacy' }), /Unsupported run kind/);
+  assert.equal(shouldStreamChatContent('auto', 'tool'), true);
+  assert.equal(shouldStreamChatContent('auto', 'dynamic_dag'), false);
+  assert.equal(shouldStreamChatContent('tool', null), true);
 });

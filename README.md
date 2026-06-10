@@ -236,7 +236,7 @@ async def main():
     messages = [{"role": "user", "content": "Research dagent and write a short note."}]
     result = await runner.run(agent, messages=messages)
     if result.requires_review and result.review is not None:
-        result = await runner.resume(result.review.approve(), state=result.state)
+        result = await runner.resume(result.review.approve())
     messages += result.messages
 
     print(result.output_text)
@@ -305,7 +305,10 @@ asyncio.run(main())
 `Runner.run(...)` always returns `RunResult`, including static `Dag` and
 `DAGSpec` runs. Agent targets accept OpenAI-compatible `messages`; append
 `result.messages` to your conversation and persist `result.state` when you need
-to resume reviews or continue dagent's internal thread later. Static DAGs use
+to continue dagent's internal thread later. If a persisted state is awaiting
+review, restore it with `RunResult.model_validate(...)` and pass the state to
+`Runner.resume(...)`; ordinary continuation uses `Runner.run(..., state=...)`.
+Static DAGs use
 `graph_input`. Customize static DAGs with Pydantic graph inputs, typed tool
 return values, explicit `dag.add_edge(...)` dependencies, artifact references, and
 per-node boundaries. See the [Python SDK guide](docs/python-sdk.md) for the full

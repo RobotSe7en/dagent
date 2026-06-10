@@ -110,9 +110,9 @@ class RunTraceNode(BaseModel):
         invocation: CapabilityInvocation,
         result: CapabilityResult | None = None,
         status: RunTraceStatus | None = None,
-        output: Any | None = None,
         error: str | None = None,
     ) -> "RunTraceNode":
+        """Build a capability node; ``capability_execution`` is the single source for IO."""
         resolved_status: RunTraceStatus
         if status is not None:
             resolved_status = status
@@ -129,9 +129,6 @@ class RunTraceNode(BaseModel):
                 "invocation_id": invocation.invocation_id,
                 "capability_id": invocation.capability_id,
             },
-            input=invocation.arguments,
-            output=output,
-            value=result.value if result is not None else None,
             error=RunTraceError(message=error) if error else None,
             capability_execution=CapabilityExecution(invocation=invocation, result=result),
             ended_at=datetime.now(timezone.utc) if result is not None or error else None,

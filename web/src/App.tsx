@@ -70,6 +70,7 @@ import {
   uploadDagArtifact,
 } from './api';
 import type { ApiRunState } from './api';
+import { shouldStreamChatContent, type RunKind } from './streamProtocol';
 import type {
   AgentProfile,
   BoundaryMode,
@@ -1117,38 +1118,14 @@ export function App() {
     setEditorMessage(`Running ${spec.name || 'DAG'}...`);
     try {
       await runDagStream(spec.id, {
-        onStatus: (status) => {
-          setEditorTrace((items) => [
-            ...items,
-            {
-              id: crypto.randomUUID(),
-              type: 'model',
-              label: status,
-              detail: 'DAG run event.',
-              status: 'running',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            },
-          ]);
-        },
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
         },
         onCapability: (event) => {
           setEditorRunTimeline((items) => appendRunTranscriptCapability(items, event));
-          setEditorTrace((items) => [
-            ...items,
-            {
-              id: `${event.invocation_id}-${event.type}-${items.length}`,
-              type: 'capability',
-              label: event.capability_id,
-              detail: event.content || JSON.stringify(event.arguments ?? {}),
-              status: event.type === 'capability.call.failed' ? 'failed' : event.type === 'capability.call.completed' ? 'completed' : 'running',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            },
-          ]);
         },
-        onContent: (content) => {
-          setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
+        onContent: (event) => {
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, event.delta));
         },
         onReview: (review) => {
           setEditorMessage(review.message);
@@ -1211,10 +1188,13 @@ export function App() {
       detail: `Agent target=${target}; capabilities=${chatScopeLabel}.`,
       status: 'running',
     });
+    let resolvedRunKind: RunKind | null = null;
 
     try {
       await streamTask(prompt, target, reviewLevel, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime request accepted.', status: 'running' }),
+        onStarted: (event) => {
+          resolvedRunKind = event.kind;
+        },
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           syncDag(nextDag);
@@ -1223,12 +1203,13 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
-        onContent: target === 'tool' ? enqueueContentToken : undefined,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onContent: (event) => {
+          if (shouldStreamChatContent(target, resolvedRunKind)) enqueueContentToken(event.delta);
+        },
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          handlePendingReview(review);
           if (review.kind !== 'capability_review') setReviewOpen(true);
         },
         onDone: (payload) => {
@@ -1299,18 +1280,16 @@ export function App() {
 
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          handlePendingReview(review);
           if (review.kind !== 'capability_review') setReviewOpen(true);
         },
         onDone: (payload) => {
@@ -1367,14 +1346,12 @@ export function App() {
 
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
-        onContent: enqueueContentToken,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onContent: (event) => enqueueContentToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
-        onReview: handlePendingReview,
         onDone: (payload) => {
           const resultReview = payload.result.state?.pending_review ?? null;
           setRunState(payload.result.state ?? null);

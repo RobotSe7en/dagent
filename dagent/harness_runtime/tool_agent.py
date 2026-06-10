@@ -21,6 +21,12 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_from_state,
     capability_scope_to_state,
 )
+from dagent.harness_runtime.runtime_events import (
+    LoopEventHandler,
+    ResponseStreamContext,
+    TokenHandler,
+    response_token_stream,
+)
 from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
@@ -53,8 +59,6 @@ class ControlToolResult:
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
-TokenHandler = Callable[[str], None]
-LoopEventHandler = Callable[[dict[str, Any]], None]
 
 
 class ToolAgent:
@@ -172,8 +176,22 @@ class ToolAgent:
                     ),
                 )
                 feed_content = _tool_content(result)
+                self.loop._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_result",
+                    run_id=state.run_id,
+                    content=feed_content,
+                )
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+                self.loop._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_error",
+                    run_id=state.run_id,
+                    content=feed_content,
+                )
 
         _reconcile_reviewed_trace_node(
             self.trace,
@@ -349,7 +367,6 @@ class ToolAgentLoop:
             loop_messages.append({"role": "user", "content": user_message})
         resolved_run_id = run_id or f"tool_run_{uuid4().hex}"
         trace = RunTrace(run_id=resolved_run_id, root=RunTraceNode.run(run_id=resolved_run_id))
-        invocations: list[CapabilityInvocation] = []
         execution_context = _execution_context(
             capability_context,
             task_id=resolved_run_id,
@@ -374,7 +391,10 @@ class ToolAgentLoop:
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
+                run_id=resolved_run_id,
+                step=step,
                 on_token=on_token,
+                on_event=on_event,
             )
 
             assistant_message = self._assistant_message(response)
@@ -385,21 +405,18 @@ class ToolAgentLoop:
                     kind="model_call",
                     status="completed",
                     label=f"model_step_{step}",
-                    output=response.content,
                     ref={"step": str(step)},
                 )
             )
 
             if not response.tool_calls:
                 trace.root.status = "completed"
-                trace.root.output = strip_thinking_blocks(response.content).strip()
                 return LoopOutcome(
                     state=_tool_run_state(
                         run_id=resolved_run_id,
                         status="completed",
                         messages=loop_messages,
                         trace=trace,
-                        invocations=invocations,
                         capability_scope=state_scope,
                     ),
                     execution_context=_format_capability_execution_context(loop_messages),
@@ -425,15 +442,20 @@ class ToolAgentLoop:
                         }
                     )
                     continue
-                invocations.append(invocation)
-                self._emit_capability_event(on_event, invocation, "capability_call")
+                self._emit_capability_event(on_event, invocation, "capability_call", run_id=resolved_run_id)
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
                         raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
                     try:
                         control_result = await control_tool_handler(tool_call)
                     except Exception as exc:
-                        self._emit_capability_event(on_event, invocation, "capability_error", content=str(exc))
+                        self._emit_capability_event(
+                            on_event,
+                            invocation,
+                            "capability_error",
+                            run_id=resolved_run_id,
+                            content=str(exc),
+                        )
                         trace.root.children.append(
                             RunTraceNode.capability_call(
                                 parent_id=trace.root.id,
@@ -455,6 +477,7 @@ class ToolAgentLoop:
                         on_event,
                         invocation,
                         "capability_result",
+                        run_id=resolved_run_id,
                         content=control_result.content,
                     )
                     review_pending = control_result.needs_review
@@ -468,7 +491,6 @@ class ToolAgentLoop:
                                 else CapabilityResult.completed(invocation, control_result.content)
                             ),
                             status="awaiting_review" if review_pending else None,
-                            output=control_result.content,
                         )
                     )
                     if review_pending:
@@ -489,7 +511,6 @@ class ToolAgentLoop:
                                 status="awaiting_review",
                                 messages=loop_messages,
                                 trace=trace,
-                                invocations=invocations,
                                 pending_review=pending_review,
                                 pending_invocation=invocation,
                                 capability_scope=state_scope,
@@ -498,14 +519,12 @@ class ToolAgentLoop:
                         )
                     if control_result.stop_reason:
                         trace.root.status = "failed"
-                        trace.root.output = control_result.content
                         return LoopOutcome(
                             state=_tool_run_state(
                                 run_id=resolved_run_id,
                                 status="failed",
                                 messages=loop_messages,
                                 trace=trace,
-                                invocations=invocations,
                                 capability_scope=state_scope,
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
@@ -521,7 +540,13 @@ class ToolAgentLoop:
                     tool_result = _tool_content(capability_result)
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
-                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
+                    self._emit_capability_event(
+                        on_event,
+                        invocation,
+                        "capability_error",
+                        run_id=resolved_run_id,
+                        content=error_content,
+                    )
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -547,13 +572,18 @@ class ToolAgentLoop:
                         "content": tool_result,
                     }
                 )
-                self._emit_capability_event(on_event, invocation, "capability_result", content=tool_result)
+                self._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_result",
+                    run_id=resolved_run_id,
+                    content=tool_result,
+                )
                 trace.root.children.append(
                     RunTraceNode.capability_call(
                         parent_id=trace.root.id,
                         invocation=invocation,
                         result=capability_result,
-                        output=tool_result,
                         error=capability_result.error,
                     )
                 )
@@ -565,7 +595,6 @@ class ToolAgentLoop:
                 status="failed",
                 messages=loop_messages,
                 trace=trace,
-                invocations=invocations,
                 capability_scope=state_scope,
             ),
             execution_context=_format_capability_execution_context(loop_messages),
@@ -586,18 +615,35 @@ class ToolAgentLoop:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]],
+        run_id: str | None,
+        step: int,
         on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
     ) -> ChatResponse:
-        if on_token is None or not hasattr(self.provider, "stream_chat"):
+        if on_token is None and on_event is None:
+            return await self.provider.chat(messages, tools=tools)
+
+        stream = response_token_stream(
+            on_raw=on_token,
+            on_event=on_event,
+            context=ResponseStreamContext.create(run_id=run_id, model_step=step),
+        )
+        if stream is None:
             return await self.provider.chat(messages, tools=tools)
 
         response: ChatResponse | None = None
-        async for event in self.provider.stream_chat(messages, tools=tools):
-            if event.type == "token" and event.content:
-                on_token(event.content)
-            elif event.type == "done":
-                response = event.response
-        _flush_token_handler(on_token)
+        try:
+            stream.start()
+            if hasattr(self.provider, "stream_chat"):
+                async for event in self.provider.stream_chat(messages, tools=tools):
+                    if event.type == "token" and event.content:
+                        stream(event.content)
+                    elif event.type == "done":
+                        response = event.response
+            else:
+                response = await self.provider.chat(messages, tools=tools)
+        finally:
+            stream.finish()
         return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
@@ -627,6 +673,7 @@ class ToolAgentLoop:
         invocation: CapabilityInvocation,
         event_type: str,
         *,
+        run_id: str,
         content: str | None = None,
     ) -> None:
         if on_event is None:
@@ -636,6 +683,7 @@ class ToolAgentLoop:
             "invocation_id": invocation.invocation_id,
             "capability_id": invocation.capability_id,
             "arguments": invocation.arguments,
+            "run_id": run_id,
         }
         if content is not None:
             payload["content"] = content
@@ -702,7 +750,6 @@ def _tool_run_state(
     status: str,
     messages: list[dict[str, Any]],
     trace: RunTrace,
-    invocations: list[CapabilityInvocation],
     pending_review: PendingReview | None = None,
     pending_invocation: CapabilityInvocation | None = None,
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
@@ -713,7 +760,6 @@ def _tool_run_state(
         status=status,  # type: ignore[arg-type]
         internal_messages=[dict(message) for message in messages],
         trace=trace,
-        invocations=list(invocations),
         pending_review=pending_review,
         pending_invocation=pending_invocation,
         capability_scope=capability_scope_to_state(capability_scope),
@@ -750,12 +796,6 @@ def _exception_message(exc: Exception) -> str:
     return str(exc)
 
 
-def _flush_token_handler(on_token: TokenHandler | None) -> None:
-    flush = getattr(on_token, "flush", None)
-    if callable(flush):
-        flush()
-
-
 def _find_capability_node(node: RunTraceNode, invocation_id: str) -> RunTraceNode | None:
     if node.kind == "capability_call" and node.ref.get("invocation_id") == invocation_id:
         return node
@@ -780,7 +820,6 @@ def _reconcile_reviewed_trace_node(
     node = _find_capability_node(trace.root, invocation.invocation_id)
     if node is None:
         return
-    node.output = content
     node.ended_at = datetime.now(timezone.utc)
     if node.capability_execution is not None:
         node.capability_execution.result = result

@@ -117,7 +117,7 @@ def test_tool_decorator_resolves_postponed_annotations() -> None:
     assert lookup.definition.output_schema["properties"]["title"]["type"] == "string"
 
 
-def test_tool_decorator_backfills_value_for_explicit_completed_result() -> None:
+def test_tool_decorator_keeps_explicit_result_value_unset_for_plain_text() -> None:
     @tool
     def explicit() -> CapabilityResult:
         return CapabilityResult(
@@ -136,4 +136,4 @@ def test_tool_decorator_backfills_value_for_explicit_completed_result() -> None:
     ))
 
     assert result.content == "hello"
-    assert result.value == "hello"
+    assert result.value is None

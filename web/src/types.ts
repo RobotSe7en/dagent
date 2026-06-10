@@ -239,7 +239,6 @@ export interface ReviewEventPayload {
   review_id: string;
   kind: 'initial_dag' | 'dag_replan' | 'capability_review';
   message: string;
-  dag?: Dag;
   proposed_dag?: Dag | null;
   capability_call?: CapabilityCallPayload;
   payload?: Record<string, unknown>;

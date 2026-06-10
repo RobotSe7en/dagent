@@ -44,7 +44,6 @@ def test_run_trace_node_wraps_capability_execution() -> None:
         parent_id="node_1",
         invocation=invocation,
         result=result,
-        output=result.content,
     )
 
     assert node.kind == "capability_call"
@@ -53,6 +52,9 @@ def test_run_trace_node_wraps_capability_execution() -> None:
         invocation=invocation,
         result=result,
     )
+    assert node.input == {}
+    assert node.output is None
+    assert node.value is None
     assert node.children == []
 
 
@@ -90,7 +92,6 @@ def test_dag_executor_returns_run_trace_tree_for_ready_layer() -> None:
     assert capability.capability_execution.invocation.capability_id == "tool.echo"
     assert capability.capability_execution.result is not None
     assert capability.capability_execution.result.content == "echo:hi"
-    assert capability.output == "echo:hi"
 
 
 def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
