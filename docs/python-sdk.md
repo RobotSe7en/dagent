@@ -502,10 +502,11 @@ print(result.artifact_state("report").status)
 
 `Runner.stream(...)` is the single streaming entry point. It runs the target and
 yields typed `RunStreamEvent` objects with a uniform envelope: `type`, `data`,
-`sequence`, and `run_id`. The stream opens with `run.started` — its envelope
-`run_id` is the final run id, so consumers never wait for the stream tail to
-correlate events — and always settles with exactly one `run.finished` or
-`run.failed`.
+`sequence`, and `run_id`. Once execution starts, the stream opens with
+`run.started` — its envelope `run_id` is the final run id, so consumers never
+wait for the stream tail to correlate events — and always settles with exactly
+one `run.finished` or `run.failed`. Pre-run request validation errors can settle
+directly as `run.failed` before a run id exists.
 
 To consume only the generated text, filter on `response.content.delta`:
 
@@ -539,11 +540,13 @@ The full event protocol:
 | `run.finished` | `event.data.result` |
 | `run.failed` | `event.data.message`, `event.data.error_type` |
 
-Every model call is bracketed by `response.started` and `response.finished`, and
-each call uses an isolated token splitter, so parallel DAG nodes never bleed
-tokens into each other. All `response.*` events carry the same identity fields:
-`response_id` (the stable per-call key), `model_step`, and — when the call runs
-inside a DAG node — `run_id`, `dag_id`, `node_id`, and `parent_capability_id`.
+Every streamed text source is bracketed by `response.started` and
+`response.finished`. This includes model calls and capabilities that explicitly
+emit token callbacks. Each source uses an isolated token splitter, so parallel
+DAG nodes never bleed tokens into each other. All `response.*` events carry the
+same identity fields: `response_id` (the stable per-source key), `model_step`,
+and — when the source runs inside a DAG node — `run_id`, `dag_id`, `node_id`,
+and `parent_capability_id`.
 Group deltas by `response_id`, not by ordering or `model_step`: under parallel
 nodes, retries, and resume, only `response_id` is unique. Whitespace between
 `</think>` and the answer is dropped from the content channel, so concatenated

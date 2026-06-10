@@ -70,6 +70,7 @@ import {
   uploadDagArtifact,
 } from './api';
 import type { ApiRunState } from './api';
+import { shouldStreamChatContent, type RunKind } from './streamProtocol';
 import type {
   AgentProfile,
   BoundaryMode,
@@ -1122,20 +1123,9 @@ export function App() {
         },
         onCapability: (event) => {
           setEditorRunTimeline((items) => appendRunTranscriptCapability(items, event));
-          setEditorTrace((items) => [
-            ...items,
-            {
-              id: `${event.invocation_id}-${event.type}-${items.length}`,
-              type: 'capability',
-              label: event.capability_id,
-              detail: event.content || JSON.stringify(event.arguments ?? {}),
-              status: event.type === 'capability.call.failed' ? 'failed' : event.type === 'capability.call.completed' ? 'completed' : 'running',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            },
-          ]);
         },
-        onContent: (content) => {
-          setEditorRunTimeline((items) => appendRunTranscriptToken(items, content));
+        onContent: (event) => {
+          setEditorRunTimeline((items) => appendRunTranscriptToken(items, event.delta));
         },
         onReview: (review) => {
           setEditorMessage(review.message);
@@ -1198,9 +1188,13 @@ export function App() {
       detail: `Agent target=${target}; capabilities=${chatScopeLabel}.`,
       status: 'running',
     });
+    let resolvedRunKind: RunKind | null = null;
 
     try {
       await streamTask(prompt, target, reviewLevel, {
+        onStarted: (event) => {
+          resolvedRunKind = event.kind;
+        },
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           syncDag(nextDag);
@@ -1209,8 +1203,10 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
-        onContent: target === 'tool' ? enqueueContentToken : undefined,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onContent: (event) => {
+          if (shouldStreamChatContent(target, resolvedRunKind)) enqueueContentToken(event.delta);
+        },
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
@@ -1290,7 +1286,7 @@ export function App() {
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
@@ -1352,8 +1348,8 @@ export function App() {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: enqueueAssistantToken,
-        onContent: enqueueContentToken,
+        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onContent: (event) => enqueueContentToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onDone: (payload) => {

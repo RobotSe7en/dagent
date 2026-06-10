@@ -537,6 +537,19 @@ def test_unknown_runtime_stream_event_fails_fast() -> None:
         _stream_event_from_runtime({"type": "legacy.status", "message": "old"})
 
 
+def test_capability_error_stream_event_does_not_accept_message_alias() -> None:
+    from dagent.runner import _stream_event_from_runtime
+
+    event = _stream_event_from_runtime({
+        "type": "capability_error",
+        "invocation_id": "call_1",
+        "capability_id": "tool.echo",
+        "message": "old fallback",
+    })
+
+    assert event.data.content == ""
+
+
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:
     @dagent.tool
     def search(q: str) -> str:

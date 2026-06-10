@@ -988,7 +988,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
             data=CapabilityCallFailedData(
                 invocation_id=str(data.get("invocation_id", "")),
                 capability_id=str(data.get("capability_id", "")),
-                content=str(data.get("content") or data.get("message") or ""),
+                content=str(data.get("content", "")),
                 **_capability_event_context(data),
             ),
         )

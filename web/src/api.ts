@@ -22,6 +22,12 @@ import type {
   MCPServerConfig,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
+import {
+  responseDeltaPayload,
+  runStartedPayload,
+  type ResponseDeltaStreamEvent,
+  type RunStartedStreamEvent,
+} from './streamProtocol';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
@@ -267,11 +273,12 @@ interface StreamEnvelope {
 }
 
 interface StreamHandlers {
+  onStarted?: (event: RunStartedStreamEvent) => void;
   onDag?: (dag: Dag) => void;
   onTrace?: (event: TraceLogEvent) => void;
   onCapability?: (event: CapabilityStreamEvent) => void;
-  onReasoning?: (content: string) => void;
-  onContent?: (content: string) => void;
+  onReasoning?: (event: ResponseDeltaStreamEvent) => void;
+  onContent?: (event: ResponseDeltaStreamEvent) => void;
   onRetry?: (event: ValidationFeedbackEvent) => void;
   onValidating?: (event: { type: 'validation.started'; message: string }) => void;
   onReview?: (review: ReviewEventPayload) => void;
@@ -380,6 +387,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       if (!line) continue;
       const event = JSON.parse(line.slice(6)) as StreamEnvelope;
       const data = isRecord(event.data) ? event.data : {};
+      if (event.type === 'run.started') handlers.onStarted?.(runStartedPayload(data));
       if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
       if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
       if (event.type === 'capability.call.started') {
@@ -400,8 +408,8 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           ...capabilityContext(data),
         });
       }
-      if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(String(data.delta ?? ''));
-      if (event.type === 'response.content.delta') handlers.onContent?.(String(data.delta ?? ''));
+      if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(responseDeltaPayload(data));
+      if (event.type === 'response.content.delta') handlers.onContent?.(responseDeltaPayload(data));
       if (event.type === 'validation.retry') {
         handlers.onRetry?.({
           type: 'validation.retry',

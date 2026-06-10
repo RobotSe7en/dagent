@@ -1,4 +1,4 @@
-"""Stream typed run events and read the final unified RunResult.
+"""Dump native typed run events from the quickstart agent.
 
 Run from the repository root:
 
