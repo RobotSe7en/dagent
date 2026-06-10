@@ -498,25 +498,21 @@ print(result.artifact_state("report").status)
 `RunResult` field.
 
 Use `Runner.stream(...)` for an async stream of `RunStreamChunk` objects. Chunks
-surface the common values directly: generated text, pending reviews, and the
-final unified `RunResult`. By default, `chunk.text` contains the raw provider
-token stream. Pass `text_stream="content"`, `text_stream="reasoning"`, or
-`text_stream="none"` to choose which low-level token channel is surfaced as
-`chunk.text`.
+carry generated text deltas and the final unified `RunResult`; other events are
+not surfaced as chunks. By default, `chunk.text` contains the content token
+channel. Pass `text_stream="reasoning"` or `text_stream="none"` to switch or
+suppress the text channel. Pending reviews are read from the final result.
 
 ```python
-async for chunk in runner.stream(agent, messages=messages, text_stream="content"):
+async for chunk in runner.stream(agent, messages=messages):
     if chunk.text:
         print(chunk.text, end="")
-    if chunk.review:
-        print(chunk.review.message)
     if chunk.result:
+        if chunk.result.requires_review:
+            print(chunk.result.review.message)
         print(chunk.result.output_text)
         print(chunk.result.model_dump(mode="json"))
 ```
-
-Each chunk also carries the underlying `chunk.event` for callers that want the
-full event envelope.
 
 Use `Runner.stream_events(...)` when you want to forward, persist, or inspect the
 complete low-level event stream. Events use a uniform envelope:
@@ -526,8 +522,6 @@ complete low-level event stream. Events use a uniform envelope:
 async for event in runner.stream_events(agent, messages=messages):
     if event.type == "response.content.delta":
         print(event.data.delta, end="")
-    elif event.type == "response.raw.delta":
-        pass  # Optional raw model delta logging.
     elif event.type == "trace.updated":
         print(event.data.trace.status)
     elif event.type == "review.required":
@@ -540,21 +534,25 @@ Common stream event payloads:
 
 | Event type | Primary fields |
 |------------|----------------|
-| `response.raw.delta` | `event.data.delta`, complete provider token stream |
 | `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
 | `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
 | `run.status` | `event.data.message` |
 | `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
 | `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |
-| `dag.updated` | `event.data.dag` |
-| `trace.updated` | `event.data.trace` |
-| `review.required` | `event.data.message`, `event.data.to_handle()` |
+| `dag.updated` | `event.data.dag`, emitted only when the DAG changed |
+| `trace.updated` | `event.data.trace`, emitted only when the trace changed |
+| `review.required` | `event.data.review_id`, `event.data.kind`, `event.data.message` |
 | `validation.started` / `validation.passed` / `validation.retry` | `event.data` |
 | `run.finished` | `event.data.result` |
 | `run.failed` | `event.data.message`, `event.data.error_type` |
 
+`review.required` is a lightweight signal; the full pending review, including any
+proposed DAG, arrives in the `run.finished` result as `state.pending_review`.
+
 `RunStreamEvent.model_dump(mode="json")` returns a JSON-ready event payload. If
 the event has a result, the nested value is `RunResult.model_dump(mode="json")`.
+The `run.finished` payload carries the complete `state` — keep it if you need to
+resume the run from another process after a restart.
 
 Use `Runner.resume_stream(...)` to continue a pending review with the same
 event contract:
