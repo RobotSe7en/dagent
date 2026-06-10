@@ -34,11 +34,7 @@ async def main() -> None:
         agent,
         messages=[{"role": "user", "content": "当前目录有哪些文件？"}],
     ):
-        if event.type == "response.content.delta":
-            print(event.data.delta, end="")
-        elif event.type == "run.finished":
-            print()
-            print(event.data.result.output_text)
+        print(event)
     runner.close()
 
 
