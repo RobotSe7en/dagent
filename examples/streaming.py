@@ -27,13 +27,12 @@ async def main() -> None:
     async for chunk in runner.stream(
         agent,
         messages=[{"role": "user", "content": "Answer when ready."}],
-        text_stream="content",
     ):
         if chunk.text:
             print(chunk.text, end="")
-        if chunk.review:
-            print(chunk.review.message)
         if chunk.result:
+            if chunk.result.requires_review:
+                print(chunk.result.review.message)
             print()
             print(chunk.result.kind)
             print(chunk.result.output_text)

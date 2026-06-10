@@ -462,11 +462,6 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     assert response.status_code == 200
     events = _sse_events(response.text)
     done_index = next(index for index, event in enumerate(events) if event["type"] == "run.finished")
-    raw_text = "".join(
-        event["data"]["delta"]
-        for event in events
-        if event["type"] == "response.raw.delta"
-    )
     reasoning_text = "".join(
         event["data"]["delta"]
         for event in events
@@ -478,7 +473,7 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
         if event["type"] == "response.content.delta"
     )
     result = _stream_result(events[-1])
-    assert "<think>planning dag</think>" in raw_text
+    assert not any(event["type"] == "response.raw.delta" for event in events)
     assert reasoning_text == "planning dag"
     assert _dag_agent_dsl() in content_text
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
@@ -611,11 +606,6 @@ def test_api_resume_review_streams_answer_text_once() -> None:
 
     assert resume_response.status_code == 200
     events = _sse_events(resume_response.text)
-    raw_text = "".join(
-        event["data"]["delta"]
-        for event in events
-        if event["type"] == "response.raw.delta"
-    )
     reasoning_text = "".join(
         event["data"]["delta"]
         for event in events
@@ -626,7 +616,7 @@ def test_api_resume_review_streams_answer_text_once() -> None:
         for event in events
         if event["type"] == "response.content.delta"
     )
-    assert "<think>observe</think>DAG agent final answer" in raw_text
+    assert not any(event["type"] == "response.raw.delta" for event in events)
     assert reasoning_text == "observe"
     assert content_text == "DAG agent final answer"
     assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"

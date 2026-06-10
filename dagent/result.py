@@ -24,7 +24,6 @@ RunStreamEventType = Literal[
     "run.status",
     "run.finished",
     "run.failed",
-    "response.raw.delta",
     "response.reasoning.delta",
     "response.content.delta",
     "dag.updated",
@@ -271,19 +270,15 @@ class RunStreamEvent:
 
 @dataclass(frozen=True)
 class RunStreamChunk:
-    """High-level stream item yielded by ``Runner.stream``."""
+    """High-level stream item yielded by ``Runner.stream``: text deltas and the final result."""
 
     text: str = ""
-    review: ReviewHandle | None = None
     result: RunResult | None = None
-    event: RunStreamEvent | None = None
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return {
             "text": self.text,
-            "review": _dump(self.review.pending if self.review is not None else None, mode=mode),
             "result": self.result.model_dump(mode=mode) if self.result is not None else None,
-            "event": self.event.model_dump(mode=mode) if self.event is not None else None,
         }
 
 

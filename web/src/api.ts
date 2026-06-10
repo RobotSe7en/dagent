@@ -272,7 +272,6 @@ interface StreamHandlers {
   onDag?: (dag: Dag) => void;
   onTrace?: (event: TraceLogEvent) => void;
   onCapability?: (event: CapabilityStreamEvent) => void;
-  onRawToken?: (content: string) => void;
   onReasoning?: (content: string) => void;
   onContent?: (content: string) => void;
   onRetry?: (event: ValidationFeedbackEvent) => void;
@@ -404,7 +403,6 @@ async function readStream(response: Response, handlers: StreamHandlers) {
           ...capabilityContext(data),
         });
       }
-      if (event.type === 'response.raw.delta') handlers.onRawToken?.(String(data.delta ?? ''));
       if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(String(data.delta ?? ''));
       if (event.type === 'response.content.delta') handlers.onContent?.(String(data.delta ?? ''));
       if (event.type === 'validation.retry') {

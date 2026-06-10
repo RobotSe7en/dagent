@@ -165,12 +165,11 @@ def test_runner_stream_yields_chunks_and_unified_result(tmp_path) -> None:
 
     chunks = run(collect())
 
-    assert [chunk.text for chunk in chunks if chunk.text] == ["<think>checking</think>hello"]
+    assert [chunk.text for chunk in chunks if chunk.text] == ["hello"]
     assert chunks[-1].result is not None
     assert isinstance(chunks[-1].result, dagent.RunResult)
     assert chunks[-1].result.output_text == "hello"
-    assert chunks[-1].event is not None
-    assert chunks[-1].event.type == "run.finished"
+    assert all(chunk.text or chunk.result is not None for chunk in chunks)
 
 
 def test_runner_stream_text_stream_selects_token_channel(tmp_path) -> None:
@@ -187,7 +186,6 @@ def test_runner_stream_text_stream_selects_token_channel(tmp_path) -> None:
             if chunk.text
         ]
 
-    assert run(collect("raw")) == ["<think>checking</think>hello"]
     assert run(collect("reasoning")) == ["checking"]
     assert run(collect("content")) == ["hello"]
     assert run(collect("none")) == []
@@ -218,21 +216,15 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
     ]
     assert token_events == [
         {
-            "type": "response.raw.delta",
-            "data": {"delta": "<think>checking</think>hello"},
-            "sequence": 1,
-            "run_id": None,
-        },
-        {
             "type": "response.reasoning.delta",
             "data": {"delta": "checking"},
-            "sequence": 2,
+            "sequence": 1,
             "run_id": None,
         },
         {
             "type": "response.content.delta",
             "data": {"delta": "hello"},
-            "sequence": 3,
+            "sequence": 2,
             "run_id": None,
         },
     ]
@@ -315,11 +307,9 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
 
     chunks = run(collect())
 
-    assert [chunk.text for chunk in chunks if chunk.text] == ["<think>checking</think>done"]
+    assert [chunk.text for chunk in chunks if chunk.text] == ["done"]
     assert chunks[-1].result is not None
     assert chunks[-1].result.output_text == "done"
-    assert chunks[-1].event is not None
-    assert chunks[-1].event.type == "run.finished"
 
 
 def test_runner_resume_stream_text_stream_selects_content_channel(tmp_path) -> None:
@@ -384,7 +374,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert dumped["state"]["pending_review"]["kind"] == "capability_review"
 
 
-def test_runner_stream_chunk_exposes_review_without_event_type_branching(tmp_path) -> None:
+def test_runner_stream_chunk_exposes_review_through_result(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:
         return f"wrote:{text}"
@@ -404,11 +394,10 @@ def test_runner_stream_chunk_exposes_review_without_event_type_branching(tmp_pat
 
     chunks = run(collect())
 
-    review_chunks = [chunk for chunk in chunks if chunk.review is not None]
-    assert review_chunks
-    assert review_chunks[-1].review.kind == "capability_review"
     assert chunks[-1].result is not None
     assert chunks[-1].result.requires_review
+    assert chunks[-1].result.review is not None
+    assert chunks[-1].result.review.kind == "capability_review"
 
 
 def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
