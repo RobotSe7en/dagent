@@ -135,7 +135,8 @@ class RunResult:
         return _node_trace(self.trace, node_id).output
 
     def node_value(self, node_id: str) -> Any:
-        return _node_trace(self.trace, node_id).value
+        node = _node_trace(self.trace, node_id)
+        return node.value if node.value is not None else node.output
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
         return {

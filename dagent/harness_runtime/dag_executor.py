@@ -266,7 +266,6 @@ class DAGExecutor:
                 parent_id=dag_node.id,
                 invocation=invocation,
                 result=failed_result,
-                output="",
                 error=str(exc),
             )
             dag_node.children.append(capability_node)
@@ -280,7 +279,6 @@ class DAGExecutor:
             parent_id=dag_node.id,
             invocation=invocation,
             result=capability_result,
-            output=capability_result.content,
             error=capability_result.error,
         )
         _attach_child_trace(capability_node, capability_result)
@@ -538,7 +536,7 @@ def _node_output_value(expr: NodeOutputExpr, node_traces: dict[str, RunTraceNode
             f"Cannot resolve output for node '{expr.node_id}' before it completes."
         )
     if expr.field == "value":
-        value = trace.value
+        value = trace.value if trace.value is not None else trace.output
     elif expr.field == "content":
         value = trace.output
     elif expr.field == "status":

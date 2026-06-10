@@ -465,7 +465,6 @@ class ToolAgentLoop:
                                 else CapabilityResult.completed(invocation, control_result.content)
                             ),
                             status="awaiting_review" if review_pending else None,
-                            output=control_result.content,
                         )
                     )
                     if review_pending:
@@ -548,7 +547,6 @@ class ToolAgentLoop:
                         parent_id=trace.root.id,
                         invocation=invocation,
                         result=capability_result,
-                        output=tool_result,
                         error=capability_result.error,
                     )
                 )
@@ -772,7 +770,6 @@ def _reconcile_reviewed_trace_node(
     node = _find_capability_node(trace.root, invocation.invocation_id)
     if node is None:
         return
-    node.output = content
     node.ended_at = datetime.now(timezone.utc)
     if node.capability_execution is not None:
         node.capability_execution.result = result

@@ -49,9 +49,6 @@ class CapabilityInvocation(BaseModel):
     risk: RiskLevel = "low"
 
 
-_VALUE_MIRRORS_CONTENT = object()
-
-
 class CapabilityResult(BaseModel):
     invocation_id: str
     capability_id: str
@@ -73,7 +70,7 @@ class CapabilityResult(BaseModel):
         invocation: "CapabilityInvocation",
         content: str = "",
         *,
-        value: Any = _VALUE_MIRRORS_CONTENT,
+        value: Any = None,
         **fields: Any,
     ) -> "CapabilityResult":
         return cls(
@@ -82,7 +79,7 @@ class CapabilityResult(BaseModel):
             kind=invocation.kind,
             status="completed",
             content=content,
-            value=content if value is _VALUE_MIRRORS_CONTENT else value,
+            value=value,
             **fields,
         )
 

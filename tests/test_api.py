@@ -413,8 +413,8 @@ def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     assert trace_response.json()["run_id"] == run_id
     trace = trace_response.json()["trace"]
     capability = _capability_trace(trace, "tool.echo")
-    assert capability["input"] == {"text": "hello"}
-    assert capability["output"] == "echo:hello"
+    assert capability["capability_execution"]["invocation"]["arguments"] == {"text": "hello"}
+    assert capability["capability_execution"]["result"]["content"] == "echo:hello"
     assert capability["capability_execution"]["result"]["status"] == "completed"
 
 
@@ -566,8 +566,8 @@ def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace
     trace = trace_response.json()["trace"]
     answer = _dag_node_trace(trace, "answer")
     capability = _capability_trace(answer, "tool.echo")
-    assert capability["input"] == {"text": "reviewed"}
-    assert capability["output"] == "echo:reviewed"
+    assert capability["capability_execution"]["invocation"]["arguments"] == {"text": "reviewed"}
+    assert capability["capability_execution"]["result"]["content"] == "echo:reviewed"
     assert capability["status"] == "completed"
 
 

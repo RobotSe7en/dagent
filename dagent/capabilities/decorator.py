@@ -92,7 +92,7 @@ def tool(
                 if inspect.isawaitable(result):
                     result = await result
                 if isinstance(result, CapabilityResult):
-                    return _normalize_capability_result(result)
+                    return result
                 content, value = _content_and_value_from_result(result)
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,
@@ -137,29 +137,22 @@ def _invoke_function(
 
 
 def _content_and_value_from_result(result: Any) -> tuple[str, Any]:
+    """Split a tool return into string content and a structured value (None for plain text)."""
     if result is None:
         return "", None
     if isinstance(result, BaseModel):
         value = result.model_dump(mode="json")
         return result.model_dump_json(), value
     if isinstance(result, str):
-        return result, result
+        return result, None
     if isinstance(result, bytes):
-        value = result.decode("utf-8", errors="replace")
-        return value, value
+        return result.decode("utf-8", errors="replace"), None
     if isinstance(result, tuple):
         value = list(result)
         return json.dumps(value, ensure_ascii=False), value
     if isinstance(result, (dict, list, bool, int, float)):
         return json.dumps(result, ensure_ascii=False), result
-    value = str(result)
-    return value, value
-
-
-def _normalize_capability_result(result: CapabilityResult) -> CapabilityResult:
-    if result.status == "completed" and result.value is None:
-        return result.model_copy(update={"value": result.content})
-    return result
+    return str(result), None
 
 
 def _schema_from_signature(func: Callable[..., Any], type_hints: dict[str, Any]) -> dict[str, Any]:

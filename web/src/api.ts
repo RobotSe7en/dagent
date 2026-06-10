@@ -530,12 +530,13 @@ function TraceLogEventFromNode(
 }
 
 function tracePayload(node: RunTraceNode): Record<string, unknown> {
+  const execution = node.capability_execution;
   return {
     ...node.ref,
-    input: node.input,
-    output: node.output,
+    input: execution?.invocation.arguments ?? node.input,
+    output: node.output ?? execution?.result?.content,
     error: node.error?.message,
-    result: node.capability_execution?.result,
+    result: execution?.result,
   };
 }
 
