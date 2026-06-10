@@ -23,8 +23,9 @@ from dagent.harness_runtime.capability_scope import (
 )
 from dagent.harness_runtime.runtime_events import (
     LoopEventHandler,
+    ResponseStreamContext,
     TokenHandler,
-    _ResponseTokenSplitter,
+    response_token_stream,
 )
 from dagent.review import ReviewLevel, _review_policy
 from dagent.profiles import AgentProfile
@@ -175,8 +176,22 @@ class ToolAgent:
                     ),
                 )
                 feed_content = _tool_content(result)
+                self.loop._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_result",
+                    run_id=state.run_id,
+                    content=feed_content,
+                )
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
+                self.loop._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_error",
+                    run_id=state.run_id,
+                    content=feed_content,
+                )
 
         _reconcile_reviewed_trace_node(
             self.trace,
@@ -376,7 +391,7 @@ class ToolAgentLoop:
             response = await self._chat(
                 loop_messages,
                 tools=tool_definitions,
-                run_id=run_id,
+                run_id=resolved_run_id,
                 step=step,
                 on_token=on_token,
                 on_event=on_event,
@@ -390,14 +405,12 @@ class ToolAgentLoop:
                     kind="model_call",
                     status="completed",
                     label=f"model_step_{step}",
-                    output=response.content,
                     ref={"step": str(step)},
                 )
             )
 
             if not response.tool_calls:
                 trace.root.status = "completed"
-                trace.root.output = strip_thinking_blocks(response.content).strip()
                 return LoopOutcome(
                     state=_tool_run_state(
                         run_id=resolved_run_id,
@@ -429,14 +442,20 @@ class ToolAgentLoop:
                         }
                     )
                     continue
-                self._emit_capability_event(on_event, invocation, "capability_call")
+                self._emit_capability_event(on_event, invocation, "capability_call", run_id=resolved_run_id)
                 if control_tool_names and tool_call.name in control_tool_names:
                     if control_tool_handler is None:
                         raise ValueError(f"Control tool '{tool_call.name}' has no handler.")
                     try:
                         control_result = await control_tool_handler(tool_call)
                     except Exception as exc:
-                        self._emit_capability_event(on_event, invocation, "capability_error", content=str(exc))
+                        self._emit_capability_event(
+                            on_event,
+                            invocation,
+                            "capability_error",
+                            run_id=resolved_run_id,
+                            content=str(exc),
+                        )
                         trace.root.children.append(
                             RunTraceNode.capability_call(
                                 parent_id=trace.root.id,
@@ -458,6 +477,7 @@ class ToolAgentLoop:
                         on_event,
                         invocation,
                         "capability_result",
+                        run_id=resolved_run_id,
                         content=control_result.content,
                     )
                     review_pending = control_result.needs_review
@@ -499,7 +519,6 @@ class ToolAgentLoop:
                         )
                     if control_result.stop_reason:
                         trace.root.status = "failed"
-                        trace.root.output = control_result.content
                         return LoopOutcome(
                             state=_tool_run_state(
                                 run_id=resolved_run_id,
@@ -521,7 +540,13 @@ class ToolAgentLoop:
                     tool_result = _tool_content(capability_result)
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
-                    self._emit_capability_event(on_event, invocation, "capability_error", content=error_content)
+                    self._emit_capability_event(
+                        on_event,
+                        invocation,
+                        "capability_error",
+                        run_id=resolved_run_id,
+                        content=error_content,
+                    )
                     loop_messages.append(
                         {
                             "role": "tool",
@@ -547,7 +572,13 @@ class ToolAgentLoop:
                         "content": tool_result,
                     }
                 )
-                self._emit_capability_event(on_event, invocation, "capability_result", content=tool_result)
+                self._emit_capability_event(
+                    on_event,
+                    invocation,
+                    "capability_result",
+                    run_id=resolved_run_id,
+                    content=tool_result,
+                )
                 trace.root.children.append(
                     RunTraceNode.capability_call(
                         parent_id=trace.root.id,
@@ -589,24 +620,30 @@ class ToolAgentLoop:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> ChatResponse:
-        if (on_token is None and on_event is None) or not hasattr(self.provider, "stream_chat"):
+        if on_token is None and on_event is None:
             return await self.provider.chat(messages, tools=tools)
 
-        splitter = _ResponseTokenSplitter(
+        stream = response_token_stream(
             on_raw=on_token,
             on_event=on_event,
-            run_id=run_id,
-            model_step=step,
+            context=ResponseStreamContext.create(run_id=run_id, model_step=step),
         )
+        if stream is None:
+            return await self.provider.chat(messages, tools=tools)
+
         response: ChatResponse | None = None
         try:
-            async for event in self.provider.stream_chat(messages, tools=tools):
-                if event.type == "token" and event.content:
-                    splitter(event.content)
-                elif event.type == "done":
-                    response = event.response
+            stream.start()
+            if hasattr(self.provider, "stream_chat"):
+                async for event in self.provider.stream_chat(messages, tools=tools):
+                    if event.type == "token" and event.content:
+                        stream(event.content)
+                    elif event.type == "done":
+                        response = event.response
+            else:
+                response = await self.provider.chat(messages, tools=tools)
         finally:
-            splitter.finish()
+            stream.finish()
         return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
@@ -636,6 +673,7 @@ class ToolAgentLoop:
         invocation: CapabilityInvocation,
         event_type: str,
         *,
+        run_id: str,
         content: str | None = None,
     ) -> None:
         if on_event is None:
@@ -645,6 +683,7 @@ class ToolAgentLoop:
             "invocation_id": invocation.invocation_id,
             "capability_id": invocation.capability_id,
             "arguments": invocation.arguments,
+            "run_id": run_id,
         }
         if content is not None:
             payload["content"] = content

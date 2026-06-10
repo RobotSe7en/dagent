@@ -207,6 +207,7 @@ class AgentCapabilityProvider:
         )
         outcome = await loop.run(
             "",
+            run_id=context.task_id if context is not None else None,
             boundary=_agent_boundary(invocation, context),
             max_steps=max_steps,
             messages=messages,

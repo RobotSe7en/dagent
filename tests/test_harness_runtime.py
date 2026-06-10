@@ -190,7 +190,7 @@ def test_harness_runtime_tool_message_does_not_create_dag() -> None:
     assert record.kind == "tool"
     assert record.trace is not None
     assert record.trace.status == "completed"
-    assert record.trace.root.output == "hello"
+    assert record.trace.root.output is None
 
 
 def test_harness_runtime_tool_followup_uses_tool_agent_thread() -> None:
@@ -685,15 +685,15 @@ def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
 
 
 def test_response_token_splitter_derives_reasoning_and_content_channels() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     raw: list[str] = []
     events: list[dict] = []
+    context = ResponseStreamContext.create(run_id="run_1", model_step=2)
     splitter = _ResponseTokenSplitter(
         on_raw=raw.append,
         on_event=events.append,
-        run_id="run_1",
-        model_step=2,
+        context=context,
     )
 
     for token in ["<", "think", ">reason", "ing about", " it</", "think>", " The answer is 42."]:
@@ -713,11 +713,15 @@ def test_response_token_splitter_derives_reasoning_and_content_channels() -> Non
 
 
 def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     raw: list[str] = []
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=raw.append, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=raw.append,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     splitter("Hello world, this is a normal response.")
     splitter.finish()
@@ -737,10 +741,14 @@ def test_response_token_splitter_emits_plain_answer_when_no_think() -> None:
 
 
 def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     for token in ["<think>", "internal reasoning", "</think>", "The final answer."]:
         splitter(token)
@@ -753,10 +761,14 @@ def test_response_token_splitter_strips_tags_from_derived_channels() -> None:
 
 
 def test_response_token_splitter_flushes_short_answer_suffix() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     splitter("<think>internal</think>好")
     splitter.finish()
@@ -771,10 +783,14 @@ def test_response_token_splitter_flushes_short_answer_suffix() -> None:
 
 
 def test_response_token_splitter_strips_whitespace_between_think_and_answer() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
 
     for token in ["<think>internal</think>", "\n", "\n  ", "The answer.", " More."]:
         splitter(token)
@@ -785,10 +801,15 @@ def test_response_token_splitter_strips_whitespace_between_think_and_answer() ->
 
 
 def test_response_token_splitter_brackets_response_without_tokens() -> None:
-    from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+    from dagent.harness_runtime.runtime_events import ResponseStreamContext, _ResponseTokenSplitter
 
     events: list[dict] = []
-    splitter = _ResponseTokenSplitter(on_raw=None, on_event=events.append)
+    splitter = _ResponseTokenSplitter(
+        on_raw=None,
+        on_event=events.append,
+        context=ResponseStreamContext.create(),
+    )
+    splitter.start()
     splitter.finish()
     splitter.finish()
 

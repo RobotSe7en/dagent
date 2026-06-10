@@ -251,7 +251,6 @@ export interface ApiRunState {
 
 interface ApiRunResult {
   output_text: string;
-  messages: Array<Record<string, unknown>>;
   state?: ApiRunState | null;
 }
 
@@ -268,7 +267,6 @@ interface StreamEnvelope {
 }
 
 interface StreamHandlers {
-  onStatus?: (status: string) => void;
   onDag?: (dag: Dag) => void;
   onTrace?: (event: TraceLogEvent) => void;
   onCapability?: (event: CapabilityStreamEvent) => void;
@@ -382,7 +380,6 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       if (!line) continue;
       const event = JSON.parse(line.slice(6)) as StreamEnvelope;
       const data = isRecord(event.data) ? event.data : {};
-      if (event.type === 'run.started') handlers.onStatus?.('run_started');
       if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
       if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
       if (event.type === 'capability.call.started') {
@@ -433,8 +430,6 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       }
       if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
-        const trace = result.state?.trace ?? undefined;
-        emitTraceSnapshot(trace, handlers.onTrace, seenTraceIds);
         handlers.onDone?.({ type: 'run.finished', result });
       }
       if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));

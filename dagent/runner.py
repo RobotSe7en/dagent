@@ -565,8 +565,6 @@ class Runner:
         def emit_event(event: dict[str, Any]) -> None:
             nonlocal run_id
             stream_event = _stream_event_from_runtime(event)
-            if stream_event is None:
-                return
             if stream_event.type == "run.started" and stream_event.run_id is not None:
                 run_id = stream_event.run_id
             queue.put_nowait(with_sequence(stream_event))
@@ -599,7 +597,7 @@ class Runner:
                 sequence=sequence + 1,
                 run_id=run_id,
             )
-            raise
+            return
         finally:
             if not task.done():
                 task.cancel()
@@ -914,8 +912,8 @@ def _apply_skill_capabilities(
     return tuple(dict.fromkeys(ids))
 
 
-def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent | None:
-    """Map a runtime event payload onto the typed protocol; unknown events are dropped."""
+def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent:
+    """Map a runtime event payload onto the typed protocol."""
     data = dict(event)
     event_type = str(data.get("type") or "")
 
@@ -935,7 +933,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent | None:
     if event_type == "response_token":
         channel = str(data.get("channel") or "")
         if channel not in {"reasoning", "content"}:
-            return None
+            raise ValueError(f"Runtime emitted unsupported response token channel: {channel!r}")
         return RunStreamEvent(
             type=f"response.{channel}.delta",  # type: ignore[arg-type]
             data=TextDeltaData(
@@ -953,13 +951,13 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent | None:
     if event_type == "dag":
         dag = _coerce_dag(data.get("dag"))
         if dag is None:
-            return None
+            raise ValueError("Runtime emitted an empty DAG update.")
         return RunStreamEvent(type="dag.updated", data=DagUpdatedData(dag=dag))
 
     if event_type == "trace":
         trace = _coerce_trace(data.get("trace"))
         if trace is None:
-            return None
+            raise ValueError("Runtime emitted an empty trace update.")
         return RunStreamEvent(type="trace.updated", data=TraceUpdatedData(trace=trace))
 
     if event_type == "capability_call":
@@ -1020,7 +1018,7 @@ def _stream_event_from_runtime(event: dict[str, Any]) -> RunStreamEvent | None:
             ),
         )
 
-    return None
+    raise ValueError(f"Runtime emitted unsupported stream event type: {event_type!r}")
 
 
 def _review_stream_event(
@@ -1044,7 +1042,7 @@ def _response_event_context(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "response_id": str(data.get("response_id", "")),
         "model_step": int(model_step) if model_step is not None else None,
-        "run_id": _nullable_event_string(data.get("run_id") or data.get("task_id")),
+        "run_id": _nullable_event_string(data.get("run_id")),
         "dag_id": _nullable_event_string(data.get("dag_id")),
         "node_id": _nullable_event_string(data.get("node_id")),
         "parent_capability_id": _nullable_event_string(data.get("parent_capability_id")),
@@ -1053,7 +1051,7 @@ def _response_event_context(data: dict[str, Any]) -> dict[str, Any]:
 
 def _capability_event_context(data: dict[str, Any]) -> dict[str, str | None]:
     return {
-        "run_id": _nullable_event_string(data.get("run_id") or data.get("task_id")),
+        "run_id": _nullable_event_string(data.get("run_id")),
         "dag_id": _nullable_event_string(data.get("dag_id")),
         "node_id": _nullable_event_string(data.get("node_id")),
         "parent_capability_id": _nullable_event_string(data.get("parent_capability_id")),

@@ -488,6 +488,37 @@ def test_runner_stream_parallel_agent_nodes_keep_response_attribution(tmp_path: 
     assert contents == {"draft alpha", "draft beta"}
 
 
+def test_runner_stream_static_dag_tool_tokens_keep_node_context(tmp_path: Path) -> None:
+    @dagent.tool(supports_context=True)
+    def stream_answer(text: str, *, context=None, callbacks=None) -> str:
+        assert context is not None
+        assert context.node.id == "answer"
+        callbacks.on_token("<think>working</think>\n\nstreamed answer")
+        return f"result:{text}"
+
+    dag = dagent.Dag("streaming_tool")
+    dag.add_node(dagent.Node("answer", target=stream_answer, inputs={"text": "ok"}))
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[stream_answer])
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [event async for event in runner.stream(dag, workspace_root=tmp_path / "runs")]
+
+    events = run(collect())
+    response_events = [event for event in events if event.type.startswith("response.")]
+
+    assert [event.type for event in response_events] == [
+        "response.started",
+        "response.reasoning.delta",
+        "response.content.delta",
+        "response.finished",
+    ]
+    assert response_events[1].data.delta == "working"
+    assert response_events[2].data.delta == "streamed answer"
+    assert all(event.data.node_id == "answer" for event in response_events)
+    assert all(event.data.run_id == events[0].run_id for event in response_events)
+    assert events[-1].data.result.node_output("answer") == "result:ok"
+
+
 def test_runner_runs_dag_spec_with_unified_run_result(tmp_path: Path) -> None:
     @dagent.tool
     def echo(text: str) -> str:

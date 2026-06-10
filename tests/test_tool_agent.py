@@ -325,6 +325,7 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     )
 
     assert result.state.status == "completed"
+    run_id = result.state.run_id
     assert [event["type"] for event in events] == [
         "response_started",
         "response_finished",
@@ -340,12 +341,14 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
+        "run_id": run_id,
     }
     assert capability_events[1] == {
         "type": "capability_result",
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
         "arguments": {"path": "notes.txt"},
+        "run_id": run_id,
         "content": "hello from file",
     }
     assert events[0]["model_step"] == 1

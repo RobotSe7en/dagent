@@ -234,8 +234,43 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
     content = "".join(
         event.data.delta for event in events if event.type == "response.content.delta"
     )
+    result = events[-1].data.result
     assert content == "hello world"
-    assert content == events[-1].data.result.output_text
+    assert content == result.output_text
+    assert result.state.trace.root.output is None
+    assert all(
+        node.output is None
+        for node in result.state.trace.root.children
+        if node.kind == "model_call"
+    )
+
+
+def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:
+    class ChatOnlyProvider:
+        async def chat(self, messages, tools=None):
+            return ChatResponse(content="hello")
+
+    runner = dagent.Runner(workspace=tmp_path, provider=ChatOnlyProvider())
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
+        ]
+
+    events = run(collect())
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "response.started",
+        "response.finished",
+        "run.finished",
+    ]
+    assert events[1].data.run_id == events[0].run_id
+    assert events[1].data.response_id == events[2].data.response_id
 
 
 def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None:
@@ -298,7 +333,7 @@ def test_run_result_and_stream_event_model_dump_are_json_ready(tmp_path) -> None
     assert events[-1].model_dump(mode="json")["data"]["result"]["output_text"] == "hello"
 
 
-def test_runner_stream_yields_typed_status_events_and_errors(tmp_path) -> None:
+def test_runner_stream_failed_event_is_terminal(tmp_path) -> None:
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
     events: list[dagent.RunStreamEvent] = []
 
@@ -306,8 +341,7 @@ def test_runner_stream_yields_typed_status_events_and_errors(tmp_path) -> None:
         async for event in runner.stream(dagent.ToolAgent(profile="conversation")):
             events.append(event)
 
-    with pytest.raises(TypeError, match="messages is required"):
-        run(collect())
+    run(collect())
 
     assert events[-1].type == "run.failed"
     assert events[-1].data.message == "messages is required for ToolAgent targets."
@@ -376,6 +410,14 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
 
     assert events[0].type == "run.started"
     assert events[0].run_id == first.run_id
+    completed = [
+        event for event in events
+        if event.type == "capability.call.completed"
+        and event.data.invocation_id == "call_1"
+    ]
+    assert len(completed) == 1
+    assert completed[0].data.content == "wrote:hello"
+    assert completed[0].data.run_id == first.run_id
     assert [
         event.data.delta for event in events if event.type == "response.content.delta"
     ] == ["done"]
@@ -442,7 +484,7 @@ def test_run_result_public_surface_uses_single_names(tmp_path) -> None:
     assert not hasattr(dagent.Runner, "task_trace")
 
 
-def test_capability_stream_events_use_run_id_not_task_id(tmp_path) -> None:
+def test_runtime_stream_adapter_does_not_convert_task_id_to_run_id(tmp_path) -> None:
     from dagent.runner import _stream_event_from_runtime
 
     started = _stream_event_from_runtime({
@@ -455,8 +497,44 @@ def test_capability_stream_events_use_run_id_not_task_id(tmp_path) -> None:
         "node_id": "answer",
     })
 
-    assert started.data.run_id == "run_1"
+    assert started.data.run_id is None
     assert not hasattr(started.data, "task_id")
+
+
+def test_tool_agent_capability_stream_events_include_run_id(tmp_path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    provider = MockProvider([
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "ok"})]),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(
+                dagent.ToolAgent(profile="conversation", capabilities=[echo]),
+                messages=user_messages("echo ok"),
+            )
+        ]
+
+    events = run(collect())
+    result = events[-1].data.result
+    capability_events = [event for event in events if event.type.startswith("capability.call.")]
+
+    assert capability_events
+    assert all(event.data.run_id == result.run_id for event in capability_events)
+    assert all(event.run_id == result.run_id for event in capability_events)
+
+
+def test_unknown_runtime_stream_event_fails_fast() -> None:
+    from dagent.runner import _stream_event_from_runtime
+
+    with pytest.raises(ValueError, match="unsupported stream event type"):
+        _stream_event_from_runtime({"type": "legacy.status", "message": "old"})
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:

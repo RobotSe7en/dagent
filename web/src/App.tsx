@@ -1117,19 +1117,6 @@ export function App() {
     setEditorMessage(`Running ${spec.name || 'DAG'}...`);
     try {
       await runDagStream(spec.id, {
-        onStatus: (status) => {
-          setEditorTrace((items) => [
-            ...items,
-            {
-              id: crypto.randomUUID(),
-              type: 'model',
-              label: status,
-              detail: 'DAG run event.',
-              status: 'running',
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            },
-          ]);
-        },
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
         },
@@ -1214,7 +1201,6 @@ export function App() {
 
     try {
       await streamTask(prompt, target, reviewLevel, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime request accepted.', status: 'running' }),
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           syncDag(nextDag);
@@ -1298,7 +1284,6 @@ export function App() {
 
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'HarnessRuntime resumed from DAG review.', status: 'running' }),
         onDag: (nextDag) => {
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
@@ -1365,7 +1350,6 @@ export function App() {
 
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
-        onStatus: (status) => appendTrace({ type: 'model', label: status, detail: 'Capability loop resumed from capability review.', status: 'running' }),
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
         onReasoning: enqueueAssistantToken,

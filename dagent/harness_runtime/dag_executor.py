@@ -23,6 +23,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
+from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.harness_runtime.dag_builder import validate_dag
 from dagent.schemas import (
     Artifact,
@@ -250,13 +251,27 @@ class DAGExecutor:
         if not invocation.capability_id:
             raise CapabilityExecutionError(f"Node '{node.id}' has no capability id.")
 
+        node_event_emitter = _node_event_emitter(on_event, dag=dag, node=node, invocation=invocation)
+        token_stream = None
+        if invocation.kind != "agent":
+            token_stream = response_token_stream(
+                on_raw=on_token,
+                on_event=node_event_emitter,
+                context=ResponseStreamContext.create(
+                    run_id=dag.task_id,
+                    dag_id=dag.dag_id,
+                    node_id=node.id,
+                    parent_capability_id=invocation.capability_id,
+                ),
+            )
+
         try:
             capability_result = await self.capability_executor.execute(
                 invocation,
                 context=self._execution_context(dag, node, skills=skills),
                 callbacks=CapabilityExecutionCallbacks(
-                    on_token=on_token,
-                    on_event=_node_event_emitter(on_event, dag=dag, node=node, invocation=invocation),
+                    on_token=token_stream or on_token,
+                    on_event=node_event_emitter,
                 ),
             )
         except Exception as exc:
@@ -274,6 +289,9 @@ class DAGExecutor:
             dag_node.ended_at = _now()
             self.partial_node_traces[node.id] = dag_node
             raise
+        finally:
+            if token_stream is not None:
+                token_stream.finish()
 
         capability_node = RunTraceNode.capability_call(
             parent_id=dag_node.id,
@@ -362,10 +380,14 @@ def _node_event_emitter(
 
     def emit(event: dict[str, Any]) -> None:
         payload = dict(event)
-        payload.setdefault("task_id", dag.task_id)
-        payload.setdefault("dag_id", dag.dag_id)
-        payload.setdefault("node_id", node.id)
-        payload.setdefault("parent_capability_id", invocation.capability_id)
+        if payload.get("run_id") is None:
+            payload["run_id"] = dag.task_id
+        if payload.get("dag_id") is None:
+            payload["dag_id"] = dag.dag_id
+        if payload.get("node_id") is None:
+            payload["node_id"] = node.id
+        if payload.get("parent_capability_id") is None:
+            payload["parent_capability_id"] = invocation.capability_id
         on_event(payload)
 
     return emit

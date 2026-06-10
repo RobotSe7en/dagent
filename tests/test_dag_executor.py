@@ -465,7 +465,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
     assert capability_events[0]["type"] == "capability_call"
     assert capability_events[0]["capability_id"] == "tool.echo"
     assert capability_events[0]["parent_capability_id"] == "agent.helper"
-    assert capability_events[0]["task_id"] == "run_1"
+    assert capability_events[0]["run_id"] == "run_1"
     assert capability_events[0]["dag_id"] == "dag_1"
     assert capability_events[0]["node_id"] == "agent_node"
     assert capability_events[1]["type"] == "capability_result"
@@ -473,7 +473,7 @@ def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> No
     response_events = [event for event in events if event["type"].startswith("response_")]
     assert response_events
     for event in response_events:
-        assert event["task_id"] == "run_1"
+        assert event["run_id"] == "run_1"
         assert event["dag_id"] == "dag_1"
         assert event["node_id"] == "agent_node"
         assert event["parent_capability_id"] == "agent.helper"

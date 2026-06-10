@@ -31,7 +31,7 @@ from dagent.harness_runtime.dag_builder import (
 )
 from dagent.review import ReviewLevel, _review_policy
 from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
-from dagent.harness_runtime.runtime_events import _ResponseTokenSplitter
+from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
@@ -852,26 +852,32 @@ async def _chat_for_dag(
     on_token: Callable[[str], None] | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> ChatResponse:
-    if (on_token is None and on_event is None) or not hasattr(provider, "stream_chat"):
+    if on_token is None and on_event is None:
         return await provider.chat(messages)
 
-    splitter = _ResponseTokenSplitter(
+    stream = response_token_stream(
         on_raw=on_token,
         on_event=on_event,
-        run_id=run_id,
-        model_step=model_step,
+        context=ResponseStreamContext.create(run_id=run_id, model_step=model_step),
     )
+    if stream is None:
+        return await provider.chat(messages)
+
     content = ""
     response: ChatResponse | None = None
     try:
-        async for event in provider.stream_chat(messages):
-            if event.type == "token" and event.content:
-                content += event.content
-                splitter(event.content)
-            elif event.type == "done":
-                response = event.response
+        stream.start()
+        if hasattr(provider, "stream_chat"):
+            async for event in provider.stream_chat(messages):
+                if event.type == "token" and event.content:
+                    content += event.content
+                    stream(event.content)
+                elif event.type == "done":
+                    response = event.response
+        else:
+            response = await provider.chat(messages)
     finally:
-        splitter.finish()
+        stream.finish()
     return response or ChatResponse(content=content)
 
 
