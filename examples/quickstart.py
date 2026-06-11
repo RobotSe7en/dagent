@@ -17,9 +17,9 @@ from dagent.profiles import AgentProfile
 
 async def main() -> None:
     provider = Provider(
-        base_url="https://api.minimaxi.com/v1",
-        model="MiniMax-M2.1",
-        api_key_env="MINIMAX_API_KEY",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-flash",
+        api_key_env="API_KEY",
     )
     profile = AgentProfile(
         name="qa",
