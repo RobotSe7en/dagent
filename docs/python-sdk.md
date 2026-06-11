@@ -84,8 +84,8 @@ runner = dagent.Runner(provider=provider)
 ```
 
 For OpenAI-compatible endpoints with reasoning controls, `reasoning` provides a
-small common shortcut while `extra_request_args` and `extra_body` pass
-provider-specific parameters through unchanged:
+small common shortcut. Use `extra_request_args` and `extra_body` only for
+provider-specific parameters supported by the target endpoint:
 
 ```python
 provider = dagent.Provider(
@@ -93,7 +93,6 @@ provider = dagent.Provider(
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
     reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
-    extra_body={"chat_template_kwargs": {"enable_thinking": True}},
 )
 ```
 
@@ -118,9 +117,6 @@ provider:
     enabled: true
     effort: "high"
     budget_tokens: 1024
-  extra_body:
-    chat_template_kwargs:
-      enable_thinking: true
 ```
 
 Tools, MCP servers, and skill roots can be registered at construction.
@@ -574,8 +570,8 @@ The full event protocol:
 |------------|----------------|
 | `run.started` | `event.data.kind`; envelope `run_id` is the final run id |
 | `response.started` | response identity fields (see below) |
-| `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
-| `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
+| `response.reasoning.delta` | `event.data.delta`, structured provider reasoning or text inside `<think>...</think>` |
+| `response.content.delta` | `event.data.delta`, assistant answer text outside reasoning |
 | `response.finished` | response identity fields |
 | `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
 | `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |

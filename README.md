@@ -96,8 +96,8 @@ runner = dagent.Runner(
 ```
 
 For OpenAI-compatible providers that expose reasoning controls, pass common
-options with `reasoning` and provider-specific options with `extra_body` or
-`extra_request_args`:
+options with `reasoning`. Use `extra_body` or `extra_request_args` only for
+provider-specific parameters supported by the target endpoint:
 
 ```python
 provider = dagent.Provider(
@@ -105,7 +105,6 @@ provider = dagent.Provider(
     model="deepseek-v4-pro",
     api_key_env="DEEPSEEK_API_KEY",
     reasoning={"enabled": True, "effort": "high"},
-    extra_body={"chat_template_kwargs": {"enable_thinking": True}},
 )
 ```
 
