@@ -25,6 +25,9 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
     assert config.provider.strip_thinking is False
+    assert config.provider.reasoning is None
+    assert config.provider.extra_request_args == {}
+    assert config.provider.extra_body == {}
     assert config.profiles.directory is None
 
 
@@ -58,3 +61,38 @@ def test_load_config_resolves_api_key_from_dotenv(tmp_path: Path, monkeypatch) -
     assert config.provider.model == "MiniMax-M2.1"
     assert config.provider.api_key == "secret-key"
     assert config.provider.strip_thinking is True
+
+
+def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                '  base_url: "https://api.deepseek.com"',
+                '  model: "deepseek-v4-pro"',
+                '  api_key: "local-key"',
+                "  reasoning:",
+                "    enabled: true",
+                '    effort: "high"',
+                "    budget_tokens: 512",
+                "  extra_request_args:",
+                "    temperature: 0",
+                "  extra_body:",
+                "    chat_template_kwargs:",
+                "      enable_thinking: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.provider.reasoning is not None
+    assert config.provider.reasoning.enabled is True
+    assert config.provider.reasoning.effort == "high"
+    assert config.provider.reasoning.budget_tokens == 512
+    assert config.provider.extra_request_args == {"temperature": 0}
+    assert config.provider.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": True},
+    }

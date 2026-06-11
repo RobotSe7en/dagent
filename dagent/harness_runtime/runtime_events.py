@@ -91,6 +91,18 @@ class _ResponseTokenSplitter:
         self._buf += token
         self._drain()
 
+    def emit_channel(self, channel: str, token: str) -> None:
+        if channel not in {"reasoning", "content"}:
+            raise ValueError(f"Unsupported response token channel: {channel!r}")
+        self.start()
+        if self._on_raw is not None:
+            self._on_raw(token)
+        self._emit({
+            "type": "response_token",
+            "channel": channel,
+            "delta": token,
+        })
+
     def start(self) -> None:
         if self._started or self._finished:
             return

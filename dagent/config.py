@@ -10,6 +10,12 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 
+class ReasoningConfig(BaseModel):
+    enabled: bool | None = None
+    effort: str | None = None
+    budget_tokens: int | None = None
+
+
 class ProviderConfig(BaseModel):
     base_url: str
     model: str
@@ -17,6 +23,9 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None
     timeout_seconds: float = 60
     strip_thinking: bool = False
+    reasoning: ReasoningConfig | None = None
+    extra_request_args: dict[str, Any] = Field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def resolve_api_key(self) -> "ProviderConfig":

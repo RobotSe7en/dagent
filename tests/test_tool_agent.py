@@ -128,6 +128,7 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
     provider = MockProvider(
         [
             ChatResponse(
+                reasoning_content="need the context-aware tool",
                 tool_calls=[
                     ToolCall(
                         id="call_1",
@@ -153,6 +154,9 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
     assert result.state.status == "completed"
     assert seen_task_ids
     assert seen_task_ids[0] is not None
+    assistant_message = provider.requests[1]["messages"][-2]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["reasoning_content"] == "need the context-aware tool"
 
 
 def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) -> None:

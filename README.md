@@ -95,12 +95,29 @@ runner = dagent.Runner(
 )
 ```
 
+For OpenAI-compatible providers that expose reasoning controls, pass common
+options with `reasoning`. Use `extra_body` or `extra_request_args` only for
+provider-specific parameters supported by the target endpoint:
+
+```python
+provider = dagent.Provider(
+    base_url="https://api.deepseek.com",
+    model="deepseek-v4-pro",
+    api_key_env="DEEPSEEK_API_KEY",
+    reasoning={"enabled": True, "effort": "high"},
+)
+```
+
 Use `Runner.from_config(...)` when provider settings, MCP servers, validation,
 or profile directories should come from a config file:
 
 ```python
 runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[search])
 ```
+
+The config file sets the initial validation default. Runtime controls such as
+`runner.enable_validation` or the Web UI validation toggle can override it for
+the current session.
 
 The same capability types can be added after runner construction:
 

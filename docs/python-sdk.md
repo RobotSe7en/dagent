@@ -83,6 +83,19 @@ provider = dagent.Provider(
 runner = dagent.Runner(provider=provider)
 ```
 
+For OpenAI-compatible endpoints with reasoning controls, `reasoning` provides a
+small common shortcut. Use `extra_request_args` and `extra_body` only for
+provider-specific parameters supported by the target endpoint:
+
+```python
+provider = dagent.Provider(
+    base_url="https://api.deepseek.com",
+    model="deepseek-v4-pro",
+    api_key_env="DEEPSEEK_API_KEY",
+    reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
+)
+```
+
 Use `Runner.from_config(...)` only when you want provider settings, configured
 MCP servers, validation, or profile directories loaded from a config file:
 
@@ -93,7 +106,19 @@ configured = dagent.Runner.from_config("config.yaml")
 `config.yaml` can define provider settings, MCP servers, result validation, and
 an optional user profile directory. Relative `profiles.directory` values resolve
 from the config file directory. If `profiles.directory` is omitted, built-in
-package profiles are used.
+package profiles are used. `enable_result_validation` is the initial default;
+`runner.enable_validation` can override it for the current runtime session.
+
+```yaml
+provider:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"
+  api_key_env: "DEEPSEEK_API_KEY"
+  reasoning:
+    enabled: true
+    effort: "high"
+    budget_tokens: 1024
+```
 
 Tools, MCP servers, and skill roots can be registered at construction.
 
@@ -172,6 +197,9 @@ for definition in runner.list_capabilities(kind="mcp"):
 runner.enable_validation = True
 trace = runner.run_trace(run_id)
 ```
+
+Result validation runs for tool and DAG outcomes that include execution context.
+Plain chat-only responses are not validated.
 
 ## Tools And Structured Results
 
@@ -546,8 +574,8 @@ The full event protocol:
 |------------|----------------|
 | `run.started` | `event.data.kind`; envelope `run_id` is the final run id |
 | `response.started` | response identity fields (see below) |
-| `response.reasoning.delta` | `event.data.delta`, text inside `<think>...</think>` |
-| `response.content.delta` | `event.data.delta`, text outside `<think>...</think>` |
+| `response.reasoning.delta` | `event.data.delta`, structured provider reasoning or text inside `<think>...</think>` |
+| `response.content.delta` | `event.data.delta`, assistant answer text outside reasoning |
 | `response.finished` | response identity fields |
 | `capability.call.started` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.arguments`, optional `run_id` and DAG context fields |
 | `capability.call.completed` / `capability.call.failed` | `event.data.invocation_id`, `event.data.capability_id`, `event.data.content`, optional `run_id` and DAG context fields |

@@ -467,18 +467,15 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
         for event in events
         if event["type"] == "response.reasoning.delta"
     )
-    content_text = "".join(
-        event["data"]["delta"]
-        for event in events
-        if event["type"] == "response.content.delta"
-    )
     result = _stream_result(events[-1])
     assert not any(event["type"] == "response.raw.delta" for event in events)
     assert reasoning_text == "planning dag"
-    assert _dag_agent_dsl() in content_text
+    # Chat endpoints drop dag content deltas; the answer arrives in run.finished.
+    assert not any(event["type"] == "response.content.delta" for event in events)
     assert any(event.get("type") == "trace.updated" for event in events[:done_index])
     assert _result_status(result) == "completed"
     assert _result_dag(result)["status"] == "completed"
+    assert result["output_text"] == "Final answer: echo:ok"
 
 
 def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
@@ -580,7 +577,7 @@ def test_api_legacy_tasks_trace_route_is_not_available() -> None:
     assert response.status_code == 404
 
 
-def test_api_resume_review_streams_answer_text_once() -> None:
+def test_api_resume_review_delivers_dag_answer_only_in_run_finished() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),            # _route()
@@ -611,15 +608,87 @@ def test_api_resume_review_streams_answer_text_once() -> None:
         for event in events
         if event["type"] == "response.reasoning.delta"
     )
+    assert not any(event["type"] == "response.raw.delta" for event in events)
+    assert reasoning_text == "observe"
+    # Chat endpoints drop dag content deltas; the answer arrives in run.finished.
+    assert not any(event["type"] == "response.content.delta" for event in events)
+    assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"
+
+
+def test_api_tool_validation_holds_answer_until_validation_passes() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+            ),
+            ChatResponse(content="Validated final answer."),
+            ChatResponse(content='{"passed": true, "issues": [], "summary": "good"}'),
+        ])
+    )
+    state.runner.enable_validation = True
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request("echo hello", target="tool"),
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    event_types = [event["type"] for event in events]
+    passed_index = event_types.index("validation.passed")
+    content_indexes = [
+        index for index, event in enumerate(events)
+        if event["type"] == "response.content.delta"
+    ]
     content_text = "".join(
         event["data"]["delta"]
         for event in events
         if event["type"] == "response.content.delta"
     )
-    assert not any(event["type"] == "response.raw.delta" for event in events)
-    assert reasoning_text == "observe"
-    assert content_text == "DAG agent final answer"
-    assert _stream_result(events[-1])["output_text"] == "DAG agent final answer"
+    assert "validation.started" in event_types
+    assert content_indexes and all(index > passed_index for index in content_indexes)
+    assert content_text == "Validated final answer."
+    assert event_types[-1] == "run.finished"
+    assert _stream_result(events[-1])["output_text"] == "Validated final answer."
+
+
+def test_api_tool_validation_retry_never_streams_rejected_answer() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(content="Rejected draft answer."),
+            ChatResponse(content='{"passed": false, "issues": [{"message": "incomplete"}], "summary": "needs work"}'),
+            ChatResponse(content="Improved final answer."),
+            ChatResponse(content='{"passed": true, "issues": [], "summary": "good"}'),
+        ])
+    )
+    state.runner.enable_validation = True
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request("answer me", target="tool"),
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    event_types = [event["type"] for event in events]
+    passed_index = event_types.index("validation.passed")
+    content_indexes = [
+        index for index, event in enumerate(events)
+        if event["type"] == "response.content.delta"
+    ]
+    content_text = "".join(
+        event["data"]["delta"]
+        for event in events
+        if event["type"] == "response.content.delta"
+    )
+    assert event_types.index("validation.retry") < passed_index
+    assert "Rejected draft" not in content_text
+    assert content_text == "Improved final answer."
+    assert all(index > passed_index for index in content_indexes)
+    assert _stream_result(events[-1])["output_text"] == "Improved final answer."
 
 
 def test_api_old_task_and_dag_lifecycle_routes_are_removed() -> None:
@@ -1186,6 +1255,46 @@ def test_api_dag_validation_and_missing_resources() -> None:
     assert client.post("/dags/missing/run").status_code == 404
     assert client.get("/dag-runs/missing").status_code == 404
     assert client.get("/dag-runs/missing/artifacts").status_code == 404
+
+
+def test_api_validation_toggle_overrides_config_default_and_survives_reset(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://example.test/v1",
+            "  model: cfg-model",
+            "  api_key: test-key",
+            "enable_result_validation: false",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    original_override = getattr(state, "validation_override", None)
+    state.close_runner()
+    setattr(state, "validation_override", None)
+    client = TestClient(app)
+
+    try:
+        assert client.get("/settings/validation").json()["enabled"] is False
+
+        enabled_response = client.post("/settings/validation", json={"enabled": True})
+
+        assert enabled_response.status_code == 200
+        assert enabled_response.json()["enabled"] is True
+        assert state.get_runner().enable_validation is True
+        assert state.get_runner().runtime.validator is not None
+
+        reset_response = client.post("/session/reset")
+        status_response = client.get("/settings/validation")
+
+        assert reset_response.status_code == 200
+        assert status_response.json()["enabled"] is True
+        assert state.get_runner().enable_validation is True
+        assert state.get_runner().runtime.validator is not None
+    finally:
+        state.close_runner()
+        setattr(state, "validation_override", original_override)
 
 
 def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) -> Runner:

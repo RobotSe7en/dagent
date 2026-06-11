@@ -42,6 +42,8 @@ from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import list_builtin_profiles
 from dagent.schemas import Artifact, DAGEdge
 
+from api.stream_gate import gate_chat_display
+
 
 MessageTarget = Literal["auto", "tool", "dag"]
 
@@ -125,6 +127,7 @@ class ApiState:
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.validation_override: bool | None = None
 
     def get_runner(self) -> Runner:
         if self.runner is None:
@@ -134,6 +137,8 @@ class ApiState:
             )
             self._install_custom_capabilities()
             self.reload_custom_mcp()
+            if self.validation_override is not None:
+                self.runner.enable_validation = self.validation_override
         return self.runner
 
     def close_runner(self) -> None:
@@ -208,7 +213,8 @@ async def get_validation_status() -> dict[str, bool]:
 @app.post("/settings/validation")
 async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
     runner = state.get_runner()
-    runner.enable_validation = payload.get("enabled", False)
+    state.validation_override = payload.get("enabled", False)
+    runner.enable_validation = state.validation_override
     return {"enabled": runner.enable_validation}
 
 
@@ -713,10 +719,14 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
     async def events():
         sent_error = False
         try:
-            async for event in state.get_runner().stream(
-                agent,
-                messages=request.messages,
-                state=request.state,
+            runner = state.get_runner()
+            async for event in gate_chat_display(
+                runner.stream(
+                    agent,
+                    messages=request.messages,
+                    state=request.state,
+                ),
+                validation_enabled=runner.enable_validation,
             ):
                 if event.type == "run.failed":
                     sent_error = True
@@ -744,7 +754,11 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
         )
         sent_error = False
         try:
-            async for event in state.get_runner().resume_stream(decision, state=request.state):
+            runner = state.get_runner()
+            async for event in gate_chat_display(
+                runner.resume_stream(decision, state=request.state),
+                validation_enabled=runner.enable_validation,
+            ):
                 if event.type == "run.failed":
                     sent_error = True
                 yield _sse(event.model_dump(mode="json"))

@@ -637,7 +637,10 @@ class ToolAgentLoop:
             if hasattr(self.provider, "stream_chat"):
                 async for event in self.provider.stream_chat(messages, tools=tools):
                     if event.type == "token" and event.content:
-                        stream(event.content)
+                        if getattr(event, "channel", "content") == "reasoning":
+                            stream.emit_channel("reasoning", event.content)
+                        else:
+                            stream(event.content)
                     elif event.type == "done":
                         response = event.response
             else:
@@ -651,6 +654,8 @@ class ToolAgentLoop:
             "role": "assistant",
             "content": response.content,
         }
+        if response.reasoning_content:
+            message["reasoning_content"] = response.reasoning_content
         if response.tool_calls:
             message["tool_calls"] = [
                 self._tool_call_message(tool_call) for tool_call in response.tool_calls

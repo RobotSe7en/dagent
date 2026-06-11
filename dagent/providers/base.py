@@ -16,6 +16,7 @@ class ToolCall:
 @dataclass(frozen=True)
 class ChatResponse:
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
@@ -23,6 +24,7 @@ class ChatResponse:
 class ChatStreamEvent:
     type: Literal["token", "done"]
     content: str = ""
+    channel: Literal["reasoning", "content"] = "content"
     response: ChatResponse | None = None
 
 
@@ -40,4 +42,3 @@ class ChatProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream assistant response tokens and finish with a ChatResponse."""
-

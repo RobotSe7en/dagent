@@ -30,14 +30,6 @@ export function responseDeltaPayload(data: Record<string, unknown>): ResponseDel
   };
 }
 
-export function shouldStreamChatContent(
-  requestedTarget: 'auto' | 'tool' | 'dag',
-  resolvedKind: RunKind | null,
-): boolean {
-  if (resolvedKind !== null) return resolvedKind === 'tool';
-  return requestedTarget === 'tool';
-}
-
 function runKind(value: unknown): RunKind {
   if (value === 'tool' || value === 'dynamic_dag' || value === 'static_dag') return value;
   throw new Error(`Unsupported run kind: ${String(value)}`);
