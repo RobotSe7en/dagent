@@ -83,6 +83,20 @@ provider = dagent.Provider(
 runner = dagent.Runner(provider=provider)
 ```
 
+For OpenAI-compatible endpoints with reasoning controls, `reasoning` provides a
+small common shortcut while `extra_request_args` and `extra_body` pass
+provider-specific parameters through unchanged:
+
+```python
+provider = dagent.Provider(
+    base_url="https://api.deepseek.com",
+    model="deepseek-v4-pro",
+    api_key_env="DEEPSEEK_API_KEY",
+    reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
+    extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+)
+```
+
 Use `Runner.from_config(...)` only when you want provider settings, configured
 MCP servers, validation, or profile directories loaded from a config file:
 
@@ -94,6 +108,20 @@ configured = dagent.Runner.from_config("config.yaml")
 an optional user profile directory. Relative `profiles.directory` values resolve
 from the config file directory. If `profiles.directory` is omitted, built-in
 package profiles are used.
+
+```yaml
+provider:
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"
+  api_key_env: "DEEPSEEK_API_KEY"
+  reasoning:
+    enabled: true
+    effort: "high"
+    budget_tokens: 1024
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: true
+```
 
 Tools, MCP servers, and skill roots can be registered at construction.
 

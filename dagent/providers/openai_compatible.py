@@ -33,48 +33,55 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> ChatResponse:
-        kwargs: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        kwargs = self._completion_kwargs(messages, tools=tools)
 
         response = await self.client.chat.completions.create(**kwargs)
         message = response.choices[0].message
         content = message.content or ""
+        reasoning_content = _reasoning_content(message)
         if self.config.strip_thinking:
             content = _strip_think_blocks(content)
         tool_calls = [
             _convert_tool_call(tool_call)
             for tool_call in (message.tool_calls or [])
         ]
-        return ChatResponse(content=content, tool_calls=tool_calls)
+        return ChatResponse(
+            content=content,
+            reasoning_content=reasoning_content,
+            tool_calls=tool_calls,
+        )
 
     async def stream_chat(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        kwargs: dict[str, Any] = {
-            "model": self.config.model,
-            "messages": messages,
-            "stream": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        kwargs = self._completion_kwargs(messages, tools=tools, stream=True)
 
         stream = await self.client.chat.completions.create(**kwargs)
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_call_parts: dict[int, dict[str, Any]] = {}
         async for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+            reasoning_content = _reasoning_content(delta)
+            if reasoning_content:
+                reasoning_parts.append(reasoning_content)
+                yield ChatStreamEvent(
+                    type="token",
+                    channel="reasoning",
+                    content=reasoning_content,
+                )
             content = getattr(delta, "content", None) or ""
             if content:
                 content_parts.append(content)
-                yield ChatStreamEvent(type="token", content=content)
+                yield ChatStreamEvent(
+                    type="token",
+                    channel="content",
+                    content=content,
+                )
             for tool_call in getattr(delta, "tool_calls", None) or []:
                 index = int(getattr(tool_call, "index", 0) or 0)
                 part = tool_call_parts.setdefault(
@@ -97,6 +104,7 @@ class OpenAICompatibleProvider:
             type="done",
             response=ChatResponse(
                 content=content,
+                reasoning_content="".join(reasoning_parts),
                 tool_calls=[
                     _convert_streamed_tool_call(part)
                     for _, part in sorted(tool_call_parts.items())
@@ -104,6 +112,40 @@ class OpenAICompatibleProvider:
                 ],
             ),
         )
+
+    def _completion_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+        }
+        if stream:
+            kwargs["stream"] = True
+        if tools:
+            kwargs["tools"] = tools
+
+        generated_extra_body: dict[str, Any] = {}
+        reasoning = self.config.reasoning
+        if reasoning is not None:
+            if reasoning.effort is not None:
+                kwargs["reasoning_effort"] = reasoning.effort
+            if reasoning.budget_tokens is not None:
+                kwargs["thinking_token_budget"] = reasoning.budget_tokens
+            if reasoning.enabled is not None:
+                generated_extra_body["thinking"] = {
+                    "type": "enabled" if reasoning.enabled else "disabled",
+                }
+
+        extra_body = _merge_dicts(generated_extra_body, self.config.extra_body)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        kwargs.update(self.config.extra_request_args)
+        return kwargs
 
 
 class Provider(OpenAICompatibleProvider):
@@ -118,6 +160,9 @@ class Provider(OpenAICompatibleProvider):
         api_key_env: str | None = None,
         timeout_seconds: float = 60,
         strip_thinking: bool = False,
+        reasoning: dict[str, Any] | None = None,
+        extra_request_args: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
         client: AsyncOpenAI | None = None,
     ) -> None:
         super().__init__(
@@ -128,6 +173,9 @@ class Provider(OpenAICompatibleProvider):
                 api_key_env=api_key_env,
                 timeout_seconds=timeout_seconds,
                 strip_thinking=strip_thinking,
+                reasoning=reasoning,
+                extra_request_args=extra_request_args or {},
+                extra_body=extra_body or {},
             ),
             client=client,
         )
@@ -155,6 +203,25 @@ def _convert_streamed_tool_call(tool_call: dict[str, str]) -> ToolCall:
         name=tool_call["name"],
         arguments=_parse_tool_arguments(tool_call["arguments"]),
     )
+
+
+def _reasoning_content(item: Any) -> str:
+    reasoning = (
+        getattr(item, "reasoning_content", None)
+        or getattr(item, "reasoning", None)
+        or ""
+    )
+    return str(reasoning)
+
+
+def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _strip_think_blocks(content: str) -> str:

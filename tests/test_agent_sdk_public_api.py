@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import dagent
-from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider, ToolCall
 
 
 def run(coro):
@@ -69,11 +69,21 @@ def test_provider_is_public_from_package_root() -> None:
         base_url="https://example.test/v1",
         model="test-model",
         api_key="test-key",
+        reasoning={"enabled": True, "effort": "medium"},
+        extra_request_args={"temperature": 0},
+        extra_body={"chat_template_kwargs": {"enable_thinking": True}},
     )
 
     assert provider.config.base_url == "https://example.test/v1"
     assert provider.config.model == "test-model"
     assert provider.config.api_key == "test-key"
+    assert provider.config.reasoning is not None
+    assert provider.config.reasoning.enabled is True
+    assert provider.config.reasoning.effort == "medium"
+    assert provider.config.extra_request_args == {"temperature": 0}
+    assert provider.config.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
     assert "config" not in inspect.signature(dagent.Provider).parameters
 
 
@@ -243,6 +253,55 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
         for node in result.state.trace.root.children
         if node.kind == "model_call"
     )
+
+
+def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
+    class ReasoningStreamProvider:
+        async def chat(self, messages, tools=None):
+            return ChatResponse(content="hello", reasoning_content="checking")
+
+        async def stream_chat(self, messages, tools=None):
+            yield ChatStreamEvent(
+                type="token",
+                channel="reasoning",
+                content="checking",
+            )
+            yield ChatStreamEvent(
+                type="token",
+                channel="content",
+                content="hello",
+            )
+            yield ChatStreamEvent(
+                type="done",
+                response=ChatResponse(
+                    content="hello",
+                    reasoning_content="checking",
+                ),
+            )
+
+    runner = dagent.Runner(workspace=tmp_path, provider=ReasoningStreamProvider())
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
+        ]
+
+    events = run(collect())
+
+    reasoning = "".join(
+        event.data.delta for event in events if event.type == "response.reasoning.delta"
+    )
+    content = "".join(
+        event.data.delta for event in events if event.type == "response.content.delta"
+    )
+    result = events[-1].data.result
+    assert reasoning == "checking"
+    assert content == "hello"
+    assert result.output_text == "hello"
 
 
 def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:

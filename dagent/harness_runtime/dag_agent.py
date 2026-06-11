@@ -262,7 +262,13 @@ class DAGAgentLoop:
             on_token=on_token,
             on_event=on_event,
         )
-        messages.append({"role": "assistant", "content": response.content})
+        assistant_message: dict[str, Any] = {
+            "role": "assistant",
+            "content": response.content,
+        }
+        if response.reasoning_content:
+            assistant_message["reasoning_content"] = response.reasoning_content
+        messages.append(assistant_message)
         result = dag_from_model_output(
             response.content,
             task_id=resolved_task_id,
@@ -870,8 +876,11 @@ async def _chat_for_dag(
         if hasattr(provider, "stream_chat"):
             async for event in provider.stream_chat(messages):
                 if event.type == "token" and event.content:
-                    content += event.content
-                    stream(event.content)
+                    if getattr(event, "channel", "content") == "reasoning":
+                        stream.emit_channel("reasoning", event.content)
+                    else:
+                        content += event.content
+                        stream(event.content)
                 elif event.type == "done":
                     response = event.response
         else:
