@@ -37,6 +37,11 @@ const {
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
 const {
+  appendReasoningTimeline,
+  appendTextTimeline,
+  closeReasoningTimeline,
+} = await importTypeScript('../src/chatTimeline.ts');
+const {
   responseDeltaPayload,
   runStartedPayload,
   shouldStreamChatContent,
@@ -340,6 +345,29 @@ test('appendRunTranscriptToken streams consecutive text into one message', () =>
       type: 'text',
       content: 'Hello world',
     },
+  ]);
+});
+
+test('appendReasoningTimeline streams reasoning into one open block', () => {
+  const timeline = appendReasoningTimeline([], 'I should ');
+  const next = appendReasoningTimeline(timeline, 'check the docs.');
+
+  assert.deepEqual(timeline, [
+    { type: 'reasoning', content: 'I should ', closed: false },
+  ]);
+  assert.deepEqual(next, [
+    { type: 'reasoning', content: 'I should check the docs.', closed: false },
+  ]);
+});
+
+test('closeReasoningTimeline closes reasoning before answer text', () => {
+  const timeline = appendReasoningTimeline([], 'I should check the docs.');
+  const closed = closeReasoningTimeline(timeline);
+  const next = appendTextTimeline(closed, 'The answer is ready.');
+
+  assert.deepEqual(next, [
+    { type: 'reasoning', content: 'I should check the docs.', closed: true },
+    { type: 'text', content: 'The answer is ready.' },
   ]);
 });
 

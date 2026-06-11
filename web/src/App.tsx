@@ -127,6 +127,14 @@ import {
   type RunDialogSummary,
   type RunTranscriptItem,
 } from './orchestrationRun';
+import {
+  appendReasoningTimeline,
+  appendTextTimeline,
+  closeReasoningTimeline,
+  upsertDagTimeline,
+  type ChatMessage,
+  type MessageTimelineItem,
+} from './chatTimeline';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -377,25 +385,14 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
   return capability?.policy?.risk ?? 'low';
 }
 
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  kind?: 'text';
-  capabilityEvents?: CapabilityStreamEvent[];
-  timeline?: MessageTimelineItem[];
-  dagSnapshot?: Dag;
-  traceSnapshot?: TraceLogEvent[];
-}
-
-type MessageTimelineItem =
-  | { type: 'text'; content: string }
-  | { type: 'dag'; dag: Dag }
-  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
-  | { type: 'validation'; event: ValidationFeedbackEvent }
-  | { type: 'validating' };
-
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
+type TokenChannel = 'reasoning' | 'content';
+
+interface QueuedAssistantToken {
+  channel: TokenChannel;
+  content: string;
+}
 
 function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
@@ -481,7 +478,7 @@ export function App() {
   const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
-  const tokenQueueRef = useRef<string[]>([]);
+  const tokenQueueRef = useRef<QueuedAssistantToken[]>([]);
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const contentStreamedRef = useRef(false);
@@ -696,8 +693,29 @@ export function App() {
     updateLastAssistantText((message) => ({
       ...message,
       content: `${message.content}${content}`,
-      timeline: appendTextTimeline(message.timeline, content),
+      timeline: appendTextTimeline(closeReasoningTimeline(message.timeline), content),
     }));
+  };
+
+  const appendAssistantReasoning = (content: string) => {
+    updateLastAssistantText((message) => ({
+      ...message,
+      timeline: appendReasoningTimeline(message.timeline, content),
+    }));
+  };
+
+  const closeAssistantReasoning = () => {
+    setMessages((items) => {
+      const copy = [...items];
+      const last = copy[copy.length - 1];
+      if (last?.role !== 'assistant' || (last.kind ?? 'text') !== 'text') return items;
+      if (!last.timeline?.some((item) => item.type === 'reasoning' && !item.closed)) return items;
+      copy[copy.length - 1] = {
+        ...last,
+        timeline: closeReasoningTimeline(last.timeline),
+      };
+      return copy;
+    });
   };
 
   const stopTokenTimer = () => {
@@ -721,20 +739,30 @@ export function App() {
       return;
     }
 
-    const chunk = next.slice(0, 14);
-    const rest = next.slice(14);
+    const chunk = next.content.slice(0, 14);
+    const rest = next.content.slice(14);
     if (rest) {
-      tokenQueueRef.current.unshift(rest);
+      tokenQueueRef.current.unshift({ ...next, content: rest });
     }
-    appendAssistantContent(chunk);
+    if (next.channel === 'reasoning') {
+      appendAssistantReasoning(chunk);
+    } else {
+      appendAssistantContent(chunk);
+    }
   };
 
   const flushQueuedTokensNow = () => {
-    const pending = tokenQueueRef.current.join('');
+    const pending = tokenQueueRef.current;
     tokenQueueRef.current = [];
     stopTokenTimer();
     resolveTokenDrain();
-    if (pending) appendAssistantContent(pending);
+    pending.forEach((item) => {
+      if (item.channel === 'reasoning') {
+        appendAssistantReasoning(item.content);
+      } else {
+        appendAssistantContent(item.content);
+      }
+    });
   };
 
   const ensureTokenTimer = () => {
@@ -742,25 +770,29 @@ export function App() {
     tokenTimerRef.current = window.setInterval(flushTokenQueue, 24);
   };
 
-  const enqueueAssistantToken = (content: string) => {
+  const enqueueAssistantToken = (channel: TokenChannel, content: string) => {
     if (!content) return;
     const shouldFlushImmediately = tokenQueueRef.current.length === 0 && tokenTimerRef.current === null;
-    tokenQueueRef.current.push(content);
+    tokenQueueRef.current.push({ channel, content });
     if (shouldFlushImmediately) {
       flushTokenQueue();
     }
     ensureTokenTimer();
   };
 
+  const enqueueReasoningToken = (content: string) => {
+    enqueueAssistantToken('reasoning', content);
+  };
+
   const enqueueContentToken = (content: string) => {
     if (!content) return;
     contentStreamedRef.current = true;
-    enqueueAssistantToken(content);
+    enqueueAssistantToken('content', content);
   };
 
   const enqueueFinalAnswer = (finalAnswer: string) => {
     if (!finalAnswer) return;
-    tokenQueueRef.current.push(finalAnswer);
+    tokenQueueRef.current.push({ channel: 'content', content: finalAnswer });
     ensureTokenTimer();
   };
 
@@ -816,6 +848,7 @@ export function App() {
 
   const appendValidationFeedback = (event: ValidationFeedbackEvent) => {
     flushQueuedTokensNow();
+    closeAssistantReasoning();
     updateLastAssistantText((message) => ({
       ...message,
       timeline: [...(message.timeline ?? []), { type: 'validation', event }],
@@ -824,6 +857,7 @@ export function App() {
 
   const appendValidating = () => {
     flushQueuedTokensNow();
+    closeAssistantReasoning();
     updateLastAssistantText((message) => ({
       ...message,
       timeline: [...(message.timeline ?? []), { type: 'validating' }],
@@ -833,6 +867,7 @@ export function App() {
   const appendCapabilityMessage = (event: CapabilityStreamEvent) => {
     if (event.type === 'capability.call.completed' && event.content?.startsWith('[PENDING_REVIEW]')) return;
     flushQueuedTokensNow();
+    closeAssistantReasoning();
     updateLastAssistantText((message) => {
       const capabilityEvents = [...(message.capabilityEvents ?? []), event];
       const timeline = [...(message.timeline ?? [])];
@@ -1197,13 +1232,14 @@ export function App() {
         },
         onDag: (nextDag) => {
           flushQueuedTokensNow();
+          closeAssistantReasoning();
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
           if (shouldOpenDagReview(nextDag)) setReviewOpen(true);
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onReasoning: (event) => enqueueReasoningToken(event.delta),
         onContent: (event) => {
           if (shouldStreamChatContent(target, resolvedRunKind)) enqueueContentToken(event.delta);
         },
@@ -1218,6 +1254,7 @@ export function App() {
           const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
           flushQueuedTokensNow();
+          closeAssistantReasoning();
           if (resultDag) {
             syncDag(resultDag);
             attachDagToLastAssistant(resultDag);
@@ -1281,12 +1318,14 @@ export function App() {
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
         onDag: (nextDag) => {
+          flushQueuedTokensNow();
+          closeAssistantReasoning();
           syncDag(nextDag);
           attachDagToLastAssistant(nextDag);
         },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onReasoning: (event) => enqueueReasoningToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
@@ -1298,6 +1337,7 @@ export function App() {
           const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
           flushQueuedTokensNow();
+          closeAssistantReasoning();
           if (resultDag) {
             syncDag(resultDag);
             attachDagToLastAssistant(resultDag);
@@ -1348,7 +1388,7 @@ export function App() {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
-        onReasoning: (event) => enqueueAssistantToken(event.delta),
+        onReasoning: (event) => enqueueReasoningToken(event.delta),
         onContent: (event) => enqueueContentToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
@@ -1356,6 +1396,7 @@ export function App() {
           const resultReview = payload.result.state?.pending_review ?? null;
           setRunState(payload.result.state ?? null);
           flushQueuedTokensNow();
+          closeAssistantReasoning();
           handlePendingReview(resultReview);
           enqueueFinalAnswerIfMissing(payload.result.output_text);
           appendTrace({ type: 'model', label: 'runtime_completed', detail: 'Capability loop completed the request.', status: 'completed' });
@@ -1659,6 +1700,8 @@ function MessageTimeline({
             dag={item.dag}
             onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
           />
+        ) : item.type === 'reasoning' ? (
+          <ReasoningBlock key={`reasoning-${index}`} content={item.content} closed={item.closed} />
         ) : item.type === 'validation' ? (
           <ValidationFeedbackCard key={`validation-${index}`} event={item.event} />
         ) : item.type === 'validating' ? (
@@ -1667,9 +1710,16 @@ function MessageTimeline({
           <MessageContent key={`text-${index}`} content={item.content} />
         ) : null,
       )}
-      {!message.content && loading ? <MessageContent content="..." /> : null}
+      {!timelineHasVisibleContent(message.timeline) && !message.content && loading ? <MessageContent content="..." /> : null}
     </div>
   );
+}
+
+function timelineHasVisibleContent(timeline: MessageTimelineItem[] | undefined): boolean {
+  return Boolean(timeline?.some((item) => {
+    if (item.type === 'text' || item.type === 'reasoning') return Boolean(item.content);
+    return true;
+  }));
 }
 
 const DSL_NODE_RE = /^[A-Za-z][A-Za-z0-9_-]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*\(.*\)/;
@@ -1689,10 +1739,7 @@ function MessageContent({ content }: { content: string }) {
     <div className="markdown-body">
       {parts.map((part, index) =>
         part.type === 'think' ? (
-          <details key={`${part.type}-${index}`} className="think-block" open={!part.closed}>
-            <summary>Thinking</summary>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{part.content || '...'}</ReactMarkdown>
-          </details>
+          <ReasoningBlock key={`${part.type}-${index}`} content={part.content} closed={Boolean(part.closed)} />
         ) : looksLikeDsl(part.content) ? null : (
           <ReactMarkdown key={`${part.type}-${index}`} remarkPlugins={[remarkGfm]}>{part.content}</ReactMarkdown>
         ),
@@ -1701,65 +1748,13 @@ function MessageContent({ content }: { content: string }) {
   );
 }
 
-function appendTextTimeline(
-  timeline: MessageTimelineItem[] | undefined,
-  content: string,
-): MessageTimelineItem[] {
-  if (!content) return timeline ?? [];
-  const items = [...(timeline ?? [])];
-  const last = items[items.length - 1];
-  if (last?.type === 'text') {
-    items[items.length - 1] = { type: 'text', content: `${last.content}${content}` };
-    return items;
-  }
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.type === 'text' && hasUnclosedThink(item.content)) {
-      items[i] = { type: 'text', content: `${item.content}${content}` };
-      return items;
-    }
-  }
-  items.push({ type: 'text', content });
-  return items;
-}
-
-function hasUnclosedThink(content: string): boolean {
-  return (content.match(/<think>/g) || []).length > (content.match(/<\/think>/g) || []).length;
-}
-
-function ensureTextTimeline(
-  timeline: MessageTimelineItem[] | undefined,
-  content: string,
-): MessageTimelineItem[] {
-  if (!content) return timeline ?? [];
-  const items = timeline ?? [];
-  const last = items[items.length - 1];
-  if (last?.type === 'text' && last.content.trim()) {
-    return items;
-  }
-  return appendTextTimeline(timeline, content);
-}
-
-function upsertDagTimeline(
-  timeline: MessageTimelineItem[] | undefined,
-  dag: Dag,
-): MessageTimelineItem[] {
-  const items = [...(timeline ?? [])];
-  const dagKey = dag.task_id || dag.dag_id;
-  const existingIndex = items.findIndex(
-    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey && item.dag.version === dag.version,
+function ReasoningBlock({ content, closed }: { content: string; closed: boolean }) {
+  return (
+    <details className="think-block" open={!closed}>
+      <summary>Thinking</summary>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '...'}</ReactMarkdown>
+    </details>
   );
-  if (existingIndex !== -1) {
-    items[existingIndex] = { type: 'dag', dag };
-    return items;
-  }
-  const last = items[items.length - 1];
-  if (last?.type === 'dag' && (last.dag.task_id || last.dag.dag_id) === dagKey && last.dag.version === dag.version) {
-    items[items.length - 1] = { type: 'dag', dag };
-  } else {
-    items.push({ type: 'dag', dag });
-  }
-  return items;
 }
 
 function splitThinking(content: string): Array<{ type: 'answer' | 'think'; content: string; closed?: boolean }> {
