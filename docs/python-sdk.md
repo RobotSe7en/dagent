@@ -106,7 +106,8 @@ configured = dagent.Runner.from_config("config.yaml")
 `config.yaml` can define provider settings, MCP servers, result validation, and
 an optional user profile directory. Relative `profiles.directory` values resolve
 from the config file directory. If `profiles.directory` is omitted, built-in
-package profiles are used.
+package profiles are used. `enable_result_validation` is the initial default;
+`runner.enable_validation` can override it for the current runtime session.
 
 ```yaml
 provider:
@@ -196,6 +197,9 @@ for definition in runner.list_capabilities(kind="mcp"):
 runner.enable_validation = True
 trace = runner.run_trace(run_id)
 ```
+
+Result validation runs for tool and DAG outcomes that include execution context.
+Plain chat-only responses are not validated.
 
 ## Tools And Structured Results
 

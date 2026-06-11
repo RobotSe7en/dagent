@@ -266,7 +266,13 @@ class Runner:
 
     @enable_validation.setter
     def enable_validation(self, value: bool) -> None:
-        self._runtime.enable_validation = bool(value)
+        enabled = bool(value)
+        if enabled and self._runtime.validator is None:
+            self._runtime.validator = ValidatorAgent(
+                provider=self._runtime.provider,
+                profile=_resolve_profile("validator_agent", profile_root=self.profile_root),
+            )
+        self._runtime.enable_validation = enabled
 
     def run_trace(self, run_id: str) -> RunTrace | None:
         """Return the cumulative run trace for a completed/awaiting run."""

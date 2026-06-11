@@ -115,6 +115,10 @@ or profile directories should come from a config file:
 runner = dagent.Runner.from_config("config.yaml", workspace=".", capabilities=[search])
 ```
 
+The config file sets the initial validation default. Runtime controls such as
+`runner.enable_validation` or the Web UI validation toggle can override it for
+the current session.
+
 The same capability types can be added after runner construction:
 
 ```python

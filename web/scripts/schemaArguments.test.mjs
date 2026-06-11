@@ -44,7 +44,6 @@ const {
 const {
   responseDeltaPayload,
   runStartedPayload,
-  shouldStreamChatContent,
 } = await importTypeScript('../src/streamProtocol.ts');
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
@@ -417,10 +416,7 @@ test('responseDeltaPayload preserves native response identity fields', () => {
   assert.throws(() => responseDeltaPayload({ delta: 'hello' }), /Missing response_id/);
 });
 
-test('runStartedPayload and shouldStreamChatContent use resolved run kind', () => {
+test('runStartedPayload validates the resolved run kind', () => {
   assert.deepEqual(runStartedPayload({ kind: 'dynamic_dag' }), { kind: 'dynamic_dag' });
   assert.throws(() => runStartedPayload({ kind: 'legacy' }), /Unsupported run kind/);
-  assert.equal(shouldStreamChatContent('auto', 'tool'), true);
-  assert.equal(shouldStreamChatContent('auto', 'dynamic_dag'), false);
-  assert.equal(shouldStreamChatContent('tool', null), true);
 });

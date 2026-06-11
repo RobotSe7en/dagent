@@ -1055,6 +1055,18 @@ def test_runner_from_config_uses_builtin_profiles_without_profile_directory(tmp_
     assert runner.runtime.tool_agent.profile.name == "conversation"
 
 
+def test_runner_enable_validation_prepares_default_validator(tmp_path) -> None:
+    runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]))
+
+    assert runner.enable_validation is False
+    assert runner.runtime.validator is None
+
+    runner.enable_validation = True
+
+    assert runner.enable_validation is True
+    assert runner.runtime.validator is not None
+
+
 def _profile_root(tmp_path, name: str = "conversation"):
     profiles = tmp_path / "profiles"
     profiles.mkdir(parents=True, exist_ok=True)
