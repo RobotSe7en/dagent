@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dagent-ai"
-version = "0.4.0"
+version = "0.4.1"
 description = "Human-reviewed Agent DAG framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,12 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/RobotSe7en/dagent"
+Documentation = "https://github.com/RobotSe7en/dagent/tree/main/docs"
+Repository = "https://github.com/RobotSe7en/dagent"
+Issues = "https://github.com/RobotSe7en/dagent/issues"
 
 [project.optional-dependencies]
 dev = [

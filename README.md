@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/dagent-logo.svg" alt="dagent" width="420">
+  <img src="https://raw.githubusercontent.com/RobotSe7en/dagent/main/docs/assets/dagent-logo.svg" alt="dagent" width="420">
 </p>
 
 <p align="center">
