@@ -562,7 +562,8 @@ class Runner:
         self,
         run_target: Callable[[LoopEventHandler], Awaitable[RunResult]],
     ) -> AsyncIterator[RunStreamEvent]:
-        queue: asyncio.Queue[RunStreamEvent] = asyncio.Queue()
+        stream_done = object()
+        queue: asyncio.Queue[RunStreamEvent | object] = asyncio.Queue()
         sequence = 0
         run_id: str | None = None
 
@@ -578,33 +579,39 @@ class Runner:
                 run_id = stream_event.run_id
             queue.put_nowait(with_sequence(stream_event))
 
-        task = asyncio.create_task(run_target(emit_event))
+        async def guarded() -> RunResult:
+            try:
+                return await run_target(emit_event)
+            finally:
+                queue.put_nowait(stream_done)
+
+        task = asyncio.create_task(guarded())
         try:
             while True:
-                if task.done() and queue.empty():
+                item = await queue.get()
+                if item is stream_done:
                     break
-                try:
-                    yield await asyncio.wait_for(queue.get(), timeout=0.05)
-                except TimeoutError:
-                    continue
+                yield item
 
             result = await task
             if result.pending_review is not None:
                 yield with_sequence(
                     _review_stream_event(result.pending_review, run_id=result.run_id)
                 )
-            yield RunStreamEvent(
-                type="run.finished",
-                data=RunFinishedData(result=result),
-                sequence=sequence + 1,
-                run_id=result.run_id,
+            yield with_sequence(
+                RunStreamEvent(
+                    type="run.finished",
+                    data=RunFinishedData(result=result),
+                    run_id=result.run_id,
+                )
             )
         except Exception as exc:
-            yield RunStreamEvent(
-                type="run.failed",
-                data=RunFailedData(message=str(exc), error_type=type(exc).__name__),
-                sequence=sequence + 1,
-                run_id=run_id,
+            yield with_sequence(
+                RunStreamEvent(
+                    type="run.failed",
+                    data=RunFailedData(message=str(exc), error_type=type(exc).__name__),
+                    run_id=run_id,
+                )
             )
             return
         finally:
