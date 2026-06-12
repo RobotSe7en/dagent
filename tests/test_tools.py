@@ -576,3 +576,117 @@ def test_run_command_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
     assert "[TRUNCATED: output exceeded limits, showing tail]" in output
     assert f"line{total - 1}" in output
     assert "line0" not in output
+
+
+# ---------------------------------------------------------------------------
+# list_files
+# ---------------------------------------------------------------------------
+
+
+def test_list_files_lists_dirs_and_files_with_structured_value(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "skip.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": "."},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert f"{tmp_path / 'src'}/" in result.content
+    assert str(tmp_path / "src" / "main.py") in result.content
+    assert ".venv" not in result.content
+    assert result.value == result.content.splitlines()
+
+
+def test_list_files_depth_limits_recursion(tmp_path: Path) -> None:
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (deep / "deep.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": ".", "depth": 2},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert f"{tmp_path / 'a' / 'b'}/" in result.content
+    assert "deep.txt" not in result.content
+
+
+def test_list_files_glob_lists_matching_files_only(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "notes.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": ".", "glob": "*.py"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.value == [str(tmp_path / "src" / "main.py")]
+    assert "notes.txt" not in result.content
+    assert not any(entry.endswith("/") for entry in result.value)
+
+
+def test_list_files_caps_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dagent.capabilities.tools import file_tools
+
+    monkeypatch.setattr(file_tools, "LIST_MAX_ENTRIES", 3)
+    for index in range(5):
+        (tmp_path / f"f{index}.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": "."},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert "[TRUNCATED] showing 3 of 5 entries." in result.content
+    assert len(result.value) == 3
+
+
+def test_list_files_rejects_paths_outside_boundary(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": "blocked"},
+        boundary=Boundary(mode="read_only", allowed_paths=["allowed"]),
+    )
+
+    assert result.status == "failed"
+    assert "outside allowed paths" in (result.error or "")
+
+
+def test_list_files_fails_on_non_directory(tmp_path: Path) -> None:
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": "file.txt"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "is not a directory" in (result.error or "")

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 
-ToolHandler = Callable[..., str]
+ToolResult = str | tuple[str, Any]
+ToolHandler = Callable[..., ToolResult]
 ToolAction = str
 ToolRisk = str
 

@@ -26,6 +26,7 @@ GREP_EXCLUDED_DIRS = {
 }
 GREP_MAX_MATCHES = 200
 GREP_TIMEOUT_SECONDS = 30
+LIST_MAX_ENTRIES = 500
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 200_000
 MAX_LINE_CHARS = 2000
@@ -112,6 +113,44 @@ def edit_file(path: str | Path, old_string: str, new_string: str) -> str:
     summary = f"Edited {resolved}: 1 replacement at line {first_line}."
     diff = _unified_diff_excerpt(normalized, updated, path=resolved)
     return f"{summary}\n{diff}" if diff else summary
+
+
+def list_files(
+    path: str | Path = ".",
+    depth: int = 3,
+    glob: str | None = None,
+) -> tuple[str, list[str]]:
+    """List files (and directories) under a path.
+
+    Without ``glob`` this lists directories (trailing ``/``) and files up to
+    ``depth`` levels deep. With ``glob`` it lists only files whose name matches
+    the pattern. Returns ``(content, entries)`` so DAG nodes can fan out over
+    the structured entry list.
+    """
+    if depth < 1:
+        raise ValueError("depth must be at least 1.")
+    root = Path(path)
+    if not root.is_dir():
+        raise ValueError(f"{root} is not a directory.")
+
+    entries: list[str] = []
+    for current, dirnames, filenames in os.walk(root):
+        level = len(Path(current).relative_to(root).parts)
+        dirnames[:] = sorted(name for name in dirnames if name not in GREP_EXCLUDED_DIRS)
+        if glob is None:
+            entries.extend(f"{Path(current) / name}/" for name in dirnames)
+        for name in sorted(filenames):
+            if glob is None or fnmatch.fnmatch(name, glob):
+                entries.append(str(Path(current) / name))
+        if level + 1 >= depth:
+            dirnames[:] = []
+
+    entries.sort()
+    shown = entries[:LIST_MAX_ENTRIES]
+    content = "\n".join(shown)
+    if len(entries) > LIST_MAX_ENTRIES:
+        content += f"\n[TRUNCATED] showing {LIST_MAX_ENTRIES} of {len(entries)} entries."
+    return content, shown
 
 
 def grep(path: str | Path, pattern: str, glob: str | None = None) -> str:
@@ -299,6 +338,37 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 },
             },
             "required": ["path", "old_string", "new_string"],
+        },
+    )
+    registry.register(
+        name="list_files",
+        handler=list_files,
+        action="read",
+        path_args=("path",),
+        default_args={"path": "."},
+        description=(
+            "List files and directories under a path (directories end with /). "
+            "Pass glob (e.g. *.py) to find matching files only. "
+            f"Returns at most {LIST_MAX_ENTRIES} entries."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list.",
+                    "default": ".",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "How many directory levels to include (1 = top level only).",
+                    "default": 3,
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Optional filename filter, e.g. *.py; lists matching files only.",
+                },
+            },
         },
     )
     registry.register(

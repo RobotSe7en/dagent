@@ -57,13 +57,13 @@ class ToolCapabilityProvider:
 
             def handler(invocation: CapabilityInvocation, *, tool_name: str = name) -> CapabilityResult:
                 try:
-                    content = _execute_tool(
+                    content, value = _execute_tool(
                         self.tools,
                         current_workspace_root(catalog.workspace_root),
                         tool_name,
                         invocation,
                     )
-                    return _completed(invocation, content)
+                    return _completed(invocation, content, value=value)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
@@ -394,7 +394,7 @@ def _execute_tool(
     workspace_root: Path,
     tool_name: str,
     invocation: CapabilityInvocation,
-) -> str:
+) -> tuple[str, Any]:
     tool = tools.get(tool_name)
     if tool is None:
         raise RuntimeError(f"Tool '{tool_name}' is not registered.")
@@ -408,17 +408,22 @@ def _execute_tool(
         )
     for arg_name in tool.command_args:
         enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
-    return tool.handler(**checked_args)
+    result = tool.handler(**checked_args)
+    if isinstance(result, tuple):
+        content, value = result
+        return str(content), value
+    return str(result), None
 
 
 def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def _completed(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
+def _completed(invocation: CapabilityInvocation, content: str, *, value: Any = None) -> CapabilityResult:
     return CapabilityResult.completed(
         invocation,
         content,
+        value=value,
         policy_decision=invocation.boundary.policy_decision(),
     )
 

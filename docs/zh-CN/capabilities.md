@@ -23,6 +23,7 @@ boundary 检查。
 | `tool.read_file` | low | 读取 UTF-8 文本文件。可选 `offset`（1 起始）和 `limit` 分页读取大文件；单次读取上限 2000 行 / 200 KB，超限时末尾追加标明已读范围的 `[TRUNCATED]` 行。二进制文件直接报错。未截断的完整读取按原文逐字节返回。 |
 | `tool.write_file` | medium | 原子写入 UTF-8 文本（临时文件 + rename），自动创建父目录，返回写入字节数。 |
 | `tool.edit_file` | medium | 将 `old_string` 的唯一一次精确匹配替换为 `new_string`。匹配必须唯一：零匹配或多处匹配都会失败，并提示先读文件、补充上下文。保留 CRLF 换行与 UTF-8 BOM；结果附带一段简短 unified diff。 |
+| `tool.list_files` | low | 列出路径下的文件与目录（目录以 `/` 结尾），最多 `depth` 层（默认 3）。传入 `glob`（如 `*.py`）时只列匹配的文件。输出上限 500 条；结构化返回值就是条目列表，DAG map 节点可直接对其扇出。 |
 | `tool.grep` | low | 按正则搜索文件，可选 `glob` 文件名过滤。`PATH` 上有 `rg` 时委托 ripgrep（argv 调用，绝不经过 shell），否则回退纯 Python 扫描。输出为 `file:line:content`，上限 200 条。 |
 | `tool.run_command` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。 |
 
