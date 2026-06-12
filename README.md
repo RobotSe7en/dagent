@@ -1,6 +1,10 @@
-# dagent
+<p align="center">
+  <img src="docs/assets/dagent-logo.svg" alt="dagent" width="420">
+</p>
 
-> **Plan globally. Re-plan locally.**
+<p align="center">
+  <strong>Plan globally. Re-plan locally.</strong>
+</p>
 
 <p align="center">
   <a href="docs/en/README.md"><img alt="Documentation" src="https://img.shields.io/badge/docs-English-blue"></a>

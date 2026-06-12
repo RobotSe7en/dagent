@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+  <title id="title">Dagent logo</title>
+  <desc id="desc">The Dagent logo with a polished uppercase D agent mark and custom wordmark.</desc>
+  <defs>
+    <linearGradient id="d-body" x1="98" y1="70" x2="430" y2="438" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1558ff"/>
+      <stop offset="0.44" stop-color="#18c9df"/>
+      <stop offset="0.74" stop-color="#1786ff"/>
+      <stop offset="1" stop-color="#173fff"/>
+    </linearGradient>
+    <linearGradient id="d-tail" x1="92" y1="426" x2="282" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#862cff"/>
+      <stop offset="0.52" stop-color="#2b47ff"/>
+      <stop offset="1" stop-color="#16d7df"/>
+    </linearGradient>
+    <linearGradient id="eye-fill" x1="200" y1="206" x2="326" y2="272" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#24f1e8"/>
+      <stop offset="1" stop-color="#16b8ff"/>
+    </linearGradient>
+    <linearGradient id="word-d" x1="104" y1="624" x2="240" y2="492" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#862cff"/>
+      <stop offset="0.52" stop-color="#2454ff"/>
+      <stop offset="1" stop-color="#17cfe0"/>
+    </linearGradient>
+    <filter id="mark-shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="15" stdDeviation="13" flood-color="#071a56" flood-opacity="0.14"/>
+    </filter>
+  </defs>
+
+  <rect width="960" height="720" fill="#fff"/>
+
+  <g transform="translate(234 0) scale(.96)" filter="url(#mark-shadow)">
+    <path
+      fill="url(#d-tail)"
+      d="M112 447V303c0-48 39-87 88-87h57c28 0 51 23 51 51v78c0 28-23 51-51 51h-20c-28 0-56 10-77 29l-38 35c-4 4-10 1-10-5v-8z"/>
+    <path
+      fill="url(#d-body)"
+      fill-rule="evenodd"
+      d="M151 58h131c116 0 207 88 207 198S398 454 282 454H161c-19 0-28-24-13-36l55-45c17-15 39-23 62-23h24c57 0 101-41 101-94s-44-94-101-94h-68c-12 0-19 14-12 24l5 6c9 12 1 29-14 29h-49c-33 0-60-27-60-60v-42c0-34 27-61 60-61zm92 139c-24 0-43 19-43 43v76h87c39 0 68-27 68-60s-29-59-68-59h-44z"/>
+    <path
+      fill="#07154c"
+      d="M186 207h133c26 0 48 21 48 48s-22 48-48 48H186c-20 0-36-16-36-36v-24c0-20 16-36 36-36z"/>
+    <path
+      stroke="#10216c"
+      stroke-linecap="round"
+      stroke-width="10"
+      d="M256 207v-29"/>
+    <circle cx="256" cy="166" r="18" fill="url(#eye-fill)"/>
+    <rect width="25" height="48" x="207" y="230" fill="url(#eye-fill)" rx="13"/>
+    <rect width="25" height="48" x="284" y="230" fill="url(#eye-fill)" rx="13"/>
+  </g>
+
+  <g aria-label="dagent" transform="translate(92 105) scale(.78)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      stroke="url(#word-d)"
+      stroke-width="35"
+      d="M225 478v132h-62c-34 0-57-22-57-53s23-52 57-52h62"/>
+    <g transform="translate(58 0)">
+      <path
+        stroke="#07154c"
+        stroke-width="35"
+        d="M340 610V505h-58c-33 0-55 22-55 52s22 53 55 53h58"/>
+    </g>
+    <g transform="translate(111 0)">
+      <path
+        stroke="#07154c"
+        stroke-width="35"
+        d="M458 505h-59c-33 0-55 22-55 52s22 53 55 53h59v18c0 27-21 43-53 43h-36"/>
+    </g>
+    <g transform="translate(148 0)">
+      <path
+        stroke="#07154c"
+        stroke-width="35"
+        d="M481 557h112v-16c0-22-18-36-43-36h-16c-34 0-56 22-56 52s22 53 57 53h58"/>
+    </g>
+    <g transform="translate(165 0)">
+      <path
+        stroke="#07154c"
+        stroke-width="35"
+        d="M633 610V505h58c31 0 50 20 50 51v54"/>
+    </g>
+    <g transform="translate(184 0)">
+      <path
+        stroke="#07154c"
+        stroke-width="35"
+        d="M815 476v101c0 22 15 33 39 33h17M779 505h92"/>
+    </g>
+  </g>
+</svg>
