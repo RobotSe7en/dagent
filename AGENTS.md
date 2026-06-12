@@ -9,10 +9,17 @@ dynamic DAG planning, and user-defined static DAG execution. Public agent object
 are declarative configuration; `Runner` owns runtime state, provider wiring,
 capability registration, review continuations, and execution dispatch.
 
-This project has not been formally released yet. Prefer clean current design over
-backward compatibility. Do not add compatibility shims, legacy aliases, hidden
-conversion layers, or duplicate code paths just to preserve old behavior or old
-tests. Update or delete obsolete tests when the intended behavior has changed.
+This project has been released. Treat the public SDK and documented behavior as
+intentional user-facing contracts. Prefer clean current design, but do not break
+public APIs, capability ids, documented request shapes, config semantics, or
+example workflows casually. Public breaking changes must be deliberate,
+documented, covered by tests, and accompanied by migration guidance.
+
+Do not add hidden compatibility shims, legacy aliases, conversion layers, or
+duplicate code paths as a reflex. If compatibility is necessary for a released
+surface, make the compatibility policy explicit in the design, tests, and docs.
+Update or delete obsolete tests only when the intended released behavior has
+changed deliberately.
 
 ## Core Engineering Rules
 
@@ -76,10 +83,26 @@ tests. Update or delete obsolete tests when the intended behavior has changed.
 
 ## Public SDK Documentation
 
-- Keep README focused on project introduction, core ideas, quick start,
-  architecture, project layout, and links.
-- Keep detailed Python SDK usage in `docs/python-sdk.md`.
-- Runnable example code belongs in `examples/`.
+Write documentation like a mature open-source project: task-oriented, accurate,
+version-aware, easy to navigate, and synchronized with runnable examples. Prefer
+small focused docs over a single sprawling guide, and keep every page clear about
+the public surface it teaches.
+
+- Keep the root README focused on project introduction, core ideas, a short
+  quick start, architecture, project layout, and documentation links. The
+  architecture section belongs in the root README because it is central to the
+  project identity.
+- Use `docs/README.md` as the documentation landing page and reading map.
+- Use `docs/quick-start.md` for the first complete user path from install to a
+  working run.
+- Use `docs/python-sdk.md` as the public SDK overview and export/reference map,
+  synchronized with `dagent/__init__.py`.
+- Split feature documentation by user task and runtime boundary, for example:
+  `docs/runner-and-configuration.md`, `docs/capabilities.md`,
+  `docs/agents.md`, `docs/static-dag.md`, `docs/skills.md`, and
+  `docs/results-streaming-review.md`.
+- Runnable example code belongs in `examples/`; `examples/README.md` should map
+  each example to the docs page and feature it demonstrates.
 - Keep the local FastAPI/WebUI backend in top-level `api/`. Do not put it
   inside the installable `dagent` SDK package unless it becomes a deliberate
   public server package.
@@ -89,8 +112,12 @@ tests. Update or delete obsolete tests when the intended behavior has changed.
   YAML profile manifests, layered prompt files, or profile memory files.
 - `Runner(...)` must use explicit SDK inputs. Do not make it read `config.yaml`
   implicitly; configuration-file loading belongs in `Runner.from_config(...)`.
-- README quick start should show capability registration, ToolAgent, DagAgent,
-  and static Dag usage. Do not put provider connectivity checks there.
+- Root README quick start should stay short. Detailed setup, provider options,
+  agent choices, static DAGs, streaming, review, and skills belong in the
+  focused docs pages.
+- Do not put provider connectivity checks in the README quick start.
+- When changing public behavior, update the relevant docs, examples, and
+  migration notes in the same change.
 - Keep docs synchronized with the actual public exports from `dagent/__init__.py`.
 
 ## Testing And Verification
