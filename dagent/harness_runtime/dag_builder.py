@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.harness_runtime.artifacts import validate_artifact_paths
-from dagent.schemas.dag import PlanSpec
+from dagent.schemas.dag import PlanSpec, iter_dag_invocations
 from dagent.schemas import (
     DAG,
     DAGEdge,
@@ -19,12 +19,17 @@ from dagent.schemas import (
     CapabilityNodePayload,
     CapabilityDefinition,
     CapabilityInvocation,
+    LoopNodePayload,
+    MapNodePayload,
     StartNodePayload,
+    SubgraphNodePayload,
 )
 from dagent.schemas.value import (
+    ItemExpr,
+    NodeOutputExpr,
     ValueExpressionError,
     iter_artifact_exprs,
-    iter_node_output_exprs,
+    iter_value_exprs,
 )
 
 
@@ -164,6 +169,7 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             )
 
     _validate_dag_spec_value_expressions(spec)
+    _validate_dag_spec_output(spec)
     _validate_artifact_data_dependencies(spec)
 
     validate_dag(
@@ -173,30 +179,89 @@ def validate_dag_spec(spec: DAGSpec) -> None:
             nodes=[node.model_copy(deep=True) for node in spec.nodes],
             edges=[edge.model_copy(deep=True) for edge in spec.edges],
         )
-            )
+    )
+
+    for node in spec.nodes:
+        embedded = _embedded_spec(node.payload)
+        if embedded is None:
+            continue
+        try:
+            validate_dag_spec(embedded)
+        except DAGValidationError as exc:
+            raise DAGValidationError(f"Node '{node.id}' embedded DAG: {exc}") from exc
+
+
+def _embedded_spec(payload: Any) -> DAGSpec | None:
+    if isinstance(payload, SubgraphNodePayload):
+        return payload.spec
+    if isinstance(payload, LoopNodePayload):
+        return payload.body
+    return None
+
+
+def _payload_value_sources(payload: Any) -> list[tuple[Any, bool]]:
+    """Return ``(value, item_allowed)`` pairs of expression-bearing payload fields."""
+    if isinstance(payload, CapabilityNodePayload):
+        invocation = payload.invocation
+        return [
+            (invocation.arguments, False),
+            (invocation.boundary.allowed_paths, False),
+            (invocation.boundary.allowed_commands, False),
+        ]
+    if isinstance(payload, MapNodePayload):
+        invocation = payload.invocation
+        return [
+            (payload.items, False),
+            (invocation.arguments, True),
+            (invocation.boundary.allowed_paths, True),
+            (invocation.boundary.allowed_commands, True),
+        ]
+    if isinstance(payload, SubgraphNodePayload):
+        return [(payload.input, False)]
+    if isinstance(payload, LoopNodePayload):
+        return [(payload.input, False), (payload.until, True)]
+    return []
 
 
 def _validate_dag_spec_value_expressions(spec: DAGSpec) -> None:
     artifact_ids = set(spec.artifacts)
-    for node in spec.nodes:
-        if not isinstance(node.payload, CapabilityNodePayload):
-            continue
-        invocation = node.payload.invocation
+
+    def check_artifact_refs(value: Any, owner: str) -> None:
         try:
-            artifact_refs = [
-                *iter_artifact_exprs(invocation.arguments),
-                *iter_artifact_exprs(invocation.boundary.allowed_paths),
-                *iter_artifact_exprs(invocation.boundary.allowed_commands),
-            ]
+            artifact_refs = list(iter_artifact_exprs(value))
         except ValueExpressionError as exc:
-            raise DAGValidationError(
-                f"Node '{node.id}' has invalid value expression: {exc}"
-            ) from exc
+            raise DAGValidationError(f"{owner} has invalid value expression: {exc}") from exc
         for ref in artifact_refs:
             if ref.artifact_id not in artifact_ids:
                 raise DAGValidationError(
-                    f"Node '{node.id}' references unknown artifact '{ref.artifact_id}' in value expression."
+                    f"{owner} references unknown artifact '{ref.artifact_id}' in value expression."
                 )
+
+    for node in spec.nodes:
+        for value, _ in _payload_value_sources(node.payload):
+            check_artifact_refs(value, f"Node '{node.id}'")
+    for edge in spec.edges:
+        if edge.when is not None:
+            check_artifact_refs(edge.when, f"Edge '{edge.source}->{edge.target}' condition")
+    if spec.output is not None:
+        check_artifact_refs(spec.output, "DAG output")
+
+
+def _validate_dag_spec_output(spec: DAGSpec) -> None:
+    if spec.output is None:
+        return
+    node_ids = {node.id for node in spec.nodes}
+    try:
+        exprs = list(iter_value_exprs(spec.output))
+    except ValueExpressionError as exc:
+        raise DAGValidationError(f"DAG output has invalid value expression: {exc}") from exc
+    for expr in exprs:
+        if isinstance(expr, ItemExpr):
+            raise DAGValidationError("DAG output cannot use item expressions.")
+        if isinstance(expr, NodeOutputExpr) and expr.node_id not in node_ids:
+            raise DAGValidationError(
+                f"DAG output reads from unknown node '{expr.node_id}'."
+            )
 
 
 def _validate_artifact_data_dependencies(spec: DAGSpec) -> None:
@@ -264,20 +329,20 @@ def _normalize_dag_spec_node(
     definitions_by_id: dict[str, CapabilityDefinition] | None,
 ) -> DAGNode:
     normalized = node.model_copy(deep=True)
-    if not isinstance(normalized.payload, CapabilityNodePayload):
+    if definitions_by_id is None:
         return normalized
-    invocation = normalized.payload.invocation
-    if definitions_by_id is None or not invocation.capability_id:
-        return normalized
-    definition = definitions_by_id.get(invocation.capability_id)
-    if definition is None:
-        available = ", ".join(sorted(definitions_by_id)) or "(none)"
-        raise DAGValidationError(
-            f"Unknown capability '{invocation.capability_id}'. "
-            f"Available capabilities: {available}."
-        )
-    normalized.payload.invocation.kind = definition.kind
-    normalized.payload.invocation.risk = definition.policy.risk
+    for invocation in iter_dag_invocations([normalized]):
+        if not invocation.capability_id:
+            continue
+        definition = definitions_by_id.get(invocation.capability_id)
+        if definition is None:
+            available = ", ".join(sorted(definitions_by_id)) or "(none)"
+            raise DAGValidationError(
+                f"Unknown capability '{invocation.capability_id}'. "
+                f"Available capabilities: {available}."
+            )
+        invocation.kind = definition.kind
+        invocation.risk = definition.policy.risk
     return normalized
 
 
@@ -302,7 +367,10 @@ def validate_dag(dag: DAG) -> None:
             if node.id != "start":
                 raise DAGValidationError("Start node must use id 'start'.")
             continue
-        if isinstance(node.payload, CapabilityNodePayload) and not node.payload.invocation.capability_id:
+        if (
+            isinstance(node.payload, (CapabilityNodePayload, MapNodePayload))
+            and not node.payload.invocation.capability_id
+        ):
             raise DAGValidationError(f"Node '{node.id}' must declare a capability.")
 
     node_id_set = set(node_ids)
@@ -340,30 +408,40 @@ def _validate_value_expression_dependencies(nodes: list[DAGNode], edges: list[DA
             upstream_cache[node_id] = _upstream_ids(node_id, incoming)
         return upstream_cache[node_id]
 
-    for node in nodes:
-        if not isinstance(node.payload, CapabilityNodePayload):
-            continue
-        invocation = node.payload.invocation
+    def check_exprs(value: Any, *, owner: str, reader_id: str, item_allowed: bool) -> None:
         try:
-            refs = [
-                *iter_node_output_exprs(invocation.arguments),
-                *iter_node_output_exprs(invocation.boundary.allowed_paths),
-                *iter_node_output_exprs(invocation.boundary.allowed_commands),
-            ]
+            exprs = list(iter_value_exprs(value))
         except ValueExpressionError as exc:
-            raise DAGValidationError(
-                f"Node '{node.id}' has invalid value expression: {exc}"
-            ) from exc
-        upstream = upstream_ids(node.id)
-        for ref in refs:
-            if ref.node_id not in node_ids:
+            raise DAGValidationError(f"{owner} has invalid value expression: {exc}") from exc
+        upstream = upstream_ids(reader_id)
+        for expr in exprs:
+            if isinstance(expr, ItemExpr) and not item_allowed:
                 raise DAGValidationError(
-                    f"Node '{node.id}' reads output from unknown node '{ref.node_id}'."
+                    f"{owner} uses an item expression outside a map body or loop condition."
                 )
-            if ref.node_id not in upstream:
-                raise DAGValidationError(
-                    f"Node '{node.id}' reads output from node '{ref.node_id}' and must depend on it."
-                )
+            if isinstance(expr, NodeOutputExpr):
+                if expr.node_id not in node_ids:
+                    raise DAGValidationError(
+                        f"{owner} reads output from unknown node '{expr.node_id}'."
+                    )
+                if expr.node_id not in upstream:
+                    raise DAGValidationError(
+                        f"{owner} reads output from node '{expr.node_id}' and must depend on it."
+                    )
+
+    for node in nodes:
+        for value, item_allowed in _payload_value_sources(node.payload):
+            check_exprs(value, owner=f"Node '{node.id}'", reader_id=node.id, item_allowed=item_allowed)
+
+    for edge in edges:
+        if edge.when is None:
+            continue
+        check_exprs(
+            edge.when,
+            owner=f"Edge '{edge.source}->{edge.target}' condition",
+            reader_id=edge.target,
+            item_allowed=False,
+        )
 
 
 MAX_EXECUTION_CONTEXT_CHARS = 16000

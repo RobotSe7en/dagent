@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import field
 from typing import Any, Literal
+
+from pydantic import ConfigDict, TypeAdapter
+from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
 from dagent.schemas import (
@@ -39,8 +42,10 @@ RunStreamEventType = Literal[
     "run.failed",
 ]
 
+_STRICT = ConfigDict(extra="forbid")
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, config=_STRICT)
 class RunResult:
     """Stable public SDK result for agent and DAG runs."""
 
@@ -52,19 +57,7 @@ class RunResult:
         """Restore a ``RunResult`` from its current ``model_dump`` payload."""
         if isinstance(value, cls):
             return value
-        if not isinstance(value, dict):
-            raise TypeError("RunResult.model_validate expects a mapping.")
-        allowed_fields = {"output_text", "state"}
-        extra_fields = sorted(set(value) - allowed_fields)
-        if extra_fields:
-            joined = ", ".join(extra_fields)
-            raise ValueError(f"unsupported RunResult field(s): {joined}")
-        if "state" not in value:
-            raise ValueError("RunResult payload must include 'state'.")
-        return cls(
-            output_text=str(value.get("output_text") or ""),
-            state=RunState.model_validate(value["state"]),
-        )
+        return _RESULT_ADAPTER.validate_python(value)
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -160,20 +153,20 @@ class RunResult:
         return node.value if node.value is not None else node.output
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
-        return {
-            "output_text": self.output_text,
-            "state": _dump(self.state, mode=mode),
-        }
+        return _RESULT_ADAPTER.dump_python(self, mode=mode)
 
 
-@dataclass(frozen=True)
+_RESULT_ADAPTER = TypeAdapter(RunResult)
+
+
+@dataclass(frozen=True, config=_STRICT)
 class RunStartedData:
     """First stream event of every run; the envelope ``run_id`` is already final."""
 
     kind: RunResultKind
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ResponseStartedData:
     """Marks the start of one model call; ``response_id`` keys its deltas."""
 
@@ -185,7 +178,7 @@ class ResponseStartedData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class TextDeltaData:
     delta: str
     response_id: str
@@ -196,7 +189,7 @@ class TextDeltaData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ResponseFinishedData:
     """Marks the end of the model call identified by ``response_id``."""
 
@@ -208,17 +201,17 @@ class ResponseFinishedData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class DagUpdatedData:
     dag: DAG
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class TraceUpdatedData:
     trace: RunTrace
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ReviewRequiredData:
     """Signals that a run is awaiting review; full review data lives in ``run.finished`` state."""
 
@@ -227,25 +220,25 @@ class ReviewRequiredData:
     message: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ValidationStartedData:
     message: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ValidationPassedData:
     summary: str = ""
     issues: list[ValidationIssue] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class ValidationRetryData:
     summary: str = ""
     issues: list[ValidationIssue] = field(default_factory=list)
     reason: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class CapabilityCallStartedData:
     invocation_id: str
     capability_id: str
@@ -256,7 +249,7 @@ class CapabilityCallStartedData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class CapabilityCallCompletedData:
     invocation_id: str
     capability_id: str
@@ -267,7 +260,7 @@ class CapabilityCallCompletedData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class CapabilityCallFailedData:
     invocation_id: str
     capability_id: str
@@ -278,12 +271,12 @@ class CapabilityCallFailedData:
     parent_capability_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class RunFinishedData:
     result: RunResult
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class RunFailedData:
     message: str
     error_type: str
@@ -308,7 +301,7 @@ RunStreamEventData = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, config=_STRICT)
 class RunStreamEvent:
     """Typed event yielded by ``Runner.stream`` and ``Runner.resume_stream``."""
 
@@ -318,12 +311,10 @@ class RunStreamEvent:
     run_id: str | None = None
 
     def model_dump(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
-        return {
-            "type": self.type,
-            "data": _dump(self.data, mode=mode),
-            "sequence": self.sequence,
-            "run_id": self.run_id,
-        }
+        return _EVENT_ADAPTER.dump_python(self, mode=mode)
+
+
+_EVENT_ADAPTER = TypeAdapter(RunStreamEvent)
 
 
 def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:
@@ -336,22 +327,3 @@ def _node_trace(trace: RunTrace | None, node_id: str) -> RunTraceNode:
             return node
         stack.extend(node.children)
     raise KeyError(f"Node '{node_id}' was not found in this run trace.")
-
-
-def _dump(value: Any, *, mode: Literal["python", "json"]) -> Any:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(mode=mode)
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            item.name: _dump(getattr(value, item.name), mode=mode)
-            for item in fields(value)
-        }
-    if isinstance(value, dict):
-        return {key: _dump(item, mode=mode) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_dump(item, mode=mode) for item in value]
-    if isinstance(value, tuple):
-        return [_dump(item, mode=mode) for item in value] if mode == "json" else tuple(
-            _dump(item, mode=mode) for item in value
-        )
-    return value

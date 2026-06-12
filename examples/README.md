@@ -9,7 +9,7 @@ root with `uv run python -m examples.<module>`.
 | --- | --- |
 | Runner and tools | `dagent.Runner`, `dagent.tool`, `dagent.CapabilityBinding` |
 | Agents | `dagent.AutoAgent`, `dagent.ToolAgent`, `dagent.DagAgent` |
-| Static DAGs | `dagent.Dag`, `dagent.Node`, `dagent.InputRef`, `dagent.NodeOutputRef`, `dagent.ArtifactRef`, `dagent.ArtifactValueRef`, `dagent.FormatRef`, `dagent.validate_dag_spec` |
+| Static DAGs | `dagent.Dag`, `dagent.Node`, `dagent.MapNode`, `dagent.LoopNode`, `dagent.item`, `dagent.InputRef`, `dagent.NodeOutputRef`, `dagent.ItemRef`, `dagent.CompareRef`, `dagent.ArtifactRef`, `dagent.ArtifactValueRef`, `dagent.FormatRef`, `dagent.validate_dag_spec` |
 | Profiles | `dagent.AgentProfile`, `dagent.ProfileStore` |
 | Skills | `dagent.SkillStore`, `dagent.SkillEntry`, `dagent.SkillView`, skill store errors, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `dagent.RunResult`, `dagent.RunState`, `dagent.RunStreamEvent`, `dagent.ReviewHandle`, `dagent.ReviewDecision`, `dagent.ReviewLevel` |
@@ -22,6 +22,7 @@ root with `uv run python -m examples.<module>`.
 - `auto_agent.py`: run an `AutoAgent` that lets the runtime choose direct tool use or dynamic DAG execution.
 - `dynamic_dag_agent.py`: run a `DagAgent` that plans, executes a tool node, and returns a final answer.
 - `static_dag.py`: build and execute a static DAG with artifacts and a context-aware tool.
+- `control_flow.py`: conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG.
 - `streaming.py`: consume `Runner.stream(...)` typed events and read the final unified `RunResult`.
 - `runtime_registration_and_skills.py`: add tools and skill roots at runtime, and use `SkillStore` directly.
 

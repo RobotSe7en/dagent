@@ -13,7 +13,20 @@ from dagent.capabilities import (
     default_skill_roots,
 )
 from dagent.capabilities.decorator import CapabilityBinding, tool
-from dagent.dag_builder import ArtifactRef, ArtifactValueRef, Dag, FormatRef, InputRef, Node, NodeOutputRef
+from dagent.dag_builder import (
+    ArtifactRef,
+    ArtifactValueRef,
+    CompareRef,
+    Dag,
+    FormatRef,
+    InputRef,
+    ItemRef,
+    LoopNode,
+    MapNode,
+    Node,
+    NodeOutputRef,
+    item,
+)
 from dagent.harness_runtime import ArtifactUpload, CapabilityScope, validate_dag_spec
 from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
 from dagent.providers import Provider
@@ -47,6 +60,7 @@ __all__ = [
     "Boundary",
     "CapabilityBinding",
     "CapabilityDefinition",
+    "CompareRef",
     "CapabilityInvocation",
     "CapabilityPolicy",
     "CapabilityResult",
@@ -58,8 +72,12 @@ __all__ = [
     "Dag",
     "FormatRef",
     "InputRef",
+    "ItemRef",
+    "item",
     "list_builtin_profiles",
     "load_builtin_profile",
+    "LoopNode",
+    "MapNode",
     "Node",
     "NodeOutputRef",
     "PendingReview",

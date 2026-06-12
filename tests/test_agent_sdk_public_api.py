@@ -3,6 +3,7 @@ import inspect
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import dagent
 from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider, ToolCall
@@ -402,12 +403,41 @@ def test_run_result_model_validate_round_trips_current_payload_and_rejects_legac
     assert restored.output_text == "hello"
     assert restored.run_id == result.run_id
     assert restored.state == result.state
-    with pytest.raises(ValueError, match="unsupported RunResult field"):
+    with pytest.raises(ValidationError):
         dagent.RunResult.model_validate({
             "output": "hello",
             "output_text": "hello",
             "state": result.state.model_dump(mode="json"),
         })
+    with pytest.raises(ValidationError):
+        dagent.RunResult.model_validate({
+            "output_text": None,
+            "state": result.state.model_dump(mode="json"),
+        })
+
+
+def test_runner_stream_does_not_poll_queue_with_timeout(tmp_path, monkeypatch) -> None:
+    provider = MockProvider([ChatResponse(content="hello")])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    async def fail_wait_for(*args, **kwargs):
+        raise AssertionError("streaming should not use timeout polling")
+
+    monkeypatch.setattr(asyncio, "wait_for", fail_wait_for)
+
+    async def collect() -> list[dagent.RunStreamEvent]:
+        return [
+            event
+            async for event in runner.stream(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("hi"),
+            )
+        ]
+
+    events = run(collect())
+
+    assert events[-1].type == "run.finished"
+    assert events[-1].data.result.output_text == "hello"
 
 
 def test_runner_stream_failed_event_is_terminal(tmp_path) -> None:

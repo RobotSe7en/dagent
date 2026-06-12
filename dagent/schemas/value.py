@@ -46,8 +46,31 @@ class FormatExpr(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
 
 
+CompareOp = Literal["eq", "ne", "gt", "ge", "lt", "le"]
+
+
+class CompareExpr(BaseModel):
+    """Compare two values after resolving nested DAG value references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["compare"]
+    op: CompareOp
+    left: Any
+    right: Any
+
+
+class ItemExpr(BaseModel):
+    """The current map item or loop body output, valid only in those scopes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["item"]
+    path: list[ValuePathItem] = Field(default_factory=list)
+
+
 ValueExpr = Annotated[
-    GraphInputExpr | NodeOutputExpr | ArtifactExpr | FormatExpr,
+    GraphInputExpr | NodeOutputExpr | ArtifactExpr | FormatExpr | CompareExpr | ItemExpr,
     Field(discriminator="type"),
 ]
 
@@ -84,6 +107,9 @@ def iter_value_exprs(value: Any):
         if isinstance(expr, FormatExpr):
             for item in expr.values.values():
                 yield from iter_value_exprs(item)
+        elif isinstance(expr, CompareExpr):
+            yield from iter_value_exprs(expr.left)
+            yield from iter_value_exprs(expr.right)
         return
     if isinstance(value, dict):
         for item in value.values():
@@ -103,3 +129,7 @@ def iter_artifact_exprs(value: Any):
     for expr in iter_value_exprs(value):
         if isinstance(expr, ArtifactExpr):
             yield expr
+
+
+def has_item_expr(value: Any) -> bool:
+    return any(isinstance(expr, ItemExpr) for expr in iter_value_exprs(value))

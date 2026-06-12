@@ -2,10 +2,19 @@
 
 from dagent.schemas.common import Boundary, BoundaryMode, RiskLevel
 from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
-from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec
+from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
 from dagent.schemas.edge import DAGEdge
 from dagent.schemas.feedback import Feedback
-from dagent.schemas.node import CapabilityNodePayload, DAGNode, NodePayload, NodePayloadType, StartNodePayload
+from dagent.schemas.node import (
+    CapabilityNodePayload,
+    DAGNode,
+    LoopNodePayload,
+    MapNodePayload,
+    NodePayload,
+    NodePayloadType,
+    StartNodePayload,
+    SubgraphNodePayload,
+)
 from dagent.schemas.capability import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -46,8 +55,10 @@ __all__ = [
     "DAGNode",
     "DAGSpec",
     "Feedback",
+    "LoopNodePayload",
     "LoopOutcome",
     "LoopStatus",
+    "MapNodePayload",
     "PendingReview",
     "RunCapabilityScope",
     "RunState",
@@ -70,6 +81,8 @@ __all__ = [
     "RunTraceNodeKind",
     "RunTraceStatus",
     "StartNodePayload",
+    "SubgraphNodePayload",
     "ValidationIssue",
     "ValidationResult",
+    "iter_dag_invocations",
 ]

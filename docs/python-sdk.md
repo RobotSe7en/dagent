@@ -14,7 +14,7 @@ Most applications start with `Runner`, `@dagent.tool`, `AutoAgent`,
 |------|------------|
 | Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
-| Static DAGs | `Dag`, `Node`, `InputRef`, `NodeOutputRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
+| Static DAGs | `Dag`, `Node`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunState`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
@@ -411,6 +411,8 @@ immediately before the capability call.
 | `artifact.absolute_path` | First artifact path resolved inside the run workspace |
 | `artifact.absolute_paths` | All artifact paths resolved inside the run workspace |
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
+| `node.output.score >= 0.8` | Comparison resolved at runtime (`==`, `!=`, `<`, `<=`, `>`, `>=`) |
+| `dagent.item` / `dagent.item.url` | Current map element, or latest loop output in loop conditions |
 
 Referencing a previous node output does not create an edge. Add the dependency
 explicitly with `dag.add_edge(...)`:
@@ -481,6 +483,103 @@ dag.add_node(write_node)
 
 Validation fails closed when a node reads from a non-upstream node, references an
 unknown artifact, or uses a malformed value expression.
+
+## Static DAG Control Flow
+
+Static DAGs support conditional branches, runtime fan-out, embedded subgraphs,
+and bounded loops. All four keep the graph acyclic, serializable, and
+reviewable: conditions and item references are ordinary `$expr` bindings, and
+the review gate sees risk levels inside embedded specs.
+
+### Conditional edges
+
+`add_edge(..., when=...)` gates an edge on a runtime condition. Reference
+comparisons build the condition; a plain reference is tested for truthiness.
+A node whose live incoming edges all fail is marked `skipped`, and skips
+cascade downstream. Reading a skipped node's output resolves to `None`
+(`node.status` resolves to `"skipped"`).
+
+```python
+score_node = dagent.Node("score", target=score, inputs={"text": dag.input})
+publish_node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
+revise_node = dagent.Node("revise", target=revise, inputs={"content": dag.input})
+
+dag.add_edge(score_node, publish_node, when=score_node.output["score"] >= 0.8)
+dag.add_edge(score_node, revise_node, when=score_node.output["score"] < 0.8)
+```
+
+A node with several incoming edges runs when at least one live edge passes.
+Conditions must reference upstream nodes; validation fails closed otherwise.
+
+### Map fan-out
+
+`MapNode` fans one capability call out over a list resolved at runtime.
+`over` must resolve to a list; `inputs` reference the current element through
+`dagent.item`. The node value is the list of per-item values in item order,
+and each item call is recorded as a child of the node trace.
+
+```python
+fetch_all = dagent.MapNode(
+    "fetch_all",
+    target=fetch,
+    over=search_node.output.urls,
+    inputs={"url": dagent.item},
+    max_items=64,        # fail-closed cap on resolved list size
+    max_concurrency=8,
+)
+```
+
+### Subgraphs
+
+A `Node` whose target is a `Dag` runs that graph as an embedded subgraph.
+`inputs` becomes the child's graph input and may be any value, including
+references to parent nodes. The child declares its result with `dag.output`;
+that value becomes the node value in the parent. Child capabilities are
+absorbed into the parent `Dag`, so `Runner.run(parent)` registers everything.
+
+`dag.output` also works at the top level: when a static DAG with a declared
+output completes, the resolved value becomes `RunResult.output_text`
+(JSON-serialized when it is not a string) and `trace.root.value`.
+
+```python
+def report_dag() -> dagent.Dag:
+    sub = dagent.Dag("report", input=str)
+    fetch_node = dagent.Node("fetch", target=fetch, inputs={"url": sub.input})
+    publish_node = dagent.Node("publish", target=publish, inputs={"content": fetch_node.output})
+    sub.add_node(fetch_node)
+    sub.add_node(publish_node)
+    sub.add_edge(fetch_node, publish_node)
+    sub.output = publish_node.output
+    return sub
+
+
+report_node = dagent.Node("make_report", target=report_dag(), inputs=dag.input)
+```
+
+The subgraph's trace nests under the node, and embedded specs are validated
+recursively with the parent.
+
+### Loops
+
+`LoopNode` runs a `Dag` body repeatedly until `until` is truthy, at most
+`max_iterations` times. Each iteration's output feeds the next iteration's
+graph input; `until` is evaluated against the latest output via `dagent.item`.
+The node value is the last iteration's output, even when `max_iterations` is
+exhausted, and every iteration is a child of the node trace.
+
+```python
+refine = dagent.LoopNode(
+    "refine",
+    body=refine_dag(),           # a Dag with dag.output declared
+    until=dagent.item["score"] >= 0.9,
+    max_iterations=3,            # required; keeps cost reviewable
+    input=draft_node.output,
+)
+```
+
+`max_iterations` is mandatory so reviewers see a static bound on cost before
+approving the plan. There is no unbounded loop in static DAGs; open-ended
+iteration is `DagAgent`'s job.
 
 ## Results And Streaming
 

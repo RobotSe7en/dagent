@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from dagent.schemas.capability import CapabilityInvocation
+from dagent.schemas.value import ValueBinding
+
+if TYPE_CHECKING:
+    from dagent.schemas.dag import DAGSpec
 
 NodeStatus = Literal[
     "planned",
@@ -16,7 +20,7 @@ NodeStatus = Literal[
     "skipped",
 ]
 
-NodePayloadType = Literal["capability", "start"]
+NodePayloadType = Literal["capability", "start", "map", "subgraph", "loop"]
 
 
 class CapabilityNodePayload(BaseModel):
@@ -32,8 +36,46 @@ class StartNodePayload(BaseModel):
     type: Literal["start"]
 
 
+class MapNodePayload(BaseModel):
+    """Fan one capability invocation out over a runtime-resolved list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["map"]
+    items: Any
+    invocation: CapabilityInvocation
+    max_items: int = Field(default=64, ge=1)
+    max_concurrency: int = Field(default=8, ge=1)
+
+
+class SubgraphNodePayload(BaseModel):
+    """Run an embedded DAGSpec; the node value is the subgraph's declared output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["subgraph"]
+    spec: "DAGSpec"
+    input: Any = None
+
+
+class LoopNodePayload(BaseModel):
+    """Run an embedded DAGSpec repeatedly until ``until`` is truthy.
+
+    Each iteration's output feeds the next iteration's graph input;
+    ``until`` is evaluated against the latest output via item expressions.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["loop"]
+    body: "DAGSpec"
+    until: ValueBinding
+    max_iterations: int = Field(ge=1)
+    input: Any = None
+
+
 NodePayload = Annotated[
-    CapabilityNodePayload | StartNodePayload,
+    CapabilityNodePayload | StartNodePayload | MapNodePayload | SubgraphNodePayload | LoopNodePayload,
     Field(discriminator="type"),
 ]
 
@@ -47,4 +89,3 @@ class DAGNode(BaseModel):
     status: NodeStatus = "planned"
     inputs: list[str] = Field(default_factory=list)
     outputs: list[str] = Field(default_factory=list)
-

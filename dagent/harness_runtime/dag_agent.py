@@ -19,6 +19,7 @@ from dagent.harness_runtime.artifacts import (
 from dagent.harness_runtime.dag_executor import (
     DAGExecutionError,
     DAGExecutor,
+    SETTLED_NODE_STATUSES,
 )
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
@@ -50,6 +51,7 @@ from dagent.schemas import (
     RunTraceStatus,
     RunState,
     StartNodePayload,
+    iter_dag_invocations,
 )
 from dagent.schemas.node import NodeStatus
 from dagent.state import PromptBuilder, PromptRequest
@@ -399,11 +401,27 @@ class DAGAgentLoop:
                 "DAG execution failed.",
             )
             trace.artifacts = dict(dag_executor.artifact_states)
+        final_response = dag_run_fallback_message(record, trace)
+        if spec.output is not None and trace.status == "completed":
+            try:
+                output_value = dag_executor.resolve_spec_output(spec.output, trace)
+            except Exception as exc:
+                trace.root.status = "failed"
+                record.dag.status = "failed"
+                final_response = f"Failed to resolve DAG output: {exc}"
+            else:
+                trace.root.value = output_value
+                final_response = (
+                    output_value
+                    if isinstance(output_value, str)
+                    else json.dumps(output_value, ensure_ascii=False)
+                )
+                trace.root.output = final_response
         _emit_dag(on_dag, record.dag)
         return _dag_loop_outcome(
             record=record,
             status="completed" if trace.status == "completed" else "failed",
-            final_response=dag_run_fallback_message(record, trace),
+            final_response=final_response,
             dag=record.dag,
             trace=trace,
             spec_id=spec.id,
@@ -775,7 +793,7 @@ class DAGAgentLoop:
         node_traces = _node_traces_by_id(trace)
         dag_node_ids = _dag_node_ids(record.dag)
         all_nodes_completed = bool(dag_node_ids) and all(
-            nid in node_traces and node_traces[nid].status == "completed"
+            nid in node_traces and node_traces[nid].status in SETTLED_NODE_STATUSES
             for nid in dag_node_ids
         )
         completed = record.dag.status != "failed" and (
@@ -809,11 +827,10 @@ class DAGAgentLoop:
         capability_ids: Sequence[str] | None = None,
     ) -> None:
         unknown_tools = sorted({
-            node.payload.invocation.capability_id
-            for node in dag.nodes
-            if isinstance(node.payload, CapabilityNodePayload)
-            and node.payload.invocation.capability_id
-            and not self._is_enabled_capability(node.payload.invocation.capability_id, capability_ids)
+            invocation.capability_id
+            for invocation in iter_dag_invocations(dag.nodes)
+            if invocation.capability_id
+            and not self._is_enabled_capability(invocation.capability_id, capability_ids)
         })
         if unknown_tools:
             available_capabilities = [
@@ -946,7 +963,7 @@ def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str
                 lines.append(f"  - {node.id}: internal start")
                 continue
             if not isinstance(node.payload, CapabilityNodePayload):
-                lines.append(f"  - {node.id}: unsupported node payload")
+                lines.append(f"  - {node.id}: {node.payload.type} node")
                 continue
             invocation = node.payload.invocation
             lines.append(
@@ -1171,7 +1188,7 @@ def _dag_completed(record: RunState) -> bool:
     trace = record.trace
     node_traces = _node_traces_by_id(trace) if trace is not None else {}
     return all(
-        node.id in node_traces and node_traces[node.id].status == "completed"
+        node.id in node_traces and node_traces[node.id].status in SETTLED_NODE_STATUSES
         for node in record.dag.nodes
     )
 
