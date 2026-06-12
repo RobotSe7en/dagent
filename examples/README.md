@@ -1,32 +1,51 @@
-# Public SDK Examples
+# Runnable Examples
 
 These examples use the current public Python SDK. Run them from the repository
 root with `uv run python -m examples.<module>`.
 
-## Public Surface
+Most examples use `MockProvider`, so they do not require network access or model
+credentials.
 
-| Area | Public names |
-| --- | --- |
-| Runner and tools | `dagent.Runner`, `dagent.tool`, `dagent.CapabilityBinding` |
-| Agents | `dagent.AutoAgent`, `dagent.ToolAgent`, `dagent.DagAgent` |
-| Static DAGs | `dagent.Dag`, `dagent.Node`, `dagent.MapNode`, `dagent.LoopNode`, `dagent.item`, `dagent.InputRef`, `dagent.NodeOutputRef`, `dagent.ItemRef`, `dagent.CompareRef`, `dagent.ArtifactRef`, `dagent.ArtifactValueRef`, `dagent.FormatRef`, `dagent.validate_dag_spec` |
-| Profiles | `dagent.AgentProfile`, `dagent.ProfileStore` |
-| Skills | `dagent.SkillStore`, `dagent.SkillEntry`, `dagent.SkillView`, skill store errors, `default_skill_roots`, `default_managed_skill_root` |
-| Reviews and results | `dagent.RunResult`, `dagent.RunState`, `dagent.RunStreamEvent`, `dagent.ReviewHandle`, `dagent.ReviewDecision`, `dagent.ReviewLevel` |
-| Runtime schemas | `dagent.Boundary`, `dagent.CapabilityDefinition`, `dagent.CapabilityInvocation`, `dagent.CapabilityPolicy`, `dagent.CapabilityResult`, `dagent.DAG`, `dagent.DAGSpec`, `dagent.DAGRun`, `dagent.PendingReview`, `dagent.RunState`, `dagent.RunTrace`, `dagent.RiskLevel`, `dagent.ArtifactUpload`, `dagent.CapabilityScope` |
-| Providers | `dagent.Provider`; test/provider helpers from `dagent.providers` include `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` |
+## Example Map
 
-## Files
+| Example | Demonstrates | Related docs |
+| --- | --- | --- |
+| `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/agents.md), [Capabilities](../docs/capabilities.md) |
+| `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/agents.md) |
+| `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/agents.md), [Results, Streaming, and Review](../docs/results-streaming-review.md) |
+| `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/static-dag.md), [Capabilities](../docs/capabilities.md) |
+| `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/static-dag.md) |
+| `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/results-streaming-review.md) |
+| `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/runner-and-configuration.md), [Skills](../docs/skills.md) |
+| `quickstart.py` | Stream a model-backed quickstart agent against a real provider. | [Quick Start](../docs/quick-start.md), [Installation](../docs/installation.md) |
 
-- `tool_agent.py`: register a Python tool and run a profile-backed `ToolAgent`.
-- `auto_agent.py`: run an `AutoAgent` that lets the runtime choose direct tool use or dynamic DAG execution.
-- `dynamic_dag_agent.py`: run a `DagAgent` that plans, executes a tool node, and returns a final answer.
-- `static_dag.py`: build and execute a static DAG with artifacts and a context-aware tool.
-- `control_flow.py`: conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG.
-- `streaming.py`: consume `Runner.stream(...)` typed events and read the final unified `RunResult`.
-- `runtime_registration_and_skills.py`: add tools and skill roots at runtime, and use `SkillStore` directly.
+## Run Examples
 
-MCP runtime registration is available through `Runner.add_mcp_server(name, config)`,
-`Runner.replace_mcp_server(name, config)`, and `Runner.remove_mcp_server(name)`.
-It requires the optional MCP extra and a real stdio MCP server, so it is documented
-in the root README rather than exercised by these offline examples.
+```bash
+uv run python -m examples.tool_agent
+uv run python -m examples.auto_agent
+uv run python -m examples.dynamic_dag_agent
+uv run python -m examples.static_dag
+uv run python -m examples.control_flow
+uv run python -m examples.streaming
+uv run python -m examples.runtime_registration_and_skills
+```
+
+`examples.quickstart` uses a real provider configuration and requires a matching
+API key environment variable:
+
+```bash
+uv run python -m examples.quickstart
+```
+
+## MCP Note
+
+MCP runtime registration is available through:
+
+- `Runner.add_mcp_server(name, config)`
+- `Runner.replace_mcp_server(name, config)`
+- `Runner.remove_mcp_server(name)`
+
+It requires the optional MCP extra and a real stdio MCP server, so it is covered
+in [Runner and Configuration](../docs/runner-and-configuration.md) rather than
+exercised by these offline examples.
