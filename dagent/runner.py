@@ -57,7 +57,6 @@ from dagent.schemas import (
     Boundary,
     CapabilityDefinition,
     CapabilityInvocation,
-    CapabilityNodePayload,
     CapabilityResult,
     DAG,
     DAGSpec,
@@ -65,6 +64,7 @@ from dagent.schemas import (
     RunState,
     RunTrace,
     ValidationIssue,
+    iter_dag_invocations,
 )
 
 
@@ -759,17 +759,12 @@ class Runner:
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)
-        for node in resolved.nodes:
-            if not isinstance(node.payload, CapabilityNodePayload):
-                continue
-            invocation = node.payload.invocation
+        for invocation in iter_dag_invocations(resolved.nodes):
             definition = self._runtime.capability_catalog.get(invocation.capability_id)
             if definition is None:
                 continue
-            node.payload.invocation = invocation.model_copy(update={
-                "kind": definition.kind,
-                "risk": definition.policy.risk,
-            })
+            invocation.kind = definition.kind
+            invocation.risk = definition.policy.risk
         return resolved
 
 

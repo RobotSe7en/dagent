@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict, deque
+import operator
+from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -24,7 +27,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutor,
 )
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
-from dagent.harness_runtime.dag_builder import validate_dag
+from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag
 from dagent.schemas import (
     Artifact,
     ArtifactState,
@@ -32,16 +35,24 @@ from dagent.schemas import (
     CapabilityNodePayload,
     CapabilityResult,
     DAG,
+    DAGEdge,
     DAGNode,
+    DAGSpec,
+    LoopNodePayload,
+    MapNodePayload,
     RunTrace,
     RunTraceError,
     RunTraceNode,
     StartNodePayload,
+    SubgraphNodePayload,
+    iter_dag_invocations,
 )
 from dagent.schemas.value import (
     ArtifactExpr,
+    CompareExpr,
     FormatExpr,
     GraphInputExpr,
+    ItemExpr,
     NodeOutputExpr,
     parse_value_binding,
 )
@@ -49,6 +60,29 @@ from dagent.schemas.value import (
 
 class DAGExecutionError(RuntimeError):
     """Raised when a DAG cannot be executed safely."""
+
+
+SETTLED_NODE_STATUSES = frozenset({"completed", "skipped"})
+_NO_ITEM = object()
+_COMPARE_OPS = {
+    "eq": operator.eq,
+    "ne": operator.ne,
+    "gt": operator.gt,
+    "ge": operator.ge,
+    "lt": operator.lt,
+    "le": operator.le,
+}
+
+
+@dataclass(frozen=True)
+class _ValueScope:
+    """Everything a value expression can resolve against at one point in time."""
+
+    node_traces: dict[str, RunTraceNode]
+    graph_input: Any = None
+    artifacts: dict[str, Artifact] = field(default_factory=dict)
+    workspace_path: Path | None = None
+    item: Any = _NO_ITEM
 
 
 class DAGExecutor:
@@ -105,7 +139,7 @@ class DAGExecutor:
             _emit_trace_snapshot(on_event, trace)
             raise
 
-        completed = _all_nodes_completed(normalized, trace.dag_node_traces())
+        completed = _all_nodes_settled(normalized, trace.dag_node_traces())
         trace.root.status = "completed" if completed else "running"
         if completed:
             if trace.root.ended_at is None:
@@ -125,18 +159,20 @@ class DAGExecutor:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        pending_nodes = _next_ready_nodes(dag, node_traces)
+        scope = self._scope(node_traces)
+        pending_nodes = _settle_and_ready_nodes(dag, trace, node_traces, scope)
         if not pending_nodes:
             return
         for node in pending_nodes:
             if isinstance(node.payload, CapabilityNodePayload):
-                self._resolve_invocation_values(node, node_traces)
+                _resolve_invocation(node.payload.invocation, scope)
         batch_results = await asyncio.gather(
             *[
                 self.execute_node(
                     node,
                     dag,
                     parent_id=trace.root.id,
+                    scope=scope,
                     skills=skills,
                     on_token=on_token,
                     on_event=on_event,
@@ -168,38 +204,13 @@ class DAGExecutor:
     def normalize(self, dag: DAG) -> DAG:
         return dag.model_copy(deep=True)
 
-    def _resolve_invocation_values(
-        self,
-        node: DAGNode,
-        node_traces: dict[str, RunTraceNode],
-    ) -> None:
-        if not isinstance(node.payload, CapabilityNodePayload):
-            return
-        invocation = node.payload.invocation
-        invocation.arguments = _resolve_value(
-            invocation.arguments,
-            node_traces,
+    def _scope(self, node_traces: dict[str, RunTraceNode], *, item: Any = _NO_ITEM) -> _ValueScope:
+        return _ValueScope(
+            node_traces=node_traces,
             graph_input=self.graph_input,
             artifacts=self.artifacts,
             workspace_path=self.workspace_path,
-        )
-        invocation.boundary = invocation.boundary.model_copy(
-            update={
-                "allowed_paths": _resolve_value_list(
-                    invocation.boundary.allowed_paths,
-                    node_traces,
-                    graph_input=self.graph_input,
-                    artifacts=self.artifacts,
-                    workspace_path=self.workspace_path,
-                ),
-                "allowed_commands": _resolve_value_list(
-                    invocation.boundary.allowed_commands,
-                    node_traces,
-                    graph_input=self.graph_input,
-                    artifacts=self.artifacts,
-                    workspace_path=self.workspace_path,
-                ),
-            }
+            item=item,
         )
 
     async def execute_node(
@@ -208,6 +219,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         parent_id: str,
+        scope: _ValueScope | None = None,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -217,23 +229,64 @@ class DAGExecutor:
             node_id=node.id,
             label=node.title or node.id,
         )
-        if isinstance(node.payload, StartNodePayload):
+        payload = node.payload
+        if isinstance(payload, StartNodePayload):
             node.status = "completed"
             dag_node.status = "completed"
             dag_node.output = "started"
             dag_node.ended_at = _now()
             return dag_node
-        if not isinstance(node.payload, CapabilityNodePayload):
-            raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
         node.status = "running"
-        return await self.execute_capability_node(
-            node,
-            dag,
-            dag_node=dag_node,
-            skills=skills,
-            on_token=on_token,
-            on_event=on_event,
-        )
+        if isinstance(payload, CapabilityNodePayload):
+            return await self.execute_capability_node(
+                node,
+                dag,
+                dag_node=dag_node,
+                skills=skills,
+                on_token=on_token,
+                on_event=on_event,
+            )
+        if scope is None:
+            scope = self._scope({})
+        try:
+            if isinstance(payload, MapNodePayload):
+                value = await self._execute_map_node(
+                    node, dag, payload, dag_node=dag_node, scope=scope,
+                    skills=skills, on_token=on_token, on_event=on_event,
+                )
+            elif isinstance(payload, SubgraphNodePayload):
+                value = await self._execute_subgraph_node(
+                    payload, dag, dag_node=dag_node, scope=scope,
+                    skills=skills, on_token=on_token, on_event=on_event,
+                )
+            elif isinstance(payload, LoopNodePayload):
+                value = await self._execute_loop_node(
+                    payload, dag, dag_node=dag_node, scope=scope,
+                    skills=skills, on_token=on_token, on_event=on_event,
+                )
+            else:
+                raise DAGExecutionError(f"Node '{node.id}' has unsupported payload type.")
+        except Exception as exc:
+            node.status = "failed"
+            dag_node.status = "failed"
+            dag_node.error = _error(str(exc), type(exc).__name__)
+            dag_node.ended_at = _now()
+            self.partial_node_traces[node.id] = dag_node
+            raise
+        if self.workspace_path is not None and self.artifacts:
+            update_node_output_artifacts(
+                node,
+                artifacts=self.artifacts,
+                states=self.artifact_states,
+                workspace_path=self.workspace_path,
+            )
+        node.status = "completed"
+        dag_node.status = "completed"
+        dag_node.output = value
+        dag_node.value = value
+        dag_node.step_count = max(len(dag_node.children), 1)
+        dag_node.ended_at = _now()
+        return dag_node
 
     async def execute_capability_node(
         self,
@@ -331,6 +384,196 @@ class DAGExecutor:
         dag_node.ended_at = _now()
         return dag_node
 
+    async def _execute_map_node(
+        self,
+        node: DAGNode,
+        dag: DAG,
+        payload: MapNodePayload,
+        *,
+        dag_node: RunTraceNode,
+        scope: _ValueScope,
+        skills: tuple[str, ...] | None,
+        on_token: Callable[[str], None] | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> list[Any]:
+        items = _resolve_value(payload.items, scope)
+        if not isinstance(items, list):
+            raise DAGExecutionError(
+                f"Map node '{node.id}' items must resolve to a list, got {type(items).__name__}."
+            )
+        if len(items) > payload.max_items:
+            raise DAGExecutionError(
+                f"Map node '{node.id}' resolved {len(items)} items, exceeding max_items={payload.max_items}."
+            )
+        semaphore = asyncio.Semaphore(payload.max_concurrency)
+
+        async def run_item(index: int, item: Any) -> tuple[CapabilityInvocation, CapabilityResult]:
+            invocation = payload.invocation.model_copy(
+                deep=True,
+                update={"invocation_id": f"{node.id}_item{index}_{uuid4().hex[:8]}"},
+            )
+            _resolve_invocation(invocation, replace(scope, item=item))
+            emitter = _node_event_emitter(on_event, dag=dag, node=node, invocation=invocation)
+            token_stream = response_token_stream(
+                on_raw=on_token,
+                on_event=emitter,
+                context=ResponseStreamContext.create(
+                    run_id=dag.task_id,
+                    dag_id=dag.dag_id,
+                    node_id=node.id,
+                    parent_capability_id=invocation.capability_id,
+                ),
+            )
+            try:
+                async with semaphore:
+                    result = await self.capability_executor.execute(
+                        invocation,
+                        context=self._execution_context(dag, node, skills=skills),
+                        callbacks=CapabilityExecutionCallbacks(
+                            on_token=token_stream or on_token,
+                            on_event=emitter,
+                        ),
+                    )
+            finally:
+                if token_stream is not None:
+                    token_stream.finish()
+            return invocation, result
+
+        outcomes = await asyncio.gather(
+            *[run_item(index, item) for index, item in enumerate(items)],
+            return_exceptions=True,
+        )
+        values: list[Any] = []
+        failure: str | None = None
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                failure = failure or str(outcome)
+                continue
+            invocation, result = outcome
+            dag_node.children.append(
+                RunTraceNode.capability_call(
+                    parent_id=dag_node.id,
+                    invocation=invocation,
+                    result=result,
+                    error=result.error,
+                )
+            )
+            if result.status == "failed":
+                failure = failure or (result.error or result.content)
+            else:
+                values.append(result.value if result.value is not None else result.content)
+        if failure is not None:
+            raise DAGExecutionError(failure)
+        return values
+
+    async def _execute_subgraph_node(
+        self,
+        payload: SubgraphNodePayload,
+        dag: DAG,
+        *,
+        dag_node: RunTraceNode,
+        scope: _ValueScope,
+        skills: tuple[str, ...] | None,
+        on_token: Callable[[str], None] | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> Any:
+        return await self._run_embedded_spec(
+            payload.spec,
+            graph_input=_resolve_value(payload.input, scope),
+            dag=dag,
+            dag_node=dag_node,
+            label=payload.spec.name or payload.spec.id,
+            skills=skills,
+            on_token=on_token,
+            on_event=on_event,
+        )
+
+    async def _execute_loop_node(
+        self,
+        payload: LoopNodePayload,
+        dag: DAG,
+        *,
+        dag_node: RunTraceNode,
+        scope: _ValueScope,
+        skills: tuple[str, ...] | None,
+        on_token: Callable[[str], None] | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> Any:
+        current = _resolve_value(payload.input, scope)
+        value: Any = None
+        for iteration in range(1, payload.max_iterations + 1):
+            value = await self._run_embedded_spec(
+                payload.body,
+                graph_input=current,
+                dag=dag,
+                dag_node=dag_node,
+                label=f"{payload.body.name or payload.body.id} #{iteration}",
+                skills=skills,
+                on_token=on_token,
+                on_event=on_event,
+            )
+            if bool(_resolve_value(payload.until, replace(scope, item=value))):
+                break
+            current = value
+        return value
+
+    async def _run_embedded_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        graph_input: Any,
+        dag: DAG,
+        dag_node: RunTraceNode,
+        label: str,
+        skills: tuple[str, ...] | None,
+        on_token: Callable[[str], None] | None,
+        on_event: Callable[[dict[str, Any]], None] | None,
+    ) -> Any:
+        """Run one embedded spec to completion; its trace nests under ``dag_node``."""
+        child_dag = compile_dag_spec(spec, task_id=dag.task_id)
+        child_dag.status = "approved"
+        executor = DAGExecutor(
+            capability_executor=self.capability_executor,
+            workspace_path=self.workspace_path,
+            artifacts=spec.artifacts,
+            spec_id=spec.id,
+            graph_input=graph_input,
+        )
+        child_on_event = _without_trace_events(on_event)
+        trace: RunTrace | None = None
+        try:
+            while True:
+                settled_before = len(trace.dag_node_traces()) if trace is not None else 0
+                trace = await executor.execute_next_ready_layer(
+                    child_dag,
+                    initial_trace=trace,
+                    skills=skills,
+                    on_token=on_token,
+                    on_event=child_on_event,
+                )
+                node_traces = trace.dag_node_traces()
+                if trace.root.status == "completed":
+                    break
+                if len(node_traces) == settled_before:
+                    raise DAGExecutionError(f"Embedded DAG '{spec.id}' made no progress.")
+        finally:
+            if trace is not None:
+                child_root = trace.root
+                child_root.parent_id = dag_node.id
+                child_root.label = label
+                dag_node.children.append(child_root)
+        if spec.output is None:
+            return None
+        return _resolve_value(
+            spec.output,
+            _ValueScope(
+                node_traces=node_traces,
+                graph_input=executor.graph_input,
+                artifacts=spec.artifacts,
+                workspace_path=self.workspace_path,
+            ),
+        )
+
     def _execution_context(
         self,
         dag: DAG,
@@ -360,12 +603,36 @@ class DAGExecutor:
 
     def _enforce_review_gate(self, dag: DAG) -> None:
         needs_approval = any(
-            node.payload.invocation.risk in {"medium", "high"}
-            for node in dag.nodes
-            if isinstance(node.payload, CapabilityNodePayload)
+            invocation.risk in {"medium", "high"}
+            for invocation in iter_dag_invocations(dag.nodes)
         )
         if needs_approval and dag.status != "approved":
             raise DAGExecutionError("DAG is not approved for execution.")
+
+
+def _resolve_invocation(invocation: CapabilityInvocation, scope: _ValueScope) -> None:
+    """Resolve value expressions in an invocation's arguments and boundary, in place."""
+    invocation.arguments = _resolve_value(invocation.arguments, scope)
+    invocation.boundary = invocation.boundary.model_copy(
+        update={
+            "allowed_paths": _resolve_value_list(invocation.boundary.allowed_paths, scope),
+            "allowed_commands": _resolve_value_list(invocation.boundary.allowed_commands, scope),
+        }
+    )
+
+
+def _without_trace_events(
+    on_event: Callable[[dict[str, Any]], None] | None,
+) -> Callable[[dict[str, Any]], None] | None:
+    """Suppress embedded-run trace snapshots; the parent emits the combined trace."""
+    if on_event is None:
+        return None
+
+    def emit(event: dict[str, Any]) -> None:
+        if event.get("type") != "trace":
+            on_event(event)
+
+    return emit
 
 
 def _node_event_emitter(
@@ -407,117 +674,99 @@ def _emit_trace_snapshot(
     on_event({"type": "trace", "trace": payload})
 
 
-def _topo_batches(dag: DAG) -> list[list[DAGNode]]:
-    nodes_by_id = {node.id: node for node in dag.nodes}
-    outgoing: dict[str, list[str]] = defaultdict(list)
-    indegree = {node.id: 0 for node in dag.nodes}
-
-    for edge in dag.edges:
-        outgoing[edge.source].append(edge.target)
-        indegree[edge.target] += 1
-
-    ready = deque(sorted(node_id for node_id, degree in indegree.items() if degree == 0))
-    batches: list[list[DAGNode]] = []
-
-    while ready:
-        current_batch_ids = list(ready)
-        ready.clear()
-        batches.append([nodes_by_id[node_id] for node_id in current_batch_ids])
-
-        for node_id in current_batch_ids:
-            for target in sorted(outgoing[node_id]):
-                indegree[target] -= 1
-                if indegree[target] == 0:
-                    ready.append(target)
-
-    return batches
-
-
-def _next_ready_nodes(
+def _settle_and_ready_nodes(
     dag: DAG,
+    trace: RunTrace,
     node_traces: dict[str, RunTraceNode],
+    scope: _ValueScope,
 ) -> list[DAGNode]:
-    completed_ids = {
-        node_id
-        for node_id, trace in node_traces.items()
-        if trace.status == "completed"
-    }
-    for batch in _topo_batches(dag):
-        pending_nodes = [node for node in batch if node.id not in node_traces]
-        if not pending_nodes:
-            continue
-        ready = [
-            node for node in pending_nodes
-            if all(
-                edge.source in completed_ids
-                for edge in dag.edges
-                if edge.target == node.id
+    """Skip nodes whose every incoming edge is dead, then return executable nodes.
+
+    An edge is live when its source completed and its ``when`` condition (if any)
+    is truthy; edges from skipped sources are dead. Skips cascade to a fixpoint.
+    """
+    incoming: dict[str, list[DAGEdge]] = defaultdict(list)
+    for edge in dag.edges:
+        incoming[edge.target].append(edge)
+
+    def settled(node: DAGNode) -> bool:
+        return all(
+            edge.source in node_traces and node_traces[edge.source].status in SETTLED_NODE_STATUSES
+            for edge in incoming[node.id]
+        )
+
+    changed = True
+    while changed:
+        changed = False
+        for node in dag.nodes:
+            if node.id in node_traces or not incoming[node.id] or not settled(node):
+                continue
+            if any(_edge_live(edge, node_traces, scope) for edge in incoming[node.id]):
+                continue
+            node.status = "skipped"
+            skipped = RunTraceNode.dag_node(
+                parent_id=trace.root.id,
+                node_id=node.id,
+                status="skipped",
+                label=node.title or node.id,
             )
-        ]
-        if ready:
-            return ready
-    return []
+            skipped.ended_at = _now()
+            trace.root.upsert_child(skipped)
+            node_traces[node.id] = skipped
+            changed = True
+
+    return [node for node in dag.nodes if node.id not in node_traces and settled(node)]
 
 
-def _all_nodes_completed(
+def _edge_live(
+    edge: DAGEdge,
+    node_traces: dict[str, RunTraceNode],
+    scope: _ValueScope,
+) -> bool:
+    source = node_traces.get(edge.source)
+    if source is None or source.status != "completed":
+        return False
+    if edge.when is None:
+        return True
+    return bool(_resolve_value(edge.when, scope))
+
+
+def _all_nodes_settled(
     dag: DAG,
     node_traces: dict[str, RunTraceNode],
 ) -> bool:
     return all(
-        node.id in node_traces and node_traces[node.id].status == "completed"
+        node.id in node_traces and node_traces[node.id].status in SETTLED_NODE_STATUSES
         for node in dag.nodes
     )
 
 
-def _resolve_value(
-    value: Any,
-    node_traces: dict[str, RunTraceNode],
-    *,
-    graph_input: Any = None,
-    artifacts: dict[str, Artifact] | None = None,
-    workspace_path: Path | None = None,
-) -> Any:
+def _resolve_value(value: Any, scope: _ValueScope) -> Any:
     expr = parse_value_binding(value)
     if isinstance(expr, GraphInputExpr):
-        return _extract_path(graph_input, expr.path)
+        return _extract_path(scope.graph_input, expr.path)
     if isinstance(expr, NodeOutputExpr):
-        return _node_output_value(expr, node_traces)
+        return _node_output_value(expr, scope.node_traces)
     if isinstance(expr, ArtifactExpr):
-        return _artifact_value(expr, artifacts=artifacts, workspace_path=workspace_path)
+        return _artifact_value(expr, artifacts=scope.artifacts, workspace_path=scope.workspace_path)
     if isinstance(expr, FormatExpr):
-        resolved = {
-            key: _resolve_value(
-                item,
-                node_traces,
-                graph_input=graph_input,
-                artifacts=artifacts,
-                workspace_path=workspace_path,
-            )
-            for key, item in expr.values.items()
-        }
+        resolved = {key: _resolve_value(item, scope) for key, item in expr.values.items()}
         return expr.template.format(**resolved)
+    if isinstance(expr, CompareExpr):
+        return _COMPARE_OPS[expr.op](
+            _resolve_value(expr.left, scope),
+            _resolve_value(expr.right, scope),
+        )
+    if isinstance(expr, ItemExpr):
+        if scope.item is _NO_ITEM:
+            raise DAGExecutionError(
+                "map_item expressions are only valid inside map nodes and loop conditions."
+            )
+        return _extract_path(scope.item, expr.path)
     if isinstance(value, dict):
-        return {
-            key: _resolve_value(
-                item,
-                node_traces,
-                graph_input=graph_input,
-                artifacts=artifacts,
-                workspace_path=workspace_path,
-            )
-            for key, item in value.items()
-        }
+        return {key: _resolve_value(item, scope) for key, item in value.items()}
     if isinstance(value, list):
-        return [
-            _resolve_value(
-                item,
-                node_traces,
-                graph_input=graph_input,
-                artifacts=artifacts,
-                workspace_path=workspace_path,
-            )
-            for item in value
-        ]
+        return [_resolve_value(item, scope) for item in value]
     return value
 
 
@@ -527,23 +776,10 @@ def _normalize_graph_input(value: Any) -> Any:
     return value
 
 
-def _resolve_value_list(
-    values: list[Any],
-    node_traces: dict[str, RunTraceNode],
-    *,
-    graph_input: Any,
-    artifacts: dict[str, Artifact] | None,
-    workspace_path: Path | None,
-) -> list[str]:
+def _resolve_value_list(values: list[Any], scope: _ValueScope) -> list[str]:
     resolved: list[str] = []
     for value in values:
-        item = _resolve_value(
-            value,
-            node_traces,
-            graph_input=graph_input,
-            artifacts=artifacts,
-            workspace_path=workspace_path,
-        )
+        item = _resolve_value(value, scope)
         if isinstance(item, list):
             resolved.extend(str(entry) for entry in item)
         else:
@@ -553,10 +789,12 @@ def _resolve_value_list(
 
 def _node_output_value(expr: NodeOutputExpr, node_traces: dict[str, RunTraceNode]) -> Any:
     trace = node_traces.get(expr.node_id)
-    if trace is None or trace.status != "completed":
+    if trace is None or trace.status not in SETTLED_NODE_STATUSES:
         raise DAGExecutionError(
             f"Cannot resolve output for node '{expr.node_id}' before it completes."
         )
+    if trace.status == "skipped":
+        return "skipped" if expr.field == "status" else None
     if expr.field == "value":
         value = trace.value if trace.value is not None else trace.output
     elif expr.field == "content":
