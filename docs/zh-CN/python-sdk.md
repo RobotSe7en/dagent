@@ -1,10 +1,9 @@
-# Python SDK Reference Map
+# Python SDK 参考地图
 
-This page maps the current public Python SDK surface. It is intentionally a
-reference map, not a full tutorial. Start with [Quick Start](quick-start.md) for
-a first run, then use the feature guides linked below for details.
+本页映射当前公开 Python SDK surface。它是参考地图，不是完整教程。第一次运行请从
+[快速开始](quick-start.md)开始，然后阅读下方链接的功能指南。
 
-Install the package as `dagent-ai` and import it as `dagent`:
+安装包名是 `dagent-ai`，导入名是 `dagent`：
 
 ```bash
 pip install dagent-ai
@@ -14,22 +13,22 @@ pip install dagent-ai
 import dagent
 ```
 
-## Common Starting Points
+## 常用入口
 
-| Task | Start with |
+| 任务 | 从这里开始 |
 | --- | --- |
-| Configure runtime, provider, MCP, profiles, validation | [Runner and Configuration](runner-and-configuration.md) |
-| Register Python tools or MCP tools | [Capabilities](capabilities.md) |
-| Choose an agent type | [Agents](agents.md) |
-| Build static workflows in code | [Static DAGs](static-dag.md) |
-| Use skills and managed skill installs | [Skills](skills.md) |
-| Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
-| Run examples | [Examples](../examples/README.md) |
+| 配置 runtime、provider、MCP、profiles、validation | [Runner 和配置](runner-and-configuration.md) |
+| 注册 Python tools 或 MCP tools | [Capabilities](capabilities.md) |
+| 选择 agent 类型 | [Agents](agents.md) |
+| 在代码中构建静态 workflow | [静态 DAGs](static-dag.md) |
+| 使用 skills 和 managed skill installs | [Skills](skills.md) |
+| 持久化、stream、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
+| 运行示例 | [Examples](../../examples/README.md) |
 
-## Public Surface
+## 公开 Surface
 
-Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
-`AutoAgent`, `DagAgent`, `Dag`, and `SkillStore`.
+大多数应用会从 `Runner`、`@dagent.tool`、`ToolAgent`、`AutoAgent`、`DagAgent`、
+`Dag` 和 `SkillStore` 开始。
 
 | Area | Public SDK |
 | --- | --- |
@@ -40,9 +39,9 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunState`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunState`, `RunTrace`, `ArtifactUpload` |
-| Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
+| Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
 
-## Minimal Runner
+## 最小 Runner
 
 ```python
 import dagent
@@ -56,7 +55,7 @@ provider = dagent.Provider(
 runner = dagent.Runner(provider=provider, workspace=".")
 ```
 
-## Minimal Tool
+## 最小 Tool
 
 ```python
 @dagent.tool
@@ -67,11 +66,10 @@ def search(q: str) -> str:
 runner.add_tool(search)
 ```
 
-Python function tools use `tool.<name>` capability ids. MCP stdio tools use
-`mcp.<server>.<tool>` capability ids. The old `custom_tool.*` kind is not a
-public compatibility alias.
+Python function tools 使用 `tool.<name>` capability ids。MCP stdio tools 使用
+`mcp.<server>.<tool>` capability ids。旧的 `custom_tool.*` kind 不是公开兼容别名。
 
-## Minimal Agent Run
+## 最小 Agent Run
 
 ```python
 agent = dagent.ToolAgent(profile="conversation", capabilities=["tool.search"])
@@ -83,7 +81,7 @@ result = await runner.run(
 print(result.output_text)
 ```
 
-## Minimal Static DAG Run
+## 最小静态 DAG Run
 
 ```python
 dag = dagent.Dag("research", input=str)
@@ -95,10 +93,9 @@ result = await runner.run(dag, graph_input="dagent")
 print(result.output_text)
 ```
 
-## Version-Aware Notes
+## 版本感知说明
 
-- This project has released public SDK contracts. Treat documented behavior,
-  capability ids, configuration semantics, and runnable examples as user-facing
-  contracts.
-- Public breaking changes should be documented in [Migration Notes](migration.md).
-- Keep this page synchronized with `dagent/__init__.py`.
+- 本项目已经发布公开 SDK contracts。文档化行为、capability ids、配置语义和可运行示例
+  都应视为面向用户的契约。
+- 公开 breaking changes 应记录在[迁移说明](migration.md)中。
+- 本页应与 `dagent/__init__.py` 保持同步。

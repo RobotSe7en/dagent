@@ -1,0 +1,55 @@
+# Migration Notes
+
+dagent has released public SDK contracts. This page records user-facing changes
+that may require action when upgrading.
+
+## Current Release Line
+
+The current package version is `0.3.0`.
+
+## Public Surface Expectations
+
+Treat the following as released behavior:
+
+- package install name: `dagent-ai`
+- Python import name: `dagent`
+- public exports listed in [Python SDK Reference Map](python-sdk.md)
+- Python tool capability ids using `tool.<name>`
+- MCP stdio capability ids using `mcp.<server>.<tool>`
+- explicit `Runner(...)` inputs
+- config-file loading through `Runner.from_config(...)`
+- static DAG explicit dependency requirements
+- review-safe continuation through `Runner.resume(...)`
+
+## Capability Ids
+
+Python function tools use `tool.<name>`. Do not rely on old or internal
+capability id prefixes as compatibility aliases.
+
+## Runner Configuration
+
+`Runner(...)` uses explicit SDK inputs and does not implicitly read
+`config.yaml`. Use `Runner.from_config(...)` when loading provider settings, MCP
+servers, validation, or profile directories from a config file.
+
+## Profiles
+
+Built-in profiles are packaged Markdown resources under
+`dagent/resources/profiles/<name>.md`. User profile directories must be passed
+explicitly through `profile_root`.
+
+## Static DAG Dataflow
+
+Static DAGs require explicit dependencies. A value reference such as
+`node.output.title` does not create an edge. Add the dependency with
+`dag.add_edge(...)`.
+
+## Future Entries
+
+When a future release changes documented public behavior, add:
+
+- affected version
+- old behavior
+- new behavior
+- migration steps
+- related examples or docs
