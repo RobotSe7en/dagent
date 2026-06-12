@@ -180,6 +180,7 @@ Key runtime contracts such as `RunState`, `RunTrace`, `LoopOutcome`,
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [中文文档](docs/zh-CN/README.md)
 - [Installation](docs/installation.md)
 - [Quick Start](docs/quick-start.md)
 - [Core Concepts](docs/concepts.md)

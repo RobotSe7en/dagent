@@ -5,6 +5,9 @@ This directory contains the user-facing documentation for dagent. The root
 overview close to the project identity. The pages here focus on installation,
 SDK usage, feature guides, and released behavior.
 
+Simplified Chinese documentation is available at
+[docs/zh-CN/README.md](zh-CN/README.md).
+
 ## Start Here
 
 - New to dagent: read [Quick Start](quick-start.md).
