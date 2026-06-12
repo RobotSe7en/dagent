@@ -5,7 +5,7 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.3.0`.
+The current package version is `0.4.0`.
 
 ## Public Surface Expectations
 
