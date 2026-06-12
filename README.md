@@ -1,6 +1,24 @@
-# dagent
+<p align="center">
+  <img src="docs/assets/dagent-logo.svg" alt="dagent" width="420">
+</p>
 
-> **Plan globally. Re-plan locally.**
+<p align="center">
+  <strong>Plan globally. Re-plan locally.</strong>
+</p>
+
+<p align="center">
+  <a href="docs/en/README.md"><img alt="Documentation" src="https://img.shields.io/badge/docs-English-blue"></a>
+  <a href="docs/zh-CN/README.md"><img alt="中文文档" src="https://img.shields.io/badge/docs-中文文档-red"></a>
+  <a href="https://pypi.org/project/dagent-ai/"><img alt="PyPI" src="https://img.shields.io/pypi/v/dagent-ai"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-green"></a>
+</p>
+
+<p align="center">
+  <a href="docs/en/README.md">Documentation</a> |
+  <a href="docs/zh-CN/README.md">中文文档</a> |
+  <a href="https://pypi.org/project/dagent-ai/">PyPI</a> |
+  <a href="LICENSE">License</a>
+</p>
 
 **dagent** is a Dynamic DAG Agent framework. It can automatically route a
 request, run it through a bounded tool-using agent, or use a planner that creates
@@ -99,7 +117,7 @@ asyncio.run(main())
 ```
 
 For a complete first run, static DAG example, provider configuration, and local
-development setup, read the [Quick Start](docs/quick-start.md).
+development setup, read the [Quick Start](docs/en/quick-start.md).
 
 Run offline examples from the repository root:
 
@@ -179,20 +197,9 @@ Key runtime contracts such as `RunState`, `RunTrace`, `LoopOutcome`,
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
+- [Documentation portal](docs/README.md)
+- [English documentation](docs/en/README.md)
 - [中文文档](docs/zh-CN/README.md)
-- [Installation](docs/installation.md)
-- [Quick Start](docs/quick-start.md)
-- [Core Concepts](docs/concepts.md)
-- [Python SDK Reference Map](docs/python-sdk.md)
-- [Runner and Configuration](docs/runner-and-configuration.md)
-- [Capabilities](docs/capabilities.md)
-- [Agents](docs/agents.md)
-- [Static DAGs](docs/static-dag.md)
-- [Skills](docs/skills.md)
-- [Results, Streaming, and Review](docs/results-streaming-review.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Migration Notes](docs/migration.md)
 - [Runnable examples](examples/README.md)
 
 ## License

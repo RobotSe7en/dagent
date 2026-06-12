@@ -10,14 +10,14 @@ credentials.
 
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
-| `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/agents.md), [Capabilities](../docs/capabilities.md) |
-| `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/agents.md) |
-| `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/agents.md), [Results, Streaming, and Review](../docs/results-streaming-review.md) |
-| `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/static-dag.md), [Capabilities](../docs/capabilities.md) |
-| `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/static-dag.md) |
-| `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/results-streaming-review.md) |
-| `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/runner-and-configuration.md), [Skills](../docs/skills.md) |
-| `quickstart.py` | Stream a model-backed quickstart agent against a real provider. | [Quick Start](../docs/quick-start.md), [Installation](../docs/installation.md) |
+| `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
+| `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |
+| `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
+| `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/en/static-dag.md), [Capabilities](../docs/en/capabilities.md) |
+| `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
+| `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
+| `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
+| `quickstart.py` | Stream a model-backed quickstart agent against a real provider. | [Quick Start](../docs/en/quick-start.md), [Installation](../docs/en/installation.md) |
 
 ## Run Examples
 
@@ -47,5 +47,5 @@ MCP runtime registration is available through:
 - `Runner.remove_mcp_server(name)`
 
 It requires the optional MCP extra and a real stdio MCP server, so it is covered
-in [Runner and Configuration](../docs/runner-and-configuration.md) rather than
+in [Runner and Configuration](../docs/en/runner-and-configuration.md) rather than
 exercised by these offline examples.
