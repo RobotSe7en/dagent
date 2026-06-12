@@ -4,7 +4,7 @@
 [`README.md`](../../README.md) 仍然是项目门面，包含项目介绍和核心架构；
 这里的页面聚焦安装、SDK 使用、功能指南和已发布行为。
 
-英文文档入口见 [docs/README.md](../README.md)。
+英文文档入口见 [docs/en/README.md](../en/README.md)。
 
 ## 从这里开始
 

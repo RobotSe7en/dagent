@@ -92,15 +92,19 @@ the public surface it teaches.
   quick start, architecture, project layout, and documentation links. The
   architecture section belongs in the root README because it is central to the
   project identity.
-- Use `docs/README.md` as the documentation landing page and reading map.
-- Use `docs/quick-start.md` for the first complete user path from install to a
-  working run.
-- Use `docs/python-sdk.md` as the public SDK overview and export/reference map,
-  synchronized with `dagent/__init__.py`.
+- Use `docs/README.md` as the documentation language portal. English docs live
+  under `docs/en/`; Simplified Chinese docs live under `docs/zh-CN/`.
+- Use `docs/en/quick-start.md` for the first complete English user path from
+  install to a working run, and keep the Chinese counterpart synchronized at
+  `docs/zh-CN/quick-start.md`.
+- Use `docs/en/python-sdk.md` as the public SDK overview and export/reference
+  map, synchronized with `dagent/__init__.py`; keep
+  `docs/zh-CN/python-sdk.md` aligned.
 - Split feature documentation by user task and runtime boundary, for example:
-  `docs/runner-and-configuration.md`, `docs/capabilities.md`,
-  `docs/agents.md`, `docs/static-dag.md`, `docs/skills.md`, and
-  `docs/results-streaming-review.md`.
+  `docs/en/runner-and-configuration.md`, `docs/en/capabilities.md`,
+  `docs/en/agents.md`, `docs/en/static-dag.md`, `docs/en/skills.md`, and
+  `docs/en/results-streaming-review.md`, with matching Chinese pages under
+  `docs/zh-CN/`.
 - Runnable example code belongs in `examples/`; `examples/README.md` should map
   each example to the docs page and feature it demonstrates.
 - Keep the local FastAPI/WebUI backend in top-level `api/`. Do not put it

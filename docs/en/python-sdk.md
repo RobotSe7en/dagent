@@ -24,7 +24,7 @@ import dagent
 | Build static workflows in code | [Static DAGs](static-dag.md) |
 | Use skills and managed skill installs | [Skills](skills.md) |
 | Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
-| Run examples | [Examples](../examples/README.md) |
+| Run examples | [Examples](../../examples/README.md) |
 
 ## Public Surface
 
