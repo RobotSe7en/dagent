@@ -14,6 +14,7 @@ from dagent.schemas import Boundary, CapabilityDefinition, CapabilityInvocation
 BUILTIN_CAPABILITY_IDS = (
     "tool.read_file",
     "tool.write_file",
+    "tool.edit_file",
     "tool.grep",
     "tool.run_command",
 )

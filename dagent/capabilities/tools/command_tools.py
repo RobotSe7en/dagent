@@ -8,6 +8,10 @@ from pathlib import Path
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
+COMMAND_OUTPUT_MAX_LINES = 200
+COMMAND_OUTPUT_MAX_BYTES = 100_000
+
+
 class CommandExecutionError(RuntimeError):
     """Raised when a command tool exits unsuccessfully."""
 
@@ -17,9 +21,12 @@ def run_command(
     cwd: str | Path = ".",
     timeout_seconds: int = 30,
 ) -> str:
+    cwd_path = Path(cwd)
+    if not cwd_path.is_dir():
+        raise CommandExecutionError(f"Working directory does not exist: {cwd_path}")
     result = subprocess.run(
         command,
-        cwd=Path(cwd),
+        cwd=cwd_path,
         shell=True,
         capture_output=True,
         text=True,
@@ -31,6 +38,7 @@ def run_command(
         for part in [result.stdout.strip(), result.stderr.strip()]
         if part
     )
+    output = _tail_truncate(output)
     formatted = (
         f"exit_code={result.returncode}\n{output}"
         if output
@@ -39,6 +47,23 @@ def run_command(
     if result.returncode != 0:
         raise CommandExecutionError(formatted)
     return formatted
+
+
+def _tail_truncate(output: str) -> str:
+    """Keep the tail of oversized output; command endings carry the signal."""
+    lines = output.splitlines()
+    truncated = False
+    if len(lines) > COMMAND_OUTPUT_MAX_LINES:
+        lines = lines[-COMMAND_OUTPUT_MAX_LINES:]
+        truncated = True
+    text = "\n".join(lines)
+    encoded = text.encode("utf-8")
+    if len(encoded) > COMMAND_OUTPUT_MAX_BYTES:
+        text = encoded[-COMMAND_OUTPUT_MAX_BYTES:].decode("utf-8", errors="replace")
+        truncated = True
+    if truncated:
+        text = f"[TRUNCATED: output exceeded limits, showing tail]\n{text}"
+    return text
 
 
 def register_command_tools(registry: ToolRegistry) -> None:

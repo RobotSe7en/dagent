@@ -278,3 +278,301 @@ def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert "outside allowed paths" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# read_file paging and limits
+# ---------------------------------------------------------------------------
+
+
+def test_read_file_offset_and_limit_slice_with_truncation_footer(tmp_path: Path) -> None:
+    target = tmp_path / "lines.txt"
+    target.write_text("".join(f"line{i}\n" for i in range(1, 11)), encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "lines.txt", "offset": 3, "limit": 2},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert result.content.startswith("line3\nline4")
+    assert "[TRUNCATED] showing lines 3-4 of 10" in result.content
+
+
+def test_read_file_full_read_preserves_exact_content(tmp_path: Path) -> None:
+    target = tmp_path / "exact.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "exact.txt"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.content == "alpha\nbeta\n"
+
+
+def test_read_file_offset_beyond_end_of_file_fails(tmp_path: Path) -> None:
+    (tmp_path / "short.txt").write_text("one\ntwo\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "short.txt", "offset": 99},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "beyond end of file" in (result.error or "")
+
+
+def test_read_file_rejects_binary_content(tmp_path: Path) -> None:
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02data")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "blob.bin"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "not a UTF-8 text file" in (result.error or "")
+
+
+def test_read_file_caps_default_read_at_max_lines(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.file_tools import MAX_READ_LINES
+
+    total = MAX_READ_LINES + 5
+    (tmp_path / "big.txt").write_text("".join(f"{i}\n" for i in range(total)), encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "big.txt"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert f"showing lines 1-{MAX_READ_LINES} of {total}" in result.content
+
+
+# ---------------------------------------------------------------------------
+# edit_file
+# ---------------------------------------------------------------------------
+
+
+def test_edit_file_replaces_unique_match_and_reports_diff(tmp_path: Path) -> None:
+    target = tmp_path / "app.py"
+    target.write_text("def main():\n    return 1\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "app.py", "old_string": "    return 1", "new_string": "    return 2"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert "1 replacement at line 2" in result.content
+    assert "-    return 1" in result.content
+    assert "+    return 2" in result.content
+    assert target.read_text(encoding="utf-8") == "def main():\n    return 2\n"
+
+
+def test_edit_file_fails_when_old_string_not_found(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "app.py", "old_string": "missing text", "new_string": "x"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "was not found" in (result.error or "")
+
+
+def test_edit_file_fails_when_old_string_is_ambiguous(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "app.py", "old_string": "x = 1", "new_string": "x = 2"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "matched 2 locations" in (result.error or "")
+    assert "more surrounding context" in (result.error or "")
+
+
+def test_edit_file_preserves_crlf_line_endings(tmp_path: Path) -> None:
+    target = tmp_path / "win.txt"
+    target.write_bytes(b"alpha\r\nbeta\r\n")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "win.txt", "old_string": "beta", "new_string": "gamma"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert target.read_bytes() == b"alpha\r\ngamma\r\n"
+
+
+def test_edit_file_preserves_utf8_bom(tmp_path: Path) -> None:
+    target = tmp_path / "bom.txt"
+    target.write_bytes(b"\xef\xbb\xbfhello\n")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "bom.txt", "old_string": "hello", "new_string": "world"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert target.read_bytes() == b"\xef\xbb\xbfworld\n"
+
+
+def test_read_only_node_cannot_edit_file(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "app.py", "old_string": "x = 1", "new_string": "x = 2"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "read_only" in (result.error or "")
+
+
+def test_edit_file_rejects_identical_strings(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "app.py", "old_string": "x = 1", "new_string": "x = 1"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "identical" in (result.error or "")
+
+
+def test_write_file_reports_bytes_written(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "write_file",
+        {"path": "out.txt", "content": "hello"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert "Wrote 5 bytes" in result.content
+
+
+# ---------------------------------------------------------------------------
+# grep backends
+# ---------------------------------------------------------------------------
+
+
+def _force_python_grep(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dagent.capabilities.tools import file_tools
+
+    monkeypatch.setattr(file_tools, "_rg_path", None)
+
+
+def test_grep_python_fallback_matches_and_filters_by_glob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _force_python_grep(monkeypatch)
+    (tmp_path / "a.py").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "grep",
+        {"path": ".", "pattern": "alpha", "glob": "*.py"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert "a.py:1:alpha" in result.content
+    assert "a.txt" not in result.content
+
+
+@pytest.mark.skipif(__import__("shutil").which("rg") is None, reason="ripgrep not installed")
+def test_grep_ripgrep_backend_matches_and_filters_by_glob(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.file_tools import _grep_with_ripgrep
+    import shutil as _shutil
+
+    (tmp_path / "a.py").write_text("alpha\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("alpha\n", encoding="utf-8")
+
+    content = _grep_with_ripgrep(_shutil.which("rg"), tmp_path, "alpha", "*.py")
+
+    assert "a.py:1:alpha" in content
+    assert "a.txt" not in content
+
+
+@pytest.mark.skipif(__import__("shutil").which("rg") is None, reason="ripgrep not installed")
+def test_grep_backends_agree_on_simple_search(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.file_tools import _grep_pure_python, _grep_with_ripgrep
+    import shutil as _shutil
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "one.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    (tmp_path / "src" / "two.txt").write_text("alphabet\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "skip.txt").write_text("alpha\n", encoding="utf-8")
+
+    rg_output = _grep_with_ripgrep(_shutil.which("rg"), tmp_path, "alpha", None)
+    py_output = _grep_pure_python(tmp_path, "alpha", None)
+
+    assert rg_output.splitlines() == py_output.splitlines()
+
+
+# ---------------------------------------------------------------------------
+# run_command hardening
+# ---------------------------------------------------------------------------
+
+
+def test_run_command_fails_when_cwd_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(CommandExecutionError, match="Working directory does not exist"):
+        run_command("echo hi", cwd=tmp_path / "missing")
+
+
+def test_run_command_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.command_tools import COMMAND_OUTPUT_MAX_LINES
+
+    total = COMMAND_OUTPUT_MAX_LINES + 50
+    command = f'"{sys.executable}" -c "[print(f\'line{{i}}\') for i in range({total})]"'
+
+    output = run_command(command, cwd=tmp_path)
+
+    assert "[TRUNCATED: output exceeded limits, showing tail]" in output
+    assert f"line{total - 1}" in output
+    assert "line0" not in output

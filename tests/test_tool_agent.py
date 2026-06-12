@@ -274,7 +274,7 @@ def test_tool_agent_loop_execution_context_keeps_evidence_after_500_chars(
 
 
 def test_tool_agent_loop_marks_truncated_execution_context(tmp_path: Path) -> None:
-    (tmp_path / "notes.txt").write_text("x" * 5000, encoding="utf-8")
+    (tmp_path / "notes.txt").write_text(("x" * 50 + "\n") * 100, encoding="utf-8")
     provider = MockProvider(
         [
             ChatResponse(

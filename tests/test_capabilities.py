@@ -166,4 +166,4 @@ def test_default_builtin_toolset_exposes_read_write_search_and_command() -> None
         for definition in adapter.definitions(("builtin",))
     ]
 
-    assert names == ["read_file", "write_file", "grep", "run_command"]
+    assert names == ["read_file", "write_file", "edit_file", "grep", "run_command"]

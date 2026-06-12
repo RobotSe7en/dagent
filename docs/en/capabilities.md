@@ -15,6 +15,24 @@ runtime capability catalog.
 Capability ids are public behavior. Do not depend on legacy aliases that are not
 documented here.
 
+## Built-in Tools
+
+Every `Runner` registers a small default tool set. All path parameters are
+checked against the node boundary before the handler runs.
+
+| Tool | Risk | Behavior |
+| --- | --- | --- |
+| `tool.read_file` | low | Read a UTF-8 text file. Optional `offset` (1-indexed) and `limit` page through large files; reads are capped at 2000 lines / 200 KB and oversized reads end with a `[TRUNCATED]` line that names the shown range. Binary files fail with a clear error. A full untruncated read returns the file content verbatim. |
+| `tool.write_file` | medium | Write UTF-8 text to a file atomically (temp file + rename), creating parent directories. Returns the byte count written. |
+| `tool.edit_file` | medium | Replace one exact occurrence of `old_string` with `new_string`. The match must be unique: zero matches and ambiguous matches fail with instructions to read the file and add surrounding context. CRLF line endings and a UTF-8 BOM are preserved; the result includes a short unified diff. |
+| `tool.grep` | low | Search files for a regular expression with an optional `glob` filename filter. Delegates to ripgrep when `rg` is on `PATH` (argv invocation, never a shell) and falls back to a pure-Python scan otherwise. Output is `file:line:content`, capped at 200 matches. |
+| `tool.run_command` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. |
+
+`read_file` output carries no line-number prefixes, so text copied from a read
+result can be passed to `edit_file` as `old_string` unchanged. The intended
+editing flow is: read the file, copy the exact text to change, then call
+`edit_file` with enough surrounding context to make the match unique.
+
 ## Python Function Tools
 
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce
