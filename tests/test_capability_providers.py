@@ -79,6 +79,32 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.policy_decision["boundary_mode"] == "read_only"
 
 
+def test_tool_provider_encodes_plain_tuple_results_like_sdk_tools() -> None:
+    tools = ToolRegistry()
+    tools.register(
+        name="pair",
+        handler=lambda: ("content", ["entry"]),
+        action="read",
+        parameters={"type": "object"},
+    )
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    ToolCapabilityProvider(tools).register_into(registry)
+
+    result = run(executor.execute(
+        CapabilityInvocation(
+            capability_id="tool.pair",
+            kind="tool",
+            arguments={},
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        )
+    ))
+
+    assert result.status == "completed"
+    assert result.content == '["content", ["entry"]]'
+    assert result.value == ["content", ["entry"]]
+
+
 def test_memory_and_file_tool_capabilities_are_explicit(tmp_path) -> None:
     registry = CapabilityCatalog(workspace_root=tmp_path)
     executor = CapabilityExecutor(registry)

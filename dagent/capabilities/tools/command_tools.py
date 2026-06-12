@@ -10,6 +10,7 @@ from dagent.capabilities.tools.registry import ToolRegistry
 
 COMMAND_OUTPUT_MAX_LINES = 200
 COMMAND_OUTPUT_MAX_BYTES = 100_000
+COMMAND_TRUNCATION_HEADER = "[TRUNCATED] output exceeded limits; showing tail\n"
 
 
 class CommandExecutionError(RuntimeError):
@@ -58,12 +59,26 @@ def _tail_truncate(output: str) -> str:
         truncated = True
     text = "\n".join(lines)
     encoded = text.encode("utf-8")
-    if len(encoded) > COMMAND_OUTPUT_MAX_BYTES:
-        text = encoded[-COMMAND_OUTPUT_MAX_BYTES:].decode("utf-8", errors="replace")
+    if truncated or len(encoded) > COMMAND_OUTPUT_MAX_BYTES:
+        budget = COMMAND_OUTPUT_MAX_BYTES - len(COMMAND_TRUNCATION_HEADER.encode("utf-8"))
+        if len(encoded) > budget:
+            text = _decode_utf8_tail(encoded, budget)
         truncated = True
     if truncated:
-        text = f"[TRUNCATED: output exceeded limits, showing tail]\n{text}"
+        text = f"{COMMAND_TRUNCATION_HEADER}{text}"
     return text
+
+
+def _decode_utf8_tail(encoded: bytes, max_bytes: int) -> str:
+    if max_bytes <= 0:
+        return ""
+    tail = encoded[-max_bytes:]
+    for index in range(min(4, len(tail) + 1)):
+        try:
+            return tail[index:].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return tail.decode("utf-8", errors="ignore")
 
 
 def register_command_tools(registry: ToolRegistry) -> None:

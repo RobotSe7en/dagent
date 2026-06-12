@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 
-ToolResult = str | tuple[str, Any]
+@dataclass(frozen=True)
+class ToolOutput:
+    content: str
+    value: Any = None
+
+
+ToolResult = Any
 ToolHandler = Callable[..., ToolResult]
 ToolAction = str
 ToolRisk = str

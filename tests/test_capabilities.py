@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -64,6 +65,30 @@ def test_capability_catalog_delete_removes_definition_and_handler() -> None:
     ))
 
     assert result.content == "new"
+
+
+def test_capability_executor_runs_sync_handlers_off_event_loop() -> None:
+    catalog = CapabilityCatalog()
+    executor = CapabilityExecutor(catalog)
+
+    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
+        time.sleep(0.2)
+        return _result(invocation, "done")
+
+    catalog.register(CapabilityDefinition(id="tool.slow", name="slow", kind="tool"), handler)
+
+    async def run_with_tick() -> float:
+        start = time.perf_counter()
+
+        async def tick() -> float:
+            await asyncio.sleep(0.02)
+            return time.perf_counter() - start
+
+        invocation = CapabilityInvocation(capability_id="tool.slow", kind="tool")
+        _, tick_delay = await asyncio.gather(executor.execute(invocation), tick())
+        return tick_delay
+
+    assert run(run_with_tick()) < 0.15
 
 
 def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> None:

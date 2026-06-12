@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -70,13 +71,18 @@ class CapabilityExecutor:
                 f"not '{invocation.kind}'."
             )
         if entry.supports_context:
-            result = entry.handler(
-                invocation,
-                context=context,
-                callbacks=callbacks or CapabilityExecutionCallbacks(),
-            )
+            args = (invocation,)
+            kwargs = {
+                "context": context,
+                "callbacks": callbacks or CapabilityExecutionCallbacks(),
+            }
         else:
-            result = entry.handler(invocation)
+            args = (invocation,)
+            kwargs = {}
+        if inspect.iscoroutinefunction(entry.handler):
+            result = entry.handler(*args, **kwargs)
+        else:
+            result = await asyncio.to_thread(entry.handler, *args, **kwargs)
         if inspect.isawaitable(result):
             return await result
         return result

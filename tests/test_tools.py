@@ -1,5 +1,7 @@
 import asyncio
+import os
 from pathlib import Path
+import stat
 import sys
 
 import pytest
@@ -317,6 +319,46 @@ def test_read_file_full_read_preserves_exact_content(tmp_path: Path) -> None:
     assert result.content == "alpha\nbeta\n"
 
 
+def test_read_file_keeps_long_lines_exact_for_edit_workflow(tmp_path: Path) -> None:
+    long_line = "a" * 2500
+    target = tmp_path / "lock.txt"
+    target.write_text(f"{long_line}\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    read_result = execute(
+        executor,
+        "read_file",
+        {"path": "lock.txt"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+    edit_result = execute(
+        executor,
+        "edit_file",
+        {"path": "lock.txt", "old_string": long_line, "new_string": "short"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert read_result.content == f"{long_line}\n"
+    assert "LINE TRUNCATED" not in read_result.content
+    assert edit_result.status == "completed"
+    assert target.read_text(encoding="utf-8") == "short\n"
+
+
+def test_read_file_null_offset_uses_schema_default(tmp_path: Path) -> None:
+    (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "notes.txt", "offset": None},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert result.content == "hello\n"
+
+
 def test_read_file_offset_beyond_end_of_file_fails(tmp_path: Path) -> None:
     (tmp_path / "short.txt").write_text("one\ntwo\n", encoding="utf-8")
     executor = make_executor(tmp_path)
@@ -494,6 +536,43 @@ def test_write_file_reports_bytes_written(tmp_path: Path) -> None:
     assert "Wrote 5 bytes" in result.content
 
 
+def test_write_file_uses_umask_and_preserves_existing_permissions_and_hardlinks(tmp_path: Path) -> None:
+    if not hasattr(os, "link"):
+        pytest.skip("hard links are not available on this platform")
+    executor = make_executor(tmp_path)
+    old_umask = os.umask(0o022)
+    try:
+        result = execute(
+            executor,
+            "write_file",
+            {"path": "new.txt", "content": "hello"},
+            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+        )
+    finally:
+        os.umask(old_umask)
+
+    assert result.status == "completed"
+    assert stat.S_IMODE((tmp_path / "new.txt").stat().st_mode) == 0o644
+
+    existing = tmp_path / "existing.txt"
+    existing.write_text("old", encoding="utf-8")
+    os.chmod(existing, 0o640)
+    linked = tmp_path / "linked.txt"
+    os.link(existing, linked)
+
+    result = execute(
+        executor,
+        "write_file",
+        {"path": "existing.txt", "content": "new"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o640
+    assert linked.read_text(encoding="utf-8") == "new"
+    assert existing.stat().st_ino == linked.stat().st_ino
+
+
 # ---------------------------------------------------------------------------
 # grep backends
 # ---------------------------------------------------------------------------
@@ -555,6 +634,22 @@ def test_grep_backends_agree_on_simple_search(tmp_path: Path) -> None:
     assert rg_output.splitlines() == py_output.splitlines()
 
 
+@pytest.mark.skipif(__import__("shutil").which("rg") is None, reason="ripgrep not installed")
+def test_grep_backends_agree_on_python_regex_and_ignore_files(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.file_tools import _grep_pure_python, _grep_with_ripgrep
+    import shutil as _shutil
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    (tmp_path / "a.txt").write_text("alphabet\n", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("alphabet\n", encoding="utf-8")
+
+    rg_output = _grep_with_ripgrep(_shutil.which("rg"), tmp_path, "alpha(?=bet)", None)
+    py_output = _grep_pure_python(tmp_path, "alpha(?=bet)", None)
+
+    assert rg_output.splitlines() == py_output.splitlines()
+
+
 # ---------------------------------------------------------------------------
 # run_command hardening
 # ---------------------------------------------------------------------------
@@ -573,9 +668,18 @@ def test_run_command_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
 
     output = run_command(command, cwd=tmp_path)
 
-    assert "[TRUNCATED: output exceeded limits, showing tail]" in output
+    assert "[TRUNCATED] output exceeded limits; showing tail" in output
     assert f"line{total - 1}" in output
     assert "line0" not in output
+
+
+def test_run_command_byte_truncation_stays_under_limit_and_preserves_utf8() -> None:
+    from dagent.capabilities.tools.command_tools import COMMAND_OUTPUT_MAX_BYTES, _tail_truncate
+
+    output = _tail_truncate("€" * 40_000)
+
+    assert len(output.encode("utf-8")) <= COMMAND_OUTPUT_MAX_BYTES
+    assert "\ufffd" not in output
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +726,23 @@ def test_list_files_depth_limits_recursion(tmp_path: Path) -> None:
     assert "deep.txt" not in result.content
 
 
+def test_list_files_null_depth_uses_schema_default(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "b").mkdir()
+    (tmp_path / "a" / "b" / "deep.txt").write_text("x", encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "list_files",
+        {"path": ".", "depth": None},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert "deep.txt" in result.content
+
+
 def test_list_files_glob_lists_matching_files_only(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("x", encoding="utf-8")
@@ -655,7 +776,7 @@ def test_list_files_caps_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
 
-    assert "[TRUNCATED] showing 3 of 5 entries." in result.content
+    assert "[TRUNCATED] showing first 3 entries; more entries exist." in result.content
     assert len(result.value) == 3
 
 

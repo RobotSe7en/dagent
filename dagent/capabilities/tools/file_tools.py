@@ -8,12 +8,14 @@ import fnmatch
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from dagent.capabilities.tools.command_tools import register_command_tools
-from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
 
 
 GREP_EXCLUDED_DIRS = {
@@ -29,11 +31,12 @@ GREP_TIMEOUT_SECONDS = 30
 LIST_MAX_ENTRIES = 500
 MAX_READ_LINES = 2000
 MAX_READ_BYTES = 200_000
-MAX_LINE_CHARS = 2000
 MAX_EDIT_DIFF_LINES = 50
+TRUNCATED = "[TRUNCATED]"
 
 _RG_UNRESOLVED = object()
 _rg_path: object = _RG_UNRESOLVED
+_UMASK_LOCK = threading.Lock()
 
 
 def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
@@ -41,32 +44,17 @@ def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> st
         raise ValueError("offset must be at least 1.")
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1.")
-    text, _ = _read_utf8(Path(path))
-    lines = text.splitlines()
-    total = len(lines)
+    max_lines = min(limit, MAX_READ_LINES) if limit is not None else MAX_READ_LINES
+    shown, total, complete_text = _read_utf8_window(Path(path), offset=offset, max_lines=max_lines)
     if offset > 1 and offset > total:
         raise ValueError(f"offset {offset} is beyond end of file ({total} lines).")
-
-    max_lines = min(limit, MAX_READ_LINES) if limit is not None else MAX_READ_LINES
-    selected = lines[offset - 1 : offset - 1 + max_lines]
-    shown: list[str] = []
-    used_bytes = 0
-    for line in selected:
-        if len(line) > MAX_LINE_CHARS:
-            line = f"{line[:MAX_LINE_CHARS]} [LINE TRUNCATED]"
-        line_bytes = len(line.encode("utf-8")) + 1
-        if shown and used_bytes + line_bytes > MAX_READ_BYTES:
-            break
-        used_bytes += line_bytes
-        shown.append(line)
-
-    if offset == 1 and shown == lines:
-        return text
+    if complete_text is not None:
+        return complete_text
     end_line = offset - 1 + len(shown)
     content = "\n".join(shown)
     if end_line < total:
         content += (
-            f"\n[TRUNCATED] showing lines {offset}-{end_line} of {total}; "
+            f"\n{TRUNCATED} showing lines {offset}-{end_line} of {total}; "
             "use offset/limit to read more."
         )
     return content
@@ -119,7 +107,7 @@ def list_files(
     path: str | Path = ".",
     depth: int = 3,
     glob: str | None = None,
-) -> tuple[str, list[str]]:
+) -> ToolOutput:
     """List files (and directories) under a path.
 
     Without ``glob`` this lists directories (trailing ``/``) and files up to
@@ -134,27 +122,40 @@ def list_files(
         raise ValueError(f"{root} is not a directory.")
 
     entries: list[str] = []
+    truncated = False
     for current, dirnames, filenames in os.walk(root):
         level = len(Path(current).relative_to(root).parts)
         dirnames[:] = sorted(name for name in dirnames if name not in GREP_EXCLUDED_DIRS)
         if glob is None:
-            entries.extend(f"{Path(current) / name}/" for name in dirnames)
+            for name in dirnames:
+                if len(entries) >= LIST_MAX_ENTRIES:
+                    truncated = True
+                    break
+                entries.append(f"{Path(current) / name}/")
+        if truncated:
+            dirnames[:] = []
+            break
         for name in sorted(filenames):
             if glob is None or fnmatch.fnmatch(name, glob):
+                if len(entries) >= LIST_MAX_ENTRIES:
+                    truncated = True
+                    break
                 entries.append(str(Path(current) / name))
+        if truncated:
+            dirnames[:] = []
+            break
         if level + 1 >= depth:
             dirnames[:] = []
 
-    entries.sort()
-    shown = entries[:LIST_MAX_ENTRIES]
-    content = "\n".join(shown)
-    if len(entries) > LIST_MAX_ENTRIES:
-        content += f"\n[TRUNCATED] showing {LIST_MAX_ENTRIES} of {len(entries)} entries."
-    return content, shown
+    content = "\n".join(entries)
+    if truncated:
+        content += f"\n{TRUNCATED} showing first {len(entries)} entries; more entries exist."
+    return ToolOutput(content=content, value=entries)
 
 
 def grep(path: str | Path, pattern: str, glob: str | None = None) -> str:
     root = Path(path)
+    re.compile(pattern)
     rg = _ripgrep_executable()
     if rg is not None:
         return _grep_with_ripgrep(rg, root, pattern, glob)
@@ -175,11 +176,14 @@ def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None) -> s
         "--with-filename",
         "--line-number",
         "--color=never",
+        "--pcre2",
+        "--no-ignore",
+        "--hidden",
         "--sort",
         "path",
     ]
     for excluded in sorted(GREP_EXCLUDED_DIRS):
-        args.extend(["--glob", f"!{excluded}"])
+        args.extend(["--glob", f"!{excluded}", "--glob", f"!{excluded}/**"])
     if glob:
         args.extend(["--glob", glob])
     args.extend(["--regexp", pattern, str(root)])
@@ -224,9 +228,89 @@ def _capped_matches(lines: list[str]) -> str:
     if len(lines) > GREP_MAX_MATCHES:
         lines = [
             *lines[:GREP_MAX_MATCHES],
-            f"[TRUNCATED] grep stopped after {GREP_MAX_MATCHES} matches.",
+            f"{TRUNCATED} grep stopped after {GREP_MAX_MATCHES} matches.",
         ]
     return "\n".join(lines)
+
+
+def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> tuple[list[str], int, str | None]:
+    shown: list[str] = []
+    total = 0
+    used_bytes = 0
+    exact_bytes = bytearray() if offset == 1 else None
+    exact_possible = offset == 1
+    stopped_showing = False
+
+    with path.open("rb") as handle:
+        prefix = handle.read(8192)
+        if b"\0" in prefix:
+            raise ValueError(f"{path} is not a UTF-8 text file.")
+        handle.seek(0)
+
+        first_line = True
+        while True:
+            raw = handle.readline(MAX_READ_BYTES + 1)
+            if not raw:
+                break
+            if first_line:
+                first_line = False
+                if raw.startswith(codecs.BOM_UTF8):
+                    raw = raw[len(codecs.BOM_UTF8):]
+            line_was_partial = len(raw) > MAX_READ_BYTES and not raw.endswith((b"\n", b"\r"))
+            if line_was_partial:
+                _discard_line_remainder(handle)
+                exact_possible = False
+            total += 1
+
+            if total < offset:
+                exact_possible = False
+                continue
+            if stopped_showing or len(shown) >= max_lines:
+                exact_possible = False
+                stopped_showing = True
+                continue
+
+            line = _line_text(raw)
+            line_bytes = len(line.encode("utf-8")) + 1
+            if used_bytes + line_bytes > MAX_READ_BYTES:
+                if not shown:
+                    prefix_lines = _decode_utf8_prefix(raw, MAX_READ_BYTES).splitlines()
+                    line = prefix_lines[0] if prefix_lines else ""
+                    shown.append(line)
+                    used_bytes = len(line.encode("utf-8"))
+                exact_possible = False
+                stopped_showing = True
+                continue
+            used_bytes += line_bytes
+            shown.append(line)
+            if exact_bytes is not None and exact_possible:
+                exact_bytes.extend(raw)
+
+    if exact_possible and exact_bytes is not None and len(shown) == total:
+        return shown, total, exact_bytes.decode("utf-8", errors="replace")
+    return shown, total, None
+
+
+def _discard_line_remainder(handle) -> None:
+    while True:
+        chunk = handle.readline(MAX_READ_BYTES + 1)
+        if not chunk or chunk.endswith((b"\n", b"\r")):
+            return
+
+
+def _line_text(raw: bytes) -> str:
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    return lines[0] if lines else ""
+
+
+def _decode_utf8_prefix(raw: bytes, max_bytes: int) -> str:
+    prefix = raw[:max_bytes]
+    while prefix:
+        try:
+            return prefix.decode("utf-8")
+        except UnicodeDecodeError:
+            prefix = prefix[:-1]
+    return ""
 
 
 def _read_utf8(path: Path) -> tuple[str, bool]:
@@ -241,10 +325,18 @@ def _read_utf8(path: Path) -> tuple[str, bool]:
 
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_stat = _existing_regular_file_stat(path)
+    if existing_stat is not None and existing_stat.st_nlink > 1:
+        _write_hardlinked_file(path, data)
+        return
+    mode = _replacement_mode(existing_stat)
     descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temp_name, path)
     except BaseException:
         try:
@@ -252,6 +344,37 @@ def _atomic_write(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def _existing_regular_file_stat(path: Path) -> os.stat_result | None:
+    try:
+        existing = path.stat()
+    except FileNotFoundError:
+        return None
+    return existing if stat.S_ISREG(existing.st_mode) else None
+
+
+def _replacement_mode(existing: os.stat_result | None) -> int:
+    if existing is not None:
+        return stat.S_IMODE(existing.st_mode) & 0o777
+    return _default_file_mode()
+
+
+def _default_file_mode() -> int:
+    with _UMASK_LOCK:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+    return 0o666 & ~current_umask
+
+
+def _write_hardlinked_file(path: Path, data: bytes) -> None:
+    # Replacing one hard link detaches it from its siblings, so rewrite in place.
+    with path.open("r+b") as handle:
+        handle.seek(0)
+        handle.write(data)
+        handle.truncate()
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _unified_diff_excerpt(before: str, after: str, *, path: Path) -> str:
@@ -266,7 +389,7 @@ def _unified_diff_excerpt(before: str, after: str, *, path: Path) -> str:
     )
     if len(diff_lines) > MAX_EDIT_DIFF_LINES:
         omitted = len(diff_lines) - MAX_EDIT_DIFF_LINES
-        diff_lines = [*diff_lines[:MAX_EDIT_DIFF_LINES], f"[DIFF TRUNCATED: {omitted} more lines]"]
+        diff_lines = [*diff_lines[:MAX_EDIT_DIFF_LINES], f"{TRUNCATED} diff omitted {omitted} more lines."]
     return "\n".join(diff_lines)
 
 
