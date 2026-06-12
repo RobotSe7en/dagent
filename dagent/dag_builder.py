@@ -124,7 +124,7 @@ class ItemRef(_Comparable):
         return self[name]
 
     def as_expr(self) -> dict[str, Any]:
-        return bind_value_expr(ItemExpr(type="map_item", path=list(self._path)))
+        return bind_value_expr(ItemExpr(type="item", path=list(self._path)))
 
 
 item = ItemRef()
@@ -449,14 +449,15 @@ class Dag:
                 raise ValueError("Loop nodes do not accept a boundary; set boundaries on body nodes.")
             body = self._absorb_subgraph(node.target)
             input_value = _normalize_value(node.inputs)
+            until = _normalize_value(node.until)
             payload = LoopNodePayload(
                 type="loop",
                 body=body,
-                until=_normalize_value(node.until),
+                until=until,
                 max_iterations=node.max_iterations,
                 input=input_value,
             )
-            return payload, [input_value]
+            return payload, [input_value, until]
         if isinstance(node, MapNode):
             invocation, boundary = self._capability_invocation(node)
             over = _normalize_value(node.over)

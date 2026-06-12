@@ -537,6 +537,10 @@ references to parent nodes. The child declares its result with `dag.output`;
 that value becomes the node value in the parent. Child capabilities are
 absorbed into the parent `Dag`, so `Runner.run(parent)` registers everything.
 
+`dag.output` also works at the top level: when a static DAG with a declared
+output completes, the resolved value becomes `RunResult.output_text`
+(JSON-serialized when it is not a string) and `trace.root.value`.
+
 ```python
 def report_dag() -> dagent.Dag:
     sub = dagent.Dag("report", input=str)

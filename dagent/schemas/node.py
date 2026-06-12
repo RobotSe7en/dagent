@@ -42,7 +42,7 @@ class MapNodePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["map"]
-    items: ValueBinding
+    items: Any
     invocation: CapabilityInvocation
     max_items: int = Field(default=64, ge=1)
     max_concurrency: int = Field(default=8, ge=1)
@@ -62,7 +62,7 @@ class LoopNodePayload(BaseModel):
     """Run an embedded DAGSpec repeatedly until ``until`` is truthy.
 
     Each iteration's output feeds the next iteration's graph input;
-    ``until`` is evaluated against the latest output via map_item expressions.
+    ``until`` is evaluated against the latest output via item expressions.
     """
 
     model_config = ConfigDict(extra="forbid")

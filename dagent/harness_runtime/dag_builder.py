@@ -225,19 +225,26 @@ def _payload_value_sources(payload: Any) -> list[tuple[Any, bool]]:
 
 def _validate_dag_spec_value_expressions(spec: DAGSpec) -> None:
     artifact_ids = set(spec.artifacts)
+
+    def check_artifact_refs(value: Any, owner: str) -> None:
+        try:
+            artifact_refs = list(iter_artifact_exprs(value))
+        except ValueExpressionError as exc:
+            raise DAGValidationError(f"{owner} has invalid value expression: {exc}") from exc
+        for ref in artifact_refs:
+            if ref.artifact_id not in artifact_ids:
+                raise DAGValidationError(
+                    f"{owner} references unknown artifact '{ref.artifact_id}' in value expression."
+                )
+
     for node in spec.nodes:
         for value, _ in _payload_value_sources(node.payload):
-            try:
-                artifact_refs = list(iter_artifact_exprs(value))
-            except ValueExpressionError as exc:
-                raise DAGValidationError(
-                    f"Node '{node.id}' has invalid value expression: {exc}"
-                ) from exc
-            for ref in artifact_refs:
-                if ref.artifact_id not in artifact_ids:
-                    raise DAGValidationError(
-                        f"Node '{node.id}' references unknown artifact '{ref.artifact_id}' in value expression."
-                    )
+            check_artifact_refs(value, f"Node '{node.id}'")
+    for edge in spec.edges:
+        if edge.when is not None:
+            check_artifact_refs(edge.when, f"Edge '{edge.source}->{edge.target}' condition")
+    if spec.output is not None:
+        check_artifact_refs(spec.output, "DAG output")
 
 
 def _validate_dag_spec_output(spec: DAGSpec) -> None:
@@ -250,7 +257,7 @@ def _validate_dag_spec_output(spec: DAGSpec) -> None:
         raise DAGValidationError(f"DAG output has invalid value expression: {exc}") from exc
     for expr in exprs:
         if isinstance(expr, ItemExpr):
-            raise DAGValidationError("DAG output cannot use map_item expressions.")
+            raise DAGValidationError("DAG output cannot use item expressions.")
         if isinstance(expr, NodeOutputExpr) and expr.node_id not in node_ids:
             raise DAGValidationError(
                 f"DAG output reads from unknown node '{expr.node_id}'."
@@ -410,7 +417,7 @@ def _validate_value_expression_dependencies(nodes: list[DAGNode], edges: list[DA
         for expr in exprs:
             if isinstance(expr, ItemExpr) and not item_allowed:
                 raise DAGValidationError(
-                    f"{owner} uses a map_item expression outside a map body or loop condition."
+                    f"{owner} uses an item expression outside a map body or loop condition."
                 )
             if isinstance(expr, NodeOutputExpr):
                 if expr.node_id not in node_ids:

@@ -56,8 +56,8 @@ class CompareExpr(BaseModel):
 
     type: Literal["compare"]
     op: CompareOp
-    left: Any = None
-    right: Any = None
+    left: Any
+    right: Any
 
 
 class ItemExpr(BaseModel):
@@ -65,7 +65,7 @@ class ItemExpr(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["map_item"]
+    type: Literal["item"]
     path: list[ValuePathItem] = Field(default_factory=list)
 
 

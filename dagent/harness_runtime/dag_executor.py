@@ -424,11 +424,16 @@ class DAGExecutor:
                     parent_capability_id=invocation.capability_id,
                 ),
             )
+            # Per-item node identity keeps stateful handlers (agent sessions) isolated.
+            context = replace(
+                self._execution_context(dag, node, skills=skills),
+                node=node.model_copy(update={"id": f"{node.id}[{index}]"}),
+            )
             try:
                 async with semaphore:
                     result = await self.capability_executor.execute(
                         invocation,
-                        context=self._execution_context(dag, node, skills=skills),
+                        context=context,
                         callbacks=CapabilityExecutionCallbacks(
                             on_token=token_stream or on_token,
                             on_event=emitter,
@@ -450,14 +455,14 @@ class DAGExecutor:
                 failure = failure or str(outcome)
                 continue
             invocation, result = outcome
-            dag_node.children.append(
-                RunTraceNode.capability_call(
-                    parent_id=dag_node.id,
-                    invocation=invocation,
-                    result=result,
-                    error=result.error,
-                )
+            item_node = RunTraceNode.capability_call(
+                parent_id=dag_node.id,
+                invocation=invocation,
+                result=result,
+                error=result.error,
             )
+            _attach_child_trace(item_node, result)
+            dag_node.children.append(item_node)
             if result.status == "failed":
                 failure = failure or (result.error or result.content)
             else:
@@ -551,28 +556,26 @@ class DAGExecutor:
                     on_token=on_token,
                     on_event=child_on_event,
                 )
-                node_traces = trace.dag_node_traces()
                 if trace.root.status == "completed":
                     break
-                if len(node_traces) == settled_before:
+                if len(trace.dag_node_traces()) == settled_before:
                     raise DAGExecutionError(f"Embedded DAG '{spec.id}' made no progress.")
         finally:
             if trace is not None:
                 child_root = trace.root
+                # The deterministic run-root id repeats across iterations; re-key it.
+                child_root.id = f"trace_node_{uuid4().hex}"
                 child_root.parent_id = dag_node.id
                 child_root.label = label
+                child_root.reparent_children()
                 dag_node.children.append(child_root)
         if spec.output is None:
             return None
-        return _resolve_value(
-            spec.output,
-            _ValueScope(
-                node_traces=node_traces,
-                graph_input=executor.graph_input,
-                artifacts=spec.artifacts,
-                workspace_path=self.workspace_path,
-            ),
-        )
+        return executor.resolve_spec_output(spec.output, trace)
+
+    def resolve_spec_output(self, output: Any, trace: RunTrace) -> Any:
+        """Resolve a ``DAGSpec.output`` expression against this executor's run."""
+        return _resolve_value(output, self._scope(trace.dag_node_traces()))
 
     def _execution_context(
         self,
@@ -760,7 +763,7 @@ def _resolve_value(value: Any, scope: _ValueScope) -> Any:
     if isinstance(expr, ItemExpr):
         if scope.item is _NO_ITEM:
             raise DAGExecutionError(
-                "map_item expressions are only valid inside map nodes and loop conditions."
+                "item expressions are only valid inside map nodes and loop conditions."
             )
         return _extract_path(scope.item, expr.path)
     if isinstance(value, dict):

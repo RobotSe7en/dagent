@@ -401,11 +401,27 @@ class DAGAgentLoop:
                 "DAG execution failed.",
             )
             trace.artifacts = dict(dag_executor.artifact_states)
+        final_response = dag_run_fallback_message(record, trace)
+        if spec.output is not None and trace.status == "completed":
+            try:
+                output_value = dag_executor.resolve_spec_output(spec.output, trace)
+            except Exception as exc:
+                trace.root.status = "failed"
+                record.dag.status = "failed"
+                final_response = f"Failed to resolve DAG output: {exc}"
+            else:
+                trace.root.value = output_value
+                final_response = (
+                    output_value
+                    if isinstance(output_value, str)
+                    else json.dumps(output_value, ensure_ascii=False)
+                )
+                trace.root.output = final_response
         _emit_dag(on_dag, record.dag)
         return _dag_loop_outcome(
             record=record,
             status="completed" if trace.status == "completed" else "failed",
-            final_response=dag_run_fallback_message(record, trace),
+            final_response=final_response,
             dag=record.dag,
             trace=trace,
             spec_id=spec.id,

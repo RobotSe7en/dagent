@@ -3,10 +3,11 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 import dagent
 from dagent.harness_runtime.dag_builder import DAGValidationError, validate_dag_spec
-from dagent.providers import MockProvider
+from dagent.providers import ChatResponse, MockProvider
 
 
 def run(coro):
@@ -203,12 +204,12 @@ def test_map_node_fails_closed_above_max_items() -> None:
     assert result.status == "failed"
 
 
-def test_map_item_expression_rejected_outside_map() -> None:
+def test_item_expression_rejected_outside_map() -> None:
     dag = dagent.Dag("bad_item", input=str)
     node = dagent.Node("publish", target=publish, inputs={"content": dagent.item})
     dag.add_node(node)
 
-    with pytest.raises(DAGValidationError, match="map_item"):
+    with pytest.raises(DAGValidationError, match="item expression"):
         validate_dag_spec(dag.to_dag_spec())
 
 
@@ -370,3 +371,142 @@ def test_conditional_edge_round_trips_through_spec_json() -> None:
     when = restored.edges[0].when
     assert when is not None
     assert when.expr.op == "ge"
+
+
+def test_static_dag_output_becomes_output_text() -> None:
+    dag = dagent.Dag("with_output", input=str)
+    node = dagent.Node("publish", target=publish, inputs={"content": dag.input})
+    dag.add_node(node)
+    dag.output = node.output
+
+    result = run_dag(dag, "x", [publish])
+
+    assert result.output_text == "published:x"
+    assert result.trace.root.value == "published:x"
+
+
+def test_static_dag_structured_output_serializes_to_json_text() -> None:
+    dag = dagent.Dag("with_dict_output", input=str)
+    node = dagent.Node("score", target=score, inputs={"text": dag.input})
+    dag.add_node(node)
+    dag.output = node.output
+
+    result = run_dag(dag, "good text", [score])
+
+    assert result.trace.root.value == {"score": 0.9}
+    assert result.output_text == '{"score": 0.9}'
+
+
+def test_map_node_accepts_literal_list() -> None:
+    dag = dagent.Dag("literal_fanout", input=str)
+    fetch_all = dagent.MapNode(
+        "fetch_all",
+        target=fetch,
+        over=["a", "b"],
+        inputs={"url": dagent.item},
+    )
+    dag.add_node(fetch_all)
+
+    result = run_dag(dag, "unused", [fetch])
+
+    assert result.node_value("fetch_all") == ["page:a", "page:b"]
+
+
+def test_map_over_agent_isolates_item_sessions_and_keeps_inner_traces() -> None:
+    provider = MockProvider([ChatResponse(content="r1"), ChatResponse(content="r2")])
+    runner = dagent.Runner(provider=provider)
+    agent = dagent.ToolAgent(profile="conversation", name="writer", max_steps=1)
+
+    dag = dagent.Dag("agent_map", input=list)
+    map_node = dagent.MapNode(
+        "write_all",
+        target=agent,
+        over=dag.input,
+        inputs={"prompt": dagent.item},
+        max_concurrency=1,
+    )
+    dag.add_node(map_node)
+
+    try:
+        result = run(runner.run(dag, graph_input=["alpha", "beta"]))
+    finally:
+        runner.close()
+
+    assert result.status == "completed"
+    assert result.node_value("write_all") == ["r1", "r2"]
+    user_texts = [
+        "\n".join(str(m.get("content")) for m in request["messages"] if m.get("role") == "user")
+        for request in provider.requests
+    ]
+    assert "alpha" in user_texts[0] and "alpha" not in user_texts[1]
+    assert "beta" in user_texts[1]
+    item_calls = result.trace.dag_node_traces()["write_all"].children
+    assert all(
+        any(grandchild.kind == "agent_loop" for grandchild in child.children)
+        for child in item_calls
+    )
+
+
+def test_edge_condition_rejects_unknown_artifact() -> None:
+    dag = dagent.Dag("when_artifact", input=str)
+    a = dagent.Node("a", target=publish, inputs={"content": dag.input})
+    b = dagent.Node("b", target=publish, inputs={"content": dag.input})
+    dag.add_node(a)
+    dag.add_node(b)
+    dag.add_edge(a, b, when=dagent.ArtifactValueRef("ghost"))
+
+    with pytest.raises(DAGValidationError, match="unknown artifact 'ghost'"):
+        validate_dag_spec(dag.to_dag_spec())
+
+
+def test_dag_output_rejects_unknown_artifact() -> None:
+    dag = dagent.Dag("output_artifact", input=str)
+    dag.add_node(dagent.Node("publish", target=publish, inputs={"content": dag.input}))
+    dag.output = dagent.ArtifactValueRef("ghost")
+
+    with pytest.raises(DAGValidationError, match="unknown artifact 'ghost'"):
+        validate_dag_spec(dag.to_dag_spec())
+
+
+def test_loop_until_participates_in_artifact_inference() -> None:
+    dag = dagent.Dag("loop_artifacts", input=int)
+    report = dag.artifact("report", "outputs/report.md")
+    loop = dagent.LoopNode(
+        "count_up",
+        body=_increment_body(),
+        until=dagent.item == report.path,
+        max_iterations=2,
+        input=dag.input,
+    )
+    dag.add_node(loop)
+
+    assert dag.to_dag_spec().nodes[0].inputs == ["report"]
+
+
+def test_embedded_run_trace_ids_are_unique_across_iterations() -> None:
+    dag = dagent.Dag("unique_ids", input=int)
+    loop = dagent.LoopNode(
+        "count_up",
+        body=_increment_body(),
+        until=dagent.item >= 2,
+        max_iterations=5,
+        input=dag.input,
+    )
+    dag.add_node(loop)
+
+    result = run_dag(dag, 0, [])
+
+    loop_trace = result.trace.dag_node_traces()["count_up"]
+    iteration_ids = [child.id for child in loop_trace.children]
+    assert len(iteration_ids) == 2
+    assert len(set(iteration_ids)) == 2
+    assert result.trace.root.id not in iteration_ids
+    for child in loop_trace.children:
+        assert all(grandchild.parent_id == child.id for grandchild in child.children)
+
+
+def test_compare_expr_requires_both_operands() -> None:
+    from dagent.schemas.value import CompareExpr
+
+    with pytest.raises(ValidationError):
+        CompareExpr(type="compare", op="eq", left=1)
