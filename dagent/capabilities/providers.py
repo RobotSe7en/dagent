@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
+
+from pydantic import BaseModel
 
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
@@ -24,7 +27,7 @@ from dagent.capabilities.tools.boundary import (
     enforce_path_allowed,
 )
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
 
 
 class ToolCapabilityProvider:
@@ -57,13 +60,13 @@ class ToolCapabilityProvider:
 
             def handler(invocation: CapabilityInvocation, *, tool_name: str = name) -> CapabilityResult:
                 try:
-                    content = _execute_tool(
+                    content, value = _execute_tool(
                         self.tools,
                         current_workspace_root(catalog.workspace_root),
                         tool_name,
                         invocation,
                     )
-                    return _completed(invocation, content)
+                    return _completed(invocation, content, value=value)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
@@ -394,12 +397,12 @@ def _execute_tool(
     workspace_root: Path,
     tool_name: str,
     invocation: CapabilityInvocation,
-) -> str:
+) -> tuple[str, Any]:
     tool = tools.get(tool_name)
     if tool is None:
         raise RuntimeError(f"Tool '{tool_name}' is not registered.")
     enforce_action_allowed(tool.action, invocation.boundary)
-    checked_args = {**(tool.default_args or {}), **invocation.arguments}
+    checked_args = _merge_tool_arguments(tool, invocation.arguments)
     for arg_name in tool.path_args:
         checked_args[arg_name] = enforce_path_allowed(
             checked_args[arg_name],
@@ -408,17 +411,61 @@ def _execute_tool(
         )
     for arg_name in tool.command_args:
         enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
-    return tool.handler(**checked_args)
+    result = tool.handler(**checked_args)
+    return _content_and_value_from_tool_result(result)
+
+
+def _merge_tool_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    defaults = _tool_default_arguments(tool)
+    merged = dict(defaults)
+    for name, value in arguments.items():
+        if value is None and name in defaults:
+            continue
+        merged[name] = value
+    return merged
+
+
+def _tool_default_arguments(tool: Any) -> dict[str, Any]:
+    defaults = dict(tool.default_args or {})
+    parameters = tool.parameters or {}
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    if isinstance(properties, dict):
+        for name, schema in properties.items():
+            if name in defaults or not isinstance(schema, dict) or "default" not in schema:
+                continue
+            defaults[name] = schema["default"]
+    return defaults
+
+
+def _content_and_value_from_tool_result(result: Any) -> tuple[str, Any]:
+    if isinstance(result, ToolOutput):
+        return result.content, result.value
+    if result is None:
+        return "", None
+    if isinstance(result, BaseModel):
+        value = result.model_dump(mode="json")
+        return result.model_dump_json(), value
+    if isinstance(result, str):
+        return result, None
+    if isinstance(result, bytes):
+        return result.decode("utf-8", errors="replace"), None
+    if isinstance(result, tuple):
+        value = list(result)
+        return json.dumps(value, ensure_ascii=False), value
+    if isinstance(result, (dict, list, bool, int, float)):
+        return json.dumps(result, ensure_ascii=False), result
+    return str(result), None
 
 
 def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def _completed(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
+def _completed(invocation: CapabilityInvocation, content: str, *, value: Any = None) -> CapabilityResult:
     return CapabilityResult.completed(
         invocation,
         content,
+        value=value,
         policy_decision=invocation.boundary.policy_decision(),
     )
 

@@ -510,3 +510,50 @@ def test_compare_expr_requires_both_operands() -> None:
 
     with pytest.raises(ValidationError):
         CompareExpr(type="compare", op="eq", left=1)
+
+
+def test_list_files_value_feeds_map_fanout(tmp_path) -> None:
+    runner = dagent.Runner(provider=MockProvider([]), workspace=tmp_path)
+
+    dag = dagent.Dag("list_then_map", input=str)
+    write_a = dagent.Node(
+        "write_a",
+        target="tool.write_file",
+        inputs={"path": "notes/a.md", "content": "alpha"},
+        boundary=dagent.Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+    write_b = dagent.Node(
+        "write_b",
+        target="tool.write_file",
+        inputs={"path": "notes/b.md", "content": "beta"},
+        boundary=dagent.Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+    listing = dagent.Node(
+        "listing",
+        target="tool.list_files",
+        inputs={"path": ".", "glob": "*.md"},
+    )
+    read_all = dagent.MapNode(
+        "read_all",
+        target="tool.read_file",
+        over=listing.output,
+        inputs={"path": dagent.item},
+    )
+    dag.add_node(write_a)
+    dag.add_node(write_b)
+    dag.add_node(listing)
+    dag.add_node(read_all)
+    dag.add_edge(write_a, listing)
+    dag.add_edge(write_b, listing)
+    dag.add_edge(listing, read_all)
+
+    try:
+        result = run(
+            runner.run(dag, graph_input="unused", workspace_root=tmp_path / "runs")
+        )
+    finally:
+        runner.close()
+
+    assert result.status == "completed"
+    assert len(result.node_value("listing")) == 2
+    assert result.node_value("read_all") == ["alpha", "beta"]
