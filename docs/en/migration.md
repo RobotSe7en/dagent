@@ -5,9 +5,9 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.4.1`.
+The current package version is `0.4.2`.
 
-## Unreleased
+## 0.4.2
 
 - The built-in shell command capability is now `tool.shell`, with DAG DSL calls
   written as `shell(command="...", cwd=".")`. Replace saved `tool.run_command`
