@@ -1,8 +1,10 @@
 import asyncio
+import io
 import os
 from pathlib import Path
 import stat
 import sys
+import time
 
 import pytest
 
@@ -344,7 +346,7 @@ def test_read_file_keeps_long_lines_exact_for_edit_workflow(tmp_path: Path) -> N
     assert target.read_text(encoding="utf-8") == "short\n"
 
 
-def test_read_file_null_offset_uses_schema_default(tmp_path: Path) -> None:
+def test_read_file_null_offset_fails_instead_of_using_schema_default(tmp_path: Path) -> None:
     (tmp_path / "notes.txt").write_text("hello\n", encoding="utf-8")
     executor = make_executor(tmp_path)
 
@@ -355,8 +357,8 @@ def test_read_file_null_offset_uses_schema_default(tmp_path: Path) -> None:
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
 
-    assert result.status == "completed"
-    assert result.content == "hello\n"
+    assert result.status == "failed"
+    assert "offset must be an integer" in (result.error or "")
 
 
 def test_read_file_offset_beyond_end_of_file_fails(tmp_path: Path) -> None:
@@ -404,6 +406,26 @@ def test_read_file_caps_default_read_at_max_lines(tmp_path: Path) -> None:
     )
 
     assert f"showing lines 1-{MAX_READ_LINES} of {total}" in result.content
+
+
+def test_read_file_marks_oversized_single_line_as_truncated(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.file_tools import MAX_READ_BYTES
+
+    target = tmp_path / "single-line.txt"
+    target.write_text("a" * (MAX_READ_BYTES + 10), encoding="utf-8")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "read_file",
+        {"path": "single-line.txt"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert result.content.startswith("a" * 100)
+    assert "[TRUNCATED]" in result.content
+    assert "showing lines 1-1 of 1" in result.content
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +499,81 @@ def test_edit_file_preserves_crlf_line_endings(tmp_path: Path) -> None:
     assert target.read_bytes() == b"alpha\r\ngamma\r\n"
 
 
+def test_edit_file_preserves_mixed_line_endings_exactly(tmp_path: Path) -> None:
+    target = tmp_path / "mixed.txt"
+    target.write_bytes(b"alpha\r\nbeta\ngamma\r\n")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "mixed.txt", "old_string": "beta", "new_string": "BETA"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "completed"
+    assert target.read_bytes() == b"alpha\r\nBETA\ngamma\r\n"
+
+
+def test_edit_file_requires_exact_newline_match(tmp_path: Path) -> None:
+    target = tmp_path / "win.txt"
+    target.write_bytes(b"alpha\r\nbeta\r\n")
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "edit_file",
+        {"path": "win.txt", "old_string": "alpha\nbeta", "new_string": "changed"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+    )
+
+    assert result.status == "failed"
+    assert "was not found" in (result.error or "")
+    assert target.read_bytes() == b"alpha\r\nbeta\r\n"
+
+
+def test_concurrent_edit_file_operations_on_same_path_do_not_lose_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dagent.capabilities.tools import file_tools
+
+    target = tmp_path / "state.txt"
+    target.write_text("alpha=1\nbeta=1\n", encoding="utf-8")
+    executor = make_executor(tmp_path)
+    original_read_utf8 = file_tools._read_utf8
+
+    def slow_read_utf8(path: Path) -> tuple[str, bool]:
+        text, had_bom = original_read_utf8(path)
+        time.sleep(0.05)
+        return text, had_bom
+
+    monkeypatch.setattr(file_tools, "_read_utf8", slow_read_utf8)
+
+    async def edit(args: dict[str, str]) -> CapabilityResult:
+        return await executor.execute(
+            CapabilityInvocation(
+                capability_id="tool.edit_file",
+                kind="tool",
+                arguments={"path": "state.txt", **args},
+                boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+            )
+        )
+
+    async def run_edits() -> tuple[CapabilityResult, CapabilityResult]:
+        first_result, second_result = await asyncio.gather(
+            edit({"old_string": "alpha=1", "new_string": "alpha=2"}),
+            edit({"old_string": "beta=1", "new_string": "beta=2"}),
+        )
+        return first_result, second_result
+
+    first, second = run(run_edits())
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert target.read_text(encoding="utf-8") == "alpha=2\nbeta=2\n"
+
+
 def test_edit_file_preserves_utf8_bom(tmp_path: Path) -> None:
     target = tmp_path / "bom.txt"
     target.write_bytes(b"\xef\xbb\xbfhello\n")
@@ -536,7 +633,7 @@ def test_write_file_reports_bytes_written(tmp_path: Path) -> None:
     assert "Wrote 5 bytes" in result.content
 
 
-def test_write_file_uses_umask_and_preserves_existing_permissions_and_hardlinks(tmp_path: Path) -> None:
+def test_write_file_uses_umask_preserves_mode_and_detaches_hardlinks(tmp_path: Path) -> None:
     if not hasattr(os, "link"):
         pytest.skip("hard links are not available on this platform")
     executor = make_executor(tmp_path)
@@ -569,8 +666,35 @@ def test_write_file_uses_umask_and_preserves_existing_permissions_and_hardlinks(
 
     assert result.status == "completed"
     assert stat.S_IMODE(existing.stat().st_mode) == 0o640
-    assert linked.read_text(encoding="utf-8") == "new"
-    assert existing.stat().st_ino == linked.stat().st_ino
+    assert existing.read_text(encoding="utf-8") == "new"
+    assert linked.read_text(encoding="utf-8") == "old"
+    assert existing.stat().st_ino != linked.stat().st_ino
+
+
+def test_write_file_does_not_mutate_hardlinked_file_outside_boundary(tmp_path: Path) -> None:
+    if not hasattr(os, "link"):
+        pytest.skip("hard links are not available on this platform")
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    allowed_link = allowed / "shared.txt"
+    blocked_link = blocked / "shared.txt"
+    allowed_link.write_text("old", encoding="utf-8")
+    os.link(allowed_link, blocked_link)
+    executor = make_executor(tmp_path)
+
+    result = execute(
+        executor,
+        "write_file",
+        {"path": "allowed/shared.txt", "content": "new"},
+        boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+    )
+
+    assert result.status == "completed"
+    assert allowed_link.read_text(encoding="utf-8") == "new"
+    assert blocked_link.read_text(encoding="utf-8") == "old"
+    assert allowed_link.stat().st_ino != blocked_link.stat().st_ino
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +774,87 @@ def test_grep_backends_agree_on_python_regex_and_ignore_files(tmp_path: Path) ->
     assert rg_output.splitlines() == py_output.splitlines()
 
 
+def test_grep_ripgrep_backend_streams_and_stops_after_match_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dagent.capabilities.tools import file_tools
+    from dagent.capabilities.tools.file_tools import GREP_MAX_MATCHES, _grep_with_ripgrep
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.index = 0
+            self.closed = False
+            self.lines = [
+                f"{tmp_path / 'many.txt'}:{index}:alpha\n"
+                for index in range(1, GREP_MAX_MATCHES + 25)
+            ]
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> str:
+            if self.closed or self.index >= len(self.lines):
+                raise StopIteration
+            line = self.lines[self.index]
+            self.index += 1
+            return line
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = FakeStdout()
+            self.stderr = io.StringIO("")
+            self.returncode: int | None = None
+            self.terminated = False
+            self.killed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self.stdout.close()
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+            self.stdout.close()
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -9
+            self.stdout.close()
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                self.returncode = 0
+            return self.returncode
+
+    processes: list[FakeProcess] = []
+
+    def fake_popen(*args, **kwargs) -> FakeProcess:
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    def fail_if_capture_output_is_used(*args, **kwargs):
+        pytest.fail("ripgrep output must be streamed instead of captured in full")
+
+    monkeypatch.setattr(file_tools.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(file_tools.subprocess, "run", fail_if_capture_output_is_used)
+
+    output = _grep_with_ripgrep("rg", tmp_path, "alpha", None)
+
+    assert len(processes) == 1
+    assert processes[0].terminated
+    assert not processes[0].killed
+    assert f"{tmp_path / 'many.txt'}:{GREP_MAX_MATCHES}:alpha" in output
+    assert f"{tmp_path / 'many.txt'}:{GREP_MAX_MATCHES + 1}:alpha" not in output
+    assert "[TRUNCATED] grep stopped after" in output
+
+
 # ---------------------------------------------------------------------------
 # run_command hardening
 # ---------------------------------------------------------------------------
@@ -726,7 +931,7 @@ def test_list_files_depth_limits_recursion(tmp_path: Path) -> None:
     assert "deep.txt" not in result.content
 
 
-def test_list_files_null_depth_uses_schema_default(tmp_path: Path) -> None:
+def test_list_files_null_depth_fails_instead_of_using_schema_default(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "b").mkdir()
     (tmp_path / "a" / "b" / "deep.txt").write_text("x", encoding="utf-8")
@@ -739,8 +944,8 @@ def test_list_files_null_depth_uses_schema_default(tmp_path: Path) -> None:
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
 
-    assert result.status == "completed"
-    assert "deep.txt" in result.content
+    assert result.status == "failed"
+    assert "depth must be an integer" in (result.error or "")
 
 
 def test_list_files_glob_lists_matching_files_only(tmp_path: Path) -> None:
