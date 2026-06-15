@@ -315,6 +315,48 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
     )
 
 
+def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    target = blocked / "secret.txt"
+    target.write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "blocked/secret.txt", "content": "changed"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I will use an allowed file instead."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write the blocked file"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(
+        agent.resume_review(
+            first.state,
+            approved=False,
+            feedback="Use allowed/notes.txt instead.",
+        )
+    )
+
+    assert resumed.output_text == "I will use an allowed file instead."
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert "Reviewer feedback: Use allowed/notes.txt instead." in agent.messages[2]["content"]
+    assert "Reviewer feedback: Use allowed/notes.txt instead." in provider.requests[1]["messages"][-1]["content"]
+
+
 def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     provider = MockProvider(

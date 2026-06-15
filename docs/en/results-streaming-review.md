@@ -125,6 +125,16 @@ if first.requires_review and first.review is not None:
     result = await runner.resume(first.review.approve())
 ```
 
+Approvals and rejections can carry reviewer feedback. Use this to explain why a
+review was rejected or to guide the agent toward a different next step:
+
+```python
+if first.requires_review and first.review is not None:
+    result = await runner.resume(
+        first.review.reject(feedback="Do not read that path. Summarize README.md instead.")
+    )
+```
+
 Streaming resume uses the same event contract:
 
 ```python
@@ -156,4 +166,6 @@ Capability reviews can be triggered by risk policy or by a boundary override
 request. Boundary override reviews use `kind == "capability_review"` and include
 `payload.reason == "boundary_violation"` plus the original error. Approving one
 executes only that pending capability call; it does not widen the run boundary
-for later calls. Rejecting it feeds a denial message back to the agent.
+for later calls. Rejecting it feeds a denial message back to the agent. If the
+review decision includes `feedback`, that text is included in the agent's
+continuation context.

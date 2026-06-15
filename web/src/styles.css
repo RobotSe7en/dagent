@@ -1840,6 +1840,92 @@ button:disabled {
   grid-template-columns: minmax(420px, 1fr) minmax(320px, 400px);
 }
 
+.capability-review-modal {
+  width: min(860px, 100%);
+  height: auto;
+  max-height: min(760px, 100%);
+}
+
+.capability-review-body {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  overflow-y: auto;
+}
+
+.capability-review-warning {
+  display: grid;
+  gap: 6px;
+  margin: 14px;
+  border: 1px solid #fca5a5;
+  border-radius: 8px;
+  background: #fef2f2;
+  padding: 12px 14px;
+  color: #991b1b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.capability-review-warning strong {
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.capability-review-body .capability-section p {
+  margin: 0;
+  padding: 8px 14px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.capability-review-body .capability-section pre {
+  max-height: 260px;
+  max-width: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 14px 14px;
+  color: var(--text-secondary);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.review-feedback-field {
+  display: grid;
+  gap: 6px;
+  margin: 14px;
+}
+
+.review-feedback-field span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.review-feedback-field textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  padding: 10px 11px;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.review-feedback-field textarea:focus {
+  outline: 2px solid rgba(79, 110, 247, 0.16);
+  border-color: var(--accent-blue);
+}
+
+.dag-review-feedback {
+  margin: 0 0 14px;
+}
+
 .modal-flow {
   min-width: 0;
   min-height: 0;

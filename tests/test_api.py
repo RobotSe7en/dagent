@@ -390,6 +390,107 @@ def test_api_message_stream_rejects_dag_spec_as_public_target() -> None:
     assert response.status_code == 422
 
 
+def test_api_message_stream_capability_review_event_includes_call_and_payload(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    blocked = tmp_path / "blocked"
+    workspace.mkdir()
+    blocked.mkdir()
+    (blocked / "secret.txt").write_text("private", encoding="utf-8")
+    state.runner = Runner(
+        workspace=workspace,
+        provider=MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "../blocked/secret.txt"},
+                    )
+                ],
+            )
+        ]),
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "read outside the workspace",
+            target="tool",
+            capability_ids=["tool.read_file"],
+        ),
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    review_event = next(event for event in events if event["type"] == "review.required")
+    review = review_event["data"]
+    assert review["kind"] == "capability_review"
+    assert review["capability_call"] == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
+        "arguments": {"path": "../blocked/secret.txt"},
+    }
+    assert review["payload"]["capability_id"] == "tool.read_file"
+    assert review["payload"]["risk"] == "low"
+    assert review["payload"]["reason"] == "boundary_violation"
+    assert "outside allowed paths" in review["payload"]["error"]
+    assert "secret.txt" in review["payload"]["error"]
+
+
+def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    blocked = tmp_path / "blocked"
+    workspace.mkdir()
+    blocked.mkdir()
+    (blocked / "secret.txt").write_text("private", encoding="utf-8")
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="read_file",
+                    arguments={"path": "../blocked/secret.txt"},
+                )
+            ],
+        ),
+        ChatResponse(content="I will read the allowed README instead."),
+    ])
+    state.runner = Runner(workspace=workspace, provider=provider)
+    client = TestClient(app)
+
+    stream_response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "read outside the workspace",
+            target="tool",
+            capability_ids=["tool.read_file"],
+        ),
+    )
+    stream_events = _sse_events(stream_response.text)
+    review_id = next(
+        event["data"]["review_id"]
+        for event in stream_events
+        if event["type"] == "review.required"
+    )
+
+    resume_response = client.post(
+        "/messages/resume",
+        json={
+            "review_id": review_id,
+            "approved": False,
+            "feedback": "Read README.md instead.",
+        },
+    )
+
+    assert resume_response.status_code == 200
+    resume_result = _stream_result(_sse_events(resume_response.text)[-1])
+    assert resume_result["output_text"] == "I will read the allowed README instead."
+    assert "Reviewer feedback: Read README.md instead." in provider.requests[1]["messages"][-1]["content"]
+
+
 def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(

@@ -88,6 +88,22 @@ def test_provider_is_public_from_package_root() -> None:
     assert "config" not in inspect.signature(dagent.Provider).parameters
 
 
+def test_review_handle_decisions_accept_reviewer_feedback() -> None:
+    handle = dagent.ReviewHandle(
+        dagent.PendingReview(
+            review_id="review_1",
+            kind="capability_review",
+            message="Review capability call.",
+        )
+    )
+
+    approved = handle.approve(feedback="Continue, then summarize the result.")
+    rejected = handle.reject(feedback="Use the allowed notes file instead.")
+
+    assert approved.feedback == "Continue, then summarize the result."
+    assert rejected.feedback == "Use the allowed notes file instead."
+
+
 def test_tool_decorator_has_tool_only_signature() -> None:
     assert "kind" not in inspect.signature(dagent.tool).parameters
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters

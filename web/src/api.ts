@@ -328,7 +328,9 @@ export async function resumeDagReview(
   approved: boolean,
   handlers: StreamHandlers,
   state?: ApiRunState | null,
+  feedback?: string,
 ): Promise<void> {
+  const normalizedFeedback = feedback?.trim();
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -338,6 +340,7 @@ export async function resumeDagReview(
       approved,
       review_level: reviewLevel,
       state,
+      ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
     }),
   });
   if (!response.ok || !response.body) {
@@ -430,11 +433,7 @@ async function readStream(response: Response, handlers: StreamHandlers) {
         handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
       }
       if (event.type === 'review.required') {
-        handlers.onReview?.({
-          review_id: String(data.review_id ?? ''),
-          kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
-          message: String(data.message ?? ''),
-        });
+        handlers.onReview?.(reviewPayload(data));
       }
       if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
@@ -447,6 +446,28 @@ async function readStream(response: Response, handlers: StreamHandlers) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function reviewPayload(data: Record<string, unknown>): ReviewEventPayload {
+  const payload: ReviewEventPayload = {
+    review_id: String(data.review_id ?? ''),
+    kind: String(data.kind ?? 'initial_dag') as ReviewEventPayload['kind'],
+    message: String(data.message ?? ''),
+  };
+  if (isRecord(data.proposed_dag)) {
+    payload.proposed_dag = data.proposed_dag as unknown as Dag;
+  }
+  if (isRecord(data.capability_call)) {
+    payload.capability_call = {
+      invocation_id: String(data.capability_call.invocation_id ?? ''),
+      capability_id: String(data.capability_call.capability_id ?? ''),
+      arguments: isRecord(data.capability_call.arguments) ? data.capability_call.arguments : {},
+    };
+  }
+  if (isRecord(data.payload)) {
+    payload.payload = data.payload;
+  }
+  return payload;
 }
 
 function capabilityContext(data: Record<string, unknown>) {
@@ -575,11 +596,18 @@ export async function resumeCapabilityReview(
   approved: boolean,
   handlers: StreamHandlers,
   state?: ApiRunState | null,
+  feedback?: string,
 ): Promise<void> {
+  const normalizedFeedback = feedback?.trim();
   const response = await fetch(`${API_BASE}/messages/resume`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ review_id: reviewId, approved, state }),
+    body: JSON.stringify({
+      review_id: reviewId,
+      approved,
+      state,
+      ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+    }),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage((response as unknown) as Response));

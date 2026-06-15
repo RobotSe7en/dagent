@@ -34,6 +34,7 @@ class ReviewDecision:
     approved: bool
     dag: DAG | None = None
     review_level: ReviewLevel | None = None
+    feedback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,21 +72,32 @@ class ReviewHandle:
         *,
         dag: DAG | None = None,
         review_level: ReviewLevel | None = None,
+        feedback: str | None = None,
     ) -> ReviewDecision:
         return ReviewDecision(
             review_id=self.review_id,
             approved=True,
             dag=dag or self.dag,
             review_level=review_level,
+            feedback=feedback,
         )
 
     def reject(
         self,
         *,
         review_level: ReviewLevel | None = None,
+        feedback: str | None = None,
     ) -> ReviewDecision:
         return ReviewDecision(
             review_id=self.review_id,
             approved=False,
             review_level=review_level,
+            feedback=feedback,
         )
+
+
+def _append_reviewer_feedback(message: str, feedback: str | None) -> str:
+    text = (feedback or "").strip()
+    if not text:
+        return message
+    return f"{message}\nReviewer feedback: {text}"

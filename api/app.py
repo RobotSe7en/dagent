@@ -28,6 +28,7 @@ from dagent import (
     RiskLevel,
     Runner,
     RunState,
+    RunStreamEvent,
     SkillAmbiguousError,
     SkillNotFoundError,
     SkillPermissionError,
@@ -65,6 +66,7 @@ class ResumeReviewRequest(BaseModel):
     approved: bool = True
     review_level: ReviewLevel | None = None
     state: RunState | None = None
+    feedback: str | None = None
 
 
 class CapabilityTestRequest(BaseModel):
@@ -730,7 +732,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
             ):
                 if event.type == "run.failed":
                     sent_error = True
-                yield _sse(event.model_dump(mode="json"))
+                yield _sse(_chat_stream_event_payload(event, runner))
         except Exception as exc:
             if not sent_error:
                 yield _sse({
@@ -751,6 +753,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             approved=request.approved,
             dag=request.dag,
             review_level=request.review_level,
+            feedback=request.feedback,
         )
         sent_error = False
         try:
@@ -761,7 +764,7 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
             ):
                 if event.type == "run.failed":
                     sent_error = True
-                yield _sse(event.model_dump(mode="json"))
+                yield _sse(_chat_stream_event_payload(event, runner))
         except Exception as exc:
             if not sent_error:
                 yield _sse({
@@ -886,3 +889,24 @@ def _clean_name(value: Any, *, field: str) -> str:
 
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _chat_stream_event_payload(event: RunStreamEvent, runner: Runner) -> dict[str, Any]:
+    payload = event.model_dump(mode="json")
+    data = payload.get("data")
+    if (
+        event.type != "review.required"
+        or event.run_id is None
+        or not isinstance(data, dict)
+        or data.get("kind") != "capability_review"
+    ):
+        return payload
+    run_state = runner.run_state(event.run_id)
+    pending_review = None if run_state is None else run_state.pending_review
+    if pending_review is None or pending_review.review_id != data.get("review_id"):
+        return payload
+    review_payload = pending_review.model_dump(mode="json")
+    if review_payload.get("capability_call") is not None:
+        data["capability_call"] = review_payload["capability_call"]
+    data["payload"] = review_payload.get("payload") or {}
+    return payload

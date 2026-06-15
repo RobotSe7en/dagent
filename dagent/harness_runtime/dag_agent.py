@@ -30,7 +30,7 @@ from dagent.harness_runtime.dag_builder import (
     dag_from_model_output,
     validate_dag,
 )
-from dagent.review import ReviewLevel, _review_policy
+from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.profiles import AgentProfile
@@ -159,6 +159,7 @@ class DAGAgent:
         dag: DAG | None = None,
         approved: bool = True,
         review_level: ReviewLevel | None = None,
+        feedback: str | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -173,6 +174,7 @@ class DAGAgent:
             dag,
             approved=approved,
             review_level=review_level,
+            feedback=feedback,
             messages=provider_messages,
             build_user_message=self.build_request_user_message,
             on_token=on_token,
@@ -435,6 +437,7 @@ class DAGAgentLoop:
         *,
         approved: bool,
         review_level: ReviewLevel | None = None,
+        feedback: str | None = None,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
         on_token: Callable[[str], None] | None = None,
@@ -470,7 +473,10 @@ class DAGAgentLoop:
                 kind="review_denied",
                 task_id=task_id,
                 record=record,
-                review_message="Human reviewer denied the proposed DAG change. Continue without applying it.",
+                review_message=_append_reviewer_feedback(
+                    "Human reviewer denied the proposed DAG change. Continue without applying it.",
+                    feedback,
+                ),
             )
             outcome = await self._continue_from_observation(
                 record,

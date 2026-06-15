@@ -292,6 +292,7 @@ class HarnessRuntime:
         dag: DAG | None = None,
         approved: bool = True,
         review_level: ReviewLevel | None = None,
+        feedback: str | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
@@ -311,6 +312,7 @@ class HarnessRuntime:
             initial_outcome = await self.tool_agent.resume_review(
                 state,
                 approved=approved,
+                feedback=feedback,
                 on_token=on_token,
                 on_event=on_event,
             )
@@ -370,6 +372,7 @@ class HarnessRuntime:
             dag=submitted_dag,
             approved=approved,
             review_level=review_level,
+            feedback=feedback,
             on_token=on_token,
             on_event=on_event,
             on_dag=_dag_event_emitter(on_event),

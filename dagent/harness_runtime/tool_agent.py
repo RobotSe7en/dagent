@@ -28,7 +28,7 @@ from dagent.harness_runtime.runtime_events import (
     TokenHandler,
     response_token_stream,
 )
-from dagent.review import ReviewLevel, _review_policy
+from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse, ToolCall
 from dagent.schemas import (
@@ -157,6 +157,7 @@ class ToolAgent:
         state: RunState,
         *,
         approved: bool,
+        feedback: str | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome | None:
@@ -202,6 +203,7 @@ class ToolAgent:
                     content=feed_content,
                 )
 
+        feed_content = _append_reviewer_feedback(feed_content, feedback)
         _reconcile_reviewed_trace_node(
             self.trace,
             invocation,
