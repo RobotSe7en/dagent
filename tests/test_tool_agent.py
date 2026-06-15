@@ -31,6 +31,32 @@ def run(coro):
     return asyncio.run(coro)
 
 
+class StrictToolMessageProvider(MockProvider):
+    async def chat(self, messages, tools=None):
+        _assert_complete_tool_call_messages(messages)
+        return await super().chat(messages, tools=tools)
+
+
+def _assert_complete_tool_call_messages(messages: list[dict]) -> None:
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        tool_calls = message.get("tool_calls") or []
+        if message.get("role") != "assistant" or not tool_calls:
+            index += 1
+            continue
+
+        expected_ids = [tool_call["id"] for tool_call in tool_calls]
+        seen_ids: list[str] = []
+        cursor = index + 1
+        while cursor < len(messages) and messages[cursor].get("role") == "tool":
+            seen_ids.append(messages[cursor].get("tool_call_id"))
+            cursor += 1
+        missing = [tool_call_id for tool_call_id in expected_ids if tool_call_id not in seen_ids]
+        assert not missing, f"missing tool messages for {missing}"
+        index = cursor
+
+
 def _tool_adapter(catalog: CapabilityCatalog) -> CapabilityToolAdapter:
     return CapabilityToolAdapter(
         catalog,
@@ -315,6 +341,52 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
     )
 
 
+def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history_valid(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    (allowed / "notes.txt").write_text("allowed", encoding="utf-8")
+    target = blocked / "secret.txt"
+    target.write_text("secret", encoding="utf-8")
+    provider = StrictToolMessageProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "blocked/secret.txt", "content": "changed"},
+                    ),
+                    ToolCall(
+                        id="call_2",
+                        name="read_file",
+                        arguments={"path": "allowed/notes.txt"},
+                    ),
+                ]
+            ),
+            ChatResponse(content="I will continue without writing."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write blocked and read allowed"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(agent.resume_review(first.state, approved=False))
+
+    assert resumed.state.status == "completed"
+    assert resumed.output_text == "I will continue without writing."
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert agent.messages[2]["tool_call_id"] == "call_1"
+    assert agent.messages[3]["tool_call_id"] == "call_2"
+    assert "[TOOL_SKIPPED]" in agent.messages[3]["content"]
+
+
 def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -> None:
     blocked = tmp_path / "blocked"
     blocked.mkdir()
@@ -447,7 +519,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     assert resumed.state.pending_review.payload["reason"] == "boundary_violation"
 
 
-def test_tool_agent_run_command_cross_boundary_path_requires_review(tmp_path: Path) -> None:
+def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     blocked = tmp_path / "blocked"
     allowed.mkdir()
@@ -459,7 +531,7 @@ def test_tool_agent_run_command_cross_boundary_path_requires_review(tmp_path: Pa
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="run_command",
+                        name="shell",
                         arguments={
                             "cwd": "allowed",
                             "command": "cat ../blocked/secret.txt",
@@ -481,7 +553,7 @@ def test_tool_agent_run_command_cross_boundary_path_requires_review(tmp_path: Pa
 
     assert result.state.status == "awaiting_review"
     assert result.state.pending_review is not None
-    assert result.state.pending_review.message == "Review boundary override: tool.run_command"
+    assert result.state.pending_review.message == "Review boundary override: tool.shell"
     assert result.state.pending_review.payload["reason"] == "boundary_violation"
     assert "../blocked/secret.txt" in result.state.pending_review.payload["error"]
 
@@ -493,7 +565,7 @@ def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> No
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="run_command",
+                        name="shell",
                         arguments={"cwd": ".", "command": "rm -rf /"},
                     )
                 ]

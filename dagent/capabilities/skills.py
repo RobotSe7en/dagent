@@ -339,7 +339,7 @@ class SkillsCapabilityProvider:
                 kind="skill",
                 description=(
                     "Read a skill's SKILL.md or a linked file inside the skill directory. "
-                    "If scripts are present, inspect them here and run them through tool.run_command's system shell."
+                    "If scripts are present, inspect them here and run them through the tool.shell system shell."
                 ),
                 parameters={
                     "type": "object",

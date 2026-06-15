@@ -6,6 +6,13 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 当前包版本是 `0.4.1`。
 
+## 未发布
+
+- 内置 shell 命令 capability 现在是 `tool.shell`，DAG DSL 调用写作
+  `shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
+  capability ids 和 `run_command(...)` plan calls 改成新名字。不会注册旧名
+  兼容别名。
+
 ## 公开 Surface 预期
 
 以下行为视为已发布行为：

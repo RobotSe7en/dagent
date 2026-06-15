@@ -257,7 +257,7 @@ def make_capability_executor() -> CapabilityExecutor:
         },
     )
     registry.register(
-        name="run_command",
+        name="shell",
         handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
         action="command",
         path_args=("cwd",),
@@ -393,7 +393,7 @@ def test_approved_dag_still_blocks_hard_boundary_command() -> None:
         nodes=[
             node(
                 "danger",
-                tools=["run_command"],
+                tools=["shell"],
                 args={"command": "rm -rf /"},
                 boundary=Boundary(mode="full"),
                 risk="high",

@@ -175,7 +175,7 @@ def make_capability_executor() -> CapabilityExecutor:
         },
     )
     registry.register(
-        name="run_command",
+        name="shell",
         handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
         action="command",
         path_args=("cwd",),
@@ -329,7 +329,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
         ChatResponse(
             content=(
                 "task: inspect project\n"
-                "list_files = run_command(command=\"dir\", cwd=\".\")\n"
+                "list_files = shell(command=\"dir\", cwd=\".\")\n"
                 "show_result = echo(text=\"done\") after list_files\n"
             )
         )
@@ -350,7 +350,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
-    assert dag.nodes[1].payload.invocation.capability_id == "tool.run_command"
+    assert dag.nodes[1].payload.invocation.capability_id == "tool.shell"
     assert dag.nodes[1].payload.invocation.arguments == {"command": "dir", "cwd": "."}
     assert {(edge.source, edge.target) for edge in dag.edges} == {
         ("start", "list_files"),
@@ -363,7 +363,7 @@ def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
         """
         PLAN_SPEC
         task: inspect project
-        inspect = run_command({"command": "dir", "cwd": "."})
+        inspect = shell({"command": "dir", "cwd": "."})
         END_PLAN_SPEC
         """
     )
@@ -401,7 +401,7 @@ def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
         <think>The user wants repository inspection.</think>
         Here is the requested plan.
         task: inspect project
-        inspect = run_command(command="dir", cwd=".")
+        inspect = shell(command="dir", cwd=".")
         """
     )
 

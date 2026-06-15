@@ -7,6 +7,13 @@ that may require action when upgrading.
 
 The current package version is `0.4.1`.
 
+## Unreleased
+
+- The built-in shell command capability is now `tool.shell`, with DAG DSL calls
+  written as `shell(command="...", cwd=".")`. Replace saved `tool.run_command`
+  capability ids and `run_command(...)` plan calls before upgrading. No legacy
+  alias is registered.
+
 ## Public Surface Expectations
 
 Treat the following as released behavior:

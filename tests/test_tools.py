@@ -13,7 +13,7 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.harness_runtime import CapabilityExecutionError, CapabilityExecutor
 from dagent.schemas import Boundary
 from dagent.schemas import CapabilityInvocation, CapabilityResult
-from dagent.capabilities.tools.command_tools import CommandExecutionError, run_command
+from dagent.capabilities.tools.shell_tools import ShellExecutionError, shell
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
@@ -203,12 +203,12 @@ def test_grep_skips_heavy_generated_directories(tmp_path: Path) -> None:
     assert "node_modules" not in result.content
 
 
-def test_run_command_executes_command_in_allowed_cwd(tmp_path: Path) -> None:
+def test_shell_executes_command_in_allowed_cwd(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
     result = execute(
         executor,
-        "run_command",
+        "shell",
         {"command": "echo hello", "cwd": "."},
         boundary=Boundary(mode="write_limited", allowed_paths=["."]),
     )
@@ -217,19 +217,19 @@ def test_run_command_executes_command_in_allowed_cwd(tmp_path: Path) -> None:
     assert "hello" in result.content
 
 
-def test_run_command_raises_when_process_exits_nonzero(tmp_path: Path) -> None:
+def test_shell_raises_when_process_exits_nonzero(tmp_path: Path) -> None:
     command = f'"{sys.executable}" -c "raise SystemExit(3)"'
 
-    with pytest.raises(CommandExecutionError, match="exit_code=3"):
-        run_command(command, cwd=tmp_path)
+    with pytest.raises(ShellExecutionError, match="exit_code=3"):
+        shell(command, cwd=tmp_path)
 
 
-def test_run_command_blocks_blacklisted_command(tmp_path: Path) -> None:
+def test_shell_blocks_blacklisted_command(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
     result = execute(
         executor,
-        "run_command",
+        "shell",
         {"command": "rm -rf /", "cwd": "."},
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
@@ -238,12 +238,12 @@ def test_run_command_blocks_blacklisted_command(tmp_path: Path) -> None:
     assert "blocked by shell safety policy" in (result.error or "")
 
 
-def test_run_command_defaults_cwd_to_workspace_root(tmp_path: Path) -> None:
+def test_shell_defaults_cwd_to_workspace_root(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
     result = execute(
         executor,
-        "run_command",
+        "shell",
         {"command": "echo hello"},
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
@@ -252,12 +252,12 @@ def test_run_command_defaults_cwd_to_workspace_root(tmp_path: Path) -> None:
     assert "hello" in result.content
 
 
-def test_run_command_blocks_sudo_password_stdin(tmp_path: Path) -> None:
+def test_shell_blocks_sudo_password_stdin(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
     result = execute(
         executor,
-        "run_command",
+        "shell",
         {"command": "echo password | sudo -S whoami", "cwd": "."},
         boundary=Boundary(mode="write_limited", allowed_paths=["."]),
     )
@@ -266,7 +266,7 @@ def test_run_command_blocks_sudo_password_stdin(tmp_path: Path) -> None:
     assert "blocked by shell safety policy" in (result.error or "")
 
 
-def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
+def test_shell_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     blocked = tmp_path / "blocked"
     allowed.mkdir()
@@ -275,7 +275,7 @@ def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
 
     result = execute(
         executor,
-        "run_command",
+        "shell",
         {"command": "echo hello", "cwd": "blocked"},
         boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
     )
@@ -284,7 +284,7 @@ def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
     assert "outside allowed paths" in (result.error or "")
 
 
-def test_run_command_option_paths_must_stay_in_allowed_paths(tmp_path: Path) -> None:
+def test_shell_option_paths_must_stay_in_allowed_paths(tmp_path: Path) -> None:
     from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_command_paths_allowed
 
     allowed = tmp_path / "allowed"
@@ -308,7 +308,7 @@ def test_run_command_option_paths_must_stay_in_allowed_paths(tmp_path: Path) -> 
             )
 
 
-def test_run_command_absolute_executable_path_is_not_treated_as_file_argument(tmp_path: Path) -> None:
+def test_shell_absolute_executable_path_is_not_treated_as_file_argument(tmp_path: Path) -> None:
     from dagent.capabilities.tools.boundary import enforce_command_paths_allowed
 
     allowed = tmp_path / "allowed"
@@ -894,34 +894,34 @@ def test_grep_ripgrep_backend_streams_and_stops_after_match_cap(
 
 
 # ---------------------------------------------------------------------------
-# run_command hardening
+# shell hardening
 # ---------------------------------------------------------------------------
 
 
-def test_run_command_fails_when_cwd_does_not_exist(tmp_path: Path) -> None:
-    with pytest.raises(CommandExecutionError, match="Working directory does not exist"):
-        run_command("echo hi", cwd=tmp_path / "missing")
+def test_shell_fails_when_cwd_does_not_exist(tmp_path: Path) -> None:
+    with pytest.raises(ShellExecutionError, match="Working directory does not exist"):
+        shell("echo hi", cwd=tmp_path / "missing")
 
 
-def test_run_command_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
-    from dagent.capabilities.tools.command_tools import COMMAND_OUTPUT_MAX_LINES
+def test_shell_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.shell_tools import SHELL_OUTPUT_MAX_LINES
 
-    total = COMMAND_OUTPUT_MAX_LINES + 50
+    total = SHELL_OUTPUT_MAX_LINES + 50
     command = f'"{sys.executable}" -c "[print(f\'line{{i}}\') for i in range({total})]"'
 
-    output = run_command(command, cwd=tmp_path)
+    output = shell(command, cwd=tmp_path)
 
     assert "[TRUNCATED] output exceeded limits; showing tail" in output
     assert f"line{total - 1}" in output
     assert "line0" not in output
 
 
-def test_run_command_byte_truncation_stays_under_limit_and_preserves_utf8() -> None:
-    from dagent.capabilities.tools.command_tools import COMMAND_OUTPUT_MAX_BYTES, _tail_truncate
+def test_shell_byte_truncation_stays_under_limit_and_preserves_utf8() -> None:
+    from dagent.capabilities.tools.shell_tools import SHELL_OUTPUT_MAX_BYTES, _tail_truncate
 
     output = _tail_truncate("€" * 40_000)
 
-    assert len(output.encode("utf-8")) <= COMMAND_OUTPUT_MAX_BYTES
+    assert len(output.encode("utf-8")) <= SHELL_OUTPUT_MAX_BYTES
     assert "\ufffd" not in output
 
 

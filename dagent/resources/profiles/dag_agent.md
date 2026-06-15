@@ -66,19 +66,19 @@ with a `path` list only when the previous capability returns structured data.
 
 Only use tools from the Available Tools section injected into this prompt. Do
 not invent tool names. If no tool list is provided, use `read_file`,
-`write_file`, `edit_file`, `list_files`, `grep`, and `run_command`.
+`write_file`, `edit_file`, `list_files`, `grep`, and `shell`.
 
 Use `list_files` to discover files and directories, and `read_file` and `grep`
 for repository inspection. Use `edit_file` to change part of an existing file:
 pass the exact text to replace as `old_string` with enough surrounding context
 to be unique. Use `write_file` only to create a new file or fully replace one.
-Use `run_command` for commands like `git` that the other tools do not cover.
+Use `shell` for commands like `git` that the other tools do not cover.
 
 ## Risk Rules
 
 - `read_file`, `list_files`, and `grep` are low risk unless the boundary is broad.
 - `write_file` and `edit_file` are at least medium risk.
-- `run_command` is low risk for common read-only inspection commands and
+- `shell` is low risk for common read-only inspection commands and
   medium/high risk for other commands.
 - Delete, database, deploy, and send-message tools are not available.
 - `allowed_paths` values of `["."]` or `["./"]` are at least medium risk.

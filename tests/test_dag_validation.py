@@ -206,7 +206,7 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
 def test_compile_infers_boundary_for_command_capability() -> None:
     plan = parse_plan_spec_dsl(
         'task: run command\n'
-        'run = run_command(command="node -e \\"console.log(1);\\"", cwd=".")\n'
+        'run = shell(command="node -e \\"console.log(1);\\"", cwd=".")\n'
     )
 
     dag = compile_plan_spec(
@@ -214,8 +214,8 @@ def test_compile_infers_boundary_for_command_capability() -> None:
         task_id="task_1",
         tools=[
             CapabilityDefinition(
-                id="tool.run_command",
-                name="run_command",
+                id="tool.shell",
+                name="shell",
                 kind="tool",
                 config={
                     "action": "command",
@@ -288,13 +288,13 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     provider = MockProvider(
         [
             ChatResponse(
-                content='inspect = run_command(command="dir", cwd=".")'
+                content='inspect = shell(command="dir", cwd=".")'
             )
         ]
     )
     registry = ToolRegistry()
     registry.register(
-        name="run_command",
+        name="shell",
         handler=lambda command, cwd=".": f"ran:{command}",
         action="read",
         parameters={"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}},
@@ -330,7 +330,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.payload.invocation.capability_id for node in dag.nodes] == ["tool.run_command"]
+    assert [node.payload.invocation.capability_id for node in dag.nodes] == ["tool.shell"]
     assert [node.payload.invocation.risk for node in dag.nodes] == ["low"]
 
 

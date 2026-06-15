@@ -47,6 +47,11 @@ from dagent.state import PromptBuilder, PromptRequest
 
 
 MAX_TOOL_RESULT_CONTEXT_CHARS = 4000
+_REVIEW_SKIPPED_TOOL_CONTENT = (
+    "[TOOL_SKIPPED] Not executed because another tool call from the same "
+    "assistant message is awaiting human review. Re-issue this tool call after "
+    "review if still needed."
+)
 
 
 @dataclass(frozen=True)
@@ -463,7 +468,7 @@ class ToolAgentLoop:
                     output_text=strip_thinking_blocks(response.content).strip(),
                 )
 
-            for tool_call in response.tool_calls:
+            for tool_call_index, tool_call in enumerate(response.tool_calls):
                 try:
                     invocation = self.tool_adapter.invocation_from_tool_call(
                         tool_call,
@@ -537,6 +542,10 @@ class ToolAgentLoop:
                         )
                     )
                     if review_pending:
+                        _append_skipped_tool_results(
+                            loop_messages,
+                            response.tool_calls[tool_call_index + 1:],
+                        )
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
                             kind="capability_review",
@@ -787,6 +796,21 @@ def _replace_tool_result(
             messages[index] = replacement
             return
     messages.append(replacement)
+
+
+def _append_skipped_tool_results(
+    messages: list[dict[str, Any]],
+    tool_calls: Sequence[ToolCall],
+) -> None:
+    for tool_call in tool_calls:
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.name,
+                "content": _REVIEW_SKIPPED_TOOL_CONTENT,
+            }
+        )
 
 
 def _strip_system_message(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

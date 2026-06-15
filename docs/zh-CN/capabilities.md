@@ -29,7 +29,7 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 | `tool.edit_file` | medium | 将 `old_string` 的唯一一次精确匹配替换为 `new_string`。匹配必须唯一，并且在 UTF-8 解码后逐字精确匹配：零匹配或多处匹配都会失败，并提示先读文件、补充上下文。保留既有换行与 UTF-8 BOM；结果附带一段简短 unified diff。 |
 | `tool.list_files` | low | 列出路径下的文件与目录（目录以 `/` 结尾），最多 `depth` 层（默认 3）。传入 `glob`（如 `*.py`）时只列匹配的文件。输出达到 500 条后停止；结构化返回值就是已展示条目列表，DAG map 节点可直接对其扇出。 |
 | `tool.grep` | low | 使用 Python 正则语法搜索文件，可选 `glob` 文件名过滤。`PATH` 上有 `rg` 时使用兼容参数委托 ripgrep（argv 调用，绝不经过 shell），否则回退纯 Python 扫描。两种后端都不应用项目 ignore 文件，但都会排除内置的重型目录。输出为 `file:line:content`，上限 200 条。 |
-| `tool.run_command` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。 |
+| `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。 |
 
 `read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
 `edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，再用

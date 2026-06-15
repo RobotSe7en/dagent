@@ -15,7 +15,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from dagent.capabilities.tools.command_tools import register_command_tools
+from dagent.capabilities.tools.shell_tools import register_shell_tools
 from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
 
 
@@ -568,5 +568,5 @@ def register_file_tools(registry: ToolRegistry) -> None:
 def create_file_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_file_tools(registry)
-    register_command_tools(registry)
+    register_shell_tools(registry)
     return registry
