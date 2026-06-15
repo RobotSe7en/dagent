@@ -239,6 +239,9 @@ def _path_from_token(token: str, *, force: bool) -> str | None:
         force = True
     if "://" in token:
         return None
+    if token.startswith("-") and "=" in token:
+        _option, _separator, value = token.partition("=")
+        return _path_from_token(value, force=True)
     if token.startswith("-") and not force:
         return None
     if force or token.startswith(("/", "./", "../", "~")) or "/" in token:

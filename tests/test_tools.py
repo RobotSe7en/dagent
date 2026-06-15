@@ -284,6 +284,44 @@ def test_run_command_cwd_must_stay_in_allowed_paths(tmp_path: Path) -> None:
     assert "outside allowed paths" in (result.error or "")
 
 
+def test_run_command_option_paths_must_stay_in_allowed_paths(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.boundary import BoundaryViolation, enforce_command_paths_allowed
+
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+
+    for command in (
+        "tool --output=../blocked/out.txt",
+        "tool --config=/tmp/outside.toml",
+        "tool --config ../blocked/config.toml",
+        "tool < ../blocked/in.txt",
+        "tool > ../blocked/out.txt",
+    ):
+        with pytest.raises(BoundaryViolation, match="resolves outside allowed paths"):
+            enforce_command_paths_allowed(
+                command,
+                Boundary(mode="write_limited", allowed_paths=["allowed"]),
+                tmp_path,
+                "allowed",
+            )
+
+
+def test_run_command_absolute_executable_path_is_not_treated_as_file_argument(tmp_path: Path) -> None:
+    from dagent.capabilities.tools.boundary import enforce_command_paths_allowed
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+
+    enforce_command_paths_allowed(
+        "/bin/echo hello",
+        Boundary(mode="write_limited", allowed_paths=["allowed"]),
+        tmp_path,
+        "allowed",
+    )
+
+
 # ---------------------------------------------------------------------------
 # read_file paging and limits
 # ---------------------------------------------------------------------------

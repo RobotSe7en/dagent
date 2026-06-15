@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
+from dagent.capabilities.providers import check_tool_boundary
 from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
@@ -333,17 +334,13 @@ class ToolAgentLoop:
                 enabled_toolsets=self.enabled_toolsets,
                 capability_ids=capability_ids,
             )
-            if not policy.reviews_tool(risk):
-                try:
-                    capability_result = await self.capability_executor.execute(
-                        invocation,
-                        context=context,
-                    )
-                except Exception as exc:
-                    return ControlToolResult(
-                        content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
-                    )
-                if _reviewable_boundary_result(capability_result):
+            boundary_result = check_tool_boundary(
+                definition,
+                invocation,
+                self.capability_executor.workspace_root,
+            )
+            if boundary_result is not None:
+                if _reviewable_boundary_result(boundary_result):
                     return ControlToolResult(
                         content=(
                             f"[PENDING_REVIEW] Capability '{invocation.capability_id}' "
@@ -355,8 +352,19 @@ class ToolAgentLoop:
                             "capability_id": invocation.capability_id,
                             "risk": risk,
                             "reason": "boundary_violation",
-                            "error": capability_result.error or capability_result.content,
+                            "error": boundary_result.error or boundary_result.content,
                         },
+                    )
+                return ControlToolResult(content=_tool_content(boundary_result))
+            if not policy.reviews_tool(risk):
+                try:
+                    capability_result = await self.capability_executor.execute(
+                        invocation,
+                        context=context,
+                    )
+                except Exception as exc:
+                    return ControlToolResult(
+                        content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
                     )
                 result_content = _tool_content(capability_result)
                 return ControlToolResult(

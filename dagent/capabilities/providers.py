@@ -443,16 +443,70 @@ def _execute_tool(
     return _content_and_value_from_tool_result(result)
 
 
+def check_tool_boundary(
+    definition: CapabilityDefinition,
+    invocation: CapabilityInvocation,
+    workspace_root: Path,
+) -> CapabilityResult | None:
+    """Return a failed result when a tool invocation exceeds its boundary.
+
+    This only checks ToolCapabilityProvider-owned boundary metadata. It does not
+    call the tool handler, so risk review can preflight boundary failures without
+    triggering side effects.
+    """
+    config = definition.config
+    action = config.get("action")
+    if not isinstance(action, str):
+        return None
+    checked_args = _merge_definition_arguments(definition, invocation.arguments)
+    try:
+        enforce_action_allowed(action, invocation.boundary)
+        for arg_name in config.get("path_args") or ():
+            enforce_path_allowed(
+                checked_args[arg_name],
+                invocation.boundary,
+                workspace_root,
+            )
+        for arg_name in config.get("command_args") or ():
+            enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+            if "cwd" in checked_args:
+                enforce_command_paths_allowed(
+                    str(checked_args[arg_name]),
+                    invocation.boundary,
+                    workspace_root,
+                    checked_args["cwd"],
+                )
+    except Exception as exc:
+        return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
+    return None
+
+
 def _merge_tool_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    defaults = _tool_default_arguments(tool)
+    defaults = _default_arguments(tool.default_args or {}, tool.parameters or {})
+    merged = dict(defaults)
+    merged.update(arguments)
+    return merged
+
+
+def _merge_definition_arguments(
+    definition: CapabilityDefinition,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    defaults = _default_arguments(
+        definition.config.get("default_args") or {},
+        definition.parameters or {},
+    )
     merged = dict(defaults)
     merged.update(arguments)
     return merged
 
 
 def _tool_default_arguments(tool: Any) -> dict[str, Any]:
-    defaults = dict(tool.default_args or {})
-    parameters = tool.parameters or {}
+    return _default_arguments(tool.default_args or {}, tool.parameters or {})
+
+
+def _default_arguments(default_args: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    defaults = dict(default_args)
     properties = parameters.get("properties") if isinstance(parameters, dict) else None
     if isinstance(properties, dict):
         for name, schema in properties.items():
