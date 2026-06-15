@@ -1432,6 +1432,15 @@ select {
   white-space: nowrap;
 }
 
+.dag-node-badges {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 124px;
+}
+
 .dag-node p {
   margin: 6px 0;
   font-size: 12px;
@@ -1492,6 +1501,34 @@ select {
   border-color: #fecaca;
   background: #fef2f2;
   color: #dc2626;
+}
+
+.boundary-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  border: 1px solid;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--gray-700);
+  background: var(--gray-50);
+  border-color: var(--gray-200);
+}
+
+.boundary-pill.boundary-write_limited {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.boundary-pill.boundary-full {
+  color: #dc2626;
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .status-badge {
@@ -2631,6 +2668,15 @@ pre.readonly-field {
 
 .react-flow__node-default.status-skipped {
   opacity: 0.45;
+}
+
+.react-flow__node-default.review-attention-node {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.14), var(--shadow-md);
+}
+
+.react-flow__node-default.review-attention-node.selected {
+  box-shadow: 0 0 0 2px #f59e0b, var(--shadow-lg);
 }
 
 @keyframes pulse-ring {

@@ -20,7 +20,9 @@ documented here.
 Every `Runner` registers a small default tool set. All path parameters are
 checked against the node boundary before the handler runs. Tool-agent runs pause
 for human review when a capability call would otherwise cross its boundary; an
-approval applies only to that single capability call.
+approval applies only to that single capability call. DAG review approval is
+broader: approving a DAG version authorizes its reviewed nodes to execute with
+their shown boundaries.
 
 | Tool | Risk | Behavior |
 | --- | --- | --- |

@@ -400,6 +400,8 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     const item = normalizeNode(rawItem);
     const invocation = isCapabilityNode(item) ? item.payload.invocation : null;
     const risk = invocation?.risk ?? 'low';
+    const boundaryMode = invocation?.boundary?.mode ?? 'read_only';
+    const reviewAttention = Boolean(invocation && (risk !== 'low' || boundaryMode === 'full'));
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
@@ -413,13 +415,20 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     return {
       id: item.id,
       position: { x: 80 + depth * 300, y: 70 + lane * 170 },
-      className: `status-${status}`,
+      className: `status-${status}${reviewAttention ? ' review-attention-node' : ''}`,
       data: {
         label: (
           <div className={`dag-node dag-node-status-${status}`}>
             <div className="dag-node-top">
               <span title={item.id}>{item.id}</span>
-              <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
+              <div className="dag-node-badges">
+                <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
+                {invocation ? (
+                  <span className={`boundary-pill boundary-${boundaryMode}`}>
+                    {boundaryMode.replace('_', ' ')}
+                  </span>
+                ) : null}
+              </div>
             </div>
             <div
               className="dag-node-tools"

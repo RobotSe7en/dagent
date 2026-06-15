@@ -446,6 +446,48 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
     assert loop_outcome.state.pending_review.kind == "initial_dag"
 
 
+def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> None:
+    provider = MockProvider([ChatResponse(content="Boundary-approved DAG completed.")])
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    runtime = runtime_for(dag_agent_loop=dag_loop_for(provider, executor), executor=executor)
+    record = dag_state(
+        task_id="task_boundary_review",
+        user_request="Write the reviewed file",
+        dag=DAG(dag_id="dag_boundary_review", task_id="task_boundary_review", nodes=[]),
+        review_level="careful",
+    )
+    record.internal_messages = [{"role": "user", "content": "Write the reviewed file"}]
+    proposed_node = _tool_node(
+        "write_reviewed",
+        "write_file",
+        {"path": "blocked/notes.md", "content": "hi"},
+    )
+    proposed_node.payload.invocation.boundary = Boundary(mode="read_only", allowed_paths=["allowed"])
+    proposed_node.payload.invocation.risk = "medium"
+
+    runtime.dag_agent.loop._apply_replan(
+        record,
+        DAG(
+            dag_id="dag_boundary_review",
+            task_id="task_boundary_review",
+            nodes=[proposed_node],
+        ),
+    )
+
+    assert record.pending_review is not None
+    result = run(
+        runtime.dag_agent.resume_review(
+            record,
+            dag=record.pending_review.proposed_dag,
+            approved=True,
+        )
+    )
+
+    assert result is not None
+    assert result.state.status == "completed"
+    assert dag_node_trace(result.state.trace, "write_reviewed").output.endswith("blocked/notes.md:hi")
+
+
 def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
     """When replan returns NO_CHANGE, layers execute with original args."""
     initial = DAG(
