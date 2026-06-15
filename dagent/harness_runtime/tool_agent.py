@@ -56,6 +56,8 @@ class ControlToolResult:
     stop_reason: str | None = None
     needs_review: bool = False
     review_payload: dict[str, Any] | None = None
+    review_message: str | None = None
+    capability_result: CapabilityResult | None = None
 
 
 ControlToolHandler = Callable[[ToolCall], Awaitable[ControlToolResult]]
@@ -167,12 +169,18 @@ class ToolAgent:
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         result: CapabilityResult | None = None
         if approved:
+            boundary_review_approved = (
+                pending_review.payload.get("reason") == "boundary_violation"
+            )
             try:
                 result = await self.loop.capability_executor.execute(
                     invocation,
                     context=CapabilityExecutionContext(
                         task_id=state.run_id,
                         skills=capability_scope.skills,
+                        approved_boundary_invocation_id=(
+                            invocation.invocation_id if boundary_review_approved else None
+                        ),
                     ),
                 )
                 feed_content = _tool_content(result)
@@ -241,6 +249,10 @@ class ToolAgent:
     ) -> LoopOutcome:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
+        control_tool_names.update(
+            definition.name
+            for definition in self.loop.available_capabilities(capability_scope.capability_ids)
+        )
         provider_messages = self._provider_messages(messages, capability_scope)
         outcome = await self.loop.run(
             "",
@@ -323,19 +335,37 @@ class ToolAgentLoop:
             )
             if not policy.reviews_tool(risk):
                 try:
-                    result_content = _tool_content(
-                        await self.capability_executor.execute(
-                            invocation,
-                            context=context,
-                        )
+                    capability_result = await self.capability_executor.execute(
+                        invocation,
+                        context=context,
                     )
                 except Exception as exc:
                     return ControlToolResult(
                         content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
                     )
-                return ControlToolResult(content=result_content)
+                if _reviewable_boundary_result(capability_result):
+                    return ControlToolResult(
+                        content=(
+                            f"[PENDING_REVIEW] Capability '{invocation.capability_id}' "
+                            "requires human review to override its boundary."
+                        ),
+                        needs_review=True,
+                        review_message=f"Review boundary override: {invocation.capability_id}",
+                        review_payload={
+                            "capability_id": invocation.capability_id,
+                            "risk": risk,
+                            "reason": "boundary_violation",
+                            "error": capability_result.error or capability_result.content,
+                        },
+                    )
+                result_content = _tool_content(capability_result)
+                return ControlToolResult(
+                    content=result_content,
+                    capability_result=capability_result,
+                )
             return ControlToolResult(
                 content=f"[PENDING_REVIEW] Capability '{invocation.capability_id}' requires human review (risk={risk}).",
+                review_message=f"Review capability call: {invocation.capability_id}",
                 needs_review=True,
                 review_payload={"capability_id": invocation.capability_id, "risk": risk},
             )
@@ -488,7 +518,10 @@ class ToolAgentLoop:
                             result=(
                                 None
                                 if review_pending
-                                else CapabilityResult.completed(invocation, control_result.content)
+                                else (
+                                    control_result.capability_result
+                                    or CapabilityResult.completed(invocation, control_result.content)
+                                )
                             ),
                             status="awaiting_review" if review_pending else None,
                         )
@@ -497,7 +530,10 @@ class ToolAgentLoop:
                         pending_review = PendingReview(
                             review_id=f"review_{uuid4().hex}",
                             kind="capability_review",
-                            message=f"Review capability call: {invocation.capability_id}",
+                            message=(
+                                control_result.review_message
+                                or f"Review capability call: {invocation.capability_id}"
+                            ),
                             capability_call={
                                 "invocation_id": invocation.invocation_id,
                                 "capability_id": invocation.capability_id,
@@ -793,6 +829,10 @@ def _tool_content(result: CapabilityResult) -> str:
         return result.content
     prefix = "[BOUNDARY_VIOLATION]" if result.stop_reason == "BoundaryViolation" else "[TOOL_ERROR]"
     return f"{prefix} {result.error or result.content}"
+
+
+def _reviewable_boundary_result(result: CapabilityResult) -> bool:
+    return result.status == "failed" and result.stop_reason == "BoundaryViolation"
 
 
 def _exception_message(exc: Exception) -> str:

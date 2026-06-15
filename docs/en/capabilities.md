@@ -18,7 +18,9 @@ documented here.
 ## Built-in Tools
 
 Every `Runner` registers a small default tool set. All path parameters are
-checked against the node boundary before the handler runs.
+checked against the node boundary before the handler runs. Tool-agent runs pause
+for human review when a capability call would otherwise cross its boundary; an
+approval applies only to that single capability call.
 
 | Tool | Risk | Behavior |
 | --- | --- | --- |
@@ -27,7 +29,7 @@ checked against the node boundary before the handler runs.
 | `tool.edit_file` | medium | Replace one exact occurrence of `old_string` with `new_string`. The match must be unique and byte-for-byte after UTF-8 decoding: zero matches and ambiguous matches fail with instructions to read the file and add surrounding context. Existing line endings and a UTF-8 BOM are preserved; the result includes a short unified diff. |
 | `tool.list_files` | low | List files and directories under a path (directories end with `/`), up to `depth` levels (default 3). With `glob` (e.g. `*.py`) it lists matching files only. Output stops after 500 entries; the structured result value is the shown entry list, so DAG map nodes can fan out over it. |
 | `tool.grep` | low | Search files with Python regular-expression syntax and an optional `glob` filename filter. Delegates to ripgrep with compatible flags when `rg` is on `PATH` (argv invocation, never a shell) and falls back to a pure-Python scan otherwise. Project ignore files are not applied; built-in heavy directory exclusions are applied in both backends. Output is `file:line:content`, capped at 200 matches. |
-| `tool.run_command` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. |
+| `tool.run_command` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, explicit shell path arguments are checked against the boundary, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. |
 
 `read_file` output carries no line-number prefixes, so text copied from a read
 result can be passed to `edit_file` as `old_string` unchanged. The intended
@@ -132,7 +134,12 @@ policy = dagent.CapabilityPolicy(
 ```
 
 Review settings on agents and runs determine when medium/high-risk work pauses
-for approval.
+for approval. Boundary review is independent of risk review: a tool-agent call
+that tries to read or write outside its boundary pauses with
+`payload.reason == "boundary_violation"`. Approving that review executes the
+same call once without expanding the run boundary. Rejecting it feeds a denial
+message back to the agent. Hard-blocked shell patterns, such as destructive
+system commands, are not reviewable.
 
 ## MCP Tools
 

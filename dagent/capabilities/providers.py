@@ -24,7 +24,9 @@ from dagent.schemas import (
 from dagent.capabilities.tools.boundary import (
     enforce_action_allowed,
     enforce_command_allowed,
+    enforce_command_paths_allowed,
     enforce_path_allowed,
+    resolve_path_against_workspace,
 )
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
@@ -58,19 +60,26 @@ class ToolCapabilityProvider:
                 },
             )
 
-            def handler(invocation: CapabilityInvocation, *, tool_name: str = name) -> CapabilityResult:
+            def handler(
+                invocation: CapabilityInvocation,
+                *,
+                context: Any = None,
+                callbacks: Any = None,
+                tool_name: str = name,
+            ) -> CapabilityResult:
                 try:
                     content, value = _execute_tool(
                         self.tools,
                         current_workspace_root(catalog.workspace_root),
                         tool_name,
                         invocation,
+                        context=context,
                     )
                     return _completed(invocation, content, value=value)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
-            catalog.register(definition, handler)
+            catalog.register(definition, handler, supports_context=True)
 
 
 class MemoryCapabilityProvider:
@@ -397,20 +406,39 @@ def _execute_tool(
     workspace_root: Path,
     tool_name: str,
     invocation: CapabilityInvocation,
+    *,
+    context: Any = None,
 ) -> tuple[str, Any]:
     tool = tools.get(tool_name)
     if tool is None:
         raise RuntimeError(f"Tool '{tool_name}' is not registered.")
-    enforce_action_allowed(tool.action, invocation.boundary)
+    boundary_override_approved = (
+        getattr(context, "approved_boundary_invocation_id", None) == invocation.invocation_id
+    )
+    if not boundary_override_approved:
+        enforce_action_allowed(tool.action, invocation.boundary)
     checked_args = _merge_tool_arguments(tool, invocation.arguments)
     for arg_name in tool.path_args:
-        checked_args[arg_name] = enforce_path_allowed(
-            checked_args[arg_name],
-            invocation.boundary,
-            workspace_root,
-        )
+        if boundary_override_approved:
+            checked_args[arg_name] = resolve_path_against_workspace(
+                checked_args[arg_name],
+                workspace_root,
+            )
+        else:
+            checked_args[arg_name] = enforce_path_allowed(
+                checked_args[arg_name],
+                invocation.boundary,
+                workspace_root,
+            )
     for arg_name in tool.command_args:
         enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+        if not boundary_override_approved and "cwd" in checked_args:
+            enforce_command_paths_allowed(
+                str(checked_args[arg_name]),
+                invocation.boundary,
+                workspace_root,
+                checked_args["cwd"],
+            )
     result = tool.handler(**checked_args)
     return _content_and_value_from_tool_result(result)
 

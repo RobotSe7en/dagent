@@ -32,6 +32,7 @@ class CapabilityExecutionContext:
     artifact_states: dict[str, ArtifactState] = field(default_factory=dict)
     skills: tuple[str, ...] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    approved_boundary_invocation_id: str | None = None
 
 
 @dataclass(frozen=True)

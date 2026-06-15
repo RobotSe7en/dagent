@@ -151,3 +151,9 @@ if restored.requires_review and restored.review is not None:
 
 The `review.required` stream event is a lightweight signal. Build review UIs from
 the full pending review carried by the following `run.finished` result.
+
+Capability reviews can be triggered by risk policy or by a boundary override
+request. Boundary override reviews use `kind == "capability_review"` and include
+`payload.reason == "boundary_violation"` plus the original error. Approving one
+executes only that pending capability call; it does not widen the run boundary
+for later calls. Rejecting it feeds a denial message back to the agent.
