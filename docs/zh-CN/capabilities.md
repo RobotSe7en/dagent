@@ -18,7 +18,9 @@ Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases�
 每个 `Runner` 都会注册一组默认工具。所有路径参数在 handler 执行前都会经过节点
 boundary 检查。Tool-agent run 中，如果一次 capability call 会跨越 boundary，运行会先暂停
 等待人工 review；批准只对这一次 capability call 生效。DAG review 的授权范围更大：
-批准某个 DAG 版本表示允许其中已审核的节点按展示的 boundary 执行。
+批准某个 DAG 版本表示允许其中已审核的节点按展示的 boundary 执行。该授权来自 DAG
+review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执行节点 boundary
+检查，并在越界时 fail closed。
 
 | 工具 | 风险 | 行为 |
 | --- | --- | --- |

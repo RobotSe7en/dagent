@@ -62,7 +62,34 @@ export interface StartNodePayload {
   type: 'start';
 }
 
-export type DagNodePayload = CapabilityNodePayload | StartNodePayload;
+export interface MapNodePayload {
+  type: 'map';
+  items: unknown;
+  invocation: CapabilityInvocation;
+  max_items?: number;
+  max_concurrency?: number;
+}
+
+export interface SubgraphNodePayload {
+  type: 'subgraph';
+  spec: DagSpec;
+  input?: unknown;
+}
+
+export interface LoopNodePayload {
+  type: 'loop';
+  body: DagSpec;
+  until: unknown;
+  max_iterations: number;
+  input?: unknown;
+}
+
+export type DagNodePayload =
+  | CapabilityNodePayload
+  | StartNodePayload
+  | MapNodePayload
+  | SubgraphNodePayload
+  | LoopNodePayload;
 
 export interface DagNode {
   id: string;
@@ -77,6 +104,19 @@ export interface DagEdge {
   source: string;
   target: string;
   reason: string;
+}
+
+export interface DagSpec {
+  id: string;
+  name?: string;
+  version?: number;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+  artifacts?: Record<string, Artifact>;
+  nodes: DagNode[];
+  edges: DagEdge[];
+  output?: unknown;
+  metadata?: Record<string, unknown>;
 }
 
 export interface Dag {

@@ -52,6 +52,7 @@ class RunState(BaseModel):
     capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
     spec_id: str | None = None
     workspace_path: str | None = None
+    dag_boundary_approved_version: int | None = None
 
 
 class LoopOutcome(BaseModel):

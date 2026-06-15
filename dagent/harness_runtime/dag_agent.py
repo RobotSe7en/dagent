@@ -505,6 +505,7 @@ class DAGAgentLoop:
                 _invalidate_node_results(record, node_id)
         record.dag = prepared
         record.dag.status = "approved"
+        record.dag_boundary_approved_version = record.dag.version
         record.pending_review = None
         _emit_dag(on_dag, record.dag)
 
@@ -563,6 +564,10 @@ class DAGAgentLoop:
                     layer = await active_executor.execute_next_ready_layer(
                         record.dag,
                         initial_trace=trace,
+                        approve_node_boundaries=(
+                            record.dag_boundary_approved_version is not None
+                            and record.dag_boundary_approved_version == record.dag.version
+                        ),
                         skills=record.capability_scope.skills,
                         on_token=on_token,
                         on_event=on_event,
@@ -755,6 +760,7 @@ class DAGAgentLoop:
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
         changed = _changed_node_ids(record.dag, prepared)
+        previous_boundary_approved_version = record.dag_boundary_approved_version
         needs_review = bool(changed) and _review_policy(record.review_level).reviews_dag_changes()
         if needs_review:
             prepared.status = "review_required"
@@ -770,6 +776,10 @@ class DAGAgentLoop:
                 _invalidate_node_results(record, node_id)
 
         record.dag = prepared
+        if changed:
+            record.dag_boundary_approved_version = None
+        elif previous_boundary_approved_version == record.dag.version - 1:
+            record.dag_boundary_approved_version = record.dag.version
         if needs_review:
             record.pending_review = PendingReview(
                 review_id=f"review_{uuid4().hex}",

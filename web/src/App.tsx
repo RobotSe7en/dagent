@@ -82,6 +82,7 @@ import type {
   DagEdge,
   DagNode,
   DagRun,
+  DagSpec,
   UserDag,
   ProfileWarning,
   ReviewEventPayload,
@@ -145,6 +146,8 @@ const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
+const riskRank: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
+const boundaryRank: Record<BoundaryMode, number> = { read_only: 0, write_limited: 1, full: 2 };
 const defaultWorkspaceRoot = '.dagent-runs';
 const directoryInputProps = {
   directory: '',
@@ -209,6 +212,13 @@ function isCapabilityNode(node: DagNode): node is DagNode & { payload: Capabilit
   return node.payload.type === 'capability';
 }
 
+interface NodeReviewInfo {
+  risk: RiskLevel;
+  boundaryMode: BoundaryMode;
+  hasBoundary: boolean;
+  reviewAttention: boolean;
+}
+
 function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvocation {
   return {
     ...invocation,
@@ -225,20 +235,114 @@ function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvoca
 }
 
 function normalizeNode(node: DagNode): DagNode {
-  if (!isCapabilityNode(node)) {
+  if (node.payload.type === 'capability') {
     return {
       ...node,
-      payload: { type: 'start' },
+      payload: {
+        type: 'capability',
+        invocation: normalizeInvocation(node.payload.invocation),
+      },
+      status: node.status ?? 'planned',
+    };
+  }
+  if (node.payload.type === 'map') {
+    return {
+      ...node,
+      payload: {
+        ...node.payload,
+        invocation: normalizeInvocation(node.payload.invocation),
+      },
+      status: node.status ?? 'planned',
+    };
+  }
+  if (node.payload.type === 'subgraph') {
+    return {
+      ...node,
+      payload: {
+        ...node.payload,
+        spec: normalizeDagSpec(node.payload.spec),
+      },
+      status: node.status ?? 'planned',
+    };
+  }
+  if (node.payload.type === 'loop') {
+    return {
+      ...node,
+      payload: {
+        ...node.payload,
+        body: normalizeDagSpec(node.payload.body),
+      },
       status: node.status ?? 'planned',
     };
   }
   return {
     ...node,
-    payload: {
-      type: 'capability',
-      invocation: normalizeInvocation(node.payload.invocation),
-    },
+    payload: { type: 'start' },
     status: node.status ?? 'planned',
+  };
+}
+
+function normalizeDagSpec(spec: DagSpec): DagSpec {
+  return {
+    ...spec,
+    nodes: (spec.nodes ?? []).map(normalizeNode),
+    edges: spec.edges ?? [],
+  };
+}
+
+function nodeReviewInfo(node: DagNode): NodeReviewInfo {
+  const normalized = normalizeNode(node);
+  const payload = normalized.payload;
+  if (payload.type === 'capability' || payload.type === 'map') {
+    return invocationReviewInfo(payload.invocation);
+  }
+  if (payload.type === 'subgraph') {
+    return nodesReviewInfo(payload.spec.nodes ?? []);
+  }
+  if (payload.type === 'loop') {
+    return nodesReviewInfo(payload.body.nodes ?? []);
+  }
+  return {
+    risk: 'low',
+    boundaryMode: 'read_only',
+    hasBoundary: false,
+    reviewAttention: false,
+  };
+}
+
+function invocationReviewInfo(invocation: CapabilityInvocation): NodeReviewInfo {
+  const risk = invocation.risk ?? 'low';
+  const boundaryMode = invocation.boundary?.mode ?? 'read_only';
+  return {
+    risk,
+    boundaryMode,
+    hasBoundary: true,
+    reviewAttention: risk !== 'low' || boundaryMode === 'full',
+  };
+}
+
+function nodesReviewInfo(nodes: DagNode[]): NodeReviewInfo {
+  return nodes.reduce<NodeReviewInfo>(
+    (summary, node) => mergeReviewInfo(summary, nodeReviewInfo(node)),
+    {
+      risk: 'low',
+      boundaryMode: 'read_only',
+      hasBoundary: false,
+      reviewAttention: false,
+    },
+  );
+}
+
+function mergeReviewInfo(left: NodeReviewInfo, right: NodeReviewInfo): NodeReviewInfo {
+  const risk = riskRank[right.risk] > riskRank[left.risk] ? right.risk : left.risk;
+  const boundaryMode = boundaryRank[right.boundaryMode] > boundaryRank[left.boundaryMode]
+    ? right.boundaryMode
+    : left.boundaryMode;
+  return {
+    risk,
+    boundaryMode,
+    hasBoundary: left.hasBoundary || right.hasBoundary,
+    reviewAttention: left.reviewAttention || right.reviewAttention,
   };
 }
 
@@ -398,19 +502,17 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
     const item = normalizeNode(rawItem);
-    const invocation = isCapabilityNode(item) ? item.payload.invocation : null;
-    const risk = invocation?.risk ?? 'low';
-    const boundaryMode = invocation?.boundary?.mode ?? 'read_only';
-    const reviewAttention = Boolean(invocation && (risk !== 'low' || boundaryMode === 'full'));
+    const payload = item.payload;
+    const invocation = payload.type === 'capability' || payload.type === 'map' ? payload.invocation : null;
+    const reviewInfo = nodeReviewInfo(item);
+    const risk = reviewInfo.risk;
+    const boundaryMode = reviewInfo.boundaryMode;
+    const reviewAttention = reviewInfo.reviewAttention;
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
-    const detail = !invocation
-      ? 'internal start'
-      : invocation.capability_id
-        ? `${invocation.capability_id} ${JSON.stringify(invocation.arguments)}`
-        : 'capability not set';
-    const detailTitle = invocation?.capability_id ? JSON.stringify(invocation.arguments) : '';
+    const detail = nodeDisplayDetail(item);
+    const detailTitle = invocation?.capability_id ? JSON.stringify(invocation.arguments) : detail;
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
@@ -423,7 +525,7 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
               <span title={item.id}>{item.id}</span>
               <div className="dag-node-badges">
                 <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
-                {invocation ? (
+                {reviewInfo.hasBoundary ? (
                   <span className={`boundary-pill boundary-${boundaryMode}`}>
                     {boundaryMode.replace('_', ' ')}
                   </span>
@@ -451,6 +553,27 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     style: { stroke: '#94a3b8', strokeWidth: 1.5 },
   }));
   return { nodes, edges };
+}
+
+function nodeDisplayDetail(node: DagNode): string {
+  const payload = node.payload;
+  if (payload.type === 'capability') {
+    return payload.invocation.capability_id
+      ? `${payload.invocation.capability_id} ${JSON.stringify(payload.invocation.arguments)}`
+      : 'capability not set';
+  }
+  if (payload.type === 'map') {
+    return payload.invocation.capability_id
+      ? `map ${payload.invocation.capability_id} ${JSON.stringify(payload.invocation.arguments)}`
+      : 'map capability not set';
+  }
+  if (payload.type === 'subgraph') {
+    return `subgraph ${payload.spec.name || payload.spec.id}`;
+  }
+  if (payload.type === 'loop') {
+    return `loop ${payload.body.name || payload.body.id}`;
+  }
+  return 'internal start';
 }
 
 function isDagConfirmable(dag: Dag): boolean {
@@ -1829,7 +1952,7 @@ function DagSummaryCard({
   dag: Dag;
   onOpen: () => void;
 }) {
-  const riskyNodes = dag.nodes.filter((node) => isCapabilityNode(node) && node.payload.invocation.risk !== 'low').length;
+  const riskyNodes = dag.nodes.filter((node) => nodeReviewInfo(node).reviewAttention).length;
   const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">

@@ -111,6 +111,7 @@ class DAGExecutor:
         dag: DAG,
         *,
         initial_trace: RunTrace | None = None,
+        approve_node_boundaries: bool = False,
         skills: tuple[str, ...] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -120,7 +121,6 @@ class DAGExecutor:
         normalized = self.normalize(dag)
         validate_dag(normalized)
         self._enforce_review_gate(normalized)
-        approve_node_boundaries = normalized.status == "approved"
         normalized.status = "running"
         trace = _copy_or_create_trace(initial_trace, normalized)
         node_traces = trace.dag_node_traces()
@@ -264,11 +264,13 @@ class DAGExecutor:
             elif isinstance(payload, SubgraphNodePayload):
                 value = await self._execute_subgraph_node(
                     payload, dag, dag_node=dag_node, scope=scope,
+                    approve_node_boundaries=approve_node_boundaries,
                     skills=skills, on_token=on_token, on_event=on_event,
                 )
             elif isinstance(payload, LoopNodePayload):
                 value = await self._execute_loop_node(
                     payload, dag, dag_node=dag_node, scope=scope,
+                    approve_node_boundaries=approve_node_boundaries,
                     skills=skills, on_token=on_token, on_event=on_event,
                 )
             else:
@@ -501,6 +503,7 @@ class DAGExecutor:
         *,
         dag_node: RunTraceNode,
         scope: _ValueScope,
+        approve_node_boundaries: bool = False,
         skills: tuple[str, ...] | None,
         on_token: Callable[[str], None] | None,
         on_event: Callable[[dict[str, Any]], None] | None,
@@ -511,6 +514,7 @@ class DAGExecutor:
             dag=dag,
             dag_node=dag_node,
             label=payload.spec.name or payload.spec.id,
+            approve_node_boundaries=approve_node_boundaries,
             skills=skills,
             on_token=on_token,
             on_event=on_event,
@@ -523,6 +527,7 @@ class DAGExecutor:
         *,
         dag_node: RunTraceNode,
         scope: _ValueScope,
+        approve_node_boundaries: bool = False,
         skills: tuple[str, ...] | None,
         on_token: Callable[[str], None] | None,
         on_event: Callable[[dict[str, Any]], None] | None,
@@ -536,6 +541,7 @@ class DAGExecutor:
                 dag=dag,
                 dag_node=dag_node,
                 label=f"{payload.body.name or payload.body.id} #{iteration}",
+                approve_node_boundaries=approve_node_boundaries,
                 skills=skills,
                 on_token=on_token,
                 on_event=on_event,
@@ -553,6 +559,7 @@ class DAGExecutor:
         dag: DAG,
         dag_node: RunTraceNode,
         label: str,
+        approve_node_boundaries: bool = False,
         skills: tuple[str, ...] | None,
         on_token: Callable[[str], None] | None,
         on_event: Callable[[dict[str, Any]], None] | None,
@@ -575,6 +582,7 @@ class DAGExecutor:
                 trace = await executor.execute_next_ready_layer(
                     child_dag,
                     initial_trace=trace,
+                    approve_node_boundaries=approve_node_boundaries,
                     skills=skills,
                     on_token=on_token,
                     on_event=child_on_event,

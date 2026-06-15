@@ -488,6 +488,41 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
     assert dag_node_trace(result.state.trace, "write_reviewed").output.endswith("blocked/notes.md:hi")
 
 
+def test_harness_runtime_fast_replan_does_not_authorize_node_boundaries() -> None:
+    provider = MockProvider([])
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag_loop = dag_loop_for(provider, executor)
+    record = dag_state(
+        task_id="task_fast_boundary",
+        user_request="Write without review",
+        dag=DAG(dag_id="dag_fast_boundary", task_id="task_fast_boundary", nodes=[]),
+        review_level="fast",
+    )
+    proposed_node = _tool_node(
+        "write_unreviewed",
+        "write_file",
+        {"path": "blocked/notes.md", "content": "hi"},
+    )
+    proposed_node.payload.invocation.boundary = Boundary(mode="read_only", allowed_paths=["allowed"])
+    proposed_node.payload.invocation.risk = "medium"
+
+    dag_loop._apply_replan(
+        record,
+        DAG(
+            dag_id="dag_fast_boundary",
+            task_id="task_fast_boundary",
+            nodes=[proposed_node],
+        ),
+    )
+
+    assert record.pending_review is None
+    result = run(dag_loop.execute(record, replan=False))
+
+    assert result is not None
+    assert result.status == "failed"
+    assert dag_node_trace(result, "write_unreviewed").status == "failed"
+
+
 def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
     """When replan returns NO_CHANGE, layers execute with original args."""
     initial = DAG(
