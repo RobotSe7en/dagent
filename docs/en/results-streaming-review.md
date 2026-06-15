@@ -162,10 +162,18 @@ if restored.requires_review and restored.review is not None:
 The `review.required` stream event is a lightweight signal. Build review UIs from
 the full pending review carried by the following `run.finished` result.
 
+DAG reviews authorize execution of the approved DAG version. After a DAG review
+is approved, every node in that submitted DAG may run with the boundary shown in
+the reviewed plan. Replanning creates a new DAG version and any changed DAG must
+be reviewed again when the selected review level requires it. The boundary
+authorization is attached to the human-approved DAG version, not to every DAG
+object whose lifecycle status is `approved`; static DAGs and fast no-review
+revisions still fail closed if a node crosses its boundary.
+
 Capability reviews can be triggered by risk policy or by a boundary override
-request. Boundary override reviews use `kind == "capability_review"` and include
-`payload.reason == "boundary_violation"` plus the original error. Approving one
-executes only that pending capability call; it does not widen the run boundary
-for later calls. Rejecting it feeds a denial message back to the agent. If the
-review decision includes `feedback`, that text is included in the agent's
-continuation context.
+request during tool-agent execution. Boundary override reviews use
+`kind == "capability_review"` and include `payload.reason == "boundary_violation"`
+plus the original error. Approving one executes only that pending capability
+call; it does not widen the run boundary for later calls. Rejecting it feeds a
+denial message back to the agent. If the review decision includes `feedback`,
+that text is included in the agent's continuation context.

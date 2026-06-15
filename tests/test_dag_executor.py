@@ -9,7 +9,7 @@ from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, Capabi
 from dagent.capabilities.providers import AgentCapabilityProvider, ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, CapabilityInvocation, RunTrace, RunTraceNode
+from dagent.schemas import Artifact, Boundary, DAG, DAGEdge, DAGNode, DAGSpec, CapabilityInvocation, RunTrace, RunTraceNode
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
@@ -257,6 +257,23 @@ def make_capability_executor() -> CapabilityExecutor:
         },
     )
     registry.register(
+        name="run_command",
+        handler=lambda command, cwd=".", timeout_seconds=30: f"ran:{command}:{cwd}",
+        action="command",
+        path_args=("cwd",),
+        command_args=("command",),
+        default_args={"cwd": ".", "timeout_seconds": 30},
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "cwd": {"type": "string"},
+                "timeout_seconds": {"type": "integer"},
+            },
+            "required": ["command"],
+        },
+    )
+    registry.register(
         name="fail_tool",
         handler=lambda text: (_ for _ in ()).throw(RuntimeError(f"failed:{text}")),
         action="read",
@@ -276,7 +293,31 @@ def _tool_capability_id(tool_name: str) -> str:
     return tool_name if tool_name.startswith("tool.") else f"tool.{tool_name}"
 
 
-def test_executor_treats_boundary_violation_as_node_failure() -> None:
+def test_executor_treats_unapproved_boundary_violation_as_node_failure() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        nodes=[
+            node(
+                "write",
+                tools=["write_note"],
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="read_only"),
+            )
+        ],
+    )
+
+    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+        run(executor.execute_next_ready_layer(dag))
+
+    failed = executor.partial_node_traces["write"]
+    assert failed.status == "failed"
+    assert failed.children[0].kind == "capability_call"
+    assert failed.children[0].status == "failed"
+
+
+def test_executor_approved_status_does_not_authorize_boundary_override() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
@@ -293,13 +334,105 @@ def test_executor_treats_boundary_violation_as_node_failure() -> None:
         ],
     )
 
-    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+    with pytest.raises(DAGExecutionError, match="read_only boundary cannot perform write operations"):
         run(executor.execute_next_ready_layer(dag))
 
-    failed = executor.partial_node_traces["write"]
-    assert failed.status == "failed"
-    assert failed.children[0].kind == "capability_call"
-    assert failed.children[0].status == "failed"
+
+def test_executor_explicit_boundary_authorization_allows_read_only_write_node() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            node(
+                "write",
+                tools=["write_file"],
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="read_only"),
+                risk="medium",
+            )
+        ],
+    )
+
+    result = run(executor.execute_next_ready_layer(dag, approve_node_boundaries=True))
+
+    assert result.status == "completed"
+    assert dag_node_trace(result, "write").output.endswith("notes.md:hi")
+
+
+def test_executor_explicit_boundary_authorization_allows_path_outside_node_allowed_paths() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            node(
+                "write",
+                tools=["write_file"],
+                args={"path": "blocked/notes.md", "content": "hi"},
+                boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+                risk="medium",
+            )
+        ],
+    )
+
+    result = run(executor.execute_next_ready_layer(dag, approve_node_boundaries=True))
+
+    assert result.status == "completed"
+    assert dag_node_trace(result, "write").output.endswith("blocked/notes.md:hi")
+
+
+def test_approved_dag_still_blocks_hard_boundary_command() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="approved",
+        nodes=[
+            node(
+                "danger",
+                tools=["run_command"],
+                args={"command": "rm -rf /"},
+                boundary=Boundary(mode="full"),
+                risk="high",
+            )
+        ],
+    )
+
+    with pytest.raises(DAGExecutionError, match="shell safety policy"):
+        run(executor.execute_next_ready_layer(dag, approve_node_boundaries=True))
+
+
+def test_executor_embedded_approved_status_does_not_authorize_boundary_override() -> None:
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    child_spec = DAGSpec(
+        id="child",
+        name="Child",
+        nodes=[
+            node(
+                "child_write",
+                tools=["write_file"],
+                args={"path": "notes.md", "content": "hi"},
+                boundary=Boundary(mode="read_only"),
+            )
+        ],
+    )
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="task_1",
+        status="draft",
+        nodes=[
+            DAGNode(
+                id="subgraph",
+                payload=dict(type="subgraph", spec=child_spec),
+            )
+        ],
+    )
+
+    with pytest.raises(DAGExecutionError, match="read_only boundary cannot perform write operations"):
+        run(executor.execute_next_ready_layer(dag))
 
 
 def test_executor_runs_tool_node_directly_without_tool_agent_loop() -> None:
@@ -625,14 +758,12 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
     dag = DAG(
         dag_id="dag_1",
         task_id="task_1",
-        status="approved",
         nodes=[
             tool_node(
                 "write_note",
                 tool="write_note",
                 args={"path": "notes.md", "content": "hi"},
                 boundary=Boundary(mode="read_only"),
-                risk="medium",
             )
         ],
     )

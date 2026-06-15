@@ -158,8 +158,14 @@ if restored.requires_review and restored.review is not None:
 `review.required` stream event 是轻量信号。Review UI 应基于后续 `run.finished` result
 中携带的完整 pending review 构建。
 
-Capability review 可以由 risk policy 触发，也可以由 boundary override 请求触发。Boundary
-override review 使用 `kind == "capability_review"`，并在 payload 中包含
-`payload.reason == "boundary_violation"` 以及原始错误。批准只会执行这一次 pending
-capability call，不会扩大后续调用的 run boundary；拒绝会把 denial 消息反馈给 agent。
-如果 review decision 携带 `feedback`，该文本会进入 agent 的后续上下文。
+DAG review 会授权已批准 DAG 版本的执行。DAG review 批准后，提交审核的这张 DAG
+中的所有节点都可以按审核时展示的 boundary 执行。Replan 会生成新的 DAG 版本；当所选
+review level 要求审核时，变更后的 DAG 需要重新 review。Boundary 授权绑定到人工批准
+的 DAG 版本，而不是所有 lifecycle status 为 `approved` 的 DAG object；静态 DAG 和
+fast no-review revision 如果节点越过 boundary，仍会 fail closed。
+
+Capability review 可以由 risk policy 触发，也可以在 tool-agent 执行过程中由 boundary
+override 请求触发。Boundary override review 使用 `kind == "capability_review"`，并在
+payload 中包含 `payload.reason == "boundary_violation"` 以及原始错误。批准只会执行这一次
+pending capability call，不会扩大后续调用的 run boundary；拒绝会把 denial 消息反馈给
+agent。如果 review decision 携带 `feedback`，该文本会进入 agent 的后续上下文。
