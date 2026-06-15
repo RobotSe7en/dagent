@@ -418,10 +418,7 @@ def _execute_tool(
 def _merge_tool_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
     defaults = _tool_default_arguments(tool)
     merged = dict(defaults)
-    for name, value in arguments.items():
-        if value is None and name in defaults:
-            continue
-        merged[name] = value
+    merged.update(arguments)
     return merged
 
 

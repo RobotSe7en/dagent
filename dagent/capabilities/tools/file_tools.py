@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+from dataclasses import dataclass
 import difflib
 import fnmatch
 import os
@@ -37,33 +38,49 @@ TRUNCATED = "[TRUNCATED]"
 _RG_UNRESOLVED = object()
 _rg_path: object = _RG_UNRESOLVED
 _UMASK_LOCK = threading.Lock()
+_MUTATION_LOCKS_LOCK = threading.Lock()
+_MUTATION_LOCKS: dict[Path, threading.RLock] = {}
+
+
+@dataclass(frozen=True)
+class _ReadWindow:
+    shown: list[str]
+    total: int
+    complete_text: str | None
+    truncated_by_bytes: bool
 
 
 def read_file(path: str | Path, offset: int = 1, limit: int | None = None) -> str:
+    if offset is None:
+        raise TypeError("offset must be an integer.")
     if offset < 1:
         raise ValueError("offset must be at least 1.")
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1.")
     max_lines = min(limit, MAX_READ_LINES) if limit is not None else MAX_READ_LINES
-    shown, total, complete_text = _read_utf8_window(Path(path), offset=offset, max_lines=max_lines)
+    window = _read_utf8_window(Path(path), offset=offset, max_lines=max_lines)
+    shown, total, complete_text = window.shown, window.total, window.complete_text
     if offset > 1 and offset > total:
         raise ValueError(f"offset {offset} is beyond end of file ({total} lines).")
     if complete_text is not None:
         return complete_text
     end_line = offset - 1 + len(shown)
     content = "\n".join(shown)
-    if end_line < total:
-        content += (
-            f"\n{TRUNCATED} showing lines {offset}-{end_line} of {total}; "
-            "use offset/limit to read more."
+    if end_line < total or window.truncated_by_bytes:
+        reason = (
+            "read byte limit reached."
+            if window.truncated_by_bytes
+            else "use offset/limit to read more."
         )
+        content += f"\n{TRUNCATED} showing lines {offset}-{end_line} of {total}; {reason}"
     return content
 
 
 def write_file(path: str | Path, content: str) -> str:
     resolved = Path(path)
     data = content.encode("utf-8")
-    _atomic_write(resolved, data)
+    with _mutation_lock(resolved):
+        _atomic_write(resolved, data)
     return f"Wrote {len(data)} bytes to {resolved}."
 
 
@@ -73,33 +90,28 @@ def edit_file(path: str | Path, old_string: str, new_string: str) -> str:
     if old_string == new_string:
         raise ValueError("old_string and new_string are identical.")
     resolved = Path(path)
-    text, had_bom = _read_utf8(resolved)
-    uses_crlf = "\r\n" in text
-    normalized = text.replace("\r\n", "\n")
-    old = old_string.replace("\r\n", "\n")
-    new = new_string.replace("\r\n", "\n")
+    with _mutation_lock(resolved):
+        text, had_bom = _read_utf8(resolved)
+        count = text.count(old_string)
+        if count == 0:
+            raise ValueError(
+                f"old_string was not found in {resolved}. Read the file and copy the exact text."
+            )
+        if count > 1:
+            raise ValueError(
+                f"old_string matched {count} locations in {resolved}; "
+                "include more surrounding context to make it unique."
+            )
 
-    count = normalized.count(old)
-    if count == 0:
-        raise ValueError(
-            f"old_string was not found in {resolved}. Read the file and copy the exact text."
-        )
-    if count > 1:
-        raise ValueError(
-            f"old_string matched {count} locations in {resolved}; "
-            "include more surrounding context to make it unique."
-        )
-
-    first_line = normalized.count("\n", 0, normalized.index(old)) + 1
-    updated = normalized.replace(old, new, 1)
-    output = updated.replace("\n", "\r\n") if uses_crlf else updated
-    data = output.encode("utf-8")
-    if had_bom:
-        data = codecs.BOM_UTF8 + data
-    _atomic_write(resolved, data)
+        first_line = text.count("\n", 0, text.index(old_string)) + 1
+        updated = text.replace(old_string, new_string, 1)
+        data = updated.encode("utf-8")
+        if had_bom:
+            data = codecs.BOM_UTF8 + data
+        _atomic_write(resolved, data)
 
     summary = f"Edited {resolved}: 1 replacement at line {first_line}."
-    diff = _unified_diff_excerpt(normalized, updated, path=resolved)
+    diff = _unified_diff_excerpt(text, updated, path=resolved)
     return f"{summary}\n{diff}" if diff else summary
 
 
@@ -115,6 +127,8 @@ def list_files(
     the pattern. Returns ``(content, entries)`` so DAG nodes can fan out over
     the structured entry list.
     """
+    if depth is None:
+        raise TypeError("depth must be an integer.")
     if depth < 1:
         raise ValueError("depth must be at least 1.")
     root = Path(path)
@@ -187,19 +201,52 @@ def _grep_with_ripgrep(rg: str, root: Path, pattern: str, glob: str | None) -> s
     if glob:
         args.extend(["--glob", glob])
     args.extend(["--regexp", pattern, str(root)])
-    result = subprocess.run(
+    process = subprocess.Popen(
         args,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         errors="replace",
-        timeout=GREP_TIMEOUT_SECONDS,
     )
-    if result.returncode == 1:
+    timed_out = False
+    stopped_after_cap = False
+
+    def kill_on_timeout() -> None:
+        nonlocal timed_out
+        timed_out = True
+        process.kill()
+
+    timer = threading.Timer(GREP_TIMEOUT_SECONDS, kill_on_timeout)
+    timer.start()
+    lines: list[str] = []
+    try:
+        if process.stdout is None:
+            raise ValueError("ripgrep stdout was not captured.")
+        for line in process.stdout:
+            lines.append(line.rstrip("\r\n"))
+            if len(lines) > GREP_MAX_MATCHES:
+                stopped_after_cap = True
+                process.terminate()
+                break
+        returncode = process.wait()
+    finally:
+        timer.cancel()
+        if process.stdout is not None:
+            process.stdout.close()
+    stderr = process.stderr.read() if process.stderr is not None else ""
+    if process.stderr is not None:
+        process.stderr.close()
+
+    if timed_out:
+        raise ValueError(f"ripgrep timed out after {GREP_TIMEOUT_SECONDS}s")
+    if stopped_after_cap:
+        return _capped_matches(lines)
+    if returncode == 1:
         return ""
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
+    if returncode != 0:
+        detail = stderr.strip() or f"exit code {returncode}"
         raise ValueError(f"ripgrep failed: {detail}")
-    return _capped_matches(result.stdout.splitlines())
+    return _capped_matches(lines)
 
 
 def _grep_pure_python(root: Path, pattern: str, glob: str | None) -> str:
@@ -233,13 +280,14 @@ def _capped_matches(lines: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> tuple[list[str], int, str | None]:
+def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> _ReadWindow:
     shown: list[str] = []
     total = 0
     used_bytes = 0
     exact_bytes = bytearray() if offset == 1 else None
     exact_possible = offset == 1
     stopped_showing = False
+    truncated_by_bytes = False
 
     with path.open("rb") as handle:
         prefix = handle.read(8192)
@@ -259,6 +307,7 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> tuple[list[
             line_was_partial = len(raw) > MAX_READ_BYTES and not raw.endswith((b"\n", b"\r"))
             if line_was_partial:
                 _discard_line_remainder(handle)
+                truncated_by_bytes = True
                 exact_possible = False
             total += 1
 
@@ -278,6 +327,7 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> tuple[list[
                     line = prefix_lines[0] if prefix_lines else ""
                     shown.append(line)
                     used_bytes = len(line.encode("utf-8"))
+                truncated_by_bytes = True
                 exact_possible = False
                 stopped_showing = True
                 continue
@@ -287,8 +337,8 @@ def _read_utf8_window(path: Path, *, offset: int, max_lines: int) -> tuple[list[
                 exact_bytes.extend(raw)
 
     if exact_possible and exact_bytes is not None and len(shown) == total:
-        return shown, total, exact_bytes.decode("utf-8", errors="replace")
-    return shown, total, None
+        return _ReadWindow(shown, total, exact_bytes.decode("utf-8", errors="replace"), False)
+    return _ReadWindow(shown, total, None, truncated_by_bytes)
 
 
 def _discard_line_remainder(handle) -> None:
@@ -326,9 +376,6 @@ def _read_utf8(path: Path) -> tuple[str, bool]:
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_stat = _existing_regular_file_stat(path)
-    if existing_stat is not None and existing_stat.st_nlink > 1:
-        _write_hardlinked_file(path, data)
-        return
     mode = _replacement_mode(existing_stat)
     descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -367,14 +414,14 @@ def _default_file_mode() -> int:
     return 0o666 & ~current_umask
 
 
-def _write_hardlinked_file(path: Path, data: bytes) -> None:
-    # Replacing one hard link detaches it from its siblings, so rewrite in place.
-    with path.open("r+b") as handle:
-        handle.seek(0)
-        handle.write(data)
-        handle.truncate()
-        handle.flush()
-        os.fsync(handle.fileno())
+def _mutation_lock(path: Path) -> threading.RLock:
+    key = path.resolve()
+    with _MUTATION_LOCKS_LOCK:
+        lock = _MUTATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _MUTATION_LOCKS[key] = lock
+        return lock
 
 
 def _unified_diff_excerpt(before: str, after: str, *, path: Path) -> str:
