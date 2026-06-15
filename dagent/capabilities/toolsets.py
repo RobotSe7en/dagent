@@ -17,7 +17,7 @@ BUILTIN_CAPABILITY_IDS = (
     "tool.edit_file",
     "tool.list_files",
     "tool.grep",
-    "tool.run_command",
+    "tool.shell",
 )
 _FUNCTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

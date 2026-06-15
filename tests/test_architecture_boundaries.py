@@ -38,7 +38,7 @@ def test_public_tool_decorator_and_tools_live_under_capabilities() -> None:
     assert not (root / "dagent" / "tools").exists()
     assert (root / "dagent" / "capabilities" / "tools" / "registry.py").exists()
     assert (root / "dagent" / "capabilities" / "tools" / "file_tools.py").exists()
-    assert (root / "dagent" / "capabilities" / "tools" / "command_tools.py").exists()
+    assert (root / "dagent" / "capabilities" / "tools" / "shell_tools.py").exists()
     assert (root / "dagent" / "capabilities" / "tools" / "boundary.py").exists()
 
 

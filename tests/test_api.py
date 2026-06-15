@@ -854,13 +854,13 @@ def test_api_capability_list_create_and_test() -> None:
     ).status_code == 404
 
 
-def test_api_capability_test_infers_run_command_boundary() -> None:
+def test_api_capability_test_infers_shell_boundary() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     command = f'{sys.executable} -c "print(1); print(2)"'
 
     response = client.post(
-        "/capabilities/tool.run_command/test",
+        "/capabilities/tool.shell/test",
         json={"arguments": {"command": command, "cwd": "."}},
     )
 

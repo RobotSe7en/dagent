@@ -183,7 +183,7 @@ def test_capability_tool_adapter_keeps_explicit_empty_toolsets_empty() -> None:
         adapter.definitions(("builtin",))
 
 
-def test_default_builtin_toolset_exposes_read_write_search_and_command() -> None:
+def test_default_builtin_toolset_exposes_read_write_search_and_shell() -> None:
     adapter = CapabilityToolAdapter(create_default_capability_catalog())
 
     names = [
@@ -191,4 +191,4 @@ def test_default_builtin_toolset_exposes_read_write_search_and_command() -> None
         for definition in adapter.definitions(("builtin",))
     ]
 
-    assert names == ["read_file", "write_file", "edit_file", "list_files", "grep", "run_command"]
+    assert names == ["read_file", "write_file", "edit_file", "list_files", "grep", "shell"]
