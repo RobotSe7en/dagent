@@ -24,7 +24,9 @@ from dagent.schemas import (
 from dagent.capabilities.tools.boundary import (
     enforce_action_allowed,
     enforce_command_allowed,
+    enforce_command_paths_allowed,
     enforce_path_allowed,
+    resolve_path_against_workspace,
 )
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
@@ -58,19 +60,26 @@ class ToolCapabilityProvider:
                 },
             )
 
-            def handler(invocation: CapabilityInvocation, *, tool_name: str = name) -> CapabilityResult:
+            def handler(
+                invocation: CapabilityInvocation,
+                *,
+                context: Any = None,
+                callbacks: Any = None,
+                tool_name: str = name,
+            ) -> CapabilityResult:
                 try:
                     content, value = _execute_tool(
                         self.tools,
                         current_workspace_root(catalog.workspace_root),
                         tool_name,
                         invocation,
+                        context=context,
                     )
                     return _completed(invocation, content, value=value)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
-            catalog.register(definition, handler)
+            catalog.register(definition, handler, supports_context=True)
 
 
 class MemoryCapabilityProvider:
@@ -397,34 +406,107 @@ def _execute_tool(
     workspace_root: Path,
     tool_name: str,
     invocation: CapabilityInvocation,
+    *,
+    context: Any = None,
 ) -> tuple[str, Any]:
     tool = tools.get(tool_name)
     if tool is None:
         raise RuntimeError(f"Tool '{tool_name}' is not registered.")
-    enforce_action_allowed(tool.action, invocation.boundary)
+    boundary_override_approved = (
+        getattr(context, "approved_boundary_invocation_id", None) == invocation.invocation_id
+    )
+    if not boundary_override_approved:
+        enforce_action_allowed(tool.action, invocation.boundary)
     checked_args = _merge_tool_arguments(tool, invocation.arguments)
     for arg_name in tool.path_args:
-        checked_args[arg_name] = enforce_path_allowed(
-            checked_args[arg_name],
-            invocation.boundary,
-            workspace_root,
-        )
+        if boundary_override_approved:
+            checked_args[arg_name] = resolve_path_against_workspace(
+                checked_args[arg_name],
+                workspace_root,
+            )
+        else:
+            checked_args[arg_name] = enforce_path_allowed(
+                checked_args[arg_name],
+                invocation.boundary,
+                workspace_root,
+            )
     for arg_name in tool.command_args:
         enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+        if not boundary_override_approved and "cwd" in checked_args:
+            enforce_command_paths_allowed(
+                str(checked_args[arg_name]),
+                invocation.boundary,
+                workspace_root,
+                checked_args["cwd"],
+            )
     result = tool.handler(**checked_args)
     return _content_and_value_from_tool_result(result)
 
 
+def check_tool_boundary(
+    definition: CapabilityDefinition,
+    invocation: CapabilityInvocation,
+    workspace_root: Path,
+) -> CapabilityResult | None:
+    """Return a failed result when a tool invocation exceeds its boundary.
+
+    This only checks ToolCapabilityProvider-owned boundary metadata. It does not
+    call the tool handler, so risk review can preflight boundary failures without
+    triggering side effects.
+    """
+    config = definition.config
+    action = config.get("action")
+    if not isinstance(action, str):
+        return None
+    checked_args = _merge_definition_arguments(definition, invocation.arguments)
+    try:
+        enforce_action_allowed(action, invocation.boundary)
+        for arg_name in config.get("path_args") or ():
+            enforce_path_allowed(
+                checked_args[arg_name],
+                invocation.boundary,
+                workspace_root,
+            )
+        for arg_name in config.get("command_args") or ():
+            enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+            if "cwd" in checked_args:
+                enforce_command_paths_allowed(
+                    str(checked_args[arg_name]),
+                    invocation.boundary,
+                    workspace_root,
+                    checked_args["cwd"],
+                )
+    except Exception as exc:
+        return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
+    return None
+
+
 def _merge_tool_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
-    defaults = _tool_default_arguments(tool)
+    defaults = _default_arguments(tool.default_args or {}, tool.parameters or {})
+    merged = dict(defaults)
+    merged.update(arguments)
+    return merged
+
+
+def _merge_definition_arguments(
+    definition: CapabilityDefinition,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    defaults = _default_arguments(
+        definition.config.get("default_args") or {},
+        definition.parameters or {},
+    )
     merged = dict(defaults)
     merged.update(arguments)
     return merged
 
 
 def _tool_default_arguments(tool: Any) -> dict[str, Any]:
-    defaults = dict(tool.default_args or {})
-    parameters = tool.parameters or {}
+    return _default_arguments(tool.default_args or {}, tool.parameters or {})
+
+
+def _default_arguments(default_args: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
+    defaults = dict(default_args)
     properties = parameters.get("properties") if isinstance(parameters, dict) else None
     if isinstance(properties, dict):
         for name, schema in properties.items():

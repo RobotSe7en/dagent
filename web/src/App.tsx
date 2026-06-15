@@ -474,7 +474,9 @@ export function App() {
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dagReview, setDagReview] = useState<ReviewEventPayload | null>(null);
+  const [dagReviewFeedback, setDagReviewFeedback] = useState('');
   const [capabilityReview, setCapabilityReview] = useState<ReviewEventPayload | null>(null);
+  const [capabilityReviewFeedback, setCapabilityReviewFeedback] = useState('');
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const validationRequestIdRef = useRef(0);
   const tokenQueueRef = useRef<QueuedAssistantToken[]>([]);
@@ -824,9 +826,11 @@ export function App() {
   const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
     if (pendingReview.kind === 'capability_review') {
+      setCapabilityReviewFeedback('');
       setCapabilityReview(pendingReview as ReviewEventPayload);
       return;
     }
+    setDagReviewFeedback('');
     setDagReview(pendingReview);
   };
 
@@ -1238,7 +1242,12 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          if (review.kind !== 'capability_review') setReviewOpen(true);
+          if (review.kind === 'capability_review') {
+            setCapabilityReviewFeedback('');
+            setCapabilityReview(review);
+          } else {
+            setReviewOpen(true);
+          }
         },
         onDone: (payload) => {
           const result = payload.result;
@@ -1299,7 +1308,9 @@ export function App() {
       { role: 'assistant', kind: 'text', content: '' },
     ]);
     const reviewId = dagReview.review_id;
+    const feedback = approved ? '' : dagReviewFeedback.trim();
     setDagReview(null);
+    setDagReviewFeedback('');
     appendTrace({
       type: 'dag',
       label: approved ? 'dag_confirmed' : 'dag_rejected',
@@ -1322,7 +1333,12 @@ export function App() {
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
         onReview: (review) => {
-          if (review.kind !== 'capability_review') setReviewOpen(true);
+          if (review.kind === 'capability_review') {
+            setCapabilityReviewFeedback('');
+            setCapabilityReview(review);
+          } else {
+            setReviewOpen(true);
+          }
         },
         onDone: (payload) => {
           const result = payload.result;
@@ -1344,7 +1360,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      }, runState);
+      }, runState, feedback);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1365,7 +1381,9 @@ export function App() {
 
   const confirmCapabilityReview = async (approved: boolean) => {
     if (!capabilityReview || streaming) return;
+    const feedback = capabilityReviewFeedback.trim();
     setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
     setError(null);
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
@@ -1385,6 +1403,7 @@ export function App() {
         onContent: (event) => enqueueContentToken(event.delta),
         onRetry: appendValidationFeedback,
         onValidating: appendValidating,
+        onReview: handlePendingReview,
         onDone: (payload) => {
           const resultReview = payload.result.state?.pending_review ?? null;
           setRunState(payload.result.state ?? null);
@@ -1398,7 +1417,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      }, runState);
+      }, runState, feedback);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1417,7 +1436,9 @@ export function App() {
       setValidationEnabled(enabled);
       setValidationError(null);
       setDagReview(null);
+      setDagReviewFeedback('');
       setCapabilityReview(null);
+      setCapabilityReviewFeedback('');
       setRunState(null);
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
@@ -1636,6 +1657,8 @@ export function App() {
           edges={edges}
           trace={trace}
           selectedNode={selectedNode}
+          feedback={dagReviewFeedback}
+          onFeedbackChange={setDagReviewFeedback}
           onClose={() => setReviewOpen(false)}
           onConfirm={confirmDag}
           onReject={rejectDag}
@@ -1651,9 +1674,14 @@ export function App() {
       {capabilityReview ? (
         <CapabilityReviewDialog
           review={capabilityReview}
+          feedback={capabilityReviewFeedback}
+          onFeedbackChange={setCapabilityReviewFeedback}
           onApprove={() => confirmCapabilityReview(true)}
           onReject={() => confirmCapabilityReview(false)}
-          onClose={() => setCapabilityReview(null)}
+          onClose={() => {
+            setCapabilityReview(null);
+            setCapabilityReviewFeedback('');
+          }}
         />
       ) : null}
     </div>
@@ -1987,29 +2015,41 @@ function compareArtifactsByPath(left: Artifact, right: Artifact) {
 
 function CapabilityReviewDialog({
   review,
+  feedback,
+  onFeedbackChange,
   onApprove,
   onReject,
   onClose,
 }: {
   review: ReviewEventPayload;
+  feedback: string;
+  onFeedbackChange: (value: string) => void;
   onApprove: () => void;
   onReject: () => void;
   onClose: () => void;
 }) {
   const capabilityCall = review.capability_call;
   const argsText = capabilityCall ? JSON.stringify(capabilityCall.arguments, null, 2) : '';
-  const risk = (review.payload?.risk as string) || 'low';
+  const payload = review.payload ?? {};
+  const reason = payloadString(payload.reason);
+  const error = payloadString(payload.error);
+  const risk = riskFromPayload(payload.risk);
+  const isBoundaryOverride = reason === 'boundary_violation';
+  const title = isBoundaryOverride ? 'Boundary Override' : 'Capability Review';
+  const detail = isBoundaryOverride
+    ? 'This tool call needs approval to cross its configured boundary.'
+    : review.message;
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Capability review">
-      <div className="dag-modal">
+      <div className="dag-modal capability-review-modal">
         <header className="modal-header">
           <div>
             <div className="modal-title">
               <AlertTriangle size={20} />
-              <span>Capability Review</span>
+              <span>{title}</span>
               <span className={`risk-badge risk-${risk}`}>{risk.toUpperCase()}</span>
             </div>
-            <p>{capabilityCall?.capability_id || review.message}</p>
+            <p>{detail}</p>
           </div>
           <div className="modal-actions">
             <button className="secondary-button compact-button" onClick={onReject} type="button">
@@ -2025,11 +2065,23 @@ function CapabilityReviewDialog({
             </button>
           </div>
         </header>
-        <div className="modal-body">
+        <div className="modal-body capability-review-body">
+          {isBoundaryOverride && error ? (
+            <div className="capability-review-warning">
+              <strong>Boundary violation</strong>
+              <span>{error}</span>
+            </div>
+          ) : null}
           {capabilityCall ? (
             <div className="capability-section">
               <div className="capability-section-label">Capability</div>
               <p><strong>{capabilityCall.capability_id}</strong></p>
+            </div>
+          ) : null}
+          {reason ? (
+            <div className="capability-section">
+              <div className="capability-section-label">Reason</div>
+              <p>{reason.replace(/_/g, ' ')}</p>
             </div>
           ) : null}
           {argsText ? (
@@ -2038,10 +2090,26 @@ function CapabilityReviewDialog({
               <pre>{clipText(argsText, 1200)}</pre>
             </div>
           ) : null}
+          <label className="review-feedback-field">
+            <span>Reviewer feedback</span>
+            <textarea
+              value={feedback}
+              onChange={(event) => onFeedbackChange(event.target.value)}
+              placeholder="Reason or next instruction"
+            />
+          </label>
         </div>
       </div>
     </div>
   );
+}
+
+function payloadString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function riskFromPayload(value: unknown): RiskLevel {
+  return riskLevels.includes(value as RiskLevel) ? value as RiskLevel : 'low';
 }
 
 function ChatCapabilityScopeDialog({
@@ -4067,6 +4135,8 @@ function DagReviewDialog({
   edges,
   trace,
   selectedNode,
+  feedback,
+  onFeedbackChange,
   onClose,
   onConfirm,
   onReject,
@@ -4082,6 +4152,8 @@ function DagReviewDialog({
   edges: Edge[];
   trace: TraceLogEvent[];
   selectedNode?: DagNode;
+  feedback: string;
+  onFeedbackChange: (value: string) => void;
   onClose: () => void;
   onConfirm: () => void;
   onReject: () => void;
@@ -4143,6 +4215,14 @@ function DagReviewDialog({
             </ReactFlow>
           </section>
           <aside className="modal-side">
+            <label className="review-feedback-field dag-review-feedback">
+              <span>Reviewer feedback</span>
+              <textarea
+                value={feedback}
+                onChange={(event) => onFeedbackChange(event.target.value)}
+                placeholder="Reason or next instruction"
+              />
+            </label>
             <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
             {selectedNode ? (
               <NodeEditor

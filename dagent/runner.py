@@ -634,6 +634,7 @@ class Runner:
             dag=decision.dag,
             approved=decision.approved,
             review_level=decision.review_level,
+            feedback=decision.feedback,
             on_token=on_token,
             on_event=on_event,
         )
@@ -937,6 +938,7 @@ def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> Rev
             approved=True,
             dag=pending_review.proposed_dag,
             review_level=decision.review_level,
+            feedback=decision.feedback,
         )
     return decision
 

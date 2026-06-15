@@ -198,6 +198,326 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
     assert "write_file" in tool_message["content"]
 
 
+def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "secret.txt").write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "blocked/secret.txt"},
+                    )
+                ]
+            ),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Read the blocked file"}],
+            boundary=Boundary(mode="read_only", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    assert result.state.status == "awaiting_review"
+    assert result.state.pending_review is not None
+    assert result.state.pending_review.kind == "capability_review"
+    assert result.state.pending_review.message == "Review boundary override: tool.read_file"
+    assert result.state.pending_review.capability_call == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.read_file",
+        "arguments": {"path": "blocked/secret.txt"},
+    }
+    assert result.state.pending_review.payload["reason"] == "boundary_violation"
+    assert "outside allowed paths" in result.state.pending_review.payload["error"]
+
+
+def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "secret.txt").write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "blocked/secret.txt"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I read the approved file."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Read the blocked file"}],
+            boundary=Boundary(mode="read_only", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(agent.resume_review(first.state, approved=True))
+
+    assert resumed.state.status == "completed"
+    assert resumed.output_text == "I read the approved file."
+    assert agent.messages[2] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "read_file",
+        "content": "secret",
+    }
+
+
+def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    target = blocked / "secret.txt"
+    target.write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "blocked/secret.txt", "content": "changed"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I will continue without writing."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write the blocked file"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(agent.resume_review(first.state, approved=False))
+
+    assert resumed.state.status == "completed"
+    assert resumed.output_text == "I will continue without writing."
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert agent.messages[2]["content"] == (
+        "[DENIED] Human reviewer denied this tool call. Continue without executing it."
+    )
+
+
+def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    target = blocked / "secret.txt"
+    target.write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "blocked/secret.txt", "content": "changed"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I will use an allowed file instead."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write the blocked file"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(
+        agent.resume_review(
+            first.state,
+            approved=False,
+            feedback="Use allowed/notes.txt instead.",
+        )
+    )
+
+    assert resumed.output_text == "I will use an allowed file instead."
+    assert target.read_text(encoding="utf-8") == "secret"
+    assert "Reviewer feedback: Use allowed/notes.txt instead." in agent.messages[2]["content"]
+    assert "Reviewer feedback: Use allowed/notes.txt instead." in provider.requests[1]["messages"][-1]["content"]
+
+
+def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tmp_path: Path) -> None:
+    target = tmp_path / "notes.txt"
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes.txt", "content": "approved"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Wrote after boundary approval."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write a file"}],
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            review_level="careful",
+        )
+    )
+
+    assert first.state.status == "awaiting_review"
+    assert first.state.pending_review is not None
+    assert first.state.pending_review.message == "Review boundary override: tool.write_file"
+    assert first.state.pending_review.payload == {
+        "capability_id": "tool.write_file",
+        "risk": "medium",
+        "reason": "boundary_violation",
+        "error": "read_only boundary cannot perform write operations.",
+    }
+
+    resumed = run(agent.resume_review(first.state, approved=True))
+
+    assert resumed.state.status == "completed"
+    assert resumed.output_text == "Wrote after boundary approval."
+    assert target.read_text(encoding="utf-8") == "approved"
+
+
+def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.txt"
+    second_file = tmp_path / "second.txt"
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "first.txt", "content": "one"},
+                    )
+                ]
+            ),
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_2",
+                        name="write_file",
+                        arguments={"path": "second.txt", "content": "two"},
+                    )
+                ]
+            ),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+    first = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Write two files"}],
+            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            review_level="fast",
+        )
+    )
+
+    resumed = run(agent.resume_review(first.state, approved=True))
+
+    assert first_file.read_text(encoding="utf-8") == "one"
+    assert not second_file.exists()
+    assert resumed.state.status == "awaiting_review"
+    assert resumed.state.pending_review is not None
+    assert resumed.state.pending_review.capability_call == {
+        "invocation_id": "call_2",
+        "capability_id": "tool.write_file",
+        "arguments": {"path": "second.txt", "content": "two"},
+    }
+    assert resumed.state.pending_review.payload["reason"] == "boundary_violation"
+
+
+def test_tool_agent_run_command_cross_boundary_path_requires_review(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    (blocked / "secret.txt").write_text("secret", encoding="utf-8")
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="run_command",
+                        arguments={
+                            "cwd": "allowed",
+                            "command": "cat ../blocked/secret.txt",
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Read through shell"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            review_level="fast",
+        )
+    )
+
+    assert result.state.status == "awaiting_review"
+    assert result.state.pending_review is not None
+    assert result.state.pending_review.message == "Review boundary override: tool.run_command"
+    assert result.state.pending_review.payload["reason"] == "boundary_violation"
+    assert "../blocked/secret.txt" in result.state.pending_review.payload["error"]
+
+
+def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> None:
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="run_command",
+                        arguments={"cwd": ".", "command": "rm -rf /"},
+                    )
+                ]
+            ),
+            ChatResponse(content="I will not run that."),
+        ]
+    )
+    agent = ToolAgent(loop=make_loop(tmp_path, provider), profile=_profile())
+
+    result = run(
+        agent.run_messages(
+            [{"role": "user", "content": "Run a dangerous command"}],
+            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+            review_level="fast",
+        )
+    )
+
+    assert result.state.status == "completed"
+    assert result.state.pending_review is None
+    tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")
+    assert "[TOOL_ERROR]" in tool_message["content"]
+    assert "blocked by shell safety policy" in tool_message["content"]
+
+
 def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     tmp_path: Path,
 ) -> None:

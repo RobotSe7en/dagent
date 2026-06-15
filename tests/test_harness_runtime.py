@@ -414,6 +414,29 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
     assert "DAG observation: review_denied" in resume_messages[-1]["content"]
 
 
+def test_harness_runtime_rejected_dag_review_includes_reviewer_feedback() -> None:
+    provider = MockProvider([
+        ChatResponse(content=_dag_agent_dsl()),
+        ChatResponse(content="I will replan with the reviewer feedback."),
+    ])
+    runtime = _runtime(provider)
+
+    result = run(run_message(runtime, "What files are here?", mode="dag", review_level="careful"))
+    resumed = run(
+        runtime.resume_review(
+            result.pending_review.review_id,
+            approved=False,
+            feedback="Only inspect README.md.",
+        )
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.output_text == "I will replan with the reviewer feedback."
+    resume_content = provider.requests[1]["messages"][-1]["content"]
+    assert "DAG observation: review_denied" in resume_content
+    assert "Reviewer feedback: Only inspect README.md." in resume_content
+
+
 def test_harness_runtime_approves_pending_dag_review_without_resubmitting_dag() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
@@ -929,8 +952,8 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].trace is not None
     assert tool_tasks[0].trace.status == "completed"
     # write_file runs under the conversation's read_only boundary, so the approved
-    # call settles as a boundary failure instead of a stale awaiting_review node.
-    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "failed"
+    # boundary override settles the pending node as a completed single call.
+    assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "completed"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
 

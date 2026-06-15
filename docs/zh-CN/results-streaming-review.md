@@ -121,6 +121,16 @@ if first.requires_review and first.review is not None:
     result = await runner.resume(first.review.approve())
 ```
 
+批准和拒绝都可以携带 reviewer feedback。拒绝时可以用它说明原因，或引导 agent
+改用另一条执行路径：
+
+```python
+if first.requires_review and first.review is not None:
+    result = await runner.resume(
+        first.review.reject(feedback="不要读取该路径，改为总结 README.md。")
+    )
+```
+
 Streaming resume 使用相同 event contract：
 
 ```python
@@ -147,3 +157,9 @@ if restored.requires_review and restored.review is not None:
 
 `review.required` stream event 是轻量信号。Review UI 应基于后续 `run.finished` result
 中携带的完整 pending review 构建。
+
+Capability review 可以由 risk policy 触发，也可以由 boundary override 请求触发。Boundary
+override review 使用 `kind == "capability_review"`，并在 payload 中包含
+`payload.reason == "boundary_violation"` 以及原始错误。批准只会执行这一次 pending
+capability call，不会扩大后续调用的 run boundary；拒绝会把 denial 消息反馈给 agent。
+如果 review decision 携带 `feedback`，该文本会进入 agent 的后续上下文。
