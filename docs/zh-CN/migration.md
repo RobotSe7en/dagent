@@ -4,9 +4,9 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.4.1`。
+当前包版本是 `0.4.2`。
 
-## 未发布
+## 0.4.2
 
 - 内置 shell 命令 capability 现在是 `tool.shell`，DAG DSL 调用写作
   `shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
