@@ -62,6 +62,7 @@ def dag_state(
     user_request: str,
     dag: DAG,
     review_level: str = "fast",
+    dynamic_adjust: bool = True,
 ) -> RunState:
     return RunState(
         run_id=task_id,
@@ -71,6 +72,7 @@ def dag_state(
         dag=dag,
         review_level=review_level,
         runtime_mode="dag",
+        dynamic_adjust=dynamic_adjust,
     )
 
 
@@ -697,6 +699,55 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     assert "  content:" in request
     assert "failed:boom" in request
     assert "User request:" not in request
+
+
+def test_harness_runtime_dynamic_adjust_false_does_not_replan_after_tool_failure() -> None:
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    executor = DAGExecutor(capability_executor=capability_executor)
+    initial = DAG(
+        dag_id="dag_failure_locked",
+        task_id="task_failure_locked",
+        status="approved",
+        nodes=[
+            _tool_node("try_bad_tool", "fail_tool", {"text": "boom"}),
+        ],
+        edges=[],
+    )
+    replacement = DAG(
+        dag_id="replacement",
+        task_id="task_failure_locked",
+        nodes=[
+            _tool_node("fallback", "echo", {"text": "recovered"}),
+        ],
+        edges=[],
+    )
+    runtime = runtime_for(
+        dag_agent_loop=dag_loop_for(
+            MockProvider([
+                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content="Recovery complete."),
+            ]),
+            executor=executor,
+        ),
+        executor=executor,
+    )
+    prepared = runtime.dag_agent.loop.prepare_for_review(initial)
+    record = dag_state(
+        task_id="task_failure_locked",
+        user_request="Do not recover from failure",
+        dag=prepared,
+        review_level="fast",
+        dynamic_adjust=False,
+    )
+    runtime.runs[record.run_id] = record
+
+    result = run(runtime.dag_agent.execute(record))
+
+    assert result.status == "failed"
+    assert dag_node_trace(result, "try_bad_tool").status == "failed"
+    assert runtime.dag_agent.loop.provider.requests == []
+    assert record.dag.version == 1
 
 
 def test_replan_sees_prior_planning_output_in_agent_thread() -> None:

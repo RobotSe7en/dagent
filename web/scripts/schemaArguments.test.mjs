@@ -127,6 +127,7 @@ test('composer uses upload placeholder instead of creating chats from the input 
 
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
@@ -205,6 +206,12 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);
   assert.doesNotMatch(directorySource, /Capability Workbench|Capability Detail|console-grid directory-grid/);
+  assert.match(appSource, /const \[dynamicAdjust, setDynamicAdjust\] = useState\(true\)/);
+  assert.match(appSource, /dynamicAdjust=\{dynamicAdjust\}/);
+  assert.match(appSource, /runState, dynamicAdjust\)/);
+  assert.match(apiSource, /dynamicAdjust\?: boolean/);
+  assert.match(apiSource, /body\.dynamic_adjust = dynamicAdjust/);
+  assert.match(apiSource, /dynamic_adjust\?: boolean/);
 
   assert.match(css, /\.design-orchestration-workspace/);
   assert.match(css, /\.orchestration-canvas/);

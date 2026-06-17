@@ -67,6 +67,7 @@ agent = dagent.AutoAgent(
     max_steps=8,
     max_cycles=6,
     review="fast",
+    dynamic_adjust=True,
 )
 
 messages = [{"role": "user", "content": "Answer directly or plan if orchestration helps."}]
@@ -91,6 +92,7 @@ agent = dagent.DagAgent(
     skills=["research/briefing"],
     max_cycles=6,
     review="careful",
+    dynamic_adjust=True,
 )
 
 result = await runner.run(
@@ -101,6 +103,10 @@ result = await runner.run(
 if result.requires_review and result.review is not None:
     result = await runner.resume(result.review.approve())
 ```
+
+如果希望 planner 只生成初始 DAG，之后按固定 DAG 执行，可设置
+`dynamic_adjust=False`。`review` 逻辑保持不变；关闭动态调整只会禁止根据执行观察或失败
+进行后续 replan。
 
 运行离线 dynamic DAG 示例：
 
@@ -119,6 +125,7 @@ uv run python -m examples.dynamic_dag_agent
 | `review` | risky work 的 review level。 |
 | `max_steps` | `ToolAgent` 和 `AutoAgent` 的 tool-loop bound。 |
 | `max_cycles` | `AutoAgent` 和 `DagAgent` 的 dynamic DAG replan bound。 |
+| `dynamic_adjust` | `AutoAgent` 和 `DagAgent` 生成初始 DAG 后是否允许继续动态 replan，默认 `True`。 |
 
 传入 `capabilities=None` 会使用 runner 默认可见 capabilities。传入显式列表会将 agent
 限制到该集合。

@@ -655,6 +655,7 @@ export function App() {
   const [draft, setDraft] = useState('');
   const [target, setTarget] = useState<ChatTarget>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('careful');
+  const [dynamicAdjust, setDynamicAdjust] = useState(true);
   const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
   const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
   const [selectedChatSkillNames, setSelectedChatSkillNames] = useState<string[]>([]);
@@ -1665,7 +1666,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState);
+      }, capabilityScope, runState, dynamicAdjust);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1911,6 +1912,7 @@ export function App() {
             loading={streaming}
             messageListRef={messageListRef}
             messages={messages}
+            dynamicAdjust={dynamicAdjust}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -1926,6 +1928,7 @@ export function App() {
               setReviewOpen(true);
             }}
             onOpenScope={() => setCapabilityScopeOpen(true)}
+            onDynamicAdjustChange={setDynamicAdjust}
             onReviewLevelChange={setReviewLevel}
             onRun={() => void runStream()}
             onStop={stopStream}
@@ -2561,6 +2564,7 @@ function ChatWorkspace({
   chatScopeLabel,
   currentDag,
   draft,
+  dynamicAdjust,
   error,
   loading,
   messageListRef,
@@ -2574,6 +2578,7 @@ function ChatWorkspace({
   validationPending,
   onArtifactSelect,
   onDraftChange,
+  onDynamicAdjustChange,
   onOpenDag,
   onOpenScope,
   onReviewLevelChange,
@@ -2588,6 +2593,7 @@ function ChatWorkspace({
   chatScopeLabel: string;
   currentDag: Dag;
   draft: string;
+  dynamicAdjust: boolean;
   error: string | null;
   loading: boolean;
   messageListRef: React.RefObject<HTMLDivElement | null>;
@@ -2601,6 +2607,7 @@ function ChatWorkspace({
   validationPending: boolean;
   onArtifactSelect: (id: string) => void;
   onDraftChange: (value: string) => void;
+  onDynamicAdjustChange: (value: boolean) => void;
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
   onOpenScope: () => void;
   onReviewLevelChange: (value: ReviewLevel) => void;
@@ -2689,6 +2696,16 @@ function ChatWorkspace({
               >
                 <span />
                 {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
+              </button>
+              <button
+                className={`validation-toggle dynamic-adjust-toggle ${dynamicAdjust ? 'active' : ''}`}
+                type="button"
+                onClick={() => onDynamicAdjustChange(!dynamicAdjust)}
+                title="控制动态 DAG 失败后是否允许自动调整"
+                aria-pressed={dynamicAdjust}
+              >
+                <span />
+                {dynamicAdjust ? '动态调整 开' : '动态调整 关'}
               </button>
               <button
                 className="secondary-button compact-button scope-button"

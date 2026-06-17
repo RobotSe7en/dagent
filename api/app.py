@@ -56,6 +56,7 @@ class MessageRequest(BaseModel):
     state: RunState | None = None
     target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
+    dynamic_adjust: bool = True
     capability_ids: list[str] | None = None
     skills: list[str] | None = None
 
@@ -649,6 +650,7 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
             capabilities=capability_ids,
             skills=skills,
             review=request.review_level,
+            dynamic_adjust=request.dynamic_adjust,
         )
     if request.target == "tool":
         return ToolAgent(
@@ -661,6 +663,7 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
         capabilities=capability_ids,
         skills=skills,
         review=request.review_level,
+        dynamic_adjust=request.dynamic_adjust,
     )
 
 

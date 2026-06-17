@@ -49,6 +49,7 @@ class RunState(BaseModel):
     user_request: str = ""
     review_level: ReviewLevelValue = "fast"
     runtime_mode: RuntimeModeValue = "auto"
+    dynamic_adjust: bool = True
     capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
     spec_id: str | None = None
     workspace_path: str | None = None

@@ -248,6 +248,7 @@ export interface ApiRunState {
   kind: 'tool' | 'dynamic_dag' | 'static_dag';
   status: string;
   internal_messages: Array<Record<string, unknown>>;
+  dynamic_adjust?: boolean;
   dag?: Dag | null;
   trace?: RunTrace | null;
   pending_review?: ReviewEventPayload | null;
@@ -298,6 +299,7 @@ export async function streamTask(
   handlers: StreamHandlers,
   capabilityScope?: ChatCapabilityScopePayload,
   state?: ApiRunState | null,
+  dynamicAdjust?: boolean,
 ): Promise<void> {
   const body: Record<string, unknown> = {
     messages: [{ role: 'user', content: message }],
@@ -309,6 +311,7 @@ export async function streamTask(
     body.skills = capabilityScope.skills;
   }
   if (state) body.state = state;
+  if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
