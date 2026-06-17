@@ -1717,6 +1717,12 @@ details[open] .timeline-chevron {
   color: #5b5bd6;
 }
 
+.orchestration-title-text {
+  color: #16181d;
+  font-size: 14px;
+  font-weight: 800;
+}
+
 .orchestration-name-input {
   min-width: 130px;
   max-width: min(280px, 28vw);
@@ -1769,6 +1775,320 @@ details[open] .timeline-chevron {
   background-color: #f6f7f9;
   background-image: radial-gradient(#d8dade 1px, transparent 1px);
   background-size: 20px 20px;
+}
+
+.dynamic-orchestration-workspace {
+  grid-template-columns: 320px minmax(0, 1fr);
+}
+
+.dynamic-orchestration-chat {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e7e8ec;
+  background: #fff;
+}
+
+.dynamic-chat-head {
+  min-height: 61px;
+  display: flex;
+  align-items: center;
+  padding: 13px 18px;
+  border-bottom: 1px solid #e7e8ec;
+}
+
+.dynamic-chat-head strong {
+  color: #16181d;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.dynamic-chat-feed {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 14px;
+  background: #f8f9fb;
+}
+
+.dynamic-chat-bubble {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #e7e8ec;
+  border-radius: 10px;
+  padding: 10px 11px;
+  background: #fff;
+}
+
+.dynamic-chat-bubble span {
+  color: #9aa0a8;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dynamic-chat-bubble p {
+  margin: 0;
+  color: #4a505b;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.dynamic-conversation-bubble.user {
+  border-color: rgba(91, 91, 214, 0.18);
+  background: #f7f7ff;
+}
+
+.dynamic-conversation-bubble.user span {
+  color: #5b5bd6;
+}
+
+.dynamic-conversation-bubble.assistant {
+  background: #fff;
+}
+
+.dynamic-event-bubble {
+  gap: 7px;
+}
+
+.dynamic-event-bubble strong {
+  color: #16181d;
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.dynamic-event-bubble p {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.dynamic-event-bubble.muted p {
+  color: #9aa0a8;
+}
+
+.dynamic-event-bubble.running {
+  border-color: rgba(91, 91, 214, 0.24);
+  background: #f7f7ff;
+}
+
+.dynamic-event-bubble.failed {
+  border-color: rgba(207, 61, 61, 0.24);
+  background: #fff8f8;
+}
+
+.dynamic-node-result-list {
+  display: grid;
+  gap: 10px;
+}
+
+.dynamic-node-result-card {
+  gap: 7px;
+}
+
+.dynamic-node-result-card summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.dynamic-node-result-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.dynamic-node-result-card[open] {
+  box-shadow: 0 8px 18px rgba(24, 28, 38, 0.06);
+}
+
+.dynamic-node-result-card[open] .dynamic-node-result-summary .timeline-chevron {
+  transform: rotate(90deg);
+}
+
+.dynamic-node-result-summary span,
+.dynamic-node-result-summary strong,
+.dynamic-node-result-summary em {
+  min-width: 0;
+  grid-column: 1;
+}
+
+.dynamic-node-result-summary .timeline-chevron {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  align-self: center;
+  color: #a2a8b2;
+  transition: transform 0.16s ease;
+}
+
+.dynamic-node-result-card strong {
+  color: #171a21;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.dynamic-node-result-card em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #8d94a0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dynamic-node-result-card.running {
+  border-color: rgba(91, 91, 214, 0.24);
+  background: #f7f7ff;
+}
+
+.dynamic-node-result-card.completed {
+  border-color: rgba(42, 161, 111, 0.22);
+  background: #f8fffb;
+}
+
+.dynamic-node-result-card.failed,
+.dynamic-node-result-card.rejected {
+  border-color: rgba(207, 61, 61, 0.24);
+  background: #fff8f8;
+}
+
+.dynamic-node-result-card.awaiting_review {
+  border-color: rgba(219, 145, 31, 0.28);
+  background: #fff9ee;
+}
+
+.dynamic-node-result-events {
+  display: grid;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.dynamic-node-result-event {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #eceef2;
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.dynamic-node-result-event span {
+  color: #a0a6af;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.dynamic-markdown {
+  color: #4a505b;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.dynamic-markdown p,
+.dynamic-markdown ul,
+.dynamic-markdown ol,
+.dynamic-markdown h3,
+.dynamic-markdown h4 {
+  margin-bottom: 8px;
+}
+
+.dynamic-event-bubble .dynamic-markdown {
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.dynamic-final-result {
+  border-color: rgba(42, 161, 111, 0.22);
+  background: #f8fffb;
+}
+
+.dynamic-final-result .dynamic-markdown {
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.dynamic-node-result-event .dynamic-markdown {
+  max-height: 118px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  scrollbar-width: thin;
+}
+
+.dynamic-chat-composer {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid #e7e8ec;
+}
+
+.dynamic-chat-composer textarea {
+  min-height: 108px;
+  resize: none;
+  border: 1px solid #e2e4ea;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+  color: #2b2f37;
+  font-size: 13px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.dynamic-chat-composer textarea:focus {
+  border-color: #5b5bd6;
+  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
+}
+
+.dynamic-chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dynamic-chat-actions .primary-button,
+.dynamic-chat-actions .secondary-button {
+  flex: 1;
+  min-width: 0;
+}
+
+.dynamic-orchestration-body {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dynamic-orchestration-body.with-inspector {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.dynamic-orchestration-canvas {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+
+.dynamic-orchestration-canvas .orchestration-flow {
+  min-height: 0;
+  height: 100%;
 }
 
 .orchestration-flow {

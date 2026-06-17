@@ -71,12 +71,13 @@ import {
   saveDag,
   setCapabilityEnabled,
   setValidationEnabled as apiSetValidation,
+  streamMessagesTask,
   streamTask,
   testCapability,
   uploadDagArtifact,
   updateMcpServer,
 } from './api';
-import type { ApiRunState } from './api';
+import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentProfile,
   BoundaryMode,
@@ -504,8 +505,11 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
 
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
+type OrchestrationMode = 'dynamic' | 'static';
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type TokenChannel = 'reasoning' | 'content';
+type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
+type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
 
 interface QueuedAssistantToken {
   channel: TokenChannel;
@@ -554,12 +558,20 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
         status,
       },
       type: 'designDag',
+      width: 192,
+      height: 64,
+      handles: [
+        { id: 'in', type: 'target' as const, position: Position.Left, x: -4, y: 28, width: 8, height: 8 },
+        { id: 'out', type: 'source' as const, position: Position.Right, x: 188, y: 28, width: 8, height: 8 },
+      ],
     };
   });
   const edges = dag.edges.map((edge) => ({
     id: `${edge.source}-${edge.target}`,
     source: edge.source,
+    sourceHandle: 'out',
     target: edge.target,
+    targetHandle: 'in',
     label: edge.reason,
     animated: dag.status === 'running',
     style: { stroke: '#94a3b8', strokeWidth: 1.5 },
@@ -603,7 +615,7 @@ function DesignDagNode({ data, selected }: any) {
       data-risk={nodeData.risk}
       data-status={nodeData.status}
     >
-      <Handle className="orchestration-handle" position={Position.Left} type="target" />
+      <Handle className="orchestration-handle" id="in" position={Position.Left} type="target" />
       <span className="orchestration-node-icon">
         <GitBranch size={15} />
       </span>
@@ -612,7 +624,7 @@ function DesignDagNode({ data, selected }: any) {
         <em title={nodeData.detail}>{nodeData.detail}</em>
       </span>
       {nodeData.reviewAttention ? <span className={`risk-chip risk-${nodeData.risk}`}>{nodeData.risk}</span> : null}
-      <Handle className="orchestration-handle" position={Position.Right} type="source" />
+      <Handle className="orchestration-handle" id="out" position={Position.Right} type="source" />
     </div>
   );
 }
@@ -646,6 +658,38 @@ function isDagConfirmable(dag: Dag): boolean {
   return !['completed', 'failed', 'aborted', 'running', 'awaiting_review', 'rejected'].includes(dag.status);
 }
 
+function dynamicDagForPrompt(dag: Dag) {
+  return {
+    dag_id: dag.dag_id,
+    task_id: dag.task_id,
+    version: dag.version,
+    status: dag.status,
+    nodes: (dag.nodes ?? []).map(normalizeNode),
+    edges: dag.edges ?? [],
+  };
+}
+
+function dynamicPromptWithDagContext(prompt: string, dag: Dag): string {
+  const trimmed = prompt.trim();
+  if (!dag.nodes.length) return trimmed;
+  return [
+    trimmed,
+    '',
+    '当前可编辑 DAG 快照如下。请基于这个 DAG 和上面的修改要求继续调整，不要忽略用户在画布中的手动编辑。',
+    '',
+    '```json',
+    JSON.stringify(dynamicDagForPrompt(dag), null, 2),
+    '```',
+  ].join('\n');
+}
+
+function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, dag: Dag): ChatStreamMessage[] {
+  return [
+    ...history.map((message) => ({ role: message.role, content: message.content })),
+    { role: 'user', content: dynamicPromptWithDagContext(prompt, dag) },
+  ];
+}
+
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
@@ -655,7 +699,6 @@ export function App() {
   const [draft, setDraft] = useState('');
   const [target, setTarget] = useState<ChatTarget>('auto');
   const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('careful');
-  const [dynamicAdjust, setDynamicAdjust] = useState(true);
   const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
   const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
   const [selectedChatSkillNames, setSelectedChatSkillNames] = useState<string[]>([]);
@@ -695,6 +738,23 @@ export function App() {
   const [editorRunning, setEditorRunning] = useState(false);
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [editorRunInputText, setEditorRunInputText] = useState('');
+  const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
+  const [dynamicPrompt, setDynamicPrompt] = useState('');
+  const [dynamicAdjust, setDynamicAdjust] = useState(true);
+  const [dynamicDag, setDynamicDag] = useState<Dag>(emptyDag);
+  const dynamicDagRef = useRef<Dag>(emptyDag);
+  const [dynamicLayoutPositions, setDynamicLayoutPositionsState] = useState<Record<string, XYPosition>>({});
+  const dynamicLayoutPositionsRef = useRef<Record<string, XYPosition>>({});
+  const [dynamicSelectedId, setDynamicSelectedId] = useState('');
+  const [dynamicRunState, setDynamicRunState] = useState<ApiRunState | null>(null);
+  const dynamicTimelineOrderRef = useRef(0);
+  const [dynamicTrace, setDynamicTrace] = useState<DynamicTraceLogEvent[]>([]);
+  const [dynamicMessages, setDynamicMessages] = useState<DynamicChatMessage[]>([]);
+  const [dynamicFinalAnswer, setDynamicFinalAnswer] = useState('');
+  const [dynamicFinalAnswerOrder, setDynamicFinalAnswerOrder] = useState(0);
+  const [dynamicMessage, setDynamicMessage] = useState('');
+  const [dynamicMessageOrder, setDynamicMessageOrder] = useState(0);
+  const [dynamicRunning, setDynamicRunning] = useState(false);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -714,6 +774,29 @@ export function App() {
     editorLayoutPositionsRef.current = positions;
     setEditorLayoutPositionsState(positions);
   }, []);
+  const setDynamicLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
+    dynamicLayoutPositionsRef.current = positions;
+    setDynamicLayoutPositionsState(positions);
+  }, []);
+  const nextDynamicTimelineOrder = useCallback(() => {
+    dynamicTimelineOrderRef.current += 1;
+    return dynamicTimelineOrderRef.current;
+  }, []);
+  const appendDynamicMessage = useCallback((role: DynamicChatMessage['role'], content: string) => {
+    setDynamicMessages((items) => [...items, { role, content, timelineOrder: nextDynamicTimelineOrder() }]);
+  }, [nextDynamicTimelineOrder]);
+  const setDynamicStatusMessage = useCallback((content: string) => {
+    setDynamicMessage(content);
+    setDynamicMessageOrder(content ? nextDynamicTimelineOrder() : 0);
+  }, [nextDynamicTimelineOrder]);
+  const clearDynamicFinalAnswer = useCallback(() => {
+    setDynamicFinalAnswer('');
+    setDynamicFinalAnswerOrder(0);
+  }, []);
+  const setOrderedDynamicFinalAnswer = useCallback((content: string) => {
+    setDynamicFinalAnswer(content);
+    setDynamicFinalAnswerOrder(content ? nextDynamicTimelineOrder() : 0);
+  }, [nextDynamicTimelineOrder]);
 
   const chatScopeLabel = chatCapabilityScopeLabel(
     chatScopeMode,
@@ -730,6 +813,7 @@ export function App() {
   const artifactDrawerOpen = artifactPanelOpen;
   const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? chatArtifacts[0] ?? null;
   const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
+  const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
     [selectedToolSkillName, skills],
@@ -1305,6 +1389,152 @@ export function App() {
     }));
   }, [editorDag]);
 
+  const syncDynamicDag = (nextDag: Dag) => {
+    const normalized = {
+      ...nextDag,
+      nodes: nextDag.nodes.map(normalizeNode),
+      edges: nextDag.edges ?? [],
+    };
+    dynamicDagRef.current = normalized;
+    setDynamicDag(normalized);
+    setDynamicLayoutPositions(pruneNodePositions(dynamicLayoutPositionsRef.current, normalized));
+    setDynamicSelectedId((current) => normalized.nodes.some((node) => node.id === current) ? current : '');
+  };
+
+  function preserveDynamicDagEdges(nextDag: Dag): Dag {
+    const nextEdges = nextDag.edges ?? [];
+    if (nextEdges.length || !dynamicDagRef.current.edges.length) return nextDag;
+    const nodeIds = new Set(nextDag.nodes.map((node) => node.id));
+    const preservedEdges = dynamicDagRef.current.edges.filter(
+      (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+    );
+    return preservedEdges.length ? { ...nextDag, edges: preservedEdges } : nextDag;
+  }
+
+  const updateDynamicDag = (updater: (current: Dag) => Dag) => {
+    setDynamicDag((current) => {
+      const nextDag = updater(current);
+      const normalized = {
+        ...nextDag,
+        nodes: nextDag.nodes.map(normalizeNode),
+        edges: nextDag.edges ?? [],
+      };
+      dynamicDagRef.current = normalized;
+      return normalized;
+    });
+  };
+
+  const onDynamicNodesChange = useCallback((changes: NodeChange[]) => {
+    const next = applyNodeChanges(changes, dynamicGraph.nodes);
+    setDynamicLayoutPositions(nodePositionsFromNodes(next));
+  }, [dynamicGraph.nodes, setDynamicLayoutPositions]);
+
+  const onDynamicEdgesChange = useCallback((changes: EdgeChange[]) => {
+    const next = applyEdgeChanges(changes, dynamicGraph.edges);
+    const nextDagEdges = next
+      .filter((edge) => edge.source && edge.target)
+      .map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        reason: 'User dependency.',
+      }));
+    updateDynamicDag((current) => ({ ...current, status: 'draft', edges: nextDagEdges }));
+  }, [dynamicGraph.edges]);
+
+  const onDynamicConnect = useCallback((connection: Connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    const nextEdge = {
+      source: connection.source,
+      target: connection.target,
+      reason: 'User dependency.',
+    };
+    updateDynamicDag((current) => ({
+      ...current,
+      status: 'draft',
+      edges: [
+        ...current.edges.filter((edge) => !(edge.source === nextEdge.source && edge.target === nextEdge.target)),
+        nextEdge,
+      ],
+    }));
+  }, []);
+
+  const onAddDynamicNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
+    const selectedCapability = capability ?? capabilities.find((item) => item.enabled);
+    const id = uniqueNodeId(dynamicDag);
+    const nodePosition = position ?? nextHorizontalNodePosition(dynamicGraph.nodes);
+    setDynamicLayoutPositions({
+      ...dynamicLayoutPositionsRef.current,
+      [id]: nodePosition,
+    });
+    updateDynamicDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: [
+        ...current.nodes,
+        normalizeNode({
+          id,
+          payload: {
+            type: 'capability',
+            invocation: {
+              capability_id: selectedCapability?.id ?? '',
+              kind: selectedCapability?.kind ?? 'tool',
+              arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
+              boundary: {
+                mode: 'read_only',
+                allowed_paths: ['.'],
+                allowed_commands: [],
+              },
+              risk: capabilityRisk(selectedCapability),
+            },
+          },
+          status: 'planned',
+        }),
+      ],
+    }));
+    setDynamicSelectedId('');
+  };
+
+  const onPatchDynamicNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
+    updateDynamicDag((current) => {
+      const updatedNodes = current.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const merged = normalizeNode({ ...node, ...patch });
+        if (patch.id && patch.id !== nodeId) {
+          setDynamicSelectedId(patch.id);
+          const positions = { ...dynamicLayoutPositionsRef.current };
+          positions[patch.id] = positions[nodeId] ?? dynamicGraph.nodes.find((item) => item.id === nodeId)?.position ?? nextHorizontalNodePosition(dynamicGraph.nodes);
+          delete positions[nodeId];
+          setDynamicLayoutPositions(positions);
+        }
+        return merged;
+      });
+      const edgesForRename = patch.id && patch.id !== nodeId
+        ? current.edges.map((edge) => ({
+            ...edge,
+            source: edge.source === nodeId ? patch.id as string : edge.source,
+            target: edge.target === nodeId ? patch.id as string : edge.target,
+          }))
+        : current.edges;
+      return {
+        ...current,
+        status: 'draft',
+        nodes: updatedNodes,
+        edges: nextEdges ?? edgesForRename,
+      };
+    });
+  };
+
+  const onDeleteDynamicNode = (nodeId: string = dynamicSelectedId) => {
+    if (!nodeId) return;
+    updateDynamicDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: current.nodes.filter((node) => node.id !== nodeId),
+      edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+    }));
+    setDynamicSelectedId('');
+  };
+
   const updateDag = (updater: (current: Dag) => Dag) => {
     syncDag(updater(dag));
   };
@@ -1593,6 +1823,86 @@ export function App() {
     }
   };
 
+  function dynamicReviewLevel(): ReviewLevel {
+    return 'careful';
+  }
+
+  const dynamicHandlers = () => ({
+    onDag: (nextDag: Dag) => {
+      syncDynamicDag(preserveDynamicDagEdges(nextDag));
+      setDynamicStatusMessage(`DAG ${nextDag.status} · ${nextDag.nodes.length} 节点`);
+    },
+    onTrace: (event: TraceLogEvent) => {
+      setDynamicTrace((items) => [...items, { ...event, timelineOrder: nextDynamicTimelineOrder() }]);
+    },
+    onReview: (review: ReviewEventPayload) => {
+      setDynamicStatusMessage(review.message);
+    },
+    onDone: (payload: Parameters<NonNullable<Parameters<typeof streamTask>[3]['onDone']>>[0]) => {
+      const state = payload.result.state ?? null;
+      setDynamicRunState(state);
+      if (state?.dag) syncDynamicDag(preserveDynamicDagEdges(state.dag));
+      if (state?.pending_review) {
+        clearDynamicFinalAnswer();
+        const content = 'DAG 已生成，可编辑节点后点击「运行」。';
+        appendDynamicMessage('assistant', content);
+        setDynamicStatusMessage('');
+      } else {
+        const answer = payload.result.output_text ?? '';
+        setOrderedDynamicFinalAnswer(answer);
+        const status = state?.status ?? 'completed';
+        const label = dagStatusLabels[status as Dag['status']] ?? status;
+        if (!answer) {
+          appendDynamicMessage('assistant', `运行${label}。`);
+        }
+        setDynamicStatusMessage('');
+      }
+    },
+    onError: (message: string) => {
+      appendDynamicMessage('assistant', message);
+      setDynamicStatusMessage('');
+    },
+  });
+
+  const generateDynamicDag = async () => {
+    if (!dynamicPrompt.trim() || dynamicRunning) return;
+    const prompt = dynamicPrompt.trim();
+    const dynamicRequestMessages = buildDynamicDagMessages(dynamicMessages, prompt, dynamicDag);
+    appendDynamicMessage('user', prompt);
+    setDynamicRunning(true);
+    setDynamicRunState(null);
+    setDynamicTrace([]);
+    clearDynamicFinalAnswer();
+    setDynamicStatusMessage(dynamicDag.nodes.length ? '正在根据对话和当前 DAG 重新生成...' : '正在生成 DAG...');
+    try {
+      await streamMessagesTask(dynamicRequestMessages, 'dag', dynamicReviewLevel(), dynamicHandlers(), undefined, dynamicAdjust);
+      setDynamicPrompt('');
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      appendDynamicMessage('assistant', message);
+      setDynamicStatusMessage('');
+    } finally {
+      setDynamicRunning(false);
+    }
+  };
+
+  const runDynamicDag = async () => {
+    const reviewId = dynamicRunState?.pending_review?.review_id;
+    if (!reviewId || dynamicRunning || !dynamicDag.nodes.length) return;
+    const dag = dynamicDag;
+    setDynamicRunning(true);
+    setDynamicTrace([]);
+    clearDynamicFinalAnswer();
+    setDynamicStatusMessage(dynamicAdjust ? '正在运行，后续重规划会再次进入审核...' : '正在按当前 DAG 运行...');
+    try {
+      await resumeDagReview(reviewId, dag, dynamicReviewLevel(), true, dynamicHandlers(), dynamicRunState);
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setDynamicRunning(false);
+    }
+  };
+
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
@@ -1666,7 +1976,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState, dynamicAdjust);
+      }, capabilityScope, runState);
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
@@ -1867,6 +2177,7 @@ export function App() {
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
         profiles={profiles}
+        orchestrationMode={orchestrationMode}
         savedDags={savedDags}
         selectedDagId={editorUserDag.id}
         selectedProfileId={selectedProfileId}
@@ -1893,6 +2204,7 @@ export function App() {
         onSelectToolMcp={setSelectedToolMcpName}
         onSelectToolSkill={selectToolSkill}
         onSelectWorkspace={setActiveWorkspace}
+        onOrchestrationModeChange={setOrchestrationMode}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
         onToolsQueryChange={setToolsDirectoryQuery}
@@ -1912,7 +2224,6 @@ export function App() {
             loading={streaming}
             messageListRef={messageListRef}
             messages={messages}
-            dynamicAdjust={dynamicAdjust}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -1928,7 +2239,6 @@ export function App() {
               setReviewOpen(true);
             }}
             onOpenScope={() => setCapabilityScopeOpen(true)}
-            onDynamicAdjustChange={setDynamicAdjust}
             onReviewLevelChange={setReviewLevel}
             onRun={() => void runStream()}
             onStop={stopStream}
@@ -1936,7 +2246,36 @@ export function App() {
             onToggleArtifacts={() => setArtifactPanelOpen((value) => !value)}
             onToggleValidation={() => void toggleValidation()}
           />
-        ) : activeWorkspace === 'orchestration' ? (
+        ) : activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
+          <DynamicOrchestrationWorkspace
+            capabilities={capabilities}
+            dag={dynamicDag}
+            finalAnswer={dynamicFinalAnswer}
+            finalAnswerOrder={dynamicFinalAnswerOrder}
+            nodes={dynamicGraph.nodes}
+            edges={dynamicGraph.edges}
+            selectedId={dynamicSelectedId}
+            prompt={dynamicPrompt}
+            dynamicAdjust={dynamicAdjust}
+            canRunDag={Boolean(dynamicRunState?.pending_review?.review_id && dynamicDag.nodes.length)}
+            running={dynamicRunning}
+            message={dynamicMessage}
+            messageOrder={dynamicMessageOrder}
+            messages={dynamicMessages}
+            trace={dynamicTrace}
+            onAddNode={onAddDynamicNode}
+            onPatchNode={onPatchDynamicNode}
+            onDeleteNode={onDeleteDynamicNode}
+            onNodesChange={onDynamicNodesChange}
+            onEdgesChange={onDynamicEdgesChange}
+            onConnect={onDynamicConnect}
+            onSelectNode={setDynamicSelectedId}
+            onPromptChange={setDynamicPrompt}
+            onDynamicAdjustChange={setDynamicAdjust}
+            onGenerate={() => void generateDynamicDag()}
+            onRun={() => void runDynamicDag()}
+          />
+        ) : activeWorkspace === 'orchestration' && orchestrationMode === 'static' ? (
           <OrchestrationWorkspace
             capabilities={capabilities}
             spec={editorUserDag}
@@ -2063,6 +2402,7 @@ function WorkspaceSidebar({
   history,
   mcpCount,
   mcpServers,
+  orchestrationMode,
   profiles,
   savedDags,
   selectedDagId,
@@ -2090,6 +2430,7 @@ function WorkspaceSidebar({
   onSelectToolMcp,
   onSelectToolSkill,
   onSelectWorkspace,
+  onOrchestrationModeChange,
   onToolsSubChange,
   onToggleCollapsed,
   onToolsQueryChange,
@@ -2104,6 +2445,7 @@ function WorkspaceSidebar({
   history: Array<{ id: string; title: string; time: string }>;
   mcpCount: number;
   mcpServers: MCPServer[];
+  orchestrationMode: OrchestrationMode;
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
@@ -2131,12 +2473,17 @@ function WorkspaceSidebar({
   onSelectToolMcp: (name: string) => void;
   onSelectToolSkill: (name: string) => void;
   onSelectWorkspace: (workspace: WorkspaceKey) => void;
+  onOrchestrationModeChange: (mode: OrchestrationMode) => void;
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
   onToolsQueryChange: (query: string) => void;
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
+  const orchestrationSubnav = [
+    { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
+    { key: 'static' as const, label: '静态编排', icon: <GitBranch size={16} />, count: savedDags.length },
+  ];
   const toolSubnav = [
     { key: 'tools' as const, label: '工具', icon: <Wrench size={16} />, count: capabilityCount },
     { key: 'skills' as const, label: '技能', icon: <FileText size={16} />, count: skillCount },
@@ -2212,6 +2559,44 @@ function WorkspaceSidebar({
       <div className="sidebar-label">工作区</div>
       <nav className="sidebar-nav" aria-label="Workspace navigation">
         {workspaceItems.map((item) => {
+          if (item.key === 'orchestration') {
+            return (
+              <div className="sidebar-capability-nav" key={item.key}>
+                <button
+                  className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
+                  onClick={() => onSelectWorkspace(item.key)}
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <span className="sidebar-capability-chevron" data-open={activeWorkspace === 'orchestration'}>
+                    <ChevronRight size={14} />
+                  </span>
+                </button>
+                {activeWorkspace === 'orchestration' ? (
+                  <div className="sidebar-subnav nested">
+                    {orchestrationSubnav.map((subitem) => (
+                      <button
+                        className={orchestrationMode === subitem.key ? 'active' : ''}
+                        key={subitem.key}
+                        onClick={() => {
+                          onSelectWorkspace('orchestration');
+                          onOrchestrationModeChange(subitem.key);
+                        }}
+                        title={subitem.label}
+                        type="button"
+                      >
+                        {subitem.icon}
+                        <span>{subitem.label}</span>
+                        <em>{subitem.count}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
           if (item.key === 'tools') {
             return (
               <div className="sidebar-capability-nav" key={item.key}>
@@ -2287,7 +2672,7 @@ function WorkspaceSidebar({
         </section>
       ) : null}
 
-      {activeWorkspace === 'orchestration' ? (
+      {activeWorkspace === 'orchestration' && orchestrationMode === 'static' ? (
         <section className="sidebar-context-section">
           <div className="sidebar-history-head">
             <span>编排列表</span>
@@ -2318,7 +2703,7 @@ function WorkspaceSidebar({
         </section>
       ) : null}
 
-      {activeWorkspace === 'orchestration' ? (
+      {activeWorkspace === 'orchestration' && orchestrationMode === 'static' ? (
         <section className="sidebar-artifact-section">
           <div className="sidebar-artifact-head">
             <span>Artifacts</span>
@@ -2564,7 +2949,6 @@ function ChatWorkspace({
   chatScopeLabel,
   currentDag,
   draft,
-  dynamicAdjust,
   error,
   loading,
   messageListRef,
@@ -2578,7 +2962,6 @@ function ChatWorkspace({
   validationPending,
   onArtifactSelect,
   onDraftChange,
-  onDynamicAdjustChange,
   onOpenDag,
   onOpenScope,
   onReviewLevelChange,
@@ -2593,7 +2976,6 @@ function ChatWorkspace({
   chatScopeLabel: string;
   currentDag: Dag;
   draft: string;
-  dynamicAdjust: boolean;
   error: string | null;
   loading: boolean;
   messageListRef: React.RefObject<HTMLDivElement | null>;
@@ -2607,7 +2989,6 @@ function ChatWorkspace({
   validationPending: boolean;
   onArtifactSelect: (id: string) => void;
   onDraftChange: (value: string) => void;
-  onDynamicAdjustChange: (value: boolean) => void;
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
   onOpenScope: () => void;
   onReviewLevelChange: (value: ReviewLevel) => void;
@@ -2696,16 +3077,6 @@ function ChatWorkspace({
               >
                 <span />
                 {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
-              </button>
-              <button
-                className={`validation-toggle dynamic-adjust-toggle ${dynamicAdjust ? 'active' : ''}`}
-                type="button"
-                onClick={() => onDynamicAdjustChange(!dynamicAdjust)}
-                title="控制动态 DAG 失败后是否允许自动调整"
-                aria-pressed={dynamicAdjust}
-              >
-                <span />
-                {dynamicAdjust ? '动态调整 开' : '动态调整 关'}
               </button>
               <button
                 className="secondary-button compact-button scope-button"
@@ -3476,6 +3847,528 @@ function ChatCapabilityScopeDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+interface DynamicNodeExecutionRow {
+  nodeId: string;
+  title: string;
+  detail: string;
+  status: TraceLogEvent['status'];
+  events: DynamicTraceLogEvent[];
+  timelineOrder: number;
+}
+
+type DynamicTimelineItem =
+  | { type: 'message'; id: string; order: number; message: DynamicChatMessage }
+  | { type: 'status'; id: string; order: number; content: string }
+  | { type: 'nodes'; id: string; order: number; rows: DynamicNodeExecutionRow[] }
+  | { type: 'empty'; id: string; order: number; content: string }
+  | { type: 'final'; id: string; order: number; content: string };
+
+function executionOrderedNodes(dag: Dag): DagNode[] {
+  const nodes = (dag.nodes ?? []).map(normalizeNode);
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+
+  for (const edge of dag.edges ?? []) {
+    if (!incoming.has(edge.source) || !incoming.has(edge.target)) continue;
+    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1);
+    outgoing.get(edge.source)?.push(edge.target);
+  }
+
+  const ready = nodes
+    .filter((node) => (incoming.get(node.id) ?? 0) === 0)
+    .sort((a, b) => (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0));
+  const ordered: DagNode[] = [];
+
+  while (ready.length) {
+    const node = ready.shift();
+    if (!node) break;
+    ordered.push(node);
+    for (const targetId of outgoing.get(node.id) ?? []) {
+      const nextIncoming = (incoming.get(targetId) ?? 0) - 1;
+      incoming.set(targetId, nextIncoming);
+      if (nextIncoming === 0) {
+        const target = nodes.find((item) => item.id === targetId);
+        if (target) {
+          ready.push(target);
+          ready.sort((a, b) => (indexById.get(a.id) ?? 0) - (indexById.get(b.id) ?? 0));
+        }
+      }
+    }
+  }
+
+  return ordered.length === nodes.length ? ordered : nodes;
+}
+
+function dynamicNodeExecutionRows(dag: Dag, trace: DynamicTraceLogEvent[]): DynamicNodeExecutionRow[] {
+  const eventsByNode = new Map<string, DynamicTraceLogEvent[]>();
+  for (const event of trace) {
+    if (!event.node_id) continue;
+    const events = eventsByNode.get(event.node_id) ?? [];
+    events.push(event);
+    eventsByNode.set(event.node_id, events);
+  }
+
+  const rows: DynamicNodeExecutionRow[] = [];
+  const rendered = new Set<string>();
+  for (const node of executionOrderedNodes(dag)) {
+    const events = eventsByNode.get(node.id) ?? [];
+    if (!events.length) continue;
+    const latest = events[events.length - 1];
+    rows.push({
+      nodeId: node.id,
+      title: node.title || node.id,
+      detail: nodeDisplayDetail(node),
+      status: latest.status,
+      events,
+      timelineOrder: Math.min(...events.map((event) => event.timelineOrder)),
+    });
+    rendered.add(node.id);
+  }
+
+  for (const [nodeId, events] of eventsByNode) {
+    if (rendered.has(nodeId) || !events.length) continue;
+    const latest = events[events.length - 1];
+    rows.push({
+      nodeId,
+      title: nodeId,
+      detail: latest.label,
+      status: latest.status,
+      events,
+      timelineOrder: Math.min(...events.map((event) => event.timelineOrder)),
+    });
+  }
+  return rows;
+}
+
+function dynamicNodeStatusLabel(status: TraceLogEvent['status']): string {
+  if (status === 'running') return '执行中';
+  if (status === 'completed') return '已完成';
+  if (status === 'failed') return '失败';
+  if (status === 'awaiting_review') return '待审核';
+  if (status === 'rejected') return '已拒绝';
+  return '待执行';
+}
+
+function dynamicTimelineItems(
+  messages: DynamicChatMessage[],
+  statusMessage: string,
+  statusMessageOrder: number,
+  rows: DynamicNodeExecutionRow[],
+  finalAnswer: string,
+  finalAnswerOrder: number,
+  running: boolean,
+): DynamicTimelineItem[] {
+  const items: DynamicTimelineItem[] = messages.map((message, index) => ({
+    type: 'message',
+    id: `message-${index}`,
+    order: message.timelineOrder,
+    message,
+  }));
+
+  if (statusMessage) {
+    items.push({ type: 'status', id: 'status', order: statusMessageOrder, content: statusMessage });
+  }
+  if (rows.length) {
+    items.push({ type: 'nodes', id: 'nodes', order: Math.min(...rows.map((row) => row.timelineOrder)), rows });
+  } else if (!finalAnswer) {
+    items.push({
+      type: 'empty',
+      id: 'empty',
+      order: statusMessageOrder || Number.MAX_SAFE_INTEGER,
+      content: running ? '等待节点执行事件...' : '暂无节点执行结果',
+    });
+  }
+  if (finalAnswer) {
+    items.push({ type: 'final', id: 'final', order: finalAnswerOrder, content: finalAnswer });
+  }
+
+  return items.sort((left, right) => left.order - right.order);
+}
+
+function DynamicMarkdown({ content, className = '' }: { content: string; className?: string }) {
+  return (
+    <div className={`dynamic-markdown markdown-body ${className}`.trim()}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '...'}</ReactMarkdown>
+    </div>
+  );
+}
+
+function DynamicChatEvents({
+  dag,
+  finalAnswer,
+  finalAnswerOrder,
+  message,
+  messageOrder,
+  messages,
+  running,
+  trace,
+}: {
+  dag: Dag;
+  finalAnswer: string;
+  finalAnswerOrder: number;
+  message: string;
+  messageOrder: number;
+  messages: DynamicChatMessage[];
+  running: boolean;
+  trace: DynamicTraceLogEvent[];
+}) {
+  const rows = dynamicNodeExecutionRows(dag, trace);
+  const finalText = finalAnswer.trim();
+  const timelineItems = dynamicTimelineItems(messages, message, messageOrder, rows, finalText, finalAnswerOrder, running);
+
+  return (
+    <>
+      {timelineItems.map((item) => {
+        if (item.type === 'message') {
+          return (
+            <div className={`dynamic-chat-bubble ${item.message.role} dynamic-conversation-bubble`} key={item.id}>
+              <span>{item.message.role === 'user' ? '你' : '助手'}</span>
+              <DynamicMarkdown content={item.message.content} />
+            </div>
+          );
+        }
+        if (item.type === 'status') {
+          return (
+            <div className="dynamic-chat-bubble assistant dynamic-event-bubble" key={item.id}>
+              <span>状态</span>
+              <DynamicMarkdown content={item.content} />
+            </div>
+          );
+        }
+        if (item.type === 'nodes') {
+          return (
+            <div className="dynamic-node-result-list" key={item.id}>
+              {item.rows.map((row, index) => (
+                <details className={`dynamic-chat-bubble assistant dynamic-node-result-card ${row.status}`} key={row.nodeId}>
+                  <summary className="dynamic-node-result-summary">
+                    <span>{String(index + 1).padStart(2, '0')} · {dynamicNodeStatusLabel(row.status)}</span>
+                    <strong title={row.nodeId}>{row.title}</strong>
+                    <em title={row.detail}>{row.detail}</em>
+                    <ChevronRight className="timeline-chevron" size={15} />
+                  </summary>
+                  {row.events.length ? (
+                    <div className="dynamic-node-result-events">
+                      {row.events.slice(-4).map((event) => (
+                        <div className={`dynamic-node-result-event ${event.status}`} key={event.id}>
+                          <span>{event.timestamp} · {event.type}</span>
+                          <DynamicMarkdown content={event.detail || event.label} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </details>
+              ))}
+            </div>
+          );
+        }
+        if (item.type === 'empty') {
+          return (
+            <div className="dynamic-chat-bubble assistant dynamic-event-bubble muted" key={item.id}>
+              <span>事件</span>
+              <p>{item.content}</p>
+            </div>
+          );
+        }
+        return (
+          <div className="dynamic-chat-bubble assistant dynamic-final-result" key={item.id}>
+            <span>最终结果</span>
+            <DynamicMarkdown content={item.content} />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function DynamicOrchestrationWorkspace({
+  capabilities,
+  dag,
+  finalAnswer,
+  finalAnswerOrder,
+  nodes,
+  edges,
+  selectedId,
+  prompt,
+  dynamicAdjust,
+  canRunDag,
+  running,
+  message,
+  messageOrder,
+  messages,
+  trace,
+  onAddNode,
+  onPatchNode,
+  onDeleteNode,
+  onNodesChange,
+  onEdgesChange,
+  onConnect,
+  onSelectNode,
+  onPromptChange,
+  onDynamicAdjustChange,
+  onGenerate,
+  onRun,
+}: {
+  capabilities: CapabilityDefinition[];
+  dag: Dag;
+  finalAnswer: string;
+  finalAnswerOrder: number;
+  nodes: Node[];
+  edges: Edge[];
+  selectedId: string;
+  prompt: string;
+  dynamicAdjust: boolean;
+  canRunDag: boolean;
+  running: boolean;
+  message: string;
+  messageOrder: number;
+  messages: DynamicChatMessage[];
+  trace: DynamicTraceLogEvent[];
+  onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
+  onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onDeleteNode: (nodeId?: string) => void;
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  onConnect: (connection: Connection) => void;
+  onSelectNode: (id: string) => void;
+  onPromptChange: (value: string) => void;
+  onDynamicAdjustChange: (value: boolean) => void;
+  onGenerate: () => void;
+  onRun: () => void;
+}) {
+  const badgeStatus: Dag['status'] = running ? 'running' : dag.status;
+  const canGenerate = prompt.trim().length > 0 && !running;
+  const canRun = canRunDag && !running;
+  const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedNormalized = selectedNode ? normalizeNode(selectedNode) : null;
+  const selectedInvocation = selectedNormalized && isCapabilityNode(selectedNormalized)
+    ? selectedNormalized.payload.invocation
+    : null;
+  const selectedCapability = selectedInvocation
+    ? capabilities.find((capability) => capability.id === selectedInvocation.capability_id)
+    : null;
+  const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
+  const selectableCapabilities = selectedCapability && !enabledCapabilities.some((capability) => capability.id === selectedCapability.id)
+    ? [selectedCapability, ...enabledCapabilities]
+    : enabledCapabilities;
+  const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
+    if (!selectedNode || !selectedInvocation) return;
+    onPatchNode(selectedNode.id, {
+      payload: {
+        type: 'capability',
+        invocation: { ...selectedInvocation, ...patch },
+      },
+    });
+  };
+
+  return (
+    <section className="design-orchestration-workspace dynamic-orchestration-workspace">
+      <aside className="dynamic-orchestration-chat">
+        <div className="dynamic-chat-head">
+          <strong>动态编排</strong>
+        </div>
+        <div className="dynamic-chat-feed">
+          <div className="dynamic-chat-bubble assistant">
+            <span>系统</span>
+            <DynamicMarkdown content={dynamicAdjust ? '生成 DAG 后可根据反馈继续调整；运行中重规划会再次审核。' : '生成 DAG 后按固定图执行，不自动重规划。'} />
+          </div>
+          <DynamicChatEvents
+            dag={dag}
+            finalAnswer={finalAnswer}
+            finalAnswerOrder={finalAnswerOrder}
+            message={message}
+            messageOrder={messageOrder}
+            messages={messages}
+            running={running}
+            trace={trace}
+          />
+        </div>
+        <div className="dynamic-chat-composer">
+          <textarea
+            value={prompt}
+            onChange={(event) => onPromptChange(event.target.value)}
+            placeholder={dag.nodes.length ? '输入新的要求来修改当前 DAG...' : '描述任务目标，或粘贴 SOP 来生成 DAG...'}
+            spellCheck={false}
+          />
+          <div className="dynamic-chat-actions">
+            <button
+              className="secondary-button compact-button"
+              disabled={!canGenerate}
+              onClick={onGenerate}
+              type="button"
+            >
+              {running ? <Loader size={14} className="spin" /> : <GitBranch size={14} />}
+              生成 DAG
+            </button>
+            <button
+              className="primary-button compact-button"
+              disabled={!canRun}
+              onClick={onRun}
+              type="button"
+            >
+              <Play size={14} />
+              运行
+            </button>
+          </div>
+        </div>
+      </aside>
+      <div className="orchestration-main">
+        <div className="orchestration-toolbar">
+          <Play size={17} />
+          <strong className="orchestration-title-text">动态编排</strong>
+          <span className="orchestration-version">目标 / SOP → DAG</span>
+          <StatusBadge status={badgeStatus} />
+          <div className="orchestration-actions">
+            <button
+              className={`validation-toggle dynamic-adjust-toggle ${dynamicAdjust ? 'active' : ''}`}
+              type="button"
+              onClick={() => onDynamicAdjustChange(!dynamicAdjust)}
+              title="控制生成初始 DAG 后是否允许根据执行结果继续调整"
+              aria-pressed={dynamicAdjust}
+            >
+              <span />
+              {dynamicAdjust ? '动态调整 开' : '动态调整 关'}
+            </button>
+            <button className="secondary-button compact-button" onClick={() => onAddNode()} type="button">
+              <Plus size={14} />
+              添加节点
+            </button>
+          </div>
+        </div>
+
+        <div className={`dynamic-orchestration-body ${selectedNormalized ? 'with-inspector' : ''}`}>
+          <div className="orchestration-canvas dynamic-orchestration-canvas">
+            <ReactFlow
+              className="orchestration-flow"
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={designNodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onNodeClick={(_, node) => onSelectNode(node.id)}
+              onPaneClick={() => onSelectNode('')}
+              nodesDraggable
+              nodesConnectable
+              elementsSelectable
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+              fitView={false}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="#d8dade" gap={20} />
+            </ReactFlow>
+            {!nodes.length ? (
+              <button className="orchestration-empty-canvas dynamic-orchestration-empty" onClick={() => onAddNode()} type="button">
+                <Plus size={15} />
+                添加第一个节点
+              </button>
+            ) : null}
+          </div>
+          {selectedNormalized ? (
+            <aside className="node-inspector dynamic-node-inspector" aria-label="节点检查器">
+              <div className="node-inspector-body">
+                <div className="node-inspector-title">
+                  <span>节点检查器</span>
+                  <strong>{selectedNormalized.title || selectedNormalized.id}</strong>
+                </div>
+                <div className="inspector-field">
+                  <label>节点 ID</label>
+                  <input
+                    value={selectedNormalized.id}
+                    onChange={(event) => onPatchNode(selectedNormalized.id, { id: event.target.value })}
+                  />
+                </div>
+                <div className="inspector-field">
+                  <label>标题</label>
+                  <input
+                    value={selectedNormalized.title ?? ''}
+                    onChange={(event) => onPatchNode(selectedNormalized.id, { title: event.target.value })}
+                  />
+                </div>
+                {selectedInvocation ? (
+                  <>
+                    <div className="inspector-field">
+                      <label>能力</label>
+                      <select
+                        value={selectedInvocation.capability_id}
+                        onChange={(event) => {
+                          const capability = capabilities.find((item) => item.id === event.target.value);
+                          patchSelectedInvocation({
+                            capability_id: event.target.value,
+                            kind: capability?.kind ?? selectedInvocation.kind,
+                            arguments: resetSchemaArguments(
+                              selectedInvocation.arguments ?? {},
+                              capability?.parameters,
+                              selectedCapability?.parameters,
+                            ),
+                            risk: capabilityRisk(capability),
+                          });
+                        }}
+                      >
+                        <option value="">选择能力...</option>
+                        {selectableCapabilities.map((capability) => (
+                          <option key={capability.id} value={capability.id}>
+                            {capability.id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="inspector-split">
+                      <div className="inspector-field">
+                        <label>类型</label>
+                        <select
+                          value={selectedInvocation.kind ?? 'tool'}
+                          onChange={(event) => patchSelectedInvocation({ kind: event.target.value as CapabilityKind })}
+                        >
+                          {capabilityKinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                        </select>
+                      </div>
+                      <div className="inspector-field">
+                        <label>风险</label>
+                        <select
+                          value={selectedInvocation.risk ?? 'low'}
+                          onChange={(event) => patchSelectedInvocation({ risk: event.target.value as RiskLevel })}
+                        >
+                          {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="inspector-field">
+                      <label>边界</label>
+                      <select
+                        value={selectedInvocation.boundary?.mode ?? 'read_only'}
+                        onChange={(event) => patchSelectedInvocation({
+                          boundary: {
+                            ...(selectedInvocation.boundary ?? { allowed_paths: ['.'], allowed_commands: [] }),
+                            mode: event.target.value as BoundaryMode,
+                          },
+                        })}
+                      >
+                        {boundaryModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                      </select>
+                    </div>
+                    <InspectorArgumentEditor
+                      value={selectedInvocation.arguments ?? {}}
+                      parameters={selectedCapability?.parameters}
+                      onChange={(argumentsValue) => patchSelectedInvocation({ arguments: argumentsValue })}
+                    />
+                  </>
+                ) : (
+                  <div className="empty-state compact">入口节点无需配置能力。</div>
+                )}
+                <button className="danger-line-button" onClick={() => onDeleteNode(selectedNormalized.id)} type="button">
+                  <Trash2 size={14} />
+                  删除节点
+                </button>
+              </div>
+            </aside>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 

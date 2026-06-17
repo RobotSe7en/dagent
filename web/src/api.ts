@@ -292,6 +292,41 @@ export interface ChatCapabilityScopePayload {
   skills: string[];
 }
 
+export interface ChatStreamMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+export async function streamMessagesTask(
+  messages: ChatStreamMessage[],
+  target: 'auto' | 'tool' | 'dag',
+  reviewLevel: ReviewLevel,
+  handlers: StreamHandlers,
+  capabilityScope?: ChatCapabilityScopePayload,
+  dynamicAdjust?: boolean,
+): Promise<void> {
+  const body: Record<string, unknown> = {
+    messages,
+    target,
+    review_level: reviewLevel,
+  };
+  if (capabilityScope) {
+    body.capability_ids = capabilityScope.capabilityIds;
+    body.skills = capabilityScope.skills;
+  }
+  if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
+  const response = await fetch(`${API_BASE}/messages/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage(response));
+  }
+
+  await readStream(response, handlers);
+}
+
 export async function streamTask(
   message: string,
   target: 'auto' | 'tool' | 'dag',
