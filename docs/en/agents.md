@@ -69,6 +69,7 @@ agent = dagent.AutoAgent(
     max_steps=8,
     max_cycles=6,
     review="fast",
+    dynamic_adjust=True,
 )
 
 messages = [{"role": "user", "content": "Answer directly or plan if orchestration helps."}]
@@ -94,6 +95,7 @@ agent = dagent.DagAgent(
     skills=["research/briefing"],
     max_cycles=6,
     review="careful",
+    dynamic_adjust=True,
 )
 
 result = await runner.run(
@@ -104,6 +106,11 @@ result = await runner.run(
 if result.requires_review and result.review is not None:
     result = await runner.resume(result.review.approve())
 ```
+
+Set `dynamic_adjust=False` when you want the planner to generate the initial DAG
+but keep that DAG fixed during execution. Review behavior is still controlled by
+`review`; disabling dynamic adjustment only prevents later replanning after
+execution observations or failures.
 
 Run the offline dynamic DAG example:
 
@@ -122,6 +129,7 @@ uv run python -m examples.dynamic_dag_agent
 | `review` | Review level for risky work. |
 | `max_steps` | Tool-loop bound for `ToolAgent` and `AutoAgent`. |
 | `max_cycles` | Dynamic DAG replan bound for `AutoAgent` and `DagAgent`. |
+| `dynamic_adjust` | Whether `AutoAgent` and `DagAgent` may replan the dynamic DAG after the initial DAG is generated. Defaults to `True`. |
 
 Passing `capabilities=None` uses the runner's default visible capabilities.
 Passing an explicit list narrows the agent to that set.

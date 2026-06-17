@@ -506,6 +506,43 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
 
 
+def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path) -> None:
+    @dagent.tool
+    def fail_tool(text: str) -> str:
+        raise RuntimeError(f"failed:{text}")
+
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    _profile_root(tmp_path, "planner")
+    provider = MockProvider([
+        ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),
+        ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),
+        ChatResponse(content="Recovered after replanning."),
+    ])
+    agent = dagent.DagAgent(
+        planner_profile="planner",
+        capabilities=[fail_tool, echo],
+        dynamic_adjust=False,
+    )
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=provider,
+        profile_root=tmp_path / "profiles",
+    )
+
+    result = run(runner.run(agent, messages=user_messages("repair through DAG")))
+
+    assert result.kind == "dynamic_dag"
+    assert result.state.dynamic_adjust is False
+    assert result.state.status == "failed"
+    assert result.dag is not None
+    assert result.dag.version == 1
+    assert result.dag.status == "failed"
+    assert len(provider.requests) == 1
+
+
 def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     @dagent.tool(risk="medium")
     def write(text: str) -> str:

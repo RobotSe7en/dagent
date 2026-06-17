@@ -103,6 +103,7 @@ class DAGAgent:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
+        dynamic_adjust: bool = True,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -113,6 +114,7 @@ class DAGAgent:
             task_id=task_id,
             review_level=review_level,
             runtime_mode=runtime_mode,
+            dynamic_adjust=dynamic_adjust,
             capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
@@ -126,6 +128,7 @@ class DAGAgent:
         task_id: str | None = None,
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
+        dynamic_adjust: bool = True,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -143,6 +146,7 @@ class DAGAgent:
             messages=provider_messages,
             build_user_message=self.build_request_user_message,
             runtime_mode=runtime_mode,
+            dynamic_adjust=dynamic_adjust,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -300,6 +304,7 @@ class DAGAgentLoop:
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
         runtime_mode: str = "auto",
+        dynamic_adjust: bool = True,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -314,6 +319,7 @@ class DAGAgentLoop:
             dag=_seed_dag(resolved_task_id),
             review_level=review_level,
             runtime_mode=runtime_mode,  # type: ignore[arg-type]
+            dynamic_adjust=dynamic_adjust,
             capability_scope=capability_scope_to_state(capability_scope),
         )
         result = await self.execute(
@@ -607,7 +613,8 @@ class DAGAgentLoop:
                     failed_node_id=failed_node_id if layer_failed else None,
                 )
 
-            if not replan:
+            can_replan = replan and (record.dynamic_adjust or not _has_real_nodes(record.dag))
+            if not can_replan:
                 if layer_failed:
                     break
                 if trace is not None and trace.status == "completed":

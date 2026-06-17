@@ -603,6 +603,37 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     assert _result_status(_stream_result(events[-1])) == "completed"
 
 
+def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(content="dag"),                                              # _route()
+            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # would replan if enabled
+            ChatResponse(content="Recovered after replanning."),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "repair through DAG",
+            target="auto",
+            review_level="fast",
+            dynamic_adjust=False,
+        ),
+    )
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    dag_events = [event["data"]["dag"] for event in events if event["type"] == "dag.updated"]
+    result = _stream_result(events[-1])
+    assert any(dag["version"] == 1 and dag["status"] == "failed" for dag in dag_events)
+    assert not any(dag["version"] == 2 for dag in dag_events)
+    assert _result_status(result) == "failed"
+    assert result["state"]["dynamic_adjust"] is False
+
+
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     state.runner = _runner(
         MockProvider([

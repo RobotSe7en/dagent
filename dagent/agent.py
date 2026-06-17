@@ -26,6 +26,7 @@ class AutoAgent:
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
     review: ReviewLevel = "fast"
+    dynamic_adjust: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.profile))
@@ -71,6 +72,7 @@ class DagAgent:
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
     review: ReviewLevel = "fast"
+    dynamic_adjust: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name or _default_profile_name(self.planner_profile))
