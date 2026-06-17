@@ -42,6 +42,12 @@ from dagent.schemas.run_trace import (
     RunTraceNodeKind,
     RunTraceStatus,
 )
+from dagent.schemas.sandbox import (
+    DockerSandboxConfig,
+    RunExecution,
+    SandboxBackend,
+    SandboxConfig,
+)
 __all__ = [
     "Boundary",
     "BoundaryMode",
@@ -63,8 +69,12 @@ __all__ = [
     "RunCapabilityScope",
     "RunState",
     "RunStateKind",
+    "RunExecution",
     "RiskLevel",
     "ReviewKind",
+    "DockerSandboxConfig",
+    "SandboxBackend",
+    "SandboxConfig",
     "CapabilityDefinition",
     "CapabilityNodePayload",
     "CapabilityInvocation",

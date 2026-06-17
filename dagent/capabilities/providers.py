@@ -10,6 +10,8 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.sandbox import SandboxToolExecutionError
+from dagent.capabilities.sandbox_context import current_run_execution, current_sandbox_session
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.profiles import AgentProfile
@@ -76,6 +78,8 @@ class ToolCapabilityProvider:
                         context=context,
                     )
                     return _completed(invocation, content, value=value)
+                except SandboxToolExecutionError as exc:
+                    return _failed(invocation, str(exc), stop_reason=exc.stop_reason)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
@@ -439,7 +443,11 @@ def _execute_tool(
                 workspace_root,
                 checked_args["cwd"],
             )
-    result = tool.handler(**checked_args)
+    session = current_sandbox_session()
+    if current_run_execution() == "sandbox" and session is not None:
+        result = session.run_tool(tool_name, checked_args)
+    else:
+        result = tool.handler(**checked_args)
     return _content_and_value_from_tool_result(result)
 
 

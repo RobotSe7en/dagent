@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
@@ -558,6 +559,7 @@ class HarnessRuntime:
             "user_request": user_request,
             "review_level": review_level,
             "runtime_mode": runtime_mode or mode,
+            "execution": current_run_execution(),
             "capability_scope": capability_scope_to_state(capability_scope),
             "pending_review": outcome.state.pending_review,
             "pending_invocation": outcome.state.pending_invocation,

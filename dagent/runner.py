@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,17 @@ from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
-from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider
+from dagent.capabilities.sandbox import (
+    SandboxExecutionError,
+    SandboxSession,
+    sandbox_status as _sandbox_status,
+)
+from dagent.capabilities.sandbox_context import (
+    run_execution_context,
+    sandbox_session_context,
+)
+from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, _visible_skills
+from dagent.capabilities.workspace import workspace_context
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
@@ -29,7 +40,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.artifacts import ArtifactUpload, create_run_workspace
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -61,8 +72,10 @@ from dagent.schemas import (
     DAG,
     DAGSpec,
     PendingReview,
+    RunExecution,
     RunState,
     RunTrace,
+    SandboxConfig,
     ValidationIssue,
     iter_dag_invocations,
 )
@@ -85,9 +98,11 @@ class Runner:
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
+        sandbox: SandboxConfig | None = None,
     ) -> None:
         self.workspace = Path(workspace)
         self.profile_root = Path(profile_root) if profile_root is not None else None
+        self.sandbox = sandbox or SandboxConfig()
         self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._registered_agent_configs: dict[str, ToolAgent] = {}
@@ -120,6 +135,7 @@ class Runner:
         skill_roots: list[str | Path] | None = None,
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
+        sandbox: SandboxConfig | None = None,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -142,6 +158,7 @@ class Runner:
             skill_roots=skill_roots,
             mcp_servers=resolved_mcp_servers,
             profile_root=resolved_profile_root,
+            sandbox=sandbox or config.sandbox,
         )
 
     @property
@@ -240,6 +257,7 @@ class Runner:
         arguments: dict[str, Any] | None = None,
         *,
         boundary: Boundary | None = None,
+        execution: RunExecution = "local",
     ) -> CapabilityResult:
         """Execute a single capability once for inspection/testing."""
 
@@ -258,7 +276,57 @@ class Runner:
             arguments=resolved_arguments,
             boundary=resolved_boundary,
         )
-        return await self._runtime.capability_executor.execute(invocation)
+        with self._run_scope(execution):
+            return await self._runtime.capability_executor.execute(invocation)
+
+    @contextmanager
+    def _run_scope(
+        self,
+        execution: RunExecution,
+        *,
+        skill_names: tuple[str, ...] | None = None,
+        workspace_root: str | Path = ".dagent-runs",
+        existing_workspace: str | Path | None = None,
+    ) -> Iterator[None]:
+        """Enter run-scoped execution context; for sandbox, manage the container."""
+        if execution != "sandbox":
+            with run_execution_context(execution):
+                yield
+            return
+        status = _sandbox_status(self.sandbox)
+        if not status.get("docker_available"):
+            raise SandboxExecutionError(
+                f"Docker sandbox is not available: {status.get('error', 'unknown error')}"
+            )
+        workspace = (
+            Path(existing_workspace)
+            if existing_workspace is not None
+            else create_run_workspace(workspace_root)
+        )
+        session = SandboxSession(
+            self.sandbox.docker,
+            workspace_root=workspace,
+            skill_dirs=self._sandbox_skill_dirs(skill_names),
+        )
+        try:
+            with (
+                run_execution_context("sandbox"),
+                workspace_context(workspace),
+                sandbox_session_context(session),
+            ):
+                yield
+        finally:
+            session.close()
+
+    def _sandbox_skill_dirs(self, skill_names: tuple[str, ...] | None) -> tuple[Path, ...]:
+        if not skill_names:
+            return ()
+        entries = _visible_skills(self._skill_provider.store.list(), tuple(skill_names))
+        return tuple(dict.fromkeys(Path(entry.skill_dir).resolve() for entry in entries))
+
+    def sandbox_status(self) -> dict[str, Any]:
+        """Report local + docker sandbox readiness."""
+        return {"local": {"ready": True}, "sandbox": _sandbox_status(self.sandbox)}
 
     @property
     def enable_validation(self) -> bool:
@@ -425,6 +493,7 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
+        execution: RunExecution = "local",
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -432,7 +501,49 @@ class Runner:
     ) -> RunResult:
         if state is not None:
             _ensure_run_state_can_continue(state)
+        resolved_execution = _resolve_run_execution(execution, state)
+        if resolved_execution == "sandbox" and isinstance(target, (Dag, DAGSpec)):
+            raise NotImplementedError(
+                "Sandbox execution is not yet supported for Dag/DAGSpec targets."
+            )
+        skill_names = (
+            _agent_skills(target)
+            if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
+            else None
+        )
+        with self._run_scope(
+            resolved_execution,
+            skill_names=skill_names,
+            workspace_root=workspace_root,
+            existing_workspace=state.workspace_path if state is not None else None,
+        ):
+            return await self._run_dispatch(
+                target,
+                messages=messages,
+                state=state,
+                graph_input=graph_input,
+                review=review,
+                dynamic_adjust=dynamic_adjust,
+                workspace_root=workspace_root,
+                artifact_uploads=artifact_uploads,
+                on_token=on_token,
+                on_event=on_event,
+            )
 
+    async def _run_dispatch(
+        self,
+        target: RunTarget,
+        *,
+        messages: list[dict[str, Any]] | None = None,
+        state: RunState | None = None,
+        graph_input: Any = None,
+        review: ReviewLevel | None = None,
+        dynamic_adjust: bool | None = None,
+        workspace_root: str | Path = ".dagent-runs",
+        artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
+        on_token: TokenHandler | None = None,
+        on_event: LoopEventHandler | None = None,
+    ) -> RunResult:
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
@@ -525,6 +636,7 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
+        execution: RunExecution = "local",
         workspace_root: str | Path = ".dagent-runs",
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
@@ -538,6 +650,7 @@ class Runner:
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
+                execution=execution,
                 workspace_root=workspace_root,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,
@@ -551,11 +664,12 @@ class Runner:
         decision: ReviewDecision,
         *,
         state: RunState | None = None,
+        execution: RunExecution = "local",
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            result = await self.resume(decision, state=state, on_event=on_event)
+            result = await self.resume(decision, state=state, execution=execution, on_event=on_event)
             if result is None:
                 raise LookupError("Review session not found.")
             return result
@@ -628,21 +742,30 @@ class Runner:
         decision: ReviewDecision,
         *,
         state: RunState | None = None,
+        execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
         if state is not None:
             decision = _decision_for_resume_state(decision, state)
-        return await self._runtime.resume_review(
-            decision.review_id,
-            run_state=state,
-            dag=decision.dag,
-            approved=decision.approved,
-            review_level=decision.review_level,
-            feedback=decision.feedback,
-            on_token=on_token,
-            on_event=on_event,
-        )
+        session_state = self._runtime.session.get_review_state(decision.review_id)
+        resolved_execution = _resolve_run_execution(execution, state or session_state)
+        resume_state = state or session_state
+        with self._run_scope(
+            resolved_execution,
+            skill_names=resume_state.capability_scope.skills if resume_state is not None else None,
+            existing_workspace=resume_state.workspace_path if resume_state is not None else None,
+        ):
+            return await self._runtime.resume_review(
+                decision.review_id,
+                run_state=state,
+                dag=decision.dag,
+                approved=decision.approved,
+                review_level=decision.review_level,
+                feedback=decision.feedback,
+                on_token=on_token,
+                on_event=on_event,
+            )
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
         capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
@@ -946,6 +1069,16 @@ def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> Rev
             feedback=decision.feedback,
         )
     return decision
+
+
+def _resolve_run_execution(execution: RunExecution, state: RunState | None) -> RunExecution:
+    if state is None:
+        return execution
+    if execution != "local" and execution != state.execution:
+        raise ValueError(
+            f"Run state uses execution='{state.execution}', cannot override with '{execution}'."
+        )
+    return state.execution
 
 
 def _agent_skills(agent: AutoAgent | ToolAgent | DagAgent) -> tuple[str, ...] | None:
