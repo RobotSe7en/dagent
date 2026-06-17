@@ -198,12 +198,11 @@ test('updated orchestration and tools workspaces use real backend data with the 
 
   assert.match(directorySource, /design-tools-workspace/);
   assert.match(directorySource, /className="tools-detail-panel"/);
-  assert.match(directorySource, /tools-workspace-skill-tree/);
   assert.match(directorySource, /skill-editor-toolbar/);
   assert.match(directorySource, /新建工具|导入技能|保存配置/);
   assert.match(directorySource, /createCapability\(/);
   assert.match(directorySource, /testCapability\(/);
-  assert.match(directorySource, /installSkill\(/);
+  assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);
   assert.doesNotMatch(directorySource, /Capability Workbench|Capability Detail|console-grid directory-grid/);
 
@@ -219,7 +218,6 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(css, /\.run-dialog-body\s*\{[^}]*grid-template-columns:\s*260px minmax\(0, 1fr\);/s);
   assert.doesNotMatch(css, /\.orchestration-canvas-inner|\.orchestration-edges|\.orchestration-node(?:[\s:{\[]|$)|\.flow-workbench/);
   assert.match(css, /\.design-tools-workspace/);
-  assert.match(css, /\.tools-workspace-skill-tree/);
   assert.match(css, /\.tools-detail-panel/);
 });
 
@@ -255,7 +253,74 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(css, /\.sidebar-capability-nav/);
   assert.match(css, /\.sidebar-capability-chevron/);
   assert.match(css, /\.sidebar-subnav\.nested/);
+  assert.doesNotMatch(css, /\.sidebar-subnav\.nested\s*\{[^}]*border-left:/s);
   assert.match(css, /\.sidebar-tool-list-head/);
+});
+
+test('skill management shows the selected skill file hierarchy in the left sidebar', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+
+  assert.match(sidebarSource, /selectedSkillDetail/);
+  assert.match(sidebarSource, /selectedSkillFilePath/);
+  assert.match(sidebarSource, /onSelectSkillFile/);
+  assert.match(sidebarSource, /onUploadSkillFile/);
+  assert.match(sidebarSource, /expandedSkillNames/);
+  assert.match(sidebarSource, /expandedSkillFolders/);
+  assert.match(sidebarSource, /const isSkillTreeOpen = expandedSkillNames\.has\(name\);/);
+  assert.match(sidebarSource, /className="sidebar-skill-row-main"/);
+  assert.match(sidebarSource, /className="sidebar-skill-toggle"/);
+  assert.match(sidebarSource, /className="sidebar-skill-folder-toggle"/);
+  assert.match(sidebarSource, /className="sidebar-skill-file-tree"/);
+  assert.match(sidebarSource, /sidebar-skill-file-row/);
+  assert.match(sidebarSource, /className="sidebar-skill-file-group"/);
+  assert.match(sidebarSource, /SKILL\.md/);
+
+  assert.doesNotMatch(directorySource, /tools-workspace-skill-tree/);
+  assert.doesNotMatch(directorySource, /skill-file-list/);
+  assert.doesNotMatch(directorySource, /skill-file-row/);
+  assert.match(directorySource, /skill-editor-toolbar/);
+  assert.match(directorySource, /selectedSkillFileDetail\?\.file_path \?\? 'SKILL\.md'/);
+
+  assert.match(css, /\.sidebar-skill-file-tree/);
+  assert.match(css, /\.sidebar-skill-file-row/);
+  assert.match(css, /\.sidebar-skill-file-group/);
+  assert.match(css, /\.sidebar-skill-row-main/);
+  assert.match(css, /\.sidebar-skill-toggle/);
+  assert.match(css, /\.sidebar-skill-folder-toggle/);
+  assert.doesNotMatch(css, /\.tools-workspace-skill-tree/);
+  assert.doesNotMatch(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);/s);
+  assert.match(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+});
+
+test('capability creation uses modal dialogs and the skill preview fills the detail pane', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+  assert.match(directorySource, /className="capability-create-backdrop"/);
+  assert.match(directorySource, /className="capability-create-dialog"/);
+  assert.match(directorySource, /creationIntent === 'tools'/);
+  assert.match(directorySource, /creationIntent === 'skills'/);
+  assert.match(directorySource, /creationIntent === 'mcp'/);
+  assert.match(directorySource, /onUploadSkillFile/);
+  assert.match(directorySource, /accept="\.md,text\/markdown,text\/plain,\.zip,application\/zip"/);
+  assert.match(directorySource, /onUploadSkillFile\(event\.target\.files\?\.\[0\]\)/);
+  assert.doesNotMatch(directorySource, /skill-editor-body[\s\S]*<section className="skill-import-panel"/);
+  assert.doesNotMatch(directorySource, /tool-detail-surface[\s\S]*<section className="tool-create-drawer"/);
+  assert.doesNotMatch(directorySource, /mcp-detail-surface[\s\S]*creatingMcp/);
+
+  assert.match(css, /\.capability-create-backdrop/);
+  assert.match(css, /\.capability-create-dialog/);
+  assert.doesNotMatch(css, /\.skill-editor-body\s*\{[^}]*grid-template-rows:\s*minmax\(260px, 1fr\) auto;/s);
+  assert.match(css, /\.skill-editor-body\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.skill-editor-body > textarea\s*\{[^}]*height:\s*100%;/s);
 });
 
 test('tools management ports the full design columns while keeping backend actions', async () => {
@@ -266,22 +331,20 @@ test('tools management ports the full design columns while keeping backend actio
   assert.ok(directorySource, 'CapabilityDirectory should end before AgentManagementWorkspace');
   assert.match(directorySource, /const toolRows = capabilities\.filter/);
   assert.match(directorySource, /const selectedTool = capabilities\.find/);
-  assert.match(directorySource, /tools-workspace-skill-tree/);
-  assert.match(directorySource, /skill-file-row/);
   assert.match(directorySource, /tool-info-table/);
   assert.match(directorySource, /tool-schema-block/);
   assert.match(directorySource, /skill-editor-toolbar/);
   assert.match(directorySource, /mcp-config-form/);
   assert.match(directorySource, /testCapability\(selectedTool\.id, parsed\)/);
-  assert.match(directorySource, /installSkill\(/);
+  assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);
   assert.match(directorySource, /updateMcpServer\(/);
   assert.doesNotMatch(directorySource, /className="tools-directory-main"/);
   assert.doesNotMatch(directorySource, /className="tool-create-panel"/);
 
   assert.match(css, /\.design-tools-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
-  assert.match(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);/s);
-  assert.match(css, /\.tools-workspace-skill-tree/);
+  assert.match(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.sidebar-skill-file-tree/);
   assert.match(css, /\.tool-info-table/);
   assert.match(css, /\.skill-editor-toolbar/);
   assert.match(css, /\.mcp-config-form/);

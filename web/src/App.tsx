@@ -705,6 +705,10 @@ export function App() {
   const [selectedToolCapabilityId, setSelectedToolCapabilityId] = useState('');
   const [selectedToolSkillName, setSelectedToolSkillName] = useState('');
   const [selectedToolMcpName, setSelectedToolMcpName] = useState('');
+  const [selectedSkillDetail, setSelectedSkillDetail] = useState<SkillDetail | null>(null);
+  const [selectedSkillFileDetail, setSelectedSkillFileDetail] = useState<SkillFileDetail | null>(null);
+  const [skillMessage, setSkillMessage] = useState('');
+  const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
   const setEditorLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
     editorLayoutPositionsRef.current = positions;
     setEditorLayoutPositionsState(positions);
@@ -725,6 +729,10 @@ export function App() {
   const artifactDrawerOpen = artifactPanelOpen;
   const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? chatArtifacts[0] ?? null;
   const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
+  const selectedSidebarSkill = useMemo(
+    () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
+    [selectedToolSkillName, skills],
+  );
 
   const selectToolsDirectoryTab = useCallback((tab: ToolDirectoryTab) => {
     setToolsDirectoryTab(tab);
@@ -773,6 +781,131 @@ export function App() {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
   }, []);
+
+  const openSkillDetail = useCallback(async (skill: SkillSummary) => {
+    const lookup = skillLookupName(skill);
+    setSelectedToolSkillName(lookup);
+    setSkillMessage(`Loading ${lookup}...`);
+    try {
+      const detail = await getSkill(lookup);
+      setSelectedSkillDetail(detail);
+      setSelectedSkillFileDetail(null);
+      setSkillMessage('');
+    } catch (exc) {
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (toolsDirectoryTab !== 'skills') return;
+    if (!selectedSidebarSkill) {
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      return;
+    }
+    const lookup = skillLookupName(selectedSidebarSkill);
+    if (selectedSkillDetail && skillLookupName(selectedSkillDetail.skill) === lookup) return;
+    void openSkillDetail(selectedSidebarSkill);
+  }, [openSkillDetail, selectedSidebarSkill, selectedSkillDetail, toolsDirectoryTab]);
+
+  const selectToolSkill = useCallback((name: string) => {
+    setSelectedToolSkillName(name);
+    setSelectedSkillFileDetail(null);
+  }, []);
+
+  const selectSkillFile = useCallback(async (filePath: string | null) => {
+    if (!filePath) {
+      setSelectedSkillFileDetail(null);
+      return;
+    }
+    const skill = selectedSkillDetail?.skill ?? selectedSidebarSkill;
+    if (!skill) return;
+    const lookup = skillLookupName(skill);
+    setSkillMessage(`Loading ${filePath}...`);
+    try {
+      const detail = await getSkillFile(lookup, filePath);
+      setSelectedSkillFileDetail(detail);
+      setSkillMessage('');
+    } catch (exc) {
+      setSelectedSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [selectedSidebarSkill, selectedSkillDetail]);
+
+  const loadSkillFile = useCallback(async (file: File | undefined) => {
+    if (!file) return;
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      setSkillMessage('Installing skill package...');
+      try {
+        const detail = await installSkill({ file });
+        setSelectedSkillDetail(detail);
+        setSelectedSkillFileDetail(null);
+        setSelectedToolSkillName(skillLookupName(detail.skill));
+        setCapabilityCreationIntent(null);
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+        try {
+          await refreshConsoleData();
+        } catch (exc) {
+          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+        }
+      } catch (exc) {
+        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+      }
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
+      setCapabilityCreationIntent('skills');
+    };
+    reader.readAsText(file);
+  }, [refreshConsoleData]);
+
+  const installSkillDraft = useCallback(async () => {
+    setSkillMessage('Installing skill...');
+    try {
+      const detail = await installSkill({
+        content: skillImport.content,
+        name: skillImport.name || undefined,
+        description: skillImport.description || undefined,
+        category: skillImport.category || undefined,
+      });
+      setSelectedSkillDetail(detail);
+      setSelectedSkillFileDetail(null);
+      setSelectedToolSkillName(skillLookupName(detail.skill));
+      setCapabilityCreationIntent(null);
+      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+      try {
+        await refreshConsoleData();
+      } catch (exc) {
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [refreshConsoleData, skillImport]);
+
+  const removeManagedSkill = useCallback(async () => {
+    const skill = selectedSkillDetail?.skill ?? selectedSidebarSkill;
+    if (!skill || !isManagedSkill(skill)) return;
+    setSkillMessage('Deleting skill...');
+    try {
+      await deleteSkill(skillLookupName(skill));
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      setSelectedToolSkillName('');
+      setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
+      try {
+        await refreshConsoleData();
+      } catch (exc) {
+        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [refreshConsoleData, selectedSidebarSkill, selectedSkillDetail]);
 
   useEffect(() => {
     const requestId = ++validationRequestIdRef.current;
@@ -1739,6 +1872,8 @@ export function App() {
         selectedToolCapabilityId={selectedToolCapabilityId}
         selectedToolMcpName={selectedToolMcpName}
         selectedToolSkillName={selectedToolSkillName}
+        selectedSkillDetail={selectedSkillDetail}
+        selectedSkillFilePath={selectedSkillFileDetail?.file_path ?? ''}
         skills={skills}
         skillCount={skills.length}
         toolsSub={toolsDirectoryTab}
@@ -1752,13 +1887,15 @@ export function App() {
         onNewChat={() => void newChat()}
         onNewDag={newEditorUserDag}
         onSelectProfile={setSelectedProfileId}
+        onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
         onSelectToolMcp={setSelectedToolMcpName}
-        onSelectToolSkill={setSelectedToolSkillName}
+        onSelectToolSkill={selectToolSkill}
         onSelectWorkspace={setActiveWorkspace}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
         onToolsQueryChange={setToolsDirectoryQuery}
+        onUploadSkillFile={(file) => void loadSkillFile(file)}
         onUploadFiles={(files) => void uploadEditorFiles(files)}
       />
       <main className="workspace">
@@ -1832,12 +1969,20 @@ export function App() {
             query={toolsDirectoryQuery}
             selectedCapabilityId={selectedToolCapabilityId}
             selectedMcpName={selectedToolMcpName}
+            selectedSkillDetail={selectedSkillDetail}
+            selectedSkillFileDetail={selectedSkillFileDetail}
             selectedSkillName={selectedToolSkillName}
+            skillImport={skillImport}
+            skillMessage={skillMessage}
             onActiveTabChange={selectToolsDirectoryTab}
             onCreationIntentChange={setCapabilityCreationIntent}
+            onInstallSkillDraft={() => void installSkillDraft()}
+            onRemoveManagedSkill={() => void removeManagedSkill()}
             onSelectedCapabilityIdChange={setSelectedToolCapabilityId}
             onSelectedMcpNameChange={setSelectedToolMcpName}
-            onSelectedSkillNameChange={setSelectedToolSkillName}
+            onSelectedSkillNameChange={selectToolSkill}
+            onSkillImportChange={setSkillImport}
+            onUploadSkillFile={(file) => void loadSkillFile(file)}
             onRefresh={refreshConsoleData}
           />
         ) : activeWorkspace === 'agents' ? (
@@ -1922,6 +2067,8 @@ function WorkspaceSidebar({
   selectedToolCapabilityId,
   selectedToolMcpName,
   selectedToolSkillName,
+  selectedSkillDetail,
+  selectedSkillFilePath,
   skills,
   skillCount,
   toolsSub,
@@ -1935,6 +2082,7 @@ function WorkspaceSidebar({
   onNewChat,
   onNewDag,
   onSelectProfile,
+  onSelectSkillFile,
   onSelectToolCapability,
   onSelectToolMcp,
   onSelectToolSkill,
@@ -1942,6 +2090,7 @@ function WorkspaceSidebar({
   onToolsSubChange,
   onToggleCollapsed,
   onToolsQueryChange,
+  onUploadSkillFile,
   onUploadFiles,
 }: {
   activeWorkspace: WorkspaceKey;
@@ -1959,6 +2108,8 @@ function WorkspaceSidebar({
   selectedToolCapabilityId: string;
   selectedToolMcpName: string;
   selectedToolSkillName: string;
+  selectedSkillDetail: SkillDetail | null;
+  selectedSkillFilePath: string;
   skills: SkillSummary[];
   skillCount: number;
   toolsSub: ToolDirectoryTab;
@@ -1972,6 +2123,7 @@ function WorkspaceSidebar({
   onNewChat: () => void;
   onNewDag: () => void;
   onSelectProfile: (id: string) => void;
+  onSelectSkillFile: (filePath: string | null) => void;
   onSelectToolCapability: (id: string) => void;
   onSelectToolMcp: (name: string) => void;
   onSelectToolSkill: (name: string) => void;
@@ -1979,6 +2131,7 @@ function WorkspaceSidebar({
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
   onToolsQueryChange: (query: string) => void;
+  onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const toolSubnav = [
@@ -1994,6 +2147,10 @@ function WorkspaceSidebar({
     || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery),
   );
   const activeToolSubnav = toolSubnav.find((item) => item.key === toolsSub) ?? toolSubnav[0];
+  const skillFileGroups = Object.entries(selectedSkillDetail?.linked_files ?? {})
+    .filter(([, files]) => files.length);
+  const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
+  const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
   const createCapabilityResource = () => {
     if (toolsSub === 'tools') {
       onCreateTool();
@@ -2008,6 +2165,30 @@ function WorkspaceSidebar({
     : toolsSub === 'skills'
       ? '导入技能'
       : '新建 MCP';
+  const toggleSkillTree = (name: string) => {
+    onSelectToolSkill(name);
+    setExpandedSkillNames((current) => {
+      const next = new Set(current);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  };
+  const toggleSkillFolder = (name: string, folder: string) => {
+    const folderKey = `${name}:${folder}`;
+    setExpandedSkillFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folderKey)) {
+        next.delete(folderKey);
+      } else {
+        next.add(folderKey);
+      }
+      return next;
+    });
+  };
 
   return (
     <aside className="workspace-sidebar" data-collapsed={collapsed}>
@@ -2204,17 +2385,86 @@ function WorkspaceSidebar({
             ) : toolsSub === 'skills' ? (
               sidebarSkills.length ? sidebarSkills.map((skill) => {
                 const name = skillLookupName(skill);
+                const isSelectedSkill = selectedToolSkillName === name;
+                const isSkillTreeOpen = expandedSkillNames.has(name);
                 return (
-                  <button
-                    className={selectedToolSkillName === name ? 'active' : ''}
-                    key={skill.path}
-                    onClick={() => onSelectToolSkill(name)}
-                    type="button"
-                  >
-                    <FileText size={14} />
-                    <span>{name}</span>
-                    <em data-enabled={skill.managed} />
-                  </button>
+                  <div className="sidebar-skill-row" key={skill.path}>
+                    <div className="sidebar-skill-row-main">
+                      <button
+                        className={isSelectedSkill ? 'active sidebar-skill-select' : 'sidebar-skill-select'}
+                        onClick={() => onSelectToolSkill(name)}
+                        type="button"
+                      >
+                        <FileText size={14} />
+                        <span>{name}</span>
+                        <em data-enabled={skill.managed} />
+                      </button>
+                      <button
+                        className="sidebar-skill-toggle"
+                        data-open={isSkillTreeOpen}
+                        onClick={() => toggleSkillTree(name)}
+                        title={isSkillTreeOpen ? '收起文件树' : '展开文件树'}
+                        type="button"
+                      >
+                        <ChevronRight size={13} />
+                      </button>
+                    </div>
+                    {isSelectedSkill && isSkillTreeOpen ? (
+                      <div className="sidebar-skill-file-tree">
+                        {selectedSkillDetail ? (
+                          <>
+                            <button
+                              className={!selectedSkillFilePath ? 'active sidebar-skill-file-row' : 'sidebar-skill-file-row'}
+                              onClick={() => onSelectSkillFile(null)}
+                              type="button"
+                            >
+                              <FileText size={13} />
+                              <span>SKILL.md</span>
+                            </button>
+                            {skillFileGroups.map(([folder, files]) => (
+                              <div className="sidebar-skill-file-group" key={folder}>
+                                <button
+                                  className="sidebar-skill-folder-toggle"
+                                  data-open={expandedSkillFolders.has(`${name}:${folder}`)}
+                                  onClick={() => toggleSkillFolder(name, folder)}
+                                  type="button"
+                                >
+                                  <ChevronRight size={12} />
+                                  <Folder size={13} />
+                                  <span>{folder}</span>
+                                </button>
+                                {expandedSkillFolders.has(`${name}:${folder}`) ? files.map((filePath) => (
+                                  <button
+                                    className={selectedSkillFilePath === filePath ? 'active sidebar-skill-file-row' : 'sidebar-skill-file-row'}
+                                    key={filePath}
+                                    onClick={() => onSelectSkillFile(filePath)}
+                                    type="button"
+                                  >
+                                    <FileText size={13} />
+                                    <span>{filePath.split('/').pop() ?? filePath}</span>
+                                  </button>
+                                )) : null}
+                              </div>
+                            ))}
+                          </>
+                        ) : (
+                          <div className="sidebar-empty-row">正在加载技能文件</div>
+                        )}
+                        <label className="sidebar-skill-upload">
+                          <Plus size={12} />
+                          添加文件
+                          <input
+                            type="file"
+                            accept=".md,text/markdown,text/plain,.zip,application/zip"
+                            onChange={(event) => {
+                              onUploadSkillFile(event.target.files?.[0]);
+                              event.currentTarget.value = '';
+                            }}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
                 );
               }) : <div className="sidebar-empty-row">没有匹配的技能</div>
             ) : (
@@ -4267,12 +4517,20 @@ function CapabilityDirectory({
   query,
   selectedCapabilityId,
   selectedMcpName,
+  selectedSkillDetail,
+  selectedSkillFileDetail,
   selectedSkillName,
+  skillImport,
+  skillMessage,
   onActiveTabChange,
   onCreationIntentChange,
+  onInstallSkillDraft,
+  onRemoveManagedSkill,
   onSelectedCapabilityIdChange,
   onSelectedMcpNameChange,
   onSelectedSkillNameChange,
+  onSkillImportChange,
+  onUploadSkillFile,
   onRefresh,
 }: {
   capabilities: CapabilityDefinition[];
@@ -4283,12 +4541,20 @@ function CapabilityDirectory({
   query: string;
   selectedCapabilityId: string;
   selectedMcpName: string;
+  selectedSkillDetail: SkillDetail | null;
+  selectedSkillFileDetail: SkillFileDetail | null;
   selectedSkillName: string;
+  skillImport: { name: string; description: string; category: string; content: string };
+  skillMessage: string;
   onActiveTabChange: (tab: ToolDirectoryTab) => void;
   onCreationIntentChange: (tab: ToolDirectoryTab | null) => void;
+  onInstallSkillDraft: () => void;
+  onRemoveManagedSkill: () => void;
   onSelectedCapabilityIdChange: (id: string) => void;
   onSelectedMcpNameChange: (name: string) => void;
   onSelectedSkillNameChange: (name: string) => void;
+  onSkillImportChange: React.Dispatch<React.SetStateAction<{ name: string; description: string; category: string; content: string }>>;
+  onUploadSkillFile: (file: File | undefined) => void;
   onRefresh: () => Promise<void>;
 }) {
   const [draftCapability, setDraftCapability] = useState<CapabilityDefinition>(defaultCustomCapability);
@@ -4296,10 +4562,6 @@ function CapabilityDirectory({
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
   const [result, setResult] = useState<CapabilityResult | null>(null);
   const [message, setMessage] = useState('');
-  const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
-  const [skillFileDetail, setSkillFileDetail] = useState<SkillFileDetail | null>(null);
-  const [skillMessage, setSkillMessage] = useState('');
-  const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
   const [mcpDraft, setMcpDraft] = useState<{ name: string } & MCPServerConfig>(defaultMcpConfig);
   const [mcpArgsText, setMcpArgsText] = useState('');
   const [mcpEnvText, setMcpEnvText] = useState('');
@@ -4310,12 +4572,7 @@ function CapabilityDirectory({
   const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? visibleSkills[0] ?? skills[0];
-  const linkedFileGroups = Object.entries(skillDetail?.linked_files ?? {})
-    .filter(([, files]) => files.length);
-  const selectedMcp = creationIntent === 'mcp'
-    ? undefined
-    : mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
-  const creatingMcp = creationIntent === 'mcp';
+  const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
 
   useEffect(() => {
     if (!selectedMcp) {
@@ -4332,6 +4589,13 @@ function CapabilityDirectory({
     setMcpArgsText((selectedMcp.config.args ?? []).join('\n'));
     setMcpEnvText(formatEnvText(selectedMcp.config.env ?? {}));
   }, [selectedMcp]);
+
+  useEffect(() => {
+    if (creationIntent !== 'mcp') return;
+    setMcpDraft(defaultMcpConfig);
+    setMcpArgsText('');
+    setMcpEnvText('');
+  }, [creationIntent]);
 
   const runCreate = async () => {
     const parameters = parseJsonObject(draftParametersText);
@@ -4402,116 +4666,6 @@ function CapabilityDirectory({
     }
   };
 
-  const openSkill = useCallback(async (skill: SkillSummary) => {
-    const lookup = skillLookupName(skill);
-    onSelectedSkillNameChange(lookup);
-    setSkillMessage(`Loading ${lookup}...`);
-    try {
-      const detail = await getSkill(lookup);
-      setSkillDetail(detail);
-      setSkillFileDetail(null);
-      setSkillMessage('');
-    } catch (exc) {
-      setSkillDetail(null);
-      setSkillFileDetail(null);
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  }, [onSelectedSkillNameChange]);
-
-  useEffect(() => {
-    if (activeTab !== 'skills' || !selectedSkill) return;
-    const lookup = skillLookupName(selectedSkill);
-    if (skillDetail && skillLookupName(skillDetail.skill) === lookup) return;
-    void openSkill(selectedSkill);
-  }, [activeTab, openSkill, selectedSkill, skillDetail]);
-
-  const openSkillLinkedFile = async (filePath: string) => {
-    const skill = skillDetail?.skill ?? selectedSkill;
-    if (!skill) return;
-    const lookup = skillLookupName(skill);
-    setSkillMessage(`Loading ${filePath}...`);
-    try {
-      const detail = await getSkillFile(lookup, filePath);
-      setSkillFileDetail(detail);
-      setSkillMessage('');
-    } catch (exc) {
-      setSkillFileDetail(null);
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const installSkillDraft = async () => {
-    setSkillMessage('Installing skill...');
-    try {
-      const detail = await installSkill({
-        content: skillImport.content,
-        name: skillImport.name || undefined,
-        description: skillImport.description || undefined,
-        category: skillImport.category || undefined,
-      });
-      setSkillDetail(detail);
-      setSkillFileDetail(null);
-      onSelectedSkillNameChange(skillLookupName(detail.skill));
-      onCreationIntentChange(null);
-      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
-      try {
-        await onRefresh();
-      } catch (exc) {
-        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-      }
-    } catch (exc) {
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const removeManagedSkill = async () => {
-    const skill = skillDetail?.skill ?? selectedSkill;
-    if (!skill || !isManagedSkill(skill)) return;
-    setSkillMessage('Deleting skill...');
-    try {
-      await deleteSkill(skillLookupName(skill));
-      setSkillDetail(null);
-      setSkillFileDetail(null);
-      onSelectedSkillNameChange('');
-      setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
-      try {
-        await onRefresh();
-      } catch (exc) {
-        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-      }
-    } catch (exc) {
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const loadSkillFile = async (file: File | undefined) => {
-    if (!file) return;
-    if (file.name.toLowerCase().endsWith('.zip')) {
-      setSkillMessage('Installing skill package...');
-      try {
-      const detail = await installSkill({ file });
-      setSkillDetail(detail);
-      setSkillFileDetail(null);
-      onSelectedSkillNameChange(skillLookupName(detail.skill));
-      onCreationIntentChange(null);
-      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
-      try {
-        await onRefresh();
-        } catch (exc) {
-          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-        }
-      } catch (exc) {
-        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-      }
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
-    };
-    reader.readAsText(file);
-  };
-
   const saveMcpServer = async () => {
     setMcpMessage('Saving MCP server...');
     try {
@@ -4558,143 +4712,157 @@ function CapabilityDirectory({
       setMcpMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
+  const createDialogTitle = creationIntent === 'tools'
+    ? '新建工具'
+    : creationIntent === 'skills'
+      ? '导入技能'
+      : '新建 MCP 服务';
 
   return (
     <section className={`design-tools-workspace ${activeTab === 'skills' ? 'skills-mode' : ''}`}>
-      {activeTab === 'skills' ? (
-        <aside className="tools-workspace-skill-tree">
-          <div className="skill-tree-head">
-            <div>
-              <strong>{selectedSkill ? skillLookupName(selectedSkill) : 'skill'}</strong>
-              <span>{skillDetail?.description || selectedSkill?.description || '选择技能查看文件'}</span>
+      {creationIntent ? (
+        <div className="capability-create-backdrop" onMouseDown={() => onCreationIntentChange(null)}>
+          <section
+            className="capability-create-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={createDialogTitle}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="capability-create-head">
+              <div>
+                <span>能力管理</span>
+                <h2>{createDialogTitle}</h2>
+              </div>
+              <button onClick={() => onCreationIntentChange(null)} title="关闭" type="button">
+                <X size={15} />
+              </button>
             </div>
-            <em>{skillDetail && isManagedSkill(skillDetail.skill) ? 'installed' : 'local'}</em>
-          </div>
-          <div className="skill-file-list">
-            {skillDetail ? (
-              <>
-                <button
-                  className={!skillFileDetail ? 'skill-file-row active' : 'skill-file-row'}
-                  onClick={() => setSkillFileDetail(null)}
-                  type="button"
-                >
-                  <FileText size={14} />
-                  <span>SKILL.md</span>
-                </button>
-                {linkedFileGroups.map(([folder, files]) => (
-                  <div className="skill-file-group" key={folder}>
-                    <div>
-                      <Folder size={14} />
-                      <span>{folder}</span>
-                    </div>
-                    {files.map((filePath) => (
-                      <button
-                        className={skillFileDetail?.file_path === filePath ? 'skill-file-row active' : 'skill-file-row'}
-                        key={filePath}
-                        onClick={() => void openSkillLinkedFile(filePath)}
-                        type="button"
-                      >
-                        <FileText size={14} />
-                        <span>{filePath.split('/').pop() ?? filePath}</span>
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div className="sidebar-empty-row">正在加载技能内容</div>
-            )}
-            <label className="skill-add-file-button">
-              <Plus size={12} />
-              添加文件
-              <input
-                type="file"
-                accept=".md,text/markdown,text/plain,.zip,application/zip"
-                onChange={(event) => void loadSkillFile(event.target.files?.[0])}
-              />
-            </label>
-          </div>
-        </aside>
+            {creationIntent === 'tools' ? (
+              <section className="tool-create-drawer">
+                <div className="compact-form-grid">
+                  <label>ID<input value={draftCapability.id} onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))} /></label>
+                  <label>名称<input value={draftCapability.name} onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))} /></label>
+                  <label>描述<textarea value={draftCapability.description} onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))} /></label>
+                  <label>参数 Schema<textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} /></label>
+                  <label>Template<textarea value={String(draftCapability.config.template ?? '')} onChange={(event) => setDraftCapability((current) => ({ ...current, kind: 'tool', config: { ...current.config, template: event.target.value } }))} /></label>
+                </div>
+                {message ? <p className="form-message">{message}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={runCreate} type="button">
+                    <Plus size={14} />
+                    创建
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            {creationIntent === 'skills' ? (
+              <section className="skill-import-panel">
+                <label className="skill-package-upload">
+                  <Upload size={15} />
+                  <span>
+                    <strong>上传技能包</strong>
+                    <em>.zip 会直接安装，SKILL.md 会填入下方内容</em>
+                  </span>
+                  <input
+                    type="file"
+                    accept=".md,text/markdown,text/plain,.zip,application/zip"
+                    onChange={(event) => {
+                      onUploadSkillFile(event.target.files?.[0]);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <div className="compact-form-grid">
+                  <label>名称<input value={skillImport.name} onChange={(event) => onSkillImportChange((current) => ({ ...current, name: event.target.value }))} /></label>
+                  <label>分类<input value={skillImport.category} onChange={(event) => onSkillImportChange((current) => ({ ...current, category: event.target.value }))} /></label>
+                  <label>描述<textarea value={skillImport.description} onChange={(event) => onSkillImportChange((current) => ({ ...current, description: event.target.value }))} /></label>
+                  <label>SKILL.md<textarea value={skillImport.content} onChange={(event) => onSkillImportChange((current) => ({ ...current, content: event.target.value }))} /></label>
+                </div>
+                {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={onInstallSkillDraft} type="button">
+                    <Upload size={14} />
+                    安装
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            {creationIntent === 'mcp' ? (
+              <section className="mcp-config-form">
+                <label>名称<input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+                <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
+                <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
+                <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+                {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={saveMcpServer} type="button">
+                    <Save size={13} />
+                    保存配置
+                  </button>
+                </div>
+              </section>
+            ) : null}
+          </section>
+        </div>
       ) : null}
-
       <aside className="tools-detail-panel">
         {activeTab === 'tools' ? (
           <div className="tools-detail-scroll">
-            {selectedTool || creationIntent === 'tools' ? (
+            {selectedTool ? (
               <div className="tool-detail-surface">
-                {selectedTool ? (
-                  <>
-                    <div className="tool-detail-head">
-                      <div>
-                        <h2>{selectedTool.id}</h2>
-                        <p>{selectedTool.description || selectedTool.name}</p>
-                      </div>
-                      <button className="secondary-button compact-button" onClick={runTest} type="button">
-                        <Play size={13} />
-                        测试
-                      </button>
-                    </div>
-                    <div className="tool-info-table">
-                      <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
-                      <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
-                      <div><span>边界</span><strong>{toolBoundaryLabel(selectedTool)}</strong></div>
-                      <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
-                    </div>
-                    <section>
-                      <h3>参数 Schema</h3>
-                      <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
-                    </section>
-                    <section>
-                      <h3>测试调用</h3>
-                      <textarea
-                        value={argumentsText}
-                        onChange={(event) => setArgumentsText(event.target.value)}
-                        placeholder='{ "pattern": "DAG", "path": "." }'
-                        spellCheck={false}
-                      />
-                      <div className="inline-actions">
-                        <button className="primary-button compact-button" onClick={runTest} type="button">
-                          <Play size={13} />
-                          执行测试
-                        </button>
-                        <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selectedTool.enabled)} disabled={!selectedEditable} type="button">
-                          {selectedTool.enabled ? '停用' : '启用'}
-                        </button>
-                        <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedEditable} type="button">
-                          删除
-                        </button>
-                      </div>
-                      {message ? <p className="form-message">{message}</p> : null}
-                      {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
-                    </section>
-                  </>
-                ) : (
-                  <div className="empty-state compact">没有加载到工具。</div>
-                )}
-                {creationIntent === 'tools' ? (
-                  <section className="tool-create-drawer">
-                  <div className="section-title-row">
-                    <span>新建工具</span>
-                    <div className="inline-actions">
-                      <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
-                        <X size={13} />
-                        取消
-                      </button>
-                      <button className="primary-button compact-button" onClick={runCreate} type="button">
-                        <Plus size={14} />
-                        创建
-                      </button>
-                    </div>
+                <div className="tool-detail-head">
+                  <div>
+                    <h2>{selectedTool.id}</h2>
+                    <p>{selectedTool.description || selectedTool.name}</p>
                   </div>
-                  <div className="compact-form-grid">
-                    <label>ID<input value={draftCapability.id} onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))} /></label>
-                    <label>名称<input value={draftCapability.name} onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))} /></label>
-                    <label>描述<textarea value={draftCapability.description} onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))} /></label>
-                    <label>参数 Schema<textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} /></label>
-                    <label>Template<textarea value={String(draftCapability.config.template ?? '')} onChange={(event) => setDraftCapability((current) => ({ ...current, kind: 'tool', config: { ...current.config, template: event.target.value } }))} /></label>
+                  <button className="secondary-button compact-button" onClick={runTest} type="button">
+                    <Play size={13} />
+                    测试
+                  </button>
+                </div>
+                <div className="tool-info-table">
+                  <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
+                  <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
+                  <div><span>边界</span><strong>{toolBoundaryLabel(selectedTool)}</strong></div>
+                  <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
+                </div>
+                <section>
+                  <h3>参数 Schema</h3>
+                  <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
+                </section>
+                <section>
+                  <h3>测试调用</h3>
+                  <textarea
+                    value={argumentsText}
+                    onChange={(event) => setArgumentsText(event.target.value)}
+                    placeholder='{ "pattern": "DAG", "path": "." }'
+                    spellCheck={false}
+                  />
+                  <div className="inline-actions">
+                    <button className="primary-button compact-button" onClick={runTest} type="button">
+                      <Play size={13} />
+                      执行测试
+                    </button>
+                    <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selectedTool.enabled)} disabled={!selectedEditable} type="button">
+                      {selectedTool.enabled ? '停用' : '启用'}
+                    </button>
+                    <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedEditable} type="button">
+                      删除
+                    </button>
                   </div>
-                  </section>
-                ) : null}
+                  {message ? <p className="form-message">{message}</p> : null}
+                  {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
+                </section>
               </div>
             ) : <div className="empty-state compact">没有加载到工具。</div>}
           </div>
@@ -4702,9 +4870,9 @@ function CapabilityDirectory({
           <div className="skill-editor">
             <div className="skill-editor-toolbar">
               <FileText size={15} />
-              <span>{selectedSkill ? skillLookupName(selectedSkill) : 'skill'} <em>/</em> <strong>{skillFileDetail?.file_path ?? 'SKILL.md'}</strong></span>
+              <span>{selectedSkill ? skillLookupName(selectedSkill) : 'skill'} <em>/</em> <strong>{selectedSkillFileDetail?.file_path ?? 'SKILL.md'}</strong></span>
               <div>
-                <button className="secondary-button danger-button compact-button" onClick={removeManagedSkill} disabled={!skillDetail || !isManagedSkill(skillDetail.skill)} type="button">
+                <button className="secondary-button danger-button compact-button" onClick={onRemoveManagedSkill} disabled={!selectedSkillDetail || !isManagedSkill(selectedSkillDetail.skill)} type="button">
                   <Trash2 size={13} />
                   删除
                 </button>
@@ -4716,90 +4884,49 @@ function CapabilityDirectory({
             </div>
             <div className="skill-editor-body">
               <textarea
-                value={skillFileDetail?.content ?? skillDetail?.content ?? ''}
+                value={selectedSkillFileDetail?.content ?? selectedSkillDetail?.content ?? ''}
                 readOnly
                 spellCheck={false}
               />
-              {creationIntent === 'skills' ? (
-                <section className="skill-import-panel">
-                  <div className="section-title-row">
-                    <span>导入技能</span>
-                    <div className="inline-actions">
-                      <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
-                        <X size={13} />
-                        取消
-                      </button>
-                      <button className="primary-button compact-button" onClick={installSkillDraft} type="button">
-                        <Upload size={14} />
-                        安装
-                      </button>
-                    </div>
-                  </div>
-                  <div className="compact-form-grid">
-                    <label>名称<input value={skillImport.name} onChange={(event) => setSkillImport((current) => ({ ...current, name: event.target.value }))} /></label>
-                    <label>分类<input value={skillImport.category} onChange={(event) => setSkillImport((current) => ({ ...current, category: event.target.value }))} /></label>
-                    <label>描述<textarea value={skillImport.description} onChange={(event) => setSkillImport((current) => ({ ...current, description: event.target.value }))} /></label>
-                    <label>SKILL.md<textarea value={skillImport.content} onChange={(event) => setSkillImport((current) => ({ ...current, content: event.target.value }))} /></label>
-                  </div>
-                  {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
-                </section>
-              ) : null}
             </div>
           </div>
         ) : (
           <div className="tools-detail-scroll">
             <div className="mcp-detail-surface">
-              {selectedMcp || creatingMcp ? (
+              {selectedMcp ? (
                 <>
                   <div className="tool-detail-head">
                     <div>
-                      <h2>{selectedMcp?.name ?? '新建 MCP 服务'}</h2>
-                      <p>{selectedMcp ? `${selectedMcp.source} · ${selectedMcp.tools.length} tools` : '配置一个可连接的 MCP 服务'}</p>
+                      <h2>{selectedMcp.name}</h2>
+                      <p>{`${selectedMcp.source} · ${selectedMcp.tools.length} tools`}</p>
                     </div>
-                    {selectedMcp ? (
-                      <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
-                        {mcpStatusLabel(selectedMcp.status)}
-                      </span>
-                    ) : null}
+                    <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
+                      {mcpStatusLabel(selectedMcp.status)}
+                    </span>
                   </div>
                   {selectedMcp?.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
                   <div className="mcp-config-form">
-                    {creatingMcp ? (
-                      <label>名称<input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-                    ) : null}
                     <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
                     <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
                     <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
                     <div className="inline-actions">
-                      {creatingMcp ? (
-                        <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
-                          <X size={13} />
-                          取消
-                        </button>
-                      ) : null}
                       <button className="primary-button compact-button" onClick={saveMcpServer} type="button">
                         <Save size={13} />
                         保存配置
                       </button>
-                      {selectedMcp ? (
-                        <>
-                          <button className="secondary-button compact-button" onClick={() => void reloadMcp()} type="button">
-                            <RefreshCw size={13} />
-                            重载
-                          </button>
-                          <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={selectedMcp.source !== 'memory'} type="button">
-                            删除
-                          </button>
-                        </>
-                      ) : null}
+                      <button className="secondary-button compact-button" onClick={() => void reloadMcp()} type="button">
+                        <RefreshCw size={13} />
+                        重载
+                      </button>
+                      <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={selectedMcp.source !== 'memory'} type="button">
+                        删除
+                      </button>
                     </div>
                   </div>
-                  {selectedMcp ? (
-                    <section>
-                      <h3>发现的工具</h3>
-                      <pre className="tool-schema-block">{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
-                    </section>
-                  ) : null}
+                  <section>
+                    <h3>发现的工具</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
+                  </section>
                   {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
                 </>
               ) : (

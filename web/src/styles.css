@@ -540,8 +540,7 @@ button:focus-visible {
 
 .sidebar-subnav.nested {
   margin: 1px 0 3px 24px;
-  padding-left: 7px;
-  border-left: 1px solid #e7e8ec;
+  padding-left: 0;
   gap: 2px;
 }
 
@@ -2334,10 +2333,11 @@ details[open] .timeline-chevron {
 }
 
 .design-tools-workspace.skills-mode {
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .tools-detail-panel {
+  height: 100%;
   min-height: 0;
   background: #fff;
   overflow: hidden;
@@ -2492,140 +2492,136 @@ details[open] .timeline-chevron {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-top: 1px solid #eef0f3;
-  padding-top: 16px;
 }
 
-.tools-workspace-skill-tree {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid #e7e8ec;
-  background: #fff;
-}
-
-.skill-tree-head {
-  flex-shrink: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 16px 16px 12px;
-  border-bottom: 1px solid #eef0f3;
-}
-
-.skill-tree-head > div {
-  min-width: 0;
-  flex: 1;
-}
-
-.skill-tree-head strong {
-  display: block;
-  overflow: hidden;
-  color: #16181d;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 14px;
-  font-weight: 750;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skill-tree-head span {
-  display: block;
-  margin-top: 5px;
-  color: #9aa0a8;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.skill-tree-head em {
-  flex-shrink: 0;
-  border: 1px solid #d4eee4;
-  border-radius: 999px;
-  background: #e9f5ef;
-  color: #1f8a5f;
-  padding: 2px 8px;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 800;
-}
-
-.skill-file-list {
-  min-height: 0;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-  padding: 10px 12px;
-}
-
-.skill-file-group {
+.sidebar-skill-row {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 4px;
 }
 
-.skill-file-group > div {
-  display: flex;
+.sidebar-skill-row-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 27px;
+  gap: 3px;
   align-items: center;
-  gap: 7px;
-  padding: 6px 8px;
-  color: #5a606b;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
-  font-weight: 650;
 }
 
-.skill-file-row,
-.skill-add-file-button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  min-height: 30px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #5a606b;
-  cursor: pointer;
-  padding: 0 8px;
-  text-align: left;
+.sidebar-tool-list .sidebar-skill-row-main > .sidebar-skill-select {
+  min-width: 0;
 }
 
-.skill-file-row:hover,
-.skill-file-row.active {
+.sidebar-tool-list .sidebar-skill-row-main > .sidebar-skill-toggle {
+  width: 27px;
+  min-width: 27px;
+  min-height: 31px;
+  display: grid;
+  place-items: center;
+  border-color: transparent;
+  padding: 0;
+  color: #aab0b9;
+}
+
+.sidebar-tool-list .sidebar-skill-row-main > .sidebar-skill-toggle:hover {
+  border-color: #eef0f3;
   background: #f6f7f9;
   color: #5b5bd6;
 }
 
-.skill-file-row span {
-  min-width: 0;
-  overflow: hidden;
+.sidebar-skill-toggle svg,
+.sidebar-skill-folder-toggle svg:first-child {
+  transition: transform 0.15s ease;
+}
+
+.sidebar-skill-toggle[data-open="true"] svg,
+.sidebar-skill-folder-toggle[data-open="true"] svg:first-child {
+  transform: rotate(90deg);
+}
+
+.sidebar-skill-file-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 1px 0 8px 21px;
+  padding-left: 8px;
+  border-left: 1px solid #e7e8ec;
+}
+
+.sidebar-skill-file-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 3px;
+}
+
+.sidebar-tool-list .sidebar-skill-folder-toggle {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-color: transparent;
+  padding: 0 8px;
+  color: #8d94a0;
   font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12.5px;
-  font-weight: 650;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.sidebar-tool-list .sidebar-skill-folder-toggle:hover {
+  border-color: transparent;
+  background: transparent;
+  color: #5b5bd6;
+}
+
+.sidebar-skill-folder-toggle span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #8d94a0;
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skill-add-file-button {
-  position: relative;
-  justify-content: center;
-  margin-top: 8px;
-  border: 1px dashed #d8dade;
-  color: #9aa0a8;
-  font-size: 12px;
-  font-weight: 700;
+.sidebar-skill-file-row {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
 }
 
-.skill-add-file-button:hover {
+.sidebar-skill-file-row span {
+  font-size: 11.5px;
+}
+
+.sidebar-skill-file-row.active {
+  background: #f6f7f9;
+  color: #5b5bd6;
+}
+
+.sidebar-skill-upload {
+  position: relative;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 7px;
+  border: 1px dashed #d8dade;
+  border-radius: 7px;
+  color: #9aa0a8;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 750;
+}
+
+.sidebar-skill-upload:hover {
   border-color: #5b5bd6;
   color: #5b5bd6;
 }
 
-.skill-add-file-button input {
+.sidebar-skill-upload input,
+.skill-package-upload input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -2678,16 +2674,17 @@ details[open] .timeline-chevron {
 }
 
 .skill-editor-body {
+  flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(260px, 1fr) auto;
-  gap: 16px;
-  overflow-y: auto;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   padding: 18px 20px;
 }
 
 .skill-editor-body > textarea {
-  min-height: 320px;
+  height: 100%;
+  min-height: 0;
   width: 100%;
   border: 1px solid #e2e4ea;
   border-radius: 12px;
@@ -2723,6 +2720,140 @@ details[open] .timeline-chevron {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.capability-create-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgba(22, 24, 29, 0.32);
+  backdrop-filter: blur(2px);
+}
+
+.capability-create-dialog {
+  width: min(620px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  border: 1px solid #e2e4ea;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 52px rgba(22, 24, 29, 0.18);
+  padding: 18px;
+}
+
+.capability-create-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eef0f3;
+}
+
+.capability-create-head > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.capability-create-head span {
+  display: block;
+  margin-bottom: 4px;
+  color: #aab0b9;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.capability-create-head h2 {
+  margin: 0;
+  color: #16181d;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.capability-create-head button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #e2e4ea;
+  border-radius: 9px;
+  background: #fff;
+  color: #9aa0a8;
+  cursor: pointer;
+}
+
+.capability-create-head button:hover {
+  border-color: #d8dade;
+  background: #f6f7f9;
+  color: #5a606b;
+}
+
+.capability-create-dialog .tool-create-drawer,
+.capability-create-dialog .skill-import-panel,
+.capability-create-dialog .mcp-config-form {
+  gap: 14px;
+}
+
+.skill-package-upload {
+  position: relative;
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px dashed #cfd3dc;
+  border-radius: 11px;
+  background: #fbfbfd;
+  color: #5a606b;
+  cursor: pointer;
+  padding: 12px 14px;
+}
+
+.skill-package-upload:hover {
+  border-color: #5b5bd6;
+  background: #f7f7ff;
+  color: #5b5bd6;
+}
+
+.skill-package-upload > svg {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 9px;
+  background: #eeeefb;
+  padding: 7px;
+}
+
+.skill-package-upload span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.skill-package-upload strong {
+  color: #2b2f37;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.skill-package-upload em {
+  color: #9aa0a8;
+  font-size: 11.5px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.capability-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ── Agent management workspace ── */
