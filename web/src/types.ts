@@ -128,8 +128,10 @@ export interface Dag {
     | 'review_required'
     | 'approved'
     | 'running'
+    | 'awaiting_review'
     | 'completed'
     | 'failed'
+    | 'rejected'
     | 'aborted';
   nodes: DagNode[];
   edges: DagEdge[];
@@ -185,7 +187,7 @@ export interface TraceLogEvent {
   type: 'dag' | 'node' | 'capability' | 'model';
   label: string;
   detail: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'rejected';
   timestamp: string;
 }
 

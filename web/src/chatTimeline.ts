@@ -1,6 +1,7 @@
 import type {
   CapabilityStreamEvent,
   Dag,
+  ReviewEventPayload,
   TraceLogEvent,
   ValidationFeedbackEvent,
 } from './types';
@@ -78,6 +79,65 @@ export function closeReasoningTimeline(
   return timeline;
 }
 
+export function appendValidatingTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+): MessageTimelineItem[] {
+  const items = [...(timeline ?? [])];
+  const last = items[items.length - 1];
+  if (last?.type === 'validating') return items;
+  items.push({ type: 'validating' });
+  return items;
+}
+
+export function appendValidationTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  event: ValidationFeedbackEvent,
+): MessageTimelineItem[] {
+  const items = [...(timeline ?? [])];
+  const last = items[items.length - 1];
+  if (last?.type === 'validating') {
+    items[items.length - 1] = { type: 'validation', event };
+    return items;
+  }
+  items.push({ type: 'validation', event });
+  return items;
+}
+
+export function appendCapabilityReviewDecisionTimeline(
+  timeline: MessageTimelineItem[] | undefined,
+  review: ReviewEventPayload,
+  approved: boolean,
+  feedback?: string,
+): MessageTimelineItem[] {
+  if (approved || review.kind !== 'capability_review' || !review.capability_call) return timeline ?? [];
+  const items = [...(timeline ?? [])];
+  const invocation = review.capability_call;
+  const content = feedback?.trim()
+    ? `人工审核已拒绝。\n\n反馈：${feedback.trim()}`
+    : '人工审核已拒绝。';
+  const result: CapabilityStreamEvent = {
+    type: 'capability.call.failed',
+    invocation_id: invocation.invocation_id,
+    capability_id: invocation.capability_id,
+    arguments: invocation.arguments,
+    content,
+  };
+  const existingIndex = items.findIndex(
+    (item) => item.type === 'capability' && item.event.invocation_id === invocation.invocation_id,
+  );
+
+  if (existingIndex !== -1) {
+    const existing = items[existingIndex];
+    if (existing.type === 'capability') {
+      items[existingIndex] = { ...existing, result };
+    }
+    return items;
+  }
+
+  items.push({ type: 'capability', event: result, result });
+  return items;
+}
+
 export function upsertDagTimeline(
   timeline: MessageTimelineItem[] | undefined,
   dag: Dag,
@@ -85,19 +145,54 @@ export function upsertDagTimeline(
   const items = [...(timeline ?? [])];
   const dagKey = dag.task_id || dag.dag_id;
   const existingIndex = items.findIndex(
-    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey && item.dag.version === dag.version,
+    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey,
   );
   if (existingIndex !== -1) {
+    const existing = items[existingIndex];
+    if (existing.type === 'dag' && existing.dag.status === 'rejected' && dag.status === 'running') {
+      return items;
+    }
     items[existingIndex] = { type: 'dag', dag };
     return items;
   }
   const last = items[items.length - 1];
+  if (last?.type === 'dag' && last.dag.status === 'rejected' && dag.status === 'running') {
+    return items;
+  }
   if (last?.type === 'dag' && (last.dag.task_id || last.dag.dag_id) === dagKey && last.dag.version === dag.version) {
     items[items.length - 1] = { type: 'dag', dag };
   } else {
     items.push({ type: 'dag', dag });
   }
   return items;
+}
+
+export function upsertDagMessageTimeline(
+  messages: ChatMessage[],
+  dag: Dag,
+): ChatMessage[] {
+  const dagKey = dag.task_id || dag.dag_id;
+  const existingMessageIndex = messages.findIndex((message) =>
+    message.role === 'assistant'
+    && message.timeline?.some((item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey),
+  );
+
+  if (existingMessageIndex !== -1) {
+    return messages.map((message, index) => index === existingMessageIndex
+      ? { ...message, timeline: upsertDagTimeline(message.timeline, dag) }
+      : message);
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === 'assistant' && (message.kind ?? 'text') === 'text') {
+      return messages.map((item, itemIndex) => itemIndex === index
+        ? { ...item, timeline: upsertDagTimeline(item.timeline, dag) }
+        : item);
+    }
+  }
+
+  return [...messages, { role: 'assistant', kind: 'text', content: '', timeline: [{ type: 'dag', dag }] }];
 }
 
 function hasUnclosedThink(content: string): boolean {
