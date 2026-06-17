@@ -37,14 +37,599 @@ const {
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
 const {
+  appendCapabilityReviewDecisionTimeline,
+  appendValidatingTimeline,
+  appendValidationTimeline,
   appendReasoningTimeline,
   appendTextTimeline,
   closeReasoningTimeline,
+  upsertDagMessageTimeline,
 } = await importTypeScript('../src/chatTimeline.ts');
 const {
   responseDeltaPayload,
   runStartedPayload,
 } = await importTypeScript('../src/streamProtocol.ts');
+
+test('chat workbench CSS removes legacy centered workspace layout', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const workspaceRuleCount = (css.match(/^\.workspace\s*\{/gm) ?? []).length;
+
+  assert.equal(workspaceRuleCount, 1);
+  assert.equal(css.includes('place-items: stretch center'), false);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\]\s+\.sidebar-nav button\s*\{[^}]*width:\s*41px;[^}]*height:\s*41px;/s);
+});
+
+test('chat workbench ports the design shell without mock run data', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'chat', label: '智能对话'/);
+  assert.match(appSource, /\{ key: 'orchestration', label: '智能体编排'/);
+  assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
+  assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
+  assert.match(appSource, /streamTask\(prompt, target, reviewLevel/);
+  assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runArtifacts: runState\?\.trace\?\.artifacts/);
+  assert.match(appSource, /function DesignEmptyConversation/);
+  assert.match(appSource, /function DesignWorkspacePlaceholder/);
+  assert.match(appSource, /className="brand-logo-expand"/);
+  assert.match(appSource, /className="user-avatar"/);
+  assert.match(appSource, /className="reasoning-summary"/);
+  assert.match(appSource, /className="timeline-chevron"/);
+  assert.match(appSource, /upsertDagMessageTimeline/);
+  assert.match(appSource, /appendValidatingTimeline/);
+  assert.match(appSource, /appendValidationTimeline/);
+  assert.match(appSource, /function ValidationCard/);
+  assert.doesNotMatch(appSource, /function ValidatingIndicator|function ValidationFeedbackCard/);
+  assert.match(appSource, /'打开审查' : '查看流程'/);
+  assert.match(appSource, /const \[artifactPanelOpen, setArtifactPanelOpen\] = useState\(false\);/);
+  assert.match(appSource, /const artifactDrawerOpen = artifactPanelOpen;/);
+  assert.match(appSource, /artifactPanelOpen=\{artifactDrawerOpen\}/);
+  assert.match(appSource, /onToggleArtifacts=\{\(\) => setArtifactPanelOpen\(\(value\) => !value\)\}/);
+  assert.match(appSource, /className="icon-button attachment-button"[\s\S]*title="上传附件（暂未接入）"[\s\S]*<Upload size=\{17\} \/>/);
+  assert.doesNotMatch(appSource, /const canOpen = artifacts\.length > 0|disabled=\{!canOpen\}|暂无产物/);
+  assert.doesNotMatch(appSource, /composer-hint|⌘ \+ Enter 发送|当前模式/);
+  assert.doesNotMatch(appSource, /designPreviewDag|designPreviewArtifacts|DesignPreviewConversation|designHistoryRows/);
+  assert.doesNotMatch(appSource, /task_ui_demo|grep_results\.txt|orchestration_map\.json|14 matches across 6 files/);
+  assert.doesNotMatch(appSource, /open review|view flow/);
+  assert.match(appSource, /activeWorkspace === 'orchestration' \? \([\s\S]*<OrchestrationWorkspace/);
+  assert.match(appSource, /activeWorkspace === 'tools' \? \([\s\S]*<CapabilityDirectory/);
+  assert.doesNotMatch(appSource, /task_ui_demo|grep_results\.txt|orchestration_map\.json|14 matches across 6 files/);
+
+  assert.match(css, /\.design-empty-conversation/);
+  assert.match(css, /\.brand-logo-expand/);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.brand-mark:hover \.brand-logo-expand/);
+  assert.match(css, /\.user-avatar/);
+  assert.match(css, /\.user-row\s*\{[^}]*--user-avatar-offset:\s*43px;[^}]*justify-content:\s*flex-end;/s);
+  assert.match(css, /\.user-avatar\s*\{[^}]*margin-right:\s*calc\(var\(--user-avatar-offset\) \* -1\);/s);
+  assert.match(css, /@media \(max-width: 760px\) \{[\s\S]*\.user-row\s*\{[^}]*--user-avatar-offset:\s*0px;/s);
+  assert.match(css, /\.design-workspace-placeholder/);
+  assert.match(css, /\.chat-workspace\s*\{[^}]*--chat-content-max-width:\s*1040px;/s);
+  assert.match(css, /\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-content-max-width:\s*1280px;/s);
+  assert.match(css, /\.conversation-frame\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
+  assert.match(css, /\.composer-card\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
+  assert.match(css, /\.composer-card textarea\s*\{[^}]*resize:\s*none;/s);
+  assert.match(css, /\.sidebar-history-head button svg\s*\{[^}]*display:\s*block;/s);
+  assert.match(css, /\.validation-card\s*\{[^}]*background:\s*#fff;/s);
+  assert.match(css, /\.validation-card \.timeline-section p\s*\{[^}]*font-size:\s*13px;[^}]*line-height:\s*1\.65;/s);
+  assert.match(css, /button:focus:not\(:focus-visible\)\s*\{[^}]*outline:\s*none;/s);
+  assert.match(css, /button:focus-visible\s*\{[^}]*outline:\s*2px solid rgba\(91, 91, 214, 0\.42\);/s);
+});
+
+test('composer uses upload placeholder instead of creating chats from the input toolbar', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
+
+  assert.ok(chatWorkspaceSource, 'ChatWorkspace function should exist');
+  assert.doesNotMatch(chatWorkspaceSource, /onNewChat/);
+  assert.doesNotMatch(chatWorkspaceSource, /title="新建会话"/);
+  assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
+});
+
+test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
+  const runDialogSource = appSource.match(/function RunDagDialog[\s\S]*?\nfunction CapabilityDirectory/)?.[0] ?? '';
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction chatCapabilityScopeLabel/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(orchestrationSource, 'OrchestrationWorkspace function should exist');
+  assert.ok(runDialogSource, 'RunDagDialog function should exist');
+  assert.ok(directorySource, 'CapabilityDirectory function should exist');
+
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
+  assert.match(appSource, /<OrchestrationWorkspace[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
+  assert.match(appSource, /<CapabilityDirectory[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*onRefresh=\{refreshConsoleData\}/);
+  assert.match(sidebarSource, /编排列表/);
+  assert.match(sidebarSource, /Artifacts/);
+  assert.match(sidebarSource, /className="sidebar-artifact-section"/);
+  assert.match(sidebarSource, /onUploadFiles\(event\.target\.files\)/);
+  assert.match(sidebarSource, /onCreateArtifact/);
+  assert.match(sidebarSource, /onDeleteArtifact\(artifact\.id\)/);
+  assert.match(sidebarSource, /sidebar-capability-nav/);
+  assert.match(sidebarSource, /toolsSub/);
+
+  assert.match(orchestrationSource, /className="design-orchestration-workspace"/);
+  assert.match(orchestrationSource, /className="orchestration-canvas"/);
+  assert.match(orchestrationSource, /<ReactFlow/);
+  assert.match(orchestrationSource, /nodeTypes=\{designNodeTypes\}/);
+  assert.match(orchestrationSource, /className="orchestration-flow"/);
+  assert.match(appSource, /function dagNameInputCh\(value: string\)/);
+  assert.match(orchestrationSource, /style=\{\{ width: `\$\{dagNameInputCh\(spec\.name \|\| 'untitled_dag'\)\}ch` \}\}/);
+  assert.match(orchestrationSource, /proOptions=\{\{ hideAttribution: true \}\}/);
+  assert.match(orchestrationSource, /onInit=\{setFlowInstance\}/);
+  assert.match(orchestrationSource, /screenToFlowPosition/);
+  assert.match(orchestrationSource, /onPaneClick=\{handlePaneClick\}/);
+  assert.match(orchestrationSource, /onAddNode\(contextCapability, contextMenu\.flowPosition\)/);
+  assert.doesNotMatch(orchestrationSource, /fitView=\{nodes\.length > 1\}/);
+  assert.match(orchestrationSource, /className="node-inspector"/);
+  assert.match(orchestrationSource, /\n\s+运行\n/);
+  assert.doesNotMatch(orchestrationSource, /运行编排/);
+  assert.match(orchestrationSource, /节点检查器/);
+  assert.match(orchestrationSource, /<InspectorArgumentEditor[\s\S]*value=\{selectedInvocation\.arguments \?\? \{\}\}[\s\S]*parameters=\{selectedCapability\?\.parameters\}/);
+  assert.match(orchestrationSource, /参数/);
+  assert.match(orchestrationSource, /键值/);
+  assert.match(orchestrationSource, /Raw/);
+  assert.match(orchestrationSource, /KEY/);
+  assert.match(orchestrationSource, /VALUE/);
+  assert.match(orchestrationSource, /添加参数/);
+  assert.match(orchestrationSource, /fields\.map\(\(field, index\) =>/);
+  assert.match(orchestrationSource, /key=\{`inspector-argument-\$\{field\.fixed \? key : index\}`\}/);
+  assert.doesNotMatch(orchestrationSource, /defaultValue=\{JSON\.stringify\(selectedInvocation\.arguments/);
+  assert.match(orchestrationSource, /Artifact 绑定/);
+  assert.match(orchestrationSource, /patchArtifactList\('inputs', artifact\.id, event\.target\.checked\)/);
+  assert.match(orchestrationSource, /patchArtifactList\('outputs', artifact\.id, event\.target\.checked\)/);
+  assert.doesNotMatch(orchestrationSource, /onCreateArtifact|onDeleteArtifact|onUploadFiles|onUploadToArtifact|handleArtifactUpload|上传到此 artifact|设为 path/);
+  assert.doesNotMatch(orchestrationSource, /console-grid orchestration-grid|flow-workbench|className="orchestration-edges"|<Controls|orchestration-summary-strip/);
+  assert.match(appSource, /function DesignDagNode/);
+  assert.match(appSource, /type: 'designDag'/);
+  assert.match(appSource, /function nextHorizontalNodePosition/);
+  assert.match(appSource, /onAddNode: \(capability\?: CapabilityDefinition, position\?: XYPosition\) => void;/);
+  assert.match(appSource, /graphFromDag\(nextDag, nextPositions\)/);
+  assert.match(appSource, /const selectedNode = dag\.nodes\.find\(\(node\) => node\.id === selectedId\) \?\? null;/);
+  assert.match(appSource, /key: 'orchestration', label: '智能体编排'/);
+
+  assert.match(runDialogSource, /运行编排/);
+  assert.match(runDialogSource, /运行时间线/);
+  assert.match(runDialogSource, /初始输入/);
+  assert.match(runDialogSource, /再次运行|开始运行/);
+  assert.doesNotMatch(runDialogSource, /Run DAG|Start Run|Run Again|Run Context|Input JSON|Blocking Issues|Review Nodes|No file inputs/);
+
+  assert.match(directorySource, /design-tools-workspace/);
+  assert.match(directorySource, /className="tools-detail-panel"/);
+  assert.match(directorySource, /skill-editor-toolbar/);
+  assert.match(directorySource, /新建工具|导入技能|保存配置/);
+  assert.match(directorySource, /createCapability\(/);
+  assert.match(directorySource, /testCapability\(/);
+  assert.match(appSource, /installSkill\(/);
+  assert.match(directorySource, /createMcpServer\(/);
+  assert.doesNotMatch(directorySource, /Capability Workbench|Capability Detail|console-grid directory-grid/);
+
+  assert.match(css, /\.design-orchestration-workspace/);
+  assert.match(css, /\.orchestration-canvas/);
+  assert.doesNotMatch(css, /\.orchestration-name-input\s*\{[^}]*\n\s*width:\s*min\(280px, 28vw\);/s);
+  assert.match(css, /\.orchestration-name-input\s*\{[^}]*max-width:\s*min\(280px, 28vw\);/s);
+  assert.match(css, /\.node-inspector/);
+  assert.match(css, /\.sidebar-artifact-section/);
+  assert.match(css, /\.inspector-argument-toggle/);
+  assert.match(css, /\.inspector-argument-header/);
+  assert.match(css, /\.inspector-argument-add/);
+  assert.match(css, /\.run-dialog-body\s*\{[^}]*grid-template-columns:\s*260px minmax\(0, 1fr\);/s);
+  assert.doesNotMatch(css, /\.orchestration-canvas-inner|\.orchestration-edges|\.orchestration-node(?:[\s:{\[]|$)|\.flow-workbench/);
+  assert.match(css, /\.design-tools-workspace/);
+  assert.match(css, /\.tools-detail-panel/);
+});
+
+test('capability management nests resources under the sidebar menu with list creation actions', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+
+  assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
+  assert.doesNotMatch(appSource, /\{ key: 'tools', label: '工具管理'/);
+  assert.match(appSource, /const \[capabilityCreationIntent, setCapabilityCreationIntent\] = useState<ToolDirectoryTab \| null>\(null\);/);
+  assert.match(appSource, /creationIntent=\{capabilityCreationIntent\}/);
+  assert.match(appSource, /onCreationIntentChange=\{setCapabilityCreationIntent\}/);
+
+  assert.match(sidebarSource, /className="sidebar-capability-nav"/);
+  assert.match(sidebarSource, /className="sidebar-capability-chevron"/);
+  assert.match(sidebarSource, /className="sidebar-subnav nested"/);
+  assert.match(sidebarSource, /onCreateTool/);
+  assert.match(sidebarSource, /onImportSkill/);
+  assert.match(sidebarSource, /onCreateMcp/);
+  assert.match(sidebarSource, /className="sidebar-tool-list-head"/);
+  assert.doesNotMatch(sidebarSource, /<div className="sidebar-label inline-label">工具管理<\/div>/);
+
+  assert.match(directorySource, /creationIntent === 'tools'/);
+  assert.match(directorySource, /creationIntent === 'skills'/);
+  assert.match(directorySource, /creationIntent === 'mcp'/);
+  assert.match(directorySource, /onCreationIntentChange\(null\)/);
+
+  assert.match(css, /\.sidebar-capability-nav/);
+  assert.match(css, /\.sidebar-capability-chevron/);
+  assert.match(css, /\.sidebar-subnav\.nested/);
+  assert.doesNotMatch(css, /\.sidebar-subnav\.nested\s*\{[^}]*border-left:/s);
+  assert.match(css, /\.sidebar-tool-list-head/);
+});
+
+test('skill management shows the selected skill file hierarchy in the left sidebar', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+
+  assert.match(sidebarSource, /selectedSkillDetail/);
+  assert.match(sidebarSource, /selectedSkillFilePath/);
+  assert.match(sidebarSource, /onSelectSkillFile/);
+  assert.match(sidebarSource, /onUploadSkillFile/);
+  assert.match(sidebarSource, /expandedSkillNames/);
+  assert.match(sidebarSource, /expandedSkillFolders/);
+  assert.match(sidebarSource, /const isSkillTreeOpen = expandedSkillNames\.has\(name\);/);
+  assert.match(sidebarSource, /className="sidebar-skill-row-main"/);
+  assert.match(sidebarSource, /className="sidebar-skill-toggle"/);
+  assert.match(sidebarSource, /className="sidebar-skill-folder-toggle"/);
+  assert.match(sidebarSource, /className="sidebar-skill-file-tree"/);
+  assert.match(sidebarSource, /sidebar-skill-file-row/);
+  assert.match(sidebarSource, /className="sidebar-skill-file-group"/);
+  assert.match(sidebarSource, /SKILL\.md/);
+
+  assert.doesNotMatch(directorySource, /tools-workspace-skill-tree/);
+  assert.doesNotMatch(directorySource, /skill-file-list/);
+  assert.doesNotMatch(directorySource, /skill-file-row/);
+  assert.match(directorySource, /skill-editor-toolbar/);
+  assert.match(directorySource, /selectedSkillFileDetail\?\.file_path \?\? 'SKILL\.md'/);
+
+  assert.match(css, /\.sidebar-skill-file-tree/);
+  assert.match(css, /\.sidebar-skill-file-row/);
+  assert.match(css, /\.sidebar-skill-file-group/);
+  assert.match(css, /\.sidebar-skill-row-main/);
+  assert.match(css, /\.sidebar-skill-toggle/);
+  assert.match(css, /\.sidebar-skill-folder-toggle/);
+  assert.doesNotMatch(css, /\.tools-workspace-skill-tree/);
+  assert.doesNotMatch(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*300px minmax\(0, 1fr\);/s);
+  assert.match(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+});
+
+test('capability creation uses modal dialogs and the skill preview fills the detail pane', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+  assert.match(directorySource, /className="capability-create-backdrop"/);
+  assert.match(directorySource, /className="capability-create-dialog"/);
+  assert.match(directorySource, /creationIntent === 'tools'/);
+  assert.match(directorySource, /creationIntent === 'skills'/);
+  assert.match(directorySource, /creationIntent === 'mcp'/);
+  assert.match(directorySource, /onUploadSkillFile/);
+  assert.match(directorySource, /accept="\.md,text\/markdown,text\/plain,\.zip,application\/zip"/);
+  assert.match(directorySource, /onUploadSkillFile\(event\.target\.files\?\.\[0\]\)/);
+  assert.doesNotMatch(directorySource, /skill-editor-body[\s\S]*<section className="skill-import-panel"/);
+  assert.doesNotMatch(directorySource, /tool-detail-surface[\s\S]*<section className="tool-create-drawer"/);
+  assert.doesNotMatch(directorySource, /mcp-detail-surface[\s\S]*creatingMcp/);
+
+  assert.match(css, /\.capability-create-backdrop/);
+  assert.match(css, /\.capability-create-dialog/);
+  assert.doesNotMatch(css, /\.skill-editor-body\s*\{[^}]*grid-template-rows:\s*minmax\(260px, 1fr\) auto;/s);
+  assert.match(css, /\.skill-editor-body\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.skill-editor-body > textarea\s*\{[^}]*height:\s*100%;/s);
+});
+
+test('tools management ports the full design columns while keeping backend actions', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(directorySource, 'CapabilityDirectory should end before AgentManagementWorkspace');
+  assert.match(directorySource, /const toolRows = capabilities\.filter/);
+  assert.match(directorySource, /const selectedTool = capabilities\.find/);
+  assert.match(directorySource, /tool-info-table/);
+  assert.match(directorySource, /tool-schema-block/);
+  assert.match(directorySource, /skill-editor-toolbar/);
+  assert.match(directorySource, /mcp-config-form/);
+  assert.match(directorySource, /testCapability\(selectedTool\.id, parsed\)/);
+  assert.match(appSource, /installSkill\(/);
+  assert.match(directorySource, /createMcpServer\(/);
+  assert.match(directorySource, /updateMcpServer\(/);
+  assert.doesNotMatch(directorySource, /className="tools-directory-main"/);
+  assert.doesNotMatch(directorySource, /className="tool-create-panel"/);
+
+  assert.match(css, /\.design-tools-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.design-tools-workspace\.skills-mode\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s);
+  assert.match(css, /\.sidebar-skill-file-tree/);
+  assert.match(css, /\.tool-info-table/);
+  assert.match(css, /\.skill-editor-toolbar/);
+  assert.match(css, /\.mcp-config-form/);
+});
+
+test('agent management uses real profiles and no longer renders the placeholder workspace', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
+  const agentSource = appSource.match(/function AgentManagementWorkspace[\s\S]*?\nfunction DagReviewDialog/)?.[0] ?? '';
+
+  assert.ok(agentSource, 'AgentManagementWorkspace should exist');
+  assert.match(appReturnSource, /activeWorkspace === 'agents' \? \([\s\S]*<AgentManagementWorkspace/);
+  assert.doesNotMatch(appReturnSource, /<DesignWorkspacePlaceholder/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*profiles=\{profiles\}[\s\S]*selectedProfileId=\{selectedProfileId\}/);
+  assert.match(appSource, /<AgentManagementWorkspace[\s\S]*profiles=\{profiles\}[\s\S]*selectedId=\{selectedProfileId\}[\s\S]*warnings=\{profileWarnings\}/);
+  assert.match(agentSource, /className="design-agents-workspace"/);
+  assert.match(agentSource, /className="agent-prompt-editor"/);
+  assert.match(agentSource, /className="agent-metadata-panel"/);
+  assert.match(agentSource, /selected\.content\.length/);
+  assert.match(agentSource, /capabilities\.filter\(\(capability\) => capability\.kind === 'agent'/);
+  assert.match(agentSource, /配置文件路径/);
+  assert.match(agentSource, /删除配置/);
+  assert.doesNotMatch(agentSource, /Profiles|Agent Profile|Profiles are read-only in this MVP/);
+
+  assert.match(css, /\.design-agents-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 380px;/s);
+  assert.match(css, /\.agent-prompt-editor/);
+  assert.match(css, /\.agent-metadata-panel/);
+  assert.match(css, /\.agent-config-list/);
+});
+
+test('validation timeline replaces an in-flight validating card with the result', () => {
+  const feedback = {
+    type: 'validation.feedback',
+    passed: false,
+    summary: 'The answer missed a requirement.',
+    reason: 'Missing artifact details.',
+    issues: [{ message: 'Mention the generated file.' }],
+  };
+  const validating = appendValidatingTimeline([{ type: 'text', content: '初稿。' }]);
+
+  const next = appendValidationTimeline(validating, feedback);
+
+  assert.equal(next.length, 2);
+  assert.equal(next.filter((item) => item.type === 'validating').length, 0);
+  assert.equal(next.filter((item) => item.type === 'validation').length, 1);
+  assert.equal(next[1].event.summary, feedback.summary);
+});
+
+test('upsertDagMessageTimeline updates an existing DAG card instead of duplicating after review resume', () => {
+  const plannedDag = {
+    dag_id: 'dag_review_001',
+    task_id: 'task_ui',
+    version: 1,
+    status: 'review_required',
+    nodes: [],
+    edges: [],
+  };
+  const approvedDag = {
+    ...plannedDag,
+    status: 'approved',
+  };
+  const messages = [
+    {
+      role: 'assistant',
+      content: '',
+      timeline: [{ type: 'dag', dag: plannedDag }],
+    },
+    {
+      role: 'assistant',
+      content: '',
+      timeline: [{ type: 'text', content: '继续执行。' }],
+    },
+  ];
+
+  const next = upsertDagMessageTimeline(messages, approvedDag);
+
+  assert.equal(next.length, 2);
+  assert.equal(next[0].timeline.filter((item) => item.type === 'dag').length, 1);
+  assert.equal(next[0].timeline[0].dag.status, 'approved');
+  assert.equal(next[1].timeline.some((item) => item.type === 'dag'), false);
+});
+
+test('upsertDagMessageTimeline keeps a rejected DAG card from reverting to running', () => {
+  const rejectedDag = {
+    dag_id: 'dag_review_001',
+    task_id: 'task_ui',
+    version: 1,
+    status: 'rejected',
+    nodes: [],
+    edges: [],
+  };
+  const runningDag = {
+    ...rejectedDag,
+    status: 'running',
+  };
+  const reviewDag = {
+    ...rejectedDag,
+    version: 2,
+    status: 'review_required',
+  };
+  const messages = [
+    {
+      role: 'assistant',
+      content: '',
+      timeline: [{ type: 'dag', dag: rejectedDag }],
+    },
+  ];
+
+  const stillRejected = upsertDagMessageTimeline(messages, runningDag);
+  const readyForReview = upsertDagMessageTimeline(stillRejected, reviewDag);
+
+  assert.equal(stillRejected[0].timeline[0].dag.status, 'rejected');
+  assert.equal(readyForReview[0].timeline[0].dag.status, 'review_required');
+});
+
+test('capability review rejection settles the running tool card', () => {
+  const review = {
+    review_id: 'review_tool_001',
+    kind: 'capability_review',
+    message: 'Review capability call.',
+    capability_call: {
+      invocation_id: 'call_001',
+      capability_id: 'tool.shell',
+      arguments: { command: 'rm -rf ./tmp' },
+    },
+  };
+  const timeline = [
+    {
+      type: 'capability',
+      event: {
+        type: 'capability.call.started',
+        invocation_id: 'call_001',
+        capability_id: 'tool.shell',
+        arguments: { command: 'rm -rf ./tmp' },
+      },
+    },
+  ];
+
+  const next = appendCapabilityReviewDecisionTimeline(timeline, review, false, '不要删除文件');
+
+  assert.equal(next.length, 1);
+  assert.equal(next[0].type, 'capability');
+  assert.equal(next[0].result.type, 'capability.call.failed');
+  assert.equal(next[0].result.invocation_id, 'call_001');
+  assert.match(next[0].result.content, /人工审核已拒绝/);
+  assert.match(next[0].result.content, /不要删除文件/);
+});
+
+test('dag review resume reuses the DAG assistant turn instead of opening a new chat frame', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const resumeDagSource = appSource.match(/const resumeDag = async[\s\S]*?\n  const confirmDag/)?.[0] ?? '';
+
+  assert.ok(resumeDagSource, 'resumeDag function should exist');
+  assert.doesNotMatch(resumeDagSource, /setMessages\(\(items\) => \[[\s\S]*role: 'assistant'/);
+});
+
+test('capability review resume keeps streaming in the existing assistant frame', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const resumeCapabilitySource = appSource.match(/const confirmCapabilityReview = async[\s\S]*?\n  const newChat/)?.[0] ?? '';
+
+  assert.ok(resumeCapabilitySource, 'confirmCapabilityReview function should exist');
+  assert.doesNotMatch(resumeCapabilitySource, /setMessages\(\(items\) => \[[\s\S]*role: 'assistant'/);
+});
+
+test('rejected review actions display as rejected instead of running', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const resumeDagSource = appSource.match(/const resumeDag = async[\s\S]*?\n  const confirmDag/)?.[0] ?? '';
+  const resumeCapabilitySource = appSource.match(/const confirmCapabilityReview = async[\s\S]*?\n  const newChat/)?.[0] ?? '';
+
+  assert.match(typesSource, /\| 'rejected'/);
+  assert.match(typesSource, /status: 'queued' \| 'running' \| 'awaiting_review' \| 'completed' \| 'failed' \| 'rejected'/);
+  assert.match(resumeDagSource, /status: approved \? 'running' : 'rejected'/);
+  assert.match(resumeDagSource, /const rejectedDag = \{ \.\.\.dag, status: 'rejected' as const \};/);
+  assert.match(resumeDagSource, /attachDagToLastAssistant\(rejectedDag\);/);
+  assert.match(resumeCapabilitySource, /status: approved \? 'running' : 'rejected'/);
+  assert.match(resumeCapabilitySource, /appendCapabilityReviewDecisionTimeline\(message\.timeline, capabilityReview, approved, feedback\)/);
+  assert.match(css, /\.trace-row\.rejected \.trace-icon/);
+  assert.match(css, /\.status-badge\[data-status="rejected"\]/);
+});
+
+test('awaiting review traces are not displayed as running', async () => {
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(typesSource, /status: 'queued' \| 'running' \| 'awaiting_review' \| 'completed' \| 'failed' \| 'rejected'/);
+  assert.match(apiSource, /if \(status === 'awaiting_review'\) return 'awaiting_review';/);
+  assert.match(css, /\.trace-row\.awaiting_review \.trace-icon/);
+  assert.match(css, /\.node-log-row\.awaiting_review summary/);
+});
+
+test('dag review dialog uses the compact review surface', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(appSource, /className="dag-review-eyebrow"/);
+  assert.match(appSource, /className="review-stat"/);
+  assert.match(appSource, /className="review-feedback-shell"/);
+  assert.match(appSource, /驳回并反馈/);
+  assert.match(appSource, /通过并继续/);
+  assert.match(css, /\.dag-review-eyebrow/);
+  assert.match(css, /\.review-feedback-shell textarea/);
+  assert.match(css, /\.review-stat/);
+});
+
+test('buildWorkbenchArtifacts exposes real DAG and trace artifacts for the preview panel', async () => {
+  const {
+    artifactPreviewText,
+    buildWorkbenchArtifacts,
+  } = await importTypeScript('../src/workbenchArtifacts.ts');
+  const dag = {
+    dag_id: 'dag_review_001',
+    task_id: 'task_ui_demo',
+    version: 1,
+    status: 'review_required',
+    nodes: [
+      {
+        id: 'inspect_project',
+        payload: {
+          type: 'capability',
+          invocation: {
+            capability_id: 'tool.grep',
+            kind: 'tool',
+            arguments: { pattern: 'DAG', path: '.' },
+          },
+        },
+        outputs: ['grep_results'],
+      },
+    ],
+    edges: [],
+  };
+  const dagArtifacts = {
+    dag_overview: {
+      id: 'dag_overview',
+      paths: ['outputs/dag_overview.md'],
+      description: 'Generated orchestration summary',
+      metadata: { display_name: 'dag_overview.md' },
+    },
+  };
+  const runArtifacts = {
+    grep_results: {
+      path: 'outputs/grep_results.txt',
+      content: '14 matches across 6 files',
+      media_type: 'text/plain',
+    },
+    orchestration_map: {
+      value: { dag_id: 'dag_review_001', nodes: 3 },
+    },
+  };
+
+  const items = buildWorkbenchArtifacts({ dag, dagArtifacts, runArtifacts });
+
+  assert.deepEqual(items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    extension: item.extension,
+    source: item.source,
+    preview: artifactPreviewText(item),
+  })), [
+    {
+      id: 'dag:dag_overview',
+      name: 'dag_overview.md',
+      extension: 'MD',
+      source: 'dag',
+      preview: 'Generated orchestration summary\n\nPath: outputs/dag_overview.md',
+    },
+    {
+      id: 'run:grep_results',
+      name: 'grep_results.txt',
+      extension: 'TXT',
+      source: 'run',
+      preview: '14 matches across 6 files',
+    },
+    {
+      id: 'run:orchestration_map',
+      name: 'orchestration_map.json',
+      extension: '{ }',
+      source: 'run',
+      preview: '{\n  "dag_id": "dag_review_001",\n  "nodes": 3\n}',
+    },
+  ]);
+});
 
 test('ensureSchemaArguments adds schema-backed defaults and keeps extras', () => {
   const parameters = {

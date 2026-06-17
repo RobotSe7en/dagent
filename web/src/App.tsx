@@ -6,8 +6,10 @@ import {
   Background,
   Controls,
   Edge,
+  Handle,
   MiniMap,
   Node,
+  Position,
   ReactFlow,
   addEdge,
   applyEdgeChanges,
@@ -15,19 +17,24 @@ import {
   type Connection,
   type EdgeChange,
   type NodeChange,
+  type ReactFlowInstance,
+  type XYPosition,
 } from '@xyflow/react';
 import {
   AlertTriangle,
   Bot,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleStop,
+  Copy,
   Database,
+  File,
   FileText,
-  FolderUp,
+  Folder,
   GitBranch,
   Loader,
   MessageSquare,
-  MessageSquarePlus,
   Plus,
   Play,
   RefreshCw,
@@ -66,8 +73,8 @@ import {
   setValidationEnabled as apiSetValidation,
   streamTask,
   testCapability,
-  updateMcpServer,
   uploadDagArtifact,
+  updateMcpServer,
 } from './api';
 import type { ApiRunState } from './api';
 import type {
@@ -128,13 +135,21 @@ import {
   type RunTranscriptItem,
 } from './orchestrationRun';
 import {
+  appendCapabilityReviewDecisionTimeline,
   appendReasoningTimeline,
   appendTextTimeline,
+  appendValidatingTimeline,
+  appendValidationTimeline,
   closeReasoningTimeline,
-  upsertDagTimeline,
+  upsertDagMessageTimeline,
   type ChatMessage,
   type MessageTimelineItem,
 } from './chatTimeline';
+import {
+  artifactPreviewText,
+  buildWorkbenchArtifacts,
+  type WorkbenchArtifactItem,
+} from './workbenchArtifacts';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -149,13 +164,6 @@ const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'mem
 const riskRank: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
 const boundaryRank: Record<BoundaryMode, number> = { read_only: 0, write_limited: 1, full: 2 };
 const defaultWorkspaceRoot = '.dagent-runs';
-const directoryInputProps = {
-  directory: '',
-  webkitdirectory: '',
-} as React.InputHTMLAttributes<HTMLInputElement> & {
-  directory: string;
-  webkitdirectory: string;
-};
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -203,10 +211,16 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
 
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
   { key: 'chat', label: '智能对话', icon: <MessageSquare size={16} /> },
-  { key: 'orchestration', label: 'AI编排', icon: <GitBranch size={16} /> },
-  { key: 'tools', label: '工具管理', icon: <Wrench size={16} /> },
-  { key: 'agents', label: '智能体管理', icon: <UserCog size={16} /> },
+  { key: 'orchestration', label: '智能体编排', icon: <GitBranch size={16} /> },
+  { key: 'tools', label: '能力管理', icon: <Wrench size={16} /> },
+  { key: 'agents', label: '智能体管理', icon: <Bot size={16} /> },
 ];
+
+const workspacePlaceholderLabels: Record<Exclude<WorkspaceKey, 'chat'>, string> = {
+  orchestration: 'AI 编排工作区',
+  tools: '能力管理工作区',
+  agents: '智能体管理工作区',
+};
 
 function isCapabilityNode(node: DagNode): node is DagNode & { payload: CapabilityNodePayload } {
   return node.payload.type === 'capability';
@@ -490,6 +504,7 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
 
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
+type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type TokenChannel = 'reasoning' | 'content';
 
 interface QueuedAssistantToken {
@@ -497,7 +512,18 @@ interface QueuedAssistantToken {
   content: string;
 }
 
-function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
+interface DesignDagNodeData {
+  nodeId: string;
+  title: string;
+  detail: string;
+  kind: string;
+  risk: RiskLevel;
+  boundaryMode: BoundaryMode;
+  reviewAttention: boolean;
+  status: string;
+}
+
+function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}): { nodes: Node[]; edges: Edge[] } {
   const depths = nodeDepths(dag);
   const laneCounts = new Map<number, number>();
   const nodes = dag.nodes.map((rawItem) => {
@@ -512,36 +538,22 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
     const depth = depths.get(item.id) ?? 0;
     const lane = laneCounts.get(depth) ?? 0;
     const detail = nodeDisplayDetail(item);
-    const detailTitle = invocation?.capability_id ? JSON.stringify(invocation.arguments) : detail;
     laneCounts.set(depth, lane + 1);
     return {
       id: item.id,
-      position: { x: 80 + depth * 300, y: 70 + lane * 170 },
+      position: layoutPositions[item.id] ?? { x: 80 + depth * 300, y: 70 + lane * 170 },
       className: `status-${status}${reviewAttention ? ' review-attention-node' : ''}`,
       data: {
-        label: (
-          <div className={`dag-node dag-node-status-${status}`}>
-            <div className="dag-node-top">
-              <span title={item.id}>{item.id}</span>
-              <div className="dag-node-badges">
-                <span className={`risk-pill ${riskClass[risk]}`}>{risk}</span>
-                {reviewInfo.hasBoundary ? (
-                  <span className={`boundary-pill boundary-${boundaryMode}`}>
-                    {boundaryMode.replace('_', ' ')}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-            <div
-              className="dag-node-tools"
-              title={invocation ? detailTitle : 'Internal DAG start node'}
-            >
-              {detail}
-            </div>
-          </div>
-        ),
+        nodeId: item.id,
+        title: item.title || item.id,
+        detail,
+        kind: invocation?.kind ?? item.payload.type,
+        risk,
+        boundaryMode,
+        reviewAttention,
+        status,
       },
-      type: 'default',
+      type: 'designDag',
     };
   });
   const edges = dag.edges.map((edge) => ({
@@ -554,6 +566,60 @@ function graphFromDag(dag: Dag): { nodes: Node[]; edges: Edge[] } {
   }));
   return { nodes, edges };
 }
+
+function nextHorizontalNodePosition(nodes: Node[]): XYPosition {
+  if (!nodes.length) return { x: 80, y: 70 };
+  const ordered = [...nodes].sort((left, right) => left.position.x - right.position.x);
+  const last = ordered[ordered.length - 1];
+  const first = ordered[0];
+  return {
+    x: Math.round(last.position.x + 240),
+    y: Math.round(first.position.y),
+  };
+}
+
+function nodePositionsFromNodes(nodes: Node[]): Record<string, XYPosition> {
+  return Object.fromEntries(
+    nodes.map((node) => [node.id, {
+      x: Math.round(node.position.x),
+      y: Math.round(node.position.y),
+    }]),
+  );
+}
+
+function pruneNodePositions(positions: Record<string, XYPosition>, dag: Dag): Record<string, XYPosition> {
+  const nodeIds = new Set(dag.nodes.map((node) => node.id));
+  return Object.fromEntries(
+    Object.entries(positions).filter(([id]) => nodeIds.has(id)),
+  );
+}
+
+function DesignDagNode({ data, selected }: any) {
+  const nodeData = data as DesignDagNodeData;
+  return (
+    <div
+      className={selected ? 'orchestration-node-card selected' : 'orchestration-node-card'}
+      data-kind={nodeData.kind}
+      data-risk={nodeData.risk}
+      data-status={nodeData.status}
+    >
+      <Handle className="orchestration-handle" position={Position.Left} type="target" />
+      <span className="orchestration-node-icon">
+        <GitBranch size={15} />
+      </span>
+      <span className="orchestration-node-copy">
+        <strong title={nodeData.nodeId}>{nodeData.title}</strong>
+        <em title={nodeData.detail}>{nodeData.detail}</em>
+      </span>
+      {nodeData.reviewAttention ? <span className={`risk-chip risk-${nodeData.risk}`}>{nodeData.risk}</span> : null}
+      <Handle className="orchestration-handle" position={Position.Right} type="source" />
+    </div>
+  );
+}
+
+const designNodeTypes = {
+  designDag: DesignDagNode,
+};
 
 function nodeDisplayDetail(node: DagNode): string {
   const payload = node.payload;
@@ -577,23 +643,18 @@ function nodeDisplayDetail(node: DagNode): string {
 }
 
 function isDagConfirmable(dag: Dag): boolean {
-  return !['completed', 'failed', 'aborted', 'running'].includes(dag.status);
+  return !['completed', 'failed', 'aborted', 'running', 'awaiting_review', 'rejected'].includes(dag.status);
 }
 
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
   const [selectedId, setSelectedId] = useState<string>('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: 'assistant',
-      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto chooses for you.',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [runState, setRunState] = useState<ApiRunState | null>(null);
   const [draft, setDraft] = useState('');
   const [target, setTarget] = useState<ChatTarget>('auto');
-  const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('fast');
+  const [reviewLevel, setReviewLevel] = useState<ReviewLevel>('careful');
   const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
   const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
   const [selectedChatSkillNames, setSelectedChatSkillNames] = useState<string[]>([]);
@@ -602,6 +663,9 @@ export function App() {
   const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
+  const [selectedArtifactId, setSelectedArtifactId] = useState('');
   const [validationEnabled, setValidationEnabled] = useState(false);
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -620,6 +684,8 @@ export function App() {
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
   const [editorUserDag, setEditorUserDag] = useState<UserDag>(() => createEmptyUserDag());
   const [editorDag, setEditorDag] = useState<Dag>(() => runtimeDagFromUserDag(editorUserDag));
+  const [editorLayoutPositions, setEditorLayoutPositionsState] = useState<Record<string, XYPosition>>({});
+  const editorLayoutPositionsRef = useRef<Record<string, XYPosition>>({});
   const [editorSelectedId, setEditorSelectedId] = useState('');
   const [editorTrace, setEditorTrace] = useState<TraceLogEvent[]>([]);
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
@@ -633,20 +699,66 @@ export function App() {
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [toolsDirectoryTab, setToolsDirectoryTab] = useState<ToolDirectoryTab>('tools');
+  const [capabilityCreationIntent, setCapabilityCreationIntent] = useState<ToolDirectoryTab | null>(null);
+  const [toolsDirectoryQuery, setToolsDirectoryQuery] = useState('');
+  const [selectedToolCapabilityId, setSelectedToolCapabilityId] = useState('');
+  const [selectedToolSkillName, setSelectedToolSkillName] = useState('');
+  const [selectedToolMcpName, setSelectedToolMcpName] = useState('');
+  const [selectedSkillDetail, setSelectedSkillDetail] = useState<SkillDetail | null>(null);
+  const [selectedSkillFileDetail, setSelectedSkillFileDetail] = useState<SkillFileDetail | null>(null);
+  const [skillMessage, setSkillMessage] = useState('');
+  const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
+  const setEditorLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
+    editorLayoutPositionsRef.current = positions;
+    setEditorLayoutPositionsState(positions);
+  }, []);
 
   const chatScopeLabel = chatCapabilityScopeLabel(
     chatScopeMode,
     selectedChatCapabilityIds.length,
     selectedChatSkillNames.length,
   );
+  const chatArtifacts = useMemo(
+    () => buildWorkbenchArtifacts({
+      dag,
+      runArtifacts: runState?.trace?.artifacts ?? null,
+    }),
+    [dag, runState],
+  );
+  const artifactDrawerOpen = artifactPanelOpen;
+  const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? chatArtifacts[0] ?? null;
+  const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
+  const selectedSidebarSkill = useMemo(
+    () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
+    [selectedToolSkillName, skills],
+  );
+
+  const selectToolsDirectoryTab = useCallback((tab: ToolDirectoryTab) => {
+    setToolsDirectoryTab(tab);
+    setCapabilityCreationIntent(null);
+  }, []);
+
+  const requestCapabilityCreation = useCallback((tab: ToolDirectoryTab) => {
+    setActiveWorkspace('tools');
+    setToolsDirectoryTab(tab);
+    setCapabilityCreationIntent(tab);
+    if (tab === 'mcp') {
+      setSelectedToolMcpName('');
+    }
+  }, []);
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
   const [edges, setEdges] = useState<Edge[]>(graph.edges);
-  const editorGraph = useMemo(() => graphFromDag(editorDag), [editorDag]);
+  const editorGraph = useMemo(() => graphFromDag(editorDag, editorLayoutPositions), [editorDag, editorLayoutPositions]);
   const [editorNodes, setEditorNodes] = useState<Node[]>(editorGraph.nodes);
   const [editorEdges, setEditorEdges] = useState<Edge[]>(editorGraph.edges);
+  const editorArtifacts = useMemo(
+    () => Object.values(editorUserDag.artifacts ?? {}).sort(compareArtifactsByPath),
+    [editorUserDag.artifacts],
+  );
 
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
@@ -669,6 +781,131 @@ export function App() {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
   }, []);
+
+  const openSkillDetail = useCallback(async (skill: SkillSummary) => {
+    const lookup = skillLookupName(skill);
+    setSelectedToolSkillName(lookup);
+    setSkillMessage(`Loading ${lookup}...`);
+    try {
+      const detail = await getSkill(lookup);
+      setSelectedSkillDetail(detail);
+      setSelectedSkillFileDetail(null);
+      setSkillMessage('');
+    } catch (exc) {
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (toolsDirectoryTab !== 'skills') return;
+    if (!selectedSidebarSkill) {
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      return;
+    }
+    const lookup = skillLookupName(selectedSidebarSkill);
+    if (selectedSkillDetail && skillLookupName(selectedSkillDetail.skill) === lookup) return;
+    void openSkillDetail(selectedSidebarSkill);
+  }, [openSkillDetail, selectedSidebarSkill, selectedSkillDetail, toolsDirectoryTab]);
+
+  const selectToolSkill = useCallback((name: string) => {
+    setSelectedToolSkillName(name);
+    setSelectedSkillFileDetail(null);
+  }, []);
+
+  const selectSkillFile = useCallback(async (filePath: string | null) => {
+    if (!filePath) {
+      setSelectedSkillFileDetail(null);
+      return;
+    }
+    const skill = selectedSkillDetail?.skill ?? selectedSidebarSkill;
+    if (!skill) return;
+    const lookup = skillLookupName(skill);
+    setSkillMessage(`Loading ${filePath}...`);
+    try {
+      const detail = await getSkillFile(lookup, filePath);
+      setSelectedSkillFileDetail(detail);
+      setSkillMessage('');
+    } catch (exc) {
+      setSelectedSkillFileDetail(null);
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [selectedSidebarSkill, selectedSkillDetail]);
+
+  const loadSkillFile = useCallback(async (file: File | undefined) => {
+    if (!file) return;
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      setSkillMessage('Installing skill package...');
+      try {
+        const detail = await installSkill({ file });
+        setSelectedSkillDetail(detail);
+        setSelectedSkillFileDetail(null);
+        setSelectedToolSkillName(skillLookupName(detail.skill));
+        setCapabilityCreationIntent(null);
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+        try {
+          await refreshConsoleData();
+        } catch (exc) {
+          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+        }
+      } catch (exc) {
+        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+      }
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
+      setCapabilityCreationIntent('skills');
+    };
+    reader.readAsText(file);
+  }, [refreshConsoleData]);
+
+  const installSkillDraft = useCallback(async () => {
+    setSkillMessage('Installing skill...');
+    try {
+      const detail = await installSkill({
+        content: skillImport.content,
+        name: skillImport.name || undefined,
+        description: skillImport.description || undefined,
+        category: skillImport.category || undefined,
+      });
+      setSelectedSkillDetail(detail);
+      setSelectedSkillFileDetail(null);
+      setSelectedToolSkillName(skillLookupName(detail.skill));
+      setCapabilityCreationIntent(null);
+      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
+      try {
+        await refreshConsoleData();
+      } catch (exc) {
+        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [refreshConsoleData, skillImport]);
+
+  const removeManagedSkill = useCallback(async () => {
+    const skill = selectedSkillDetail?.skill ?? selectedSidebarSkill;
+    if (!skill || !isManagedSkill(skill)) return;
+    setSkillMessage('Deleting skill...');
+    try {
+      await deleteSkill(skillLookupName(skill));
+      setSelectedSkillDetail(null);
+      setSelectedSkillFileDetail(null);
+      setSelectedToolSkillName('');
+      setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
+      try {
+        await refreshConsoleData();
+      } catch (exc) {
+        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+    } catch (exc) {
+      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [refreshConsoleData, selectedSidebarSkill, selectedSkillDetail]);
 
   useEffect(() => {
     const requestId = ++validationRequestIdRef.current;
@@ -696,15 +933,46 @@ export function App() {
   }, [capabilities]);
 
   useEffect(() => {
+    setSelectedToolCapabilityId((current) =>
+      current && capabilities.some((capability) => capability.id === current)
+        ? current
+        : capabilities[0]?.id ?? '',
+    );
+  }, [capabilities]);
+
+  useEffect(() => {
     const availableSkills = new Set(skills.map((skill) => skillLookupName(skill)));
     setSelectedChatSkillNames((items) => items.filter((name) => availableSkills.has(name)));
+    setSelectedToolSkillName((current) =>
+      current && availableSkills.has(current)
+        ? current
+        : skills[0] ? skillLookupName(skills[0]) : '',
+    );
   }, [skills]);
+
+  useEffect(() => {
+    setSelectedToolMcpName((current) =>
+      current && mcpServers.some((server) => server.name === current)
+        ? current
+        : mcpServers[0]?.name ?? '',
+    );
+  }, [mcpServers]);
 
   useEffect(() => {
     const element = messageListRef.current;
     if (!element) return;
     element.scrollTop = element.scrollHeight;
   }, [messages, streaming]);
+
+  useEffect(() => {
+    if (!chatArtifacts.length) {
+      setSelectedArtifactId('');
+      return;
+    }
+    setSelectedArtifactId((current) =>
+      chatArtifacts.some((item) => item.id === current) ? current : chatArtifacts[0].id,
+    );
+  }, [chatArtifacts]);
 
   const toggleValidation = async () => {
     if (validationPending) return;
@@ -740,13 +1008,15 @@ export function App() {
 
   const syncEditorDag = useCallback((nextDag: Dag) => {
     setEditorDag(nextDag);
-    const nextGraph = graphFromDag(nextDag);
+    const nextPositions = pruneNodePositions(editorLayoutPositionsRef.current, nextDag);
+    setEditorLayoutPositions(nextPositions);
+    const nextGraph = graphFromDag(nextDag, nextPositions);
     setEditorNodes(nextGraph.nodes);
     setEditorEdges(nextGraph.edges);
     setEditorSelectedId((current) =>
       nextDag.nodes.some((node) => node.id === current) ? current : nextDag.nodes[0]?.id ?? '',
     );
-  }, []);
+  }, [setEditorLayoutPositions]);
 
   const setEditorUserDagAndRuntimeDag = useCallback((spec: UserDag) => {
     const normalizedSpec = {
@@ -775,32 +1045,6 @@ export function App() {
     if (patch.id) {
       setEditorDag((current) => ({ ...current, dag_id: patch.id as string, task_id: patch.id as string }));
     }
-  };
-
-  const upsertEditorArtifact = (artifact: Artifact, previousId?: string) => {
-    const nextArtifactId = artifact.id.trim();
-    if (!nextArtifactId) return;
-    const normalizedArtifact = { ...artifact, id: nextArtifactId };
-    const nextArtifacts = upsertArtifact(editorUserDag.artifacts ?? {}, normalizedArtifact, previousId);
-    const nextNodes = previousId && previousId !== nextArtifactId
-      ? editorDag.nodes.map((node) => ({
-          ...node,
-          inputs: (node.inputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
-          outputs: (node.outputs ?? []).map((id) => (id === previousId ? nextArtifactId : id)),
-        }))
-      : editorDag.nodes;
-    const nextSpec = {
-      ...userDagFromRuntimeDag(editorUserDag, { ...editorDag, nodes: nextNodes }),
-      artifacts: nextArtifacts,
-    };
-    setEditorUserDag(nextSpec);
-    syncEditorDag(runtimeDagFromUserDag(nextSpec));
-  };
-
-  const deleteEditorArtifact = (artifactId: string) => {
-    const nextSpec = removeArtifactBinding(userDagFromRuntimeDag(editorUserDag, editorDag), artifactId);
-    setEditorUserDag(nextSpec);
-    syncEditorDag(runtimeDagFromUserDag(nextSpec));
   };
 
   const updateEditorDag = (updater: (current: Dag) => Dag) => {
@@ -944,11 +1188,11 @@ export function App() {
   };
 
   const attachDagToLastAssistant = (nextDag: Dag) => {
-    updateLastAssistantText((message) => ({
-      ...message,
-      dagSnapshot: nextDag,
-      timeline: upsertDagTimeline(message.timeline, nextDag),
-      traceSnapshot: message.traceSnapshot,
+    setMessages((items) => upsertDagMessageTimeline(items, nextDag).map((message) => {
+      const hasDag = message.timeline?.some(
+        (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === (nextDag.task_id || nextDag.dag_id),
+      );
+      return hasDag ? { ...message, dagSnapshot: nextDag } : message;
     }));
   };
 
@@ -986,7 +1230,7 @@ export function App() {
     closeAssistantReasoning();
     updateLastAssistantText((message) => ({
       ...message,
-      timeline: [...(message.timeline ?? []), { type: 'validation', event }],
+      timeline: appendValidationTimeline(message.timeline, event),
     }));
   };
 
@@ -995,7 +1239,7 @@ export function App() {
     closeAssistantReasoning();
     updateLastAssistantText((message) => ({
       ...message,
-      timeline: [...(message.timeline ?? []), { type: 'validating' }],
+      timeline: appendValidatingTimeline(message.timeline),
     }));
   };
 
@@ -1021,7 +1265,13 @@ export function App() {
 
   const onNodesChange = useCallback((changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
-  const onEditorNodesChange = useCallback((changes: NodeChange[]) => setEditorNodes((nds) => applyNodeChanges(changes, nds)), []);
+  const onEditorNodesChange = useCallback((changes: NodeChange[]) => {
+    setEditorNodes((nds) => {
+      const next = applyNodeChanges(changes, nds);
+      setEditorLayoutPositions(nodePositionsFromNodes(next));
+      return next;
+    });
+  }, [setEditorLayoutPositions]);
   const onEditorEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEditorEdges((eds) => {
       const next = applyEdgeChanges(changes, eds);
@@ -1124,9 +1374,14 @@ export function App() {
     setEditorUserDagAndRuntimeDag(spec);
   };
 
-  const addEditorNode = (capability?: CapabilityDefinition) => {
+  const addEditorNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
     const selectedCapability = capability ?? capabilities.find((item) => item.enabled);
     const id = uniqueNodeId(editorDag);
+    const nodePosition = position ?? nextHorizontalNodePosition(editorNodes);
+    setEditorLayoutPositions({
+      ...editorLayoutPositionsRef.current,
+      [id]: nodePosition,
+    });
     updateEditorDag((current) => ({
       ...current,
       status: 'draft',
@@ -1162,6 +1417,10 @@ export function App() {
         const merged = normalizeNode({ ...node, ...patch });
         if (patch.id && patch.id !== nodeId) {
           setEditorSelectedId(patch.id);
+          const positions = { ...editorLayoutPositionsRef.current };
+          positions[patch.id] = positions[nodeId] ?? editorNodes.find((item) => item.id === nodeId)?.position ?? nextHorizontalNodePosition(editorNodes);
+          delete positions[nodeId];
+          setEditorLayoutPositions(positions);
         }
         return merged;
       });
@@ -1191,79 +1450,78 @@ export function App() {
     }));
   };
 
-  const persistEditorUserDag = async (): Promise<boolean> => {
-    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+  const saveEditorDraftSpec = async (
+    spec: UserDag,
+    savingMessage = '正在保存 DAG...',
+    savedMessage?: (saved: UserDag) => string,
+  ): Promise<UserDag | null> => {
     const validation = validateUserDagDraft(spec);
     if (validation) {
       setEditorMessage(validation);
-      return false;
+      return null;
     }
-    setEditorMessage('Saving DAG...');
+    setEditorMessage(savingMessage);
     try {
       const saved = await saveDag(spec);
       setEditorUserDagAndRuntimeDag(saved);
       await refreshConsoleData();
-      setEditorMessage(`Saved ${saved.name || 'DAG'}.`);
-      return true;
+      setEditorMessage(savedMessage ? savedMessage(saved) : `已保存 ${saved.name || 'DAG'}。`);
+      return saved;
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
-      return false;
+      return null;
     }
   };
 
-  const uploadEditorArtifact = async (artifactId: string, fileList: FileList | null) => {
-    const files = Array.from(fileList ?? []);
-    if (!files.length) return;
+  const persistEditorUserDag = async (): Promise<boolean> => {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
-    const validation = validateUserDagDraft(spec);
-    if (validation) {
-      setEditorMessage(validation);
-      return;
-    }
-    setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
-    try {
-      const saved = await saveDag(spec);
-      setEditorUserDagAndRuntimeDag(saved);
-      await uploadDagArtifact(saved.id, artifactId, files);
-      await refreshConsoleData();
-      setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}.`);
-    } catch (exc) {
-      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
-    }
+    return Boolean(await saveEditorDraftSpec(spec));
+  };
+
+  const createEditorArtifact = () => {
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const artifactId = uniqueDraftArtifactId(spec.artifacts ?? {}, 'artifact');
+    const artifact: Artifact = {
+      id: artifactId,
+      paths: [`outputs/${artifactId}`],
+      description: artifactId,
+      required: true,
+      metadata: {},
+    };
+    setEditorUserDag({
+      ...spec,
+      artifacts: upsertArtifact(spec.artifacts ?? {}, artifact),
+    });
+    setEditorMessage(`已添加 artifact ${artifactId}。`);
+  };
+
+  const deleteEditorArtifact = (artifactId: string) => {
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const nextSpec = removeArtifactBinding(spec, artifactId);
+    setEditorUserDagAndRuntimeDag(nextSpec);
+    setEditorMessage(`已删除 artifact ${artifactId}。`);
   };
 
   const uploadEditorFiles = async (fileList: FileList | null) => {
-    const files = Array.from(fileList ?? []);
+    const files = filesFromList(fileList);
     if (!files.length) return;
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
-    const uploadRoot = uploadBatchRoot(files);
-    const uploadDraft = createUploadedFileArtifacts(uploadSourceFiles(files), {
+    const uploadDraft = createUploadedFileArtifacts(files as UploadSourceFile[], {
       artifacts: spec.artifacts ?? {},
-      uploadRoot,
+      uploadRoot: 'inputs/uploads',
     });
-    const nextSpec = {
-      ...spec,
-      artifacts: uploadDraft.artifacts,
-    };
-    const validation = validateUserDagDraft(nextSpec);
-    if (validation) {
-      setEditorMessage(validation);
-      return;
-    }
-    setEditorMessage(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}...`);
+    const saved = await saveEditorDraftSpec(
+      { ...spec, artifacts: uploadDraft.artifacts },
+      `正在保存并上传 ${files.length} 个文件...`,
+      () => `正在上传 ${files.length} 个文件...`,
+    );
+    if (!saved) return;
     try {
-      const saved = await saveDag(nextSpec);
-      setEditorUserDagAndRuntimeDag(saved);
-      for (let index = 0; index < uploadDraft.uploads.length; index += 1) {
-        await uploadDagArtifact(
-          saved.id,
-          uploadDraft.uploads[index].artifact.id,
-          [files[index]],
-          { preserveRelativePath: false },
-        );
-      }
+      await Promise.all(uploadDraft.uploads.map((upload, index) =>
+        uploadDagArtifact(saved.id, upload.artifact.id, [files[index]], { preserveRelativePath: false }),
+      ));
       await refreshConsoleData();
-      setEditorMessage(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'} to ${uploadRoot}.`);
+      setEditorMessage(`已上传 ${files.length} 个文件。`);
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -1435,10 +1693,6 @@ export function App() {
     contentStreamedRef.current = false;
     stopTokenTimer();
     setStreaming(true);
-    setMessages((items) => [
-      ...items,
-      { role: 'assistant', kind: 'text', content: '' },
-    ]);
     const reviewId = dagReview.review_id;
     const feedback = approved ? '' : dagReviewFeedback.trim();
     setDagReview(null);
@@ -1447,8 +1701,13 @@ export function App() {
       type: 'dag',
       label: approved ? 'dag_confirmed' : 'dag_rejected',
       detail: `${approved ? 'Approving' : 'Rejecting'} review ${reviewId}.`,
-      status: 'running',
+      status: approved ? 'running' : 'rejected',
     });
+    if (!approved) {
+      const rejectedDag = { ...dag, status: 'rejected' as const };
+      syncDag(rejectedDag);
+      attachDagToLastAssistant(rejectedDag);
+    }
 
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
@@ -1521,11 +1780,20 @@ export function App() {
     contentStreamedRef.current = false;
     stopTokenTimer();
     setStreaming(true);
-    setMessages((items) => [
-      ...items,
-      { role: 'assistant', kind: 'text', content: '' },
-    ]);
-    appendTrace({ type: 'model', label: 'capability_review_resumed', detail: `Capability review ${approved ? 'approved' : 'rejected'}.`, status: 'running' });
+    appendTrace({
+      type: 'model',
+      label: 'capability_review_resumed',
+      detail: `Capability review ${approved ? 'approved' : 'rejected'}.`,
+      status: approved ? 'running' : 'rejected',
+    });
+    if (!approved) {
+      flushQueuedTokensNow();
+      closeAssistantReasoning();
+      updateLastAssistantText((message) => ({
+        ...message,
+        timeline: appendCapabilityReviewDecisionTimeline(message.timeline, capabilityReview, approved, feedback),
+      }));
+    }
 
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
@@ -1575,10 +1843,7 @@ export function App() {
     } catch (exc) {
       setValidationError(exc instanceof Error ? exc.message : String(exc));
     }
-    setMessages([{
-      role: 'assistant',
-      content: 'Enter a task, and I will either use tools directly or create and execute a DAG plan when orchestration is useful. Auto chooses for you.',
-    }]);
+    setMessages([]);
     setDraft('');
     syncDag(emptyDag);
     setTrace([]);
@@ -1590,135 +1855,87 @@ export function App() {
   };
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <div className="brand">
-            <GitBranch size={20} />
-            <span>dagent</span>
-          </div>
-          <p>Human-reviewed Agent DAG Harness</p>
-        </div>
-        <nav className="workspace-nav" aria-label="Workspace navigation">
-          {workspaceItems.map((item) => (
-            <button
-              key={item.key}
-              className={activeWorkspace === item.key ? 'active' : ''}
-              type="button"
-              onClick={() => setActiveWorkspace(item.key)}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </nav>
-      </header>
-
+    <div className={`app-shell ${navCollapsed ? 'nav-collapsed' : ''}`}>
+      <WorkspaceSidebar
+        activeWorkspace={activeWorkspace}
+        artifacts={editorArtifacts}
+        collapsed={navCollapsed}
+        capabilities={capabilities}
+        capabilityCount={capabilities.length}
+        history={chatHistory}
+        mcpCount={mcpServers.length}
+        mcpServers={mcpServers}
+        profiles={profiles}
+        savedDags={savedDags}
+        selectedDagId={editorUserDag.id}
+        selectedProfileId={selectedProfileId}
+        selectedToolCapabilityId={selectedToolCapabilityId}
+        selectedToolMcpName={selectedToolMcpName}
+        selectedToolSkillName={selectedToolSkillName}
+        selectedSkillDetail={selectedSkillDetail}
+        selectedSkillFilePath={selectedSkillFileDetail?.file_path ?? ''}
+        skills={skills}
+        skillCount={skills.length}
+        toolsSub={toolsDirectoryTab}
+        toolsQuery={toolsDirectoryQuery}
+        onCreateArtifact={createEditorArtifact}
+        onCreateMcp={() => requestCapabilityCreation('mcp')}
+        onCreateTool={() => requestCapabilityCreation('tools')}
+        onDeleteArtifact={deleteEditorArtifact}
+        onImportSkill={() => requestCapabilityCreation('skills')}
+        onLoadDag={loadEditorUserDag}
+        onNewChat={() => void newChat()}
+        onNewDag={newEditorUserDag}
+        onSelectProfile={setSelectedProfileId}
+        onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
+        onSelectToolCapability={setSelectedToolCapabilityId}
+        onSelectToolMcp={setSelectedToolMcpName}
+        onSelectToolSkill={selectToolSkill}
+        onSelectWorkspace={setActiveWorkspace}
+        onToolsSubChange={selectToolsDirectoryTab}
+        onToggleCollapsed={() => setNavCollapsed((value) => !value)}
+        onToolsQueryChange={setToolsDirectoryQuery}
+        onUploadSkillFile={(file) => void loadSkillFile(file)}
+        onUploadFiles={(files) => void uploadEditorFiles(files)}
+      />
       <main className="workspace">
         {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
         {activeWorkspace === 'chat' ? (
-          <section className="chat-pane">
-            <PaneTitle icon={<Bot size={18} />} title="智能对话" />
-            {error ? <div className="error-banner">{error}</div> : null}
-            <div className="message-list" ref={messageListRef}>
-              {messages.map((message, index) => (
-                <div key={`${message.role}-${index}`} className={`message ${message.role} ${message.kind ?? 'text'}`}>
-                  <span>{message.role}</span>
-                  <MessageTimeline
-                    message={message}
-                    loading={streaming}
-                    onOpenDag={(snapshot, snapshotTrace) => {
-                      syncDag(snapshot);
-                      if (snapshotTrace) setTrace(snapshotTrace);
-                      setReviewOpen(true);
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="composer">
-              <textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) runStream();
-                }}
-                placeholder="Ask for a plan, review, or execution result"
-              />
-              <div className="composer-bar">
-                <div className="composer-controls">
-                  <button className="icon-button" onClick={newChat} disabled={streaming} title="New chat" type="button">
-                    <MessageSquarePlus size={18} />
-                  </button>
-                  <div className="mode-switch" aria-label="Agent target">
-                    {(['auto', 'dag', 'tool'] as ChatTarget[]).map((item) => (
-                      <button
-                        key={item}
-                        className={target === item ? 'active' : ''}
-                        onClick={() => setTarget(item)}
-                        type="button"
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
-                  <select
-                    className="review-select"
-                    value={reviewLevel}
-                    onChange={(event) => setReviewLevel(event.target.value as ReviewLevel)}
-                    aria-label="Review level"
-                  >
-                    {reviewLevels.map((level) => (
-                      <option key={level} value={level}>
-                        {level}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
-                    type="button"
-                    onClick={toggleValidation}
-                    disabled={validationPending}
-                    title={validationError ?? 'Validate final answers against the user request'}
-                    aria-pressed={validationEnabled}
-                  >
-                    {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
-                  </button>
-                  <button
-                    className={`secondary-button compact-button scope-button ${chatScopeMode === 'custom' ? 'active' : ''}`}
-                    onClick={() => setCapabilityScopeOpen(true)}
-                    title="Select chat capabilities"
-                    type="button"
-                  >
-                    <SlidersHorizontal size={16} />
-                    {chatScopeLabel}
-                  </button>
-                  {dag.nodes.length ? (
-                    <>
-                      <StatusBadge status={dag.status} />
-                      <button className="secondary-button compact-button" onClick={() => setReviewOpen(true)} type="button">
-                        <GitBranch size={16} />
-                        Review DAG
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-                <div className="composer-actions">
-                  <button className="icon-button" onClick={stopStream} disabled={!streaming} title="Stop stream" type="button">
-                    <CircleStop size={18} />
-                  </button>
-                  <button className="primary-button" onClick={runStream} disabled={streaming} type="button">
-                    <Send size={17} />
-                    Send
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
+          <ChatWorkspace
+            artifactPanelOpen={artifactDrawerOpen}
+            artifacts={chatArtifacts}
+            chatScopeLabel={chatScopeLabel}
+            currentDag={dag}
+            draft={draft}
+            error={error}
+            loading={streaming}
+            messageListRef={messageListRef}
+            messages={messages}
+            reviewLevel={reviewLevel}
+            selectedArtifact={selectedArtifact}
+            selectedArtifactId={selectedArtifactId}
+            target={target}
+            validationEnabled={validationEnabled}
+            validationError={validationError}
+            validationPending={validationPending}
+            onArtifactSelect={setSelectedArtifactId}
+            onDraftChange={setDraft}
+            onOpenDag={(snapshot, snapshotTrace) => {
+              syncDag(snapshot);
+              if (snapshotTrace) setTrace(snapshotTrace);
+              setReviewOpen(true);
+            }}
+            onOpenScope={() => setCapabilityScopeOpen(true)}
+            onReviewLevelChange={setReviewLevel}
+            onRun={() => void runStream()}
+            onStop={stopStream}
+            onTargetChange={setTarget}
+            onToggleArtifacts={() => setArtifactPanelOpen((value) => !value)}
+            onToggleValidation={() => void toggleValidation()}
+          />
         ) : activeWorkspace === 'orchestration' ? (
           <OrchestrationWorkspace
             capabilities={capabilities}
-            savedDags={savedDags}
             spec={editorUserDag}
             dag={editorDag}
             nodes={editorNodes}
@@ -1729,17 +1946,9 @@ export function App() {
             runTimeline={editorRunTimeline}
             message={editorMessage}
             running={editorRunning}
-            workspaceRoot={editorWorkspaceRoot}
             runInputText={editorRunInputText}
-            onNew={newEditorUserDag}
-            onLoad={loadEditorUserDag}
             onPatchDag={patchEditorUserDag}
-            onWorkspaceRootChange={setEditorWorkspaceRoot}
             onRunInputTextChange={setEditorRunInputText}
-            onUpsertArtifact={upsertEditorArtifact}
-            onDeleteArtifact={deleteEditorArtifact}
-            onUploadArtifact={uploadEditorArtifact}
-            onUploadFiles={uploadEditorFiles}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
             onDeleteNode={deleteEditorNode}
@@ -1755,15 +1964,37 @@ export function App() {
             capabilities={capabilities}
             skills={skills}
             mcpServers={mcpServers}
+            activeTab={toolsDirectoryTab}
+            creationIntent={capabilityCreationIntent}
+            query={toolsDirectoryQuery}
+            selectedCapabilityId={selectedToolCapabilityId}
+            selectedMcpName={selectedToolMcpName}
+            selectedSkillDetail={selectedSkillDetail}
+            selectedSkillFileDetail={selectedSkillFileDetail}
+            selectedSkillName={selectedToolSkillName}
+            skillImport={skillImport}
+            skillMessage={skillMessage}
+            onActiveTabChange={selectToolsDirectoryTab}
+            onCreationIntentChange={setCapabilityCreationIntent}
+            onInstallSkillDraft={() => void installSkillDraft()}
+            onRemoveManagedSkill={() => void removeManagedSkill()}
+            onSelectedCapabilityIdChange={setSelectedToolCapabilityId}
+            onSelectedMcpNameChange={setSelectedToolMcpName}
+            onSelectedSkillNameChange={selectToolSkill}
+            onSkillImportChange={setSkillImport}
+            onUploadSkillFile={(file) => void loadSkillFile(file)}
             onRefresh={refreshConsoleData}
           />
-        ) : (
-          <AgentDirectory
+        ) : activeWorkspace === 'agents' ? (
+          <AgentManagementWorkspace
+            capabilities={capabilities}
             profiles={profiles}
-            warnings={profileWarnings}
             selectedId={selectedProfileId}
+            warnings={profileWarnings}
             onSelect={setSelectedProfileId}
           />
+        ) : (
+          null
         )}
       </main>
 
@@ -1820,6 +2051,816 @@ export function App() {
   );
 }
 
+function WorkspaceSidebar({
+  activeWorkspace,
+  artifacts,
+  collapsed,
+  capabilities,
+  capabilityCount,
+  history,
+  mcpCount,
+  mcpServers,
+  profiles,
+  savedDags,
+  selectedDagId,
+  selectedProfileId,
+  selectedToolCapabilityId,
+  selectedToolMcpName,
+  selectedToolSkillName,
+  selectedSkillDetail,
+  selectedSkillFilePath,
+  skills,
+  skillCount,
+  toolsSub,
+  toolsQuery,
+  onCreateArtifact,
+  onCreateMcp,
+  onCreateTool,
+  onDeleteArtifact,
+  onImportSkill,
+  onLoadDag,
+  onNewChat,
+  onNewDag,
+  onSelectProfile,
+  onSelectSkillFile,
+  onSelectToolCapability,
+  onSelectToolMcp,
+  onSelectToolSkill,
+  onSelectWorkspace,
+  onToolsSubChange,
+  onToggleCollapsed,
+  onToolsQueryChange,
+  onUploadSkillFile,
+  onUploadFiles,
+}: {
+  activeWorkspace: WorkspaceKey;
+  artifacts: Artifact[];
+  collapsed: boolean;
+  capabilities: CapabilityDefinition[];
+  capabilityCount: number;
+  history: Array<{ id: string; title: string; time: string }>;
+  mcpCount: number;
+  mcpServers: MCPServer[];
+  profiles: AgentProfile[];
+  savedDags: UserDag[];
+  selectedDagId: string;
+  selectedProfileId: string;
+  selectedToolCapabilityId: string;
+  selectedToolMcpName: string;
+  selectedToolSkillName: string;
+  selectedSkillDetail: SkillDetail | null;
+  selectedSkillFilePath: string;
+  skills: SkillSummary[];
+  skillCount: number;
+  toolsSub: ToolDirectoryTab;
+  toolsQuery: string;
+  onCreateArtifact: () => void;
+  onCreateMcp: () => void;
+  onCreateTool: () => void;
+  onDeleteArtifact: (artifactId: string) => void;
+  onImportSkill: () => void;
+  onLoadDag: (spec: UserDag) => void;
+  onNewChat: () => void;
+  onNewDag: () => void;
+  onSelectProfile: (id: string) => void;
+  onSelectSkillFile: (filePath: string | null) => void;
+  onSelectToolCapability: (id: string) => void;
+  onSelectToolMcp: (name: string) => void;
+  onSelectToolSkill: (name: string) => void;
+  onSelectWorkspace: (workspace: WorkspaceKey) => void;
+  onToolsSubChange: (tab: ToolDirectoryTab) => void;
+  onToggleCollapsed: () => void;
+  onToolsQueryChange: (query: string) => void;
+  onUploadSkillFile: (file: File | undefined) => void;
+  onUploadFiles: (files: FileList | null) => void;
+}) {
+  const toolSubnav = [
+    { key: 'tools' as const, label: '工具', icon: <Wrench size={16} />, count: capabilityCount },
+    { key: 'skills' as const, label: '技能', icon: <FileText size={16} />, count: skillCount },
+    { key: 'mcp' as const, label: 'MCP 服务', icon: <Database size={16} />, count: mcpCount },
+  ];
+  const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
+  const sidebarCapabilities = capabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedToolsQuery));
+  const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
+  const sidebarMcp = mcpServers.filter((server) =>
+    !normalizedToolsQuery
+    || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery),
+  );
+  const activeToolSubnav = toolSubnav.find((item) => item.key === toolsSub) ?? toolSubnav[0];
+  const skillFileGroups = Object.entries(selectedSkillDetail?.linked_files ?? {})
+    .filter(([, files]) => files.length);
+  const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
+  const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
+  const createCapabilityResource = () => {
+    if (toolsSub === 'tools') {
+      onCreateTool();
+    } else if (toolsSub === 'skills') {
+      onImportSkill();
+    } else {
+      onCreateMcp();
+    }
+  };
+  const capabilityCreateTitle = toolsSub === 'tools'
+    ? '新建工具'
+    : toolsSub === 'skills'
+      ? '导入技能'
+      : '新建 MCP';
+  const toggleSkillTree = (name: string) => {
+    onSelectToolSkill(name);
+    setExpandedSkillNames((current) => {
+      const next = new Set(current);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        next.add(name);
+      }
+      return next;
+    });
+  };
+  const toggleSkillFolder = (name: string, folder: string) => {
+    const folderKey = `${name}:${folder}`;
+    setExpandedSkillFolders((current) => {
+      const next = new Set(current);
+      if (next.has(folderKey)) {
+        next.delete(folderKey);
+      } else {
+        next.add(folderKey);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <aside className="workspace-sidebar" data-collapsed={collapsed}>
+      <div className="sidebar-brand-row">
+        <button className="brand-mark" onClick={collapsed ? onToggleCollapsed : undefined} title={collapsed ? '展开侧栏' : 'dagent'} type="button">
+          <GitBranch className="brand-logo-glyph" size={18} />
+          <ChevronRight className="brand-logo-expand" size={19} />
+        </button>
+        <div className="sidebar-brand-copy">
+          <strong>dagent</strong>
+          <span>Agent DAG Harness</span>
+        </div>
+        <button className="sidebar-collapse-button" onClick={onToggleCollapsed} title="收起 / 展开" type="button">
+          {collapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+        </button>
+      </div>
+
+      <div className="sidebar-label">工作区</div>
+      <nav className="sidebar-nav" aria-label="Workspace navigation">
+        {workspaceItems.map((item) => {
+          if (item.key === 'tools') {
+            return (
+              <div className="sidebar-capability-nav" key={item.key}>
+                <button
+                  className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
+                  onClick={() => onSelectWorkspace(item.key)}
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <span className="sidebar-capability-chevron" data-open={activeWorkspace === 'tools'}>
+                    <ChevronRight size={14} />
+                  </span>
+                </button>
+                {activeWorkspace === 'tools' ? (
+                  <div className="sidebar-subnav nested">
+                    {toolSubnav.map((subitem) => (
+                      <button
+                        className={toolsSub === subitem.key ? 'active' : ''}
+                        key={subitem.key}
+                        onClick={() => {
+                          onSelectWorkspace('tools');
+                          onToolsSubChange(subitem.key);
+                        }}
+                        title={subitem.label}
+                        type="button"
+                      >
+                        {subitem.icon}
+                        <span>{subitem.label}</span>
+                        <em>{subitem.count}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
+          return (
+            <button
+              key={item.key}
+              className={activeWorkspace === item.key ? 'active' : ''}
+              onClick={() => onSelectWorkspace(item.key)}
+              title={item.label}
+              type="button"
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {activeWorkspace === 'chat' ? (
+        <section className="sidebar-history">
+          <div className="sidebar-history-head">
+            <span>历史对话</span>
+            <button onClick={onNewChat} title="新建对话" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <div className="sidebar-history-list">
+            {history.map((item, index) => (
+              <button className={index === 0 ? 'active' : ''} key={item.id} type="button">
+                <span>
+                  <MessageSquare size={13} />
+                  <strong>{item.title}</strong>
+                </span>
+                <em>{item.time}</em>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'orchestration' ? (
+        <section className="sidebar-context-section">
+          <div className="sidebar-history-head">
+            <span>编排列表</span>
+            <button onClick={onNewDag} title="新建编排" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <div className="sidebar-context-list">
+            {savedDags.length ? savedDags.map((item) => (
+              <button
+                className={item.id === selectedDagId ? 'active' : ''}
+                key={item.id}
+                onClick={() => onLoadDag(item)}
+                title={item.name || item.id}
+                type="button"
+              >
+                <span>
+                  <GitBranch size={13} />
+                  <strong>{item.name || item.id}</strong>
+                  <code>v{item.version ?? 1}</code>
+                </span>
+                <em>{item.description || `${item.nodes.length} 节点`}</em>
+              </button>
+            )) : (
+              <div className="sidebar-empty-row">暂无编排</div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'orchestration' ? (
+        <section className="sidebar-artifact-section">
+          <div className="sidebar-artifact-head">
+            <span>Artifacts</span>
+            <label className="sidebar-artifact-icon" title="上传文件">
+              <Upload size={13} />
+              <input
+                type="file"
+                multiple
+                onChange={(event) => {
+                  onUploadFiles(event.target.files);
+                  event.currentTarget.value = '';
+                }}
+              />
+            </label>
+            <button className="sidebar-artifact-icon" onClick={onCreateArtifact} title="添加路径" type="button">
+              <Plus size={13} />
+            </button>
+          </div>
+          <div className="sidebar-artifact-list">
+            {artifacts.length ? artifacts.map((artifact) => (
+              <div className="sidebar-artifact-row" key={artifact.id}>
+                <span>{artifactKindLabel(artifact)}</span>
+                <strong title={artifactDisplayPath(artifact)}>
+                  {artifactDisplayName(artifact)}
+                </strong>
+                <button onClick={() => onDeleteArtifact(artifact.id)} title="删除 artifact" type="button">
+                  <X size={11} />
+                </button>
+              </div>
+            )) : (
+              <div className="sidebar-empty-row">暂无 artifacts</div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'tools' ? (
+        <section className="sidebar-context-section capability-resource-section">
+          <div className="sidebar-tool-list-head">
+            <span>{activeToolSubnav.label}</span>
+            <button onClick={createCapabilityResource} title={capabilityCreateTitle} type="button">
+              {toolsSub === 'skills' ? <Upload size={14} /> : <Plus size={14} />}
+            </button>
+          </div>
+          <label className="sidebar-search-field">
+            <Search size={13} />
+            <input
+              value={toolsQuery}
+              onChange={(event) => onToolsQueryChange(event.target.value)}
+              placeholder="搜索…"
+            />
+          </label>
+          <div className="sidebar-tool-list">
+            {toolsSub === 'tools' ? (
+              sidebarCapabilities.length ? sidebarCapabilities.map((capability) => (
+                <button
+                  className={selectedToolCapabilityId === capability.id ? 'active' : ''}
+                  key={capability.id}
+                  onClick={() => onSelectToolCapability(capability.id)}
+                  type="button"
+                >
+                  <Wrench size={14} />
+                  <span>{capability.id}</span>
+                  <em data-enabled={capability.enabled} />
+                </button>
+              )) : <div className="sidebar-empty-row">没有匹配的工具</div>
+            ) : toolsSub === 'skills' ? (
+              sidebarSkills.length ? sidebarSkills.map((skill) => {
+                const name = skillLookupName(skill);
+                const isSelectedSkill = selectedToolSkillName === name;
+                const isSkillTreeOpen = expandedSkillNames.has(name);
+                return (
+                  <div className="sidebar-skill-row" key={skill.path}>
+                    <div className="sidebar-skill-row-main">
+                      <button
+                        className={isSelectedSkill ? 'active sidebar-skill-select' : 'sidebar-skill-select'}
+                        onClick={() => onSelectToolSkill(name)}
+                        type="button"
+                      >
+                        <FileText size={14} />
+                        <span>{name}</span>
+                        <em data-enabled={skill.managed} />
+                      </button>
+                      <button
+                        className="sidebar-skill-toggle"
+                        data-open={isSkillTreeOpen}
+                        onClick={() => toggleSkillTree(name)}
+                        title={isSkillTreeOpen ? '收起文件树' : '展开文件树'}
+                        type="button"
+                      >
+                        <ChevronRight size={13} />
+                      </button>
+                    </div>
+                    {isSelectedSkill && isSkillTreeOpen ? (
+                      <div className="sidebar-skill-file-tree">
+                        {selectedSkillDetail ? (
+                          <>
+                            <button
+                              className={!selectedSkillFilePath ? 'active sidebar-skill-file-row' : 'sidebar-skill-file-row'}
+                              onClick={() => onSelectSkillFile(null)}
+                              type="button"
+                            >
+                              <FileText size={13} />
+                              <span>SKILL.md</span>
+                            </button>
+                            {skillFileGroups.map(([folder, files]) => (
+                              <div className="sidebar-skill-file-group" key={folder}>
+                                <button
+                                  className="sidebar-skill-folder-toggle"
+                                  data-open={expandedSkillFolders.has(`${name}:${folder}`)}
+                                  onClick={() => toggleSkillFolder(name, folder)}
+                                  type="button"
+                                >
+                                  <ChevronRight size={12} />
+                                  <Folder size={13} />
+                                  <span>{folder}</span>
+                                </button>
+                                {expandedSkillFolders.has(`${name}:${folder}`) ? files.map((filePath) => (
+                                  <button
+                                    className={selectedSkillFilePath === filePath ? 'active sidebar-skill-file-row' : 'sidebar-skill-file-row'}
+                                    key={filePath}
+                                    onClick={() => onSelectSkillFile(filePath)}
+                                    type="button"
+                                  >
+                                    <FileText size={13} />
+                                    <span>{filePath.split('/').pop() ?? filePath}</span>
+                                  </button>
+                                )) : null}
+                              </div>
+                            ))}
+                          </>
+                        ) : (
+                          <div className="sidebar-empty-row">正在加载技能文件</div>
+                        )}
+                        <label className="sidebar-skill-upload">
+                          <Plus size={12} />
+                          添加文件
+                          <input
+                            type="file"
+                            accept=".md,text/markdown,text/plain,.zip,application/zip"
+                            onChange={(event) => {
+                              onUploadSkillFile(event.target.files?.[0]);
+                              event.currentTarget.value = '';
+                            }}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }) : <div className="sidebar-empty-row">没有匹配的技能</div>
+            ) : (
+              sidebarMcp.length ? sidebarMcp.map((server) => (
+                <button
+                  className={selectedToolMcpName === server.name ? 'active' : ''}
+                  key={server.name}
+                  onClick={() => onSelectToolMcp(server.name)}
+                  type="button"
+                >
+                  <Database size={14} />
+                  <span>{server.name}</span>
+                  <em data-enabled={server.status === 'connected'} />
+                </button>
+              )) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'agents' ? (
+        <section className="sidebar-context-section agent-config-list">
+          <div className="sidebar-history-head">
+            <span>智能体配置</span>
+            <button title="新建配置（暂未接入）" type="button" disabled>
+              <Plus size={14} />
+            </button>
+          </div>
+          <div className="sidebar-agent-list">
+            {profiles.length ? profiles.map((profile) => (
+              <button
+                className={selectedProfileId === profile.id ? 'active' : ''}
+                key={profile.id}
+                onClick={() => onSelectProfile(profile.id)}
+                type="button"
+              >
+                <span className="sidebar-agent-icon">
+                  <Bot size={14} />
+                </span>
+                <span>
+                  <strong>{profile.name}</strong>
+                  <em>{profile.description || profilePathLabel(profile)}</em>
+                </span>
+              </button>
+            )) : <div className="sidebar-empty-row">暂无智能体配置</div>}
+          </div>
+        </section>
+      ) : null}
+
+      <div className="sidebar-foot">
+        <div className="workspace-root-chip">
+          <span />
+          <code>.dagent-runs</code>
+        </div>
+        <div className="sidebar-user">
+          <div>RX</div>
+          <span>
+            <strong>RobotSe7en</strong>
+            <em>本地运行</em>
+          </span>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function DesignWorkspacePlaceholder({
+  workspace,
+  onBackToChat,
+}: {
+  workspace: WorkspaceKey;
+  onBackToChat: () => void;
+}) {
+  const label = workspace === 'chat' ? '智能对话' : workspacePlaceholderLabels[workspace];
+  return (
+    <section className="design-workspace-placeholder">
+      <div>
+        <div className="design-workspace-placeholder-icon">
+          <GitBranch size={26} />
+        </div>
+        <strong>{label}</strong>
+        <p>先评审「智能对话」这一版的视觉方案。确认方向后,我会把同一套设计语言铺到这个工作区。</p>
+        <button onClick={onBackToChat} type="button">
+          ← 返回智能对话
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ChatWorkspace({
+  artifactPanelOpen,
+  artifacts,
+  chatScopeLabel,
+  currentDag,
+  draft,
+  error,
+  loading,
+  messageListRef,
+  messages,
+  reviewLevel,
+  selectedArtifact,
+  selectedArtifactId,
+  target,
+  validationEnabled,
+  validationError,
+  validationPending,
+  onArtifactSelect,
+  onDraftChange,
+  onOpenDag,
+  onOpenScope,
+  onReviewLevelChange,
+  onRun,
+  onStop,
+  onTargetChange,
+  onToggleArtifacts,
+  onToggleValidation,
+}: {
+  artifactPanelOpen: boolean;
+  artifacts: WorkbenchArtifactItem[];
+  chatScopeLabel: string;
+  currentDag: Dag;
+  draft: string;
+  error: string | null;
+  loading: boolean;
+  messageListRef: React.RefObject<HTMLDivElement | null>;
+  messages: ChatMessage[];
+  reviewLevel: ReviewLevel;
+  selectedArtifact: WorkbenchArtifactItem | null;
+  selectedArtifactId: string;
+  target: ChatTarget;
+  validationEnabled: boolean;
+  validationError: string | null;
+  validationPending: boolean;
+  onArtifactSelect: (id: string) => void;
+  onDraftChange: (value: string) => void;
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
+  onOpenScope: () => void;
+  onReviewLevelChange: (value: ReviewLevel) => void;
+  onRun: () => void;
+  onStop: () => void;
+  onTargetChange: (value: ChatTarget) => void;
+  onToggleArtifacts: () => void;
+  onToggleValidation: () => void;
+}) {
+  const title = currentChatTitle(messages);
+
+  return (
+    <section className={`chat-workspace ${artifactPanelOpen ? 'with-artifacts' : 'without-artifacts'}`}>
+      <div className="chat-main">
+        <div className="chat-scroll" ref={messageListRef}>
+          <div className="conversation-frame">
+            <div className="conversation-meta">
+              <strong>{title}</strong>
+              <span />
+              <code>session · {messages.length} turns</code>
+            </div>
+            {error ? <div className="error-banner">{error}</div> : null}
+            {messages.length === 0 ? (
+              <DesignEmptyConversation />
+            ) : messages.map((message, index) => (
+                <ChatMessageRow
+                  key={`${message.role}-${index}`}
+                  loading={loading && index === messages.length - 1}
+                  message={message}
+                  onOpenDag={onOpenDag}
+                />
+              ))}
+          </div>
+        </div>
+
+        <div className="composer-shell">
+          <div className="composer-card">
+            <textarea
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) onRun();
+              }}
+              placeholder="描述一个任务,或请求规划、审查、执行结果…"
+            />
+            <div className="composer-toolbar">
+              <button
+                className="icon-button attachment-button"
+                title="上传附件（暂未接入）"
+                aria-label="上传附件（暂未接入）"
+                type="button"
+              >
+                <Upload size={17} />
+              </button>
+              <div className="mode-switch" aria-label="Agent target">
+                {(['auto', 'dag', 'tool'] as ChatTarget[]).map((item) => (
+                  <button
+                    key={item}
+                    className={target === item ? 'active' : ''}
+                    onClick={() => onTargetChange(item)}
+                    type="button"
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <select
+                className="review-select"
+                value={reviewLevel}
+                onChange={(event) => onReviewLevelChange(event.target.value as ReviewLevel)}
+                aria-label="Review level"
+              >
+                {reviewLevels.map((level) => (
+                  <option key={level} value={level}>
+                    {level} review
+                  </option>
+                ))}
+              </select>
+              <button
+                className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
+                type="button"
+                onClick={onToggleValidation}
+                disabled={validationPending}
+                title={validationError ?? 'Validate final answers against the user request'}
+                aria-pressed={validationEnabled}
+              >
+                <span />
+                {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
+              </button>
+              <button
+                className="secondary-button compact-button scope-button"
+                onClick={onOpenScope}
+                title="选择能力"
+                type="button"
+              >
+                <SlidersHorizontal size={15} />
+                {chatScopeLabel}
+              </button>
+              {currentDag.nodes.length ? <StatusBadge status={currentDag.status} /> : null}
+              <button className="primary-button chat-send-button" onClick={loading ? onStop : onRun} type="button">
+                {loading ? '停止' : '发送'}
+                {loading ? <CircleStop size={16} /> : <Send size={16} />}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <ArtifactPanel
+        artifacts={artifacts}
+        open={artifactPanelOpen}
+        selectedArtifact={selectedArtifact}
+        selectedArtifactId={selectedArtifactId}
+        onSelect={onArtifactSelect}
+        onToggle={onToggleArtifacts}
+      />
+    </section>
+  );
+}
+
+function DesignEmptyConversation() {
+  return (
+    <div className="design-empty-conversation">
+      <div className="design-empty-icon">
+        <Bot size={18} />
+      </div>
+      <strong>新对话</strong>
+      <p>输入任务后，这里会显示来自后端运行流的真实推理、DAG、工具调用和结果。</p>
+    </div>
+  );
+}
+
+function ChatMessageRow({
+  loading,
+  message,
+  onOpenDag,
+}: {
+  loading: boolean;
+  message: ChatMessage;
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
+}) {
+  if (message.role === 'user') {
+    return (
+      <div className="chat-row user-row">
+        <div className="user-bubble">{message.content}</div>
+        <div className="user-avatar">
+          <UserCog size={15} />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="chat-row assistant-row">
+      <div className="assistant-avatar">
+        <Bot size={16} />
+      </div>
+      <div className="assistant-turn-frame">
+        <MessageTimeline
+          message={message}
+          loading={loading}
+          onOpenDag={(snapshot, snapshotTrace) => onOpenDag(snapshot, snapshotTrace)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ArtifactPanel({
+  artifacts,
+  open,
+  selectedArtifact,
+  selectedArtifactId,
+  onSelect,
+  onToggle,
+}: {
+  artifacts: WorkbenchArtifactItem[];
+  open: boolean;
+  selectedArtifact: WorkbenchArtifactItem | null;
+  selectedArtifactId: string;
+  onSelect: (id: string) => void;
+  onToggle: () => void;
+}) {
+  if (!open) {
+    return (
+      <aside className="artifact-rail">
+        <button
+          className="icon-button"
+          onClick={onToggle}
+          title="展开产物"
+          type="button"
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <div>
+          <span>产物</span>
+          <em>{artifacts.length}</em>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="artifact-drawer">
+      <div className="artifact-drawer-head">
+        <Folder size={17} />
+        <strong>产物</strong>
+        <span>{artifacts.length}</span>
+        <button className="icon-button" title="刷新" type="button">
+          <RefreshCw size={15} />
+        </button>
+        <button className="icon-button" onClick={onToggle} title="收起面板" type="button">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      <div className="artifact-file-label">
+        <ChevronRight size={13} />
+        <span>文件</span>
+        <em>{artifacts.length}</em>
+      </div>
+      <div className="artifact-file-list">
+        {artifacts.length ? artifacts.map((artifact) => (
+          <button
+            className={artifact.id === selectedArtifactId ? 'active' : ''}
+            key={artifact.id}
+            onClick={() => onSelect(artifact.id)}
+            type="button"
+          >
+            <span className="artifact-extension">{artifact.extension}</span>
+            <span>
+              <strong>{artifact.name}</strong>
+              <em>{artifact.meta}</em>
+            </span>
+          </button>
+        )) : (
+          <div className="artifact-empty">当前运行还没有产物。</div>
+        )}
+      </div>
+
+      <div className="artifact-preview">
+        {selectedArtifact ? (
+          <>
+            <div className="artifact-preview-head">
+              <File size={14} />
+              <strong>{selectedArtifact.name}</strong>
+              <span>{selectedArtifact.meta}</span>
+              <button className="icon-button" title="复制" type="button">
+                <Copy size={13} />
+              </button>
+            </div>
+            <pre>{artifactPreviewText(selectedArtifact)}</pre>
+          </>
+        ) : (
+          <div className="artifact-preview-empty">选择一次运行产物后在这里预览。</div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <div className="pane-title">
@@ -1856,9 +2897,9 @@ function MessageTimeline({
         ) : item.type === 'reasoning' ? (
           <ReasoningBlock key={`reasoning-${index}`} content={item.content} closed={item.closed} />
         ) : item.type === 'validation' ? (
-          <ValidationFeedbackCard key={`validation-${index}`} event={item.event} />
+          <ValidationCard key={`validation-${index}`} event={item.event} />
         ) : item.type === 'validating' ? (
-          <ValidatingIndicator key={`validating-${index}`} />
+          <ValidationCard key={`validating-${index}`} />
         ) : item.content ? (
           <MessageContent key={`text-${index}`} content={item.content} />
         ) : null,
@@ -1904,7 +2945,11 @@ function MessageContent({ content }: { content: string }) {
 function ReasoningBlock({ content, closed }: { content: string; closed: boolean }) {
   return (
     <details className="think-block" open={!closed}>
-      <summary>Thinking</summary>
+      <summary className="reasoning-summary">
+        <Bot size={14} />
+        <strong>推理过程</strong>
+        <ChevronRight className="timeline-chevron" size={15} />
+      </summary>
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '...'}</ReactMarkdown>
     </details>
   );
@@ -1941,8 +2986,20 @@ function dagRunStatus(status: string): 'planned' | 'running' | 'completed' | 'fa
   return 'completed';
 }
 
+const dagStatusLabels: Record<Dag['status'], string> = {
+  draft: '草稿',
+  review_required: '待审核',
+  approved: '已通过',
+  running: '运行中',
+  awaiting_review: '待审核',
+  completed: '已完成',
+  failed: '失败',
+  rejected: '已拒绝',
+  aborted: '已终止',
+};
+
 function StatusBadge({ status }: { status: Dag['status'] }) {
-  return <span className="status-badge" data-status={status}>{status}</span>;
+  return <span className="status-badge" data-status={status}>{dagStatusLabels[status] ?? status}</span>;
 }
 
 function DagSummaryCard({
@@ -1953,7 +3010,7 @@ function DagSummaryCard({
   onOpen: () => void;
 }) {
   const riskyNodes = dag.nodes.filter((node) => nodeReviewInfo(node).reviewAttention).length;
-  const actionLabel = isDagConfirmable(dag) ? 'open review' : 'view flow';
+  const actionLabel = isDagConfirmable(dag) ? '打开审查' : '查看流程';
   return (
     <button className="dag-summary-card" onClick={onOpen} type="button">
       <div className="dag-summary-head">
@@ -1962,45 +3019,42 @@ function DagSummaryCard({
         <StatusBadge status={dag.status} />
       </div>
       <div className="dag-summary-stats">
-        <span>{dag.nodes.length} nodes</span>
-        <span>{dag.edges.length} edges</span>
-        <span>{riskyNodes} review</span>
-        <span>{actionLabel}</span>
+        <span><strong>{dag.nodes.length}</strong> nodes</span>
+        <span><strong>{dag.edges.length}</strong> edges</span>
+        <span><strong>{riskyNodes}</strong> review</span>
+        <em>{actionLabel} <ChevronRight size={13} /></em>
       </div>
     </button>
   );
 }
 
-function ValidatingIndicator() {
-  return (
-    <details className="timeline-card">
-      <summary className="timeline-card-head">
-        <Loader size={14} />
-        <strong>Validating result quality...</strong>
-        <span>validating</span>
-      </summary>
-    </details>
-  );
-}
+function ValidationCard({ event }: { event?: ValidationFeedbackEvent }) {
+  const validating = !event;
+  const passed = event ? event.type === 'validation.passed' || event.passed === true : false;
+  const statusLabel = validating ? '校验中' : passed ? '通过' : '需要重试';
 
-function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
-  const passed = event.type === 'validation.passed' || event.passed === true;
   return (
-    <details className={`timeline-card ${passed ? 'validation-passed' : 'validation-feedback'}`}>
+    <details className={`timeline-card validation-card ${validating ? 'validation-running' : passed ? 'validation-passed' : 'validation-feedback'}`}>
       <summary className="timeline-card-head">
-        {passed ? <Check size={14} /> : <AlertTriangle size={14} />}
-        <strong>Validation {passed ? 'Passed' : 'Feedback'}</strong>
-        <span>{passed ? 'passed' : 'retry'}</span>
+        {validating ? <Loader size={14} /> : passed ? <Check size={14} /> : <AlertTriangle size={14} />}
+        <strong>结果校验</strong>
+        <span>{statusLabel}</span>
+        <ChevronRight className="timeline-chevron" size={15} />
       </summary>
-      {event.summary ? (
+      {validating ? (
         <div className="timeline-section">
-          <div className="timeline-section-label">Summary</div>
+          <div className="timeline-section-label">状态</div>
+          <p>正在校验最终回复...</p>
+        </div>
+      ) : event?.summary ? (
+        <div className="timeline-section">
+          <div className="timeline-section-label">摘要</div>
           <p>{event.summary}</p>
         </div>
       ) : null}
-      {!passed && event.issues.length ? (
+      {!validating && event && !passed && event.issues.length ? (
         <div className="timeline-section">
-          <div className="timeline-section-label">Issues</div>
+          <div className="timeline-section-label">问题</div>
           <ul className="validation-issues">
             {event.issues.map((issue, index) => (
               <li key={index}>
@@ -2011,9 +3065,9 @@ function ValidationFeedbackCard({ event }: { event: ValidationFeedbackEvent }) {
           </ul>
         </div>
       ) : null}
-      {!passed && event.reason ? (
+      {!validating && event && !passed && event.reason ? (
         <div className="timeline-section">
-          <div className="timeline-section-label">Feedback to Agent</div>
+          <div className="timeline-section-label">反馈</div>
           <p>{event.reason}</p>
         </div>
       ) : null}
@@ -2030,19 +3084,21 @@ function hasNonZeroExitCode(content?: string): boolean {
 function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
   const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
   const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
+  const rejectedByReview = Boolean(result?.content?.startsWith('人工审核已拒绝'));
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
   const statusLabel = result
-    ? (isError ? 'failed' : isExitError ? 'error' : 'done')
+    ? (rejectedByReview ? '已拒绝' : isError ? 'failed' : isExitError ? 'error' : 'done')
     : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
   const argsText = formatCapabilityArguments(event.arguments);
-  const eventClass = showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
+  const eventClass = rejectedByReview ? 'capability-event-rejected' : showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
   return (
     <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">
         <Wrench size={14} />
         <strong>{event.capability_id}</strong>
         <span>{statusLabel}</span>
+        <ChevronRight className="timeline-chevron" size={15} />
       </summary>
       {argsText ? (
         <div className="capability-section">
@@ -2080,6 +3136,21 @@ function clipText(value: string, maxLength: number) {
   return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
 }
 
+function currentChatTitle(messages: ChatMessage[]): string {
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user' && message.content.trim());
+  return latestUser ? clipText(latestUser.content.trim(), 40) : '新对话';
+}
+
+function currentChatHistory(messages: ChatMessage[]): Array<{ id: string; title: string; time: string }> {
+  const title = currentChatTitle(messages);
+  const userTurns = messages.filter((message) => message.role === 'user').length;
+  return [{
+    id: 'current',
+    title,
+    time: userTurns ? `${userTurns} turns` : '刚刚',
+  }];
+}
+
 function uniqueNodeId(dag: Dag) {
   let index = dag.nodes.length + 1;
   let id = `node_${index}`;
@@ -2091,44 +3162,22 @@ function uniqueNodeId(dag: Dag) {
   return id;
 }
 
-function uploadBatchRoot(files: File[]) {
-  const firstPath = files[0]?.webkitRelativePath || files[0]?.name || 'upload';
-  const firstSegment = firstPath.replace(/\\/g, '/').split('/').filter(Boolean)[0] || 'upload';
-  return `inputs/uploads/${safeUploadSegment(firstSegment)}-${Date.now()}`;
+function dagNameInputCh(value: string) {
+  return Math.max(12, Math.min(32, value.length + 2));
 }
 
-function uploadSourceFiles(files: File[]): UploadSourceFile[] {
-  const rawPaths = files.map((file) => (file.webkitRelativePath || file.name).replace(/\\/g, '/'));
-  const commonFolder = commonUploadedFolder(rawPaths);
-  return files.map((file) => {
-    const rawPath = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
-    return {
-      name: file.name,
-      relativePath: commonFolder && rawPath.startsWith(`${commonFolder}/`)
-        ? rawPath.slice(commonFolder.length + 1)
-        : rawPath,
-      webkitRelativePath: file.webkitRelativePath,
-    };
-  });
+function uniqueDraftArtifactId(artifacts: Record<string, Artifact>, prefix: string) {
+  let index = Object.keys(artifacts).length + 1;
+  let id = `${prefix}_${index}`;
+  while (Object.prototype.hasOwnProperty.call(artifacts, id)) {
+    index += 1;
+    id = `${prefix}_${index}`;
+  }
+  return id;
 }
 
-function commonUploadedFolder(paths: string[]) {
-  if (!paths.length || paths.some((path) => !path.includes('/'))) return '';
-  const firstSegments = paths.map((path) => path.replace(/\\/g, '/').split('/')[0]);
-  const first = firstSegments[0];
-  return first && firstSegments.every((segment) => segment === first) ? first : '';
-}
-
-function safeUploadSegment(value: string) {
-  return value
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter(Boolean)
-    .pop()
-    ?.replace(/[<>:"|?*]/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    || 'upload';
+function filesFromList(fileList: FileList | null): File[] {
+  return Array.from(fileList ?? []);
 }
 
 function artifactDisplayPath(artifact: Artifact) {
@@ -2139,6 +3188,12 @@ function artifactDisplayName(artifact: Artifact) {
   const displayName = artifact.metadata?.display_name;
   if (typeof displayName === 'string' && displayName.trim()) return displayName;
   return artifact.description || artifact.id;
+}
+
+function artifactKindLabel(artifact: Artifact) {
+  const kind = artifact.metadata?.kind;
+  if (typeof kind === 'string' && kind.trim()) return kind;
+  return isUploadedFileArtifact(artifact) ? 'file' : 'path';
 }
 
 function compareArtifactsByPath(left: Artifact, right: Artifact) {
@@ -2407,176 +3462,8 @@ function ChatCapabilityScopeDialog({
   );
 }
 
-function ArtifactEditorPanel({
-  artifacts,
-  onUpsert,
-  onDelete,
-  onUpload,
-  onUploadFiles,
-}: {
-  artifacts: Record<string, Artifact>;
-  onUpsert: (artifact: Artifact, previousId?: string) => void;
-  onDelete: (artifactId: string) => void;
-  onUpload: (artifactId: string, files: FileList | null) => void;
-  onUploadFiles: (files: FileList | null) => void;
-}) {
-  const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
-  const uploadedFiles = artifactItems.filter(isUploadedFileArtifact);
-  const manualArtifacts = artifactItems.filter((artifact) => !isUploadedFileArtifact(artifact));
-  const addArtifact = () => {
-    let index = manualArtifacts.length + 1;
-    let id = `artifact_${index}`;
-    while (artifacts[id]) {
-      index += 1;
-      id = `artifact_${index}`;
-    }
-    onUpsert({
-      id,
-      paths: [`outputs/${id}`],
-      description: '',
-      required: true,
-      metadata: {},
-    });
-  };
-
-  return (
-    <section className="artifact-panel">
-      <div className="artifact-panel-head">
-        <span>Files</span>
-        <div className="artifact-panel-actions">
-          <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
-            <Upload size={14} />
-            Files
-            <input
-              type="file"
-              multiple
-              onChange={(event) => {
-                onUploadFiles(event.currentTarget.files);
-                event.currentTarget.value = '';
-              }}
-            />
-          </label>
-          <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
-            <FolderUp size={14} />
-            Folder
-            <input
-              type="file"
-              multiple
-              {...directoryInputProps}
-              onChange={(event) => {
-                onUploadFiles(event.currentTarget.files);
-                event.currentTarget.value = '';
-              }}
-            />
-          </label>
-        </div>
-      </div>
-      {uploadedFiles.length ? (
-        <div className="uploaded-file-list">
-          {uploadedFiles.map((artifact) => (
-            <div className="uploaded-file-row" key={artifact.id}>
-              <div className="uploaded-file-main">
-                <strong>{artifactDisplayName(artifact)}</strong>
-                <span>{artifactDisplayPath(artifact)}</span>
-              </div>
-              <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete file" type="button">
-                <Trash2 size={15} />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state compact">No files uploaded.</div>
-      )}
-      <details className="node-policy-details artifact-advanced">
-        <summary>Advanced Artifacts</summary>
-        <div className="artifact-panel-head nested">
-          <span>Artifact Contracts</span>
-          <button className="icon-button" onClick={addArtifact} title="Add artifact" type="button">
-            <Plus size={15} />
-          </button>
-        </div>
-        {manualArtifacts.length ? (
-          <div className="artifact-list">
-            {manualArtifacts.map((artifact) => (
-              <div className="artifact-row" key={artifact.id}>
-                <div className="artifact-row-grid">
-                  <label>
-                    ID
-                    <input
-                      value={artifact.id}
-                      onChange={(event) => onUpsert({ ...artifact, id: event.target.value }, artifact.id)}
-                    />
-                  </label>
-                  <label>
-                    Paths
-                    <input
-                      value={(artifact.paths ?? []).join(', ')}
-                      onChange={(event) => onUpsert({ ...artifact, paths: splitCsv(event.target.value) }, artifact.id)}
-                    />
-                  </label>
-                </div>
-                <label>
-                  Description
-                  <input
-                    value={artifact.description ?? ''}
-                    onChange={(event) => onUpsert({ ...artifact, description: event.target.value }, artifact.id)}
-                  />
-                </label>
-                <div className="artifact-row-actions">
-                  <label className="checkbox-line">
-                    <input
-                      type="checkbox"
-                      checked={artifact.required ?? true}
-                      onChange={(event) => onUpsert({ ...artifact, required: event.target.checked }, artifact.id)}
-                    />
-                    Required
-                  </label>
-                  <div className="artifact-action-buttons">
-                    <label className="secondary-button compact-button artifact-upload-button" title="Upload files">
-                      <Upload size={14} />
-                      Files
-                      <input
-                        type="file"
-                        multiple
-                        onChange={(event) => {
-                          onUpload(artifact.id, event.currentTarget.files);
-                          event.currentTarget.value = '';
-                        }}
-                      />
-                    </label>
-                    <label className="secondary-button compact-button artifact-upload-button" title="Upload folder">
-                      <FolderUp size={14} />
-                      Folder
-                      <input
-                        type="file"
-                        multiple
-                        {...directoryInputProps}
-                        onChange={(event) => {
-                          onUpload(artifact.id, event.currentTarget.files);
-                          event.currentTarget.value = '';
-                        }}
-                      />
-                    </label>
-                    <button className="icon-button" onClick={() => onDelete(artifact.id)} title="Delete artifact" type="button">
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-state compact">No advanced artifacts.</div>
-        )}
-      </details>
-    </section>
-  );
-}
-
 function OrchestrationWorkspace({
   capabilities,
-  savedDags,
   spec,
   dag,
   nodes,
@@ -2587,17 +3474,9 @@ function OrchestrationWorkspace({
   runTimeline,
   message,
   running,
-  workspaceRoot,
   runInputText,
-  onNew,
-  onLoad,
   onPatchDag,
-  onWorkspaceRootChange,
   onRunInputTextChange,
-  onUpsertArtifact,
-  onDeleteArtifact,
-  onUploadArtifact,
-  onUploadFiles,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -2609,7 +3488,6 @@ function OrchestrationWorkspace({
   onSelectNode,
 }: {
   capabilities: CapabilityDefinition[];
-  savedDags: UserDag[];
   spec: UserDag;
   dag: Dag;
   nodes: Node[];
@@ -2620,18 +3498,10 @@ function OrchestrationWorkspace({
   runTimeline: RunTranscriptItem[];
   message: string;
   running: boolean;
-  workspaceRoot: string;
   runInputText: string;
-  onNew: () => void;
-  onLoad: (spec: UserDag) => void;
   onPatchDag: (patch: Partial<UserDag>) => void;
-  onWorkspaceRootChange: (workspaceRoot: string) => void;
   onRunInputTextChange: (value: string) => void;
-  onUpsertArtifact: (artifact: Artifact, previousId?: string) => void;
-  onDeleteArtifact: (artifactId: string) => void;
-  onUploadArtifact: (artifactId: string, files: FileList | null) => void;
-  onUploadFiles: (files: FileList | null) => void;
-  onAddNode: (capability?: CapabilityDefinition) => void;
+  onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
   onSave: () => void;
@@ -2641,34 +3511,48 @@ function OrchestrationWorkspace({
   onConnect: (connection: Connection) => void;
   onSelectNode: (id: string) => void;
 }) {
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId?: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; flowPosition?: XYPosition; nodeId?: string } | null>(null);
   const [contextCapabilityId, setContextCapabilityId] = useState('');
-  const [nodeDrawerOpen, setNodeDrawerOpen] = useState(false);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
-  const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
   const runSummary = buildRunDialogSummary(userDagFromRuntimeDag(spec, dag));
   const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
   const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
-  const selectNode = (id: string) => {
-    onSelectNode(id);
-    setNodeDrawerOpen(true);
-  };
+  const selectedNormalized = selectedNode ? normalizeNode(selectedNode) : null;
+  const selectedInvocation = selectedNormalized && isCapabilityNode(selectedNormalized)
+    ? selectedNormalized.payload.invocation
+    : null;
+  const selectedCapability = selectedInvocation
+    ? capabilities.find((capability) => capability.id === selectedInvocation.capability_id)
+    : null;
+  const selectableCapabilities = selectedCapability && !enabledCapabilities.some((capability) => capability.id === selectedCapability.id)
+    ? [selectedCapability, ...enabledCapabilities]
+    : enabledCapabilities;
+  const artifactItems = Object.values(spec.artifacts ?? {}).sort(compareArtifactsByPath);
+  const flowPositionFromEvent = (event: MouseEvent | React.MouseEvent<Element>) =>
+    flowInstance?.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+
   const openCanvasMenu = (event: MouseEvent | React.MouseEvent<Element>) => {
     event.preventDefault();
-    setContextMenu({ x: event.clientX, y: event.clientY });
+    setContextMenu({ x: event.clientX, y: event.clientY, flowPosition: flowPositionFromEvent(event) });
     setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
   };
-  const openNodeMenu = (event: React.MouseEvent, node: Node) => {
+  const openNodeMenu = (event: React.MouseEvent, nodeId: string) => {
     event.preventDefault();
     event.stopPropagation();
-    selectNode(node.id);
-    setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+    onSelectNode(nodeId);
+    setContextMenu({ x: event.clientX, y: event.clientY, flowPosition: flowPositionFromEvent(event), nodeId });
     setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
   };
+  const handlePaneClick = () => {
+    setContextMenu(null);
+    onSelectNode('');
+  };
   const addFromContext = () => {
+    if (!contextMenu) return;
     if (contextCapability) {
-      onAddNode(contextCapability);
-      setNodeDrawerOpen(true);
+      onAddNode(contextCapability, contextMenu.flowPosition);
     }
     setContextMenu(null);
   };
@@ -2676,118 +3560,107 @@ function OrchestrationWorkspace({
     if (contextMenu?.nodeId) onDeleteNode(contextMenu.nodeId);
     setContextMenu(null);
   };
-  const deleteSelectedNode = () => {
-    onDeleteNode(selectedNode?.id);
-    setNodeDrawerOpen(false);
+  const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
+    if (!selectedNode || !selectedInvocation) return;
+    onPatchNode(selectedNode.id, {
+      payload: {
+        type: 'capability',
+        invocation: { ...selectedInvocation, ...patch },
+      },
+    });
   };
+  const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
+    if (!selectedNode || !selectedInvocation) return;
+    const current = selectedNode[field] ?? [];
+    const next = checked
+      ? [...current.filter((id) => id !== artifactId), artifactId].sort()
+      : current.filter((id) => id !== artifactId);
+    if (field === 'inputs' && checked) {
+      const boundary = selectedInvocation.boundary ?? {
+        mode: 'read_only' as BoundaryMode,
+        allowed_paths: ['.'],
+        allowed_commands: [],
+      };
+      onPatchNode(selectedNode.id, {
+        [field]: next,
+        payload: {
+          type: 'capability',
+          invocation: {
+            ...selectedInvocation,
+            boundary: {
+              ...boundary,
+              allowed_paths: addUniqueBoundaryValue(boundary.allowed_paths ?? [], artifactPathExpr(artifactId)),
+            },
+          },
+        },
+      });
+      return;
+    }
+    onPatchNode(selectedNode.id, { [field]: next });
+  };
+
   return (
-    <section className="console-grid orchestration-grid">
-      <aside className="console-sidebar">
-        <PaneTitle icon={<FileText size={18} />} title="DAGs" />
-        <div className="sidebar-actions">
-          <button className="secondary-button compact-button" onClick={onNew} type="button">
-            <Plus size={16} />
-            New
-          </button>
-          <button className="secondary-button compact-button" onClick={onSave} type="button">
-            <Save size={16} />
-            Save
-          </button>
-          <button className="primary-button compact-button" onClick={() => setRunDialogOpen(true)} type="button">
-            <Play size={16} />
-            Run
-          </button>
-        </div>
-        <div className="spec-meta-form">
-          <label>
-            Name
-            <input value={spec.name} onChange={(event) => onPatchDag({ name: event.target.value })} />
-          </label>
-          <label>
-            Description
-            <textarea value={spec.description ?? ''} onChange={(event) => onPatchDag({ description: event.target.value })} />
-          </label>
-          <label>
-            Workspace Root
-            <input value={workspaceRoot} onChange={(event) => onWorkspaceRootChange(event.target.value)} />
-          </label>
-        </div>
-        <ArtifactEditorPanel
-          artifacts={spec.artifacts ?? {}}
-          onUpsert={onUpsertArtifact}
-          onDelete={onDeleteArtifact}
-          onUpload={onUploadArtifact}
-          onUploadFiles={onUploadFiles}
-        />
-        <div className="resource-list">
-          {savedDags.length ? savedDags.map((item) => (
-            <button
-              key={item.id}
-              className={item.id === spec.id ? 'resource-row active' : 'resource-row'}
-              type="button"
-              onClick={() => onLoad(item)}
-            >
-              <strong>{item.name || 'Untitled DAG'}</strong>
-              <span>{item.nodes.length} nodes</span>
+    <section className="design-orchestration-workspace">
+      <div className="orchestration-main">
+        <div className="orchestration-toolbar">
+          <GitBranch size={17} />
+          <input
+            className="orchestration-name-input"
+            style={{ width: `${dagNameInputCh(spec.name || 'untitled_dag')}ch` }}
+            value={spec.name || ''}
+            onChange={(event) => onPatchDag({ name: event.target.value })}
+            placeholder="untitled_dag"
+          />
+          <span className="orchestration-version">v{spec.version ?? 1}</span>
+          <StatusBadge status={dag.status} />
+          <div className="orchestration-actions">
+            <button className="secondary-button compact-button" onClick={onSave} type="button">
+              <Save size={15} />
+              保存
             </button>
-          )) : <div className="empty-state compact">No saved DAGs in this process.</div>}
-        </div>
-      </aside>
-      <section className="flow-workbench">
-        <div className="workbench-toolbar">
-          <div>
-            <strong>{spec.name || 'Untitled DAG'}</strong>
-            <span>{message || (run ? `Last run: ${run.status}` : 'Draft DAG')}</span>
+            <button className="primary-button compact-button" onClick={() => setRunDialogOpen(true)} type="button">
+              <Play size={14} />
+              运行
+            </button>
           </div>
-          <select
-            onChange={(event) => {
-              const capability = enabledCapabilities.find((item) => item.id === event.target.value);
-              if (capability) {
-                onAddNode(capability);
-                setNodeDrawerOpen(true);
-              }
-              event.currentTarget.value = '';
-            }}
-            defaultValue=""
-            aria-label="Add capability node"
-          >
-            <option value="" disabled>Add node from capability...</option>
-            {enabledCapabilities.map((capability) => (
-              <option key={capability.id} value={capability.id}>
-                {capabilityDisplayName(capability)}
-              </option>
-            ))}
-          </select>
         </div>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={(_, node) => selectNode(node.id)}
-          onPaneClick={() => {
-            setContextMenu(null);
-            setNodeDrawerOpen(false);
-          }}
-          onPaneContextMenu={openCanvasMenu}
-          onNodeContextMenu={openNodeMenu}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-        >
-          <Background color="#e2e4ea" gap={20} />
-          <MiniMap pannable zoomable nodeColor="#4f6ef7" maskColor="rgba(245,246,248,0.7)" />
-          <Controls />
-        </ReactFlow>
+
+        <div className="orchestration-canvas">
+          <ReactFlow
+            className="orchestration-flow"
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={designNodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={(_, node) => onSelectNode(node.id)}
+            onNodeContextMenu={(event, node) => openNodeMenu(event, node.id)}
+            onPaneClick={handlePaneClick}
+            onPaneContextMenu={openCanvasMenu}
+            onInit={setFlowInstance}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            fitView={false}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#d8dade" gap={20} />
+          </ReactFlow>
+          {!nodes.length ? (
+            <button className="orchestration-empty-canvas" onClick={() => onAddNode()} type="button">
+              <Plus size={15} />
+              添加第一个节点
+            </button>
+          ) : null}
+        </div>
         {contextMenu ? (
           <div
-            className="canvas-context-menu"
+            className="orchestration-context-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="context-menu-title">{contextMenu.nodeId ? `Node: ${contextMenu.nodeId}` : 'Canvas'}</div>
-            <label>
-              Capability
+            <div className="context-menu-title">{contextMenu.nodeId ? `节点：${contextMenu.nodeId}` : '画布'}</div>
+            <label className="context-select">
+              能力
               <select value={contextCapability?.id ?? ''} onChange={(event) => setContextCapabilityId(event.target.value)}>
                 {enabledCapabilities.map((capability) => (
                   <option key={capability.id} value={capability.id}>
@@ -2798,34 +3671,152 @@ function OrchestrationWorkspace({
             </label>
             <button className="context-menu-item" onClick={addFromContext} disabled={!contextCapability} type="button">
               <Plus size={15} />
-              Add node
+              添加节点
             </button>
             {contextMenu.nodeId ? (
               <button className="context-menu-item danger" onClick={deleteFromContext} type="button">
                 <Trash2 size={15} />
-                Delete node
+                删除节点
               </button>
             ) : null}
           </div>
         ) : null}
-      </section>
-      {nodeDrawerOpen && selectedNode ? (
-        <aside className="node-config-drawer" aria-label="Node config">
-          <header className="node-config-drawer-head">
-            <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Config" />
-            <button className="icon-button" onClick={() => setNodeDrawerOpen(false)} title="Close node config" type="button">
-              <X size={18} />
+      </div>
+
+      {selectedNormalized ? (
+        <aside className="node-inspector" aria-label="节点检查器">
+          <div className="node-inspector-body">
+            <div className="node-inspector-title">
+              <span>节点检查器</span>
+              <strong>{selectedNormalized.title || selectedNormalized.id}</strong>
+            </div>
+            <div className="inspector-field">
+              <label>节点 ID</label>
+              <input
+                value={selectedNormalized.id}
+                onChange={(event) => onPatchNode(selectedNormalized.id, { id: event.target.value })}
+              />
+            </div>
+            <div className="inspector-field">
+              <label>标题</label>
+              <input
+                value={selectedNormalized.title ?? ''}
+                onChange={(event) => onPatchNode(selectedNormalized.id, { title: event.target.value })}
+              />
+            </div>
+            {selectedInvocation ? (
+              <>
+                <div className="inspector-field">
+                  <label>能力</label>
+                  <select
+                    value={selectedInvocation.capability_id}
+                    onChange={(event) => {
+                      const capability = capabilities.find((item) => item.id === event.target.value);
+                      patchSelectedInvocation({
+                        capability_id: event.target.value,
+                        kind: capability?.kind ?? selectedInvocation.kind,
+                        arguments: resetSchemaArguments(
+                          selectedInvocation.arguments ?? {},
+                          capability?.parameters,
+                          selectedCapability?.parameters,
+                        ),
+                        risk: capabilityRisk(capability),
+                      });
+                    }}
+                  >
+                    <option value="">选择能力...</option>
+                    {selectableCapabilities.map((capability) => (
+                      <option key={capability.id} value={capability.id}>
+                        {capability.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="inspector-split">
+                  <div className="inspector-field">
+                    <label>类型</label>
+                    <select
+                      value={selectedInvocation.kind ?? 'tool'}
+                      onChange={(event) => patchSelectedInvocation({ kind: event.target.value as CapabilityKind })}
+                    >
+                      {capabilityKinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                    </select>
+                  </div>
+                  <div className="inspector-field">
+                    <label>风险</label>
+                    <select
+                      value={selectedInvocation.risk ?? 'low'}
+                      onChange={(event) => patchSelectedInvocation({ risk: event.target.value as RiskLevel })}
+                    >
+                      {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="inspector-field">
+                  <label>边界</label>
+                  <select
+                    value={selectedInvocation.boundary?.mode ?? 'read_only'}
+                    onChange={(event) => patchSelectedInvocation({
+                      boundary: {
+                        ...(selectedInvocation.boundary ?? { allowed_paths: ['.'], allowed_commands: [] }),
+                        mode: event.target.value as BoundaryMode,
+                      },
+                    })}
+                  >
+                    {boundaryModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+                  </select>
+                </div>
+                <div className="inspector-field">
+                  <InspectorArgumentEditor
+                    value={selectedInvocation.arguments ?? {}}
+                    parameters={selectedCapability?.parameters}
+                    onChange={(argumentsValue) => patchSelectedInvocation({ arguments: argumentsValue })}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="empty-state compact">入口节点无需配置能力。</div>
+            )}
+
+            <div className="inspector-section-head">
+              <span>Artifact 绑定</span>
+            </div>
+            <div className="inspector-artifact-list">
+              {artifactItems.length ? artifactItems.map((artifact) => (
+                <div className="inspector-artifact-row" key={artifact.id}>
+                  <code>{artifactKindLabel(artifact)}</code>
+                  <span title={artifactDisplayPath(artifact)}>
+                    {artifactDisplayName(artifact)}
+                  </span>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={(selectedNormalized.inputs ?? []).includes(artifact.id)}
+                      onChange={(event) => patchArtifactList('inputs', artifact.id, event.target.checked)}
+                    />
+                    输入
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={(selectedNormalized.outputs ?? []).includes(artifact.id)}
+                      onChange={(event) => patchArtifactList('outputs', artifact.id, event.target.checked)}
+                    />
+                    输出
+                  </label>
+                </div>
+              )) : <div className="empty-state compact">暂无 artifacts。</div>}
+            </div>
+
+            <button className="danger-line-button" onClick={() => onDeleteNode(selectedNormalized.id)} type="button">
+              <Trash2 size={14} />
+              删除节点
             </button>
-          </header>
-          <OrchestrationNodeEditor
-            node={normalizeNode(selectedNode)}
-            dag={dag}
-            artifacts={spec.artifacts ?? {}}
-            capabilities={capabilities}
-            logs={trace.filter((event) => event.node_id === selectedNode.id)}
-            onPatch={(patch, nextEdges) => onPatchNode(selectedNode.id, patch, nextEdges)}
-            onDelete={deleteSelectedNode}
-          />
+
+            {trace.filter((event) => event.node_id === selectedNormalized.id).length ? (
+              <NodeExecutionLog logs={trace.filter((event) => event.node_id === selectedNormalized.id)} />
+            ) : null}
+          </div>
         </aside>
       ) : null}
       {runDialogOpen ? (
@@ -2842,6 +3833,126 @@ function OrchestrationWorkspace({
           onClose={() => setRunDialogOpen(false)}
         />
       ) : null}
+    </section>
+  );
+}
+
+function InspectorArgumentEditor({
+  value,
+  parameters,
+  onChange,
+}: {
+  value: Record<string, unknown>;
+  parameters?: Record<string, unknown>;
+  onChange: (value: Record<string, unknown>) => void;
+}) {
+  const normalizedValue = ensureSchemaArguments(value, parameters);
+  const fields = buildSchemaArgumentFields(value, parameters);
+  const [mode, setMode] = useState<'kv' | 'raw'>('kv');
+  const [rawText, setRawText] = useState(() => JSON.stringify(normalizedValue, null, 2));
+
+  useEffect(() => {
+    setRawText(JSON.stringify(ensureSchemaArguments(value, parameters), null, 2));
+  }, [value, parameters]);
+
+  const updateKey = (oldKey: string, nextKey: string) => {
+    const cleanKey = nextKey.trim();
+    if (!cleanKey || (cleanKey !== oldKey && Object.prototype.hasOwnProperty.call(normalizedValue, cleanKey))) return;
+    const next: Record<string, unknown> = {};
+    for (const [key, itemValue] of Object.entries(normalizedValue)) {
+      next[key === oldKey ? cleanKey : key] = itemValue;
+    }
+    onChange(next);
+  };
+  const updateValue = (key: string, rawValue: string, type: ArgumentValueType) => {
+    onChange({
+      ...normalizedValue,
+      [key]: parseArgumentValue(rawValue, type, normalizedValue[key]),
+    });
+  };
+  const addField = () => {
+    let index = Object.keys(normalizedValue).length + 1;
+    let key = `arg_${index}`;
+    while (Object.prototype.hasOwnProperty.call(normalizedValue, key)) {
+      index += 1;
+      key = `arg_${index}`;
+    }
+    onChange({ ...normalizedValue, [key]: '' });
+  };
+  const removeField = (key: string) => {
+    const next = { ...normalizedValue };
+    delete next[key];
+    onChange(next);
+  };
+  const applyRawText = () => {
+    const parsed = parseJsonObject(rawText);
+    if (parsed) onChange(parsed);
+  };
+
+  return (
+    <section className="inspector-argument-editor">
+      <div className="inspector-argument-head">
+        <span>参数</span>
+        <div className="inspector-argument-toggle">
+          <button className={mode === 'kv' ? 'active' : ''} onClick={() => setMode('kv')} type="button">
+            键值
+          </button>
+          <button className={mode === 'raw' ? 'active' : ''} onClick={() => setMode('raw')} type="button">
+            Raw
+          </button>
+        </div>
+      </div>
+      {mode === 'kv' ? (
+        <div className="inspector-argument-kv">
+          <div className="inspector-argument-header">
+            <span>KEY</span>
+            <span>VALUE</span>
+            <span />
+          </div>
+          {fields.map((field, index) => {
+            const { key, value: itemValue, valueType: type } = field;
+            return (
+              <div className="inspector-argument-row" key={`inspector-argument-${field.fixed ? key : index}`}>
+                <input
+                  value={key}
+                  disabled={field.fixed}
+                  onChange={(event) => updateKey(key, event.target.value)}
+                  placeholder="key"
+                  aria-label="参数名"
+                />
+                <input
+                  value={formatArgumentValue(itemValue)}
+                  onChange={(event) => updateValue(key, event.target.value, type)}
+                  placeholder="value"
+                  aria-label="参数值"
+                  title={field.description}
+                />
+                <button
+                  onClick={() => removeField(key)}
+                  disabled={field.fixed}
+                  title={field.fixed ? 'Schema 参数不可删除' : '删除参数'}
+                  type="button"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            );
+          })}
+          <button className="inspector-argument-add" onClick={addField} type="button">
+            <Plus size={13} />
+            添加参数
+          </button>
+        </div>
+      ) : (
+        <textarea
+          className="inspector-argument-raw"
+          value={rawText}
+          onChange={(event) => setRawText(event.target.value)}
+          onBlur={applyRawText}
+          rows={5}
+          spellCheck={false}
+        />
+      )}
     </section>
   );
 }
@@ -2870,194 +3981,138 @@ function RunDagDialog({
   onClose: () => void;
 }) {
   const state = running ? 'running' : run?.status ?? 'ready';
-  const hasStarted = running || Boolean(run) || timeline.length > 0;
-  const startLabel = run ? 'Run Again' : 'Start Run';
+  const startLabel = running ? '运行中...' : run ? '再次运行' : '开始运行';
+  const riskLabel = summary.riskyNodes.length ? `${summary.riskyNodes.length} 个中/高` : '0';
+  const workspacePath = run?.workspace_path || '.dagent-runs';
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Run DAG">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="运行编排">
       <div className="run-dialog">
-        <header className="modal-header">
-          <div>
-            <div className="modal-title">
-              <Play size={20} />
-              <span>Run DAG</span>
-              <span className={`run-state ${state}`}>{state}</span>
-            </div>
-            <p>{message || specName || 'Untitled DAG'}</p>
+        <header className="run-dialog-header">
+          <div className="run-dialog-title">
+            <Play size={17} />
+            <strong>运行编排</strong>
+            <code>{specName || 'untitled_dag'}</code>
+            <span className={`run-state ${state}`}>{state}</span>
           </div>
-          <div className="modal-actions">
-            <button className="secondary-button compact-button" onClick={onClose} type="button">
-              <X size={16} />
-              Close
-            </button>
+          <button className="icon-button" onClick={onClose} title="关闭" type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="run-dialog-body">
+          <aside className="run-dialog-side">
+            <div className="run-meta-table">
+              <div>
+                <span>节点</span>
+                <strong>{summary.nodeCount}</strong>
+              </div>
+              <div>
+                <span>风险</span>
+                <strong>{riskLabel}</strong>
+              </div>
+              <div>
+                <span>目录</span>
+                <code>{workspacePath}</code>
+              </div>
+            </div>
+            <label className="run-input-block">
+              <span>初始输入 (可选 JSON)</span>
+              <textarea
+                value={inputText}
+                disabled={running}
+                spellCheck={false}
+                placeholder='{ "topic": "竞品定价" }'
+                onChange={(event) => onInputTextChange(event.target.value)}
+              />
+            </label>
+            {summary.issues.length ? (
+              <div className="run-issue-list">
+                {summary.issues.map((issue, index) => (
+                  <p key={`${issue.nodeId ?? 'spec'}-${index}`}>
+                    <strong>{issue.nodeId ?? 'DAG'}</strong>
+                    {runIssueText(issue)}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+            {message ? <p className="run-dialog-message">{message}</p> : null}
             <button
-              className="primary-button"
+              className="primary-button run-start-button"
               onClick={onStart}
               disabled={running || !summary.canRun}
               type="button"
             >
-              {running ? <Loader size={17} className="spin" /> : <Play size={17} />}
+              {running ? <Loader size={16} className="spin" /> : <Play size={16} />}
               {startLabel}
             </button>
-          </div>
-        </header>
-        <div className={hasStarted ? 'run-dialog-body transcript-mode' : 'run-dialog-body'}>
-          {hasStarted ? (
-            <>
-              <details className="run-context-details">
-                <summary>Run Context</summary>
-                <div className="run-context-body">
-                  <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
-                  <RunPreflightPanel summary={summary} />
-                </div>
-              </details>
-              <RunTranscript timeline={timeline} running={running} />
-              {run?.workspace_path ? (
-                <div className="readonly-note">Workspace: {run.workspace_path}</div>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <RunInputPanel value={inputText} disabled={running} onChange={onInputTextChange} />
-              <RunPreflightPanel summary={summary} />
-            </>
-          )}
+          </aside>
+          <section className="run-timeline-panel">
+            <span className="run-panel-title">运行时间线</span>
+            <RunTimeline timeline={timeline} running={running} state={state} />
+          </section>
         </div>
       </div>
     </div>
   );
 }
 
-function RunInputPanel({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  disabled: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <section className="run-section run-input-panel">
-      <h3>Input JSON</h3>
-      <textarea
-        value={value}
-        disabled={disabled}
-        spellCheck={false}
-        placeholder='{"query":"dagent"}'
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </section>
-  );
-}
-
-function RunPreflightPanel({ summary }: { summary: RunDialogSummary }) {
-  return (
-    <>
-      <section className="run-overview-grid">
-        <div className="run-stat-card">
-          <span>Nodes</span>
-          <strong>{summary.nodeCount}</strong>
-        </div>
-        <div className="run-stat-card">
-          <span>Edges</span>
-          <strong>{summary.edgeCount}</strong>
-        </div>
-        <div className="run-stat-card">
-          <span>Inputs</span>
-          <strong>{summary.inputArtifacts.length}</strong>
-        </div>
-        <div className="run-stat-card">
-          <span>Review</span>
-          <strong>{summary.riskyNodes.length}</strong>
-        </div>
-      </section>
-      {summary.issues.length ? (
-        <section className="run-section run-issues">
-          <h3><AlertTriangle size={15} /> Blocking Issues</h3>
-          <div className="run-list">
-            {summary.issues.map((issue, index) => (
-              <div className="run-list-row" key={`${issue.nodeId ?? 'spec'}-${index}`}>
-                <strong>{issue.nodeId ?? 'DAG'}</strong>
-                <span>{issue.message}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-      <section className="run-artifact-grid">
-        <RunArtifactPanel title="Input Files" artifacts={summary.inputArtifacts} empty="No file inputs selected." />
-        <RunArtifactPanel title="Outputs" artifacts={summary.outputArtifacts} empty="No output artifacts selected." />
-      </section>
-      {summary.riskyNodes.length ? (
-        <section className="run-section">
-          <h3><AlertTriangle size={15} /> Review Nodes</h3>
-          <div className="run-risk-list">
-            {summary.riskyNodes.map((node) => (
-              <div className="run-risk-row" key={node.id}>
-                <strong>{node.id}</strong>
-                <span>{node.capabilityId || 'Missing capability'}</span>
-                <em className={`risk-badge risk-${node.risk}`}>{node.risk}</em>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-    </>
-  );
-}
-
-function RunTranscript({
+function RunTimeline({
   timeline,
   running,
+  state,
 }: {
   timeline: RunTranscriptItem[];
   running: boolean;
+  state: string;
 }) {
-  const message: ChatMessage = {
-    role: 'assistant',
-    content: timeline.length ? '' : (running ? 'Running DAG...' : 'Run transcript will appear here.'),
-    timeline,
-  };
+  const rows = timeline.map(runTimelineRow);
   return (
-    <section className="run-transcript">
-      <div className="message assistant run-transcript-message">
-        <span>Run Transcript</span>
-        <MessageTimeline
-          message={message}
-          loading={running && timeline.length === 0}
-          onOpenDag={() => undefined}
-        />
-      </div>
-    </section>
+    <div className="run-timeline-list">
+      {rows.length ? rows.map((row, index) => (
+        <details className={`run-timeline-row ${row.status}`} key={`${row.label}-${index}`} open={index === rows.length - 1}>
+          <summary>
+            <span>{row.label}</span>
+            <code>{row.kind}</code>
+            <ChevronRight size={15} />
+          </summary>
+          {row.detail ? <p>{row.detail}</p> : null}
+        </details>
+      )) : (
+        <div className="run-timeline-empty">
+          <span>{running ? '编排正在启动...' : state === 'ready' ? '点击「开始运行」启动编排' : '暂无运行事件'}</span>
+        </div>
+      )}
+    </div>
   );
 }
 
-function RunArtifactPanel({
-  title,
-  artifacts,
-  empty,
-}: {
-  title: string;
-  artifacts: RunDialogSummary['inputArtifacts'];
-  empty: string;
-}) {
-  return (
-    <section className="run-section">
-      <h3>{title}</h3>
-      {artifacts.length ? (
-        <div className="run-list">
-          {artifacts.map((artifact) => (
-            <div className="run-list-row" key={artifact.id}>
-              <strong>{artifact.label}</strong>
-              <span>{artifact.path}</span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state compact">{empty}</div>
-      )}
-    </section>
-  );
+function runTimelineRow(item: RunTranscriptItem): { label: string; kind: string; detail: string; status: string } {
+  if (item.type === 'text') {
+    const content = item.content.trim();
+    return {
+      label: content.split('\n').find(Boolean)?.slice(0, 70) || '运行输出',
+      kind: 'trace',
+      detail: content,
+      status: 'done',
+    };
+  }
+  const event = item.event;
+  const result = item.result;
+  const failed = result?.type === 'capability.call.failed';
+  return {
+    label: event.capability_id ? `${event.capability_id}` : '能力调用',
+    kind: event.type.includes('review') ? 'review' : 'tool',
+    detail: JSON.stringify(event.arguments ?? {}, null, 2),
+    status: failed ? 'failed' : result ? 'done' : 'running',
+  };
+}
+
+function runIssueText(issue: RunDialogSummary['issues'][number]): string {
+  if (issue.message === 'Add at least one node before running.') return '请先添加至少一个节点。';
+  const missingTarget = issue.message.match(/^Node '([^']+)' is missing a target\.$/);
+  if (missingTarget) return '节点缺少目标能力。';
+  const unknownArtifact = issue.message.match(/^Node '([^']+)' references unknown (input|output) artifact '([^']+)'\.$/);
+  if (unknownArtifact) return `引用了未知 ${unknownArtifact[2] === 'input' ? '输入' : '输出'}产物 ${unknownArtifact[3]}。`;
+  return issue.message;
 }
 
 function OrchestrationNodeEditor({
@@ -3381,10 +4436,10 @@ function ArgumentForm({
   return (
     <section className="argument-form">
       <div className="argument-form-head">
-        <span>Arguments</span>
+        <span>参数</span>
         <button className="secondary-button compact-button" onClick={addField} type="button">
           <Plus size={14} />
-          Add field
+          添加参数
         </button>
       </div>
       {fields.length ? fields.map((field) => {
@@ -3397,11 +4452,11 @@ function ArgumentForm({
                 value={key}
                 disabled={field.fixed}
                 onChange={(event) => updateKey(key, event.target.value)}
-                aria-label="Argument name"
+                aria-label="参数名"
               />
               {field.fixed ? (
                 <span className="argument-meta" title={field.description}>
-                  {field.required ? 'required' : 'optional'}
+                  {field.required ? '必填' : '可选'}
                 </span>
               ) : null}
             </div>
@@ -3410,7 +4465,7 @@ function ArgumentForm({
               value={type}
               disabled={field.fixed}
               onChange={(event) => updateType(key, event.target.value as ArgumentValueType)}
-              aria-label="Argument type"
+              aria-label="参数类型"
             >
               <option value="string">string</option>
               <option value="number">number</option>
@@ -3422,7 +4477,7 @@ function ArgumentForm({
                 className="argument-value"
                 value={String(Boolean(itemValue))}
                 onChange={(event) => updateValue(key, event.target.value, type)}
-                aria-label="Argument value"
+                aria-label="参数值"
               >
                 <option value="true">true</option>
                 <option value="false">false</option>
@@ -3432,14 +4487,14 @@ function ArgumentForm({
                 className="argument-value"
                 value={formatArgumentValue(itemValue)}
                 onChange={(event) => updateValue(key, event.target.value, type)}
-                aria-label="Argument value"
+                aria-label="参数值"
               />
             )}
             <button
               className="icon-button"
               onClick={() => removeField(key)}
               disabled={field.fixed}
-              title={field.fixed ? 'Schema-defined argument' : 'Remove argument'}
+              title={field.fixed ? 'Schema 参数不可删除' : '删除参数'}
               type="button"
             >
               <Trash2 size={15} />
@@ -3447,7 +4502,7 @@ function ArgumentForm({
           </div>
         );
       }) : (
-        <div className="empty-state compact">No arguments yet. Add a field for this node.</div>
+        <div className="empty-state compact">暂无参数，添加一个字段。</div>
       )}
     </section>
   );
@@ -3457,44 +4512,90 @@ function CapabilityDirectory({
   capabilities,
   skills,
   mcpServers,
+  activeTab,
+  creationIntent,
+  query,
+  selectedCapabilityId,
+  selectedMcpName,
+  selectedSkillDetail,
+  selectedSkillFileDetail,
+  selectedSkillName,
+  skillImport,
+  skillMessage,
+  onActiveTabChange,
+  onCreationIntentChange,
+  onInstallSkillDraft,
+  onRemoveManagedSkill,
+  onSelectedCapabilityIdChange,
+  onSelectedMcpNameChange,
+  onSelectedSkillNameChange,
+  onSkillImportChange,
+  onUploadSkillFile,
   onRefresh,
 }: {
   capabilities: CapabilityDefinition[];
   skills: SkillSummary[];
   mcpServers: MCPServer[];
+  activeTab: ToolDirectoryTab;
+  creationIntent: ToolDirectoryTab | null;
+  query: string;
+  selectedCapabilityId: string;
+  selectedMcpName: string;
+  selectedSkillDetail: SkillDetail | null;
+  selectedSkillFileDetail: SkillFileDetail | null;
+  selectedSkillName: string;
+  skillImport: { name: string; description: string; category: string; content: string };
+  skillMessage: string;
+  onActiveTabChange: (tab: ToolDirectoryTab) => void;
+  onCreationIntentChange: (tab: ToolDirectoryTab | null) => void;
+  onInstallSkillDraft: () => void;
+  onRemoveManagedSkill: () => void;
+  onSelectedCapabilityIdChange: (id: string) => void;
+  onSelectedMcpNameChange: (name: string) => void;
+  onSelectedSkillNameChange: (name: string) => void;
+  onSkillImportChange: React.Dispatch<React.SetStateAction<{ name: string; description: string; category: string; content: string }>>;
+  onUploadSkillFile: (file: File | undefined) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<'tools' | 'skills' | 'mcp'>('tools');
-  const [query, setQuery] = useState('');
   const [draftCapability, setDraftCapability] = useState<CapabilityDefinition>(defaultCustomCapability);
   const [draftParametersText, setDraftParametersText] = useState(JSON.stringify(defaultCustomCapability.parameters, null, 2));
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
-  const [selectedId, setSelectedId] = useState('');
   const [result, setResult] = useState<CapabilityResult | null>(null);
   const [message, setMessage] = useState('');
-  const [selectedSkillName, setSelectedSkillName] = useState('');
-  const [skillDetail, setSkillDetail] = useState<SkillDetail | null>(null);
-  const [skillFileDetail, setSkillFileDetail] = useState<SkillFileDetail | null>(null);
-  const [skillMessage, setSkillMessage] = useState('');
-  const [skillImport, setSkillImport] = useState({ name: '', description: '', category: '', content: '' });
-  const [selectedMcpName, setSelectedMcpName] = useState('');
   const [mcpDraft, setMcpDraft] = useState<{ name: string } & MCPServerConfig>(defaultMcpConfig);
   const [mcpArgsText, setMcpArgsText] = useState('');
   const [mcpEnvText, setMcpEnvText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
-  const filtered = capabilities.filter((capability) => {
-    const haystack = `${capability.id} ${capability.name} ${capability.kind} ${capability.description}`.toLowerCase();
-    return haystack.includes(query.toLowerCase());
-  });
-  const selected = capabilities.find((capability) => capability.id === selectedId) ?? filtered[0];
-  const selectedEditable = Boolean(selected && isEditableToolCapability(selected));
-  const grouped = capabilityKinds
-    .map((kind) => ({ kind, items: filtered.filter((capability) => capability.kind === kind) }))
-    .filter((group) => group.items.length);
-  const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? skills[0];
-  const linkedFileGroups = Object.entries(skillDetail?.linked_files ?? {})
-    .filter(([, files]) => files.length);
+  const normalizedQuery = query.toLowerCase();
+  const toolRows = capabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
+  const selectedTool = capabilities.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0] ?? capabilities[0];
+  const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
+  const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
+  const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? visibleSkills[0] ?? skills[0];
   const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
+
+  useEffect(() => {
+    if (!selectedMcp) {
+      setMcpDraft(defaultMcpConfig);
+      setMcpArgsText('');
+      setMcpEnvText('');
+      return;
+    }
+    setMcpDraft({
+      ...defaultMcpConfig,
+      name: selectedMcp.name,
+      ...selectedMcp.config,
+    });
+    setMcpArgsText((selectedMcp.config.args ?? []).join('\n'));
+    setMcpEnvText(formatEnvText(selectedMcp.config.env ?? {}));
+  }, [selectedMcp]);
+
+  useEffect(() => {
+    if (creationIntent !== 'mcp') return;
+    setMcpDraft(defaultMcpConfig);
+    setMcpArgsText('');
+    setMcpEnvText('');
+  }, [creationIntent]);
 
   const runCreate = async () => {
     const parameters = parseJsonObject(draftParametersText);
@@ -3515,7 +4616,8 @@ function CapabilityDirectory({
       };
       await createCapability(definition);
       await onRefresh();
-      setSelectedId(definition.id);
+      onSelectedCapabilityIdChange(definition.id);
+      onCreationIntentChange(null);
       setMessage(`Created ${definition.id}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
@@ -3523,15 +4625,15 @@ function CapabilityDirectory({
   };
 
   const runTest = async () => {
-    if (!selected) return;
+    if (!selectedTool) return;
     const parsed = parseJsonObject(argumentsText);
     if (!parsed) {
       setMessage('Test arguments must be a JSON object.');
       return;
     }
-    setMessage(`Testing ${selected.id}...`);
+    setMessage(`Testing ${selectedTool.id}...`);
     try {
-      const nextResult = await testCapability(selected.id, parsed);
+      const nextResult = await testCapability(selectedTool.id, parsed);
       setResult(nextResult);
       setMessage(`Test ${nextResult.status}.`);
     } catch (exc) {
@@ -3540,140 +4642,28 @@ function CapabilityDirectory({
   };
 
   const toggleCapability = async (enabled: boolean) => {
-    if (!selected) return;
+    if (!selectedTool) return;
     setMessage(enabled ? 'Enabling capability...' : 'Disabling capability...');
     try {
-      await setCapabilityEnabled(selected.id, enabled);
+      await setCapabilityEnabled(selectedTool.id, enabled);
       await onRefresh();
-      setMessage(`${enabled ? 'Enabled' : 'Disabled'} ${selected.id}.`);
+      setMessage(`${enabled ? 'Enabled' : 'Disabled'} ${selectedTool.id}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
   const removeCapability = async () => {
-    if (!selected || !isEditableToolCapability(selected)) return;
+    if (!selectedTool || !isEditableToolCapability(selectedTool)) return;
     setMessage('Deleting tool...');
     try {
-      await deleteCapability(selected.id);
-      setSelectedId('');
+      await deleteCapability(selectedTool.id);
+      onSelectedCapabilityIdChange('');
       await onRefresh();
-      setMessage(`Deleted ${selected.id}.`);
+      setMessage(`Deleted ${selectedTool.id}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
     }
-  };
-
-  const openSkill = async (skill: SkillSummary) => {
-    const lookup = skillLookupName(skill);
-    setSelectedSkillName(lookup);
-    setSkillMessage(`Loading ${lookup}...`);
-    try {
-      const detail = await getSkill(lookup);
-      setSkillDetail(detail);
-      setSkillFileDetail(null);
-      setSkillMessage('');
-    } catch (exc) {
-      setSkillDetail(null);
-      setSkillFileDetail(null);
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const openSkillLinkedFile = async (filePath: string) => {
-    const skill = skillDetail?.skill ?? selectedSkill;
-    if (!skill) return;
-    const lookup = skillLookupName(skill);
-    setSkillMessage(`Loading ${filePath}...`);
-    try {
-      const detail = await getSkillFile(lookup, filePath);
-      setSkillFileDetail(detail);
-      setSkillMessage('');
-    } catch (exc) {
-      setSkillFileDetail(null);
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const installSkillDraft = async () => {
-    setSkillMessage('Installing skill...');
-    try {
-      const detail = await installSkill({
-        content: skillImport.content,
-        name: skillImport.name || undefined,
-        description: skillImport.description || undefined,
-        category: skillImport.category || undefined,
-      });
-      setSkillDetail(detail);
-      setSkillFileDetail(null);
-      setSelectedSkillName(skillLookupName(detail.skill));
-      setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
-      try {
-        await onRefresh();
-      } catch (exc) {
-        setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-      }
-    } catch (exc) {
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const removeManagedSkill = async () => {
-    const skill = skillDetail?.skill ?? selectedSkill;
-    if (!skill || !isManagedSkill(skill)) return;
-    setSkillMessage('Deleting skill...');
-    try {
-      await deleteSkill(skillLookupName(skill));
-      setSkillDetail(null);
-      setSkillFileDetail(null);
-      setSelectedSkillName('');
-      setSkillMessage(`Deleted ${skillLookupName(skill)}.`);
-      try {
-        await onRefresh();
-      } catch (exc) {
-        setSkillMessage(`Deleted ${skillLookupName(skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-      }
-    } catch (exc) {
-      setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
-
-  const loadSkillFile = async (file: File | undefined) => {
-    if (!file) return;
-    if (file.name.toLowerCase().endsWith('.zip')) {
-      setSkillMessage('Installing skill package...');
-      try {
-        const detail = await installSkill({ file });
-        setSkillDetail(detail);
-        setSkillFileDetail(null);
-        setSelectedSkillName(skillLookupName(detail.skill));
-        setSkillMessage(`Installed ${skillLookupName(detail.skill)}.`);
-        try {
-          await onRefresh();
-        } catch (exc) {
-          setSkillMessage(`Installed ${skillLookupName(detail.skill)}, but refresh failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-        }
-      } catch (exc) {
-        setSkillMessage(exc instanceof Error ? exc.message : String(exc));
-      }
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSkillImport((current) => ({ ...current, content: String(reader.result || '') }));
-    };
-    reader.readAsText(file);
-  };
-
-  const selectMcpServer = (server: MCPServer) => {
-    setSelectedMcpName(server.name);
-    setMcpDraft({
-      ...defaultMcpConfig,
-      name: server.name,
-      ...server.config,
-    });
-    setMcpArgsText((server.config.args ?? []).join('\n'));
-    setMcpEnvText(formatEnvText(server.config.env ?? {}));
   };
 
   const saveMcpServer = async () => {
@@ -3691,7 +4681,8 @@ function CapabilityDirectory({
         await createMcpServer(payload);
       }
       await onRefresh();
-      setSelectedMcpName(payload.name);
+      onSelectedMcpNameChange(payload.name);
+      onCreationIntentChange(null);
       setMcpMessage(`Saved ${payload.name}.`);
     } catch (exc) {
       setMcpMessage(exc instanceof Error ? exc.message : String(exc));
@@ -3703,7 +4694,7 @@ function CapabilityDirectory({
     setMcpMessage('Deleting MCP server...');
     try {
       await deleteMcpServer(selectedMcp.name);
-      setSelectedMcpName('');
+      onSelectedMcpNameChange('');
       await onRefresh();
       setMcpMessage(`Deleted ${selectedMcp.name}.`);
     } catch (exc) {
@@ -3721,406 +4712,366 @@ function CapabilityDirectory({
       setMcpMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
+  const createDialogTitle = creationIntent === 'tools'
+    ? '新建工具'
+    : creationIntent === 'skills'
+      ? '导入技能'
+      : '新建 MCP 服务';
 
   return (
-    <section className="console-grid directory-grid">
-      <aside className="console-sidebar">
-        <PaneTitle icon={<Wrench size={18} />} title="Capability Workbench" />
-        <div className="capability-tabs" role="tablist" aria-label="Capability workbench sections">
-          {(['tools', 'skills', 'mcp'] as const).map((tab) => (
-            <button key={tab} className={activeTab === tab ? 'active' : ''} onClick={() => setActiveTab(tab)} type="button">
-              {tab}
-            </button>
-          ))}
-        </div>
-        {activeTab === 'tools' ? (
-          <>
-            <label className="search-field">
-              <Search size={15} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search capabilities" />
-            </label>
-            <div className="resource-list">
-              {grouped.map((group) => (
-                <div key={group.kind} className="resource-group">
-                  <h3>{group.kind}</h3>
-                  {group.items.map((capability) => (
-                    <button
-                      key={capability.id}
-                      className={selected?.id === capability.id ? 'resource-row active' : 'resource-row'}
-                      type="button"
-                      onClick={() => setSelectedId(capability.id)}
-                    >
-                      <strong>{capability.name}</strong>
-                      <span>{capability.id}</span>
-                    </button>
-                  ))}
-                </div>
-              ))}
+    <section className={`design-tools-workspace ${activeTab === 'skills' ? 'skills-mode' : ''}`}>
+      {creationIntent ? (
+        <div className="capability-create-backdrop" onMouseDown={() => onCreationIntentChange(null)}>
+          <section
+            className="capability-create-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={createDialogTitle}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="capability-create-head">
+              <div>
+                <span>能力管理</span>
+                <h2>{createDialogTitle}</h2>
+              </div>
+              <button onClick={() => onCreationIntentChange(null)} title="关闭" type="button">
+                <X size={15} />
+              </button>
             </div>
-          </>
-        ) : activeTab === 'skills' ? (
-          <div className="resource-list">
-            {skills.length ? skills.map((skill) => (
-              <button
-                key={skill.path}
-                className={skillLookupName(selectedSkill ?? skill) === skillLookupName(skill) ? 'resource-row active' : 'resource-row'}
-                type="button"
-                onClick={() => void openSkill(skill)}
-              >
-                <strong>{skill.name}</strong>
-                <span>{skill.category ? `${skill.category} · ${skill.path}` : skill.path}</span>
-              </button>
-            )) : <div className="empty-state compact">No skills found.</div>}
-          </div>
-        ) : (
-          <div className="resource-list">
-            {mcpServers.length ? mcpServers.map((server) => (
-              <button
-                key={server.name}
-                className={selectedMcp?.name === server.name ? 'resource-row active' : 'resource-row'}
-                type="button"
-                onClick={() => selectMcpServer(server)}
-              >
-                <strong>{server.name}</strong>
-                <span>{server.status} · {server.tools.length} tools · {server.source}</span>
-              </button>
-            )) : <div className="empty-state compact">No MCP servers configured.</div>}
-          </div>
-        )}
-      </aside>
-      <section className="console-detail wide">
+            {creationIntent === 'tools' ? (
+              <section className="tool-create-drawer">
+                <div className="compact-form-grid">
+                  <label>ID<input value={draftCapability.id} onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))} /></label>
+                  <label>名称<input value={draftCapability.name} onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))} /></label>
+                  <label>描述<textarea value={draftCapability.description} onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))} /></label>
+                  <label>参数 Schema<textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} /></label>
+                  <label>Template<textarea value={String(draftCapability.config.template ?? '')} onChange={(event) => setDraftCapability((current) => ({ ...current, kind: 'tool', config: { ...current.config, template: event.target.value } }))} /></label>
+                </div>
+                {message ? <p className="form-message">{message}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={runCreate} type="button">
+                    <Plus size={14} />
+                    创建
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            {creationIntent === 'skills' ? (
+              <section className="skill-import-panel">
+                <label className="skill-package-upload">
+                  <Upload size={15} />
+                  <span>
+                    <strong>上传技能包</strong>
+                    <em>.zip 会直接安装，SKILL.md 会填入下方内容</em>
+                  </span>
+                  <input
+                    type="file"
+                    accept=".md,text/markdown,text/plain,.zip,application/zip"
+                    onChange={(event) => {
+                      onUploadSkillFile(event.target.files?.[0]);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <div className="compact-form-grid">
+                  <label>名称<input value={skillImport.name} onChange={(event) => onSkillImportChange((current) => ({ ...current, name: event.target.value }))} /></label>
+                  <label>分类<input value={skillImport.category} onChange={(event) => onSkillImportChange((current) => ({ ...current, category: event.target.value }))} /></label>
+                  <label>描述<textarea value={skillImport.description} onChange={(event) => onSkillImportChange((current) => ({ ...current, description: event.target.value }))} /></label>
+                  <label>SKILL.md<textarea value={skillImport.content} onChange={(event) => onSkillImportChange((current) => ({ ...current, content: event.target.value }))} /></label>
+                </div>
+                {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={onInstallSkillDraft} type="button">
+                    <Upload size={14} />
+                    安装
+                  </button>
+                </div>
+              </section>
+            ) : null}
+            {creationIntent === 'mcp' ? (
+              <section className="mcp-config-form">
+                <label>名称<input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+                <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
+                <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
+                <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+                {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
+                <div className="capability-create-actions">
+                  <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
+                    取消
+                  </button>
+                  <button className="primary-button compact-button" onClick={saveMcpServer} type="button">
+                    <Save size={13} />
+                    保存配置
+                  </button>
+                </div>
+              </section>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+      <aside className="tools-detail-panel">
         {activeTab === 'tools' ? (
-          <>
-            <PaneTitle icon={<Database size={18} />} title="Capability Detail" />
-            {selected ? (
-              <div className="directory-detail">
-                <div className="detail-header">
+          <div className="tools-detail-scroll">
+            {selectedTool ? (
+              <div className="tool-detail-surface">
+                <div className="tool-detail-head">
                   <div>
-                    <h2>{selected.name}</h2>
-                    <p>{selected.id}</p>
+                    <h2>{selectedTool.id}</h2>
+                    <p>{selectedTool.description || selectedTool.name}</p>
                   </div>
-                  <span className={`risk-badge risk-${selected.policy.risk}`}>{selected.policy.risk}</span>
+                  <button className="secondary-button compact-button" onClick={runTest} type="button">
+                    <Play size={13} />
+                    测试
+                  </button>
                 </div>
-                <div className="metadata-grid">
-                  <span>Kind</span><strong>{selected.kind}</strong>
-                  <span>Status</span><strong>{selected.enabled ? 'enabled' : 'disabled'}</strong>
-                  <span>Source</span><strong>{selectedEditable ? 'memory tool' : 'backend/config readonly'}</strong>
+                <div className="tool-info-table">
+                  <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
+                  <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
+                  <div><span>边界</span><strong>{toolBoundaryLabel(selectedTool)}</strong></div>
+                  <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
                 </div>
-                <p>{selected.description || 'No description.'}</p>
-                <div className="two-col">
-                  <section className="code-panel">
-                    <h3>Parameters</h3>
-                    <pre>{JSON.stringify(selected.parameters, null, 2)}</pre>
-                  </section>
-                  <section className="code-panel">
-                    <h3>Config</h3>
-                    <pre>{JSON.stringify(selected.config, null, 2)}</pre>
-                  </section>
-                </div>
-                <section className="code-panel">
-                  <h3>Test Arguments</h3>
-                  <textarea value={argumentsText} onChange={(event) => setArgumentsText(event.target.value)} />
+                <section>
+                  <h3>参数 Schema</h3>
+                  <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
+                </section>
+                <section>
+                  <h3>测试调用</h3>
+                  <textarea
+                    value={argumentsText}
+                    onChange={(event) => setArgumentsText(event.target.value)}
+                    placeholder='{ "pattern": "DAG", "path": "." }'
+                    spellCheck={false}
+                  />
                   <div className="inline-actions">
                     <button className="primary-button compact-button" onClick={runTest} type="button">
-                      <Play size={16} />
-                      Test
+                      <Play size={13} />
+                      执行测试
                     </button>
-                    <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selected.enabled)} disabled={!selectedEditable} type="button">
-                      {selected.enabled ? 'Disable' : 'Enable'}
+                    <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selectedTool.enabled)} disabled={!selectedEditable} type="button">
+                      {selectedTool.enabled ? '停用' : '启用'}
                     </button>
                     <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedEditable} type="button">
-                      Delete
+                      删除
                     </button>
                   </div>
                   {message ? <p className="form-message">{message}</p> : null}
-                  {result ? <pre>{JSON.stringify(result, null, 2)}</pre> : null}
+                  {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
                 </section>
-                {!selectedEditable ? <div className="readonly-note">This capability is provided by backend configuration and is read-only in the MVP.</div> : null}
               </div>
-            ) : <div className="empty-state compact">No capabilities loaded.</div>}
-          </>
+            ) : <div className="empty-state compact">没有加载到工具。</div>}
+          </div>
         ) : activeTab === 'skills' ? (
-          <>
-            <PaneTitle icon={<FileText size={18} />} title="Skill Detail" />
-            <div className="directory-detail">
-              {skillDetail ? (
-                <>
-                  <div className="detail-header">
-                    <div>
-                      <h2>{skillDetail.name}</h2>
-                      <p>{skillDetail.category ? `${skillDetail.category}/${skillDetail.name}` : skillDetail.name}</p>
-                    </div>
-                    <span className="status-badge" data-status={isManagedSkill(skillDetail.skill) ? 'approved' : 'completed'}>
-                      {isManagedSkill(skillDetail.skill) ? 'installed' : 'local'}
-                    </span>
-                  </div>
-                  <p>{skillDetail.description || 'No description.'}</p>
-                  {skillDetail.skill_dir ? (
-                    <div className="metadata-grid">
-                      <span>Directory</span><strong>{skillDetail.skill_dir}</strong>
-                    </div>
-                  ) : null}
-                  {linkedFileGroups.length ? (
-                    <section className="code-panel">
-                      <h3>Linked Files</h3>
-                      <div className="linked-file-list">
-                        {linkedFileGroups.map(([folder, files]) => (
-                          <div key={folder} className="linked-file-group">
-                            <strong>{folder}</strong>
-                            <div>
-                              {files.map((filePath) => (
-                                <button
-                                  key={filePath}
-                                  className={skillFileDetail?.file_path === filePath ? 'secondary-button compact-button active' : 'secondary-button compact-button'}
-                                  onClick={() => void openSkillLinkedFile(filePath)}
-                                  type="button"
-                                >
-                                  <FileText size={14} />
-                                  {filePath}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  ) : null}
-                  <section className="code-panel">
-                    <h3>Content</h3>
-                    <pre>{skillDetail.content}</pre>
-                  </section>
-                  {skillFileDetail ? (
-                    <section className="code-panel">
-                      <h3>{skillFileDetail.file_path}</h3>
-                      <pre>{skillFileDetail.content}</pre>
-                    </section>
-                  ) : null}
-                  <section className="code-panel">
-                    <h3>Metadata</h3>
-                    <pre>{JSON.stringify(skillDetail.metadata, null, 2)}</pre>
-                  </section>
-                </>
-              ) : selectedSkill ? (
-                <div className="readonly-note">Select a skill to load its normalized content.</div>
-              ) : (
-                <div className="empty-state compact">No skill selected.</div>
-              )}
-              <div className="inline-actions">
-                {selectedSkill ? (
-                  <button className="secondary-button compact-button" onClick={() => void openSkill(selectedSkill)} type="button">
-                    <Search size={16} />
-                    View
-                  </button>
-                ) : null}
-                <button className="secondary-button danger-button compact-button" onClick={removeManagedSkill} disabled={!skillDetail || !isManagedSkill(skillDetail.skill)} type="button">
-                  Delete installed
+          <div className="skill-editor">
+            <div className="skill-editor-toolbar">
+              <FileText size={15} />
+              <span>{selectedSkill ? skillLookupName(selectedSkill) : 'skill'} <em>/</em> <strong>{selectedSkillFileDetail?.file_path ?? 'SKILL.md'}</strong></span>
+              <div>
+                <button className="secondary-button danger-button compact-button" onClick={onRemoveManagedSkill} disabled={!selectedSkillDetail || !isManagedSkill(selectedSkillDetail.skill)} type="button">
+                  <Trash2 size={13} />
+                  删除
+                </button>
+                <button className="primary-button compact-button" type="button" disabled title="后端暂未提供技能文件保存接口">
+                  <Save size={13} />
+                  保存
                 </button>
               </div>
-              {skillMessage ? <p className="form-message">{skillMessage}</p> : null}
             </div>
-          </>
+            <div className="skill-editor-body">
+              <textarea
+                value={selectedSkillFileDetail?.content ?? selectedSkillDetail?.content ?? ''}
+                readOnly
+                spellCheck={false}
+              />
+            </div>
+          </div>
         ) : (
-          <>
-            <PaneTitle icon={<Database size={18} />} title="MCP Server Detail" />
-            <div className="directory-detail">
+          <div className="tools-detail-scroll">
+            <div className="mcp-detail-surface">
               {selectedMcp ? (
                 <>
-                  <div className="detail-header">
+                  <div className="tool-detail-head">
                     <div>
                       <h2>{selectedMcp.name}</h2>
-                      <p>{selectedMcp.source}</p>
+                      <p>{`${selectedMcp.source} · ${selectedMcp.tools.length} tools`}</p>
                     </div>
                     <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
-                      {selectedMcp.status}
+                      {mcpStatusLabel(selectedMcp.status)}
                     </span>
                   </div>
-                  {selectedMcp.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
-                  <div className="metadata-grid">
-                    <span>Command</span><strong>{selectedMcp.config.command || 'not set'}</strong>
-                    <span>Risk</span><strong>{selectedMcp.config.risk ?? 'medium'}</strong>
-                    <span>Tools</span><strong>{selectedMcp.tools.length}</strong>
+                  {selectedMcp?.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
+                  <div className="mcp-config-form">
+                    <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
+                    <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
+                    <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+                    <div className="inline-actions">
+                      <button className="primary-button compact-button" onClick={saveMcpServer} type="button">
+                        <Save size={13} />
+                        保存配置
+                      </button>
+                      <button className="secondary-button compact-button" onClick={() => void reloadMcp()} type="button">
+                        <RefreshCw size={13} />
+                        重载
+                      </button>
+                      <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={selectedMcp.source !== 'memory'} type="button">
+                        删除
+                      </button>
+                    </div>
                   </div>
-                  <section className="code-panel">
-                    <h3>Discovered Tools</h3>
-                    <pre>{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
+                  <section>
+                    <h3>发现的工具</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
                   </section>
+                  {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
                 </>
-              ) : <div className="empty-state compact">No MCP server selected.</div>}
-              <div className="inline-actions">
-                <button className="secondary-button compact-button" onClick={() => void reloadMcp()} type="button">
-                  <RefreshCw size={16} />
-                  Reload
-                </button>
-                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || selectedMcp.source !== 'memory'} type="button">
-                  Delete memory server
-                </button>
-              </div>
-              {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
+              ) : (
+                <div className="empty-state compact">暂无 MCP 服务，点击左侧列表中的 + 新建。</div>
+              )}
             </div>
-          </>
-        )}
-      </section>
-      <aside className="console-sidebar">
-        {activeTab === 'tools' ? (
-          <>
-            <PaneTitle icon={<Plus size={18} />} title="New tool" />
-            <div className="spec-meta-form">
-              <label>
-                ID
-                <input
-                  value={draftCapability.id}
-                  onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))}
-                />
-              </label>
-              <label>
-                Name
-                <input
-                  value={draftCapability.name}
-                  onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))}
-                />
-              </label>
-              <label>
-                Description
-                <textarea
-                  value={draftCapability.description}
-                  onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))}
-                />
-              </label>
-              <div className="two-col">
-                <label>
-                  Risk
-                  <select
-                    value={draftCapability.policy.risk}
-                    onChange={(event) => setDraftCapability((current) => ({
-                      ...current,
-                      kind: 'tool',
-                      policy: { ...current.policy, risk: event.target.value as RiskLevel },
-                    }))}
-                  >
-                    {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
-                  </select>
-                </label>
-                <label className="checkbox-line">
-                  <input
-                    type="checkbox"
-                    checked={draftCapability.policy.requires_review}
-                    onChange={(event) => setDraftCapability((current) => ({
-                      ...current,
-                      kind: 'tool',
-                      policy: { ...current.policy, requires_review: event.target.checked },
-                    }))}
-                  />
-                  Requires review
-                </label>
-              </div>
-              <label>
-                Parameters JSON Schema
-                <textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} />
-              </label>
-              <label>
-                Template
-                <textarea
-                  value={String(draftCapability.config.template ?? '')}
-                  onChange={(event) => setDraftCapability((current) => ({
-                    ...current,
-                    kind: 'tool',
-                    config: { ...current.config, template: event.target.value },
-                  }))}
-                />
-              </label>
-              <button className="primary-button" onClick={runCreate} type="button">
-                <Plus size={16} />
-                Create tool
-              </button>
-            </div>
-          </>
-        ) : activeTab === 'skills' ? (
-          <>
-            <PaneTitle icon={<FolderUp size={18} />} title="Install skill" />
-            <div className="spec-meta-form">
-              <label>
-                Name
-                <input value={skillImport.name} onChange={(event) => setSkillImport((current) => ({ ...current, name: event.target.value }))} />
-              </label>
-              <label>
-                Category
-                <input value={skillImport.category} onChange={(event) => setSkillImport((current) => ({ ...current, category: event.target.value }))} />
-              </label>
-              <label>
-                Description
-                <textarea value={skillImport.description} onChange={(event) => setSkillImport((current) => ({ ...current, description: event.target.value }))} />
-              </label>
-              <label>
-                SKILL.md
-                <textarea value={skillImport.content} onChange={(event) => setSkillImport((current) => ({ ...current, content: event.target.value }))} />
-              </label>
-              <label>
-                Upload
-                <input type="file" accept=".md,text/markdown,text/plain,.zip,application/zip" onChange={(event) => void loadSkillFile(event.target.files?.[0])} />
-              </label>
-              <div className="readonly-note">Markdown and zip installs are stored under the managed local skill root. Zip packages may include references, templates, scripts, and assets.</div>
-              <button className="primary-button" onClick={installSkillDraft} type="button">
-                <Upload size={16} />
-                Install skill
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <PaneTitle icon={<Plus size={18} />} title="Stdio MCP server" />
-            <div className="spec-meta-form">
-              <label>
-                Name
-                <input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} />
-              </label>
-              <label>
-                Command
-                <input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} />
-              </label>
-              <label>
-                Args
-                <textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="One argument per line" />
-              </label>
-              <label>
-                Env
-                <textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" />
-              </label>
-              <div className="two-col">
-                <label>
-                  Risk
-                  <select value={mcpDraft.risk ?? 'medium'} onChange={(event) => setMcpDraft((current) => ({ ...current, risk: event.target.value as RiskLevel }))}>
-                    {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
-                  </select>
-                </label>
-                <label className="checkbox-line">
-                  <input type="checkbox" checked={mcpDraft.enabled !== false} onChange={(event) => setMcpDraft((current) => ({ ...current, enabled: event.target.checked }))} />
-                  Enabled
-                </label>
-              </div>
-              <div className="two-col">
-                <label>
-                  Connect timeout
-                  <input type="number" value={mcpDraft.connect_timeout ?? 30} onChange={(event) => setMcpDraft((current) => ({ ...current, connect_timeout: Number(event.target.value) }))} />
-                </label>
-                <label>
-                  Tool timeout
-                  <input type="number" value={mcpDraft.tool_timeout ?? 60} onChange={(event) => setMcpDraft((current) => ({ ...current, tool_timeout: Number(event.target.value) }))} />
-                </label>
-              </div>
-              <button className="primary-button" onClick={saveMcpServer} type="button">
-                <Save size={16} />
-                Save MCP server
-              </button>
-            </div>
-          </>
+          </div>
         )}
       </aside>
     </section>
   );
 }
 
+function profilePathLabel(profile: AgentProfile): string {
+  return profile.source === 'builtin'
+    ? `dagent/resources/profiles/${profile.name}.md`
+    : `profiles/${profile.name}.md`;
+}
+
+function toolBoundaryLabel(capability: CapabilityDefinition): string {
+  const configured = capability.config.boundary ?? capability.config.boundary_mode ?? capability.config.mode;
+  if (typeof configured === 'string' && configured.trim()) return configured;
+  if (capability.policy.sandbox_required) return 'sandbox';
+  if (capability.policy.network) return 'network';
+  return 'read_only';
+}
+
+function capabilityStatusLabel(capability: CapabilityDefinition): string {
+  return capability.enabled ? '已启用' : '已停用';
+}
+
+function mcpStatusLabel(status: MCPServer['status']): string {
+  if (status === 'connected') return 'connected';
+  if (status === 'disabled') return 'disabled';
+  if (status === 'error') return 'error';
+  return 'pending';
+}
+
+function AgentManagementWorkspace({
+  capabilities,
+  profiles,
+  warnings,
+  selectedId,
+  onSelect,
+}: {
+  capabilities: CapabilityDefinition[];
+  profiles: AgentProfile[];
+  warnings: ProfileWarning[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0] ?? null;
+  const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent');
+  const capabilityRows = agentCapabilities.length
+    ? agentCapabilities
+    : capabilities.filter((capability) => capability.enabled).slice(0, 3);
+
+  useEffect(() => {
+    if (!selected && profiles[0]) onSelect(profiles[0].id);
+  }, [onSelect, profiles, selected]);
+
+  return (
+    <section className="design-agents-workspace">
+      <div className="agent-prompt-editor">
+        {selected ? (
+          <>
+            <div className="agent-editor-toolbar">
+              <div className="agent-editor-icon">
+                <Bot size={15} />
+              </div>
+              <div>
+                <strong>{selected.name}</strong>
+                <span>{profilePathLabel(selected)}</span>
+              </div>
+              <div>
+                <button className="secondary-button compact-button" type="button" disabled title="后端暂未提供导入 profile 接口">
+                  <Upload size={14} />
+                  导入
+                </button>
+                <button className="primary-button compact-button" type="button" disabled title="后端暂未提供保存 profile 接口">
+                  <Save size={14} />
+                  保存
+                </button>
+              </div>
+            </div>
+            <div className="agent-editor-body">
+              <div className="agent-editor-title-row">
+                <span>系统提示词</span>
+                <em>{selected.content.length} chars</em>
+              </div>
+              <textarea value={selected.content || ''} readOnly spellCheck={false} />
+              <div className="agent-path-note">
+                <AlertTriangle size={14} />
+                配置文件路径：<code>{profilePathLabel(selected)}</code>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="empty-state compact">暂无智能体配置。</div>
+        )}
+      </div>
+
+      <aside className="agent-metadata-panel">
+        <div className="agent-panel-label">配置信息</div>
+        {selected ? (
+          <>
+            <div className="agent-info-table">
+              <div><span>名称</span><strong>{selected.name}</strong></div>
+              <div><span>描述</span><strong>{selected.description || 'Markdown profile'}</strong></div>
+              <div><span>来源</span><strong>{selected.source}</strong></div>
+              <div><span>字符数</span><strong>{selected.content.length}</strong></div>
+            </div>
+            <div className="agent-panel-label">能力范围</div>
+            <div className="agent-capability-list">
+              {capabilityRows.length ? capabilityRows.map((capability) => (
+                <div key={capability.id}>
+                  <Wrench size={13} />
+                  <span>{capability.id}</span>
+                </div>
+              )) : <div className="sidebar-empty-row">暂无可展示能力</div>}
+            </div>
+            {warnings.length ? (
+              <>
+                <div className="agent-panel-label">加载警告</div>
+                <div className="agent-warning-list">
+                  {warnings.map((warning) => (
+                    <p key={warning.name}><strong>{warning.name}</strong>: {warning.error}</p>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            <div className="agent-panel-label">危险操作</div>
+            <button className="danger-line-button" type="button" disabled title="后端暂未提供删除 profile 接口">
+              <Trash2 size={14} />
+              删除配置
+            </button>
+          </>
+        ) : null}
+      </aside>
+    </section>
+  );
+}
+
 function chatCapabilityScopeLabel(mode: ChatScopeMode, capabilityCount: number, skillCount: number): string {
-  if (mode === 'all') return 'All capabilities';
+  if (mode === 'all') return '全部能力';
   const total = capabilityCount + skillCount;
   if (total === 0) return 'No capabilities';
   if (skillCount === 0) return `${capabilityCount} capabilities`;
@@ -4195,72 +5146,6 @@ function formatEnvText(env: Record<string, string>): string {
   return Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n');
 }
 
-function AgentDirectory({
-  profiles,
-  warnings,
-  selectedId,
-  onSelect,
-}: {
-  profiles: AgentProfile[];
-  warnings: ProfileWarning[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0];
-  return (
-    <section className="console-grid directory-grid">
-      <aside className="console-sidebar">
-        <PaneTitle icon={<UserCog size={18} />} title="Profiles" />
-        <div className="resource-list">
-          {profiles.length ? profiles.map((profile) => (
-            <button
-              key={profile.id}
-              className={selected?.id === profile.id ? 'resource-row active' : 'resource-row'}
-              type="button"
-              onClick={() => onSelect(profile.id)}
-            >
-              <strong>{profile.name}</strong>
-              <span>{profile.source} · {profile.description || 'Markdown profile'}</span>
-            </button>
-          )) : <div className="empty-state compact">No profiles found.</div>}
-        </div>
-        {warnings.length ? (
-          <div className="warning-list">
-            {warnings.map((warning) => (
-              <p key={warning.name}><strong>{warning.name}</strong>: {warning.error}</p>
-            ))}
-          </div>
-        ) : null}
-      </aside>
-      <section className="console-detail wide">
-        <PaneTitle icon={<Bot size={18} />} title="Agent Profile" />
-        {selected ? (
-          <div className="directory-detail">
-            <div className="detail-header">
-              <div>
-                <h2>{selected.name}</h2>
-                <p>{selected.description || 'Markdown profile'}</p>
-              </div>
-            </div>
-            <div className="metadata-grid">
-              <span>File</span><strong>{selected.name}.md</strong>
-              <span>Source</span><strong>{selected.source}</strong>
-              <span>Characters</span><strong>{selected.content.length}</strong>
-            </div>
-            <div className="profile-layer-list">
-              <section className="code-panel">
-                <h3>Prompt</h3>
-                <pre>{selected.content || '(empty)'}</pre>
-              </section>
-            </div>
-            <div className="readonly-note">Profiles are read-only in this MVP. Add or edit profile files on disk, then refresh.</div>
-          </div>
-        ) : <div className="empty-state compact">Select a profile to inspect its prompt.</div>}
-      </section>
-    </section>
-  );
-}
-
 function DagReviewDialog({
   dag,
   nodes,
@@ -4297,33 +5182,35 @@ function DagReviewDialog({
   onSelectNode: (id: string) => void;
 }) {
   const canConfirm = dag.nodes.length > 0 && isDagConfirmable(dag);
+  const riskyNodes = dag.nodes.filter((node) => nodeReviewInfo(node).reviewAttention).length;
   const selectedNodeLogs = selectedNode
     ? trace.filter((event) => event.node_id === selectedNode.id && (!event.dag_id || event.dag_id === dag.dag_id))
     : [];
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="DAG review">
-      <div className="dag-modal">
-        <header className="modal-header">
-          <div>
+      <div className="dag-modal dag-review-modal">
+        <header className="modal-header dag-review-header">
+          <div className="modal-title-wrap">
+            <span className="dag-review-eyebrow">人工审核</span>
             <div className="modal-title">
-              <GitBranch size={20} />
-              <span>DAG Review</span>
+              <GitBranch size={19} />
+              <span>DAG 审查</span>
               <StatusBadge status={dag.status} />
+              <code>{dag.task_id || dag.dag_id}</code>
             </div>
-            <p>{dag.task_id || dag.dag_id}</p>
           </div>
           <div className="modal-actions">
             <button className="secondary-button compact-button" onClick={() => onAddNode()} type="button">
               <Plus size={16} />
-              Add Node
+              添加节点
             </button>
-            <button className="secondary-button compact-button" onClick={onReject} disabled={!canConfirm} type="button">
+            <button className="secondary-button compact-button danger-button" onClick={onReject} disabled={!canConfirm} type="button">
               <X size={16} />
-              Reject
+              驳回并反馈
             </button>
             <button className="primary-button" onClick={onConfirm} disabled={!canConfirm} type="button">
               <Check size={17} />
-              {canConfirm ? 'Confirm & Resume' : 'Completed'}
+              {canConfirm ? '通过并继续' : '已完成'}
             </button>
             <button className="icon-button" onClick={onClose} title="Close" type="button">
               <X size={18} />
@@ -4332,6 +5219,23 @@ function DagReviewDialog({
         </header>
         <div className="modal-body">
           <section className="modal-flow">
+            <div className="review-flow-card">
+              <span className="review-flow-label">流程概览</span>
+              <div className="review-flow-summary">
+                <div className="review-stat">
+                  <strong>{dag.nodes.length}</strong>
+                  <span>节点</span>
+                </div>
+                <div className="review-stat">
+                  <strong>{dag.edges.length}</strong>
+                  <span>连线</span>
+                </div>
+                <div className="review-stat">
+                  <strong>{riskyNodes}</strong>
+                  <span>风险</span>
+                </div>
+              </div>
+            </div>
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -4347,15 +5251,10 @@ function DagReviewDialog({
             </ReactFlow>
           </section>
           <aside className="modal-side">
-            <label className="review-feedback-field dag-review-feedback">
-              <span>Reviewer feedback</span>
-              <textarea
-                value={feedback}
-                onChange={(event) => onFeedbackChange(event.target.value)}
-                placeholder="Reason or next instruction"
-              />
-            </label>
-            <PaneTitle icon={<SlidersHorizontal size={18} />} title="Node Detail" />
+            <div className="node-inspector-title">
+              <span>节点检查器</span>
+              <strong>{selectedNode?.title || selectedNode?.id || '未选择节点'}</strong>
+            </div>
             {selectedNode ? (
               <NodeEditor
                 node={normalizeNode(selectedNode)}
@@ -4369,6 +5268,19 @@ function DagReviewDialog({
             )}
           </aside>
         </div>
+        <footer className="dag-review-footer">
+          <div className="review-feedback-shell">
+            <label htmlFor="dag-review-feedback">反馈给 Agent</label>
+            <textarea
+              id="dag-review-feedback"
+              rows={2}
+              value={feedback}
+              onChange={(event) => onFeedbackChange(event.target.value)}
+              placeholder="写下拒绝原因或希望调整的规划方向…"
+            />
+          </div>
+          <span className="review-footer-note">通过后继续执行；驳回时会带上反馈重新规划</span>
+        </footer>
       </div>
     </div>
   );

@@ -583,6 +583,7 @@ function traceType(kind: RunTraceNode['kind']): TraceLogEvent['type'] {
 function traceStatus(status: RunTraceStatus): TraceLogEvent['status'] {
   if (status === 'failed' || status === 'cancelled') return 'failed';
   if (status === 'completed') return 'completed';
+  if (status === 'awaiting_review') return 'awaiting_review';
   if (status === 'planned' || status === 'skipped') return 'queued';
   return 'running';
 }
