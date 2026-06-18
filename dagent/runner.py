@@ -19,13 +19,13 @@ from dagent.capabilities.providers import AgentCapabilityProvider
 from dagent.capabilities.sandbox import (
     SandboxExecutionError,
     SandboxSession,
-    sandbox_status as _sandbox_status,
+    sandbox_status,
 )
 from dagent.capabilities.sandbox_context import (
     run_execution_context,
     sandbox_session_context,
 )
-from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, _visible_skills
+from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, visible_skills
 from dagent.capabilities.workspace import workspace_context
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
@@ -293,10 +293,9 @@ class Runner:
             with run_execution_context(execution):
                 yield
             return
-        status = _sandbox_status(self.sandbox)
-        if not status.get("docker_available"):
+        if self.sandbox.backend != "docker":
             raise SandboxExecutionError(
-                f"Docker sandbox is not available: {status.get('error', 'unknown error')}"
+                f"Unsupported sandbox backend: {self.sandbox.backend!r}."
             )
         workspace = (
             Path(existing_workspace)
@@ -314,6 +313,10 @@ class Runner:
                 workspace_context(workspace),
                 sandbox_session_context(session),
             ):
+                # Start eagerly so an unavailable daemon fails at scope entry
+                # with a clear error (rather than mid-run on the first tool),
+                # without the redundant ping a separate precheck would add.
+                session.start()
                 yield
         finally:
             session.close()
@@ -321,12 +324,12 @@ class Runner:
     def _sandbox_skill_dirs(self, skill_names: tuple[str, ...] | None) -> tuple[Path, ...]:
         if not skill_names:
             return ()
-        entries = _visible_skills(self._skill_provider.store.list(), tuple(skill_names))
+        entries = visible_skills(self._skill_provider.store.list(), tuple(skill_names))
         return tuple(dict.fromkeys(Path(entry.skill_dir).resolve() for entry in entries))
 
     def sandbox_status(self) -> dict[str, Any]:
-        """Report local + docker sandbox readiness."""
-        return {"local": {"ready": True}, "sandbox": _sandbox_status(self.sandbox)}
+        """Report docker sandbox availability and configuration."""
+        return sandbox_status(self.sandbox)
 
     @property
     def enable_validation(self) -> bool:
@@ -502,10 +505,6 @@ class Runner:
         if state is not None:
             _ensure_run_state_can_continue(state)
         resolved_execution = _resolve_run_execution(execution, state)
-        if resolved_execution == "sandbox" and isinstance(target, (Dag, DAGSpec)):
-            raise NotImplementedError(
-                "Sandbox execution is not yet supported for Dag/DAGSpec targets."
-            )
         skill_names = (
             _agent_skills(target)
             if isinstance(target, (AutoAgent, ToolAgent, DagAgent))

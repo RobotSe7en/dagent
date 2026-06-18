@@ -275,7 +275,10 @@ def test_session_timeout_exit_code(tmp_path: Path, monkeypatch):
 
     with pytest.raises(SandboxExecutionError) as excinfo:
         session.run_tool("shell", {"command": "sleep 999", "cwd": str(workspace)})
-    assert "timed out" in str(excinfo.value)
+    # hard watchdog = tool_timeout_seconds (3) + grace (5)
+    assert "exceeded the hard limit of 8s" in str(excinfo.value)
+    cmd = container.exec_calls[-1]
+    assert cmd[:2] == ["timeout", "8"]
     session.close()
 
 
@@ -293,6 +296,41 @@ def test_run_tool_serializes_path_arguments(tmp_path: Path, monkeypatch):
     assert request["tool"] == "read_file"
     assert request["args"]["path"] == str(workspace / "a.txt")
     session.close()
+
+
+def test_run_tool_clamps_tool_timeout(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    container = _FakeContainer(_ok_exec())
+    client = _FakeClient(present={DockerSandboxConfig().image}, container=container)
+    _patch_docker(monkeypatch, client)
+    session = SandboxSession(
+        DockerSandboxConfig(tool_timeout_seconds=60), workspace_root=workspace
+    )
+    # A request above the hard budget is clamped down...
+    session.run_tool("shell", {"command": "x", "timeout_seconds": 600})
+    request = json.loads(base64.b64decode(container.exec_calls[-1][-1]).decode())
+    assert request["args"]["timeout_seconds"] == 60
+    # ...while a value within budget passes through untouched.
+    session.run_tool("shell", {"command": "x", "timeout_seconds": 10})
+    request = json.loads(base64.b64decode(container.exec_calls[-1][-1]).decode())
+    assert request["args"]["timeout_seconds"] == 10
+    session.close()
+
+
+def test_run_tool_rejected_after_close(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    container = _FakeContainer(_ok_exec())
+    client = _FakeClient(present={DockerSandboxConfig().image}, container=container)
+    _patch_docker(monkeypatch, client)
+    session = SandboxSession(DockerSandboxConfig(), workspace_root=workspace)
+    session.run_tool("read_file", {"path": workspace / "a.txt"})
+    session.close()
+    # A closed session must not silently resurrect a fresh container.
+    with pytest.raises(SandboxExecutionError):
+        session.run_tool("read_file", {"path": workspace / "a.txt"})
+    assert client.containers.run_count == 1
 
 
 # --------------------------------------------------------------------------

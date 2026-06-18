@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.capabilities.providers import check_tool_boundary
+from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     context_excerpt,
@@ -344,7 +345,7 @@ class ToolAgentLoop:
             boundary_result = check_tool_boundary(
                 definition,
                 invocation,
-                self.capability_executor.workspace_root,
+                current_workspace_root(self.capability_executor.workspace_root),
             )
             if boundary_result is not None:
                 if _reviewable_boundary_result(boundary_result):

@@ -13,27 +13,14 @@ Imports only stdlib + the stdlib-only tool modules. Must NOT import
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import json
 import sys
 from typing import Any
 
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
-from dagent.capabilities.tools.registry import ToolOutput
-
-
-def _content_and_value(result: Any) -> tuple[str, Any]:
-    if isinstance(result, ToolOutput):
-        return result.content, result.value
-    if result is None:
-        return "", None
-    if isinstance(result, str):
-        return result, None
-    if isinstance(result, bytes):
-        return result.decode("utf-8", errors="replace"), None
-    if isinstance(result, tuple):
-        value = list(result)
-        return json.dumps(value, ensure_ascii=False), value
-    return str(result), None
+from dagent.capabilities.tools.registry import content_and_value_from_result
 
 
 def run_request(request: dict[str, Any]) -> dict[str, Any]:
@@ -47,14 +34,18 @@ def run_request(request: dict[str, Any]) -> dict[str, Any]:
         result = tool.handler(**args)
     except Exception as exc:  # noqa: BLE001 - surfaced to host as structured failure
         return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-    content, value = _content_and_value(result)
+    content, value = content_and_value_from_result(result)
     return {"ok": True, "content": content, "value": value}
 
 
 def main(argv: list[str]) -> int:
     request = json.loads(base64.b64decode(argv[1]).decode("utf-8"))
-    result = run_request(request)
-    sys.stdout.write(json.dumps(result, ensure_ascii=False))
+    # Capture any stray stdout a tool (or an imported library) emits so it can
+    # never corrupt the single-line JSON result envelope the host parses.
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = run_request(request)
+    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
     return 0
 
 

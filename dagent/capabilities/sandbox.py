@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -25,6 +26,12 @@ from typing import Any
 from dagent.capabilities.tools.registry import ToolOutput
 from dagent.schemas import DockerSandboxConfig, SandboxConfig
 
+
+_logger = logging.getLogger(__name__)
+
+# Extra seconds the host watchdog allows beyond a tool's own timeout, so an
+# in-tool timeout surfaces its clean error before the hard `timeout` kill.
+_WATCHDOG_GRACE_SECONDS = 5
 
 SKELETON_BIND = "/opt/dagent-sandbox"
 WORKER_IN_CONTAINER = f"{SKELETON_BIND}/dagent/capabilities/tools/sandbox_worker.py"
@@ -61,13 +68,17 @@ def _import_docker() -> Any:
 def _default_docker_user(configured_user: str | None) -> str:
     if configured_user:
         return configured_user
-    if hasattr(os, "getuid") and hasattr(os, "getgid"):
-        uid = os.getuid()
-        gid = os.getgid()
-        if uid == 0:
-            return "1000:1000"
-        return f"{uid}:{gid}"
-    return "1000:1000"
+    # Match the container user to the host user so files created in the
+    # identity-mounted workspace are owned by (and writable to) the host. The
+    # Docker daemon is Unix-only, so os.getuid/getgid are always available here.
+    # When the host runs as root we fall back to 1000:1000 rather than run the
+    # container as root; override via DockerSandboxConfig.user when the
+    # workspace is owned by a different uid (e.g. Docker Desktop / rootless).
+    uid = os.getuid()
+    gid = os.getgid()
+    if uid == 0:
+        return "1000:1000"
+    return f"{uid}:{gid}"
 
 
 def build_skeleton(root: Path) -> Path:
@@ -111,14 +122,21 @@ class SandboxSession:
         self._lock = threading.Lock()
         self._container: Any | None = None
         self._skeleton_dir: Path | None = None
+        self._closed = False
         self._user = _default_docker_user(config.user)
 
     # -- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        """Eagerly start the container, surfacing daemon errors up front."""
+        self._ensure_started()
 
     def _ensure_started(self) -> Any:
         if self._container is not None:
             return self._container
         with self._lock:
+            if self._closed:
+                raise SandboxExecutionError("Sandbox session is closed.")
             if self._container is not None:
                 return self._container
             docker = _import_docker()
@@ -170,25 +188,47 @@ class SandboxSession:
         return volumes
 
     def close(self) -> None:
-        container = self._container
-        self._container = None
+        with self._lock:
+            self._closed = True
+            container = self._container
+            self._container = None
+            skeleton_dir = self._skeleton_dir
+            self._skeleton_dir = None
         if container is not None:
             try:
                 container.stop(timeout=5)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+                _logger.warning("Failed to stop sandbox container: %s", exc)
             try:
                 container.remove(force=True)
-            except Exception:
-                pass
-        if self._skeleton_dir is not None:
-            shutil.rmtree(self._skeleton_dir, ignore_errors=True)
-            self._skeleton_dir = None
+            except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+                _logger.warning("Failed to remove sandbox container: %s", exc)
+        if skeleton_dir is not None:
+            shutil.rmtree(skeleton_dir, ignore_errors=True)
 
     # -- execution ---------------------------------------------------------
 
+    def _clamp_tool_timeout(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Cap a tool's own ``timeout_seconds`` to the configured hard budget.
+
+        The model can pass an arbitrary ``timeout_seconds`` (e.g. to ``shell``);
+        without clamping it can exceed the host watchdog, which would then hard
+        kill the worker with a generic timeout instead of honoring the budget.
+        """
+        requested = arguments.get("timeout_seconds")
+        if requested is None:
+            return arguments
+        try:
+            capped = min(int(requested), self.config.tool_timeout_seconds)
+        except (TypeError, ValueError):
+            return arguments
+        if capped == requested:
+            return arguments
+        return {**arguments, "timeout_seconds": capped}
+
     def run_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolOutput:
         container = self._ensure_started()
+        arguments = self._clamp_tool_timeout(arguments)
         request = base64.b64encode(
             json.dumps(
                 {"tool": tool_name, "args": arguments},
@@ -196,14 +236,15 @@ class SandboxSession:
                 default=str,  # resolved path args arrive as Path objects
             ).encode("utf-8")
         ).decode("ascii")
+        watchdog = self.config.tool_timeout_seconds + _WATCHDOG_GRACE_SECONDS
         exit_code, (stdout, stderr) = container.exec_run(
-            ["timeout", str(self.config.tool_timeout_seconds), "python", WORKER_IN_CONTAINER, request],
+            ["timeout", str(watchdog), "python", WORKER_IN_CONTAINER, request],
             user=self._user,
             demux=True,
         )
         if exit_code == 124:
             raise SandboxExecutionError(
-                f"Sandbox tool '{tool_name}' timed out after {self.config.tool_timeout_seconds}s."
+                f"Sandbox tool '{tool_name}' exceeded the hard limit of {watchdog}s."
             )
         out = (stdout or b"").decode("utf-8", errors="replace").strip()
         if exit_code != 0 or not out:
@@ -233,7 +274,9 @@ def sandbox_status(config: SandboxConfig | None = None) -> dict[str, Any]:
     }
     try:
         docker = _import_docker()
-        client = docker.from_env()
+        # Bound the probe so a hung/unreachable DOCKER_HOST cannot stall the
+        # status call for the SDK's default (~60s) timeout.
+        client = docker.from_env(timeout=5)
         status["docker_available"] = bool(client.ping())
     except Exception as exc:  # noqa: BLE001 - status endpoint should not raise
         status["docker_available"] = False

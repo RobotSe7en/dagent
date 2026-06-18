@@ -29,8 +29,6 @@ def current_sandbox_session() -> Any | None:
 
 @contextmanager
 def run_execution_context(execution: RunExecution) -> Iterator[None]:
-    if execution not in {"local", "sandbox"}:
-        raise ValueError("execution must be 'local' or 'sandbox'.")
     token = _RUN_EXECUTION.set(execution)
     try:
         yield
