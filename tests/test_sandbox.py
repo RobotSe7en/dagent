@@ -296,6 +296,49 @@ def test_run_tool_serializes_path_arguments(tmp_path: Path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Real Docker integration (skipped when no daemon): proves the skeleton
+# imports and runs the real tools inside the *configured* image. Catches what
+# static tests cannot -- e.g. the configured image missing a dependency the
+# skeleton needs to import.
+# --------------------------------------------------------------------------
+
+def _docker_live() -> bool:
+    try:
+        import docker  # requires the [sandbox] extra
+    except Exception:
+        return False
+    try:
+        return bool(docker.from_env().ping())
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _docker_live(), reason="requires a running Docker daemon")
+def test_real_docker_session_runs_tools_in_container(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    session = SandboxSession(DockerSandboxConfig(), workspace_root=workspace)
+    try:
+        target = workspace / "a.txt"
+        # write_file -> read_file round trip (identity mount: host absolute
+        # paths are valid inside the container with no translation)
+        wrote = session.run_tool("write_file", {"path": target, "content": "hello\nworld\n"})
+        assert isinstance(wrote, ToolOutput)
+        read = session.run_tool("read_file", {"path": target})
+        assert "hello" in read.content
+        # file written in-container is visible on the host (identity mount + host uid:gid)
+        assert target.read_text() == "hello\nworld\n"
+        # list_files structured value round-trips
+        listed = session.run_tool("list_files", {"path": workspace})
+        assert listed.value == [str(target.resolve())]
+        # shell really executes inside the container (uname reflects the image)
+        shell = session.run_tool("shell", {"command": "uname -a"})
+        assert "Linux" in shell.content
+    finally:
+        session.close()
+
+
+# --------------------------------------------------------------------------
 # Routing through the capability handler
 # --------------------------------------------------------------------------
 
