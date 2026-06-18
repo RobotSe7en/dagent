@@ -51,8 +51,10 @@ import {
 import {
   createCapability,
   createMcpServer,
+  createModelProvider,
   deleteCapability,
   deleteMcpServer,
+  deleteModelProvider,
   deleteSkill,
   getSkill,
   getSkillFile,
@@ -61,6 +63,7 @@ import {
   listCapabilities,
   listDags,
   listMcpServers,
+  listModels,
   listProfiles,
   listSkills,
   reloadMcpServers,
@@ -76,6 +79,8 @@ import {
   testCapability,
   uploadDagArtifact,
   updateMcpServer,
+  updateModelProvider,
+  activateModelProvider,
 } from './api';
 import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
@@ -103,6 +108,8 @@ import type {
   Artifact,
   MCPServer,
   MCPServerConfig,
+  ModelProvider,
+  ModelProviderInput,
   SkillDetail,
   SkillFileDetail,
   SkillSummary,
@@ -210,16 +217,32 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
   tool_timeout: 60,
 };
 
+const defaultModelDraft: ModelProviderInput = {
+  id: 'runtime-model',
+  name: '',
+  base_url: 'https://api.openai.com/v1',
+  model: '',
+  api_key: null,
+  api_key_env: '',
+  timeout_seconds: 60,
+  strip_thinking: false,
+  reasoning: null,
+  extra_request_args: {},
+  extra_body: {},
+};
+
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
   { key: 'chat', label: '智能对话', icon: <MessageSquare size={16} /> },
   { key: 'orchestration', label: '智能体编排', icon: <GitBranch size={16} /> },
   { key: 'tools', label: '能力管理', icon: <Wrench size={16} /> },
   { key: 'agents', label: '智能体管理', icon: <Bot size={16} /> },
+  { key: 'models', label: '模型管理', icon: <SlidersHorizontal size={16} /> },
 ];
 
 const workspacePlaceholderLabels: Record<Exclude<WorkspaceKey, 'chat'>, string> = {
   orchestration: 'AI 编排工作区',
   tools: '能力管理工作区',
+  models: '模型管理工作区',
   agents: '智能体管理工作区',
 };
 
@@ -760,6 +783,10 @@ export function App() {
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [models, setModels] = useState<ModelProvider[]>([]);
+  const [activeModelId, setActiveModelId] = useState('config');
+  const [selectedModelId, setSelectedModelId] = useState('config');
+  const [creatingModel, setCreatingModel] = useState(false);
   const [toolsDirectoryTab, setToolsDirectoryTab] = useState<ToolDirectoryTab>('tools');
   const [capabilityCreationIntent, setCapabilityCreationIntent] = useState<ToolDirectoryTab | null>(null);
   const [toolsDirectoryQuery, setToolsDirectoryQuery] = useState('');
@@ -833,6 +860,11 @@ export function App() {
     }
   }, []);
 
+  const requestModelCreation = useCallback(() => {
+    setActiveWorkspace('models');
+    setCreatingModel(true);
+  }, []);
+
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
@@ -848,12 +880,13 @@ export function App() {
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
     try {
-      const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers] = await Promise.all([
+      const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers, nextModels] = await Promise.all([
         listCapabilities(),
         listDags(),
         listProfiles(),
         listSkills(),
         listMcpServers(),
+        listModels(),
       ]);
       setCapabilities(nextCapabilities);
       setSavedDags(nextSpecs);
@@ -861,6 +894,8 @@ export function App() {
       setProfileWarnings(nextProfiles.warnings);
       setSkills(nextSkills);
       setMcpServers(nextMcpServers);
+      setModels(nextModels.models);
+      setActiveModelId(nextModels.active_model_id);
       setSelectedProfileId((current) => current || nextProfiles.profiles[0]?.id || '');
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
@@ -1042,6 +1077,14 @@ export function App() {
         : mcpServers[0]?.name ?? '',
     );
   }, [mcpServers]);
+
+  useEffect(() => {
+    setSelectedModelId((current) =>
+      current && models.some((model) => model.id === current)
+        ? current
+        : activeModelId || models[0]?.id || 'config',
+    );
+  }, [activeModelId, models]);
 
   useEffect(() => {
     const element = messageListRef.current;
@@ -2173,13 +2216,16 @@ export function App() {
         collapsed={navCollapsed}
         capabilities={capabilities}
         capabilityCount={capabilities.length}
+        creatingModel={creatingModel}
         history={chatHistory}
+        models={models}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
         profiles={profiles}
         orchestrationMode={orchestrationMode}
         savedDags={savedDags}
         selectedDagId={editorUserDag.id}
+        selectedModelId={selectedModelId}
         selectedProfileId={selectedProfileId}
         selectedToolCapabilityId={selectedToolCapabilityId}
         selectedToolMcpName={selectedToolMcpName}
@@ -2192,6 +2238,7 @@ export function App() {
         toolsQuery={toolsDirectoryQuery}
         onCreateArtifact={createEditorArtifact}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
+        onCreateModel={requestModelCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
         onImportSkill={() => requestCapabilityCreation('skills')}
@@ -2199,6 +2246,10 @@ export function App() {
         onNewChat={() => void newChat()}
         onNewDag={newEditorUserDag}
         onSelectProfile={setSelectedProfileId}
+        onSelectModel={(id) => {
+          setCreatingModel(false);
+          setSelectedModelId(id);
+        }}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
         onSelectToolMcp={setSelectedToolMcpName}
@@ -2327,6 +2378,16 @@ export function App() {
             onUploadSkillFile={(file) => void loadSkillFile(file)}
             onRefresh={refreshConsoleData}
           />
+        ) : activeWorkspace === 'models' ? (
+          <ModelManagementWorkspace
+            activeModelId={activeModelId}
+            creating={creatingModel}
+            models={models}
+            selectedId={selectedModelId}
+            onCreatingChange={setCreatingModel}
+            onRefresh={refreshConsoleData}
+            onSelect={setSelectedModelId}
+          />
         ) : activeWorkspace === 'agents' ? (
           <AgentManagementWorkspace
             capabilities={capabilities}
@@ -2399,13 +2460,16 @@ function WorkspaceSidebar({
   collapsed,
   capabilities,
   capabilityCount,
+  creatingModel,
   history,
+  models,
   mcpCount,
   mcpServers,
   orchestrationMode,
   profiles,
   savedDags,
   selectedDagId,
+  selectedModelId,
   selectedProfileId,
   selectedToolCapabilityId,
   selectedToolMcpName,
@@ -2418,6 +2482,7 @@ function WorkspaceSidebar({
   toolsQuery,
   onCreateArtifact,
   onCreateMcp,
+  onCreateModel,
   onCreateTool,
   onDeleteArtifact,
   onImportSkill,
@@ -2425,6 +2490,7 @@ function WorkspaceSidebar({
   onNewChat,
   onNewDag,
   onSelectProfile,
+  onSelectModel,
   onSelectSkillFile,
   onSelectToolCapability,
   onSelectToolMcp,
@@ -2442,13 +2508,16 @@ function WorkspaceSidebar({
   collapsed: boolean;
   capabilities: CapabilityDefinition[];
   capabilityCount: number;
+  creatingModel: boolean;
   history: Array<{ id: string; title: string; time: string }>;
+  models: ModelProvider[];
   mcpCount: number;
   mcpServers: MCPServer[];
   orchestrationMode: OrchestrationMode;
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
+  selectedModelId: string;
   selectedProfileId: string;
   selectedToolCapabilityId: string;
   selectedToolMcpName: string;
@@ -2461,6 +2530,7 @@ function WorkspaceSidebar({
   toolsQuery: string;
   onCreateArtifact: () => void;
   onCreateMcp: () => void;
+  onCreateModel: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
   onImportSkill: () => void;
@@ -2468,6 +2538,7 @@ function WorkspaceSidebar({
   onNewChat: () => void;
   onNewDag: () => void;
   onSelectProfile: (id: string) => void;
+  onSelectModel: (id: string) => void;
   onSelectSkillFile: (filePath: string | null) => void;
   onSelectToolCapability: (id: string) => void;
   onSelectToolMcp: (name: string) => void;
@@ -2869,6 +2940,34 @@ function WorkspaceSidebar({
                 </button>
               )) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
             )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'models' ? (
+        <section className="sidebar-context-section">
+          <div className="sidebar-history-head">
+            <span>模型列表</span>
+            <button onClick={onCreateModel} title="新建模型" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <div className="sidebar-context-list sidebar-model-list">
+            {models.length ? models.map((model) => (
+              <button
+                className={!creatingModel && selectedModelId === model.id ? 'active' : ''}
+                key={model.id}
+                onClick={() => onSelectModel(model.id)}
+                type="button"
+              >
+                <span>
+                  <SlidersHorizontal size={13} />
+                  <strong>{model.name || model.model}</strong>
+                  <code>{model.active ? '当前' : model.source}</code>
+                </span>
+                <em>{model.model}</em>
+              </button>
+            )) : <div className="sidebar-empty-row">暂无模型</div>}
           </div>
         </section>
       ) : null}
@@ -5875,6 +5974,299 @@ function mcpStatusLabel(status: MCPServer['status']): string {
   return 'pending';
 }
 
+function ModelManagementWorkspace({
+  activeModelId,
+  creating,
+  models,
+  selectedId,
+  onCreatingChange,
+  onSelect,
+  onRefresh,
+}: {
+  activeModelId: string;
+  creating: boolean;
+  models: ModelProvider[];
+  selectedId: string;
+  onCreatingChange: (creating: boolean) => void;
+  onSelect: (id: string) => void;
+  onRefresh: () => Promise<void>;
+}) {
+  const selected = models.find((model) => model.id === selectedId)
+    ?? models.find((model) => model.id === activeModelId)
+    ?? models[0]
+    ?? null;
+  const [draft, setDraft] = useState<ModelProviderInput>(defaultModelDraft);
+  const [apiKeyText, setApiKeyText] = useState('');
+  const [reasoningText, setReasoningText] = useState('');
+  const [extraRequestArgsText, setExtraRequestArgsText] = useState('{}');
+  const [extraBodyText, setExtraBodyText] = useState('{}');
+  const [modelAdvancedOpen, setModelAdvancedOpen] = useState(false);
+  const [message, setMessage] = useState('');
+  const source = creating ? 'runtime' : selected?.source ?? 'runtime';
+  const isConfigModel = source === 'config';
+  const editable = creating || source === 'runtime';
+
+  useEffect(() => {
+    if (creating) return;
+    if (!selected) {
+      setDraft(defaultModelDraft);
+      setApiKeyText('');
+      setReasoningText('');
+      setExtraRequestArgsText('{}');
+      setExtraBodyText('{}');
+      setModelAdvancedOpen(false);
+      return;
+    }
+    setDraft(modelInputFromProvider(selected));
+    setApiKeyText('');
+    setReasoningText(formatModelJson(selected.reasoning, true));
+    setExtraRequestArgsText(formatModelJson(selected.extra_request_args));
+    setExtraBodyText(formatModelJson(selected.extra_body));
+    setModelAdvancedOpen(false);
+  }, [creating, selected]);
+
+  useEffect(() => {
+    if (!creating) return;
+    const runtimeCount = models.filter((model) => model.source === 'runtime').length + 1;
+    setDraft({
+      ...defaultModelDraft,
+      id: `runtime-model-${runtimeCount}`,
+    });
+    setApiKeyText('');
+    setReasoningText('');
+    setExtraRequestArgsText('{}');
+    setExtraBodyText('{}');
+    setModelAdvancedOpen(false);
+    setMessage('');
+  }, [creating, models]);
+
+  const cancelCreate = () => {
+    onCreatingChange(false);
+    setMessage('');
+    if (selected) onSelect(selected.id);
+  };
+
+  const patchModelValue = (value: string) => {
+    setDraft((current) => ({
+      ...current,
+      model: value,
+      name: modelDisplayNameForDraft(current.name, current.model, value),
+    }));
+  };
+
+  const saveModel = async () => {
+    if (!editable) return;
+    const extraRequestArgs = parseJsonObject(extraRequestArgsText);
+    const extraBody = parseJsonObject(extraBodyText);
+    const reasoning = reasoningText.trim() ? parseJsonObject(reasoningText) : null;
+    if (!extraRequestArgs) {
+      setMessage('Extra request args must be a JSON object.');
+      return;
+    }
+    if (!extraBody) {
+      setMessage('Extra body must be a JSON object.');
+      return;
+    }
+    if (reasoningText.trim() && !reasoning) {
+      setMessage('Reasoning must be a JSON object.');
+      return;
+    }
+    const payload: ModelProviderInput = {
+      ...draft,
+      id: creating ? uniqueModelDraftId(draft.name || draft.model, models) : draft.id.trim(),
+      name: (draft.name || draft.model).trim(),
+      base_url: draft.base_url.trim(),
+      model: draft.model.trim(),
+      api_key: apiKeyText.trim() || null,
+      api_key_env: draft.api_key_env?.trim() || null,
+      reasoning,
+      extra_request_args: extraRequestArgs,
+      extra_body: extraBody,
+    };
+    if (!payload.id || !payload.name || !payload.base_url || !payload.model) {
+      setMessage('Base URL, model, and display name are required.');
+      return;
+    }
+    setMessage(creating ? 'Creating model...' : 'Saving model...');
+    try {
+      const result = creating
+        ? await createModelProvider(payload)
+        : await updateModelProvider(payload.id, payload);
+      await onRefresh();
+      onSelect(result.model.id);
+      onCreatingChange(false);
+      setApiKeyText('');
+      setMessage(`Saved ${result.model.name}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const activateModel = async () => {
+    if (!selected || creating || selected.active) return;
+    setMessage(`Activating ${selected.name}...`);
+    try {
+      const result = await activateModelProvider(selected.id);
+      await onRefresh();
+      onSelect(result.model.id);
+      setMessage(`Activated ${result.model.name}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const removeModel = async () => {
+    if (!selected || selected.source !== 'runtime' || creating) return;
+    setMessage(`Deleting ${selected.name}...`);
+    try {
+      const result = await deleteModelProvider(selected.id);
+      await onRefresh();
+      onSelect(result.active_model_id);
+      setMessage(`Deleted ${selected.name}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  return (
+    <section className="design-models-workspace">
+      <section className="model-config-panel">
+        <div className="model-editor-toolbar">
+          <div className="agent-editor-icon">
+            <SlidersHorizontal size={15} />
+          </div>
+          <div>
+            <strong>{creating ? '新建模型' : selected?.name ?? '模型管理'}</strong>
+            <span>{creating ? 'runtime' : selected ? `${modelSourceLabel(selected.source)} · ${selected.model}` : 'runtime'}</span>
+          </div>
+          <div>
+            {creating ? (
+              <button className="secondary-button compact-button" onClick={cancelCreate} type="button">
+                取消
+              </button>
+            ) : (
+              <button className="secondary-button compact-button" onClick={activateModel} disabled={!selected || selected.active} type="button">
+                <Check size={13} />
+                激活
+              </button>
+            )}
+            <button className="primary-button compact-button" onClick={saveModel} disabled={!editable} type="button">
+              <Save size={13} />
+              保存
+            </button>
+          </div>
+        </div>
+
+        {selected || creating ? (
+          <div className="model-config-body">
+            {isConfigModel ? (
+              <div className="agent-path-note">
+                <AlertTriangle size={14} />
+                配置来源：<code>config.yaml</code>
+              </div>
+            ) : null}
+            <div className="model-secret-state" data-configured={Boolean(selected?.api_key_configured || draft.api_key_env || apiKeyText)}>
+              {selected?.api_key_configured || draft.api_key_env || apiKeyText ? <Check size={14} /> : <AlertTriangle size={14} />}
+              <span>{selected?.api_key_configured || draft.api_key_env || apiKeyText ? '密钥已配置' : '未配置密钥'}</span>
+            </div>
+            <div className="model-config-form">
+              <label>Base URL<input disabled={!editable} value={draft.base_url} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
+              <label>Model<input disabled={!editable} value={draft.model} onChange={(event) => patchModelValue(event.target.value)} /></label>
+              <label>显示名称<input disabled={!editable} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label>API Key<input disabled={!editable} value={apiKeyText} onChange={(event) => setApiKeyText(event.target.value)} type="password" placeholder="不会回显已保存密钥" /></label>
+            </div>
+            <section className="model-advanced-section">
+              <button
+                className="model-advanced-toggle"
+                data-open={modelAdvancedOpen}
+                onClick={() => setModelAdvancedOpen((value) => !value)}
+                type="button"
+              >
+                <ChevronRight size={14} />
+                <span>高级配置</span>
+              </button>
+              {modelAdvancedOpen ? (
+                <div className="model-config-form model-advanced-content">
+                  <label>API Key Env<input disabled={!editable} value={draft.api_key_env ?? ''} onChange={(event) => setDraft((current) => ({ ...current, api_key_env: event.target.value }))} /></label>
+                  <label>Timeout<input disabled={!editable} value={draft.timeout_seconds} onChange={(event) => setDraft((current) => ({ ...current, timeout_seconds: Number(event.target.value) || 60 }))} type="number" min="1" /></label>
+                  <label className="model-checkbox-row">
+                    <input disabled={!editable} checked={draft.strip_thinking} onChange={(event) => setDraft((current) => ({ ...current, strip_thinking: event.target.checked }))} type="checkbox" />
+                    <span>{'移除 <think> 推理块'}</span>
+                  </label>
+                  <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium"}' /></label>
+                  <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
+                  <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
+                </div>
+              ) : null}
+            </section>
+            <div className="inline-actions model-actions">
+              <button className="secondary-button compact-button" onClick={activateModel} disabled={creating || !selected || selected.active} type="button">
+                <Check size={13} />
+                设为当前模型
+              </button>
+              <button className="secondary-button danger-button compact-button" onClick={removeModel} disabled={creating || !selected || selected.source !== 'runtime'} type="button">
+                <Trash2 size={13} />
+                删除
+              </button>
+            </div>
+            {message ? <p className="form-message">{message}</p> : null}
+          </div>
+        ) : (
+          <div className="empty-state compact">暂无模型配置。</div>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
+  return {
+    id: model.id,
+    name: model.name,
+    base_url: model.base_url,
+    model: model.model,
+    api_key: null,
+    api_key_env: model.api_key_env ?? '',
+    timeout_seconds: model.timeout_seconds,
+    strip_thinking: model.strip_thinking,
+    reasoning: model.reasoning ?? null,
+    extra_request_args: model.extra_request_args ?? {},
+    extra_body: model.extra_body ?? {},
+  };
+}
+
+function modelDisplayNameForDraft(currentName: string, previousModel: string, nextModel: string): string {
+  const name = currentName.trim();
+  if (!name || name === previousModel.trim()) return nextModel;
+  return currentName;
+}
+
+function uniqueModelDraftId(label: string, models: ModelProvider[]): string {
+  const base = slugValue(label || 'runtime-model') || 'runtime-model';
+  const used = new Set(models.map((model) => model.id));
+  if (!used.has(base)) return base;
+  let suffix = 2;
+  while (used.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
+}
+
+function slugValue(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function formatModelJson(value: Record<string, unknown> | null | undefined, emptyIsBlank = false): string {
+  if (!value || !Object.keys(value).length) return emptyIsBlank ? '' : '{}';
+  return JSON.stringify(value, null, 2);
+}
+
+function modelSourceLabel(source: ModelProvider['source']): string {
+  return source === 'config' ? 'config.yaml' : 'runtime';
+}
+
 function AgentManagementWorkspace({
   capabilities,
   profiles,
@@ -6147,13 +6539,16 @@ function DagReviewDialog({
               </div>
             </div>
             <ReactFlow
+              className="orchestration-flow"
               nodes={nodes}
               edges={edges}
+              nodeTypes={designNodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onNodeClick={(_, node) => onSelectNode(node.id)}
               fitView
               fitViewOptions={{ padding: 0.2 }}
+              proOptions={{ hideAttribution: true }}
             >
               <Background color="#e2e4ea" gap={20} />
               <MiniMap pannable zoomable nodeColor="#4f6ef7" maskColor="rgba(245,246,248,0.7)" />

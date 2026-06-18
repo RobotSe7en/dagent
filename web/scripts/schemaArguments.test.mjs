@@ -136,6 +136,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   const dynamicEventsSource = appSource.match(/function DynamicChatEvents[\s\S]*?\nfunction DynamicOrchestrationWorkspace/)?.[0] ?? '';
   const runDialogSource = appSource.match(/function RunDagDialog[\s\S]*?\nfunction CapabilityDirectory/)?.[0] ?? '';
   const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction chatCapabilityScopeLabel/)?.[0] ?? '';
+  const dagReviewSource = appSource.match(/function DagReviewDialog[\s\S]*?\nfunction NodeEditor/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.ok(orchestrationSource, 'OrchestrationWorkspace function should exist');
@@ -196,6 +197,8 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /function DesignDagNode/);
   assert.match(appSource, /type: 'designDag'/);
   assert.match(appSource, /type: 'designDag',[\s\S]*width:\s*192,[\s\S]*height:\s*64,/);
+  assert.match(dagReviewSource, /nodeTypes=\{designNodeTypes\}/);
+  assert.match(dagReviewSource, /className="orchestration-flow"/);
   assert.match(appSource, /handles:\s*\[[\s\S]*id:\s*'in'[\s\S]*type:\s*'target'[\s\S]*id:\s*'out'[\s\S]*type:\s*'source'/);
   assert.match(appSource, /<Handle[\s\S]*id="in"[\s\S]*position=\{Position\.Left\}[\s\S]*type="target"/);
   assert.match(appSource, /<Handle[\s\S]*id="out"[\s\S]*position=\{Position\.Right\}[\s\S]*type="source"/);
@@ -454,6 +457,62 @@ test('tools management ports the full design columns while keeping backend actio
   assert.match(css, /\.tool-info-table/);
   assert.match(css, /\.skill-editor-toolbar/);
   assert.match(css, /\.mcp-config-form/);
+});
+
+test('model management is a first-class workspace backed by runtime model APIs', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const modelSource = appSource.match(/function ModelManagementWorkspace[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(modelSource, 'ModelManagementWorkspace should exist');
+  assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'models';/);
+  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'models', label: '模型管理'/);
+  assert.match(appReturnSource, /activeWorkspace === 'models' \? \([\s\S]*<ModelManagementWorkspace/);
+  assert.match(appSource, /const \[models, setModels\] = useState<ModelProvider\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[activeModelId, setActiveModelId\] = useState\('config'\);/);
+  assert.match(appSource, /listModels\(\)/);
+  assert.match(appSource, /const \[creatingModel, setCreatingModel\] = useState\(false\);/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*models=\{models\}[\s\S]*onCreateModel/);
+  assert.match(sidebarSource, /模型列表/);
+  assert.match(sidebarSource, /sidebar-model-list/);
+  assert.match(sidebarSource, /onCreateModel/);
+  assert.match(sidebarSource, /onSelectModel\(model\.id\)/);
+  assert.match(modelSource, /className="design-models-workspace"/);
+  assert.match(modelSource, /createModelProvider\(/);
+  assert.match(modelSource, /updateModelProvider\(/);
+  assert.match(modelSource, /deleteModelProvider\(/);
+  assert.match(modelSource, /activateModelProvider\(/);
+  assert.match(modelSource, /source === 'config'/);
+  assert.match(modelSource, /api_key_configured/);
+  assert.doesNotMatch(modelSource, /selected\?\.api_key(?!_configured)|selected\.api_key(?!_configured)/);
+  assert.doesNotMatch(modelSource, /<label>ID/);
+  assert.doesNotMatch(modelSource, /className="model-list-panel"/);
+  assert.match(modelSource, /显示名称/);
+  assert.match(modelSource, /modelDisplayNameForDraft/);
+  assert.match(modelSource, /const \[modelAdvancedOpen, setModelAdvancedOpen\] = useState\(false\);/);
+  assert.match(modelSource, /高级配置/);
+  assert.match(modelSource, /data-open=\{modelAdvancedOpen\}/);
+  assert.match(modelSource, /modelAdvancedOpen \? \(/);
+  assert.match(modelSource, /API Key Env/);
+  assert.match(modelSource, /Timeout/);
+  assert.match(modelSource, /移除 <think> 推理块/);
+
+  assert.match(apiSource, /export async function listModels/);
+  assert.match(apiSource, /export async function createModelProvider/);
+  assert.match(apiSource, /export async function updateModelProvider/);
+  assert.match(apiSource, /export async function deleteModelProvider/);
+  assert.match(apiSource, /export async function activateModelProvider/);
+
+  assert.match(css, /\.design-models-workspace\s*\{[^}]*display:\s*flex;/s);
+  assert.match(css, /\.sidebar-model-list/);
+  assert.match(css, /\.model-config-form/);
+  assert.match(css, /\.model-secret-state/);
+  assert.match(css, /\.model-advanced-toggle/);
 });
 
 test('agent management uses real profiles and no longer renders the placeholder workspace', async () => {

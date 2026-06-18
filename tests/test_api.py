@@ -1429,6 +1429,132 @@ def test_api_validation_toggle_overrides_config_default_and_survives_reset(monke
         setattr(state, "validation_override", original_override)
 
 
+def test_api_model_management_adds_runtime_model_and_activates_with_redacted_secret(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+            "enable_result_validation: false",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        listed = client.get("/models")
+        created = client.post(
+            "/models",
+            json={
+                "id": "local-qwen",
+                "name": "Local Qwen",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3-coder",
+                "api_key": "session-secret",
+                "timeout_seconds": 42,
+                "strip_thinking": True,
+                "extra_body": {"temperature": 0.2},
+            },
+        )
+        activated = client.post("/models/local-qwen/activate")
+
+        assert listed.status_code == 200
+        assert listed.json()["active_model_id"] == "config"
+        assert listed.json()["models"][0]["id"] == "config"
+        assert listed.json()["models"][0]["source"] == "config"
+        assert listed.json()["models"][0]["api_key_configured"] is True
+        assert "api_key" not in listed.json()["models"][0]
+
+        assert created.status_code == 200
+        created_model = created.json()["model"]
+        assert created_model["id"] == "local-qwen"
+        assert created_model["source"] == "runtime"
+        assert created_model["api_key_configured"] is True
+        assert "api_key" not in created_model
+
+        assert activated.status_code == 200
+        assert activated.json()["active_model_id"] == "local-qwen"
+        assert activated.json()["model"]["active"] is True
+        assert state.get_runner().runtime.provider.config.base_url == "http://localhost:8000/v1"
+        assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
+        assert state.get_runner().runtime.provider.config.timeout_seconds == 42
+        assert state.get_runner().runtime.provider.config.strip_thinking is True
+        assert state.get_runner().runtime.provider.config.extra_body == {"temperature": 0.2}
+
+        updated = client.put(
+            "/models/local-qwen",
+            json={
+                "id": "local-qwen",
+                "name": "Local Qwen",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3-coder",
+                "timeout_seconds": 30,
+                "strip_thinking": True,
+                "extra_body": {"temperature": 0.4},
+            },
+        )
+
+        assert updated.status_code == 200
+        assert state.get_runner().runtime.provider.config.api_key == "session-secret"
+        assert state.get_runner().runtime.provider.config.timeout_seconds == 30
+        assert state.get_runner().runtime.provider.config.extra_body == {"temperature": 0.4}
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
+def test_api_model_management_deletes_active_runtime_model_and_returns_to_config(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        assert client.post(
+            "/models",
+            json={
+                "id": "runtime-model",
+                "name": "Runtime Model",
+                "base_url": "https://runtime.example/v1",
+                "model": "runtime-model",
+                "api_key_env": "RUNTIME_API_KEY",
+            },
+        ).status_code == 200
+        assert client.post("/models/runtime-model/activate").status_code == 200
+
+        deleted = client.delete("/models/runtime-model")
+        listed = client.get("/models")
+
+        assert deleted.status_code == 200
+        assert deleted.json()["active_model_id"] == "config"
+        assert listed.json()["active_model_id"] == "config"
+        assert [model["id"] for model in listed.json()["models"]] == ["config"]
+        assert state.get_runner().runtime.provider.config.base_url == "https://config.example/v1"
+        assert state.get_runner().runtime.provider.config.model == "config-model"
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
 def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) -> Runner:
     runner = Runner(provider=provider, skill_roots=skill_roots)
     registry = ToolRegistry()

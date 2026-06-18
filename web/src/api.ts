@@ -20,6 +20,8 @@ import type {
   SkillSummary,
   MCPServer,
   MCPServerConfig,
+  ModelProvider,
+  ModelProviderInput,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 import {
@@ -241,6 +243,55 @@ export async function reloadMcpServers(): Promise<MCPServer[]> {
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.servers ?? [];
+}
+
+export async function listModels(): Promise<{ models: ModelProvider[]; active_model_id: string }> {
+  const res = await fetch(`${API_BASE}/models`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    models: data.models ?? [],
+    active_model_id: data.active_model_id ?? 'config',
+  };
+}
+
+export async function createModelProvider(payload: ModelProviderInput): Promise<{ model: ModelProvider; active_model_id: string }> {
+  const res = await fetch(`${API_BASE}/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export async function updateModelProvider(
+  modelId: string,
+  payload: ModelProviderInput,
+): Promise<{ model: ModelProvider; active_model_id: string }> {
+  const res = await fetch(`${API_BASE}/models/${encodeURIComponent(modelId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export async function deleteModelProvider(modelId: string): Promise<{ status: string; active_model_id: string }> {
+  const res = await fetch(`${API_BASE}/models/${encodeURIComponent(modelId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export async function activateModelProvider(modelId: string): Promise<{ model: ModelProvider; active_model_id: string }> {
+  const res = await fetch(`${API_BASE}/models/${encodeURIComponent(modelId)}/activate`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
 }
 
 export interface ApiRunState {

@@ -312,7 +312,7 @@ export interface ProfileWarning {
   error: string;
 }
 
-export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents';
+export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents' | 'models';
 
 export interface SkillSummary {
   name: string;
@@ -362,4 +362,34 @@ export interface MCPServer {
   status: 'disabled' | 'connected' | 'error' | 'pending';
   error?: string | null;
   tools: CapabilityDefinition[];
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  source: 'config' | 'runtime';
+  active: boolean;
+  base_url: string;
+  model: string;
+  api_key_env?: string | null;
+  api_key_configured: boolean;
+  timeout_seconds: number;
+  strip_thinking: boolean;
+  reasoning?: Record<string, unknown> | null;
+  extra_request_args: Record<string, unknown>;
+  extra_body: Record<string, unknown>;
+}
+
+export interface ModelProviderInput {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  api_key?: string | null;
+  api_key_env?: string | null;
+  timeout_seconds: number;
+  strip_thinking: boolean;
+  reasoning?: Record<string, unknown> | null;
+  extra_request_args: Record<string, unknown>;
+  extra_body: Record<string, unknown>;
 }
