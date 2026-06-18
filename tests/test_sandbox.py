@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from dagent import tool
 from dagent.capabilities.bootstrap import create_default_capability_catalog
 from dagent.capabilities.sandbox import (
     SandboxExecutionError,
@@ -31,9 +32,19 @@ from dagent.capabilities.sandbox_context import (
 )
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
 from dagent.capabilities.tools.registry import ToolOutput
-from dagent.harness_runtime.capability_executor import CapabilityExecutor
+from dagent.harness_runtime.capability_executor import (
+    CapabilityExecutionError,
+    CapabilityExecutor,
+)
 from dagent.runner import _resolve_run_execution
-from dagent.schemas import Boundary, CapabilityInvocation, DockerSandboxConfig, RunState
+from dagent.schemas import (
+    Boundary,
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityResult,
+    DockerSandboxConfig,
+    RunState,
+)
 import dagent.capabilities.sandbox as sandbox_module
 
 
@@ -467,9 +478,61 @@ def test_sandbox_rejects_non_tool_capability(tmp_path: Path):
         boundary=Boundary(mode="read_only", allowed_paths=["."]),
     )
     with run_execution_context("sandbox"), sandbox_session_context(session):
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(CapabilityExecutionError) as excinfo:
             run(executor.execute(invocation))
     assert "sandbox" in str(excinfo.value).lower()
+    assert session.calls == []
+
+
+def test_sandbox_rejects_decorated_host_tool(tmp_path: Path):
+    called: list[str] = []
+
+    @tool
+    def host_echo() -> str:
+        called.append("host")
+        return "HOST_HANDLER_RAN"
+
+    catalog = create_default_capability_catalog(workspace_root=tmp_path)
+    catalog.register(
+        host_echo.definition,
+        host_echo.handler,
+        supports_context=host_echo.supports_context,
+    )
+    executor = CapabilityExecutor(catalog)
+    session = _RecordingSession()
+    invocation = CapabilityInvocation(capability_id=host_echo.definition.id, kind="tool")
+
+    with run_execution_context("sandbox"), sandbox_session_context(session):
+        with pytest.raises(CapabilityExecutionError) as excinfo:
+            run(executor.execute(invocation))
+
+    assert "sandbox" in str(excinfo.value).lower()
+    assert "built-in tool" in str(excinfo.value)
+    assert called == []
+    assert session.calls == []
+
+
+def test_sandbox_rejects_raw_host_tool_capability(tmp_path: Path):
+    called: list[str] = []
+
+    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
+        called.append("host")
+        return CapabilityResult.completed(invocation, "HOST_HANDLER_RAN")
+
+    definition = CapabilityDefinition(id="tool.host_raw", name="host_raw", kind="tool")
+    catalog = create_default_capability_catalog(workspace_root=tmp_path)
+    catalog.register(definition, handler)
+    executor = CapabilityExecutor(catalog)
+    session = _RecordingSession()
+    invocation = CapabilityInvocation(capability_id=definition.id, kind="tool")
+
+    with run_execution_context("sandbox"), sandbox_session_context(session):
+        with pytest.raises(CapabilityExecutionError) as excinfo:
+            run(executor.execute(invocation))
+
+    assert "sandbox" in str(excinfo.value).lower()
+    assert "built-in tool" in str(excinfo.value)
+    assert called == []
     assert session.calls == []
 
 

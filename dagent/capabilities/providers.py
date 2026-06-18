@@ -83,7 +83,12 @@ class ToolCapabilityProvider:
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
-            catalog.register(definition, handler, supports_context=True)
+            catalog.register(
+                definition,
+                handler,
+                supports_context=True,
+                sandbox_execution="builtin_tool",
+            )
 
 
 class MemoryCapabilityProvider:

@@ -72,11 +72,10 @@ class CapabilityExecutor:
                 f"Capability '{invocation.capability_id}' has kind '{definition.kind}', "
                 f"not '{invocation.kind}'."
             )
-        if current_run_execution() == "sandbox" and invocation.kind != "tool":
-            # Fail closed: only built-in tool capabilities execute inside the
-            # sandbox (routed through the sandbox session). MCP, sub-agent,
-            # skill and memory capabilities run on the host, so refuse them
-            # under execution='sandbox' rather than silently breaking isolation.
+        if current_run_execution() == "sandbox" and entry.sandbox_execution != "builtin_tool":
+            # Fail closed: only ToolCapabilityProvider-owned tools execute
+            # inside the sandbox. Other handlers, including public @tool
+            # bindings, run on the host and must not be allowed to fall back.
             raise CapabilityExecutionError(
                 f"Capability '{invocation.capability_id}' (kind='{invocation.kind}') cannot "
                 "run under execution='sandbox', which currently supports only built-in tool "

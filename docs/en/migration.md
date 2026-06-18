@@ -13,6 +13,12 @@ The current package version is `0.4.2`.
   written as `shell(command="...", cwd=".")`. Replace saved `tool.run_command`
   capability ids and `run_command(...)` plan calls before upgrading. No legacy
   alias is registered.
+- Sandbox execution now fails closed for unsupported targets and capabilities.
+  Only built-in tool capabilities execute inside `execution="sandbox"`. Python
+  function tools, raw registered capabilities, MCP, skills, memory, agents,
+  DAGs, `DAGSpec`, and `DagAgent` must use `execution="local"` until sandbox
+  support is added for them; they no longer fall back to host execution when a
+  sandbox run is active.
 
 ## Public Surface Expectations
 

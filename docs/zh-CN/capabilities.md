@@ -35,6 +35,19 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 `edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，再用
 足够的上下文调用 `edit_file` 使匹配唯一。
 
+## Sandbox 执行
+
+`execution="sandbox"` 目前只支持上面列出的内置 tool capabilities。它们会先在 host
+上执行 boundary 检查，然后把检查后的工具调用路由到当前 sandbox session。
+
+通过 `@dagent.tool` 或 `Runner.register_capability(...)` 注册的 Python function tools、
+MCP tools、skill capabilities、memory capabilities、agent capabilities、DAG、`DAGSpec`
+和 `DagAgent` 目前还不能在 sandbox 中执行。它们在 `execution="sandbox"` 下会 fail
+closed，而不会回退到 host 执行。对这些 capabilities 请使用 `execution="local"`。
+
+`Runner.test_capability(..., execution="sandbox")` 使用 runner workspace 作为 sandbox
+workspace，因此 `Runner(workspace=...)` 下已有的文件对受支持的内置工具可见。
+
 ## Python Function Tools
 
 用 `@dagent.tool` 装饰 Python 函数。参数注解会生成 tool input JSON schema；返回注解会
