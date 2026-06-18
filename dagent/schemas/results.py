@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from dagent.schemas.dag import DAG
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
+from dagent.schemas.sandbox import RunExecution
 
 
 ReviewKind = Literal["initial_dag", "dag_replan", "capability_review"]
@@ -49,6 +50,7 @@ class RunState(BaseModel):
     user_request: str = ""
     review_level: ReviewLevelValue = "fast"
     runtime_mode: RuntimeModeValue = "auto"
+    execution: RunExecution = "local"
     dynamic_adjust: bool = True
     capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
     spec_id: str | None = None

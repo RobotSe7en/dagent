@@ -515,6 +515,15 @@ def _context_skills(context: Any) -> tuple[str, ...] | None:
     return tuple(str(skill) for skill in value)
 
 
+def visible_skills(skills: list[SkillEntry], visible_names: tuple[str, ...] | None) -> list[SkillEntry]:
+    """Resolve the visible :class:`SkillEntry` list for the given names.
+
+    Public entry point so callers outside this module (e.g. the sandbox skill
+    mount resolution in the runner) don't reach into the private helper.
+    """
+    return _visible_skills(skills, visible_names)
+
+
 def _visible_skills(skills: list[SkillEntry], visible_names: tuple[str, ...] | None) -> list[SkillEntry]:
     if visible_names is None:
         return skills

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from dagent.schemas import (
     CapabilityDefinition,
@@ -17,6 +18,7 @@ from dagent.schemas import (
 CapabilityHandlerResult = CapabilityResult | Awaitable[CapabilityResult]
 CapabilityHandler = Callable[..., CapabilityHandlerResult]
 ShutdownHook = Callable[[], None]
+SandboxExecution = Literal["unsupported", "builtin_tool"]
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class CapabilityEntry:
     definition: CapabilityDefinition
     handler: CapabilityHandler
     supports_context: bool = False
+    sandbox_execution: SandboxExecution = "unsupported"
 
 
 class CapabilityCatalog:
@@ -41,6 +44,7 @@ class CapabilityCatalog:
         handler: CapabilityHandler,
         *,
         supports_context: bool = False,
+        sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
         if definition.id in self._entries:
             raise ValueError(f"Capability '{definition.id}' is already registered.")
@@ -48,6 +52,7 @@ class CapabilityCatalog:
             definition=definition.model_copy(deep=True),
             handler=handler,
             supports_context=supports_context,
+            sandbox_execution=sandbox_execution,
         )
 
     def replace(
@@ -56,6 +61,7 @@ class CapabilityCatalog:
         handler: CapabilityHandler,
         *,
         supports_context: bool = False,
+        sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
         if definition.id not in self._entries:
             raise KeyError(f"Capability '{definition.id}' is not registered.")
@@ -63,6 +69,7 @@ class CapabilityCatalog:
             definition=definition.model_copy(deep=True),
             handler=handler,
             supports_context=supports_context,
+            sandbox_execution=sandbox_execution,
         )
 
     def set_enabled(self, capability_id: str, enabled: bool) -> CapabilityDefinition:
@@ -74,6 +81,7 @@ class CapabilityCatalog:
             definition=updated,
             handler=entry.handler,
             supports_context=entry.supports_context,
+            sandbox_execution=entry.sandbox_execution,
         )
         return updated
 

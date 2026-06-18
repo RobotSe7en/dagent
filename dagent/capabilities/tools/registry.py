@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +12,34 @@ from typing import Any
 class ToolOutput:
     content: str
     value: Any = None
+
+
+def content_and_value_from_result(result: Any) -> tuple[str, Any]:
+    """Normalize a tool handler result into ``(content, value)``.
+
+    Single source of truth shared by the in-process executor and the sandbox
+    worker. Pydantic models are handled by duck typing (``model_dump_json`` /
+    ``model_dump``) so this module stays stdlib-only and importable inside the
+    sandbox container, which has no pydantic.
+    """
+    if isinstance(result, ToolOutput):
+        return result.content, result.value
+    if result is None:
+        return "", None
+    model_dump_json = getattr(result, "model_dump_json", None)
+    model_dump = getattr(result, "model_dump", None)
+    if callable(model_dump_json) and callable(model_dump):
+        return model_dump_json(), model_dump(mode="json")
+    if isinstance(result, str):
+        return result, None
+    if isinstance(result, bytes):
+        return result.decode("utf-8", errors="replace"), None
+    if isinstance(result, tuple):
+        value = list(result)
+        return json.dumps(value, ensure_ascii=False), value
+    if isinstance(result, (dict, list, bool, int, float)):
+        return json.dumps(result, ensure_ascii=False), result
+    return str(result), None
 
 
 ToolResult = Any

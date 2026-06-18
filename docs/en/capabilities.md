@@ -40,6 +40,22 @@ result can be passed to `edit_file` as `old_string` unchanged. The intended
 editing flow is: read the file, copy the exact text to change, then call
 `edit_file` with enough surrounding context to make the match unique.
 
+## Sandbox Execution
+
+`execution="sandbox"` currently supports only the built-in tool capabilities
+listed above. Their boundary checks run on the host first, and the checked tool
+call is then routed through the active sandbox session.
+
+Python function tools registered with `@dagent.tool` or
+`Runner.register_capability(...)`, MCP tools, skill capabilities, memory
+capabilities, agent capabilities, DAGs, `DAGSpec`, and `DagAgent` are not
+sandbox-executable yet. They fail closed under `execution="sandbox"` instead of
+falling back to host execution. Use `execution="local"` for those capabilities.
+
+`Runner.test_capability(..., execution="sandbox")` uses the runner workspace as
+the sandbox workspace, so files already present under `Runner(workspace=...)`
+are visible to supported built-in tools.
+
 ## Python Function Tools
 
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce

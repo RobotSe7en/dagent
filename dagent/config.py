@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from dagent.schemas.sandbox import SandboxConfig
+
 
 class ReasoningConfig(BaseModel):
     enabled: bool | None = None
@@ -45,6 +47,7 @@ class DagentConfig(BaseModel):
     profiles: "ProfilesConfig" = Field(default_factory=lambda: ProfilesConfig())
     enable_result_validation: bool = False
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
 
 
 class ProfilesConfig(BaseModel):

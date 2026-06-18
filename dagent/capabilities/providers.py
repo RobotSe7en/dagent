@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel
-
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.sandbox import SandboxToolExecutionError
+from dagent.capabilities.sandbox_context import current_run_execution, current_sandbox_session
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.workspace import current_workspace_root
 from dagent.profiles import AgentProfile
@@ -29,7 +28,10 @@ from dagent.capabilities.tools.boundary import (
     resolve_path_against_workspace,
 )
 from dagent.state import PromptBuilder, PromptRequest
-from dagent.capabilities.tools.registry import ToolOutput, ToolRegistry
+from dagent.capabilities.tools.registry import (
+    ToolRegistry,
+    content_and_value_from_result,
+)
 
 
 class ToolCapabilityProvider:
@@ -76,10 +78,17 @@ class ToolCapabilityProvider:
                         context=context,
                     )
                     return _completed(invocation, content, value=value)
+                except SandboxToolExecutionError as exc:
+                    return _failed(invocation, str(exc), stop_reason=exc.stop_reason)
                 except Exception as exc:
                     return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
 
-            catalog.register(definition, handler, supports_context=True)
+            catalog.register(
+                definition,
+                handler,
+                supports_context=True,
+                sandbox_execution="builtin_tool",
+            )
 
 
 class MemoryCapabilityProvider:
@@ -439,7 +448,19 @@ def _execute_tool(
                 workspace_root,
                 checked_args["cwd"],
             )
-    result = tool.handler(**checked_args)
+    if current_run_execution() == "sandbox":
+        session = current_sandbox_session()
+        if session is None:
+            # Fail closed: sandbox was requested but no session is active, so
+            # we must not silently fall back to host execution.
+            raise SandboxToolExecutionError(
+                f"Sandbox execution requested for tool '{tool_name}' but no "
+                "sandbox session is active.",
+                stop_reason="SandboxExecutionError",
+            )
+        result = session.run_tool(tool_name, checked_args)
+    else:
+        result = tool.handler(**checked_args)
     return _content_and_value_from_tool_result(result)
 
 
@@ -517,23 +538,7 @@ def _default_arguments(default_args: dict[str, Any], parameters: dict[str, Any])
 
 
 def _content_and_value_from_tool_result(result: Any) -> tuple[str, Any]:
-    if isinstance(result, ToolOutput):
-        return result.content, result.value
-    if result is None:
-        return "", None
-    if isinstance(result, BaseModel):
-        value = result.model_dump(mode="json")
-        return result.model_dump_json(), value
-    if isinstance(result, str):
-        return result, None
-    if isinstance(result, bytes):
-        return result.decode("utf-8", errors="replace"), None
-    if isinstance(result, tuple):
-        value = list(result)
-        return json.dumps(value, ensure_ascii=False), value
-    if isinstance(result, (dict, list, bool, int, float)):
-        return json.dumps(result, ensure_ascii=False), result
-    return str(result), None
+    return content_and_value_from_result(result)
 
 
 def _tool_capability_id(tool_name: str) -> str:

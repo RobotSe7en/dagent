@@ -1075,6 +1075,20 @@ def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) ->
     assert dag_node_trace(record.trace, "write").status == "completed"
 
 
+def test_harness_runtime_rejects_dag_under_sandbox(tmp_path) -> None:
+    from dagent.capabilities.sandbox import SandboxExecutionError
+    from dagent.capabilities.sandbox_context import run_execution_context
+
+    runtime = _runtime(MockProvider([ChatResponse(content="unused")]))
+    spec = DAGSpec(id="noop", name="noop", artifacts={}, nodes=[])
+
+    # DAG-based execution under the sandbox is not yet supported and must fail
+    # fast rather than silently run nodes against an unmounted workspace.
+    with run_execution_context("sandbox"):
+        with pytest.raises(SandboxExecutionError):
+            run(runtime.run_dag_spec(spec, workspace_root=tmp_path / "runs"))
+
+
 class _RejectThenApproveValidator:
     def __init__(self) -> None:
         self.calls = 0

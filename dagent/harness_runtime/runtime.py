@@ -12,6 +12,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.sandbox import SandboxExecutionError
+from dagent.capabilities.sandbox_context import current_run_execution
+from dagent.capabilities.workspace import current_workspace_root
 from dagent.harness_runtime.tool_agent import (
     ToolAgent,
     LoopEventHandler,
@@ -365,6 +368,14 @@ class HarnessRuntime:
                 input_messages=input_messages,
             )
 
+        # DAG review resume does not flow through _execute_loop, so enforce the
+        # sandbox DAG restriction here too (defense in depth; normally a sandbox
+        # DAG run can't reach awaiting_review because the loop guard rejects it).
+        if current_run_execution() == "sandbox":
+            raise SandboxExecutionError(
+                "Sandbox execution is not yet supported for DAG-based runs; "
+                "use a tool agent or execution='local'."
+            )
         submitted_dag = dag
         if approved and submitted_dag is None:
             submitted_dag = pending_review.proposed_dag
@@ -473,6 +484,15 @@ class HarnessRuntime:
         messages: list[dict[str, Any]] | None = None,
     ) -> LoopOutcome:
         """Dispatch to the appropriate loop and return a unified LoopOutcome."""
+        if mode != "tool" and current_run_execution() == "sandbox":
+            # DAG execution builds its own per-node workspace context, which
+            # would shadow the sandbox run workspace bind-mounted into the
+            # container. Until that is unified, only tool-agent runs are
+            # supported under the sandbox.
+            raise SandboxExecutionError(
+                "Sandbox execution is not yet supported for DAG-based runs "
+                f"(mode={mode!r}); use a tool agent or execution='local'."
+            )
         if mode == "dag":
             if not isinstance(request, str):
                 raise TypeError("DAG message execution requires a string request.")
@@ -551,17 +571,26 @@ class HarnessRuntime:
             if outcome.state.status == "awaiting_review"
             else outcome.output_text.strip() or _fallback_output_text(outcome)
         )
-        state = outcome.state.model_copy(update={
+        update: dict[str, Any] = {
             "kind": _state_kind_for_mode(mode),
             "status": outcome.state.status,
             "input_message_count": len(input_messages or []),
             "user_request": user_request,
             "review_level": review_level,
             "runtime_mode": runtime_mode or mode,
+            "execution": current_run_execution(),
             "capability_scope": capability_scope_to_state(capability_scope),
             "pending_review": outcome.state.pending_review,
             "pending_invocation": outcome.state.pending_invocation,
-        })
+        }
+        # Record the active sandbox run workspace so a resumed sandbox run
+        # re-mounts the same directory instead of creating an empty one
+        # (tool/auto runs otherwise never persist workspace_path).
+        if current_run_execution() == "sandbox" and not outcome.state.workspace_path:
+            # In sandbox scope the workspace contextvar is always set by the
+            # runner; the default is a never-used fallback to satisfy the API.
+            update["workspace_path"] = str(current_workspace_root("."))
+        state = outcome.state.model_copy(update=update)
         state = self.session.save_run_state(state)
         return RunResult(state=state, output_text=final_answer)
 
@@ -588,7 +617,9 @@ class HarnessRuntime:
             artifact_uploads=artifact_uploads,
             graph_input=graph_input,
         )
-        state = self.session.save_run_state(outcome.state)
+        state = self.session.save_run_state(
+            outcome.state.model_copy(update={"execution": current_run_execution()})
+        )
         if state.trace is None:
             raise RuntimeError(f"DAGSpec run '{state.run_id}' completed without a run trace.")
         return RunResult(
