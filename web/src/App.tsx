@@ -108,6 +108,7 @@ import type {
   Artifact,
   MCPServer,
   MCPServerConfig,
+  ModelApiKeyAction,
   ModelProvider,
   ModelProviderInput,
   SkillDetail,
@@ -223,6 +224,7 @@ const defaultModelDraft: ModelProviderInput = {
   base_url: 'https://api.openai.com/v1',
   model: '',
   api_key: null,
+  api_key_action: 'replace',
   api_key_env: '',
   timeout_seconds: 60,
   strip_thinking: false,
@@ -713,6 +715,10 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
   ];
 }
 
+function isAbortError(value: unknown): boolean {
+  return value instanceof Error && value.name === 'AbortError';
+}
+
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
@@ -746,6 +752,7 @@ export function App() {
   const tokenTimerRef = useRef<number | null>(null);
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const contentStreamedRef = useRef(false);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -1229,6 +1236,42 @@ export function App() {
       tokenTimerRef.current = null;
     }
   };
+
+  function beginStreamRequest(): AbortSignal {
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    return controller.signal;
+  }
+
+  function clearStreamRequest(signal: AbortSignal) {
+    if (streamAbortRef.current?.signal === signal) {
+      streamAbortRef.current = null;
+    }
+  }
+
+  function restoreDagReviewAfterAbort(
+    previousDagReview: ReviewEventPayload,
+    previousDagReviewFeedback: string,
+    previousDag: Dag,
+    previousMessages: ChatMessage[],
+  ) {
+    setDagReview(previousDagReview);
+    setDagReviewFeedback(previousDagReviewFeedback);
+    setReviewOpen(true);
+    syncDag(previousDag);
+    setMessages(previousMessages);
+  }
+
+  function restoreCapabilityReviewAfterAbort(
+    previousCapabilityReview: ReviewEventPayload,
+    previousCapabilityReviewFeedback: string,
+    previousMessages: ChatMessage[],
+  ) {
+    setCapabilityReview(previousCapabilityReview);
+    setCapabilityReviewFeedback(previousCapabilityReviewFeedback);
+    setMessages(previousMessages);
+  }
 
   const resolveTokenDrain = () => {
     const resolvers = tokenDrainResolversRef.current;
@@ -1970,6 +2013,7 @@ export function App() {
       detail: `Agent target=${target}; capabilities=${chatScopeLabel}.`,
       status: 'running',
     });
+    const signal = beginStreamRequest();
     try {
       await streamTask(prompt, target, reviewLevel, {
         onDag: (nextDag) => {
@@ -2019,18 +2063,21 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState);
+      }, capabilityScope, runState, undefined, { signal });
     } catch (exc) {
+      if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
     } finally {
+      clearStreamRequest(signal);
       await waitForTokenQueue();
       setStreaming(false);
     }
   };
 
   const stopStream = () => {
+    streamAbortRef.current?.abort();
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
     stopTokenTimer();
@@ -2041,6 +2088,10 @@ export function App() {
 
   const resumeDag = async (approved: boolean) => {
     if (!dagReview || streaming) return;
+    const previousDagReview = dagReview;
+    const previousDagReviewFeedback = dagReviewFeedback;
+    const previousDag = dag;
+    const previousMessages = messages;
     setError(null);
     setReviewOpen(false);
     tokenQueueRef.current = [];
@@ -2063,6 +2114,7 @@ export function App() {
       attachDagToLastAssistant(rejectedDag);
     }
 
+    const signal = beginStreamRequest();
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
         onDag: (nextDag) => {
@@ -2105,12 +2157,17 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback);
+      }, runState, feedback, { signal });
     } catch (exc) {
+      if (isAbortError(exc) || signal.aborted) {
+        restoreDagReviewAfterAbort(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages);
+        return;
+      }
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
     } finally {
+      clearStreamRequest(signal);
       await waitForTokenQueue();
       setStreaming(false);
     }
@@ -2126,6 +2183,9 @@ export function App() {
 
   const confirmCapabilityReview = async (approved: boolean) => {
     if (!capabilityReview || streaming) return;
+    const previousCapabilityReview = capabilityReview;
+    const previousCapabilityReviewFeedback = capabilityReviewFeedback;
+    const previousMessages = messages;
     const feedback = capabilityReviewFeedback.trim();
     setCapabilityReview(null);
     setCapabilityReviewFeedback('');
@@ -2149,6 +2209,7 @@ export function App() {
       }));
     }
 
+    const signal = beginStreamRequest();
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
         onTrace: appendRuntimeTrace,
@@ -2171,12 +2232,17 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback);
+      }, runState, feedback, { signal });
     } catch (exc) {
+      if (isAbortError(exc) || signal.aborted) {
+        restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
+        return;
+      }
       const message = exc instanceof Error ? exc.message : String(exc);
       setError(message);
       appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
     } finally {
+      clearStreamRequest(signal);
       await waitForTokenQueue();
       setStreaming(false);
     }
@@ -5997,6 +6063,7 @@ function ModelManagementWorkspace({
     ?? null;
   const [draft, setDraft] = useState<ModelProviderInput>(defaultModelDraft);
   const [apiKeyText, setApiKeyText] = useState('');
+  const [apiKeyAction, setApiKeyAction] = useState<ModelApiKeyAction>('replace');
   const [reasoningText, setReasoningText] = useState('');
   const [extraRequestArgsText, setExtraRequestArgsText] = useState('{}');
   const [extraBodyText, setExtraBodyText] = useState('{}');
@@ -6011,6 +6078,7 @@ function ModelManagementWorkspace({
     if (!selected) {
       setDraft(defaultModelDraft);
       setApiKeyText('');
+      setApiKeyAction('replace');
       setReasoningText('');
       setExtraRequestArgsText('{}');
       setExtraBodyText('{}');
@@ -6019,6 +6087,7 @@ function ModelManagementWorkspace({
     }
     setDraft(modelInputFromProvider(selected));
     setApiKeyText('');
+    setApiKeyAction('preserve');
     setReasoningText(formatModelJson(selected.reasoning, true));
     setExtraRequestArgsText(formatModelJson(selected.extra_request_args));
     setExtraBodyText(formatModelJson(selected.extra_body));
@@ -6033,6 +6102,7 @@ function ModelManagementWorkspace({
       id: `runtime-model-${runtimeCount}`,
     });
     setApiKeyText('');
+    setApiKeyAction('replace');
     setReasoningText('');
     setExtraRequestArgsText('{}');
     setExtraBodyText('{}');
@@ -6053,6 +6123,19 @@ function ModelManagementWorkspace({
       name: modelDisplayNameForDraft(current.name, current.model, value),
     }));
   };
+
+  const updateApiKeyText = (value: string) => {
+    setApiKeyText(value);
+    setApiKeyAction(value.trim() ? 'replace' : creating ? 'replace' : 'preserve');
+  };
+
+  const clearSavedApiKey = () => {
+    setApiKeyText('');
+    setApiKeyAction('clear');
+  };
+
+  const savedApiKeyWillRemain = Boolean(selected?.api_key_saved && apiKeyAction !== 'clear');
+  const secretConfigured = Boolean(savedApiKeyWillRemain || draft.api_key_env || apiKeyText.trim());
 
   const saveModel = async () => {
     if (!editable) return;
@@ -6078,6 +6161,7 @@ function ModelManagementWorkspace({
       base_url: draft.base_url.trim(),
       model: draft.model.trim(),
       api_key: apiKeyText.trim() || null,
+      api_key_action: creating ? 'replace' : apiKeyAction,
       api_key_env: draft.api_key_env?.trim() || null,
       reasoning,
       extra_request_args: extraRequestArgs,
@@ -6096,6 +6180,7 @@ function ModelManagementWorkspace({
       onSelect(result.model.id);
       onCreatingChange(false);
       setApiKeyText('');
+      setApiKeyAction('preserve');
       setMessage(`Saved ${result.model.name}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
@@ -6165,15 +6250,20 @@ function ModelManagementWorkspace({
                 配置来源：<code>config.yaml</code>
               </div>
             ) : null}
-            <div className="model-secret-state" data-configured={Boolean(selected?.api_key_configured || draft.api_key_env || apiKeyText)}>
-              {selected?.api_key_configured || draft.api_key_env || apiKeyText ? <Check size={14} /> : <AlertTriangle size={14} />}
-              <span>{selected?.api_key_configured || draft.api_key_env || apiKeyText ? '密钥已配置' : '未配置密钥'}</span>
+            <div className="model-secret-state" data-configured={secretConfigured}>
+              {secretConfigured ? <Check size={14} /> : <AlertTriangle size={14} />}
+              <span>{apiKeyAction === 'clear' ? '保存后清除已保存密钥' : secretConfigured ? '密钥已配置' : '未配置密钥'}</span>
             </div>
             <div className="model-config-form">
               <label>Base URL<input disabled={!editable} value={draft.base_url} onChange={(event) => setDraft((current) => ({ ...current, base_url: event.target.value }))} /></label>
               <label>Model<input disabled={!editable} value={draft.model} onChange={(event) => patchModelValue(event.target.value)} /></label>
               <label>显示名称<input disabled={!editable} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label>API Key<input disabled={!editable} value={apiKeyText} onChange={(event) => setApiKeyText(event.target.value)} type="password" placeholder="不会回显已保存密钥" /></label>
+              <label>API Key<input disabled={!editable} value={apiKeyText} onChange={(event) => updateApiKeyText(event.target.value)} type="password" placeholder="不会回显已保存密钥" /></label>
+              {editable && selected?.source === 'runtime' && selected.api_key_saved ? (
+                <button className="secondary-button compact-button model-secret-clear" onClick={clearSavedApiKey} disabled={apiKeyAction === 'clear'} type="button">
+                  清除已保存密钥
+                </button>
+              ) : null}
             </div>
             <section className="model-advanced-section">
               <button
@@ -6226,6 +6316,7 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     base_url: model.base_url,
     model: model.model,
     api_key: null,
+    api_key_action: 'preserve',
     api_key_env: model.api_key_env ?? '',
     timeout_seconds: model.timeout_seconds,
     strip_thinking: model.strip_thinking,

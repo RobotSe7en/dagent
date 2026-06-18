@@ -488,8 +488,15 @@ test('model management is a first-class workspace backed by runtime model APIs',
   assert.match(modelSource, /deleteModelProvider\(/);
   assert.match(modelSource, /activateModelProvider\(/);
   assert.match(modelSource, /source === 'config'/);
-  assert.match(modelSource, /api_key_configured/);
-  assert.doesNotMatch(modelSource, /selected\?\.api_key(?!_configured)|selected\.api_key(?!_configured)/);
+  assert.match(typesSource, /api_key_configured: boolean;/);
+  assert.match(modelSource, /api_key_saved/);
+  assert.match(typesSource, /export type ModelApiKeyAction = 'preserve' \| 'replace' \| 'clear';/);
+  assert.match(typesSource, /api_key_action: ModelApiKeyAction;/);
+  assert.match(modelSource, /const \[apiKeyAction, setApiKeyAction\] = useState<ModelApiKeyAction>/);
+  assert.match(modelSource, /api_key_action: creating \? 'replace' : apiKeyAction/);
+  assert.match(modelSource, /clearSavedApiKey/);
+  assert.match(modelSource, /清除已保存密钥/);
+  assert.doesNotMatch(modelSource, /selected\?\.api_key(?!_(?:configured|saved))|selected\.api_key(?!_(?:configured|saved))/);
   assert.doesNotMatch(modelSource, /<label>ID/);
   assert.doesNotMatch(modelSource, /className="model-list-panel"/);
   assert.match(modelSource, /显示名称/);
@@ -673,6 +680,40 @@ test('capability review resume keeps streaming in the existing assistant frame',
 
   assert.ok(resumeCapabilitySource, 'confirmCapabilityReview function should exist');
   assert.doesNotMatch(resumeCapabilitySource, /setMessages\(\(items\) => \[[\s\S]*role: 'assistant'/);
+});
+
+test('chat stop button aborts the active stream request', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
+  const stopStreamSource = appSource.match(/const stopStream = \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  const resumeDagSource = appSource.match(/const resumeDag = async[\s\S]*?\n  const confirmDag/)?.[0] ?? '';
+  const resumeCapabilitySource = appSource.match(/const confirmCapabilityReview = async[\s\S]*?\n  const newChat/)?.[0] ?? '';
+
+  assert.match(apiSource, /interface StreamRequestOptions \{[\s\S]*signal\?: AbortSignal;[\s\S]*\}/);
+  assert.match(apiSource, /streamMessagesTask\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
+  assert.match(apiSource, /streamTask\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
+  assert.match(apiSource, /resumeDagReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
+  assert.match(apiSource, /resumeCapabilityReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
+  assert.match(appSource, /const streamAbortRef = useRef<AbortController \| null>\(null\);/);
+  assert.match(appSource, /function beginStreamRequest\(\): AbortSignal/);
+  assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
+  assert.match(appSource, /function isAbortError\(value: unknown\)/);
+  assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
+  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal \}\);/);
+  assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
+  assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
+  assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
+  assert.match(resumeDagSource, /const signal = beginStreamRequest\(\);/);
+  assert.match(resumeDagSource, /resumeDagReview\([\s\S]*\{ signal \}\);/);
+  assert.match(resumeDagSource, /const previousDagReview = dagReview;/);
+  assert.match(resumeDagSource, /const previousDagReviewFeedback = dagReviewFeedback;/);
+  assert.match(resumeDagSource, /restoreDagReviewAfterAbort\(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages\);/);
+  assert.match(resumeCapabilitySource, /const signal = beginStreamRequest\(\);/);
+  assert.match(resumeCapabilitySource, /resumeCapabilityReview\([\s\S]*\{ signal \}\);/);
+  assert.match(resumeCapabilitySource, /const previousCapabilityReview = capabilityReview;/);
+  assert.match(resumeCapabilitySource, /const previousCapabilityReviewFeedback = capabilityReviewFeedback;/);
+  assert.match(resumeCapabilitySource, /restoreCapabilityReviewAfterAbort\(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages\);/);
 });
 
 test('rejected review actions display as rejected instead of running', async () => {

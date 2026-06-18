@@ -1437,6 +1437,11 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
             "  base_url: https://config.example/v1",
             "  model: config-model",
             "  api_key: config-secret",
+            "  extra_request_args:",
+            "    headers:",
+            "      Authorization: Bearer config-nested-secret",
+            "  extra_body:",
+            "    vendor_secret: config-body-secret",
             "enable_result_validation: false",
         ]),
         encoding="utf-8",
@@ -1459,7 +1464,8 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
                 "api_key": "session-secret",
                 "timeout_seconds": 42,
                 "strip_thinking": True,
-                "extra_body": {"temperature": 0.2},
+                "extra_request_args": {"headers": {"Authorization": "Bearer nested-secret"}, "timeout": 7},
+                "extra_body": {"temperature": 0.2, "metadata": {"api_key": "nested-body-secret"}},
             },
         )
         activated = client.post("/models/local-qwen/activate")
@@ -1470,6 +1476,8 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         assert listed.json()["models"][0]["source"] == "config"
         assert listed.json()["models"][0]["api_key_configured"] is True
         assert "api_key" not in listed.json()["models"][0]
+        assert listed.json()["models"][0]["extra_request_args"]["headers"]["Authorization"] == "[redacted]"
+        assert listed.json()["models"][0]["extra_body"]["vendor_secret"] == "[redacted]"
 
         assert created.status_code == 200
         created_model = created.json()["model"]
@@ -1477,6 +1485,8 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         assert created_model["source"] == "runtime"
         assert created_model["api_key_configured"] is True
         assert "api_key" not in created_model
+        assert created_model["extra_request_args"]["headers"]["Authorization"] == "[redacted]"
+        assert created_model["extra_body"]["metadata"]["api_key"] == "[redacted]"
 
         assert activated.status_code == 200
         assert activated.json()["active_model_id"] == "local-qwen"
@@ -1485,7 +1495,34 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 42
         assert state.get_runner().runtime.provider.config.strip_thinking is True
-        assert state.get_runner().runtime.provider.config.extra_body == {"temperature": 0.2}
+        assert state.get_runner().runtime.provider.config.extra_request_args == {
+            "headers": {"Authorization": "Bearer nested-secret"},
+            "timeout": 7,
+        }
+        assert state.get_runner().runtime.provider.config.extra_body == {
+            "temperature": 0.2,
+            "metadata": {"api_key": "nested-body-secret"},
+        }
+
+        redacted_round_trip = client.put(
+            "/models/local-qwen",
+            json={
+                "id": "local-qwen",
+                "name": "Local Qwen",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3-coder",
+                "api_key_action": "preserve",
+                "timeout_seconds": 42,
+                "strip_thinking": True,
+                "extra_body": {"temperature": 0.2, "metadata": {"api_key": "[redacted]"}},
+            },
+        )
+
+        assert redacted_round_trip.status_code == 200
+        assert state.get_runner().runtime.provider.config.extra_body == {
+            "temperature": 0.2,
+            "metadata": {"api_key": "nested-body-secret"},
+        }
 
         updated = client.put(
             "/models/local-qwen",
@@ -1494,6 +1531,7 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
                 "name": "Local Qwen",
                 "base_url": "http://localhost:8000/v1",
                 "model": "qwen3-coder",
+                "api_key_action": "preserve",
                 "timeout_seconds": 30,
                 "strip_thinking": True,
                 "extra_body": {"temperature": 0.4},
@@ -1504,6 +1542,23 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         assert state.get_runner().runtime.provider.config.api_key == "session-secret"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 30
         assert state.get_runner().runtime.provider.config.extra_body == {"temperature": 0.4}
+
+        cleared = client.put(
+            "/models/local-qwen",
+            json={
+                "id": "local-qwen",
+                "name": "Local Qwen",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3-coder",
+                "api_key_action": "clear",
+                "timeout_seconds": 30,
+                "strip_thinking": True,
+            },
+        )
+
+        assert cleared.status_code == 200
+        assert cleared.json()["model"]["api_key_configured"] is False
+        assert state.custom_model_providers["local-qwen"].api_key is None
     finally:
         state.close_runner()
         state.custom_model_providers.clear()
