@@ -338,6 +338,10 @@ interface StreamHandlers {
   onError?: (message: string) => void;
 }
 
+interface StreamRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface ChatCapabilityScopePayload {
   capabilityIds: string[] | null;
   skills: string[];
@@ -355,6 +359,7 @@ export async function streamMessagesTask(
   handlers: StreamHandlers,
   capabilityScope?: ChatCapabilityScopePayload,
   dynamicAdjust?: boolean,
+  options: StreamRequestOptions = {},
 ): Promise<void> {
   const body: Record<string, unknown> = {
     messages,
@@ -370,6 +375,7 @@ export async function streamMessagesTask(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
@@ -386,6 +392,7 @@ export async function streamTask(
   capabilityScope?: ChatCapabilityScopePayload,
   state?: ApiRunState | null,
   dynamicAdjust?: boolean,
+  options: StreamRequestOptions = {},
 ): Promise<void> {
   const body: Record<string, unknown> = {
     messages: [{ role: 'user', content: message }],
@@ -402,6 +409,7 @@ export async function streamTask(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
@@ -418,6 +426,7 @@ export async function resumeDagReview(
   handlers: StreamHandlers,
   state?: ApiRunState | null,
   feedback?: string,
+  options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
   const response = await fetch(`${API_BASE}/messages/resume`, {
@@ -431,6 +440,7 @@ export async function resumeDagReview(
       state,
       ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
     }),
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));
@@ -687,6 +697,7 @@ export async function resumeCapabilityReview(
   handlers: StreamHandlers,
   state?: ApiRunState | null,
   feedback?: string,
+  options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
   const response = await fetch(`${API_BASE}/messages/resume`, {
@@ -698,6 +709,7 @@ export async function resumeCapabilityReview(
       state,
       ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
     }),
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage((response as unknown) as Response));

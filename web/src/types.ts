@@ -373,6 +373,7 @@ export interface ModelProvider {
   model: string;
   api_key_env?: string | null;
   api_key_configured: boolean;
+  api_key_saved: boolean;
   timeout_seconds: number;
   strip_thinking: boolean;
   reasoning?: Record<string, unknown> | null;
@@ -380,12 +381,15 @@ export interface ModelProvider {
   extra_body: Record<string, unknown>;
 }
 
+export type ModelApiKeyAction = 'preserve' | 'replace' | 'clear';
+
 export interface ModelProviderInput {
   id: string;
   name: string;
   base_url: string;
   model: string;
   api_key?: string | null;
+  api_key_action: ModelApiKeyAction;
   api_key_env?: string | null;
   timeout_seconds: number;
   strip_thinking: boolean;

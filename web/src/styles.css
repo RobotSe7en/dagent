@@ -3333,6 +3333,11 @@ details[open] .timeline-chevron {
   color: #7d8490;
 }
 
+.model-secret-clear {
+  width: fit-content;
+  align-self: end;
+}
+
 .model-advanced-section {
   display: flex;
   flex-direction: column;

@@ -49,6 +49,9 @@ from api.stream_gate import gate_chat_display
 
 MessageTarget = Literal["auto", "tool", "dag"]
 CONFIG_MODEL_ID = "config"
+ApiKeyAction = Literal["preserve", "replace", "clear"]
+ModelProviderSource = Literal["config", "runtime"]
+REDACTED_SECRET_VALUE = "[redacted]"
 
 
 class MessageRequest(BaseModel):
@@ -130,12 +133,45 @@ class ModelProviderRequest(BaseModel):
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
     api_key: str | None = None
+    api_key_action: ApiKeyAction = "replace"
     api_key_env: str | None = None
     timeout_seconds: float = 60
     strip_thinking: bool = False
     reasoning: dict[str, Any] | None = None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelProviderPayload(BaseModel):
+    id: str
+    name: str
+    source: ModelProviderSource
+    active: bool
+    base_url: str
+    model: str
+    api_key_env: str | None = None
+    api_key_configured: bool
+    api_key_saved: bool
+    timeout_seconds: float
+    strip_thinking: bool
+    reasoning: dict[str, Any] | None = None
+    extra_request_args: dict[str, Any] = Field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelListResponse(BaseModel):
+    models: list[ModelProviderPayload]
+    active_model_id: str
+
+
+class ModelMutationResponse(BaseModel):
+    model: ModelProviderPayload
+    active_model_id: str
+
+
+class ModelDeleteResponse(BaseModel):
+    status: str
+    active_model_id: str
 
 
 class ApiState:
@@ -500,29 +536,33 @@ async def disable_capability(capability_id: str) -> dict[str, Any]:
     return _set_capability_enabled(capability_id, False)
 
 
-@app.get("/models")
-async def list_models() -> dict[str, Any]:
-    return {
-        "models": _model_provider_payloads(),
-        "active_model_id": _active_model_id(),
-    }
+@app.get("/models", response_model=ModelListResponse)
+async def list_models() -> ModelListResponse:
+    return ModelListResponse(
+        models=_model_provider_payloads(),
+        active_model_id=_active_model_id(),
+    )
 
 
-@app.post("/models")
-async def create_model_provider(request: ModelProviderRequest) -> dict[str, Any]:
+@app.post("/models", response_model=ModelMutationResponse)
+async def create_model_provider(request: ModelProviderRequest) -> ModelMutationResponse:
     model_id = _clean_model_id(request.id)
     if model_id in state.custom_model_providers:
         raise HTTPException(status_code=400, detail=f"Model '{model_id}' already exists.")
+    if request.api_key_action == "preserve":
+        raise HTTPException(status_code=400, detail="Cannot preserve an API key when creating a model.")
     model = _normalized_model_provider(request, model_id=model_id)
+    if request.api_key_action == "clear":
+        model = model.model_copy(update={"api_key": None}, deep=True)
     state.custom_model_providers[model_id] = model
-    return {
-        "model": _runtime_model_payload(model, active=_active_model_id() == model_id),
-        "active_model_id": _active_model_id(),
-    }
+    return ModelMutationResponse(
+        model=_runtime_model_payload(model, active=_active_model_id() == model_id),
+        active_model_id=_active_model_id(),
+    )
 
 
-@app.put("/models/{model_id}")
-async def update_model_provider(model_id: str, request: ModelProviderRequest) -> dict[str, Any]:
+@app.put("/models/{model_id}", response_model=ModelMutationResponse)
+async def update_model_provider(model_id: str, request: ModelProviderRequest) -> ModelMutationResponse:
     clean_model_id = _clean_model_id(model_id)
     body_model_id = _clean_model_id(request.id)
     if clean_model_id != body_model_id:
@@ -530,20 +570,22 @@ async def update_model_provider(model_id: str, request: ModelProviderRequest) ->
     if clean_model_id not in state.custom_model_providers:
         raise HTTPException(status_code=404, detail="Model not found.")
     existing = state.custom_model_providers[clean_model_id]
-    model = _normalized_model_provider(request, model_id=clean_model_id)
-    if model.api_key is None and existing.api_key and model.api_key_env == existing.api_key_env:
+    model = _normalized_model_provider(request, model_id=clean_model_id, existing=existing)
+    if request.api_key_action == "preserve":
         model = model.model_copy(update={"api_key": existing.api_key}, deep=True)
+    elif request.api_key_action == "clear":
+        model = model.model_copy(update={"api_key": None}, deep=True)
     state.custom_model_providers[clean_model_id] = model
     if state.active_model_id == clean_model_id:
         state.close_runner()
-    return {
-        "model": _runtime_model_payload(model, active=_active_model_id() == clean_model_id),
-        "active_model_id": _active_model_id(),
-    }
+    return ModelMutationResponse(
+        model=_runtime_model_payload(model, active=_active_model_id() == clean_model_id),
+        active_model_id=_active_model_id(),
+    )
 
 
-@app.delete("/models/{model_id}")
-async def delete_model_provider(model_id: str) -> dict[str, str]:
+@app.delete("/models/{model_id}", response_model=ModelDeleteResponse)
+async def delete_model_provider(model_id: str) -> ModelDeleteResponse:
     clean_model_id = _clean_model_id(model_id)
     if clean_model_id not in state.custom_model_providers:
         raise HTTPException(status_code=404, detail="Model not found.")
@@ -551,28 +593,22 @@ async def delete_model_provider(model_id: str) -> dict[str, str]:
     if state.active_model_id == clean_model_id:
         state.active_model_id = None
         state.close_runner()
-    return {"status": "deleted", "active_model_id": _active_model_id()}
+    return ModelDeleteResponse(status="deleted", active_model_id=_active_model_id())
 
 
-@app.post("/models/{model_id}/activate")
-async def activate_model_provider(model_id: str) -> dict[str, Any]:
+@app.post("/models/{model_id}/activate", response_model=ModelMutationResponse)
+async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     clean_model_id = _clean_model_id(model_id, allow_config=True)
     if clean_model_id == CONFIG_MODEL_ID:
         state.active_model_id = None
         state.close_runner()
-        return {
-            "model": _config_model_payload(active=True),
-            "active_model_id": CONFIG_MODEL_ID,
-        }
+        return ModelMutationResponse(model=_config_model_payload(active=True), active_model_id=CONFIG_MODEL_ID)
     model = state.custom_model_providers.get(clean_model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found.")
     state.active_model_id = clean_model_id
     state.close_runner()
-    return {
-        "model": _runtime_model_payload(model, active=True),
-        "active_model_id": clean_model_id,
-    }
+    return ModelMutationResponse(model=_runtime_model_payload(model, active=True), active_model_id=clean_model_id)
 
 
 @app.get("/mcp/servers")
@@ -781,7 +817,7 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
     }
 
 
-def _model_provider_payloads() -> list[dict[str, Any]]:
+def _model_provider_payloads() -> list[ModelProviderPayload]:
     active_id = _active_model_id()
     return [
         _config_model_payload(active=active_id == CONFIG_MODEL_ID),
@@ -796,45 +832,57 @@ def _active_model_id() -> str:
     return state.active_model_id if state.active_model() is not None else CONFIG_MODEL_ID
 
 
-def _config_model_payload(*, active: bool) -> dict[str, Any]:
+def _config_model_payload(*, active: bool) -> ModelProviderPayload:
     config = load_config()
     provider = config.provider
-    return {
-        "id": CONFIG_MODEL_ID,
-        "name": "config.yaml",
-        "source": "config",
-        "active": active,
-        "base_url": provider.base_url,
-        "model": provider.model,
-        "api_key_env": provider.api_key_env,
-        "api_key_configured": _api_key_configured(provider.api_key, provider.api_key_env),
-        "timeout_seconds": provider.timeout_seconds,
-        "strip_thinking": provider.strip_thinking,
-        "reasoning": provider.reasoning.model_dump(mode="json") if provider.reasoning is not None else None,
-        "extra_request_args": provider.extra_request_args,
-        "extra_body": provider.extra_body,
-    }
+    return ModelProviderPayload(
+        id=CONFIG_MODEL_ID,
+        name="config.yaml",
+        source="config",
+        active=active,
+        base_url=provider.base_url,
+        model=provider.model,
+        api_key_env=provider.api_key_env,
+        api_key_configured=_api_key_configured(provider.api_key, provider.api_key_env),
+        api_key_saved=bool(provider.api_key),
+        timeout_seconds=provider.timeout_seconds,
+        strip_thinking=provider.strip_thinking,
+        reasoning=provider.reasoning.model_dump(mode="json") if provider.reasoning is not None else None,
+        extra_request_args=_redact_json_secrets(provider.extra_request_args),
+        extra_body=_redact_json_secrets(provider.extra_body),
+    )
 
 
-def _runtime_model_payload(model: ModelProviderRequest, *, active: bool) -> dict[str, Any]:
-    return {
-        "id": model.id,
-        "name": model.name,
-        "source": "runtime",
-        "active": active,
-        "base_url": model.base_url,
-        "model": model.model,
-        "api_key_env": model.api_key_env,
-        "api_key_configured": _api_key_configured(model.api_key, model.api_key_env),
-        "timeout_seconds": model.timeout_seconds,
-        "strip_thinking": model.strip_thinking,
-        "reasoning": model.reasoning,
-        "extra_request_args": model.extra_request_args,
-        "extra_body": model.extra_body,
-    }
+def _runtime_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelProviderPayload:
+    return ModelProviderPayload(
+        id=model.id,
+        name=model.name,
+        source="runtime",
+        active=active,
+        base_url=model.base_url,
+        model=model.model,
+        api_key_env=model.api_key_env,
+        api_key_configured=_api_key_configured(model.api_key, model.api_key_env),
+        api_key_saved=bool(model.api_key),
+        timeout_seconds=model.timeout_seconds,
+        strip_thinking=model.strip_thinking,
+        reasoning=model.reasoning,
+        extra_request_args=_redact_json_secrets(model.extra_request_args),
+        extra_body=_redact_json_secrets(model.extra_body),
+    )
 
 
-def _normalized_model_provider(request: ModelProviderRequest, *, model_id: str) -> ModelProviderRequest:
+def _normalized_model_provider(
+    request: ModelProviderRequest,
+    *,
+    model_id: str,
+    existing: ModelProviderRequest | None = None,
+) -> ModelProviderRequest:
+    extra_request_args = dict(request.extra_request_args)
+    extra_body = dict(request.extra_body)
+    if existing is not None:
+        extra_request_args = _merge_redacted_json(existing.extra_request_args, extra_request_args)
+        extra_body = _merge_redacted_json(existing.extra_body, extra_body)
     return request.model_copy(update={
         "id": model_id,
         "name": _required_text(request.name, field="Model name"),
@@ -842,7 +890,40 @@ def _normalized_model_provider(request: ModelProviderRequest, *, model_id: str) 
         "model": _required_text(request.model, field="Model"),
         "api_key": _optional_secret(request.api_key),
         "api_key_env": _optional_text(request.api_key_env),
+        "extra_request_args": extra_request_args,
+        "extra_body": extra_body,
     }, deep=True)
+
+
+def _redact_json_secrets(value: Any, *, key: str = "") -> Any:
+    if _is_sensitive_json_key(key):
+        return REDACTED_SECRET_VALUE
+    if isinstance(value, dict):
+        return {name: _redact_json_secrets(item, key=str(name)) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_json_secrets(item) for item in value]
+    return value
+
+
+def _merge_redacted_json(existing: Any, incoming: Any, *, key: str = "") -> Any:
+    if incoming == REDACTED_SECRET_VALUE and _is_sensitive_json_key(key):
+        return existing
+    if isinstance(existing, dict) and isinstance(incoming, dict):
+        return {
+            child_key: _merge_redacted_json(existing.get(child_key), value, key=str(child_key))
+            for child_key, value in incoming.items()
+        }
+    if isinstance(existing, list) and isinstance(incoming, list):
+        return [
+            _merge_redacted_json(existing[index], value, key=key) if index < len(existing) else value
+            for index, value in enumerate(incoming)
+        ]
+    return incoming
+
+
+def _is_sensitive_json_key(key: str) -> bool:
+    normalized = "".join(char for char in key.lower() if char.isalnum())
+    return any(marker in normalized for marker in ("apikey", "authorization", "token", "secret", "password", "credential"))
 
 
 def _clean_model_id(value: str, *, allow_config: bool = False) -> str:
