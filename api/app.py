@@ -34,6 +34,7 @@ from dagent import (
     SkillPermissionError,
     SkillStore,
     SkillStoreError,
+    Provider,
     default_skill_roots,
     ToolAgent,
     validate_dag_spec,
@@ -47,6 +48,7 @@ from api.stream_gate import gate_chat_display
 
 
 MessageTarget = Literal["auto", "tool", "dag"]
+CONFIG_MODEL_ID = "config"
 
 
 class MessageRequest(BaseModel):
@@ -120,6 +122,22 @@ class MCPServerRequest(BaseModel):
     exclude_tools: list[str] = Field(default_factory=list)
 
 
+class ModelProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    api_key: str | None = None
+    api_key_env: str | None = None
+    timeout_seconds: float = 60
+    strip_thinking: bool = False
+    reasoning: dict[str, Any] | None = None
+    extra_request_args: dict[str, Any] = Field(default_factory=dict)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
 class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
@@ -130,19 +148,35 @@ class ApiState:
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.custom_model_providers: dict[str, ModelProviderRequest] = {}
+        self.active_model_id: str | None = None
         self.validation_override: bool | None = None
 
     def get_runner(self) -> Runner:
         if self.runner is None:
-            self.runner = Runner.from_config(
-                workspace=".",
-                skill_roots=self.get_skill_roots(),
-            )
+            self.runner = self._create_runner()
             self._install_custom_capabilities()
             self.reload_custom_mcp()
             if self.validation_override is not None:
                 self.runner.enable_validation = self.validation_override
         return self.runner
+
+    def _create_runner(self) -> Runner:
+        active_model = self.active_model()
+        if active_model is None:
+            return Runner.from_config(
+                workspace=".",
+                skill_roots=self.get_skill_roots(),
+            )
+        return _runner_from_model_provider(active_model, skill_roots=self.get_skill_roots())
+
+    def active_model(self) -> ModelProviderRequest | None:
+        if self.active_model_id is None:
+            return None
+        model = self.custom_model_providers.get(self.active_model_id)
+        if model is None:
+            self.active_model_id = None
+        return model
 
     def close_runner(self) -> None:
         if self.runner is not None:
@@ -466,6 +500,81 @@ async def disable_capability(capability_id: str) -> dict[str, Any]:
     return _set_capability_enabled(capability_id, False)
 
 
+@app.get("/models")
+async def list_models() -> dict[str, Any]:
+    return {
+        "models": _model_provider_payloads(),
+        "active_model_id": _active_model_id(),
+    }
+
+
+@app.post("/models")
+async def create_model_provider(request: ModelProviderRequest) -> dict[str, Any]:
+    model_id = _clean_model_id(request.id)
+    if model_id in state.custom_model_providers:
+        raise HTTPException(status_code=400, detail=f"Model '{model_id}' already exists.")
+    model = _normalized_model_provider(request, model_id=model_id)
+    state.custom_model_providers[model_id] = model
+    return {
+        "model": _runtime_model_payload(model, active=_active_model_id() == model_id),
+        "active_model_id": _active_model_id(),
+    }
+
+
+@app.put("/models/{model_id}")
+async def update_model_provider(model_id: str, request: ModelProviderRequest) -> dict[str, Any]:
+    clean_model_id = _clean_model_id(model_id)
+    body_model_id = _clean_model_id(request.id)
+    if clean_model_id != body_model_id:
+        raise HTTPException(status_code=400, detail="Model id mismatch.")
+    if clean_model_id not in state.custom_model_providers:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    existing = state.custom_model_providers[clean_model_id]
+    model = _normalized_model_provider(request, model_id=clean_model_id)
+    if model.api_key is None and existing.api_key and model.api_key_env == existing.api_key_env:
+        model = model.model_copy(update={"api_key": existing.api_key}, deep=True)
+    state.custom_model_providers[clean_model_id] = model
+    if state.active_model_id == clean_model_id:
+        state.close_runner()
+    return {
+        "model": _runtime_model_payload(model, active=_active_model_id() == clean_model_id),
+        "active_model_id": _active_model_id(),
+    }
+
+
+@app.delete("/models/{model_id}")
+async def delete_model_provider(model_id: str) -> dict[str, str]:
+    clean_model_id = _clean_model_id(model_id)
+    if clean_model_id not in state.custom_model_providers:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    state.custom_model_providers.pop(clean_model_id, None)
+    if state.active_model_id == clean_model_id:
+        state.active_model_id = None
+        state.close_runner()
+    return {"status": "deleted", "active_model_id": _active_model_id()}
+
+
+@app.post("/models/{model_id}/activate")
+async def activate_model_provider(model_id: str) -> dict[str, Any]:
+    clean_model_id = _clean_model_id(model_id, allow_config=True)
+    if clean_model_id == CONFIG_MODEL_ID:
+        state.active_model_id = None
+        state.close_runner()
+        return {
+            "model": _config_model_payload(active=True),
+            "active_model_id": CONFIG_MODEL_ID,
+        }
+    model = state.custom_model_providers.get(clean_model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    state.active_model_id = clean_model_id
+    state.close_runner()
+    return {
+        "model": _runtime_model_payload(model, active=True),
+        "active_model_id": clean_model_id,
+    }
+
+
 @app.get("/mcp/servers")
 async def list_mcp_servers() -> dict[str, Any]:
     return {"servers": _mcp_server_payloads(state.get_runner())}
@@ -640,6 +749,138 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
         raise HTTPException(status_code=404, detail="Capability not found.")
     updated = runner.set_capability_enabled(capability_id, enabled)
     return {"capability": updated.model_dump(mode="json")}
+
+
+def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: list[Path]) -> Runner:
+    config_path = resolve_config_path()
+    config = load_config(config_path)
+    validator = "validator_agent" if config.enable_result_validation else None
+    profile_root = resolve_config_relative_path(config.profiles.directory, config_path)
+    return Runner(
+        workspace=".",
+        provider=Provider(**_provider_kwargs(model)),
+        validator=validator,
+        skill_roots=skill_roots,
+        mcp_servers=dict(config.mcp_servers),
+        profile_root=profile_root,
+        sandbox=config.sandbox,
+    )
+
+
+def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
+    return {
+        "base_url": model.base_url,
+        "model": model.model,
+        "api_key": model.api_key,
+        "api_key_env": model.api_key_env,
+        "timeout_seconds": model.timeout_seconds,
+        "strip_thinking": model.strip_thinking,
+        "reasoning": model.reasoning,
+        "extra_request_args": dict(model.extra_request_args),
+        "extra_body": dict(model.extra_body),
+    }
+
+
+def _model_provider_payloads() -> list[dict[str, Any]]:
+    active_id = _active_model_id()
+    return [
+        _config_model_payload(active=active_id == CONFIG_MODEL_ID),
+        *[
+            _runtime_model_payload(model, active=model.id == active_id)
+            for model in sorted(state.custom_model_providers.values(), key=lambda item: (item.name.lower(), item.id))
+        ],
+    ]
+
+
+def _active_model_id() -> str:
+    return state.active_model_id if state.active_model() is not None else CONFIG_MODEL_ID
+
+
+def _config_model_payload(*, active: bool) -> dict[str, Any]:
+    config = load_config()
+    provider = config.provider
+    return {
+        "id": CONFIG_MODEL_ID,
+        "name": "config.yaml",
+        "source": "config",
+        "active": active,
+        "base_url": provider.base_url,
+        "model": provider.model,
+        "api_key_env": provider.api_key_env,
+        "api_key_configured": _api_key_configured(provider.api_key, provider.api_key_env),
+        "timeout_seconds": provider.timeout_seconds,
+        "strip_thinking": provider.strip_thinking,
+        "reasoning": provider.reasoning.model_dump(mode="json") if provider.reasoning is not None else None,
+        "extra_request_args": provider.extra_request_args,
+        "extra_body": provider.extra_body,
+    }
+
+
+def _runtime_model_payload(model: ModelProviderRequest, *, active: bool) -> dict[str, Any]:
+    return {
+        "id": model.id,
+        "name": model.name,
+        "source": "runtime",
+        "active": active,
+        "base_url": model.base_url,
+        "model": model.model,
+        "api_key_env": model.api_key_env,
+        "api_key_configured": _api_key_configured(model.api_key, model.api_key_env),
+        "timeout_seconds": model.timeout_seconds,
+        "strip_thinking": model.strip_thinking,
+        "reasoning": model.reasoning,
+        "extra_request_args": model.extra_request_args,
+        "extra_body": model.extra_body,
+    }
+
+
+def _normalized_model_provider(request: ModelProviderRequest, *, model_id: str) -> ModelProviderRequest:
+    return request.model_copy(update={
+        "id": model_id,
+        "name": _required_text(request.name, field="Model name"),
+        "base_url": _required_text(request.base_url, field="Base URL"),
+        "model": _required_text(request.model, field="Model"),
+        "api_key": _optional_secret(request.api_key),
+        "api_key_env": _optional_text(request.api_key_env),
+    }, deep=True)
+
+
+def _clean_model_id(value: str, *, allow_config: bool = False) -> str:
+    model_id = str(value or "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="Model id is required.")
+    if model_id == CONFIG_MODEL_ID:
+        if allow_config:
+            return model_id
+        raise HTTPException(status_code=400, detail=f"Model id '{CONFIG_MODEL_ID}' is reserved.")
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+    if any(char not in allowed for char in model_id) or not any(char.isalnum() for char in model_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Model id may contain only letters, numbers, dots, underscores, and dashes.",
+        )
+    return model_id
+
+
+def _api_key_configured(api_key: str | None, api_key_env: str | None) -> bool:
+    return bool(api_key_env or (api_key and api_key != "not-needed"))
+
+
+def _optional_text(value: str | None) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _optional_secret(value: str | None) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _required_text(value: Any, *, field: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{field} is required.")
+    return text
 
 
 def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagAgent:

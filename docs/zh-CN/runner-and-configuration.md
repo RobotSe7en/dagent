@@ -152,6 +152,30 @@ for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
 
+## 运行时切换 Provider
+
+如果 host 允许用户在运行时选择模型，应创建新的公开 provider 并重建 runner，
+不要修改 runner 内部状态：
+
+```python
+runner.close()
+provider = dagent.Provider(
+    base_url="https://api.openai.com/v1",
+    model="another-model",
+    api_key_env="OPENAI_API_KEY",
+)
+runner = dagent.Runner(
+    workspace=".",
+    provider=provider,
+    skill_roots=skill_roots,
+    mcp_servers=mcp_servers,
+    profile_root=profile_root,
+)
+```
+
+本地 WebUI 的模型管理遵循这个模式。`config.yaml` 中的 provider 仍是默认模型。
+运行时新增的模型条目属于 session state，除非 host 应用明确选择持久化它们。
+
 ## Validation
 
 配置中的 `enable_result_validation` 设置初始默认值。运行时控制可以覆盖当前 session：

@@ -156,6 +156,31 @@ for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
 
+## Runtime Provider Switching
+
+Hosts that let users choose a model at runtime should create a new public
+provider and rebuild the runner instead of mutating runner internals:
+
+```python
+runner.close()
+provider = dagent.Provider(
+    base_url="https://api.openai.com/v1",
+    model="another-model",
+    api_key_env="OPENAI_API_KEY",
+)
+runner = dagent.Runner(
+    workspace=".",
+    provider=provider,
+    skill_roots=skill_roots,
+    mcp_servers=mcp_servers,
+    profile_root=profile_root,
+)
+```
+
+The local WebUI model manager follows this pattern. The `config.yaml` provider
+remains the default model. Runtime-added model entries are session state unless
+the host application chooses to persist them.
+
 ## Validation
 
 `enable_result_validation` in config sets the initial default. Runtime controls
