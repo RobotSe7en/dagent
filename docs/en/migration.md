@@ -5,7 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.5.0`.
+The current package version is `0.5.1`.
+
+## 0.5.1
+
+- No migration action is required for this patch release. It adds WebUI model
+  provider management and API key redaction improvements without changing the
+  documented public SDK contracts.
 
 ## 0.5.0
 

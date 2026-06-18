@@ -4,7 +4,12 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.5.0`。
+当前包版本是 `0.5.1`。
+
+## 0.5.1
+
+- 此 patch release 不需要迁移动作。它增加了 WebUI model provider 管理和 API key
+  redaction 改进，不改变已文档化的公开 SDK contracts。
 
 ## 0.5.0
 
