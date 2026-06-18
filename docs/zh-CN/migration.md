@@ -4,7 +4,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.4.2`。
+当前包版本是 `0.5.0`。
+
+## 0.5.0
+
+- Sandbox 执行现在会对不支持的 targets 和 capabilities fail closed。只有内置 tool
+  capabilities 会在 `execution="sandbox"` 中执行。Python function tools、raw registered
+  capabilities、MCP、skills、memory、agents、DAG、`DAGSpec` 和 `DagAgent` 在获得 sandbox
+  支持前都必须使用 `execution="local"`；当 sandbox run 处于活动状态时，它们不再回退到
+  host 执行。
 
 ## 0.4.2
 
@@ -12,11 +20,6 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   `shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
   capability ids 和 `run_command(...)` plan calls 改成新名字。不会注册旧名
   兼容别名。
-- Sandbox 执行现在会对不支持的 targets 和 capabilities fail closed。只有内置 tool
-  capabilities 会在 `execution="sandbox"` 中执行。Python function tools、raw registered
-  capabilities、MCP、skills、memory、agents、DAG、`DAGSpec` 和 `DagAgent` 在获得 sandbox
-  支持前都必须使用 `execution="local"`；当 sandbox run 处于活动状态时，它们不再回退到
-  host 执行。
 
 ## 公开 Surface 预期
 
