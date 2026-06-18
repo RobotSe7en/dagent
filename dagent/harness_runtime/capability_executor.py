@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.capabilities.workspace import workspace_context
 from dagent.schemas import ArtifactState, CapabilityInvocation, CapabilityResult, DAGNode
 
@@ -70,6 +71,16 @@ class CapabilityExecutor:
             raise CapabilityExecutionError(
                 f"Capability '{invocation.capability_id}' has kind '{definition.kind}', "
                 f"not '{invocation.kind}'."
+            )
+        if current_run_execution() == "sandbox" and invocation.kind != "tool":
+            # Fail closed: only built-in tool capabilities execute inside the
+            # sandbox (routed through the sandbox session). MCP, sub-agent,
+            # skill and memory capabilities run on the host, so refuse them
+            # under execution='sandbox' rather than silently breaking isolation.
+            raise CapabilityExecutionError(
+                f"Capability '{invocation.capability_id}' (kind='{invocation.kind}') cannot "
+                "run under execution='sandbox', which currently supports only built-in tool "
+                "capabilities. Use execution='local'."
             )
         if entry.supports_context:
             args = (invocation,)

@@ -276,7 +276,9 @@ class Runner:
             arguments=resolved_arguments,
             boundary=resolved_boundary,
         )
-        with self._run_scope(execution):
+        # Use the runner's own workspace as the sandbox workspace so preset
+        # files under it are visible (rather than minting an empty run dir).
+        with self._run_scope(execution, existing_workspace=self.workspace):
             return await self._runtime.capability_executor.execute(invocation)
 
     @contextmanager
@@ -505,6 +507,14 @@ class Runner:
         if state is not None:
             _ensure_run_state_can_continue(state)
         resolved_execution = _resolve_run_execution(execution, state)
+        if resolved_execution == "sandbox" and isinstance(target, (Dag, DAGSpec, DagAgent)):
+            # Preflight before entering the sandbox scope so we don't start a
+            # container only to reject the run. AutoAgent resolves its mode at
+            # runtime, so the _execute_loop guard remains the backstop for it.
+            raise SandboxExecutionError(
+                "Sandbox execution is not yet supported for DAG-based runs "
+                f"({type(target).__name__}); use a tool agent or execution='local'."
+            )
         skill_names = (
             _agent_skills(target)
             if isinstance(target, (AutoAgent, ToolAgent, DagAgent))

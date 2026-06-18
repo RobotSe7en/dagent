@@ -29,6 +29,12 @@ def current_sandbox_session() -> Any | None:
 
 @contextmanager
 def run_execution_context(execution: RunExecution) -> Iterator[None]:
+    # Validate at the boundary: the value can arrive from untyped sources
+    # (config files, API bodies) where the RunExecution Literal is not
+    # enforced, and an unrecognized value must not silently fall back to a
+    # non-sandboxed path.
+    if execution not in {"local", "sandbox"}:
+        raise ValueError(f"execution must be 'local' or 'sandbox', got {execution!r}.")
     token = _RUN_EXECUTION.set(execution)
     try:
         yield

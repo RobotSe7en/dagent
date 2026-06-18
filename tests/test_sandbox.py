@@ -438,6 +438,41 @@ def test_sandbox_execution_still_enforces_boundary(tmp_path: Path):
     assert session.calls == []  # boundary rejected before reaching the sandbox
 
 
+def test_run_execution_context_rejects_invalid_value():
+    with pytest.raises(ValueError):
+        with run_execution_context("sandboxx"):  # type: ignore[arg-type]
+            pass
+
+
+def test_sandbox_without_session_fails_closed(tmp_path: Path):
+    # execution='sandbox' but no active session must NOT fall back to host.
+    (tmp_path / "a.txt").write_text("local-content\n")
+    catalog = create_default_capability_catalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(catalog)
+    with run_execution_context("sandbox"):  # note: no sandbox_session_context
+        result = run(executor.execute(_read_file_invocation()))
+    assert result.status == "failed"
+    assert "local-content" not in (result.content or "")
+
+
+def test_sandbox_rejects_non_tool_capability(tmp_path: Path):
+    # Only built-in tool capabilities run in the sandbox; others fail closed.
+    catalog = create_default_capability_catalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(catalog)
+    session = _RecordingSession()
+    invocation = CapabilityInvocation(
+        capability_id="memory.write",
+        kind="memory",
+        arguments={"key": "k", "value": "v"},
+        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+    )
+    with run_execution_context("sandbox"), sandbox_session_context(session):
+        with pytest.raises(Exception) as excinfo:
+            run(executor.execute(invocation))
+    assert "sandbox" in str(excinfo.value).lower()
+    assert session.calls == []
+
+
 # --------------------------------------------------------------------------
 # Execution resolution + status
 # --------------------------------------------------------------------------

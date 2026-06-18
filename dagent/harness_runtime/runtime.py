@@ -368,6 +368,14 @@ class HarnessRuntime:
                 input_messages=input_messages,
             )
 
+        # DAG review resume does not flow through _execute_loop, so enforce the
+        # sandbox DAG restriction here too (defense in depth; normally a sandbox
+        # DAG run can't reach awaiting_review because the loop guard rejects it).
+        if current_run_execution() == "sandbox":
+            raise SandboxExecutionError(
+                "Sandbox execution is not yet supported for DAG-based runs; "
+                "use a tool agent or execution='local'."
+            )
         submitted_dag = dag
         if approved and submitted_dag is None:
             submitted_dag = pending_review.proposed_dag

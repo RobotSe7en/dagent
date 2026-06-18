@@ -443,8 +443,16 @@ def _execute_tool(
                 workspace_root,
                 checked_args["cwd"],
             )
-    session = current_sandbox_session()
-    if current_run_execution() == "sandbox" and session is not None:
+    if current_run_execution() == "sandbox":
+        session = current_sandbox_session()
+        if session is None:
+            # Fail closed: sandbox was requested but no session is active, so
+            # we must not silently fall back to host execution.
+            raise SandboxToolExecutionError(
+                f"Sandbox execution requested for tool '{tool_name}' but no "
+                "sandbox session is active.",
+                stop_reason="SandboxExecutionError",
+            )
         result = session.run_tool(tool_name, checked_args)
     else:
         result = tool.handler(**checked_args)

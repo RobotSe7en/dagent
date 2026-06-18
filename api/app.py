@@ -610,10 +610,13 @@ def _profile_payload(profile, source: str) -> dict[str, Any]:
 
 @app.get("/sandbox/status")
 async def sandbox_status() -> dict[str, Any]:
+    runner = state.get_runner()
+    status = runner.sandbox_status()
     return {
         "runner": "local-dev",
-        "workspace_root": str(state.get_runner().workspace.resolve()),
-        "container_ready": False,
+        "workspace_root": str(runner.workspace.resolve()),
+        "container_ready": bool(status.get("docker_available")),
+        **status,
     }
 
 
