@@ -65,7 +65,9 @@ import {
   listMcpServers,
   listModels,
   listProfiles,
+  listRunArtifacts,
   listSkills,
+  previewRunArtifact,
   reloadMcpServers,
   resetSession,
   resumeCapabilityReview,
@@ -100,6 +102,8 @@ import type {
   ReviewEventPayload,
   ValidationFeedbackEvent,
   ReviewLevel,
+  RunArtifactFile,
+  RunArtifactPreview,
   RiskLevel,
   CapabilityStreamEvent,
   TraceLogEvent,
@@ -154,7 +158,6 @@ import {
   type MessageTimelineItem,
 } from './chatTimeline';
 import {
-  artifactPreviewText,
   buildWorkbenchArtifacts,
   type WorkbenchArtifactItem,
 } from './workbenchArtifacts';
@@ -700,6 +703,11 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
 }
 
+function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
+  if (!item.runId || !item.path) return '';
+  return `${item.runId}:${item.path}:${item.size ?? 'unknown'}`;
+}
+
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
@@ -720,6 +728,12 @@ export function App() {
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState('');
+  const [runArtifactFiles, setRunArtifactFiles] = useState<RunArtifactFile[]>([]);
+  const [runArtifactLoading, setRunArtifactLoading] = useState(false);
+  const [runArtifactError, setRunArtifactError] = useState<string | null>(null);
+  const [artifactPreviews, setArtifactPreviews] = useState<Record<string, RunArtifactPreview>>({});
+  const [artifactPreviewLoadingId, setArtifactPreviewLoadingId] = useState('');
+  const [artifactPreviewError, setArtifactPreviewError] = useState<{ id: string; message: string } | null>(null);
   const [validationEnabled, setValidationEnabled] = useState(false);
   const [validationPending, setValidationPending] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -734,6 +748,7 @@ export function App() {
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const contentStreamedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const runArtifactRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -818,21 +833,106 @@ export function App() {
     selectedChatCapabilityIds.length,
     selectedChatSkillNames.length,
   );
+  const activeRunId = runState?.run_id ?? null;
   const chatArtifacts = useMemo(
     () => buildWorkbenchArtifacts({
       dag,
-      runArtifacts: runState?.trace?.artifacts ?? null,
+      runId: activeRunId,
+      runFiles: runArtifactFiles,
     }),
-    [dag, runState],
+    [activeRunId, dag, runArtifactFiles],
   );
   const artifactDrawerOpen = artifactPanelOpen;
-  const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? chatArtifacts[0] ?? null;
+  const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? null;
+  const selectedArtifactPreviewKey = selectedArtifact ? artifactPreviewCacheKey(selectedArtifact) : '';
+  const selectedArtifactPreview = selectedArtifactPreviewKey ? artifactPreviews[selectedArtifactPreviewKey] ?? null : null;
+  const selectedArtifactPreviewLoading = Boolean(
+    selectedArtifactPreviewKey && artifactPreviewLoadingId === selectedArtifactPreviewKey,
+  );
+  const selectedArtifactPreviewError = (
+    selectedArtifactPreviewKey && artifactPreviewError?.id === selectedArtifactPreviewKey
+      ? artifactPreviewError.message
+      : null
+  );
   const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
     [selectedToolSkillName, skills],
   );
+
+  const refreshRunArtifacts = useCallback(async () => {
+    const requestId = runArtifactRequestRef.current + 1;
+    runArtifactRequestRef.current = requestId;
+    if (!activeRunId) {
+      setRunArtifactFiles([]);
+      setRunArtifactError(null);
+      setRunArtifactLoading(false);
+      return;
+    }
+    setRunArtifactLoading(true);
+    setRunArtifactError(null);
+    try {
+      const payload = await listRunArtifacts(activeRunId);
+      if (runArtifactRequestRef.current !== requestId) return;
+      setRunArtifactFiles(payload.files);
+      setArtifactPreviews({});
+      setArtifactPreviewError(null);
+      setArtifactPreviewLoadingId('');
+    } catch (exc) {
+      if (runArtifactRequestRef.current !== requestId) return;
+      setRunArtifactFiles([]);
+      setRunArtifactError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (runArtifactRequestRef.current === requestId) setRunArtifactLoading(false);
+    }
+  }, [activeRunId]);
+
+  useEffect(() => {
+    void refreshRunArtifacts();
+  }, [refreshRunArtifacts]);
+
+  useEffect(() => {
+    setRunArtifactFiles([]);
+    setArtifactPreviews({});
+    setArtifactPreviewError(null);
+    setArtifactPreviewLoadingId('');
+    setSelectedArtifactId('');
+  }, [activeRunId]);
+
+  useEffect(() => {
+    if (!artifactPanelOpen || !selectedArtifact?.previewable || !selectedArtifact.runId || !selectedArtifact.path) return;
+    const cacheKey = artifactPreviewCacheKey(selectedArtifact);
+    if (!cacheKey || artifactPreviews[cacheKey]) return;
+    let cancelled = false;
+    setArtifactPreviewLoadingId(cacheKey);
+    setArtifactPreviewError(null);
+    void previewRunArtifact(selectedArtifact.runId, selectedArtifact.path)
+      .then((preview) => {
+        if (cancelled) return;
+        if (preview.run_id !== selectedArtifact.runId || preview.path !== selectedArtifact.path) return;
+        setArtifactPreviews((current) => ({ ...current, [cacheKey]: preview }));
+      })
+      .catch((exc) => {
+        if (cancelled) return;
+        setArtifactPreviewError({
+          id: cacheKey,
+          message: exc instanceof Error ? exc.message : String(exc),
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setArtifactPreviewLoadingId('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactPanelOpen, artifactPreviews, selectedArtifact]);
+
+  const copySelectedArtifact = useCallback(() => {
+    const content = selectedArtifactPreview?.content ?? '';
+    if (!content || !navigator.clipboard) return;
+    void navigator.clipboard.writeText(content);
+  }, [selectedArtifactPreview]);
 
   const selectToolsDirectoryTab = useCallback((tab: ToolDirectoryTab) => {
     setToolsDirectoryTab(tab);
@@ -2307,7 +2407,12 @@ export function App() {
         {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
         {activeWorkspace === 'chat' ? (
           <ChatWorkspace
+            artifactListError={runArtifactError}
+            artifactListLoading={runArtifactLoading}
             artifactPanelOpen={artifactDrawerOpen}
+            artifactPreview={selectedArtifactPreview}
+            artifactPreviewError={selectedArtifactPreviewError}
+            artifactPreviewLoading={selectedArtifactPreviewLoading}
             artifacts={chatArtifacts}
             chatScopeLabel={chatScopeLabel}
             currentDag={dag}
@@ -2324,6 +2429,8 @@ export function App() {
             validationError={validationError}
             validationPending={validationPending}
             onArtifactSelect={setSelectedArtifactId}
+            onArtifactCopy={copySelectedArtifact}
+            onArtifactRefresh={refreshRunArtifacts}
             onDraftChange={setDraft}
             onOpenDag={(snapshot, snapshotTrace) => {
               syncDag(snapshot);
@@ -3084,7 +3191,12 @@ function DesignWorkspacePlaceholder({
 }
 
 function ChatWorkspace({
+  artifactListError,
+  artifactListLoading,
   artifactPanelOpen,
+  artifactPreview,
+  artifactPreviewError,
+  artifactPreviewLoading,
   artifacts,
   chatScopeLabel,
   currentDag,
@@ -3100,6 +3212,8 @@ function ChatWorkspace({
   validationEnabled,
   validationError,
   validationPending,
+  onArtifactCopy,
+  onArtifactRefresh,
   onArtifactSelect,
   onDraftChange,
   onOpenDag,
@@ -3111,7 +3225,12 @@ function ChatWorkspace({
   onToggleArtifacts,
   onToggleValidation,
 }: {
+  artifactListError: string | null;
+  artifactListLoading: boolean;
   artifactPanelOpen: boolean;
+  artifactPreview: RunArtifactPreview | null;
+  artifactPreviewError: string | null;
+  artifactPreviewLoading: boolean;
   artifacts: WorkbenchArtifactItem[];
   chatScopeLabel: string;
   currentDag: Dag;
@@ -3127,6 +3246,8 @@ function ChatWorkspace({
   validationEnabled: boolean;
   validationError: string | null;
   validationPending: boolean;
+  onArtifactCopy: () => void;
+  onArtifactRefresh: () => void;
   onArtifactSelect: (id: string) => void;
   onDraftChange: (value: string) => void;
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
@@ -3238,10 +3359,17 @@ function ChatWorkspace({
       </div>
 
       <ArtifactPanel
+        error={artifactListError}
+        loading={artifactListLoading}
+        preview={artifactPreview}
+        previewError={artifactPreviewError}
+        previewLoading={artifactPreviewLoading}
         artifacts={artifacts}
         open={artifactPanelOpen}
         selectedArtifact={selectedArtifact}
         selectedArtifactId={selectedArtifactId}
+        onCopy={onArtifactCopy}
+        onRefresh={onArtifactRefresh}
         onSelect={onArtifactSelect}
         onToggle={onToggleArtifacts}
       />
@@ -3297,17 +3425,31 @@ function ChatMessageRow({
 }
 
 function ArtifactPanel({
+  error,
+  loading,
+  preview,
+  previewError,
+  previewLoading,
   artifacts,
   open,
   selectedArtifact,
   selectedArtifactId,
+  onCopy,
+  onRefresh,
   onSelect,
   onToggle,
 }: {
+  error: string | null;
+  loading: boolean;
+  preview: RunArtifactPreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
   artifacts: WorkbenchArtifactItem[];
   open: boolean;
   selectedArtifact: WorkbenchArtifactItem | null;
   selectedArtifactId: string;
+  onCopy: () => void;
+  onRefresh: () => void;
   onSelect: (id: string) => void;
   onToggle: () => void;
 }) {
@@ -3336,8 +3478,8 @@ function ArtifactPanel({
         <Folder size={17} />
         <strong>产物</strong>
         <span>{artifacts.length}</span>
-        <button className="icon-button" title="刷新" type="button">
-          <RefreshCw size={15} />
+        <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
+          <RefreshCw className={loading ? 'spin' : ''} size={15} />
         </button>
         <button className="icon-button" onClick={onToggle} title="收起面板" type="button">
           <ChevronRight size={16} />
@@ -3350,6 +3492,7 @@ function ArtifactPanel({
         <em>{artifacts.length}</em>
       </div>
       <div className="artifact-file-list">
+        {error ? <div className="artifact-empty">{error}</div> : null}
         {artifacts.length ? artifacts.map((artifact) => (
           <button
             className={artifact.id === selectedArtifactId ? 'active' : ''}
@@ -3368,24 +3511,82 @@ function ArtifactPanel({
         )}
       </div>
 
-      <div className="artifact-preview">
-        {selectedArtifact ? (
-          <>
-            <div className="artifact-preview-head">
-              <File size={14} />
-              <strong>{selectedArtifact.name}</strong>
-              <span>{selectedArtifact.meta}</span>
-              <button className="icon-button" title="复制" type="button">
-                <Copy size={13} />
-              </button>
-            </div>
-            <pre>{artifactPreviewText(selectedArtifact)}</pre>
-          </>
-        ) : (
-          <div className="artifact-preview-empty">选择一次运行产物后在这里预览。</div>
-        )}
-      </div>
+      <ArtifactPreview
+        error={previewError}
+        loading={previewLoading}
+        preview={preview}
+        selectedArtifact={selectedArtifact}
+        onCopy={onCopy}
+      />
     </aside>
+  );
+}
+
+function ArtifactPreview({
+  error,
+  loading,
+  preview,
+  selectedArtifact,
+  onCopy,
+}: {
+  error: string | null;
+  loading: boolean;
+  preview: RunArtifactPreview | null;
+  selectedArtifact: WorkbenchArtifactItem | null;
+  onCopy: () => void;
+}) {
+  if (!selectedArtifact) {
+    return (
+      <div className="artifact-preview">
+        <div className="artifact-preview-empty">选择一次运行产物后在这里预览。</div>
+      </div>
+    );
+  }
+
+  let body: React.ReactNode;
+  if (selectedArtifact.error) {
+    body = <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
+  } else if (selectedArtifact.previewable === false) {
+    body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
+  } else if (loading) {
+    body = (
+      <div className="artifact-preview-empty">
+        <Loader className="spin" size={14} />
+        <span>正在加载预览...</span>
+      </div>
+    );
+  } else if (error) {
+    body = <div className="artifact-preview-empty">{error}</div>;
+  } else if (preview && selectedArtifact.previewKind === 'markdown') {
+    body = (
+      <div className="artifact-markdown markdown-body">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.content}</ReactMarkdown>
+        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
+      </div>
+    );
+  } else if (preview) {
+    body = (
+      <>
+        <pre>{preview.content}</pre>
+        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
+      </>
+    );
+  } else {
+    body = <div className="artifact-preview-empty">选择文件后加载预览。</div>;
+  }
+
+  return (
+    <div className="artifact-preview">
+      <div className="artifact-preview-head">
+        <File size={14} />
+        <strong>{selectedArtifact.name}</strong>
+        <span>{selectedArtifact.meta}</span>
+        <button className="icon-button" disabled={!preview} onClick={onCopy} title="复制" type="button">
+          <Copy size={13} />
+        </button>
+      </div>
+      {body}
+    </div>
   );
 }
 

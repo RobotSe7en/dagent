@@ -1653,6 +1653,12 @@ details[open] .timeline-chevron {
   padding: 12px;
 }
 
+.artifact-preview-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .artifact-preview {
   min-height: 0;
   flex: 1;
@@ -1692,7 +1698,7 @@ details[open] .timeline-chevron {
   white-space: nowrap;
 }
 
-.artifact-preview pre {
+.artifact-preview > pre {
   min-height: 0;
   flex: 1;
   margin: 0;
@@ -1704,6 +1710,23 @@ details[open] .timeline-chevron {
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.artifact-markdown {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 14px 16px;
+  color: #3b414b;
+  font-size: 13px;
+}
+
+.artifact-preview-note {
+  border-top: 1px solid #eef0f3;
+  padding: 8px 16px;
+  color: #8b919b;
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 /* ── Updated orchestration workspace ── */

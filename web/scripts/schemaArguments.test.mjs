@@ -68,7 +68,7 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
   assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
   assert.match(appSource, /streamTask\(prompt, target, reviewLevel/);
-  assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runArtifacts: runState\?\.trace\?\.artifacts/);
+  assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runFiles: runArtifactFiles/);
   assert.match(appSource, /function DesignEmptyConversation/);
   assert.match(appSource, /function DesignWorkspacePlaceholder/);
   assert.match(appSource, /className="brand-logo-expand"/);
@@ -762,7 +762,7 @@ test('dag review dialog uses the compact review surface', async () => {
   assert.match(css, /\.review-stat/);
 });
 
-test('buildWorkbenchArtifacts exposes real DAG and trace artifacts for the preview panel', async () => {
+test('buildWorkbenchArtifacts exposes declarative DAG artifacts and real run files for the preview panel', async () => {
   const {
     artifactPreviewText,
     buildWorkbenchArtifacts,
@@ -796,24 +796,31 @@ test('buildWorkbenchArtifacts exposes real DAG and trace artifacts for the previ
       metadata: { display_name: 'dag_overview.md' },
     },
   };
-  const runArtifacts = {
-    grep_results: {
+  const runFiles = [
+    {
+      id: 'run:outputs/grep_results.txt',
+      artifact_id: 'grep_results',
+      source: 'run_file',
       path: 'outputs/grep_results.txt',
-      content: '14 matches across 6 files',
+      name: 'grep_results.txt',
       media_type: 'text/plain',
+      preview_kind: 'text',
+      previewable: true,
+      size: 24,
+      status: 'created',
+      error: null,
+      preview_url: '/runs/run_tool_1/artifacts/preview?path=outputs%2Fgrep_results.txt',
     },
-    orchestration_map: {
-      value: { dag_id: 'dag_review_001', nodes: 3 },
-    },
-  };
+  ];
 
-  const items = buildWorkbenchArtifacts({ dag, dagArtifacts, runArtifacts });
+  const items = buildWorkbenchArtifacts({ dag, dagArtifacts, runFiles, runId: 'run_tool_1' });
 
   assert.deepEqual(items.map((item) => ({
     id: item.id,
     name: item.name,
     extension: item.extension,
     source: item.source,
+    path: item.path,
     preview: artifactPreviewText(item),
   })), [
     {
@@ -821,21 +828,130 @@ test('buildWorkbenchArtifacts exposes real DAG and trace artifacts for the previ
       name: 'dag_overview.md',
       extension: 'MD',
       source: 'dag',
+      path: 'outputs/dag_overview.md',
       preview: 'Generated orchestration summary\n\nPath: outputs/dag_overview.md',
     },
     {
-      id: 'run:grep_results',
+      id: 'run:outputs/grep_results.txt',
       name: 'grep_results.txt',
       extension: 'TXT',
       source: 'run',
-      preview: '14 matches across 6 files',
+      path: 'outputs/grep_results.txt',
+      preview: 'Path: outputs/grep_results.txt',
     },
+  ]);
+});
+
+test('run artifact preview uses backend manifest files and a dedicated preview component', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /export async function listRunArtifacts\(runId: string\)/);
+  assert.match(apiSource, /export async function previewRunArtifact\(runId: string, path: string\)/);
+  assert.match(appSource, /const \[runArtifactFiles, setRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
+  assert.match(appSource, /const runArtifactRequestRef = useRef\(0\);/);
+  assert.match(appSource, /function artifactPreviewCacheKey\(item: WorkbenchArtifactItem\)/);
+  assert.match(appSource, /listRunArtifacts\(activeRunId\)/);
+  assert.match(appSource, /runArtifactRequestRef\.current !== requestId/);
+  assert.match(appSource, /previewRunArtifact\(selectedArtifact\.runId, selectedArtifact\.path\)/);
+  assert.match(appSource, /preview\.run_id !== selectedArtifact\.runId \|\| preview\.path !== selectedArtifact\.path/);
+  assert.doesNotMatch(appSource, /runArtifacts: runState\?\.trace\?\.artifacts/);
+  assert.doesNotMatch(appSource, /artifactPreviewText/);
+  assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
+  assert.match(appSource, /function ArtifactPreview\(/);
+  assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
+  assert.match(appSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}>\{preview\.content\}<\/ReactMarkdown>/);
+});
+
+test('buildWorkbenchArtifacts maps run file manifests into previewable drawer items', async () => {
+  const {
+    artifactPreviewText,
+    buildWorkbenchArtifacts,
+  } = await importTypeScript('../src/workbenchArtifacts.ts');
+
+  const items = buildWorkbenchArtifacts({
+    runId: 'run_tool_1',
+    runFiles: [
+      {
+        id: 'run:notes/output.md',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'notes/output.md',
+        name: 'output.md',
+        media_type: 'text/markdown',
+        preview_kind: 'markdown',
+        previewable: true,
+        size: 13,
+        status: 'created',
+        error: null,
+        preview_url: '/runs/run_tool_1/artifacts/preview?path=notes%2Foutput.md',
+      },
+    ],
+  });
+
+  assert.deepEqual(items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    extension: item.extension,
+    meta: item.meta,
+    path: item.path,
+    previewKind: item.previewKind,
+    previewable: item.previewable,
+    runId: item.runId,
+    preview: artifactPreviewText(item),
+  })), [
     {
-      id: 'run:orchestration_map',
-      name: 'orchestration_map.json',
-      extension: '{ }',
-      source: 'run',
-      preview: '{\n  "dag_id": "dag_review_001",\n  "nodes": 3\n}',
+      id: 'run:notes/output.md',
+      name: 'output.md',
+      extension: 'MD',
+      meta: 'text/markdown · notes/output.md · 13 B',
+      path: 'notes/output.md',
+      previewKind: 'markdown',
+      previewable: true,
+      runId: 'run_tool_1',
+      preview: 'Path: notes/output.md',
+    },
+  ]);
+});
+
+test('buildWorkbenchArtifacts keeps unsupported run files visible but not previewable', async () => {
+  const { buildWorkbenchArtifacts } = await importTypeScript('../src/workbenchArtifacts.ts');
+
+  const items = buildWorkbenchArtifacts({
+    runId: 'run_tool_1',
+    runFiles: [
+      {
+        id: 'run:exports/report.pdf',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'exports/report.pdf',
+        name: 'report.pdf',
+        media_type: 'application/pdf',
+        preview_kind: null,
+        previewable: false,
+        size: 15,
+        status: 'created',
+        error: null,
+        preview_url: null,
+      },
+    ],
+  });
+
+  assert.deepEqual(items.map((item) => ({
+    id: item.id,
+    extension: item.extension,
+    meta: item.meta,
+    previewKind: item.previewKind,
+    previewable: item.previewable,
+    previewUrl: item.previewUrl,
+  })), [
+    {
+      id: 'run:exports/report.pdf',
+      extension: 'PDF',
+      meta: 'application/pdf · exports/report.pdf · 15 B',
+      previewKind: undefined,
+      previewable: false,
+      previewUrl: null,
     },
   ]);
 });

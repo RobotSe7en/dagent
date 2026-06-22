@@ -28,10 +28,12 @@ runner = dagent.Runner(
 
 `Runner(...)` does not read `config.yaml` implicitly.
 
-The runner workspace defaults to `.dagent`. Built-in file and shell tool paths
-resolve from that workspace, and each run records its own directory under
-`.dagent/runs/<run_id>`. Passing `workspace=...` uses that exact directory as
-the dagent runtime workspace.
+The runner workspace defaults to `.dagent`, and each run records its own
+directory under `.dagent/runs/<run_id>`. In ToolAgent and DagAgent message runs,
+built-in file and shell tool relative paths resolve from the current run
+workspace. Passing `workspace=...` uses that exact directory as the dagent
+runtime workspace, so run workspaces live under `<workspace>/runs/<run_id>` by
+default.
 
 ## Provider Options
 
