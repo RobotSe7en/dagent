@@ -22,6 +22,8 @@ import type {
   MCPServerConfig,
   ModelProvider,
   ModelProviderInput,
+  RunArtifactPreview,
+  RunArtifactsResponse,
 } from './types';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 import {
@@ -139,6 +141,25 @@ export async function uploadDagArtifact(
       body,
     },
   );
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export async function listRunArtifacts(runId: string): Promise<RunArtifactsResponse> {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    run_id: data.run_id ?? runId,
+    workspace_path: data.workspace_path ?? null,
+    artifacts: data.artifacts ?? {},
+    files: data.files ?? [],
+  };
+}
+
+export async function previewRunArtifact(runId: string, path: string): Promise<RunArtifactPreview> {
+  const params = new URLSearchParams({ path });
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/preview?${params.toString()}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   return await res.json();
 }

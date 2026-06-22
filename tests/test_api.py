@@ -1093,6 +1093,138 @@ def test_api_dag_create_run_and_artifacts() -> None:
     artifacts_response = client.get(f"/dag-runs/{run_payload['run_id']}/artifacts")
     assert artifacts_response.status_code == 200
     assert artifacts_response.json()["artifacts"]["note"]["paths"] == ["notes/output.txt"]
+    artifact_files = artifacts_response.json()["files"]
+    assert artifact_files == [
+        {
+            "id": "dag:note:notes/output.txt",
+            "artifact_id": "note",
+            "source": "dag_artifact",
+            "path": "notes/output.txt",
+            "name": "output.txt",
+            "media_type": "text/plain",
+            "preview_kind": "text",
+            "previewable": True,
+            "size": 5,
+            "status": "created",
+            "error": None,
+            "preview_url": f"/runs/{run_payload['run_id']}/artifacts/preview?path=notes%2Foutput.txt",
+        }
+    ]
+
+    preview_response = client.get(
+        f"/runs/{run_payload['run_id']}/artifacts/preview",
+        params={"path": "notes/output.txt"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.json() == {
+        "run_id": run_payload["run_id"],
+        "path": "notes/output.txt",
+        "name": "output.txt",
+        "media_type": "text/plain",
+        "preview_kind": "text",
+        "content": "hello",
+        "size": 5,
+        "truncated": False,
+        "truncated_at": 200000,
+    }
+
+
+def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes/output.md", "content": "# Hello\n\nBody"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write markdown",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+    assert artifacts_response.status_code == 200
+    payload = artifacts_response.json()
+    assert payload["artifacts"] == {}
+    assert payload["files"] == [
+        {
+            "id": "run:notes/output.md",
+            "artifact_id": None,
+            "source": "run_file",
+            "path": "notes/output.md",
+            "name": "output.md",
+            "media_type": "text/markdown",
+            "preview_kind": "markdown",
+            "previewable": True,
+            "size": 13,
+            "status": "created",
+            "error": None,
+            "preview_url": f"/runs/{run_id}/artifacts/preview?path=notes%2Foutput.md",
+        }
+    ]
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "notes/output.md"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.json()["preview_kind"] == "markdown"
+    assert preview_response.json()["content"] == "# Hello\n\nBody"
+
+
+def test_api_run_artifacts_preview_rejects_paths_outside_workspace() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes/output.txt", "content": "hello"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    run_id = _result_run_id(_stream_result(_sse_events(response.text)[-1]))
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "../outside.txt"},
+    )
+
+    assert preview_response.status_code == 400
+    assert "escapes run workspace" in preview_response.json()["detail"]
 
 
 def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:

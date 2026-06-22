@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import mimetypes
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,6 +60,47 @@ CONFIG_MODEL_ID = "config"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "runtime"]
 REDACTED_SECRET_VALUE = "[redacted]"
+RunArtifactSource = Literal["dag_artifact", "run_file"]
+RunArtifactPreviewKind = Literal["markdown", "code", "text"]
+RUN_ARTIFACT_PREVIEW_BYTES = 200_000
+RUN_ARTIFACT_SCAN_LIMIT = 500
+
+_MARKDOWN_EXTENSIONS = {".md", ".markdown"}
+_TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
+_CODE_EXTENSIONS = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".css",
+    ".go",
+    ".h",
+    ".html",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".mjs",
+    ".py",
+    ".rb",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_CODE_FILENAMES = {"Dockerfile", "Makefile"}
+_MEDIA_TYPE_OVERRIDES = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".py": "text/x-python",
+    ".sh": "text/x-shellscript",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript-jsx",
+    ".jsx": "text/jsx",
+}
 
 
 class MessageRequest(BaseModel):
@@ -180,6 +223,40 @@ class ModelMutationResponse(BaseModel):
 class ModelDeleteResponse(BaseModel):
     status: str
     active_model_id: str
+
+
+class RunArtifactFile(BaseModel):
+    id: str
+    artifact_id: str | None = None
+    source: RunArtifactSource
+    path: str
+    name: str
+    media_type: str
+    preview_kind: RunArtifactPreviewKind | None = None
+    previewable: bool
+    size: int | None = None
+    status: str = "created"
+    error: str | None = None
+    preview_url: str | None = None
+
+
+class RunArtifactsResponse(BaseModel):
+    run_id: str
+    workspace_path: str | None = None
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    files: list[RunArtifactFile] = Field(default_factory=list)
+
+
+class RunArtifactPreviewResponse(BaseModel):
+    run_id: str
+    path: str
+    name: str
+    media_type: str
+    preview_kind: RunArtifactPreviewKind
+    content: str
+    size: int
+    truncated: bool
+    truncated_at: int = RUN_ARTIFACT_PREVIEW_BYTES
 
 
 class ApiState:
@@ -473,18 +550,44 @@ async def get_dag_run(run_id: str) -> dict[str, Any]:
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 
+@app.get("/runs/{run_id}/artifacts")
+async def get_run_artifacts(run_id: str) -> dict[str, Any]:
+    run_state = _run_state_from_state(run_id)
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return _run_artifacts_response(run_state).model_dump(mode="json")
+
+
+@app.get("/runs/{run_id}/artifacts/preview")
+async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
+    run_state = _run_state_from_state(run_id)
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    file_path = _resolve_run_artifact_path(run_state, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found.")
+    preview_kind = _preview_kind_for_path(path)
+    if preview_kind is None:
+        raise HTTPException(status_code=415, detail="Artifact file type is not previewable.")
+    content, truncated, size = _read_text_preview(file_path)
+    return RunArtifactPreviewResponse(
+        run_id=run_id,
+        path=_normalize_run_artifact_path(path),
+        name=file_path.name,
+        media_type=_media_type_for_path(path),
+        preview_kind=preview_kind,
+        content=content,
+        size=size,
+        truncated=truncated,
+    ).model_dump(mode="json")
+
+
 @app.get("/dag-runs/{run_id}/artifacts")
 async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
-    dag_run = _dag_run_from_state(run_id)
-    if dag_run is None:
+    run_state = _run_state_from_state(run_id)
+    if run_state is None or run_state.kind != "static_dag":
         raise HTTPException(status_code=404, detail="DAGRun not found.")
-    return {
-        "run_id": run_id,
-        "artifacts": {
-            artifact_id: artifact_state.model_dump(mode="json")
-            for artifact_id, artifact_state in dag_run.trace.artifacts.items()
-        },
-    }
+    return _run_artifacts_response(run_state).model_dump(mode="json")
 
 
 @app.get("/capabilities")
@@ -1112,10 +1215,14 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _dag_run_from_state(run_id: str) -> DAGRun | None:
+def _run_state_from_state(run_id: str) -> RunState | None:
     if state.runner is None:
         return None
-    run_state = state.runner.run_state(run_id)
+    return state.runner.run_state(run_id)
+
+
+def _dag_run_from_state(run_id: str) -> DAGRun | None:
+    run_state = _run_state_from_state(run_id)
     if (
         run_state is None
         or run_state.kind != "static_dag"
@@ -1130,6 +1237,226 @@ def _dag_run_from_state(run_id: str) -> DAGRun | None:
         dag=run_state.dag,
         trace=run_state.trace,
     )
+
+
+def _run_artifacts_response(run_state: RunState) -> RunArtifactsResponse:
+    artifact_states = {
+        artifact_id: artifact_state.model_dump(mode="json")
+        for artifact_id, artifact_state in (run_state.trace.artifacts if run_state.trace else {}).items()
+    }
+    return RunArtifactsResponse(
+        run_id=run_state.run_id,
+        workspace_path=run_state.workspace_path,
+        artifacts=artifact_states,
+        files=_run_artifact_files(run_state),
+    )
+
+
+def _run_artifact_files(run_state: RunState) -> list[RunArtifactFile]:
+    workspace = _run_workspace(run_state)
+    if workspace is None:
+        return []
+    declared_paths: set[str] = set()
+    files: list[RunArtifactFile] = []
+    artifact_states = run_state.trace.artifacts if run_state.trace else {}
+    for artifact_id, artifact_state in sorted(artifact_states.items()):
+        for path in artifact_state.paths:
+            normalized_path = _normalize_run_artifact_path(path)
+            declared_paths.add(normalized_path)
+            files.append(
+                _run_artifact_file(
+                    run_id=run_state.run_id,
+                    workspace=workspace,
+                    path=normalized_path,
+                    artifact_id=artifact_id,
+                    source="dag_artifact",
+                    status=artifact_state.status,
+                    error=artifact_state.error,
+                )
+            )
+
+    for path in _workspace_preview_paths(workspace, exclude=declared_paths):
+        files.append(
+            _run_artifact_file(
+                run_id=run_state.run_id,
+                workspace=workspace,
+                path=path,
+                artifact_id=None,
+                source="run_file",
+                status="created",
+                error=None,
+            )
+        )
+    return sorted(files, key=lambda item: (item.source, item.path, item.id))
+
+
+def _run_artifact_file(
+    *,
+    run_id: str,
+    workspace: Path,
+    path: str,
+    artifact_id: str | None,
+    source: RunArtifactSource,
+    status: str,
+    error: str | None,
+) -> RunArtifactFile:
+    file_path = _resolve_workspace_path(workspace, path)
+    preview_kind = _preview_kind_for_path(path)
+    size: int | None = None
+    path_error = error
+    previewable = False
+    if file_path is None:
+        path_error = path_error or "Artifact path escapes run workspace."
+    elif file_path.is_file():
+        size = file_path.stat().st_size
+        previewable = preview_kind is not None and _looks_like_utf8_text(file_path)
+    elif path_error is None and status == "created":
+        path_error = "Artifact file not found."
+    return RunArtifactFile(
+        id=_run_artifact_file_id(source=source, artifact_id=artifact_id, path=path),
+        artifact_id=artifact_id,
+        source=source,
+        path=path,
+        name=Path(path).name,
+        media_type=_media_type_for_path(path),
+        preview_kind=preview_kind if previewable else None,
+        previewable=previewable,
+        size=size,
+        status=status,
+        error=path_error,
+        preview_url=_preview_url(run_id, path) if previewable else None,
+    )
+
+
+def _workspace_preview_paths(workspace: Path, *, exclude: set[str]) -> list[str]:
+    paths: list[str] = []
+    for candidate in sorted(workspace.rglob("*")):
+        if len(paths) >= RUN_ARTIFACT_SCAN_LIMIT:
+            break
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(workspace)
+            relative_path = candidate.relative_to(workspace).as_posix()
+        except (OSError, ValueError):
+            continue
+        if relative_path in exclude or _preview_kind_for_path(relative_path) is None:
+            continue
+        if resolved.is_file() and _looks_like_utf8_text(resolved):
+            paths.append(relative_path)
+    return paths
+
+
+def _run_workspace(run_state: RunState) -> Path | None:
+    if not run_state.workspace_path:
+        return None
+    return Path(run_state.workspace_path).resolve()
+
+
+def _resolve_run_artifact_path(run_state: RunState, path: str) -> Path:
+    workspace = _run_workspace(run_state)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Run workspace not found.")
+    try:
+        normalized_path = _normalize_run_artifact_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    file_path = _resolve_workspace_path(workspace, normalized_path)
+    if file_path is None:
+        raise HTTPException(status_code=400, detail="Artifact path escapes run workspace.")
+    return file_path
+
+
+def _resolve_workspace_path(workspace: Path, path: str) -> Path | None:
+    try:
+        normalized_path = _normalize_run_artifact_path(path)
+    except ValueError:
+        return None
+    path_obj = Path(normalized_path)
+    windows_path = PureWindowsPath(normalized_path)
+    if path_obj.is_absolute() or windows_path.is_absolute():
+        return None
+    if ".." in path_obj.parts or ".." in windows_path.parts:
+        return None
+    resolved = (workspace / normalized_path).resolve()
+    try:
+        resolved.relative_to(workspace)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _normalize_run_artifact_path(path: str) -> str:
+    normalized_path = path.strip().replace("\\", "/")
+    if not normalized_path:
+        raise ValueError("Artifact path is required.")
+    return normalized_path
+
+
+def _run_artifact_file_id(
+    *,
+    source: RunArtifactSource,
+    artifact_id: str | None,
+    path: str,
+) -> str:
+    if source == "dag_artifact":
+        return f"dag:{artifact_id}:{path}"
+    return f"run:{path}"
+
+
+def _preview_url(run_id: str, path: str) -> str:
+    return f"/runs/{quote(run_id, safe='')}/artifacts/preview?path={quote(path, safe='')}"
+
+
+def _preview_kind_for_path(path: str) -> RunArtifactPreviewKind | None:
+    name = Path(path).name
+    suffix = Path(path).suffix.lower()
+    if suffix in _MARKDOWN_EXTENSIONS or name.upper() == "README":
+        return "markdown"
+    if suffix in _CODE_EXTENSIONS or name in _CODE_FILENAMES:
+        return "code"
+    if suffix in _TEXT_EXTENSIONS:
+        return "text"
+    return None
+
+
+def _media_type_for_path(path: str) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix in _MEDIA_TYPE_OVERRIDES:
+        return _MEDIA_TYPE_OVERRIDES[suffix]
+    return mimetypes.guess_type(path)[0] or "text/plain"
+
+
+def _looks_like_utf8_text(path: Path) -> bool:
+    try:
+        with path.open("rb") as file:
+            sample = file.read(2048)
+    except OSError:
+        return False
+    if b"\x00" in sample:
+        return False
+    try:
+        sample.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _read_text_preview(path: Path) -> tuple[str, bool, int]:
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as file:
+            content = file.read(RUN_ARTIFACT_PREVIEW_BYTES + 1)
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Artifact file not found.") from exc
+    truncated = len(content) > RUN_ARTIFACT_PREVIEW_BYTES
+    content = content[:RUN_ARTIFACT_PREVIEW_BYTES]
+    if b"\x00" in content:
+        raise HTTPException(status_code=415, detail="Artifact file is not text.")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=415, detail="Artifact file is not UTF-8 text.") from exc
+    return text, truncated, size
 
 
 @app.get("/runs/{run_id}/trace")

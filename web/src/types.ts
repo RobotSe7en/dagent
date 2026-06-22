@@ -164,6 +164,43 @@ export interface Artifact {
   metadata?: Record<string, unknown>;
 }
 
+export type RunArtifactPreviewKind = 'markdown' | 'code' | 'text';
+export type RunArtifactFileSource = 'dag_artifact' | 'run_file';
+
+export interface RunArtifactFile {
+  id: string;
+  artifact_id?: string | null;
+  source: RunArtifactFileSource;
+  path: string;
+  name: string;
+  media_type: string;
+  preview_kind?: RunArtifactPreviewKind | null;
+  previewable: boolean;
+  size?: number | null;
+  status: string;
+  error?: string | null;
+  preview_url?: string | null;
+}
+
+export interface RunArtifactsResponse {
+  run_id: string;
+  workspace_path?: string | null;
+  artifacts: Record<string, unknown>;
+  files: RunArtifactFile[];
+}
+
+export interface RunArtifactPreview {
+  run_id: string;
+  path: string;
+  name: string;
+  media_type: string;
+  preview_kind: RunArtifactPreviewKind;
+  content: string;
+  size: number;
+  truncated: boolean;
+  truncated_at: number;
+}
+
 export interface DagRun {
   run_id: string;
   spec_id?: string | null;
