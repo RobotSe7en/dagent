@@ -68,7 +68,7 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
             capability_id="tool.echo",
             kind="tool",
             arguments={"text": "ok"},
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     ))
 
@@ -76,7 +76,7 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.status == "completed"
     assert result.content == "echo:ok"
     assert result.kind == "tool"
-    assert result.policy_decision["boundary_mode"] == "read_only"
+    assert result.policy_decision == {"allowed_paths": ["."]}
 
 
 def test_tool_provider_encodes_plain_tuple_results_like_sdk_tools() -> None:
@@ -96,7 +96,7 @@ def test_tool_provider_encodes_plain_tuple_results_like_sdk_tools() -> None:
             capability_id="tool.pair",
             kind="tool",
             arguments={},
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     ))
 
@@ -130,7 +130,7 @@ def test_memory_and_file_tool_capabilities_are_explicit(tmp_path) -> None:
             capability_id="tool.write_file",
             kind="tool",
             arguments={"path": "notes.txt", "content": "hello"},
-            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     ))
 
@@ -353,12 +353,12 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     assert "source_doc" not in first_user
 
 
-def test_agent_boundary_grants_full_run_workspace_with_artifact_paths(tmp_path) -> None:
+def test_agent_boundary_grants_run_workspace_with_artifact_paths(tmp_path) -> None:
     uploaded_file = tmp_path / "inputs" / "uploads" / "source.txt"
     invocation = CapabilityInvocation(
         capability_id="agent.helper",
         kind="agent",
-        boundary=Boundary(mode="read_only", allowed_paths=[str(uploaded_file)]),
+        boundary=Boundary(allowed_paths=[str(uploaded_file)]),
     )
     context = CapabilityExecutionContext(
         task_id="run_1",
@@ -367,6 +367,5 @@ def test_agent_boundary_grants_full_run_workspace_with_artifact_paths(tmp_path) 
 
     boundary = _agent_boundary(invocation, context)
 
-    assert boundary.mode == "full"
     assert str(tmp_path) in boundary.allowed_paths
     assert str(uploaded_file) in boundary.allowed_paths

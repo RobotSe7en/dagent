@@ -1,6 +1,6 @@
 """Public schema exports."""
 
-from dagent.schemas.common import Boundary, BoundaryMode, RiskLevel
+from dagent.schemas.common import Boundary, RiskLevel
 from dagent.schemas.artifact import Artifact, ArtifactState, ArtifactStatus
 from dagent.schemas.dag import DAG, DAGRun, DAGRunStatus, DAGSpec, iter_dag_invocations
 from dagent.schemas.edge import DAGEdge
@@ -50,7 +50,6 @@ from dagent.schemas.sandbox import (
 )
 __all__ = [
     "Boundary",
-    "BoundaryMode",
     "Artifact",
     "ArtifactState",
     "ArtifactStatus",

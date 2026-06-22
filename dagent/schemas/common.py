@@ -5,26 +5,23 @@ from __future__ import annotations
 import inspect
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PydanticSchemaGenerationError, PydanticUserError, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PydanticSchemaGenerationError, PydanticUserError, TypeAdapter
 
 from dagent.schemas.value import ValueBinding
 
 
-BoundaryMode = Literal["read_only", "write_limited", "full"]
 RiskLevel = Literal["low", "medium", "high"]
 BoundaryValue = str | ValueBinding
 
 
 class Boundary(BaseModel):
-    mode: BoundaryMode = "read_only"
+    model_config = ConfigDict(extra="forbid")
+
     allowed_paths: list[BoundaryValue] = Field(default_factory=list)
-    allowed_commands: list[BoundaryValue] = Field(default_factory=list)
 
     def policy_decision(self) -> dict[str, Any]:
         return {
-            "boundary_mode": self.mode,
             "allowed_paths": list(self.allowed_paths),
-            "allowed_commands": list(self.allowed_commands),
         }
 
 

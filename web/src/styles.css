@@ -4749,34 +4749,6 @@ details[open] .timeline-chevron {
   color: #dc2626;
 }
 
-.boundary-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 20px;
-  border: 1px solid;
-  border-radius: 999px;
-  padding: 0 6px;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.1;
-  color: var(--gray-700);
-  background: var(--gray-50);
-  border-color: var(--gray-200);
-}
-
-.boundary-pill.boundary-write_limited {
-  color: #b45309;
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-
-.boundary-pill.boundary-full {
-  color: #dc2626;
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
 .status-badge {
   font-size: 10px;
   text-transform: uppercase;

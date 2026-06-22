@@ -520,13 +520,13 @@ def test_list_files_value_feeds_map_fanout(tmp_path) -> None:
         "write_a",
         target="tool.write_file",
         inputs={"path": "notes/a.md", "content": "alpha"},
-        boundary=dagent.Boundary(mode="write_limited", allowed_paths=["."]),
+        boundary=dagent.Boundary(allowed_paths=["."]),
     )
     write_b = dagent.Node(
         "write_b",
         target="tool.write_file",
         inputs={"path": "notes/b.md", "content": "beta"},
-        boundary=dagent.Boundary(mode="write_limited", allowed_paths=["."]),
+        boundary=dagent.Boundary(allowed_paths=["."]),
     )
     listing = dagent.Node(
         "listing",

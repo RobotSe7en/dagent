@@ -652,7 +652,6 @@ def _resolve_invocation(invocation: CapabilityInvocation, scope: _ValueScope) ->
     invocation.boundary = invocation.boundary.model_copy(
         update={
             "allowed_paths": _resolve_value_list(invocation.boundary.allowed_paths, scope),
-            "allowed_commands": _resolve_value_list(invocation.boundary.allowed_commands, scope),
         }
     )
 

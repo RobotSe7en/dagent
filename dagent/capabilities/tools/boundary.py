@@ -17,13 +17,11 @@ class BoundaryViolation(PermissionError):
         message: str,
         *,
         tool_name: str | None = None,
-        action: str | None = None,
         path: str | None = None,
         command: str | None = None,
     ) -> None:
         super().__init__(message)
         self.tool_name = tool_name
-        self.action = action
         self.path = path
         self.command = command
 
@@ -32,7 +30,6 @@ class HardBoundaryViolation(BoundaryViolation):
     """Raised when a boundary failure must not be bypassed by review."""
 
 
-WRITE_ACTIONS = {"write"}
 _REDIRECTION_OPERATORS = {"<", "<<", ">", ">>", "1>", "1>>", "2>", "2>>", "&>"}
 _REDIRECTION_PREFIX_RE = re.compile(r"^(?:[0-9]?>?>|&>|<<?)(.+)$")
 
@@ -94,15 +91,7 @@ _BLOCKED_SHELL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def enforce_action_allowed(action: str, boundary: Boundary) -> None:
-    if action in WRITE_ACTIONS and boundary.mode == "read_only":
-        raise BoundaryViolation(
-            "read_only boundary cannot perform write operations.",
-            action=action,
-        )
-
-
-def enforce_command_allowed(command: str, _boundary: Boundary) -> None:
+def enforce_command_allowed(command: str) -> None:
     if not command.strip():
         raise HardBoundaryViolation("Command cannot be empty.", command=command)
 

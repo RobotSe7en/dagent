@@ -253,7 +253,7 @@ def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
                 capability_id=_tool_capability_id(tool),
                 kind="tool",
                 arguments=args,
-                boundary=Boundary(mode="read_only"),
+                boundary=Boundary(),
             ),
         ),
     )
@@ -464,7 +464,7 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
         "write_file",
         {"path": "blocked/notes.md", "content": "hi"},
     )
-    proposed_node.payload.invocation.boundary = Boundary(mode="read_only", allowed_paths=["allowed"])
+    proposed_node.payload.invocation.boundary = Boundary(allowed_paths=["allowed"])
     proposed_node.payload.invocation.risk = "medium"
 
     runtime.dag_agent.loop._apply_replan(
@@ -505,7 +505,7 @@ def test_harness_runtime_fast_replan_does_not_authorize_node_boundaries() -> Non
         "write_file",
         {"path": "blocked/notes.md", "content": "hi"},
     )
-    proposed_node.payload.invocation.boundary = Boundary(mode="read_only", allowed_paths=["allowed"])
+    proposed_node.payload.invocation.boundary = Boundary(allowed_paths=["allowed"])
     proposed_node.payload.invocation.risk = "medium"
 
     dag_loop._apply_replan(

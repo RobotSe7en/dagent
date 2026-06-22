@@ -206,7 +206,6 @@ def _payload_value_sources(payload: Any) -> list[tuple[Any, bool]]:
         return [
             (invocation.arguments, False),
             (invocation.boundary.allowed_paths, False),
-            (invocation.boundary.allowed_commands, False),
         ]
     if isinstance(payload, MapNodePayload):
         invocation = payload.invocation
@@ -214,7 +213,6 @@ def _payload_value_sources(payload: Any) -> list[tuple[Any, bool]]:
             (payload.items, False),
             (invocation.arguments, True),
             (invocation.boundary.allowed_paths, True),
-            (invocation.boundary.allowed_commands, True),
         ]
     if isinstance(payload, SubgraphNodePayload):
         return [(payload.input, False)]
