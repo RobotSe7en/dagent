@@ -7,6 +7,17 @@ that may require action when upgrading.
 
 The current package version is `0.5.1`.
 
+## Unreleased
+
+- Breaking change: built-in file and shell tools now resolve relative paths from
+  the current ToolAgent or DagAgent message run workspace, not from the runner
+  workspace root. A `write_file(path="notes.txt", ...)` call in a normal agent
+  run now writes under `.dagent/runs/<run_id>/notes.txt` instead of
+  `.dagent/notes.txt`. Code that expects files directly under the runner
+  workspace should pass absolute paths or move shared inputs into each run
+  workspace. Static DAG artifact paths still use their documented artifact
+  mapping; pass `artifact.path` for built-in path-aware tools.
+
 ## 0.5.1
 
 - No migration action is required for this patch release. It adds WebUI model

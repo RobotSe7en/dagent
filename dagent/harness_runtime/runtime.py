@@ -321,13 +321,14 @@ class HarnessRuntime:
             input_messages = _messages_before_pending_capability_call(state)
             self.tool_agent.messages = [dict(message) for message in state.internal_messages]
             self.tool_agent.trace = state.trace
-            initial_outcome = await self.tool_agent.resume_review(
-                state,
-                approved=approved,
-                feedback=feedback,
-                on_token=on_token,
-                on_event=on_event,
-            )
+            with self.capability_executor.workspace_context(state.workspace_path):
+                initial_outcome = await self.tool_agent.resume_review(
+                    state,
+                    approved=approved,
+                    feedback=feedback,
+                    on_token=on_token,
+                    on_event=on_event,
+                )
             if initial_outcome is None:
                 return None
             self.session.discard_review(review_id)
@@ -342,19 +343,20 @@ class HarnessRuntime:
                     {"role": "user", "content": feedback},
                 ]
                 previous_trace = retry_outcome.state.trace
-                next_outcome = await self.tool_agent.run_messages(
-                    retry_messages,
-                    run_id=state.run_id,
-                    review_level=state.review_level,
-                    capability_context=CapabilityExecutionContext(
-                        task_id=state.run_id,
-                        workspace_path=state.workspace_path,
-                        skills=capability_scope.skills,
-                    ),
-                    capability_scope=capability_scope,
-                    on_token=on_token,
-                    on_event=on_event,
-                )
+                with self.capability_executor.workspace_context(state.workspace_path):
+                    next_outcome = await self.tool_agent.run_messages(
+                        retry_messages,
+                        run_id=state.run_id,
+                        review_level=state.review_level,
+                        capability_context=CapabilityExecutionContext(
+                            task_id=state.run_id,
+                            workspace_path=state.workspace_path,
+                            skills=capability_scope.skills,
+                        ),
+                        capability_scope=capability_scope,
+                        on_token=on_token,
+                        on_event=on_event,
+                    )
                 if previous_trace is not None and next_outcome.state.trace is not None:
                     next_state = next_outcome.state.model_copy(
                         update={"trace": previous_trace.merge(next_outcome.state.trace)}
@@ -541,9 +543,23 @@ class HarnessRuntime:
         elif mode == "tool":
             if not isinstance(request, str):
                 raise TypeError("Tool execution requires a string request.")
-            if messages is not None:
-                return await self.tool_agent.run_messages(
-                    messages,
+            with self.capability_executor.workspace_context(workspace_path):
+                if messages is not None:
+                    return await self.tool_agent.run_messages(
+                        messages,
+                        run_id=run_id,
+                        review_level=review_level,
+                        capability_context=CapabilityExecutionContext(
+                            task_id=run_id,
+                            workspace_path=workspace_path,
+                            skills=capability_scope.skills,
+                        ),
+                        capability_scope=capability_scope,
+                        on_token=on_token,
+                        on_event=on_event,
+                    )
+                return await self.tool_agent.run(
+                    request,
                     run_id=run_id,
                     review_level=review_level,
                     capability_context=CapabilityExecutionContext(
@@ -555,19 +571,6 @@ class HarnessRuntime:
                     on_token=on_token,
                     on_event=on_event,
                 )
-            return await self.tool_agent.run(
-                request,
-                run_id=run_id,
-                review_level=review_level,
-                capability_context=CapabilityExecutionContext(
-                    task_id=run_id,
-                    workspace_path=workspace_path,
-                    skills=capability_scope.skills,
-                ),
-                capability_scope=capability_scope,
-                on_token=on_token,
-                on_event=on_event,
-            )
         elif mode == "dag_spec":
             if not isinstance(request, DAGSpec):
                 raise TypeError("DAGSpec execution requires a DAGSpec request.")
@@ -674,13 +677,15 @@ class HarnessRuntime:
 
     def _dag_executor_for_run(self, workspace_path: str | Path | None) -> DAGExecutor:
         base = self.dag_agent.loop.dag_executor
+        capability_workspace_root = (
+            Path(workspace_path).resolve()
+            if workspace_path is not None
+            else base.capability_workspace_root or base.capability_executor.workspace_root
+        )
         return DAGExecutor(
             capability_executor=base.capability_executor,
             workspace_path=workspace_path,
-            capability_workspace_root=(
-                base.capability_workspace_root
-                or base.capability_executor.workspace_root
-            ),
+            capability_workspace_root=capability_workspace_root,
         )
 
 

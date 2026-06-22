@@ -27,9 +27,11 @@ runner = dagent.Runner(
 
 `Runner(...)` 不会隐式读取 `config.yaml`。
 
-runner workspace 默认是 `.dagent`。内置 file 和 shell tool 的路径从这个
-workspace 解析，每次运行都会在 `.dagent/runs/<run_id>` 下记录自己的目录。
-传入 `workspace=...` 时，dagent 会把该目录本身作为 runtime workspace。
+runner workspace 默认是 `.dagent`，每次运行都会在 `.dagent/runs/<run_id>`
+下记录自己的目录。在 ToolAgent 和 DagAgent message run 中，内置 file 和 shell
+tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时，dagent 会把
+该目录本身作为 runtime workspace，因此默认 run workspace 会位于
+`<workspace>/runs/<run_id>`。
 
 ## Provider 选项
 

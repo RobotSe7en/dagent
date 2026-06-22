@@ -27,7 +27,7 @@ def test_runner_defaults_to_managed_dagent_workspace(tmp_path: Path, monkeypatch
     assert runner.runtime.capability_catalog.workspace_root == tmp_path / ".dagent"
 
 
-def test_tool_agent_uses_dagent_workspace_and_records_run_workspace(
+def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -53,9 +53,11 @@ def test_tool_agent_uses_dagent_workspace_and_records_run_workspace(
         )
     )
 
-    assert (tmp_path / ".dagent" / "shared" / "tool.txt").read_text(encoding="utf-8") == "hi"
     assert result.workspace_path is not None
-    assert Path(result.workspace_path).parent == tmp_path / ".dagent" / "runs"
+    workspace_path = Path(result.workspace_path)
+    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert (workspace_path / "shared" / "tool.txt").read_text(encoding="utf-8") == "hi"
+    assert not (tmp_path / ".dagent" / "shared" / "tool.txt").exists()
 
 
 def test_runner_uses_resolved_workspace_after_cwd_changes(
@@ -89,13 +91,15 @@ def test_runner_uses_resolved_workspace_after_cwd_changes(
         )
     )
 
-    assert (project / ".dagent" / "shared" / "chdir.txt").read_text(encoding="utf-8") == "hi"
     assert not (other / ".dagent").exists()
     assert result.workspace_path is not None
-    assert Path(result.workspace_path).parent == project / ".dagent" / "runs"
+    workspace_path = Path(result.workspace_path)
+    assert workspace_path.parent == project / ".dagent" / "runs"
+    assert (workspace_path / "shared" / "chdir.txt").read_text(encoding="utf-8") == "hi"
+    assert not (project / ".dagent" / "shared" / "chdir.txt").exists()
 
 
-def test_dag_agent_uses_dagent_workspace_and_records_run_workspace(
+def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -118,9 +122,11 @@ def test_dag_agent_uses_dagent_workspace_and_records_run_workspace(
         )
     )
 
-    assert (tmp_path / ".dagent" / "shared" / "dag.txt").read_text(encoding="utf-8") == "hi"
     assert result.workspace_path is not None
-    assert Path(result.workspace_path).parent == tmp_path / ".dagent" / "runs"
+    workspace_path = Path(result.workspace_path)
+    assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    assert (workspace_path / "shared" / "dag.txt").read_text(encoding="utf-8") == "hi"
+    assert not (tmp_path / ".dagent" / "shared" / "dag.txt").exists()
 
 
 def test_tool_agent_continuation_reuses_run_id_and_workspace(
@@ -169,8 +175,11 @@ def test_tool_agent_continuation_reuses_run_id_and_workspace(
 
     assert second.run_id == first.run_id
     assert second.workspace_path == first.workspace_path
-    assert (tmp_path / ".dagent" / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
-    assert (tmp_path / ".dagent" / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
+    workspace_path = Path(second.workspace_path)
+    assert (workspace_path / "shared" / "first.txt").read_text(encoding="utf-8") == "one"
+    assert (workspace_path / "shared" / "second.txt").read_text(encoding="utf-8") == "two"
+    assert not (tmp_path / ".dagent" / "shared" / "first.txt").exists()
+    assert not (tmp_path / ".dagent" / "shared" / "second.txt").exists()
 
 
 def test_dag_agent_continuation_reuses_run_id_and_workspace(
@@ -213,8 +222,11 @@ def test_dag_agent_continuation_reuses_run_id_and_workspace(
 
     assert second.run_id == first.run_id
     assert second.workspace_path == first.workspace_path
-    assert (tmp_path / ".dagent" / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
-    assert (tmp_path / ".dagent" / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
+    workspace_path = Path(second.workspace_path)
+    assert (workspace_path / "shared" / "dag_first.txt").read_text(encoding="utf-8") == "one"
+    assert (workspace_path / "shared" / "dag_second.txt").read_text(encoding="utf-8") == "two"
+    assert not (tmp_path / ".dagent" / "shared" / "dag_first.txt").exists()
+    assert not (tmp_path / ".dagent" / "shared" / "dag_second.txt").exists()
 
 
 def test_static_dag_artifacts_live_under_dagent_runs(
@@ -337,7 +349,8 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     workspace_path = Path(result.workspace_path)
     assert workspace_path.parent == tmp_path / ".dagent" / "runs"
     assert workspace_path.name == result.run_id
-    assert (tmp_path / ".dagent" / "shared" / "sandbox.txt").read_text(encoding="utf-8") == "hi"
+    assert (workspace_path / "shared" / "sandbox.txt").read_text(encoding="utf-8") == "hi"
+    assert not (tmp_path / ".dagent" / "shared" / "sandbox.txt").exists()
 
 
 def test_create_run_workspace_rejects_non_leaf_run_id(tmp_path: Path) -> None:

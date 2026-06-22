@@ -6,6 +6,16 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 当前包版本是 `0.5.1`。
 
+## Unreleased
+
+- Breaking change：内置 file 和 shell tools 现在会从当前 ToolAgent 或 DagAgent
+  message run workspace 解析相对路径，而不是从 runner workspace root 解析。普通
+  agent run 中的 `write_file(path="notes.txt", ...)` 现在会写到
+  `.dagent/runs/<run_id>/notes.txt`，不再写到 `.dagent/notes.txt`。如果代码需要把
+  文件放在 runner workspace 下，请传入绝对路径，或把共享输入复制到每次运行的
+  workspace 中。静态 DAG artifact path 仍使用已有 artifact 映射；内置 path-aware
+  tools 继续传入 `artifact.path`。
+
 ## 0.5.1
 
 - 此 patch release 不需要迁移动作。它增加了 WebUI model provider 管理和 API key
