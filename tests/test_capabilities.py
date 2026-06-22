@@ -42,6 +42,22 @@ def test_boundary_rejects_removed_mode_and_allowed_commands_fields() -> None:
         Boundary(allowed_paths=["."], allowed_commands=["ls"])
 
 
+def test_capability_invocation_rejects_removed_boundary_peer_fields() -> None:
+    stale_payloads = [
+        {"boundary_mode": "read_only"},
+        {"mode": "read_only"},
+        {"allowed_commands": ["ls"]},
+    ]
+
+    for payload in stale_payloads:
+        with pytest.raises(ValidationError):
+            CapabilityInvocation(
+                capability_id="tool.read_file",
+                kind="tool",
+                **payload,
+            )
+
+
 def test_capability_catalog_replaces_definition_and_handler_atomically() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
