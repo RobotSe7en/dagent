@@ -39,7 +39,13 @@ from dagent import (
     ToolAgent,
     validate_dag_spec,
 )
-from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
+from dagent.config import (
+    DEFAULT_RUNS_DIR,
+    DEFAULT_WORKSPACE,
+    load_config,
+    resolve_config_path,
+    resolve_config_relative_path,
+)
 from dagent.capabilities.providers import template_capability_handler
 from dagent.profiles import list_builtin_profiles
 from dagent.schemas import Artifact, DAGEdge
@@ -203,7 +209,7 @@ class ApiState:
         active_model = self.active_model()
         if active_model is None:
             return Runner.from_config(
-                workspace=".",
+                workspace=DEFAULT_WORKSPACE,
                 skill_roots=self.get_skill_roots(),
             )
         return _runner_from_model_provider(active_model, skill_roots=self.get_skill_roots())
@@ -413,7 +419,7 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
 
 def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
     if request is None or request.workspace_root is None or not request.workspace_root.strip():
-        return ".dagent-runs"
+        return DEFAULT_RUNS_DIR
     return request.workspace_root.strip()
 
 
@@ -761,7 +767,7 @@ async def sandbox_status() -> dict[str, Any]:
     status = runner.sandbox_status()
     return {
         "runner": "local-dev",
-        "workspace_root": str(runner.workspace.resolve()),
+        "workspace_root": str(runner.runtime.capability_catalog.workspace_root),
         "container_ready": bool(status.get("docker_available")),
         **status,
     }
@@ -795,7 +801,7 @@ def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: lis
     validator = "validator_agent" if config.enable_result_validation else None
     profile_root = resolve_config_relative_path(config.profiles.directory, config_path)
     return Runner(
-        workspace=".",
+        workspace=DEFAULT_WORKSPACE,
         provider=Provider(**_provider_kwargs(model)),
         validator=validator,
         skill_roots=skill_roots,

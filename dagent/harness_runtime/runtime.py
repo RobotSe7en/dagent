@@ -21,7 +21,7 @@ from dagent.harness_runtime.tool_agent import (
     TokenHandler,
 )
 from dagent.capabilities.catalog import CapabilityHandler
-from dagent.harness_runtime.capability_executor import CapabilityExecutor
+from dagent.harness_runtime.capability_executor import CapabilityExecutionContext, CapabilityExecutor
 from dagent.harness_runtime.capability_scope import (
     CapabilityScope,
     DEFAULT_CAPABILITY_SCOPE,
@@ -29,7 +29,8 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_to_state,
 )
 from dagent.harness_runtime.dag_agent import DAGAgent
-from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.dag_executor import DAGExecutor
+from dagent.harness_runtime.artifacts import ArtifactUpload, create_run_workspace
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import _dag_event_emitter
@@ -43,6 +44,7 @@ from dagent.schemas import (
     CapabilityDefinition,
     RunState,
 )
+from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 
 
 RuntimeMode = Literal["auto", "tool", "dag"]
@@ -238,6 +240,7 @@ class HarnessRuntime:
         mode: RuntimeMode = "auto",
         review_level: ReviewLevel = "fast",
         dynamic_adjust: bool = True,
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -248,7 +251,8 @@ class HarnessRuntime:
         resolved_mode = mode
         if mode == "auto":
             resolved_mode = await self._route(user_request)
-        run_id = _new_run_id_for_mode(resolved_mode)
+        run_id = run_state.run_id if run_state is not None else _new_run_id_for_mode(resolved_mode)
+        workspace_path = self._workspace_path_for_run(run_state, workspace_root, run_id)
         _emit_run_started(on_event, run_id=run_id, kind=_state_kind_for_mode(resolved_mode))
 
         async def run_once(feedback: str | None) -> LoopOutcome:
@@ -259,6 +263,7 @@ class HarnessRuntime:
                     mode=resolved_mode,
                     review_level=review_level,
                     dynamic_adjust=dynamic_adjust,
+                    workspace_path=workspace_path,
                     capability_scope=capability_scope,
                     messages=loop_messages,
                     on_token=on_token,
@@ -270,6 +275,7 @@ class HarnessRuntime:
                 mode=resolved_mode,
                 review_level=review_level,
                 dynamic_adjust=dynamic_adjust,
+                workspace_path=workspace_path,
                 capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
@@ -340,6 +346,11 @@ class HarnessRuntime:
                     retry_messages,
                     run_id=state.run_id,
                     review_level=state.review_level,
+                    capability_context=CapabilityExecutionContext(
+                        task_id=state.run_id,
+                        workspace_path=state.workspace_path,
+                        skills=capability_scope.skills,
+                    ),
                     capability_scope=capability_scope,
                     on_token=on_token,
                     on_event=on_event,
@@ -387,6 +398,7 @@ class HarnessRuntime:
             approved=approved,
             review_level=review_level,
             feedback=feedback,
+            dag_executor=self._dag_executor_for_run(state.workspace_path),
             on_token=on_token,
             on_event=on_event,
             on_dag=_dag_event_emitter(on_event),
@@ -421,6 +433,8 @@ class HarnessRuntime:
                 review_level=review_level or state.review_level,
                 runtime_mode=state.runtime_mode,
                 dynamic_adjust=state.dynamic_adjust,
+                workspace_path=state.workspace_path,
+                dag_executor=self._dag_executor_for_run(state.workspace_path),
                 capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
@@ -477,7 +491,8 @@ class HarnessRuntime:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
         dynamic_adjust: bool = True,
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         graph_input: Any = None,
@@ -503,6 +518,8 @@ class HarnessRuntime:
                     review_level=review_level,
                     runtime_mode=str(mode),
                     dynamic_adjust=dynamic_adjust,
+                    workspace_path=workspace_path,
+                    dag_executor=self._dag_executor_for_run(workspace_path),
                     capability_scope=capability_scope,
                     on_token=on_token,
                     on_event=on_event,
@@ -514,6 +531,8 @@ class HarnessRuntime:
                 review_level=review_level,
                 runtime_mode=str(mode),
                 dynamic_adjust=dynamic_adjust,
+                workspace_path=workspace_path,
+                dag_executor=self._dag_executor_for_run(workspace_path),
                 capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
@@ -527,6 +546,11 @@ class HarnessRuntime:
                     messages,
                     run_id=run_id,
                     review_level=review_level,
+                    capability_context=CapabilityExecutionContext(
+                        task_id=run_id,
+                        workspace_path=workspace_path,
+                        skills=capability_scope.skills,
+                    ),
                     capability_scope=capability_scope,
                     on_token=on_token,
                     on_event=on_event,
@@ -535,6 +559,11 @@ class HarnessRuntime:
                 request,
                 run_id=run_id,
                 review_level=review_level,
+                capability_context=CapabilityExecutionContext(
+                    task_id=run_id,
+                    workspace_path=workspace_path,
+                    skills=capability_scope.skills,
+                ),
                 capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
@@ -583,9 +612,9 @@ class HarnessRuntime:
             "pending_review": outcome.state.pending_review,
             "pending_invocation": outcome.state.pending_invocation,
         }
-        # Record the active sandbox run workspace so a resumed sandbox run
-        # re-mounts the same directory instead of creating an empty one
-        # (tool/auto runs otherwise never persist workspace_path).
+        # Low-level callers may invoke loops under a sandbox context without
+        # providing a run workspace. Preserve the mounted capability workspace
+        # rather than leaving the state blank.
         if current_run_execution() == "sandbox" and not outcome.state.workspace_path:
             # In sandbox scope the workspace contextvar is always set by the
             # runner; the default is a never-used fallback to satisfy the API.
@@ -599,12 +628,13 @@ class HarnessRuntime:
         spec: DAGSpec,
         *,
         graph_input: Any = None,
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
         run_id = _new_run_id_for_mode("dag_spec")
+        resolved_workspace_root = self._resolve_run_workspace_root(workspace_root)
         _emit_run_started(on_event, run_id=run_id, kind="static_dag")
         outcome = await self._execute_loop(
             spec,
@@ -613,7 +643,7 @@ class HarnessRuntime:
             review_level="fast",
             on_token=on_token,
             on_event=on_event,
-            workspace_root=workspace_root,
+            workspace_root=resolved_workspace_root,
             artifact_uploads=artifact_uploads,
             graph_input=graph_input,
         )
@@ -625,6 +655,32 @@ class HarnessRuntime:
         return RunResult(
             state=state,
             output_text=outcome.output_text.strip() or _fallback_output_text(outcome),
+        )
+
+    def _resolve_run_workspace_root(self, workspace_root: str | Path) -> Path:
+        return resolve_run_workspace_root(self.capability_catalog.workspace_root, workspace_root)
+
+    def _workspace_path_for_run(
+        self,
+        run_state: RunState | None,
+        workspace_root: str | Path,
+        run_id: str,
+    ) -> Path:
+        if run_state is not None and run_state.workspace_path:
+            workspace_path = Path(run_state.workspace_path).resolve()
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            return workspace_path
+        return create_run_workspace(self._resolve_run_workspace_root(workspace_root), run_id=run_id)
+
+    def _dag_executor_for_run(self, workspace_path: str | Path | None) -> DAGExecutor:
+        base = self.dag_agent.loop.dag_executor
+        return DAGExecutor(
+            capability_executor=base.capability_executor,
+            workspace_path=workspace_path,
+            capability_workspace_root=(
+                base.capability_workspace_root
+                or base.capability_executor.workspace_root
+            ),
         )
 
 

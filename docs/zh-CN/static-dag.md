@@ -95,8 +95,8 @@ bindings，并在 capability call 前立即解析。
 | `node.content` | 上游节点 text content |
 | `node.status` | 上游节点 status |
 | `node.steps` | 上游节点 step count |
-| `artifact.path` | 第一个声明的 artifact path |
-| `artifact.paths` | 所有声明的 artifact paths |
+| `artifact.path` | 第一个相对 capability workspace 的 artifact path，可直接作为 tool 参数 |
+| `artifact.paths` | 所有相对 capability workspace 的 artifact paths，可直接作为 tool 参数 |
 | `artifact.absolute_path` | 在 run workspace 内解析出的第一个 artifact path |
 | `artifact.absolute_paths` | 在 run workspace 内解析出的所有 artifact paths |
 | `dag.format("Use {x}", x=node.output)` | nested refs 解析后的 format string |
@@ -116,7 +116,9 @@ validation 会 fail closed。
 
 ## Artifacts 和 Boundaries
 
-Artifacts 声明 DAG 产生或消费的文件。Boundaries 约束副作用：
+Artifacts 声明 DAG 产生或消费的文件。Boundaries 约束副作用。对于内置的
+path-aware tools，传入 `artifact.path`；如果自定义 Python tool 直接消费文件系统路径，
+通常应使用 `artifact.absolute_path`：
 
 ```python
 report = dag.artifact("report", "outputs/report.md")
@@ -124,10 +126,10 @@ report = dag.artifact("report", "outputs/report.md")
 write_node = dagent.Node(
     "write_report",
     target=write_note,
-    inputs={"path": report.path, "content": search_node.output},
+    inputs={"path": report.absolute_path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        allowed_paths=[report.path.as_expr()],
+        allowed_paths=[report.absolute_path.as_expr()],
     ),
 )
 ```

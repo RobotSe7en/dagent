@@ -1042,19 +1042,21 @@ def test_api_dag_create_run_and_artifacts() -> None:
                 }
             },
             "nodes": [
-                {
-                    "id": "write",
-                    "title": "Write output note",
-                    "target": "tool.write_file",
-                    "inputs": {
-                        "path": "notes/output.txt",
-                        "content": "hello",
-                    },
-                    "artifact_outputs": ["note"],
-                    "boundary": {
-                        "allowed_paths": ["notes/output.txt"],
-                    },
-                }
+                    {
+                        "id": "write",
+                        "title": "Write output note",
+                        "target": "tool.write_file",
+                        "inputs": {
+                            "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
+                            "content": "hello",
+                        },
+                        "artifact_outputs": ["note"],
+                        "boundary": {
+                            "allowed_paths": [
+                                {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                            ],
+                        },
+                    }
             ],
             "edges": [],
         },
@@ -1080,6 +1082,9 @@ def test_api_dag_create_run_and_artifacts() -> None:
     assert run_payload["dag"]["status"] == "completed"
     assert run_payload["dag"]["nodes"][0]["status"] == "completed"
     assert run_payload["trace"]["artifacts"]["note"]["status"] == "created"
+    workspace_path = Path(run_payload["workspace_path"])
+    assert workspace_path.parent == state.runner.runtime.capability_catalog.workspace_root / "runs"
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
 
     get_run_response = client.get(f"/dag-runs/{run_payload['run_id']}")
     assert get_run_response.status_code == 200
@@ -1111,13 +1116,13 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
                     "id": "write",
                     "target": "tool.write_file",
                     "inputs": {
-                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}},
                         "content": "hello",
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
                         "allowed_paths": [
-                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}}
                         ],
                     },
                 }
@@ -1136,6 +1141,54 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     workspace_path = Path(run_payload["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_api_dag_run_fails_artifact_path_outside_capability_workspace(tmp_path: Path) -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "outside-runs"
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "outside_path_note",
+            "name": "Outside path note",
+            "artifacts": {
+                "note": {
+                    "id": "note",
+                    "paths": ["notes/output.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "write",
+                    "target": "tool.write_file",
+                    "inputs": {
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
+                        "content": "hello",
+                    },
+                    "artifact_outputs": ["note"],
+                    "boundary": {
+                        "allowed_paths": [
+                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    run_response = client.post(
+        "/dags/outside_path_note/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    assert run_payload["status"] == "failed"
+    assert "outside capability workspace" in run_payload["trace"]["root"]["error"]["message"]
+    assert "outside capability workspace" in run_payload["trace"]["artifacts"]["note"]["error"]
 
 
 def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None:
@@ -1159,12 +1212,12 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
                     "id": "read",
                     "target": "tool.read_file",
                     "inputs": {
-                        "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "path"}},
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}},
                     },
                     "artifact_inputs": ["source"],
                     "boundary": {
                         "allowed_paths": [
-                            {"$expr": {"type": "artifact", "artifact_id": "source", "field": "path"}}
+                            {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}}
                         ],
                     },
                 }
@@ -1250,18 +1303,20 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
                 }
             },
             "nodes": [
-                {
-                    "id": "write",
-                    "target": "tool.write_file",
-                    "inputs": {
-                        "path": "notes/output.txt",
-                        "content": "hello",
-                    },
-                    "artifact_outputs": ["note"],
-                    "boundary": {
-                        "allowed_paths": ["notes/output.txt"],
-                    },
-                }
+                    {
+                        "id": "write",
+                        "target": "tool.write_file",
+                        "inputs": {
+                            "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
+                            "content": "hello",
+                        },
+                        "artifact_outputs": ["note"],
+                        "boundary": {
+                            "allowed_paths": [
+                                {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                            ],
+                        },
+                    }
             ],
         },
     )
@@ -1278,6 +1333,9 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
     assert events[-1]["type"] == "run.finished"
     dag_run = _result_dag_run(result)
     assert dag_run["status"] == "completed"
+    workspace_path = Path(dag_run["workspace_path"])
+    assert workspace_path.parent == state.runner.runtime.capability_catalog.workspace_root / "runs"
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
     run_id = dag_run["run_id"]
     assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
 
@@ -1302,13 +1360,13 @@ def test_api_dag_run_stream_uses_requested_workspace_root(tmp_path: Path) -> Non
                     "id": "write",
                     "target": "tool.write_file",
                     "inputs": {
-                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}},
                         "content": "hello",
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
                         "allowed_paths": [
-                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}}
                         ],
                     },
                 }

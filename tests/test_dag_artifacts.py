@@ -475,12 +475,14 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
         release,
         capability_executor=capability_executor,
         workspace_path=workspace_a,
+        capability_workspace_root=workspace_a,
         artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
     )
     executor_b = _DelayedDAGExecutor(
         release,
         capability_executor=capability_executor,
         workspace_path=workspace_b,
+        capability_workspace_root=workspace_b,
         artifacts={"note": Artifact(id="note", paths=["notes/output.txt"])},
     )
     dag_a = _write_note_dag("task_a", "from-a")
@@ -502,6 +504,7 @@ def test_concurrent_executors_keep_workspace_context_isolated(tmp_path: Path) ->
 def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Path) -> None:
     capability_executor = _write_capability_executor(tmp_path)
     loop = _dag_agent_loop_for_executor(capability_executor)
+    artifact_path = {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
     spec = DAGSpec(
         id="write_note",
         name="Write note",
@@ -512,8 +515,8 @@ def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Pa
             _node(
                 "write",
                 tool="write_note",
-                args={"path": "notes/output.txt", "content": "hi"},
-                boundary=Boundary(allowed_paths=["notes/output.txt"]),
+                args={"path": artifact_path, "content": "hi"},
+                boundary=Boundary(allowed_paths=[artifact_path]),
                 outputs=["note"],
             )
         ],
@@ -533,6 +536,41 @@ def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Pa
     assert outcome.state.trace is not None
     assert outcome.state.trace.artifacts["note"].status == "created"
     assert dag_node_trace(outcome.state.trace, "write").children[0].capability_execution.result.content.startswith("wrote:")
+
+
+def test_dag_agent_loop_static_artifact_paths_are_relative_to_capability_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    capability_executor = _write_capability_executor(tmp_path / ".dagent")
+    loop = _dag_agent_loop_for_executor(capability_executor)
+    artifact_path = {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
+    spec = DAGSpec(
+        id="write_note",
+        name="Write note",
+        artifacts={
+            "note": Artifact(id="note", paths=["notes/output.txt"]),
+        },
+        nodes=[
+            _node(
+                "write",
+                tool="write_note",
+                args={"path": artifact_path, "content": "hi"},
+                boundary=Boundary(allowed_paths=[artifact_path]),
+                outputs=["note"],
+            )
+        ],
+    )
+
+    outcome = run(loop.run_static(spec, run_id="static_test"))
+
+    assert outcome.state.workspace_path == str(tmp_path / ".dagent" / "runs" / "static_test")
+    assert (tmp_path / ".dagent" / "runs" / "static_test" / "notes" / "output.txt").read_text(
+        encoding="utf-8"
+    ) == "hi"
+    invocation = dag_node_trace(outcome.state.trace, "write").children[0].capability_execution.invocation
+    assert invocation.arguments["path"] == "runs/static_test/notes/output.txt"
 
 
 def test_dag_agent_loop_run_static_respects_enabled_toolsets(tmp_path: Path) -> None:
@@ -560,6 +598,7 @@ def test_dag_agent_loop_run_static_respects_enabled_toolsets(tmp_path: Path) -> 
 def test_dag_agent_loop_run_static_preserves_partial_state_on_failure(tmp_path: Path) -> None:
     capability_executor = _write_and_fail_capability_executor(tmp_path)
     loop = _dag_agent_loop_for_executor(capability_executor)
+    artifact_path = {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
     spec = DAGSpec(
         id="partial_failure",
         name="Partial failure",
@@ -568,8 +607,8 @@ def test_dag_agent_loop_run_static_preserves_partial_state_on_failure(tmp_path: 
             _node(
                 "write",
                 tool="write_note",
-                args={"path": "notes/output.txt", "content": "hi"},
-                boundary=Boundary(allowed_paths=["notes/output.txt"]),
+                args={"path": artifact_path, "content": "hi"},
+                boundary=Boundary(allowed_paths=[artifact_path]),
                 outputs=["note"],
             ),
             _node(

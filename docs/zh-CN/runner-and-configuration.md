@@ -17,7 +17,7 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     capabilities=[],
     skill_roots=["team-skills"],
@@ -26,6 +26,10 @@ runner = dagent.Runner(
 ```
 
 `Runner(...)` 不会隐式读取 `config.yaml`。
+
+runner workspace 默认是 `.dagent`。内置 file 和 shell tool 的路径从这个
+workspace 解析，每次运行都会在 `.dagent/runs/<run_id>` 下记录自己的目录。
+传入 `workspace=...` 时，dagent 会把该目录本身作为 runtime workspace。
 
 ## Provider 选项
 
@@ -55,7 +59,7 @@ provider = dagent.Provider(
 ```python
 runner = dagent.Runner.from_config(
     "config.yaml",
-    workspace=".",
+    workspace=".dagent",
     capabilities=[search],
 )
 ```
@@ -89,7 +93,7 @@ mcp_servers:
 
 ```python
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     capabilities=[search],
     skill_roots=["team-skills"],
@@ -165,7 +169,7 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     skill_roots=skill_roots,
     mcp_servers=mcp_servers,

@@ -29,7 +29,7 @@
 
 - [ ] Replace the old `.topbar` app chrome with a left sidebar and workspace body matching `Dagent.dc.html`.
 - [ ] Render all four workspaces through the sidebar only; remove the top navigation render path.
-- [ ] Add sidebar collapse state, chat history rows derived from the current message list, and the `.dagent-runs` workspace root chip.
+- [ ] Add sidebar collapse state, chat history rows derived from the current message list, and the `.dagent/runs` workspace root chip.
 - [ ] Keep the existing workspace handlers and public API calls unchanged.
 
 ### Task 3: Chat Execution Workspace

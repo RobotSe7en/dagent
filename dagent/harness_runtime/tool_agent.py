@@ -114,6 +114,7 @@ class ToolAgent:
         *,
         run_id: str | None = None,
         review_level: ReviewLevel = "fast",
+        capability_context: CapabilityExecutionContext | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -129,6 +130,7 @@ class ToolAgent:
             ],
             run_id=run_id,
             review_level=review_level,
+            capability_context=capability_context,
             capability_scope=capability_scope,
             boundary=boundary,
             on_token=on_token,
@@ -143,6 +145,7 @@ class ToolAgent:
         review_level: ReviewLevel = "fast",
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         boundary: Boundary | None = None,
+        capability_context: CapabilityExecutionContext | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
@@ -154,6 +157,7 @@ class ToolAgent:
             review_level=review_level,
             boundary=boundary or Boundary(allowed_paths=["."]),
             capability_scope=capability_scope,
+            capability_context=capability_context,
             on_token=on_token,
             on_event=on_event,
         )
@@ -185,6 +189,7 @@ class ToolAgent:
                     invocation,
                     context=CapabilityExecutionContext(
                         task_id=state.run_id,
+                        workspace_path=state.workspace_path,
                         skills=capability_scope.skills,
                         approved_boundary_invocation_id=(
                             invocation.invocation_id if boundary_review_approved else None
@@ -234,6 +239,11 @@ class ToolAgent:
             review_level=state.review_level,
             boundary=invocation.boundary,
             capability_scope=capability_scope,
+            capability_context=CapabilityExecutionContext(
+                task_id=state.run_id,
+                workspace_path=state.workspace_path,
+                skills=capability_scope.skills,
+            ),
             on_token=on_token,
             on_event=on_event,
         )
@@ -253,6 +263,7 @@ class ToolAgent:
         review_level: ReviewLevel,
         boundary: Boundary,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+        capability_context: CapabilityExecutionContext | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
@@ -273,6 +284,7 @@ class ToolAgent:
             review_level=review_level,
             capability_ids=capability_scope.capability_ids,
             capability_scope=capability_scope,
+            capability_context=capability_context,
             skills=capability_scope.skills,
             on_token=on_token,
             on_event=on_event,
@@ -464,6 +476,11 @@ class ToolAgentLoop:
                         messages=loop_messages,
                         trace=trace,
                         capability_scope=state_scope,
+                        workspace_path=(
+                            None
+                            if execution_context.workspace_path is None
+                            else str(execution_context.workspace_path)
+                        ),
                     ),
                     execution_context=_format_capability_execution_context(loop_messages),
                     output_text=strip_thinking_blocks(response.content).strip(),
@@ -570,6 +587,11 @@ class ToolAgentLoop:
                                 pending_review=pending_review,
                                 pending_invocation=invocation,
                                 capability_scope=state_scope,
+                                workspace_path=(
+                                    None
+                                    if execution_context.workspace_path is None
+                                    else str(execution_context.workspace_path)
+                                ),
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
                         )
@@ -582,6 +604,11 @@ class ToolAgentLoop:
                                 messages=loop_messages,
                                 trace=trace,
                                 capability_scope=state_scope,
+                                workspace_path=(
+                                    None
+                                    if execution_context.workspace_path is None
+                                    else str(execution_context.workspace_path)
+                                ),
                             ),
                             execution_context=_format_capability_execution_context(loop_messages),
                             output_text=control_result.content,
@@ -650,9 +677,14 @@ class ToolAgentLoop:
                 run_id=resolved_run_id,
                 status="failed",
                 messages=loop_messages,
-                trace=trace,
-                capability_scope=state_scope,
-            ),
+                    trace=trace,
+                    capability_scope=state_scope,
+                    workspace_path=(
+                        None
+                        if execution_context.workspace_path is None
+                        else str(execution_context.workspace_path)
+                    ),
+                ),
             execution_context=_format_capability_execution_context(loop_messages),
         )
 
@@ -829,6 +861,7 @@ def _tool_run_state(
     pending_review: PendingReview | None = None,
     pending_invocation: CapabilityInvocation | None = None,
     capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
+    workspace_path: str | None = None,
 ) -> RunState:
     return RunState(
         run_id=run_id,
@@ -840,6 +873,7 @@ def _tool_run_state(
         pending_invocation=pending_invocation,
         capability_scope=capability_scope_to_state(capability_scope),
         runtime_mode="tool",
+        workspace_path=workspace_path,
     )
 
 

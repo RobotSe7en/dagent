@@ -18,7 +18,7 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     capabilities=[],
     skill_roots=["team-skills"],
@@ -27,6 +27,11 @@ runner = dagent.Runner(
 ```
 
 `Runner(...)` does not read `config.yaml` implicitly.
+
+The runner workspace defaults to `.dagent`. Built-in file and shell tool paths
+resolve from that workspace, and each run records its own directory under
+`.dagent/runs/<run_id>`. Passing `workspace=...` uses that exact directory as
+the dagent runtime workspace.
 
 ## Provider Options
 
@@ -57,7 +62,7 @@ or profile directories should come from YAML:
 ```python
 runner = dagent.Runner.from_config(
     "config.yaml",
-    workspace=".",
+    workspace=".dagent",
     capabilities=[search],
 )
 ```
@@ -92,7 +97,7 @@ Register tools, skill roots, and MCP servers when the runner is constructed:
 
 ```python
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     capabilities=[search],
     skill_roots=["team-skills"],
@@ -169,7 +174,7 @@ provider = dagent.Provider(
     api_key_env="OPENAI_API_KEY",
 )
 runner = dagent.Runner(
-    workspace=".",
+    workspace=".dagent",
     provider=provider,
     skill_roots=skill_roots,
     mcp_servers=mcp_servers,

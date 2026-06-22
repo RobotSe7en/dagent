@@ -82,6 +82,7 @@ class _ValueScope:
     graph_input: Any = None
     artifacts: dict[str, Artifact] = field(default_factory=dict)
     workspace_path: Path | None = None
+    capability_workspace_root: Path | None = None
     item: Any = _NO_ITEM
 
 
@@ -93,6 +94,7 @@ class DAGExecutor:
         *,
         capability_executor: CapabilityExecutor,
         workspace_path: str | Path | None = None,
+        capability_workspace_root: str | Path | None = None,
         artifacts: dict[str, Artifact] | None = None,
         artifact_states: dict[str, ArtifactState] | None = None,
         spec_id: str | None = None,
@@ -101,6 +103,11 @@ class DAGExecutor:
         self.capability_executor = capability_executor
         self.partial_node_traces: dict[str, RunTraceNode] = {}
         self.workspace_path = Path(workspace_path).resolve() if workspace_path is not None else None
+        self.capability_workspace_root = (
+            Path(capability_workspace_root).resolve()
+            if capability_workspace_root is not None
+            else self.capability_executor.workspace_root
+        )
         self.artifacts = artifacts or {}
         self.artifact_states = artifact_states or init_artifact_states(self.artifacts)
         self.spec_id = spec_id
@@ -126,7 +133,7 @@ class DAGExecutor:
         node_traces = trace.dag_node_traces()
 
         try:
-            with self.capability_executor.workspace_context(self.workspace_path):
+            with self.capability_executor.workspace_context(self.capability_workspace_root):
                 await self._execute_next_ready_layer(
                     normalized,
                     trace,
@@ -214,6 +221,7 @@ class DAGExecutor:
             graph_input=self.graph_input,
             artifacts=self.artifacts,
             workspace_path=self.workspace_path,
+            capability_workspace_root=self.capability_workspace_root,
             item=item,
         )
 
@@ -570,6 +578,7 @@ class DAGExecutor:
         executor = DAGExecutor(
             capability_executor=self.capability_executor,
             workspace_path=self.workspace_path,
+            capability_workspace_root=self.capability_workspace_root,
             artifacts=spec.artifacts,
             spec_id=spec.id,
             graph_input=graph_input,
@@ -783,7 +792,12 @@ def _resolve_value(value: Any, scope: _ValueScope) -> Any:
     if isinstance(expr, NodeOutputExpr):
         return _node_output_value(expr, scope.node_traces)
     if isinstance(expr, ArtifactExpr):
-        return _artifact_value(expr, artifacts=scope.artifacts, workspace_path=scope.workspace_path)
+        return _artifact_value(
+            expr,
+            artifacts=scope.artifacts,
+            workspace_path=scope.workspace_path,
+            capability_workspace_root=scope.capability_workspace_root,
+        )
     if isinstance(expr, FormatExpr):
         resolved = {key: _resolve_value(item, scope) for key, item in expr.values.items()}
         return expr.template.format(**resolved)
@@ -848,25 +862,43 @@ def _artifact_value(
     *,
     artifacts: dict[str, Artifact] | None,
     workspace_path: Path | None,
+    capability_workspace_root: Path | None,
 ) -> Any:
     artifact = (artifacts or {}).get(expr.artifact_id)
     if artifact is None:
         raise DAGExecutionError(f"Unknown artifact '{expr.artifact_id}'.")
 
-    if expr.field == "path":
-        return artifact.paths[0]
-    if expr.field == "paths":
-        return list(artifact.paths)
     if workspace_path is None:
+        if expr.field == "path":
+            return artifact.paths[0]
+        if expr.field == "paths":
+            return list(artifact.paths)
         raise DAGExecutionError(
             f"Cannot resolve absolute artifact '{expr.artifact_id}' without a workspace."
         )
-    absolute_paths = [str(path) for path in resolve_artifact_paths(artifact, workspace_path)]
+    resolved_paths = resolve_artifact_paths(artifact, workspace_path)
+    if expr.field == "path":
+        return _tool_relative_path(resolved_paths[0], capability_workspace_root)
+    if expr.field == "paths":
+        return [_tool_relative_path(path, capability_workspace_root) for path in resolved_paths]
+    absolute_paths = [str(path) for path in resolved_paths]
     if expr.field == "absolute_path":
         return absolute_paths[0]
     if expr.field == "absolute_paths":
         return absolute_paths
     raise DAGExecutionError(f"Unknown artifact field '{expr.field}'.")
+
+
+def _tool_relative_path(path: Path, capability_workspace_root: Path | None) -> str:
+    if capability_workspace_root is None:
+        return str(path)
+    try:
+        return str(path.relative_to(capability_workspace_root))
+    except ValueError:
+        raise DAGExecutionError(
+            f"Artifact path '{path}' is outside capability workspace '{capability_workspace_root}'. "
+            "Use artifact.absolute_path for absolute filesystem paths."
+        )
 
 
 def _extract_path(value: Any, path: list[str | int]) -> Any:

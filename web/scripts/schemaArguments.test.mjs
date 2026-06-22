@@ -144,6 +144,9 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.ok(runDialogSource, 'RunDagDialog function should exist');
   assert.ok(directorySource, 'CapabilityDirectory function should exist');
 
+  assert.match(appSource, /const defaultWorkspaceRoot = 'runs';/);
+  assert.match(appSource, /<code>\.dagent\/runs<\/code>/);
+  assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
   assert.match(appSource, /<OrchestrationWorkspace[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
   assert.match(appSource, /const \[orchestrationMode, setOrchestrationMode\] = useState<OrchestrationMode>\('dynamic'\)/);

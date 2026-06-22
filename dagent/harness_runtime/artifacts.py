@@ -9,6 +9,7 @@ from posixpath import normpath
 from uuid import uuid4
 
 from dagent.schemas import Artifact, ArtifactState, DAGNode
+from dagent.config import DEFAULT_RUNS_DIR
 
 
 class ArtifactPathError(ValueError):
@@ -23,10 +24,26 @@ class ArtifactUpload:
     content: bytes
 
 
-def create_run_workspace(root: str | Path = ".dagent-runs") -> Path:
-    workspace = Path(root).resolve() / f"run_{uuid4().hex}"
+def create_run_workspace(root: str | Path = DEFAULT_RUNS_DIR, *, run_id: str | None = None) -> Path:
+    workspace_name = run_id if run_id is not None else f"run_{uuid4().hex}"
+    _validate_run_id(workspace_name)
+    workspace = Path(root).resolve() / workspace_name
     workspace.mkdir(parents=True, exist_ok=False)
     return workspace
+
+
+def _validate_run_id(run_id: str) -> None:
+    if not run_id or run_id in {".", ".."}:
+        raise ValueError("run_id must be a single directory name.")
+    path = Path(run_id)
+    windows_path = PureWindowsPath(run_id)
+    if (
+        path.is_absolute()
+        or windows_path.is_absolute()
+        or path.name != run_id
+        or windows_path.name != run_id
+    ):
+        raise ValueError("run_id must be a single directory name.")
 
 
 def init_artifact_states(artifacts: dict[str, Artifact]) -> dict[str, ArtifactState]:

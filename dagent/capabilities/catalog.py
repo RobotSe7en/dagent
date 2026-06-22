@@ -13,6 +13,7 @@ from dagent.schemas import (
     CapabilityKind,
     CapabilityResult,
 )
+from dagent.config import DEFAULT_WORKSPACE
 
 
 CapabilityHandlerResult = CapabilityResult | Awaitable[CapabilityResult]
@@ -32,7 +33,7 @@ class CapabilityEntry:
 class CapabilityCatalog:
     """Owns capability definitions and their executable handlers."""
 
-    def __init__(self, *, workspace_root: str | Path = ".") -> None:
+    def __init__(self, *, workspace_root: str | Path = DEFAULT_WORKSPACE) -> None:
         self.workspace_root = Path(workspace_root).resolve()
         self._entries: dict[str, CapabilityEntry] = {}
         self._shutdown_hooks: list[ShutdownHook] = []

@@ -46,7 +46,8 @@ MCP tools、skill capabilities、memory capabilities、agent capabilities、DAG�
 closed，而不会回退到 host 执行。对这些 capabilities 请使用 `execution="local"`。
 
 `Runner.test_capability(..., execution="sandbox")` 使用 runner workspace 作为 sandbox
-workspace，因此 `Runner(workspace=...)` 下已有的文件对受支持的内置工具可见。
+workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下已有的文件
+对受支持的内置工具可见。
 
 ## Python Function Tools
 
@@ -106,7 +107,9 @@ import dagent
 
 @dagent.tool(risk="medium", supports_context=True)
 def write_note(path: str, content: str, *, context, callbacks=None) -> str:
-    resolved = Path(context.workspace_path) / path
+    run_workspace = Path(context.workspace_path).resolve()
+    resolved = Path(path).resolve()
+    resolved.relative_to(run_workspace)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
     return f"wrote:{path}"
@@ -120,10 +123,10 @@ report = dag.artifact("report", "outputs/report.md")
 write_node = dagent.Node(
     "write_report",
     target=write_note,
-    inputs={"path": report.path, "content": search_node.output},
+    inputs={"path": report.absolute_path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        allowed_paths=[report.path.as_expr()],
+        allowed_paths=[report.absolute_path.as_expr()],
     ),
 )
 ```

@@ -62,6 +62,10 @@ print(result.node_value("search"))
 print(result.artifact_state("report").status)
 ```
 
+`workspace_root` is resolved relative to the runner workspace when it is not an
+absolute path. With the default runner workspace, run artifacts live under
+`.dagent/runs/<run_id>`.
+
 `DAGRun` remains a schema for API projections and is available through
 `result.dag_run` for static DAG runs.
 

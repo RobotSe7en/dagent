@@ -11,11 +11,12 @@ from dagent.capabilities.providers import (
 )
 from dagent.capabilities.skills import SkillsCapabilityProvider
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
+from dagent.config import DEFAULT_WORKSPACE
 
 
 def create_default_capability_catalog(
     *,
-    workspace_root: str | Path = ".",
+    workspace_root: str | Path = DEFAULT_WORKSPACE,
     skill_roots: list[str | Path] | None = None,
     skills_provider: SkillsCapabilityProvider | None = None,
 ) -> CapabilityCatalog:

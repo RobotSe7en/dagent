@@ -53,8 +53,8 @@ sandbox-executable yet. They fail closed under `execution="sandbox"` instead of
 falling back to host execution. Use `execution="local"` for those capabilities.
 
 `Runner.test_capability(..., execution="sandbox")` uses the runner workspace as
-the sandbox workspace, so files already present under `Runner(workspace=...)`
-are visible to supported built-in tools.
+the sandbox workspace. The default runner workspace is `.dagent`; files already
+present under `Runner(workspace=...)` are visible to supported built-in tools.
 
 ## Python Function Tools
 
@@ -114,7 +114,9 @@ import dagent
 
 @dagent.tool(risk="medium", supports_context=True)
 def write_note(path: str, content: str, *, context, callbacks=None) -> str:
-    resolved = Path(context.workspace_path) / path
+    run_workspace = Path(context.workspace_path).resolve()
+    resolved = Path(path).resolve()
+    resolved.relative_to(run_workspace)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
     return f"wrote:{path}"
@@ -128,10 +130,10 @@ report = dag.artifact("report", "outputs/report.md")
 write_node = dagent.Node(
     "write_report",
     target=write_note,
-    inputs={"path": report.path, "content": search_node.output},
+    inputs={"path": report.absolute_path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        allowed_paths=[report.path.as_expr()],
+        allowed_paths=[report.absolute_path.as_expr()],
     ),
 )
 ```

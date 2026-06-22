@@ -24,9 +24,11 @@ def search(q: str) -> str:
 
 @dagent.tool(risk="medium", supports_context=True)
 def write_note(path: str, content: str, *, context, callbacks=None) -> str:
-    """Write a note inside the run workspace."""
+    """Write a note at a runtime-resolved artifact path."""
 
-    resolved = Path(context.workspace_path) / path
+    run_workspace = Path(context.workspace_path).resolve()
+    resolved = Path(path).resolve()
+    resolved.relative_to(run_workspace)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
     return f"wrote:{path}"
@@ -41,10 +43,10 @@ async def main() -> None:
         write_node = dagent.Node(
             "write_report",
             target=write_note,
-            inputs={"path": report.path, "content": search_node.output},
+            inputs={"path": report.absolute_path, "content": search_node.output},
             artifact_outputs=[report],
             boundary=dagent.Boundary(
-                allowed_paths=[report.path.as_expr()],
+                allowed_paths=[report.absolute_path.as_expr()],
             ),
         )
         dag.add_node(search_node)
@@ -54,11 +56,10 @@ async def main() -> None:
         spec = dag.to_dag_spec()
         dagent.validate_dag_spec(spec)
 
-        runner = dagent.Runner(workspace=workspace, provider=MockProvider([]))
+        runner = dagent.Runner(workspace=Path(workspace) / ".dagent", provider=MockProvider([]))
         result = await runner.run(
             dag,
             graph_input="dagent sdk",
-            workspace_root=Path(workspace) / "runs",
         )
         output_path = Path(result.workspace_path) / "outputs" / "report.md"
 
