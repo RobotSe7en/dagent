@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import mimetypes
 from pathlib import Path, PureWindowsPath
@@ -64,6 +65,7 @@ RunArtifactSource = Literal["dag_artifact", "run_file"]
 RunArtifactPreviewKind = Literal["markdown", "code", "text"]
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
+RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -245,6 +247,9 @@ class RunArtifactsResponse(BaseModel):
     workspace_path: str | None = None
     artifacts: dict[str, Any] = Field(default_factory=dict)
     files: list[RunArtifactFile] = Field(default_factory=list)
+    files_truncated: bool = False
+    file_limit: int = RUN_ARTIFACT_SCAN_LIMIT
+    visit_limit: int = RUN_ARTIFACT_SCAN_VISIT_LIMIT
 
 
 class RunArtifactPreviewResponse(BaseModel):
@@ -1244,18 +1249,20 @@ def _run_artifacts_response(run_state: RunState) -> RunArtifactsResponse:
         artifact_id: artifact_state.model_dump(mode="json")
         for artifact_id, artifact_state in (run_state.trace.artifacts if run_state.trace else {}).items()
     }
+    files, files_truncated = _run_artifact_files(run_state)
     return RunArtifactsResponse(
         run_id=run_state.run_id,
         workspace_path=run_state.workspace_path,
         artifacts=artifact_states,
-        files=_run_artifact_files(run_state),
+        files=files,
+        files_truncated=files_truncated,
     )
 
 
-def _run_artifact_files(run_state: RunState) -> list[RunArtifactFile]:
+def _run_artifact_files(run_state: RunState) -> tuple[list[RunArtifactFile], bool]:
     workspace = _run_workspace(run_state)
     if workspace is None:
-        return []
+        return [], False
     declared_paths: set[str] = set()
     files: list[RunArtifactFile] = []
     artifact_states = run_state.trace.artifacts if run_state.trace else {}
@@ -1275,7 +1282,8 @@ def _run_artifact_files(run_state: RunState) -> list[RunArtifactFile]:
                 )
             )
 
-    for path in _workspace_preview_paths(workspace, exclude=declared_paths):
+    workspace_paths, files_truncated = _workspace_file_paths(workspace, exclude=declared_paths)
+    for path in workspace_paths:
         files.append(
             _run_artifact_file(
                 run_id=run_state.run_id,
@@ -1287,7 +1295,7 @@ def _run_artifact_files(run_state: RunState) -> list[RunArtifactFile]:
                 error=None,
             )
         )
-    return sorted(files, key=lambda item: (item.source, item.path, item.id))
+    return sorted(files, key=lambda item: (item.source, item.path, item.id)), files_truncated
 
 
 def _run_artifact_file(
@@ -1328,22 +1336,39 @@ def _run_artifact_file(
     )
 
 
-def _workspace_preview_paths(workspace: Path, *, exclude: set[str]) -> list[str]:
+def _workspace_file_paths(workspace: Path, *, exclude: set[str]) -> tuple[list[str], bool]:
     paths: list[str] = []
-    for candidate in sorted(workspace.rglob("*")):
-        if len(paths) >= RUN_ARTIFACT_SCAN_LIMIT:
-            break
+    directories = [workspace]
+    visited = 0
+    truncated = False
+    while directories:
+        directory = directories.pop()
         try:
-            resolved = candidate.resolve()
-            resolved.relative_to(workspace)
+            entries = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError:
+            continue
+        for candidate in entries:
+            visited += 1
+            if visited > RUN_ARTIFACT_SCAN_VISIT_LIMIT:
+                return paths, True
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(workspace)
+            except (OSError, ValueError):
+                continue
+            if candidate.is_dir() and not candidate.is_symlink():
+                directories.append(candidate)
+                continue
+            if not resolved.is_file():
+                continue
             relative_path = candidate.relative_to(workspace).as_posix()
-        except (OSError, ValueError):
-            continue
-        if relative_path in exclude or _preview_kind_for_path(relative_path) is None:
-            continue
-        if resolved.is_file() and _looks_like_utf8_text(resolved):
+            if relative_path in exclude:
+                continue
             paths.append(relative_path)
-    return paths
+            if len(paths) >= RUN_ARTIFACT_SCAN_LIMIT:
+                truncated = True
+                return paths, truncated
+    return paths, truncated
 
 
 def _run_workspace(run_state: RunState) -> Path | None:
@@ -1423,7 +1448,10 @@ def _media_type_for_path(path: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix in _MEDIA_TYPE_OVERRIDES:
         return _MEDIA_TYPE_OVERRIDES[suffix]
-    return mimetypes.guess_type(path)[0] or "text/plain"
+    guessed_type = mimetypes.guess_type(path)[0]
+    if guessed_type is not None:
+        return guessed_type
+    return "text/plain" if _preview_kind_for_path(path) is not None else "application/octet-stream"
 
 
 def _looks_like_utf8_text(path: Path) -> bool:
@@ -1453,10 +1481,17 @@ def _read_text_preview(path: Path) -> tuple[str, bool, int]:
     if b"\x00" in content:
         raise HTTPException(status_code=415, detail="Artifact file is not text.")
     try:
-        text = content.decode("utf-8")
+        text = _decode_utf8_preview(content, truncated=truncated)
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=415, detail="Artifact file is not UTF-8 text.") from exc
     return text, truncated, size
+
+
+def _decode_utf8_preview(content: bytes, *, truncated: bool) -> str:
+    if not truncated:
+        return content.decode("utf-8")
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    return decoder.decode(content, final=False)
 
 
 @app.get("/runs/{run_id}/trace")

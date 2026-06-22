@@ -1227,6 +1227,109 @@ def test_api_run_artifacts_preview_rejects_paths_outside_workspace() -> None:
     assert "escapes run workspace" in preview_response.json()["detail"]
 
 
+def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes/output.txt", "content": "hello"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "report.pdf").write_bytes(b"%PDF-1.7\x00binary")
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["exports/report.pdf"] == {
+        "id": "run:exports/report.pdf",
+        "artifact_id": None,
+        "source": "run_file",
+        "path": "exports/report.pdf",
+        "name": "report.pdf",
+        "media_type": "application/pdf",
+        "preview_kind": None,
+        "previewable": False,
+        "size": 15,
+        "status": "created",
+        "error": None,
+        "preview_url": None,
+    }
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "exports/report.pdf"},
+    )
+    assert preview_response.status_code == 415
+
+
+def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes/output.md", "content": "seed"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write markdown",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    content = "a" * (app_module.RUN_ARTIFACT_PREVIEW_BYTES - 1) + "é" + "\nrest"
+    (workspace / "notes" / "output.md").write_text(content, encoding="utf-8")
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "notes/output.md"},
+    )
+
+    assert preview_response.status_code == 200
+    payload = preview_response.json()
+    assert payload["truncated"] is True
+    assert payload["content"] == "a" * (app_module.RUN_ARTIFACT_PREVIEW_BYTES - 1)
+
+
 def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

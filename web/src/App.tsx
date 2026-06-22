@@ -158,7 +158,6 @@ import {
   type MessageTimelineItem,
 } from './chatTimeline';
 import {
-  artifactPreviewText,
   buildWorkbenchArtifacts,
   type WorkbenchArtifactItem,
 } from './workbenchArtifacts';
@@ -704,6 +703,11 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
 }
 
+function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
+  if (!item.runId || !item.path) return '';
+  return `${item.runId}:${item.path}:${item.size ?? 'unknown'}`;
+}
+
 export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceKey>('chat');
   const [dag, setDag] = useState<Dag>(emptyDag);
@@ -725,7 +729,6 @@ export function App() {
   const [artifactPanelOpen, setArtifactPanelOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState('');
   const [runArtifactFiles, setRunArtifactFiles] = useState<RunArtifactFile[]>([]);
-  const [runArtifactManifestRunId, setRunArtifactManifestRunId] = useState<string | null>(null);
   const [runArtifactLoading, setRunArtifactLoading] = useState(false);
   const [runArtifactError, setRunArtifactError] = useState<string | null>(null);
   const [artifactPreviews, setArtifactPreviews] = useState<Record<string, RunArtifactPreview>>({});
@@ -745,6 +748,7 @@ export function App() {
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const contentStreamedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const runArtifactRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -830,24 +834,23 @@ export function App() {
     selectedChatSkillNames.length,
   );
   const activeRunId = runState?.run_id ?? null;
-  const runArtifactManifestLoaded = runArtifactManifestRunId === activeRunId;
   const chatArtifacts = useMemo(
     () => buildWorkbenchArtifacts({
       dag,
       runId: activeRunId,
-      runFiles: runArtifactManifestLoaded ? runArtifactFiles : null,
-      runArtifacts: runArtifactManifestLoaded ? null : runState?.trace?.artifacts ?? null,
+      runFiles: runArtifactFiles,
     }),
-    [activeRunId, dag, runArtifactFiles, runArtifactManifestLoaded, runState],
+    [activeRunId, dag, runArtifactFiles],
   );
   const artifactDrawerOpen = artifactPanelOpen;
-  const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? chatArtifacts[0] ?? null;
-  const selectedArtifactPreview = selectedArtifact ? artifactPreviews[selectedArtifact.id] ?? null : null;
+  const selectedArtifact = chatArtifacts.find((item) => item.id === selectedArtifactId) ?? null;
+  const selectedArtifactPreviewKey = selectedArtifact ? artifactPreviewCacheKey(selectedArtifact) : '';
+  const selectedArtifactPreview = selectedArtifactPreviewKey ? artifactPreviews[selectedArtifactPreviewKey] ?? null : null;
   const selectedArtifactPreviewLoading = Boolean(
-    selectedArtifact && artifactPreviewLoadingId === selectedArtifact.id,
+    selectedArtifactPreviewKey && artifactPreviewLoadingId === selectedArtifactPreviewKey,
   );
   const selectedArtifactPreviewError = (
-    selectedArtifact && artifactPreviewError?.id === selectedArtifact.id
+    selectedArtifactPreviewKey && artifactPreviewError?.id === selectedArtifactPreviewKey
       ? artifactPreviewError.message
       : null
   );
@@ -859,24 +862,29 @@ export function App() {
   );
 
   const refreshRunArtifacts = useCallback(async () => {
+    const requestId = runArtifactRequestRef.current + 1;
+    runArtifactRequestRef.current = requestId;
     if (!activeRunId) {
       setRunArtifactFiles([]);
-      setRunArtifactManifestRunId(null);
       setRunArtifactError(null);
+      setRunArtifactLoading(false);
       return;
     }
     setRunArtifactLoading(true);
     setRunArtifactError(null);
     try {
       const payload = await listRunArtifacts(activeRunId);
+      if (runArtifactRequestRef.current !== requestId) return;
       setRunArtifactFiles(payload.files);
-      setRunArtifactManifestRunId(payload.run_id);
+      setArtifactPreviews({});
+      setArtifactPreviewError(null);
+      setArtifactPreviewLoadingId('');
     } catch (exc) {
+      if (runArtifactRequestRef.current !== requestId) return;
       setRunArtifactFiles([]);
-      setRunArtifactManifestRunId(activeRunId);
       setRunArtifactError(exc instanceof Error ? exc.message : String(exc));
     } finally {
-      setRunArtifactLoading(false);
+      if (runArtifactRequestRef.current === requestId) setRunArtifactLoading(false);
     }
   }, [activeRunId]);
 
@@ -885,6 +893,7 @@ export function App() {
   }, [refreshRunArtifacts]);
 
   useEffect(() => {
+    setRunArtifactFiles([]);
     setArtifactPreviews({});
     setArtifactPreviewError(null);
     setArtifactPreviewLoadingId('');
@@ -892,20 +901,22 @@ export function App() {
   }, [activeRunId]);
 
   useEffect(() => {
-    if (!selectedArtifact?.previewable || !selectedArtifact.runId || !selectedArtifact.path) return;
-    if (artifactPreviews[selectedArtifact.id]) return;
+    if (!artifactPanelOpen || !selectedArtifact?.previewable || !selectedArtifact.runId || !selectedArtifact.path) return;
+    const cacheKey = artifactPreviewCacheKey(selectedArtifact);
+    if (!cacheKey || artifactPreviews[cacheKey]) return;
     let cancelled = false;
-    setArtifactPreviewLoadingId(selectedArtifact.id);
+    setArtifactPreviewLoadingId(cacheKey);
     setArtifactPreviewError(null);
     void previewRunArtifact(selectedArtifact.runId, selectedArtifact.path)
       .then((preview) => {
         if (cancelled) return;
-        setArtifactPreviews((current) => ({ ...current, [selectedArtifact.id]: preview }));
+        if (preview.run_id !== selectedArtifact.runId || preview.path !== selectedArtifact.path) return;
+        setArtifactPreviews((current) => ({ ...current, [cacheKey]: preview }));
       })
       .catch((exc) => {
         if (cancelled) return;
         setArtifactPreviewError({
-          id: selectedArtifact.id,
+          id: cacheKey,
           message: exc instanceof Error ? exc.message : String(exc),
         });
       })
@@ -915,13 +926,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [artifactPreviews, selectedArtifact]);
+  }, [artifactPanelOpen, artifactPreviews, selectedArtifact]);
 
   const copySelectedArtifact = useCallback(() => {
-    const content = selectedArtifactPreview?.content ?? (selectedArtifact ? artifactPreviewText(selectedArtifact) : '');
+    const content = selectedArtifactPreview?.content ?? '';
     if (!content || !navigator.clipboard) return;
     void navigator.clipboard.writeText(content);
-  }, [selectedArtifact, selectedArtifactPreview]);
+  }, [selectedArtifactPreview]);
 
   const selectToolsDirectoryTab = useCallback((tab: ToolDirectoryTab) => {
     setToolsDirectoryTab(tab);
@@ -3535,11 +3546,7 @@ function ArtifactPreview({
   let body: React.ReactNode;
   if (selectedArtifact.error) {
     body = <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
-  } else if (
-    selectedArtifact.previewable === false
-    && !selectedArtifact.content
-    && selectedArtifact.value === undefined
-  ) {
+  } else if (selectedArtifact.previewable === false) {
     body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
   } else if (loading) {
     body = (
@@ -3565,7 +3572,7 @@ function ArtifactPreview({
       </>
     );
   } else {
-    body = <pre>{artifactPreviewText(selectedArtifact)}</pre>;
+    body = <div className="artifact-preview-empty">选择文件后加载预览。</div>;
   }
 
   return (
@@ -3574,7 +3581,7 @@ function ArtifactPreview({
         <File size={14} />
         <strong>{selectedArtifact.name}</strong>
         <span>{selectedArtifact.meta}</span>
-        <button className="icon-button" onClick={onCopy} title="复制" type="button">
+        <button className="icon-button" disabled={!preview} onClick={onCopy} title="复制" type="button">
           <Copy size={13} />
         </button>
       </div>

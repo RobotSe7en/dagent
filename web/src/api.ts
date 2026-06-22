@@ -154,6 +154,9 @@ export async function listRunArtifacts(runId: string): Promise<RunArtifactsRespo
     workspace_path: data.workspace_path ?? null,
     artifacts: data.artifacts ?? {},
     files: data.files ?? [],
+    files_truncated: Boolean(data.files_truncated),
+    file_limit: data.file_limit,
+    visit_limit: data.visit_limit,
   };
 }
 

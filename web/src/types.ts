@@ -187,6 +187,9 @@ export interface RunArtifactsResponse {
   workspace_path?: string | null;
   artifacts: Record<string, unknown>;
   files: RunArtifactFile[];
+  files_truncated?: boolean;
+  file_limit?: number;
+  visit_limit?: number;
 }
 
 export interface RunArtifactPreview {
