@@ -40,7 +40,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload, create_run_workspace
+from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -79,6 +79,7 @@ from dagent.schemas import (
     ValidationIssue,
     iter_dag_invocations,
 )
+from dagent.config import DEFAULT_RUNS_DIR, DEFAULT_WORKSPACE, resolve_run_workspace_root
 
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
@@ -91,7 +92,7 @@ class Runner:
     def __init__(
         self,
         *,
-        workspace: str | Path = ".",
+        workspace: str | Path = DEFAULT_WORKSPACE,
         provider: ChatProvider | None = None,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
@@ -129,7 +130,7 @@ class Runner:
         cls,
         path: str | Path | None = None,
         *,
-        workspace: str | Path = ".",
+        workspace: str | Path = DEFAULT_WORKSPACE,
         capabilities: Iterable[CapabilityBinding] = (),
         validator: str | AgentProfile | ValidatorAgent | None = None,
         skill_roots: list[str | Path] | None = None,
@@ -276,9 +277,7 @@ class Runner:
             arguments=resolved_arguments,
             boundary=resolved_boundary,
         )
-        # Use the runner's own workspace as the sandbox workspace so preset
-        # files under it are visible (rather than minting an empty run dir).
-        with self._run_scope(execution, existing_workspace=self.workspace):
+        with self._run_scope(execution):
             return await self._runtime.capability_executor.execute(invocation)
 
     @contextmanager
@@ -287,8 +286,6 @@ class Runner:
         execution: RunExecution,
         *,
         skill_names: tuple[str, ...] | None = None,
-        workspace_root: str | Path = ".dagent-runs",
-        existing_workspace: str | Path | None = None,
     ) -> Iterator[None]:
         """Enter run-scoped execution context; for sandbox, manage the container."""
         if execution != "sandbox":
@@ -299,11 +296,7 @@ class Runner:
             raise SandboxExecutionError(
                 f"Unsupported sandbox backend: {self.sandbox.backend!r}."
             )
-        workspace = (
-            Path(existing_workspace)
-            if existing_workspace is not None
-            else create_run_workspace(workspace_root)
-        )
+        workspace = self._runtime.capability_catalog.workspace_root
         session = SandboxSession(
             self.sandbox.docker,
             workspace_root=workspace,
@@ -322,6 +315,9 @@ class Runner:
                 yield
         finally:
             session.close()
+
+    def _resolve_run_workspace_root(self, workspace_root: str | Path) -> Path:
+        return resolve_run_workspace_root(self._runtime.capability_catalog.workspace_root, workspace_root)
 
     def _sandbox_skill_dirs(self, skill_names: tuple[str, ...] | None) -> tuple[Path, ...]:
         if not skill_names:
@@ -499,7 +495,7 @@ class Runner:
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
         execution: RunExecution = "local",
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -523,8 +519,6 @@ class Runner:
         with self._run_scope(
             resolved_execution,
             skill_names=skill_names,
-            workspace_root=workspace_root,
-            existing_workspace=state.workspace_path if state is not None else None,
         ):
             return await self._run_dispatch(
                 target,
@@ -548,7 +542,7 @@ class Runner:
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -564,6 +558,7 @@ class Runner:
                 mode="auto",
                 review_level=review or target.review,
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
+                workspace_root=self._resolve_run_workspace_root(workspace_root),
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
                 on_event=on_event,
@@ -579,6 +574,7 @@ class Runner:
                 run_state=state,
                 mode="tool",
                 review_level=review or target.review,
+                workspace_root=self._resolve_run_workspace_root(workspace_root),
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
                 on_event=on_event,
@@ -595,6 +591,7 @@ class Runner:
                 mode="dag",
                 review_level=review or target.review,
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
+                workspace_root=self._resolve_run_workspace_root(workspace_root),
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
                 on_event=on_event,
@@ -612,7 +609,7 @@ class Runner:
             return await self._runtime.run_dag_spec(
                 spec,
                 graph_input=graph_input,
-                workspace_root=workspace_root,
+                workspace_root=self._resolve_run_workspace_root(workspace_root),
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -628,7 +625,7 @@ class Runner:
             return await self._runtime.run_dag_spec(
                 self._resolve_spec_capability_metadata(target),
                 graph_input=graph_input,
-                workspace_root=workspace_root,
+                workspace_root=self._resolve_run_workspace_root(workspace_root),
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -646,7 +643,7 @@ class Runner:
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
         execution: RunExecution = "local",
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
@@ -763,7 +760,6 @@ class Runner:
         with self._run_scope(
             resolved_execution,
             skill_names=resume_state.capability_scope.skills if resume_state is not None else None,
-            existing_workspace=resume_state.workspace_path if resume_state is not None else None,
         ):
             return await self._runtime.resume_review(
                 decision.review_id,
@@ -940,7 +936,10 @@ def _assemble_runtime(
     runtime_dag_agent = RuntimeDAGAgent(
         loop=DAGAgentLoop(
             provider=provider,
-            dag_executor=DAGExecutor(capability_executor=capability_executor),
+            dag_executor=DAGExecutor(
+                capability_executor=capability_executor,
+                capability_workspace_root=catalog.workspace_root,
+            ),
             tool_adapter=tool_adapter,
             max_cycles=dag_max_cycles,
         ),

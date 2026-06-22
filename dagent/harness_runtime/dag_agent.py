@@ -47,12 +47,14 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityNodePayload,
     RunTrace,
+    RunTraceError,
     RunTraceNode,
     RunTraceStatus,
     RunState,
     StartNodePayload,
     iter_dag_invocations,
 )
+from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 from dagent.schemas.node import NodeStatus
 from dagent.state import PromptBuilder, PromptRequest
 
@@ -104,6 +106,8 @@ class DAGAgent:
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
         dynamic_adjust: bool = True,
+        workspace_path: str | Path | None = None,
+        dag_executor: DAGExecutor | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -115,6 +119,8 @@ class DAGAgent:
             review_level=review_level,
             runtime_mode=runtime_mode,
             dynamic_adjust=dynamic_adjust,
+            workspace_path=workspace_path,
+            dag_executor=dag_executor,
             capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,
@@ -129,6 +135,8 @@ class DAGAgent:
         review_level: ReviewLevel = "fast",
         runtime_mode: str = "auto",
         dynamic_adjust: bool = True,
+        workspace_path: str | Path | None = None,
+        dag_executor: DAGExecutor | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -147,6 +155,8 @@ class DAGAgent:
             build_user_message=self.build_request_user_message,
             runtime_mode=runtime_mode,
             dynamic_adjust=dynamic_adjust,
+            workspace_path=workspace_path,
+            dag_executor=dag_executor,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -164,6 +174,7 @@ class DAGAgent:
         approved: bool = True,
         review_level: ReviewLevel | None = None,
         feedback: str | None = None,
+        dag_executor: DAGExecutor | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -181,6 +192,7 @@ class DAGAgent:
             feedback=feedback,
             messages=provider_messages,
             build_user_message=self.build_request_user_message,
+            dag_executor=dag_executor,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -305,6 +317,8 @@ class DAGAgentLoop:
         build_user_message: Callable[..., dict[str, str]],
         runtime_mode: str = "auto",
         dynamic_adjust: bool = True,
+        workspace_path: str | Path | None = None,
+        dag_executor: DAGExecutor | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -320,6 +334,7 @@ class DAGAgentLoop:
             review_level=review_level,
             runtime_mode=runtime_mode,  # type: ignore[arg-type]
             dynamic_adjust=dynamic_adjust,
+            workspace_path=None if workspace_path is None else str(workspace_path),
             capability_scope=capability_scope_to_state(capability_scope),
         )
         result = await self.execute(
@@ -327,6 +342,7 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             entry_observation=request,
+            dag_executor=dag_executor,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -339,7 +355,7 @@ class DAGAgentLoop:
         *,
         run_id: str | None = None,
         graph_input: Any = None,
-        workspace_root: str | Path = ".dagent-runs",
+        workspace_root: str | Path = DEFAULT_RUNS_DIR,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -352,7 +368,14 @@ class DAGAgentLoop:
             capabilities=self.tool_adapter.capabilities(self.enabled_toolsets),
         )
         dag = self.prepare_for_review(dag)
-        workspace = create_run_workspace(workspace_root)
+        capability_workspace_root = (
+            self.dag_executor.capability_workspace_root
+            or self.dag_executor.capability_executor.workspace_root
+        )
+        workspace = create_run_workspace(
+            resolve_run_workspace_root(capability_workspace_root, workspace_root),
+            run_id=run_id,
+        )
         artifact_states = init_artifact_states(spec.artifacts)
         materialized_artifact_ids = materialize_artifact_uploads(
             artifact_uploads or {},
@@ -384,6 +407,7 @@ class DAGAgentLoop:
         dag_executor = DAGExecutor(
             capability_executor=self.dag_executor.capability_executor,
             workspace_path=workspace,
+            capability_workspace_root=capability_workspace_root,
             artifacts=spec.artifacts,
             artifact_states=artifact_states,
             spec_id=spec.id,
@@ -404,9 +428,14 @@ class DAGAgentLoop:
             trace.root.status = "failed"
             record.dag.status = "failed"
         if trace.status == "failed":
+            failure_message = (
+                trace.root.error.message
+                if trace.root.error is not None
+                else "DAG execution failed."
+            )
             _mark_planned_artifacts_failed(
                 dag_executor.artifact_states,
-                "DAG execution failed.",
+                failure_message,
             )
             trace.artifacts = dict(dag_executor.artifact_states)
         final_response = dag_run_fallback_message(record, trace)
@@ -446,6 +475,7 @@ class DAGAgentLoop:
         feedback: str | None = None,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
+        dag_executor: DAGExecutor | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -489,6 +519,7 @@ class DAGAgentLoop:
                 observation,
                 messages=messages,
                 build_user_message=build_user_message,
+                dag_executor=dag_executor,
                 on_token=on_token,
                 on_event=on_event,
                 on_dag=on_dag,
@@ -517,6 +548,7 @@ class DAGAgentLoop:
 
         result = await self.execute(
             record,
+            dag_executor=dag_executor,
             messages=messages,
             build_user_message=build_user_message,
             on_token=on_token,
@@ -585,6 +617,8 @@ class DAGAgentLoop:
                         trace,
                         on_dag,
                         dag_executor=active_executor,
+                        error_message=str(exc),
+                        error_code=type(exc).__name__,
                     )
                     failed_node_id = _latest_failed_node_id_from_trace(
                         trace,
@@ -687,6 +721,7 @@ class DAGAgentLoop:
         *,
         messages: list[dict[str, Any]],
         build_user_message: Callable[..., dict[str, str]],
+        dag_executor: DAGExecutor | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         on_dag: Callable[[DAG], None] | None = None,
@@ -696,6 +731,7 @@ class DAGAgentLoop:
             messages=messages,
             build_user_message=build_user_message,
             entry_observation=observation,
+            dag_executor=dag_executor,
             on_token=on_token,
             on_event=on_event,
             on_dag=on_dag,
@@ -737,6 +773,8 @@ class DAGAgentLoop:
         on_dag: Callable[[DAG], None] | None = None,
         *,
         dag_executor: DAGExecutor | None = None,
+        error_message: str | None = None,
+        error_code: str = "",
     ) -> RunTrace:
         if trace is None:
             trace = _empty_run_trace(run_id=record.run_id, dag=record.dag)
@@ -750,6 +788,8 @@ class DAGAgentLoop:
             _node_by_id(record.dag, failed_id).status = "failed"
         record.dag.status = "failed"
         trace.root.status = "failed"
+        if error_message:
+            trace.root.error = RunTraceError(message=error_message, code=error_code)
         record.trace = trace
         _emit_dag(on_dag, record.dag)
         return trace
@@ -1025,7 +1065,10 @@ def dag_run_fallback_message(record: RunState, trace: RunTrace) -> str:
         "Node results:",
     ]
     if not node_traces:
-        lines.append("- No completed node results were recorded.")
+        if trace.root.error is not None:
+            lines.append(f"- Run failed: {trace.root.error.message}")
+        else:
+            lines.append("- No completed node results were recorded.")
     for node_id, node_trace in node_traces.items():
         status = node_trace.status
         response = str(node_trace.output or "").strip() or (

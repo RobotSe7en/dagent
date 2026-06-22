@@ -8,7 +8,6 @@ Run from the repository root:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import dagent
 from dagent.providers import Provider
@@ -27,7 +26,6 @@ async def main() -> None:
     )
     agent = dagent.ToolAgent(profile=profile)
     runner = dagent.Runner(
-        workspace=Path(__file__).resolve().parents[0],
         provider=provider,
     )
     async for event in runner.stream(

@@ -75,7 +75,7 @@ async def main():
         model="your-model",
         api_key_env="OPENAI_API_KEY",
     )
-    runner = dagent.Runner(workspace=".", provider=provider, capabilities=[echo])
+    runner = dagent.Runner(workspace=".dagent", provider=provider, capabilities=[echo])
     agent = dagent.ToolAgent(
         profile="conversation",
         capabilities=["tool.echo"],
@@ -136,7 +136,7 @@ async def main():
 
     dagent.validate_dag_spec(dag.to_dag_spec())
 
-    runner = dagent.Runner(provider=provider, workspace=".")
+    runner = dagent.Runner(provider=provider, workspace=".dagent")
     result = await runner.run(dag, graph_input="dagent")
     print(result.output_text)
     runner.close()

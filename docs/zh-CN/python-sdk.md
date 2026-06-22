@@ -52,7 +52,7 @@ provider = dagent.Provider(
     model="your-model",
     api_key_env="OPENAI_API_KEY",
 )
-runner = dagent.Runner(provider=provider, workspace=".")
+runner = dagent.Runner(provider=provider, workspace=".dagent")
 ```
 
 ## 最小 Tool

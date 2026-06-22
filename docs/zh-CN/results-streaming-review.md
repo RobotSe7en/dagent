@@ -59,6 +59,9 @@ print(result.node_value("search"))
 print(result.artifact_state("report").status)
 ```
 
+当 `workspace_root` 不是绝对路径时，它会相对 runner workspace 解析。使用默认
+runner workspace 时，运行 artifact 会写到 `.dagent/runs/<run_id>`。
+
 `DAGRun` 仍然是 API projections 使用的 schema，并且可以通过静态 DAG runs 的
 `result.dag_run` 访问。
 

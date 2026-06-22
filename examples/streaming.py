@@ -8,7 +8,6 @@ Run from the repository root:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import dagent
 from dagent.providers import ChatResponse, MockProvider
@@ -19,7 +18,6 @@ async def main() -> None:
         ChatResponse(content="<think>checking</think>The answer is ready."),
     ])
     runner = dagent.Runner(
-        workspace=Path(__file__).resolve().parents[1],
         provider=provider,
     )
     agent = dagent.ToolAgent(profile="conversation")

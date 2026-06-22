@@ -1,4 +1,4 @@
-"""Global YAML configuration."""
+"""Configuration models, loading helpers, and default runtime paths."""
 
 from __future__ import annotations
 
@@ -10,6 +10,19 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from dagent.schemas.sandbox import SandboxConfig
+
+
+DEFAULT_WORKSPACE = ".dagent"
+DEFAULT_RUNS_DIR = "runs"
+
+
+def resolve_run_workspace_root(workspace_root: str | Path, run_workspace_root: str | Path) -> Path:
+    """Resolve a run root relative to the configured dagent workspace."""
+
+    root = Path(run_workspace_root).expanduser()
+    if root.is_absolute():
+        return root.resolve()
+    return (Path(workspace_root).expanduser() / root).resolve()
 
 
 class ReasoningConfig(BaseModel):

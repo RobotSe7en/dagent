@@ -169,7 +169,7 @@ const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
 const riskRank: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
-const defaultWorkspaceRoot = '.dagent-runs';
+const defaultWorkspaceRoot = 'runs';
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -3045,7 +3045,7 @@ function WorkspaceSidebar({
       <div className="sidebar-foot">
         <div className="workspace-root-chip">
           <span />
-          <code>.dagent-runs</code>
+          <code>.dagent/runs</code>
         </div>
         <div className="sidebar-user">
           <div>RX</div>
@@ -5003,7 +5003,7 @@ function RunDagDialog({
   const state = running ? 'running' : run?.status ?? 'ready';
   const startLabel = running ? '运行中...' : run ? '再次运行' : '开始运行';
   const riskLabel = summary.riskyNodes.length ? `${summary.riskyNodes.length} 个中/高` : '0';
-  const workspacePath = run?.workspace_path || '.dagent-runs';
+  const workspacePath = run?.workspace_path || '.dagent/runs';
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="运行编排">
       <div className="run-dialog">

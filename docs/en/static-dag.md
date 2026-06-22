@@ -97,8 +97,8 @@ Static DAG arguments can contain value references. They serialize as structured
 | `node.content` | Previous node text content |
 | `node.status` | Previous node status |
 | `node.steps` | Previous node step count |
-| `artifact.path` | First declared artifact path |
-| `artifact.paths` | All declared artifact paths |
+| `artifact.path` | First artifact path relative to the capability workspace, for tool arguments |
+| `artifact.paths` | All artifact paths relative to the capability workspace, for tool arguments |
 | `artifact.absolute_path` | First artifact path resolved inside the run workspace |
 | `artifact.absolute_paths` | All artifact paths resolved inside the run workspace |
 | `dag.format("Use {x}", x=node.output)` | Format string after nested refs resolve |
@@ -119,7 +119,9 @@ unknown artifact, or uses a malformed expression.
 ## Artifacts and Boundaries
 
 Artifacts declare files produced or consumed by the DAG. Boundaries constrain
-side effects:
+side effects. For built-in path-aware tools, pass `artifact.path`; custom
+Python tools that consume raw filesystem paths should usually use
+`artifact.absolute_path`:
 
 ```python
 report = dag.artifact("report", "outputs/report.md")
@@ -127,10 +129,10 @@ report = dag.artifact("report", "outputs/report.md")
 write_node = dagent.Node(
     "write_report",
     target=write_note,
-    inputs={"path": report.path, "content": search_node.output},
+    inputs={"path": report.absolute_path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        allowed_paths=[report.path.as_expr()],
+        allowed_paths=[report.absolute_path.as_expr()],
     ),
 )
 ```
