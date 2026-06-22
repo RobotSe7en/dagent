@@ -121,7 +121,6 @@ def test_dag_builder_user_node_infers_artifact_inputs_from_boundary() -> None:
         target="tool.read_file",
         inputs={"path": "inputs/source.md"},
         boundary=dagent.Boundary(
-            mode="read_only",
             allowed_paths=[source.path.as_expr()],
         ),
     )

@@ -468,7 +468,7 @@ class Dag:
                 max_items=node.max_items,
                 max_concurrency=node.max_concurrency,
             )
-            return payload, [over, invocation.arguments, boundary.allowed_paths, boundary.allowed_commands]
+            return payload, [over, invocation.arguments, boundary.allowed_paths]
         if isinstance(node.target, Dag):
             if node.boundary is not None:
                 raise ValueError("Subgraph nodes do not accept a boundary; set boundaries on child nodes.")
@@ -479,7 +479,7 @@ class Dag:
         invocation, boundary = self._capability_invocation(node)
         return (
             CapabilityNodePayload(type="capability", invocation=invocation),
-            [invocation.arguments, boundary.allowed_paths, boundary.allowed_commands],
+            [invocation.arguments, boundary.allowed_paths],
         )
 
     def _capability_invocation(self, node: Node) -> tuple[CapabilityInvocation, Boundary]:
@@ -490,7 +490,7 @@ class Dag:
         if not isinstance(inputs, dict):
             raise TypeError(f"Node '{node.id}' inputs must be a dict for capability targets.")
         arguments = _normalize_arguments(inputs)
-        boundary = node.boundary or Boundary(mode="read_only", allowed_paths=["."])
+        boundary = node.boundary or Boundary(allowed_paths=["."])
         invocation = CapabilityInvocation(
             capability_id=capability_id,
             kind=kind,  # type: ignore[arg-type]

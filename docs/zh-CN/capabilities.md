@@ -123,14 +123,13 @@ write_node = dagent.Node(
     inputs={"path": report.path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        mode="write_limited",
         allowed_paths=[report.path.as_expr()],
     ),
 )
 ```
 
-Boundary modes 包括 `read_only`、`write_limited` 和 `full`。Boundary values 可以是字面量
-字符串，也可以是结构化 value references。
+Boundary 声明节点可以读取或写入的路径。Boundary values 可以是字面量字符串，也可以是
+结构化 value references。
 
 ## Capability Policies
 

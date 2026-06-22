@@ -130,7 +130,6 @@ write_node = dagent.Node(
     inputs={"path": report.path, "content": search_node.output},
     artifact_outputs=[report],
     boundary=dagent.Boundary(
-        mode="write_limited",
         allowed_paths=[report.path.as_expr()],
     ),
 )

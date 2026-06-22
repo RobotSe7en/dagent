@@ -119,7 +119,7 @@ class ToolAgent:
         on_event: LoopEventHandler | None = None,
     ) -> LoopOutcome:
         """Append a user turn to the tool-agent thread and run the bounded loop."""
-        boundary = Boundary(mode="read_only", allowed_paths=["."])
+        boundary = Boundary(allowed_paths=["."])
         return await self.run_messages(
             [
                 self.prompt_builder.build_user_message(
@@ -152,7 +152,7 @@ class ToolAgent:
             self.messages,
             run_id=run_id,
             review_level=review_level,
-            boundary=boundary or Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=boundary or Boundary(allowed_paths=["."]),
             capability_scope=capability_scope,
             on_token=on_token,
             on_event=on_event,

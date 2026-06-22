@@ -228,9 +228,7 @@ def test_compile_infers_boundary_for_command_capability() -> None:
     )
 
     boundary = dag.nodes[0].payload.invocation.boundary
-    assert boundary.mode == "write_limited"
     assert boundary.allowed_paths == ["."]
-    assert boundary.allowed_commands == []
 
 
 def test_plan_spec_rejects_node_goal_and_instructions() -> None:

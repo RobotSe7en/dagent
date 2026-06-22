@@ -75,7 +75,7 @@ def test_tool_agent_loop_returns_plain_text_response(tmp_path: Path) -> None:
     result = run(
         loop.run(
             "Say done",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
 
@@ -92,7 +92,7 @@ def test_tool_agent_loop_streams_response_tokens(tmp_path: Path) -> None:
     result = run(
         loop.run(
             "Say done",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
             on_token=tokens.append,
         )
     )
@@ -246,7 +246,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
     result = run(
         agent.run_messages(
             [{"role": "user", "content": "Read the blocked file"}],
-            boundary=Boundary(mode="read_only", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -286,7 +286,7 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Read the blocked file"}],
-            boundary=Boundary(mode="read_only", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -326,7 +326,7 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Write the blocked file"}],
-            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -372,7 +372,7 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Write blocked and read allowed"}],
-            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -410,7 +410,7 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Write the blocked file"}],
-            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -430,7 +430,7 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
 
 
 def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tmp_path: Path) -> None:
-    target = tmp_path / "notes.txt"
+    target = tmp_path / "blocked" / "notes.txt"
     provider = MockProvider(
         [
             ChatResponse(
@@ -438,7 +438,7 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
                     ToolCall(
                         id="call_1",
                         name="write_file",
-                        arguments={"path": "notes.txt", "content": "approved"},
+                        arguments={"path": "blocked/notes.txt", "content": "approved"},
                     )
                 ]
             ),
@@ -449,7 +449,7 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Write a file"}],
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="careful",
         )
     )
@@ -457,12 +457,10 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
     assert first.state.status == "awaiting_review"
     assert first.state.pending_review is not None
     assert first.state.pending_review.message == "Review boundary override: tool.write_file"
-    assert first.state.pending_review.payload == {
-        "capability_id": "tool.write_file",
-        "risk": "medium",
-        "reason": "boundary_violation",
-        "error": "read_only boundary cannot perform write operations.",
-    }
+    assert first.state.pending_review.payload["capability_id"] == "tool.write_file"
+    assert first.state.pending_review.payload["risk"] == "medium"
+    assert first.state.pending_review.payload["reason"] == "boundary_violation"
+    assert "outside allowed paths" in first.state.pending_review.payload["error"]
 
     resumed = run(agent.resume_review(first.state, approved=True))
 
@@ -472,8 +470,8 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
 
 
 def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_path: Path) -> None:
-    first_file = tmp_path / "first.txt"
-    second_file = tmp_path / "second.txt"
+    first_file = tmp_path / "blocked" / "first.txt"
+    second_file = tmp_path / "blocked" / "second.txt"
     provider = MockProvider(
         [
             ChatResponse(
@@ -481,7 +479,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
                     ToolCall(
                         id="call_1",
                         name="write_file",
-                        arguments={"path": "first.txt", "content": "one"},
+                        arguments={"path": "blocked/first.txt", "content": "one"},
                     )
                 ]
             ),
@@ -490,7 +488,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
                     ToolCall(
                         id="call_2",
                         name="write_file",
-                        arguments={"path": "second.txt", "content": "two"},
+                        arguments={"path": "blocked/second.txt", "content": "two"},
                     )
                 ]
             ),
@@ -500,7 +498,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     first = run(
         agent.run_messages(
             [{"role": "user", "content": "Write two files"}],
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -514,7 +512,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     assert resumed.state.pending_review.capability_call == {
         "invocation_id": "call_2",
         "capability_id": "tool.write_file",
-        "arguments": {"path": "second.txt", "content": "two"},
+        "arguments": {"path": "blocked/second.txt", "content": "two"},
     }
     assert resumed.state.pending_review.payload["reason"] == "boundary_violation"
 
@@ -546,7 +544,7 @@ def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) ->
     result = run(
         agent.run_messages(
             [{"role": "user", "content": "Read through shell"}],
-            boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+            boundary=Boundary(allowed_paths=["allowed"]),
             review_level="fast",
         )
     )
@@ -578,7 +576,7 @@ def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> No
     result = run(
         agent.run_messages(
             [{"role": "user", "content": "Run a dangerous command"}],
-            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
             review_level="fast",
         )
     )
@@ -613,7 +611,7 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     result = run(
         loop.run(
             "Read notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
 
@@ -657,7 +655,7 @@ def test_tool_agent_loop_execution_context_keeps_evidence_after_500_chars(
     result = run(
         loop.run(
             "Read notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
 
@@ -686,7 +684,7 @@ def test_tool_agent_loop_marks_truncated_execution_context(tmp_path: Path) -> No
     result = run(
         loop.run(
             "Read notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
 
@@ -715,7 +713,7 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
     result = run(
         loop.run(
             "Read notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
             on_event=events.append,
         )
     )
@@ -773,7 +771,7 @@ def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
     result = run(
         loop.run(
             "Read notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
             max_steps=1,
         )
     )
@@ -791,7 +789,7 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
                     ToolCall(
                         id="call_1",
                         name="write_file",
-                        arguments={"path": "notes.txt", "content": "nope"},
+                        arguments={"path": "blocked/notes.txt", "content": "nope"},
                     )
                 ]
             ),
@@ -803,7 +801,7 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
     result = run(
         loop.run(
             "Write notes",
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["allowed"]),
         )
     )
 

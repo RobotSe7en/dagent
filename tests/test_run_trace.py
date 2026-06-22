@@ -105,7 +105,7 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
         tool_adapter=_tool_adapter(executor.catalog),
     )
 
-    outcome = run(loop.run("say hi", boundary=Boundary(mode="read_only")))
+    outcome = run(loop.run("say hi", boundary=Boundary()))
 
     assert outcome.state.trace is not None
     assert outcome.state.trace.root.kind == "run"

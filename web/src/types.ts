@@ -1,5 +1,4 @@
 export type RiskLevel = 'low' | 'medium' | 'high';
-export type BoundaryMode = 'read_only' | 'write_limited' | 'full';
 export type ReviewLevel = 'fast' | 'careful';
 
 export type ValuePathItem = string | number;
@@ -17,9 +16,7 @@ export interface ValueBinding {
 export type BoundaryValue = string | ValueBinding;
 
 export interface Boundary {
-  mode: BoundaryMode;
   allowed_paths?: BoundaryValue[];
-  allowed_commands?: BoundaryValue[];
 }
 
 export type CapabilityKind = 'tool' | 'mcp' | 'skill' | 'agent' | 'memory';

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dagent.schemas.common import Boundary, RiskLevel
 
@@ -41,6 +41,8 @@ class CapabilityDefinition(BaseModel):
 
 
 class CapabilityInvocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     invocation_id: str = Field(default_factory=lambda: f"run_inv_{uuid4().hex}")
     capability_id: str
     kind: CapabilityKind

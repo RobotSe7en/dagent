@@ -300,7 +300,7 @@ def test_compile_dag_spec_copies_capability_policy_risk() -> None:
                 "write",
                 tool="write_file",
                 args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="write_limited", allowed_paths=["notes.md"]),
+                boundary=Boundary(allowed_paths=["notes.md"]),
             )
         ],
     )
@@ -366,7 +366,7 @@ def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> 
                     "write",
                     tool="write_note",
                     args={"path": "notes/output.txt", "content": "hi"},
-                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                    boundary=Boundary(allowed_paths=["notes/output.txt"]),
                     outputs=["note"],
                 )
             ],
@@ -407,7 +407,6 @@ def test_executor_resolves_artifact_exprs_in_arguments_and_boundary(tmp_path: Pa
                         "content": "hi",
                     },
                     boundary=Boundary(
-                        mode="write_limited",
                         allowed_paths=[_expr({"type": "artifact", "artifact_id": "note", "field": "path"})],
                     ),
                     outputs=["note"],
@@ -514,7 +513,7 @@ def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Pa
                 "write",
                 tool="write_note",
                 args={"path": "notes/output.txt", "content": "hi"},
-                boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                boundary=Boundary(allowed_paths=["notes/output.txt"]),
                 outputs=["note"],
             )
         ],
@@ -570,7 +569,7 @@ def test_dag_agent_loop_run_static_preserves_partial_state_on_failure(tmp_path: 
                 "write",
                 tool="write_note",
                 args={"path": "notes/output.txt", "content": "hi"},
-                boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                boundary=Boundary(allowed_paths=["notes/output.txt"]),
                 outputs=["note"],
             ),
             _node(
@@ -653,7 +652,7 @@ def _write_note_dag(task_id: str, content: str):
                     "write",
                     tool="write_note",
                     args={"path": "notes/output.txt", "content": content},
-                    boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                    boundary=Boundary(allowed_paths=["notes/output.txt"]),
                     outputs=["note"],
                 )
             ],

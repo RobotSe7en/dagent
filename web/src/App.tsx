@@ -85,7 +85,6 @@ import {
 import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentProfile,
-  BoundaryMode,
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
@@ -167,11 +166,9 @@ const riskClass: Record<RiskLevel, string> = {
 };
 
 const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
-const boundaryModes: BoundaryMode[] = ['read_only', 'write_limited', 'full'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
 const riskRank: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
-const boundaryRank: Record<BoundaryMode, number> = { read_only: 0, write_limited: 1, full: 2 };
 const defaultWorkspaceRoot = '.dagent-runs';
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
@@ -254,7 +251,6 @@ function isCapabilityNode(node: DagNode): node is DagNode & { payload: Capabilit
 
 interface NodeReviewInfo {
   risk: RiskLevel;
-  boundaryMode: BoundaryMode;
   hasBoundary: boolean;
   reviewAttention: boolean;
 }
@@ -266,9 +262,7 @@ function normalizeInvocation(invocation: CapabilityInvocation): CapabilityInvoca
     kind: invocation.kind ?? 'tool',
     arguments: invocation.arguments ?? {},
     boundary: {
-      mode: invocation.boundary?.mode ?? 'read_only',
       allowed_paths: invocation.boundary?.allowed_paths ?? ['.'],
-      allowed_commands: invocation.boundary?.allowed_commands ?? [],
     },
     risk: invocation.risk ?? 'low',
   };
@@ -344,7 +338,6 @@ function nodeReviewInfo(node: DagNode): NodeReviewInfo {
   }
   return {
     risk: 'low',
-    boundaryMode: 'read_only',
     hasBoundary: false,
     reviewAttention: false,
   };
@@ -352,12 +345,10 @@ function nodeReviewInfo(node: DagNode): NodeReviewInfo {
 
 function invocationReviewInfo(invocation: CapabilityInvocation): NodeReviewInfo {
   const risk = invocation.risk ?? 'low';
-  const boundaryMode = invocation.boundary?.mode ?? 'read_only';
   return {
     risk,
-    boundaryMode,
     hasBoundary: true,
-    reviewAttention: risk !== 'low' || boundaryMode === 'full',
+    reviewAttention: risk !== 'low',
   };
 }
 
@@ -366,7 +357,6 @@ function nodesReviewInfo(nodes: DagNode[]): NodeReviewInfo {
     (summary, node) => mergeReviewInfo(summary, nodeReviewInfo(node)),
     {
       risk: 'low',
-      boundaryMode: 'read_only',
       hasBoundary: false,
       reviewAttention: false,
     },
@@ -375,12 +365,8 @@ function nodesReviewInfo(nodes: DagNode[]): NodeReviewInfo {
 
 function mergeReviewInfo(left: NodeReviewInfo, right: NodeReviewInfo): NodeReviewInfo {
   const risk = riskRank[right.risk] > riskRank[left.risk] ? right.risk : left.risk;
-  const boundaryMode = boundaryRank[right.boundaryMode] > boundaryRank[left.boundaryMode]
-    ? right.boundaryMode
-    : left.boundaryMode;
   return {
     risk,
-    boundaryMode,
     hasBoundary: left.hasBoundary || right.hasBoundary,
     reviewAttention: left.reviewAttention || right.reviewAttention,
   };
@@ -419,9 +405,7 @@ function dagNodeFromUserNode(node: UserDagNode): DagNode {
         kind: capabilityKindFromTarget(normalized.target),
         arguments: normalized.inputs ?? {},
         boundary: normalized.boundary ?? {
-          mode: 'read_only',
           allowed_paths: ['.'],
-          allowed_commands: [],
         },
         risk: riskFromTarget(normalized.target),
       },
@@ -547,7 +531,6 @@ interface DesignDagNodeData {
   detail: string;
   kind: string;
   risk: RiskLevel;
-  boundaryMode: BoundaryMode;
   reviewAttention: boolean;
   status: string;
 }
@@ -561,7 +544,6 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
     const invocation = payload.type === 'capability' || payload.type === 'map' ? payload.invocation : null;
     const reviewInfo = nodeReviewInfo(item);
     const risk = reviewInfo.risk;
-    const boundaryMode = reviewInfo.boundaryMode;
     const reviewAttention = reviewInfo.reviewAttention;
     const status = item.status ?? 'planned';
     const depth = depths.get(item.id) ?? 0;
@@ -578,7 +560,6 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
         detail,
         kind: invocation?.kind ?? item.payload.type,
         risk,
-        boundaryMode,
         reviewAttention,
         status,
       },
@@ -1566,9 +1547,7 @@ export function App() {
               kind: selectedCapability?.kind ?? 'tool',
               arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
               boundary: {
-                mode: 'read_only',
                 allowed_paths: ['.'],
-                allowed_commands: [],
               },
               risk: capabilityRisk(selectedCapability),
             },
@@ -1656,9 +1635,7 @@ export function App() {
                 kind: firstInvocation?.kind ?? 'tool',
                 arguments: ensureSchemaArguments({}, firstCapability?.parameters),
                 boundary: {
-                  mode: 'read_only',
                   allowed_paths: ['.'],
-                  allowed_commands: [],
                 },
                 risk: 'low',
               },
@@ -1713,9 +1690,7 @@ export function App() {
               kind: selectedCapability?.kind ?? 'tool',
               arguments: ensureSchemaArguments({}, selectedCapability?.parameters),
               boundary: {
-                mode: 'read_only',
                 allowed_paths: ['.'],
-                allowed_commands: [],
               },
               risk: capabilityRisk(selectedCapability),
             },
@@ -4501,20 +4476,6 @@ function DynamicOrchestrationWorkspace({
                         </select>
                       </div>
                     </div>
-                    <div className="inspector-field">
-                      <label>边界</label>
-                      <select
-                        value={selectedInvocation.boundary?.mode ?? 'read_only'}
-                        onChange={(event) => patchSelectedInvocation({
-                          boundary: {
-                            ...(selectedInvocation.boundary ?? { allowed_paths: ['.'], allowed_commands: [] }),
-                            mode: event.target.value as BoundaryMode,
-                          },
-                        })}
-                      >
-                        {boundaryModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
-                      </select>
-                    </div>
                     <InspectorArgumentEditor
                       value={selectedInvocation.arguments ?? {}}
                       parameters={selectedCapability?.parameters}
@@ -4652,9 +4613,7 @@ function OrchestrationWorkspace({
       : current.filter((id) => id !== artifactId);
     if (field === 'inputs' && checked) {
       const boundary = selectedInvocation.boundary ?? {
-        mode: 'read_only' as BoundaryMode,
         allowed_paths: ['.'],
-        allowed_commands: [],
       };
       onPatchNode(selectedNode.id, {
         [field]: next,
@@ -4826,20 +4785,6 @@ function OrchestrationWorkspace({
                       {riskLevels.map((risk) => <option key={risk} value={risk}>{risk}</option>)}
                     </select>
                   </div>
-                </div>
-                <div className="inspector-field">
-                  <label>边界</label>
-                  <select
-                    value={selectedInvocation.boundary?.mode ?? 'read_only'}
-                    onChange={(event) => patchSelectedInvocation({
-                      boundary: {
-                        ...(selectedInvocation.boundary ?? { allowed_paths: ['.'], allowed_commands: [] }),
-                        mode: event.target.value as BoundaryMode,
-                      },
-                    })}
-                  >
-                    {boundaryModes.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
-                  </select>
                 </div>
                 <div className="inspector-field">
                   <InspectorArgumentEditor
@@ -5227,9 +5172,7 @@ function OrchestrationNodeEditor({
   const dependsOn = dag.edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
   const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent' && capability.enabled);
   const boundary = invocation.boundary ?? {
-    mode: 'read_only' as BoundaryMode,
     allowed_paths: ['.'],
-    allowed_commands: [],
   };
   const artifactItems = Object.values(artifacts).sort(compareArtifactsByPath);
   const patchInvocation = (patch: Partial<typeof invocation>) =>
@@ -5360,31 +5303,11 @@ function OrchestrationNodeEditor({
       </label>
       <details className="node-policy-details">
         <summary>Execution Policy</summary>
-        <div className="two-col">
-          <label>
-            Boundary
-            <select
-              value={boundary.mode}
-              onChange={(event) => patchInvocation({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })}
-            >
-              {boundaryModes.map((mode) => (
-                <option key={mode} value={mode}>{mode}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Allowed Paths
-            <BoundaryValueEditor
-              values={boundary.allowed_paths ?? []}
-              onChange={(allowedPaths) => patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })}
-            />
-          </label>
-        </div>
         <label>
-          Allowed Commands
+          Allowed Paths
           <BoundaryValueEditor
-            values={boundary.allowed_commands ?? []}
-            onChange={(allowedCommands) => patchInvocation({ boundary: { ...boundary, allowed_commands: allowedCommands } })}
+            values={boundary.allowed_paths ?? []}
+            onChange={(allowedPaths) => patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })}
           />
         </label>
       </details>
@@ -5908,7 +5831,7 @@ function CapabilityDirectory({
                 <div className="tool-info-table">
                   <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
                   <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
-                  <div><span>边界</span><strong>{toolBoundaryLabel(selectedTool)}</strong></div>
+                  <div><span>执行</span><strong>{toolExecutionLabel(selectedTool)}</strong></div>
                   <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
                 </div>
                 <section>
@@ -6021,12 +5944,10 @@ function profilePathLabel(profile: AgentProfile): string {
     : `profiles/${profile.name}.md`;
 }
 
-function toolBoundaryLabel(capability: CapabilityDefinition): string {
-  const configured = capability.config.boundary ?? capability.config.boundary_mode ?? capability.config.mode;
-  if (typeof configured === 'string' && configured.trim()) return configured;
+function toolExecutionLabel(capability: CapabilityDefinition): string {
   if (capability.policy.sandbox_required) return 'sandbox';
   if (capability.policy.network) return 'network';
-  return 'read_only';
+  return 'local';
 }
 
 function capabilityStatusLabel(capability: CapabilityDefinition): string {
@@ -6709,9 +6630,7 @@ function NodeEditor({
   }
   const invocation = node.payload.invocation;
   const boundary = invocation.boundary ?? {
-    mode: 'read_only' as BoundaryMode,
     allowed_paths: ['.'],
-    allowed_commands: [],
   };
   const patchInvocation = (patch: Partial<typeof invocation>) =>
     onPatch({ payload: { type: 'capability', invocation: { ...invocation, ...patch } } });
@@ -6786,38 +6705,12 @@ function NodeEditor({
       </label>
       <details className="node-policy-details">
         <summary>Execution Policy</summary>
-        <div className="two-col">
-          <label>
-            Boundary
-            <select
-              value={boundary.mode}
-              onChange={(event) =>
-                patchInvocation({ boundary: { ...boundary, mode: event.target.value as BoundaryMode } })
-              }
-            >
-              {boundaryModes.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Allowed Paths
-            <BoundaryValueEditor
-              values={boundary.allowed_paths ?? []}
-              onChange={(allowedPaths) =>
-                patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })
-              }
-            />
-          </label>
-        </div>
         <label>
-          Allowed Commands
+          Allowed Paths
           <BoundaryValueEditor
-            values={boundary.allowed_commands ?? []}
-            onChange={(allowedCommands) =>
-              patchInvocation({ boundary: { ...boundary, allowed_commands: allowedCommands } })
+            values={boundary.allowed_paths ?? []}
+            onChange={(allowedPaths) =>
+              patchInvocation({ boundary: { ...boundary, allowed_paths: allowedPaths } })
             }
           />
         </label>

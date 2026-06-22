@@ -49,7 +49,7 @@ def test_default_capability_catalog_uses_workspace_root_for_file_capabilities(tm
             capability_id="tool.write_file",
             kind="tool",
             arguments={"path": "notes.txt", "content": "saved"},
-            boundary=Boundary(mode="write_limited", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
     read_result = read_entry.handler(
@@ -57,7 +57,7 @@ def test_default_capability_catalog_uses_workspace_root_for_file_capabilities(tm
             capability_id="tool.read_file",
             kind="tool",
             arguments={"path": "notes.txt"},
-            boundary=Boundary(mode="read_only", allowed_paths=["."]),
+            boundary=Boundary(allowed_paths=["."]),
         )
     )
 

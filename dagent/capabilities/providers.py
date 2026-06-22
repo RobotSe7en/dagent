@@ -21,7 +21,6 @@ from dagent.schemas import (
     CapabilityResult,
 )
 from dagent.capabilities.tools.boundary import (
-    enforce_action_allowed,
     enforce_command_allowed,
     enforce_command_paths_allowed,
     enforce_path_allowed,
@@ -379,7 +378,6 @@ def _agent_boundary(
     if workspace_path not in allowed_paths:
         allowed_paths.append(workspace_path)
     return invocation.boundary.model_copy(update={
-        "mode": "full",
         "allowed_paths": allowed_paths,
     })
 
@@ -424,8 +422,6 @@ def _execute_tool(
     boundary_override_approved = (
         getattr(context, "approved_boundary_invocation_id", None) == invocation.invocation_id
     )
-    if not boundary_override_approved:
-        enforce_action_allowed(tool.action, invocation.boundary)
     checked_args = _merge_tool_arguments(tool, invocation.arguments)
     for arg_name in tool.path_args:
         if boundary_override_approved:
@@ -440,7 +436,7 @@ def _execute_tool(
                 workspace_root,
             )
     for arg_name in tool.command_args:
-        enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+        enforce_command_allowed(str(checked_args[arg_name]))
         if not boundary_override_approved and "cwd" in checked_args:
             enforce_command_paths_allowed(
                 str(checked_args[arg_name]),
@@ -476,12 +472,8 @@ def check_tool_boundary(
     triggering side effects.
     """
     config = definition.config
-    action = config.get("action")
-    if not isinstance(action, str):
-        return None
     checked_args = _merge_definition_arguments(definition, invocation.arguments)
     try:
-        enforce_action_allowed(action, invocation.boundary)
         for arg_name in config.get("path_args") or ():
             enforce_path_allowed(
                 checked_args[arg_name],
@@ -489,7 +481,7 @@ def check_tool_boundary(
                 workspace_root,
             )
         for arg_name in config.get("command_args") or ():
-            enforce_command_allowed(str(checked_args[arg_name]), invocation.boundary)
+            enforce_command_allowed(str(checked_args[arg_name]))
             if "cwd" in checked_args:
                 enforce_command_paths_allowed(
                     str(checked_args[arg_name]),

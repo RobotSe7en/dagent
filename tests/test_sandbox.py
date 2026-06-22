@@ -400,12 +400,12 @@ class _RecordingSession:
         return ToolOutput(content="SANDBOXED", value=None)
 
 
-def _read_file_invocation(mode="read_only"):
+def _read_file_invocation():
     return CapabilityInvocation(
         capability_id="tool.read_file",
         kind="tool",
         arguments={"path": "a.txt"},
-        boundary=Boundary(mode=mode, allowed_paths=["."]),
+        boundary=Boundary(allowed_paths=["."]),
     )
 
 
@@ -440,8 +440,8 @@ def test_sandbox_execution_still_enforces_boundary(tmp_path: Path):
     invocation = CapabilityInvocation(
         capability_id="tool.write_file",
         kind="tool",
-        arguments={"path": "a.txt", "content": "x"},
-        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        arguments={"path": "blocked/a.txt", "content": "x"},
+        boundary=Boundary(allowed_paths=["allowed"]),
     )
     with run_execution_context("sandbox"), sandbox_session_context(session):
         result = run(executor.execute(invocation))
@@ -475,7 +475,7 @@ def test_sandbox_rejects_non_tool_capability(tmp_path: Path):
         capability_id="memory.write",
         kind="memory",
         arguments={"key": "k", "value": "v"},
-        boundary=Boundary(mode="read_only", allowed_paths=["."]),
+        boundary=Boundary(allowed_paths=["."]),
     )
     with run_execution_context("sandbox"), sandbox_session_context(session):
         with pytest.raises(CapabilityExecutionError) as excinfo:

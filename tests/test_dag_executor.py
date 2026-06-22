@@ -133,7 +133,7 @@ def test_risk_override_promotes_write_file_to_medium() -> None:
                 "write",
                 tools=["write_file"],
                 args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="write_limited", allowed_paths=["notes.md"]),
+                boundary=Boundary(allowed_paths=["notes.md"]),
                 risk="low",
             )
         ],
@@ -172,7 +172,7 @@ def test_high_risk_dag_requires_approval() -> None:
         run(executor.execute_next_ready_layer(dag))
 
 
-def test_read_only_broad_paths_does_not_require_approval() -> None:
+def test_low_risk_broad_paths_do_not_require_approval() -> None:
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag = DAG(
         dag_id="dag_1",
@@ -182,7 +182,7 @@ def test_read_only_broad_paths_does_not_require_approval() -> None:
             node(
                 "broad",
                 risk="low",
-                boundary=Boundary(mode="read_only", allowed_paths=["."]),
+                boundary=Boundary(allowed_paths=["."]),
             )
         ],
     )
@@ -302,13 +302,13 @@ def test_executor_treats_unapproved_boundary_violation_as_node_failure() -> None
             node(
                 "write",
                 tools=["write_note"],
-                args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="read_only"),
+                args={"path": "blocked/notes.md", "content": "hi"},
+                boundary=Boundary(allowed_paths=["allowed"]),
             )
         ],
     )
 
-    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+    with pytest.raises(Exception, match="outside allowed paths"):
         run(executor.execute_next_ready_layer(dag))
 
     failed = executor.partial_node_traces["write"]
@@ -327,38 +327,15 @@ def test_executor_approved_status_does_not_authorize_boundary_override() -> None
             node(
                 "write",
                 tools=["write_file"],
-                args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="read_only"),
+                args={"path": "blocked/notes.md", "content": "hi"},
+                boundary=Boundary(allowed_paths=["allowed"]),
                 risk="medium",
             )
         ],
     )
 
-    with pytest.raises(DAGExecutionError, match="read_only boundary cannot perform write operations"):
+    with pytest.raises(DAGExecutionError, match="outside allowed paths"):
         run(executor.execute_next_ready_layer(dag))
-
-
-def test_executor_explicit_boundary_authorization_allows_read_only_write_node() -> None:
-    executor = DAGExecutor(capability_executor=make_capability_executor())
-    dag = DAG(
-        dag_id="dag_1",
-        task_id="task_1",
-        status="approved",
-        nodes=[
-            node(
-                "write",
-                tools=["write_file"],
-                args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="read_only"),
-                risk="medium",
-            )
-        ],
-    )
-
-    result = run(executor.execute_next_ready_layer(dag, approve_node_boundaries=True))
-
-    assert result.status == "completed"
-    assert dag_node_trace(result, "write").output.endswith("notes.md:hi")
 
 
 def test_executor_explicit_boundary_authorization_allows_path_outside_node_allowed_paths() -> None:
@@ -372,7 +349,7 @@ def test_executor_explicit_boundary_authorization_allows_path_outside_node_allow
                 "write",
                 tools=["write_file"],
                 args={"path": "blocked/notes.md", "content": "hi"},
-                boundary=Boundary(mode="write_limited", allowed_paths=["allowed"]),
+                boundary=Boundary(allowed_paths=["allowed"]),
                 risk="medium",
             )
         ],
@@ -395,7 +372,7 @@ def test_approved_dag_still_blocks_hard_boundary_command() -> None:
                 "danger",
                 tools=["shell"],
                 args={"command": "rm -rf /"},
-                boundary=Boundary(mode="full"),
+                boundary=Boundary(),
                 risk="high",
             )
         ],
@@ -414,8 +391,8 @@ def test_executor_embedded_approved_status_does_not_authorize_boundary_override(
             node(
                 "child_write",
                 tools=["write_file"],
-                args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="read_only"),
+                args={"path": "blocked/notes.md", "content": "hi"},
+                boundary=Boundary(allowed_paths=["allowed"]),
             )
         ],
     )
@@ -431,7 +408,7 @@ def test_executor_embedded_approved_status_does_not_authorize_boundary_override(
         ],
     )
 
-    with pytest.raises(DAGExecutionError, match="read_only boundary cannot perform write operations"):
+    with pytest.raises(DAGExecutionError, match="outside allowed paths"):
         run(executor.execute_next_ready_layer(dag))
 
 
@@ -762,18 +739,18 @@ def test_tool_node_boundary_violation_records_failed_node() -> None:
             tool_node(
                 "write_note",
                 tool="write_note",
-                args={"path": "notes.md", "content": "hi"},
-                boundary=Boundary(mode="read_only"),
+                args={"path": "blocked/notes.md", "content": "hi"},
+                boundary=Boundary(allowed_paths=["allowed"]),
             )
         ],
     )
 
-    with pytest.raises(Exception, match="read_only boundary cannot perform write operations"):
+    with pytest.raises(Exception, match="outside allowed paths"):
         run(executor.execute_next_ready_layer(dag))
 
     failed = executor.partial_node_traces["write_note"]
     capability = failed.children[0]
     assert capability.capability_execution.invocation.capability_id == "tool.write_note"
-    assert capability.capability_execution.invocation.arguments == {"path": "notes.md", "content": "hi"}
+    assert capability.capability_execution.invocation.arguments == {"path": "blocked/notes.md", "content": "hi"}
     assert capability.status == "failed"
     assert capability.error.message

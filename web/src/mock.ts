@@ -19,9 +19,7 @@ export const initialDag: Dag = {
           kind: 'tool',
           arguments: { pattern: 'DAG', path: '.' },
           boundary: {
-            mode: 'read_only',
             allowed_paths: ['./'],
-            allowed_commands: [],
           },
           risk: 'medium',
         },
@@ -36,9 +34,7 @@ export const initialDag: Dag = {
           kind: 'tool',
           arguments: { path: 'README.md' },
           boundary: {
-            mode: 'read_only',
             allowed_paths: ['.'],
-            allowed_commands: [],
           },
           risk: 'low',
         },

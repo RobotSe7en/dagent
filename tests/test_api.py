@@ -898,10 +898,46 @@ def test_api_capability_test_infers_shell_boundary() -> None:
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["status"] == "completed"
-    assert result["policy_decision"]["boundary_mode"] == "write_limited"
-    assert result["policy_decision"]["allowed_commands"] == []
+    assert result["policy_decision"] == {"allowed_paths": ["."]}
     assert "1" in result["content"]
     assert "2" in result["content"]
+
+
+def test_api_capability_test_rejects_removed_top_level_boundary_fields() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    command = f'{sys.executable} -c "print(1)"'
+
+    for stale_payload in (
+        {"boundary_mode": "read_only"},
+        {"mode": "read_only"},
+        {"allowed_commands": ["ls"]},
+    ):
+        response = client.post(
+            "/capabilities/tool.shell/test",
+            json={
+                "arguments": {"command": command, "cwd": "."},
+                **stale_payload,
+            },
+        )
+
+        assert response.status_code == 422
+
+
+def test_api_capability_test_rejects_removed_nested_boundary_fields() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app, raise_server_exceptions=False)
+    command = f'{sys.executable} -c "print(1)"'
+
+    response = client.post(
+        "/capabilities/tool.shell/test",
+        json={
+            "arguments": {"command": command, "cwd": "."},
+            "boundary": {"allowed_paths": ["."], "mode": "read_only"},
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_api_rejects_removed_custom_tool_capability_kind() -> None:
@@ -1016,7 +1052,6 @@ def test_api_dag_create_run_and_artifacts() -> None:
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
-                        "mode": "write_limited",
                         "allowed_paths": ["notes/output.txt"],
                     },
                 }
@@ -1081,7 +1116,6 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
-                        "mode": "write_limited",
                         "allowed_paths": [
                             {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
                         ],
@@ -1129,7 +1163,6 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
                     },
                     "artifact_inputs": ["source"],
                     "boundary": {
-                        "mode": "read_only",
                         "allowed_paths": [
                             {"$expr": {"type": "artifact", "artifact_id": "source", "field": "path"}}
                         ],
@@ -1226,7 +1259,6 @@ def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
-                        "mode": "write_limited",
                         "allowed_paths": ["notes/output.txt"],
                     },
                 }
@@ -1275,7 +1307,6 @@ def test_api_dag_run_stream_uses_requested_workspace_root(tmp_path: Path) -> Non
                     },
                     "artifact_outputs": ["note"],
                     "boundary": {
-                        "mode": "write_limited",
                         "allowed_paths": [
                             {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
                         ],

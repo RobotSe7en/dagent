@@ -951,8 +951,8 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert tool_tasks[0].run_id == first.run_id
     assert tool_tasks[0].trace is not None
     assert tool_tasks[0].trace.status == "completed"
-    # write_file runs under the conversation's read_only boundary, so the approved
-    # boundary override settles the pending node as a completed single call.
+    # write_file is medium risk, so the approved capability review settles the
+    # pending node as a completed single call.
     assert capability_trace(tool_tasks[0].trace, "tool.write_file").status == "completed"
     retry_request = provider.requests[2]["messages"]
     assert "Please address these issues." in retry_request[-1]["content"]
@@ -1057,7 +1057,7 @@ def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) ->
                         capability_id="tool.write_file",
                         kind="tool",
                         arguments={"path": "notes/output.txt", "content": "hi"},
-                        boundary=Boundary(mode="write_limited", allowed_paths=["notes/output.txt"]),
+                        boundary=Boundary(allowed_paths=["notes/output.txt"]),
                     ),
                 ),
             )

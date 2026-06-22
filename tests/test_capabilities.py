@@ -34,6 +34,30 @@ def test_capability_kind_rejects_removed_file_and_shell_kinds() -> None:
         CapabilityInvocation(capability_id="shell.say_hello", kind="shell")
 
 
+def test_boundary_rejects_removed_mode_and_allowed_commands_fields() -> None:
+    with pytest.raises(ValidationError):
+        Boundary(mode="read_only", allowed_paths=["."])
+
+    with pytest.raises(ValidationError):
+        Boundary(allowed_paths=["."], allowed_commands=["ls"])
+
+
+def test_capability_invocation_rejects_removed_boundary_peer_fields() -> None:
+    stale_payloads = [
+        {"boundary_mode": "read_only"},
+        {"mode": "read_only"},
+        {"allowed_commands": ["ls"]},
+    ]
+
+    for payload in stale_payloads:
+        with pytest.raises(ValidationError):
+            CapabilityInvocation(
+                capability_id="tool.read_file",
+                kind="tool",
+                **payload,
+            )
+
+
 def test_capability_catalog_replaces_definition_and_handler_atomically() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
@@ -139,7 +163,7 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
 
     invocation = adapter.invocation_from_tool_call(
         ToolCall(id="call_1", name="read_file", arguments={"path": "README.md"}),
-        Boundary(mode="read_only", allowed_paths=["."]),
+        Boundary(allowed_paths=["."]),
         enabled_toolsets=("builtin",),
     )
 
@@ -147,7 +171,7 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     assert invocation.capability_id == "tool.read_file"
     assert invocation.kind == "tool"
     assert invocation.arguments == {"path": "README.md"}
-    assert invocation.boundary.mode == "read_only"
+    assert invocation.boundary.allowed_paths == ["."]
 
 
 def test_capability_tool_adapter_rejects_name_collisions() -> None:

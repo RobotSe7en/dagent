@@ -76,8 +76,10 @@ class ResumeReviewRequest(BaseModel):
 
 
 class CapabilityTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     arguments: dict[str, Any] = Field(default_factory=dict)
-    boundary: dict[str, Any] | None = None
+    boundary: Boundary | None = None
 
 
 class DAGRunRequest(BaseModel):
@@ -1037,8 +1039,7 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
     runner = state.get_runner()
     if runner.get_capability(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
-    boundary = Boundary.model_validate(request.boundary) if request.boundary is not None else None
-    result = await runner.test_capability(capability_id, request.arguments, boundary=boundary)
+    result = await runner.test_capability(capability_id, request.arguments, boundary=request.boundary)
     return {"result": result.model_dump(mode="json")}
 
 
