@@ -163,7 +163,7 @@ class AgentCapabilityProvider:
                 name=name,
                 kind="agent",
                 description=str(config.get("description", "")),
-                parameters=config.get("parameters") or {"type": "object"},
+                parameters=config.get("parameters") or agent_capability_parameters(),
                 policy=CapabilityPolicy(risk=config.get("risk", "medium"), sandbox_required=True),
                 config={"profile": _profile_from_config(name, config).name},
             )
@@ -287,6 +287,25 @@ def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> A
     if context is None:
         return None
     return replace(context, skills=skills)
+
+
+def agent_capability_parameters() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Task prompt for this agent node.",
+                "default": "",
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "Maximum tool-loop steps for this agent node.",
+                "default": 8,
+                "minimum": 1,
+            }
+        },
+    }
 
 
 def template_capability_handler(template: str):

@@ -43,10 +43,28 @@ class ProfileStore:
             content=content,
         )
 
+    def save(self, name: str, content: str) -> AgentProfile:
+        profile_name = _checked_profile_name(name)
+        path = self._profile_path(profile_name)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return self.load(profile_name)
+
+    def delete(self, name: str) -> None:
+        profile_name = _checked_profile_name(name)
+        self._profile_path(profile_name).unlink()
+
     def list_names(self) -> list[str]:
         if not self.directory.exists():
             return []
         return sorted(path.stem for path in self.directory.glob("*.md"))
+
+    def _profile_path(self, name: str) -> Path:
+        path = (self.directory / f"{name}.md").resolve()
+        root = self.directory.resolve()
+        if path != root and root not in path.parents:
+            raise ValueError("Profile destination must stay inside the profile root.")
+        return path
 
 
 def _checked_profile_name(name: str) -> str:

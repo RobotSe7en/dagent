@@ -19,9 +19,9 @@ from dagent import (
     AutoAgent,
     Boundary,
     CapabilityDefinition,
+    CapabilityPolicy,
     DAG,
     DAGRun,
-    DAGSpec,
     Dag,
     DagAgent,
     Node,
@@ -49,8 +49,8 @@ from dagent.config import (
     resolve_config_path,
     resolve_config_relative_path,
 )
-from dagent.capabilities.providers import template_capability_handler
-from dagent.profiles import list_builtin_profiles
+from dagent.capabilities.providers import agent_capability_parameters, template_capability_handler
+from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
 from dagent.schemas import Artifact, DAGEdge
 
 from api.stream_gate import gate_chat_display
@@ -66,6 +66,7 @@ RunArtifactPreviewKind = Literal["markdown", "code", "text"]
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
+PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -138,6 +139,13 @@ class DAGRunRequest(BaseModel):
     graph_input: Any = None
 
 
+class UserDAGAgentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capabilities: list[str] | None = None
+    skills: list[str] | None = None
+
+
 class UserDAGNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -148,6 +156,7 @@ class UserDAGNode(BaseModel):
     artifact_outputs: list[str] = Field(default_factory=list)
     title: str = ""
     boundary: Boundary | None = None
+    agent: UserDAGAgentConfig | None = None
 
 
 class UserDAG(BaseModel):
@@ -162,6 +171,32 @@ class UserDAG(BaseModel):
     nodes: list[UserDAGNode] = Field(default_factory=list)
     edges: list[DAGEdge] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DAGValidationIssue(BaseModel):
+    severity: Literal["error", "warning"] = "error"
+    code: str = "dag_validation_error"
+    message: str
+    node_id: str | None = None
+    path: list[str | int] = Field(default_factory=list)
+
+
+class DAGValidationResponse(BaseModel):
+    valid: bool
+    issues: list[DAGValidationIssue] = Field(default_factory=list)
+
+
+class ProfileCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class ProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1)
 
 
 class MCPServerRequest(BaseModel):
@@ -327,8 +362,14 @@ class ApiState:
     def get_managed_skill_root(self) -> Path:
         return Path.home() / ".dagent" / "skills"
 
+    def get_managed_profile_root(self) -> Path:
+        return Path.home() / ".dagent" / "profiles"
+
     def skill_store(self) -> SkillStore:
         return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
+
+    def managed_profile_store(self) -> ProfileStore:
+        return ProfileStore(self.get_managed_profile_root())
 
     def _install_custom_capabilities(self) -> None:
         if self.runner is None:
@@ -404,12 +445,24 @@ async def list_dags() -> dict[str, Any]:
 @app.post("/dags")
 async def create_dag(dag: UserDAG) -> dict[str, Any]:
     try:
-        validate_dag_spec(_compile_user_dag(dag))
+        validate_dag_spec(_compile_user_dag(dag).to_dag_spec())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.dags[dag.id] = dag.model_copy(deep=True)
     _prune_dag_artifact_uploads(dag)
     return {"dag": dag.model_dump(mode="json")}
+
+
+@app.post("/dags/validate")
+async def validate_user_dag(dag: UserDAG) -> dict[str, Any]:
+    try:
+        validate_dag_spec(_compile_user_dag(dag).to_dag_spec())
+    except Exception as exc:
+        return DAGValidationResponse(
+            valid=False,
+            issues=[DAGValidationIssue(message=str(exc))],
+        ).model_dump(mode="json")
+    return DAGValidationResponse(valid=True).model_dump(mode="json")
 
 
 @app.get("/dags/{dag_id}")
@@ -505,7 +558,7 @@ def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
     return request.workspace_root.strip()
 
 
-def _compile_user_dag(dag: UserDAG) -> DAGSpec:
+def _compile_user_dag(dag: UserDAG) -> Dag:
     builder = Dag(
         dag.id,
         name=dag.name,
@@ -519,7 +572,7 @@ def _compile_user_dag(dag: UserDAG) -> DAGSpec:
     for node in dag.nodes:
         builder.add_node(Node(
             node.id,
-            target=node.target.strip(),
+            target=_compile_user_dag_target(node),
             inputs=dict(node.inputs),
             artifact_inputs=list(node.artifact_inputs),
             artifact_outputs=list(node.artifact_outputs),
@@ -528,7 +581,83 @@ def _compile_user_dag(dag: UserDAG) -> DAGSpec:
         ))
     for edge in dag.edges:
         builder.add_edge(edge.source, edge.target, reason=edge.reason)
-    return builder.to_dag_spec()
+    return builder
+
+
+def _compile_user_dag_target(node: UserDAGNode) -> str | ToolAgent:
+    capability_id = node.target.strip()
+    if not capability_id.startswith("agent."):
+        if node.agent is not None:
+            raise ValueError(f"Node '{node.id}' has agent config but does not target an agent capability.")
+        return capability_id
+    profile_name = _clean_agent_profile_name(capability_id.removeprefix("agent."))
+    agent_config = node.agent
+    capabilities = (
+        None if agent_config is None or agent_config.capabilities is None
+        else tuple(_validated_agent_node_capabilities(agent_config.capabilities))
+    )
+    skills = (
+        None if agent_config is None or agent_config.skills is None
+        else tuple(_validated_agent_node_skills(agent_config.skills))
+    )
+    return ToolAgent(
+        profile=_resolve_agent_profile(profile_name),
+        name=profile_name,
+        capabilities=capabilities,
+        skills=skills,
+        review="fast",
+    )
+
+
+def _validated_agent_node_capabilities(capability_ids: list[str]) -> list[str]:
+    runner = state.get_runner()
+    validated: list[str] = []
+    for capability_id in _dedupe(capability_ids):
+        definition = runner.get_capability(capability_id)
+        if definition is None:
+            raise ValueError(f"Capability '{capability_id}' was not found.")
+        if not definition.enabled:
+            raise ValueError(f"Capability '{capability_id}' is disabled.")
+        if definition.kind in {"agent", "skill"}:
+            raise ValueError(
+                f"Capability '{capability_id}' cannot be used in an agent node capability scope."
+            )
+        validated.append(capability_id)
+    return validated
+
+
+def _validated_agent_node_skills(skills: list[str]) -> list[str]:
+    store = state.skill_store()
+    validated: list[str] = []
+    for skill in _dedupe(skills):
+        try:
+            store.view(skill)
+        except SkillStoreError as exc:
+            raise ValueError(str(exc)) from exc
+        validated.append(skill)
+    return validated
+
+
+def _clean_agent_profile_name(value: str) -> str:
+    try:
+        return _clean_managed_profile_name(value)
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
+def _resolve_agent_profile(name: str) -> AgentProfile:
+    managed_store = state.managed_profile_store()
+    if name in managed_store.list_names():
+        return managed_store.load(name)
+    config_directory = state.get_profile_directory()
+    if config_directory is not None:
+        config_store = ProfileStore(config_directory)
+        if name in config_store.list_names():
+            return config_store.load(name)
+    try:
+        return load_builtin_profile(name)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Agent profile '{name}' was not found.") from exc
 
 
 def _artifact_uploads_for_dag(dag_id: str) -> dict[str, list[ArtifactUpload]]:
@@ -598,12 +727,57 @@ async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
 @app.get("/capabilities")
 async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     runner = state.get_runner()
+    definitions = list(runner.list_capabilities(kind=kind))
+    if kind in (None, "agent"):
+        existing_ids = {definition.id for definition in definitions}
+        definitions.extend(
+            definition
+            for definition in _profile_agent_capabilities()
+            if definition.id not in existing_ids
+        )
     return {
         "capabilities": [
             definition.model_dump(mode="json")
-            for definition in runner.list_capabilities(kind=kind)
+            for definition in sorted(definitions, key=lambda item: item.id)
         ]
     }
+
+
+def _profile_agent_capabilities() -> list[CapabilityDefinition]:
+    profiles = _agent_profile_candidates()
+    return [
+        CapabilityDefinition(
+            id=f"agent.{profile.name}",
+            name=profile.name,
+            kind="agent",
+            description=profile.description,
+            parameters=agent_capability_parameters(),
+            policy=CapabilityPolicy(risk="medium", sandbox_required=True),
+            config={"profile": profile.name, "source": source},
+        )
+        for source, profile in profiles
+    ]
+
+
+def _agent_profile_candidates() -> list[tuple[str, AgentProfile]]:
+    candidates: dict[str, tuple[str, AgentProfile]] = {}
+    for profile in list_builtin_profiles():
+        candidates[profile.name] = ("builtin", profile)
+    config_directory = state.get_profile_directory()
+    if config_directory is not None:
+        config_store = ProfileStore(config_directory)
+        for name in config_store.list_names():
+            try:
+                candidates[name] = ("config", config_store.load(name))
+            except Exception:
+                continue
+    managed_store = state.managed_profile_store()
+    for name in managed_store.list_names():
+        try:
+            candidates[name] = ("managed", managed_store.load(name))
+        except Exception:
+            continue
+    return sorted(candidates.values(), key=lambda item: item[1].name)
 
 
 @app.post("/capabilities")
@@ -838,35 +1012,112 @@ async def delete_skill(name: str) -> dict[str, str]:
 
 @app.get("/profiles")
 async def list_profiles() -> dict[str, Any]:
-    profile_directory = state.get_profile_directory()
-    profiles: list[dict[str, Any]] = [
-        _profile_payload(profile, "builtin")
-        for profile in list_builtin_profiles()
-    ]
-    warnings: list[dict[str, str]] = []
-    if profile_directory is None:
-        return {"profiles": profiles, "warnings": warnings}
-    directory = Path(profile_directory)
-    store = ProfileStore(directory)
-    if not directory.exists():
-        return {
-            "profiles": profiles,
-            "warnings": [{"name": str(directory), "error": "Profiles directory not found."}],
-        }
-    for profile_path in sorted(directory.glob("*.md"), key=lambda path: path.name):
-        try:
-            profiles.append(_profile_payload(store.load(profile_path.name), "user"))
-        except Exception as exc:
-            warnings.append({"name": profile_path.stem, "error": str(exc)})
+    profiles, warnings = _profile_payloads()
     return {"profiles": profiles, "warnings": warnings}
 
 
-def _profile_payload(profile, source: str) -> dict[str, Any]:
+@app.post("/profiles")
+async def create_profile(request: ProfileCreateRequest) -> dict[str, Any]:
+    name = _clean_managed_profile_name(request.name)
+    _validate_profile_content(request.content)
+    _ensure_managed_profile_name_available(name)
+    profile = state.managed_profile_store().save(name, request.content)
+    state.close_runner()
+    return {"profile": _profile_payload(profile, "managed")}
+
+
+@app.put("/profiles/{name}")
+async def update_profile(name: str, request: ProfileUpdateRequest) -> dict[str, Any]:
+    profile_name = _clean_managed_profile_name(name)
+    _validate_profile_content(request.content)
+    store = state.managed_profile_store()
+    if profile_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Managed profile not found.")
+    profile = store.save(profile_name, request.content)
+    state.close_runner()
+    return {"profile": _profile_payload(profile, "managed")}
+
+
+@app.delete("/profiles/{name}")
+async def delete_profile(name: str) -> dict[str, str]:
+    profile_name = _clean_managed_profile_name(name)
+    store = state.managed_profile_store()
+    if profile_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Managed profile not found.")
+    store.delete(profile_name)
+    state.close_runner()
+    return {"status": "deleted"}
+
+
+def _profile_payload(profile: AgentProfile, source: str) -> dict[str, Any]:
     return {
         **profile.model_dump(mode="json"),
         "id": f"{source}:{profile.name}",
         "source": source,
+        "editable": source == "managed",
+        "deletable": source == "managed",
     }
+
+
+def _profile_payloads() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    profiles: list[dict[str, Any]] = []
+    warnings: list[dict[str, str]] = []
+    for profile in list_builtin_profiles():
+        profiles.append(_profile_payload(profile, "builtin"))
+    managed_store = state.managed_profile_store()
+    for name in managed_store.list_names():
+        try:
+            profiles.append(_profile_payload(managed_store.load(name), "managed"))
+        except Exception as exc:
+            warnings.append({"name": name, "error": str(exc)})
+    config_directory = state.get_profile_directory()
+    if config_directory is None:
+        return profiles, warnings
+    directory = Path(config_directory)
+    if not directory.exists():
+        warnings.append({"name": str(directory), "error": "Profiles directory not found."})
+        return profiles, warnings
+    config_store = ProfileStore(directory)
+    for name in config_store.list_names():
+        try:
+            profiles.append(_profile_payload(config_store.load(name), "config"))
+        except Exception as exc:
+            warnings.append({"name": name, "error": str(exc)})
+    return profiles, warnings
+
+
+def _clean_managed_profile_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Profile name is required.")
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    if (
+        not name[0].isalpha()
+        or any(char not in allowed for char in name)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Profile name may contain only letters, numbers, underscores, and dashes, and must start with a letter.",
+        )
+    return name
+
+
+def _validate_profile_content(content: str) -> None:
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Profile content is required.")
+    if len(content.encode("utf-8")) > PROFILE_CONTENT_BYTES_LIMIT:
+        raise HTTPException(status_code=400, detail="Profile content is too large.")
+
+
+def _ensure_managed_profile_name_available(name: str) -> None:
+    if name in {profile.name for profile in list_builtin_profiles()}:
+        raise HTTPException(status_code=400, detail=f"Profile '{name}' is built in.")
+    managed_store = state.managed_profile_store()
+    if name in managed_store.list_names():
+        raise HTTPException(status_code=400, detail=f"Profile '{name}' already exists.")
+    config_directory = state.get_profile_directory()
+    if config_directory is not None and name in ProfileStore(config_directory).list_names():
+        raise HTTPException(status_code=400, detail=f"Profile '{name}' already exists in the configured profile directory.")
 
 
 @app.get("/sandbox/status")

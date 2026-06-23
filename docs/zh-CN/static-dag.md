@@ -114,6 +114,20 @@ dag.add_edge(found, rendered)
 当节点读取 non-upstream node、引用 unknown artifact 或使用 malformed expression 时，
 validation 会 fail closed。
 
+## Agent 节点
+
+Python 中的静态 DAG 节点可以直接 target `ToolAgent` 对象。在本地 Web UI 中，受管
+agent profiles 会暴露为 `agent.<name>` capabilities。例如
+`~/.dagent/profiles/analyst.md` 会显示为 `agent.analyst`；选择它会创建一个 agent 节点，
+它的 `prompt` 参数可以是固定值，也可以绑定 graph input、artifacts 或上游节点输出。
+Agent 节点还会暴露 `max_steps`，用于控制内部有界 tool loop。
+
+Web UI 的 agent 节点能力范围会映射到公开 SDK 字段：
+`ToolAgent(capabilities=[...], skills=[...])`。Tool 和 MCP 选择会保存为
+`tool.search`、`mcp.browser.open` 这类 capability ids；Skill 选择会保存为 skill names。
+范围保持“全部”时使用外层 `Runner` 的默认可见能力。provider、workspace root、profile
+存储以及 MCP/Skill 的注册来源仍由外层 `Runner` 和 API 配置拥有。
+
 ## Artifacts 和 Boundaries
 
 Artifacts 声明 DAG 产生或消费的文件。Boundaries 约束副作用。对于内置的

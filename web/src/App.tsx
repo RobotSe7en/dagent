@@ -28,6 +28,7 @@ import {
   ChevronRight,
   CircleStop,
   Copy,
+  Crosshair,
   Database,
   File,
   FileText,
@@ -47,6 +48,8 @@ import {
   UserCog,
   Wrench,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import {
   createCapability,
@@ -83,6 +86,10 @@ import {
   updateMcpServer,
   updateModelProvider,
   activateModelProvider,
+  validateDag,
+  createProfile,
+  updateProfile,
+  deleteProfile,
 } from './api';
 import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
@@ -97,6 +104,7 @@ import type {
   DagNode,
   DagRun,
   DagSpec,
+  DagValidationIssue,
   UserDag,
   ProfileWarning,
   ReviewEventPayload,
@@ -118,7 +126,9 @@ import type {
   SkillFileDetail,
   SkillSummary,
   BoundaryValue,
+  UserDagAgentConfig,
   UserDagNode,
+  ValueBinding,
 } from './types';
 import {
   buildSchemaArgumentFields,
@@ -136,11 +146,13 @@ import {
   createUploadedFileArtifacts,
   isUploadedFileArtifact,
   removeArtifactBinding,
+  updateArtifactBinding,
   upsertArtifact,
   type UploadSourceFile,
 } from './dagArtifacts';
 import {
   appendRunTranscriptCapability,
+  appendRunTranscriptTraceEvent,
   appendRunTranscriptToken,
   buildRunDialogSummary,
   type RunDialogSummary,
@@ -161,6 +173,17 @@ import {
   buildWorkbenchArtifacts,
   type WorkbenchArtifactItem,
 } from './workbenchArtifacts';
+import {
+  bindingLabel,
+  buildVariableCatalog,
+  collectNodeOutputRefs,
+  isValueBinding,
+  removeNodeOutputRefs,
+  rewriteNodeOutputRefs,
+  wouldCreateCycle,
+  type VariableCatalog,
+  type VariableCatalogItem,
+} from './valueBindings';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -384,7 +407,27 @@ function normalizeUserDagNode(node: UserDagNode): UserDagNode {
     artifact_outputs: node.artifact_outputs ?? [],
     title: node.title ?? '',
     boundary: node.boundary ?? null,
+    agent: normalizeUserDagAgentConfig(node.agent),
   };
+}
+
+function normalizeUserDagAgentConfig(agent?: UserDagAgentConfig | null): UserDagAgentConfig | undefined {
+  if (!agent) return undefined;
+  const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : undefined;
+  const skills = Array.isArray(agent.skills) ? agent.skills : undefined;
+  if (capabilities === undefined && skills === undefined) return undefined;
+  return {
+    capabilities: capabilities ?? [],
+    skills: skills ?? [],
+  };
+}
+
+function isAgentTarget(target: string): boolean {
+  return target.trim().startsWith('agent.');
+}
+
+function isCustomAgentScope(agent?: UserDagAgentConfig | null): boolean {
+  return Boolean(agent && (Array.isArray(agent.capabilities) || Array.isArray(agent.skills)));
 }
 
 function capabilityKindFromTarget(target: string): CapabilityKind {
@@ -459,7 +502,14 @@ function runtimeDagFromUserDag(spec: UserDag): Dag {
 }
 
 function userDagFromRuntimeDag(spec: UserDag, dag: Dag): UserDag {
-  const nodes = dag.nodes.filter(isCapabilityNode).map(userNodeFromDagNode);
+  const agentConfigByNodeId = new Map(
+    (spec.nodes ?? []).map((node) => [node.id, normalizeUserDagAgentConfig(node.agent)]),
+  );
+  const nodes = dag.nodes.filter(isCapabilityNode).map((node) => {
+    const userNode = userNodeFromDagNode(node);
+    const agent = isAgentTarget(userNode.target) ? agentConfigByNodeId.get(userNode.id) : undefined;
+    return { ...userNode, agent };
+  });
   const nodeIds = new Set(nodes.map((node) => node.id));
   return {
     ...spec,
@@ -483,6 +533,7 @@ function validateUserDagDraft(spec: UserDag): string | null {
     const kind = capabilityKindFromTarget(target);
     if (!target) return `Node '${node.id}' needs a target.`;
     if (kind === 'skill') return `Node '${node.id}' cannot target a skill directly; use an agent target.`;
+    if (node.agent && !isAgentTarget(target)) return `Node '${node.id}' has agent settings but does not target an agent.`;
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -507,8 +558,34 @@ function parseDagRunInput(value: string): ParsedDagRunInput {
   }
 }
 
+function dagValidationIssueMessage(issues: DagValidationIssue[]): string {
+  const issue = issues.find((item) => item.severity === 'error') ?? issues[0];
+  if (!issue) return 'DAG validation failed.';
+  const owner = issue.node_id ? `节点 ${issue.node_id}: ` : '';
+  return `${owner}${issue.message}`;
+}
+
 function capabilityDisplayName(capability: CapabilityDefinition): string {
   return `${capability.name} (${capability.id})`;
+}
+
+function capabilityKindLabel(kind: CapabilityKind): string {
+  if (kind === 'agent') return 'Agent';
+  if (kind === 'mcp') return 'MCP';
+  if (kind === 'tool') return 'Tool';
+  if (kind === 'memory') return 'Memory';
+  return 'Skill';
+}
+
+function capabilityOptionGroups(capabilities: CapabilityDefinition[]): Array<{ kind: CapabilityKind; label: string; items: CapabilityDefinition[] }> {
+  const order: CapabilityKind[] = ['agent', 'tool', 'mcp', 'memory', 'skill'];
+  return order
+    .map((kind) => ({
+      kind,
+      label: capabilityKindLabel(kind),
+      items: capabilities.filter((capability) => capability.kind === kind),
+    }))
+    .filter((group) => group.items.length);
 }
 
 function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
@@ -559,7 +636,7 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
       className: `status-${status}${reviewAttention ? ' review-attention-node' : ''}`,
       data: {
         nodeId: item.id,
-        title: item.title || item.id,
+        title: nodeDisplayTitle(item),
         detail,
         kind: invocation?.kind ?? item.payload.type,
         risk,
@@ -629,7 +706,7 @@ function DesignDagNode({ data, selected }: any) {
         <GitBranch size={15} />
       </span>
       <span className="orchestration-node-copy">
-        <strong title={nodeData.nodeId}>{nodeData.title}</strong>
+        <strong title={nodeData.title}>{nodeData.title}</strong>
         <em title={nodeData.detail}>{nodeData.detail}</em>
       </span>
       {nodeData.reviewAttention ? <span className={`risk-chip risk-${nodeData.risk}`}>{nodeData.risk}</span> : null}
@@ -641,6 +718,15 @@ function DesignDagNode({ data, selected }: any) {
 const designNodeTypes = {
   designDag: DesignDagNode,
 };
+
+function nodeDisplayTitle(node: DagNode): string {
+  const title = node.title?.trim();
+  if (title) return title;
+  if (node.payload.type === 'capability') {
+    return node.payload.invocation.capability_id || '未命名节点';
+  }
+  return node.payload.type === 'start' ? '入口节点' : '未命名节点';
+}
 
 function nodeDisplayDetail(node: DagNode): string {
   const payload = node.payload;
@@ -764,6 +850,7 @@ export function App() {
   const [editorRunning, setEditorRunning] = useState(false);
   const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [editorRunInputText, setEditorRunInputText] = useState('');
+  const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
   const [dynamicPrompt, setDynamicPrompt] = useState('');
   const [dynamicAdjust, setDynamicAdjust] = useState(true);
@@ -784,6 +871,7 @@ export function App() {
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
+  const [creatingProfile, setCreatingProfile] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [models, setModels] = useState<ModelProvider[]>([]);
@@ -953,6 +1041,11 @@ export function App() {
     setCreatingModel(true);
   }, []);
 
+  const requestProfileCreation = useCallback(() => {
+    setActiveWorkspace('agents');
+    setCreatingProfile(true);
+  }, []);
+
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
   const graph = useMemo(() => graphFromDag(dag), [dag]);
   const [nodes, setNodes] = useState<Node[]>(graph.nodes);
@@ -964,6 +1057,7 @@ export function App() {
     () => Object.values(editorUserDag.artifacts ?? {}).sort(compareArtifactsByPath),
     [editorUserDag.artifacts],
   );
+  const editingArtifact = editingArtifactId ? editorUserDag.artifacts?.[editingArtifactId] ?? null : null;
 
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
@@ -989,6 +1083,40 @@ export function App() {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
   }, []);
+
+  const refreshAgentData = useCallback(async (preferredProfileId?: string) => {
+    const [nextCapabilities, nextProfiles] = await Promise.all([
+      listCapabilities(),
+      listProfiles(),
+    ]);
+    setCapabilities(nextCapabilities);
+    setProfiles(nextProfiles.profiles);
+    setProfileWarnings(nextProfiles.warnings);
+    setSelectedProfileId(
+      preferredProfileId && nextProfiles.profiles.some((profile) => profile.id === preferredProfileId)
+        ? preferredProfileId
+        : nextProfiles.profiles[0]?.id || '',
+    );
+  }, []);
+
+  const createManagedProfile = useCallback(async (name: string, content: string) => {
+    const profile = await createProfile({ name, content });
+    setCreatingProfile(false);
+    await refreshAgentData(profile.id);
+    return profile;
+  }, [refreshAgentData]);
+
+  const updateManagedProfile = useCallback(async (name: string, content: string) => {
+    const profile = await updateProfile(name, content);
+    await refreshAgentData(profile.id);
+    return profile;
+  }, [refreshAgentData]);
+
+  const removeManagedProfile = useCallback(async (name: string) => {
+    await deleteProfile(name);
+    setCreatingProfile(false);
+    await refreshAgentData();
+  }, [refreshAgentData]);
 
   const openSkillDetail = useCallback(async (skill: SkillSummary) => {
     const lookup = skillLookupName(skill);
@@ -1640,6 +1768,7 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
+          title: selectedCapability?.name || selectedCapability?.id || '未命名节点',
           payload: {
             type: 'capability',
             invocation: {
@@ -1816,6 +1945,22 @@ export function App() {
         }
         return merged;
       });
+      const nodesWithUpdatedRefs = patch.id && patch.id !== nodeId
+        ? updatedNodes.map((node) => {
+            if (!isCapabilityNode(node)) return node;
+            const invocation = node.payload.invocation;
+            return {
+              ...node,
+              payload: {
+                type: 'capability' as const,
+                invocation: {
+                  ...invocation,
+                  arguments: rewriteNodeOutputRefs(invocation.arguments ?? {}, nodeId, patch.id as string),
+                },
+              },
+            };
+          })
+        : updatedNodes;
       const edgesForRename = patch.id && patch.id !== nodeId
         ? current.edges.map((edge) => ({
             ...edge,
@@ -1826,7 +1971,7 @@ export function App() {
       return {
         ...current,
         status: 'draft',
-        nodes: updatedNodes,
+        nodes: nodesWithUpdatedRefs,
         edges: nextEdges ?? edgesForRename,
       };
     });
@@ -1837,7 +1982,22 @@ export function App() {
     updateEditorDag((current) => ({
       ...current,
       status: 'draft',
-      nodes: current.nodes.filter((node) => node.id !== nodeId),
+      nodes: current.nodes
+        .filter((node) => node.id !== nodeId)
+        .map((node) => {
+          if (!isCapabilityNode(node)) return node;
+          const invocation = node.payload.invocation;
+          return {
+            ...node,
+            payload: {
+              type: 'capability' as const,
+              invocation: {
+                ...invocation,
+                arguments: removeNodeOutputRefs(invocation.arguments ?? {}, nodeId) as Record<string, unknown>,
+              },
+            },
+          };
+        }),
       edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
     }));
   };
@@ -1852,8 +2012,14 @@ export function App() {
       setEditorMessage(validation);
       return null;
     }
-    setEditorMessage(savingMessage);
+    setEditorMessage('正在校验 DAG...');
     try {
+      const validationResult = await validateDag(spec);
+      if (!validationResult.valid) {
+        setEditorMessage(dagValidationIssueMessage(validationResult.issues));
+        return null;
+      }
+      setEditorMessage(savingMessage);
       const saved = await saveDag(spec);
       setEditorUserDagAndRuntimeDag(saved);
       await refreshConsoleData();
@@ -1887,9 +2053,24 @@ export function App() {
     setEditorMessage(`已添加 artifact ${artifactId}。`);
   };
 
+  const saveEditorArtifact = (previousId: string, artifact: Artifact) => {
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const validation = validateArtifactDraft(artifact, spec.artifacts ?? {}, previousId);
+    if (validation) {
+      setEditorMessage(validation);
+      return false;
+    }
+    const nextSpec = updateArtifactBinding(spec, previousId, artifact);
+    setEditorUserDagAndRuntimeDag(nextSpec);
+    setEditingArtifactId('');
+    setEditorMessage(previousId === artifact.id ? `已更新 artifact ${artifact.id}。` : `已重命名 artifact ${previousId} -> ${artifact.id}。`);
+    return true;
+  };
+
   const deleteEditorArtifact = (artifactId: string) => {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const nextSpec = removeArtifactBinding(spec, artifactId);
+    if (editingArtifactId === artifactId) setEditingArtifactId('');
     setEditorUserDagAndRuntimeDag(nextSpec);
     setEditorMessage(`已删除 artifact ${artifactId}。`);
   };
@@ -1940,6 +2121,7 @@ export function App() {
       await runDagStream(spec.id, {
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
+          setEditorRunTimeline((items) => appendRunTranscriptTraceEvent(items, event));
         },
         onCapability: (event) => {
           setEditorRunTimeline((items) => appendRunTranscriptCapability(items, event));
@@ -2356,7 +2538,7 @@ export function App() {
         artifacts={editorArtifacts}
         collapsed={navCollapsed}
         capabilities={capabilities}
-        capabilityCount={capabilities.length}
+        capabilityCount={capabilities.filter((capability) => capability.kind !== 'agent').length}
         creatingModel={creatingModel}
         history={chatHistory}
         models={models}
@@ -2380,8 +2562,10 @@ export function App() {
         onCreateArtifact={createEditorArtifact}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
         onCreateModel={requestModelCreation}
+        onCreateProfile={requestProfileCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
+        onEditArtifact={(artifactId) => setEditingArtifactId(artifactId)}
         onImportSkill={() => requestCapabilityCreation('skills')}
         onLoadDag={loadEditorUserDag}
         onNewChat={() => void newChat()}
@@ -2477,6 +2661,8 @@ export function App() {
         ) : activeWorkspace === 'orchestration' && orchestrationMode === 'static' ? (
           <OrchestrationWorkspace
             capabilities={capabilities}
+            skills={skills}
+            mcpServers={mcpServers}
             spec={editorUserDag}
             dag={editorDag}
             nodes={editorNodes}
@@ -2539,10 +2725,16 @@ export function App() {
         ) : activeWorkspace === 'agents' ? (
           <AgentManagementWorkspace
             capabilities={capabilities}
+            creating={creatingProfile}
             profiles={profiles}
             selectedId={selectedProfileId}
             warnings={profileWarnings}
+            onCreate={createManagedProfile}
+            onCreatingChange={setCreatingProfile}
+            onDelete={removeManagedProfile}
+            onRefresh={refreshAgentData}
             onSelect={setSelectedProfileId}
+            onUpdate={updateManagedProfile}
           />
         ) : (
           null
@@ -2582,6 +2774,15 @@ export function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onSelectNode={setSelectedId}
+        />
+      ) : null}
+
+      {editingArtifact ? (
+        <ArtifactEditDialog
+          artifact={editingArtifact}
+          artifacts={editorUserDag.artifacts ?? {}}
+          onClose={() => setEditingArtifactId('')}
+          onSave={saveEditorArtifact}
         />
       ) : null}
 
@@ -2631,8 +2832,10 @@ function WorkspaceSidebar({
   onCreateArtifact,
   onCreateMcp,
   onCreateModel,
+  onCreateProfile,
   onCreateTool,
   onDeleteArtifact,
+  onEditArtifact,
   onImportSkill,
   onLoadDag,
   onNewChat,
@@ -2679,8 +2882,10 @@ function WorkspaceSidebar({
   onCreateArtifact: () => void;
   onCreateMcp: () => void;
   onCreateModel: () => void;
+  onCreateProfile: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
+  onEditArtifact: (artifactId: string) => void;
   onImportSkill: () => void;
   onLoadDag: (spec: UserDag) => void;
   onNewChat: () => void;
@@ -2709,7 +2914,7 @@ function WorkspaceSidebar({
     { key: 'mcp' as const, label: 'MCP 服务', icon: <Database size={16} />, count: mcpCount },
   ];
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
-  const sidebarCapabilities = capabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedToolsQuery));
+  const sidebarCapabilities = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedToolsQuery));
   const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
   const sidebarMcp = mcpServers.filter((server) =>
     !normalizedToolsQuery
@@ -2944,11 +3149,16 @@ function WorkspaceSidebar({
           <div className="sidebar-artifact-list">
             {artifacts.length ? artifacts.map((artifact) => (
               <div className="sidebar-artifact-row" key={artifact.id}>
-                <span>{artifactKindLabel(artifact)}</span>
-                <strong title={artifactDisplayPath(artifact)}>
-                  {artifactDisplayName(artifact)}
-                </strong>
-                <button onClick={() => onDeleteArtifact(artifact.id)} title="删除 artifact" type="button">
+                <button
+                  className="sidebar-artifact-main"
+                  onClick={() => onEditArtifact(artifact.id)}
+                  title={`编辑 ${artifactDisplayPath(artifact)}`}
+                  type="button"
+                >
+                  <span>{artifactKindLabel(artifact)}</span>
+                  <strong>{artifactDisplayName(artifact)}</strong>
+                </button>
+                <button className="sidebar-artifact-delete" onClick={() => onDeleteArtifact(artifact.id)} title="删除 artifact" type="button">
                   <X size={11} />
                 </button>
               </div>
@@ -3124,7 +3334,7 @@ function WorkspaceSidebar({
         <section className="sidebar-context-section agent-config-list">
           <div className="sidebar-history-head">
             <span>智能体配置</span>
-            <button title="新建配置（暂未接入）" type="button" disabled>
+            <button onClick={onCreateProfile} title="新建配置" type="button">
               <Plus size={14} />
             </button>
           </div>
@@ -3141,7 +3351,7 @@ function WorkspaceSidebar({
                 </span>
                 <span>
                   <strong>{profile.name}</strong>
-                  <em>{profile.description || profilePathLabel(profile)}</em>
+                  <em>{profile.description || profileSourceLabel(profile)}</em>
                 </span>
               </button>
             )) : <div className="sidebar-empty-row">暂无智能体配置</div>}
@@ -3832,17 +4042,34 @@ function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; 
       {argsText ? (
         <div className="capability-section">
           <div className="capability-section-label">Args</div>
-          <pre>{clipText(argsText, 800)}</pre>
+          <CapabilityCodeBlock value={argsText} />
         </div>
       ) : null}
       {resultContent ? (
         <div className="capability-section">
           <div className="capability-section-label">{showError ? 'Error' : 'Result'}</div>
-          <pre>{clipText(resultContent, 1200)}</pre>
+          <CapabilityCodeBlock value={resultContent} />
         </div>
       ) : null}
     </details>
   );
+}
+
+function CapabilityCodeBlock({ value }: { value: string }) {
+  return (
+    <textarea
+      className="capability-code-block"
+      readOnly
+      rows={capabilityCodeRows(value)}
+      spellCheck={false}
+      value={value}
+    />
+  );
+}
+
+function capabilityCodeRows(value: string): number {
+  const lines = Math.max(1, value.split('\n').length);
+  return Math.max(6, Math.min(16, lines));
 }
 
 function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationId: string): number {
@@ -3927,6 +4154,124 @@ function artifactKindLabel(artifact: Artifact) {
 
 function compareArtifactsByPath(left: Artifact, right: Artifact) {
   return artifactDisplayPath(left).localeCompare(artifactDisplayPath(right));
+}
+
+function validateArtifactDraft(
+  artifact: Artifact,
+  artifacts: Record<string, Artifact>,
+  previousId: string,
+): string | null {
+  const id = artifact.id.trim();
+  if (!id) return 'Artifact id is required.';
+  if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(id)) return 'Artifact id must start with a letter and use letters, numbers, _ or -.';
+  if (id !== previousId && Object.prototype.hasOwnProperty.call(artifacts, id)) return `Artifact '${id}' already exists.`;
+  if (!artifact.paths.length) return 'Artifact path is required.';
+  const invalidPath = artifact.paths.find((path) => !isSafeArtifactPath(path));
+  if (invalidPath) return `Artifact path '${invalidPath}' must be a relative path without .. segments.`;
+  return null;
+}
+
+function isSafeArtifactPath(path: string): boolean {
+  const clean = path.trim().replace(/\\/g, '/');
+  if (!clean || clean.startsWith('/')) return false;
+  return clean.split('/').every((part) => part && part !== '.' && part !== '..');
+}
+
+function ArtifactEditDialog({
+  artifact,
+  artifacts,
+  onClose,
+  onSave,
+}: {
+  artifact: Artifact;
+  artifacts: Record<string, Artifact>;
+  onClose: () => void;
+  onSave: (previousId: string, artifact: Artifact) => boolean;
+}) {
+  const [artifactId, setArtifactId] = useState(artifact.id);
+  const [pathsText, setPathsText] = useState((artifact.paths ?? []).join('\n'));
+  const [description, setDescription] = useState(artifact.description ?? '');
+  const [required, setRequired] = useState(artifact.required ?? true);
+
+  useEffect(() => {
+    setArtifactId(artifact.id);
+    setPathsText((artifact.paths ?? []).join('\n'));
+    setDescription(artifact.description ?? '');
+    setRequired(artifact.required ?? true);
+  }, [artifact]);
+
+  const draft: Artifact = {
+    id: artifactId.trim(),
+    paths: pathsText.split('\n').map((path) => path.trim()).filter(Boolean),
+    description,
+    required,
+    metadata: artifact.metadata ?? {},
+  };
+  const uploadedFile = isUploadedFileArtifact(artifact);
+  const validation = validateArtifactDraft(draft, artifacts, artifact.id);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="编辑 artifact">
+      <form
+        className="artifact-edit-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!validation) onSave(artifact.id, draft);
+        }}
+      >
+        <header className="artifact-edit-head">
+          <div>
+            <span>Artifact</span>
+            <strong>{artifactDisplayName(artifact)}</strong>
+          </div>
+          <button className="icon-button" onClick={onClose} title="关闭" type="button">
+            <X size={17} />
+          </button>
+        </header>
+        <div className="artifact-edit-body">
+          <label>
+            ID
+            <input
+              value={artifactId}
+              disabled={uploadedFile}
+              onChange={(event) => setArtifactId(event.target.value)}
+              spellCheck={false}
+              title={uploadedFile ? '上传文件的 id 关联当前会话内的上传内容' : undefined}
+            />
+          </label>
+          <label>
+            Path
+            <textarea
+              value={pathsText}
+              onChange={(event) => setPathsText(event.target.value)}
+              spellCheck={false}
+              rows={3}
+            />
+          </label>
+          <label>
+            Description
+            <input value={description} onChange={(event) => setDescription(event.target.value)} spellCheck={false} />
+          </label>
+          <label className="checkbox-line artifact-edit-required">
+            <input
+              type="checkbox"
+              checked={required}
+              onChange={(event) => setRequired(event.target.checked)}
+            />
+            Required
+          </label>
+          {validation ? <p className="artifact-edit-error">{validation}</p> : null}
+        </div>
+        <footer className="artifact-edit-actions">
+          <button className="secondary-button" onClick={onClose} type="button">取消</button>
+          <button className="primary-button" disabled={Boolean(validation)} type="submit">
+            <Save size={16} />
+            保存
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
 }
 
 function CapabilityReviewDialog({
@@ -4055,7 +4400,7 @@ function ChatCapabilityScopeDialog({
   const selectedCapabilities = new Set(selectedCapabilityIds);
   const selectedSkills = new Set(selectedSkillNames);
   const normalizedQuery = query.trim().toLowerCase();
-  const enabledCapabilities = capabilities.filter((capability) => capability.enabled);
+  const enabledCapabilities = capabilities.filter((capability) => capability.enabled && capability.kind !== 'agent');
   const visibleCapabilities = enabledCapabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
   const groups = capabilityKinds
@@ -4481,6 +4826,7 @@ function DynamicOrchestrationWorkspace({
   onRun: () => void;
 }) {
   const badgeStatus: Dag['status'] = running ? 'running' : dag.status;
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const canGenerate = prompt.trim().length > 0 && !running;
   const canRun = canRunDag && !running;
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
@@ -4592,6 +4938,7 @@ function DynamicOrchestrationWorkspace({
               onConnect={onConnect}
               onNodeClick={(_, node) => onSelectNode(node.id)}
               onPaneClick={() => onSelectNode('')}
+              onInit={setFlowInstance}
               nodesDraggable
               nodesConnectable
               elementsSelectable
@@ -4601,6 +4948,7 @@ function DynamicOrchestrationWorkspace({
             >
               <Background color="#d8dade" gap={20} />
             </ReactFlow>
+            <CanvasViewportControls flowInstance={flowInstance} hasNodes={nodes.length > 0} />
             {!nodes.length ? (
               <button className="orchestration-empty-canvas dynamic-orchestration-empty" onClick={() => onAddNode()} type="button">
                 <Plus size={15} />
@@ -4699,8 +5047,49 @@ function DynamicOrchestrationWorkspace({
   );
 }
 
+function CanvasViewportControls({
+  flowInstance,
+  hasNodes,
+}: {
+  flowInstance: ReactFlowInstance | null;
+  hasNodes: boolean;
+}) {
+  const stopCanvasEvent = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  const centerCanvas = () => {
+    if (!flowInstance || !hasNodes) return;
+    void flowInstance.fitView({ padding: 0.25, duration: 220 });
+  };
+  const zoomInCanvas = () => {
+    if (!flowInstance) return;
+    void flowInstance.zoomIn({ duration: 160 });
+  };
+  const zoomOutCanvas = () => {
+    if (!flowInstance) return;
+    void flowInstance.zoomOut({ duration: 160 });
+  };
+
+  return (
+    <div className="canvas-viewport-controls" onMouseDown={stopCanvasEvent} onClick={stopCanvasEvent}>
+      <button onClick={centerCanvas} disabled={!flowInstance || !hasNodes} title="居中显示" type="button">
+        <Crosshair size={15} />
+      </button>
+      <button onClick={zoomInCanvas} disabled={!flowInstance} title="放大" type="button">
+        <ZoomIn size={15} />
+      </button>
+      <button onClick={zoomOutCanvas} disabled={!flowInstance} title="缩小" type="button">
+        <ZoomOut size={15} />
+      </button>
+    </div>
+  );
+}
+
 function OrchestrationWorkspace({
   capabilities,
+  skills,
+  mcpServers,
   spec,
   dag,
   nodes,
@@ -4725,6 +5114,8 @@ function OrchestrationWorkspace({
   onSelectNode,
 }: {
   capabilities: CapabilityDefinition[];
+  skills: SkillSummary[];
+  mcpServers: MCPServer[];
   spec: UserDag;
   dag: Dag;
   nodes: Node[];
@@ -4753,6 +5144,9 @@ function OrchestrationWorkspace({
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedUserNode = selectedNode
+    ? spec.nodes.find((node) => node.id === selectedNode.id) ?? null
+    : null;
   const runSummary = buildRunDialogSummary(userDagFromRuntimeDag(spec, dag));
   const enabledCapabilities = visibleCapabilitiesForPicker(capabilities);
   const contextCapability = enabledCapabilities.find((capability) => capability.id === contextCapabilityId) ?? enabledCapabilities[0];
@@ -4763,10 +5157,24 @@ function OrchestrationWorkspace({
   const selectedCapability = selectedInvocation
     ? capabilities.find((capability) => capability.id === selectedInvocation.capability_id)
     : null;
+  const staticNodeTitle = (node: DagNode): string => {
+    const title = node.title?.trim();
+    if (title) return title;
+    if (isCapabilityNode(node)) {
+      const capability = capabilities.find((item) => item.id === node.payload.invocation.capability_id);
+      return capability?.name || node.payload.invocation.capability_id || '未命名节点';
+    }
+    return nodeDisplayTitle(node);
+  };
+  const selectedDisplayTitle = selectedNormalized ? staticNodeTitle(selectedNormalized) : '';
   const selectableCapabilities = selectedCapability && !enabledCapabilities.some((capability) => capability.id === selectedCapability.id)
     ? [selectedCapability, ...enabledCapabilities]
     : enabledCapabilities;
+  const contextCapabilityGroups = capabilityOptionGroups(enabledCapabilities);
+  const selectableCapabilityGroups = capabilityOptionGroups(selectableCapabilities);
   const artifactItems = Object.values(spec.artifacts ?? {}).sort(compareArtifactsByPath);
+  const contextNode = contextMenu?.nodeId ? dag.nodes.find((node) => node.id === contextMenu.nodeId) : null;
+  const contextMenuTitle = contextNode ? `节点：${staticNodeTitle(contextNode)}` : '画布';
   const flowPositionFromEvent = (event: MouseEvent | React.MouseEvent<Element>) =>
     flowInstance?.screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
@@ -4797,14 +5205,46 @@ function OrchestrationWorkspace({
     if (contextMenu?.nodeId) onDeleteNode(contextMenu.nodeId);
     setContextMenu(null);
   };
-  const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
+  const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>, nextEdges?: DagEdge[]) => {
     if (!selectedNode || !selectedInvocation) return;
     onPatchNode(selectedNode.id, {
       payload: {
         type: 'capability',
         invocation: { ...selectedInvocation, ...patch },
       },
+    }, nextEdges);
+  };
+  const patchSelectedAgentConfig = (agent: UserDagAgentConfig | undefined) => {
+    if (!selectedNode) return;
+    onPatchDag({
+      nodes: spec.nodes.map((node) =>
+        node.id === selectedNode.id
+          ? normalizeUserDagNode({ ...node, agent })
+          : node,
+      ),
     });
+  };
+  function ensureBindingDependency(argumentsValue: Record<string, unknown>): DagEdge[] | undefined {
+    if (!selectedNode) return undefined;
+    const refs = collectNodeOutputRefs(argumentsValue);
+    if (!refs.length) return undefined;
+    let nextEdges = dag.edges ?? [];
+    let changed = false;
+    for (const ref of refs) {
+      if (ref.nodeId === selectedNode.id) continue;
+      const exists = nextEdges.some((edge) => edge.source === ref.nodeId && edge.target === selectedNode.id);
+      if (exists || wouldCreateCycle(nextEdges, ref.nodeId, selectedNode.id)) continue;
+      nextEdges = [
+        ...nextEdges,
+        {
+          source: ref.nodeId,
+          target: selectedNode.id,
+          reason: 'Parameter binding.',
+        },
+      ];
+      changed = true;
+    }
+    return changed ? nextEdges : undefined;
   };
   const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
     if (!selectedNode || !selectedInvocation) return;
@@ -4880,6 +5320,7 @@ function OrchestrationWorkspace({
           >
             <Background color="#d8dade" gap={20} />
           </ReactFlow>
+          <CanvasViewportControls flowInstance={flowInstance} hasNodes={nodes.length > 0} />
           {!nodes.length ? (
             <button className="orchestration-empty-canvas" onClick={() => onAddNode()} type="button">
               <Plus size={15} />
@@ -4893,14 +5334,18 @@ function OrchestrationWorkspace({
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="context-menu-title">{contextMenu.nodeId ? `节点：${contextMenu.nodeId}` : '画布'}</div>
+            <div className="context-menu-title">{contextMenuTitle}</div>
             <label className="context-select">
               能力
               <select value={contextCapability?.id ?? ''} onChange={(event) => setContextCapabilityId(event.target.value)}>
-                {enabledCapabilities.map((capability) => (
-                  <option key={capability.id} value={capability.id}>
-                    {capabilityDisplayName(capability)}
-                  </option>
+                {contextCapabilityGroups.map((group) => (
+                  <optgroup key={group.kind} label={group.label}>
+                    {group.items.map((capability) => (
+                      <option key={capability.id} value={capability.id}>
+                        {capabilityDisplayName(capability)}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>
@@ -4919,24 +5364,18 @@ function OrchestrationWorkspace({
       </div>
 
       {selectedNormalized ? (
-        <aside className="node-inspector" aria-label="节点检查器">
+        <aside className="node-inspector static-node-inspector" aria-label="节点检查器">
           <div className="node-inspector-body">
             <div className="node-inspector-title">
               <span>节点检查器</span>
-              <strong>{selectedNormalized.title || selectedNormalized.id}</strong>
-            </div>
-            <div className="inspector-field">
-              <label>节点 ID</label>
-              <input
-                value={selectedNormalized.id}
-                onChange={(event) => onPatchNode(selectedNormalized.id, { id: event.target.value })}
-              />
+              <strong>{selectedDisplayTitle}</strong>
             </div>
             <div className="inspector-field">
               <label>标题</label>
               <input
                 value={selectedNormalized.title ?? ''}
                 onChange={(event) => onPatchNode(selectedNormalized.id, { title: event.target.value })}
+                placeholder={selectedDisplayTitle}
               />
             </div>
             {selectedInvocation ? (
@@ -4960,10 +5399,14 @@ function OrchestrationWorkspace({
                     }}
                   >
                     <option value="">选择能力...</option>
-                    {selectableCapabilities.map((capability) => (
-                      <option key={capability.id} value={capability.id}>
-                        {capability.id}
-                      </option>
+                    {selectableCapabilityGroups.map((group) => (
+                      <optgroup key={group.kind} label={group.label}>
+                        {group.items.map((capability) => (
+                          <option key={capability.id} value={capability.id}>
+                            {capability.id}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 </div>
@@ -4991,9 +5434,23 @@ function OrchestrationWorkspace({
                   <InspectorArgumentEditor
                     value={selectedInvocation.arguments ?? {}}
                     parameters={selectedCapability?.parameters}
-                    onChange={(argumentsValue) => patchSelectedInvocation({ arguments: argumentsValue })}
+                    dag={dag}
+                    nodeId={selectedNormalized.id}
+                    inputSchema={spec.input_schema ?? {}}
+                    artifacts={spec.artifacts ?? {}}
+                    onEnsureDependency={ensureBindingDependency}
+                    onChange={(argumentsValue, nextEdges) => patchSelectedInvocation({ arguments: argumentsValue }, nextEdges)}
                   />
                 </div>
+                {isAgentTarget(selectedInvocation.capability_id) ? (
+                  <AgentNodeScopeEditor
+                    capabilities={capabilities}
+                    skills={skills}
+                    mcpServers={mcpServers}
+                    config={selectedUserNode?.agent}
+                    onChange={patchSelectedAgentConfig}
+                  />
+                ) : null}
               </>
             ) : (
               <div className="empty-state compact">入口节点无需配置能力。</div>
@@ -5058,17 +5515,167 @@ function OrchestrationWorkspace({
   );
 }
 
+function AgentNodeScopeEditor({
+  capabilities,
+  skills,
+  mcpServers,
+  config,
+  onChange,
+}: {
+  capabilities: CapabilityDefinition[];
+  skills: SkillSummary[];
+  mcpServers: MCPServer[];
+  config?: UserDagAgentConfig | null;
+  onChange: (config: UserDagAgentConfig | undefined) => void;
+}) {
+  const isCustom = isCustomAgentScope(config);
+  const availableCapabilities = capabilities
+    .filter((capability) => capability.enabled && capability.kind !== 'agent' && capability.kind !== 'skill');
+  const availableCapabilityIds = availableCapabilities.map((capability) => capability.id);
+  const availableSkillNames = skills.map(skillLookupName);
+  const selectedCapabilityIds = config?.capabilities ?? [];
+  const selectedSkillNames = config?.skills ?? [];
+  const selectedCapabilities = new Set(selectedCapabilityIds);
+  const selectedSkills = new Set(selectedSkillNames);
+  const groups = capabilityOptionGroups(availableCapabilities);
+  const availableCapabilityIdSet = new Set(availableCapabilityIds);
+  const mcpServerCounts = mcpServers
+    .map((server) => ({
+      name: server.name,
+      ids: server.tools
+        .filter((tool) => tool.enabled && availableCapabilityIdSet.has(tool.id))
+        .map((tool) => tool.id),
+    }))
+    .filter((server) => server.ids.length);
+  const customConfig = (capabilityIds = selectedCapabilityIds, skillNames = selectedSkillNames): UserDagAgentConfig => ({
+    capabilities: capabilityIds,
+    skills: skillNames,
+  });
+  const enableCustom = () => onChange(customConfig(availableCapabilityIds, availableSkillNames));
+  const selectAll = () => onChange(customConfig(availableCapabilityIds, availableSkillNames));
+  const clearAll = () => onChange(customConfig([], []));
+  const patchCapabilities = (capabilityIds: string[]) => onChange(customConfig(capabilityIds, selectedSkillNames));
+  const patchSkills = (skillNames: string[]) => onChange(customConfig(selectedCapabilityIds, skillNames));
+  const selectedCount = selectedCapabilityIds.length + selectedSkillNames.length;
+
+  return (
+    <section className="agent-node-scope">
+      <div className="agent-node-scope-head">
+        <span>Agent 可用能力</span>
+        <strong>{isCustom ? `已选 ${selectedCount}` : '全部启用'}</strong>
+      </div>
+      <div className="scope-mode-switch agent-node-scope-mode" role="tablist" aria-label="Agent capability scope mode">
+        <button className={!isCustom ? 'active' : ''} onClick={() => onChange(undefined)} type="button">
+          全部
+        </button>
+        <button className={isCustom ? 'active' : ''} onClick={enableCustom} type="button">
+          自定义
+        </button>
+      </div>
+      {isCustom ? (
+        <>
+          <div className="agent-node-scope-actions">
+            <button className="secondary-button compact-button" onClick={selectAll} type="button">
+              全选
+            </button>
+            <button className="secondary-button compact-button" onClick={clearAll} type="button">
+              清空
+            </button>
+          </div>
+          {mcpServerCounts.length ? (
+            <div className="agent-node-mcp-groups">
+              {mcpServerCounts.map((server) => (
+                <button
+                  key={server.name}
+                  className="scope-server-button"
+                  onClick={() => patchCapabilities(mergeValues(selectedCapabilityIds, server.ids))}
+                  type="button"
+                >
+                  <span>{server.name}</span>
+                  <strong>{server.ids.length}</strong>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="agent-node-scope-list">
+            {groups.map((group) => (
+              <section className="scope-group" key={group.kind}>
+                <h3>{group.label}</h3>
+                {group.items.map((capability) => (
+                  <label className="scope-row" key={capability.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedCapabilities.has(capability.id)}
+                      onChange={(event) => {
+                        patchCapabilities(toggleValue(selectedCapabilityIds, capability.id, event.target.checked));
+                      }}
+                    />
+                    <span>
+                      <strong>{capability.name}</strong>
+                      <span>{capabilityScopeDetail(capability)}</span>
+                    </span>
+                  </label>
+                ))}
+              </section>
+            ))}
+            {skills.length ? (
+              <section className="scope-group">
+                <h3>Skills</h3>
+                {skills.map((skill) => {
+                  const lookup = skillLookupName(skill);
+                  return (
+                    <label className="scope-row" key={skill.path}>
+                      <input
+                        type="checkbox"
+                        checked={selectedSkills.has(lookup)}
+                        onChange={(event) => {
+                          patchSkills(toggleValue(selectedSkillNames, lookup, event.target.checked));
+                        }}
+                      />
+                      <span>
+                        <strong>{skill.name}</strong>
+                        <span>{skill.category ? `${skill.category} · ${skill.path}` : skill.path}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </section>
+            ) : null}
+          </div>
+        </>
+      ) : (
+        <div className="agent-node-scope-default">
+          当前 Runner 的可用能力
+        </div>
+      )}
+    </section>
+  );
+}
+
 function InspectorArgumentEditor({
   value,
   parameters,
+  dag,
+  nodeId,
+  inputSchema = {},
+  artifacts = {},
+  onEnsureDependency,
   onChange,
 }: {
   value: Record<string, unknown>;
   parameters?: Record<string, unknown>;
-  onChange: (value: Record<string, unknown>) => void;
+  dag?: Dag;
+  nodeId?: string;
+  inputSchema?: Record<string, unknown>;
+  artifacts?: Record<string, Artifact>;
+  onEnsureDependency?: (value: Record<string, unknown>) => DagEdge[] | undefined;
+  onChange: (value: Record<string, unknown>, edges?: DagEdge[]) => void;
 }) {
   const normalizedValue = ensureSchemaArguments(value, parameters);
   const fields = buildSchemaArgumentFields(value, parameters);
+  const variableCatalog = dag && nodeId
+    ? buildVariableCatalog(dag, nodeId, inputSchema, artifacts)
+    : null;
   const [mode, setMode] = useState<'kv' | 'raw'>('kv');
   const [rawText, setRawText] = useState(() => JSON.stringify(normalizedValue, null, 2));
 
@@ -5076,6 +5683,9 @@ function InspectorArgumentEditor({
     setRawText(JSON.stringify(ensureSchemaArguments(value, parameters), null, 2));
   }, [value, parameters]);
 
+  const emitChange = (next: Record<string, unknown>) => {
+    onChange(next, onEnsureDependency?.(next));
+  };
   const updateKey = (oldKey: string, nextKey: string) => {
     const cleanKey = nextKey.trim();
     if (!cleanKey || (cleanKey !== oldKey && Object.prototype.hasOwnProperty.call(normalizedValue, cleanKey))) return;
@@ -5083,12 +5693,18 @@ function InspectorArgumentEditor({
     for (const [key, itemValue] of Object.entries(normalizedValue)) {
       next[key === oldKey ? cleanKey : key] = itemValue;
     }
-    onChange(next);
+    emitChange(next);
   };
   const updateValue = (key: string, rawValue: string, type: ArgumentValueType) => {
-    onChange({
+    emitChange({
       ...normalizedValue,
       [key]: parseArgumentValue(rawValue, type, normalizedValue[key]),
+    });
+  };
+  const updateBoundValue = (key: string, nextValue: unknown) => {
+    emitChange({
+      ...normalizedValue,
+      [key]: nextValue,
     });
   };
   const addField = () => {
@@ -5098,16 +5714,16 @@ function InspectorArgumentEditor({
       index += 1;
       key = `arg_${index}`;
     }
-    onChange({ ...normalizedValue, [key]: '' });
+    emitChange({ ...normalizedValue, [key]: '' });
   };
   const removeField = (key: string) => {
     const next = { ...normalizedValue };
     delete next[key];
-    onChange(next);
+    emitChange(next);
   };
   const applyRawText = () => {
     const parsed = parseJsonObject(rawText);
-    if (parsed) onChange(parsed);
+    if (parsed) emitChange(parsed);
   };
 
   return (
@@ -5141,11 +5757,12 @@ function InspectorArgumentEditor({
                   placeholder="key"
                   aria-label="参数名"
                 />
-                <input
-                  value={formatArgumentValue(itemValue)}
-                  onChange={(event) => updateValue(key, event.target.value, type)}
-                  placeholder="value"
-                  aria-label="参数值"
+                <ValueBindingEditor
+                  value={itemValue}
+                  valueType={type}
+                  catalog={variableCatalog}
+                  onLiteralChange={(rawValue) => updateValue(key, rawValue, type)}
+                  onChange={(nextValue) => updateBoundValue(key, nextValue)}
                   title={field.description}
                 />
                 <button
@@ -5176,6 +5793,108 @@ function InspectorArgumentEditor({
       )}
     </section>
   );
+}
+
+function ValueBindingEditor({
+  value,
+  valueType,
+  catalog,
+  title,
+  onLiteralChange,
+  onChange,
+}: {
+  value: unknown;
+  valueType: ArgumentValueType;
+  catalog: VariableCatalog | null;
+  title?: string;
+  onLiteralChange: (rawValue: string) => void;
+  onChange: (value: unknown) => void;
+}) {
+  const isBinding = isValueBinding(value);
+  const [mode, setMode] = useState<'literal' | 'binding'>(isBinding ? 'binding' : 'literal');
+  const optionGroups = buildVariableOptionGroups(catalog);
+  const options = optionGroups.flatMap((group) => group.items);
+  const selectedValue = isBinding ? bindingOptionValue(value) : '';
+  const hasSelectedOption = Boolean(selectedValue && options.some((option) => bindingOptionValue(option.binding) === selectedValue));
+
+  useEffect(() => {
+    setMode(isValueBinding(value) ? 'binding' : 'literal');
+  }, [value]);
+
+  const setBindingMode = () => {
+    setMode('binding');
+    if (!isBinding && options[0]) {
+      onChange(options[0].binding);
+    }
+  };
+  const setLiteralMode = () => {
+    setMode('literal');
+    if (isBinding) {
+      onChange('');
+    }
+  };
+  const selectBinding = (optionValue: string) => {
+    const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
+    if (selected) onChange(selected.binding);
+  };
+
+  return (
+    <div className="value-binding-editor">
+      <div className="value-binding-toggle" role="group" aria-label="参数值类型">
+        <button className={mode === 'literal' ? 'active' : ''} onClick={setLiteralMode} type="button">
+          固定值
+        </button>
+        <button className={mode === 'binding' ? 'active' : ''} onClick={setBindingMode} type="button">
+          变量
+        </button>
+      </div>
+      {mode === 'binding' ? (
+        <select
+          value={selectedValue}
+          onChange={(event) => selectBinding(event.target.value)}
+          disabled={!options.length}
+          aria-label="变量"
+          title={isBinding ? bindingLabel(value) : title}
+        >
+          {!options.length ? <option value="">暂无可用变量</option> : null}
+          {isBinding && selectedValue && !hasSelectedOption ? (
+            <option value={selectedValue}>{bindingLabel(value)}（当前引用）</option>
+          ) : null}
+          {optionGroups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.items.map((item) => (
+                <option key={item.id} value={bindingOptionValue(item.binding)}>
+                  {item.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      ) : (
+        <input
+          value={isBinding ? '' : formatArgumentValue(value)}
+          onChange={(event) => onLiteralChange(event.target.value)}
+          placeholder="value"
+          aria-label="参数值"
+          title={title}
+          data-value-type={valueType}
+        />
+      )}
+    </div>
+  );
+}
+
+function buildVariableOptionGroups(catalog: VariableCatalog | null): Array<{ label: string; items: VariableCatalogItem[] }> {
+  if (!catalog) return [];
+  return [
+    { label: 'DAG 输入', items: catalog.graphInputs },
+    { label: '节点输出', items: catalog.nodeOutputs },
+    { label: 'Artifacts', items: catalog.artifacts },
+  ].filter((group) => group.items.length);
+}
+
+function bindingOptionValue(binding: ValueBinding): string {
+  return JSON.stringify(binding);
 }
 
 function RunDagDialog({
@@ -5286,8 +6005,14 @@ function RunTimeline({
   state: string;
 }) {
   const rows = timeline.map(runTimelineRow);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
+  }, [rows.length]);
   return (
-    <div className="run-timeline-list">
+    <div className="run-timeline-list" ref={listRef}>
       {rows.length ? rows.map((row, index) => (
         <details className={`run-timeline-row ${row.status}`} key={`${row.label}-${index}`} open={index === rows.length - 1}>
           <summary>
@@ -5295,7 +6020,13 @@ function RunTimeline({
             <code>{row.kind}</code>
             <ChevronRight size={15} />
           </summary>
-          {row.detail ? <p>{row.detail}</p> : null}
+          {row.item.type === 'capability' ? (
+            <RunTimelineCapabilityDetails item={row.item} />
+          ) : row.item.type === 'trace' ? (
+            <RunTimelineTraceDetails item={row.item} />
+          ) : (
+            <RunTimelineTextDetails content={row.detail} />
+          )}
         </details>
       )) : (
         <div className="run-timeline-empty">
@@ -5306,25 +6037,123 @@ function RunTimeline({
   );
 }
 
-function runTimelineRow(item: RunTranscriptItem): { label: string; kind: string; detail: string; status: string } {
+function RunTimelineTraceDetails({ item }: { item: Extract<RunTranscriptItem, { type: 'trace' }> }) {
+  const payload = item.event.payload ?? {};
+  const resultRecord = recordValue(payload.result);
+  const argsText = formatTraceValue(payload.input) || '{}';
+  const error = stringValue(payload.error) || stringValue(resultRecord?.error);
+  const output = error
+    || payload.output
+    || resultRecord?.content
+    || resultRecord?.value
+    || item.event.detail;
+  const resultText = formatTraceValue(output) || (item.event.status === 'running' ? '等待执行结果...' : '执行完成，未返回文本结果。');
+  const failed = item.event.status === 'failed' || Boolean(error);
+  return (
+    <div className="run-timeline-detail">
+      <section className="run-timeline-section">
+        <span>参数</span>
+        <RunTimelineCodeBlock value={argsText} />
+      </section>
+      <section className={`run-timeline-section ${failed ? 'failed' : ''}`}>
+        <span>{failed ? '错误' : '执行结果'}</span>
+        <RunTimelineCodeBlock value={resultText} />
+      </section>
+    </div>
+  );
+}
+
+function RunTimelineCapabilityDetails({ item }: { item: Extract<RunTranscriptItem, { type: 'capability' }> }) {
+  const argsText = formatCapabilityArguments(item.event.arguments) || '{}';
+  const result = item.result ?? (item.event.type === 'capability.call.started' ? undefined : item.event);
+  const failed = result?.type === 'capability.call.failed';
+  const resultText = result
+    ? result.content || (failed ? '调用失败，未返回错误详情。' : '执行完成，未返回文本结果。')
+    : '等待执行结果...';
+  return (
+    <div className="run-timeline-detail">
+      <section className="run-timeline-section">
+        <span>参数</span>
+        <RunTimelineCodeBlock value={argsText} />
+      </section>
+      <section className={`run-timeline-section ${failed ? 'failed' : ''}`}>
+        <span>{failed ? '错误' : '执行结果'}</span>
+        <RunTimelineCodeBlock value={resultText} />
+      </section>
+    </div>
+  );
+}
+
+function RunTimelineTextDetails({ content }: { content: string }) {
+  if (!content) return null;
+  return (
+    <div className="run-timeline-detail">
+      <section className="run-timeline-section">
+        <span>输出</span>
+        <RunTimelineCodeBlock value={content} />
+      </section>
+    </div>
+  );
+}
+
+function RunTimelineCodeBlock({ value }: { value: string }) {
+  return (
+    <pre className="run-timeline-code">{value}</pre>
+  );
+}
+
+function runTimelineRow(item: RunTranscriptItem): { item: RunTranscriptItem; label: string; kind: string; detail: string; status: string } {
   if (item.type === 'text') {
     const content = item.content.trim();
     return {
+      item,
       label: content.split('\n').find(Boolean)?.slice(0, 70) || '运行输出',
       kind: 'trace',
       detail: content,
       status: 'done',
     };
   }
+  if (item.type === 'trace') {
+    const payload = item.event.payload ?? {};
+    const capabilityId = stringValue(payload.capability_id) || item.event.label;
+    return {
+      item,
+      label: item.event.node_id ? `${item.event.node_id} · ${capabilityId}` : capabilityId,
+      kind: item.event.type,
+      detail: item.event.detail,
+      status: item.event.status === 'failed' ? 'failed' : item.event.status === 'running' ? 'running' : 'done',
+    };
+  }
   const event = item.event;
   const result = item.result;
   const failed = result?.type === 'capability.call.failed';
   return {
+    item,
     label: event.capability_id ? `${event.capability_id}` : '能力调用',
     kind: event.type.includes('review') ? 'review' : 'tool',
-    detail: JSON.stringify(event.arguments ?? {}, null, 2),
+    detail: result?.content ?? '',
     status: failed ? 'failed' : result ? 'done' : 'running',
   };
+}
+
+function formatTraceValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function runIssueText(issue: RunDialogSummary['issues'][number]): string {
@@ -5766,8 +6595,8 @@ function CapabilityDirectory({
   const [mcpEnvText, setMcpEnvText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
   const normalizedQuery = query.toLowerCase();
-  const toolRows = capabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
-  const selectedTool = capabilities.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0] ?? capabilities[0];
+  const toolRows = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedQuery));
+  const selectedTool = toolRows.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0];
   const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? visibleSkills[0] ?? skills[0];
@@ -6139,10 +6968,28 @@ function CapabilityDirectory({
   );
 }
 
-function profilePathLabel(profile: AgentProfile): string {
-  return profile.source === 'builtin'
-    ? `dagent/resources/profiles/${profile.name}.md`
-    : `profiles/${profile.name}.md`;
+function profileSourceLabel(profile: AgentProfile): string {
+  if (profile.source === 'builtin') return '内置配置';
+  if (profile.source === 'managed') return '本地配置';
+  return '配置目录';
+}
+
+function uniqueProfileName(baseName: string, profiles: AgentProfile[]): string {
+  const safeBase = cleanProfileNameDraft(baseName) || 'agent';
+  const names = new Set(profiles.map((profile) => profile.name));
+  let candidate = safeBase;
+  let index = 2;
+  while (names.has(candidate)) {
+    candidate = `${safeBase}_${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function cleanProfileNameDraft(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  if (!cleaned) return '';
+  return /^[A-Za-z]/.test(cleaned) ? cleaned : `agent_${cleaned}`;
 }
 
 function toolExecutionLabel(capability: CapabilityDefinition): string {
@@ -6482,61 +7329,160 @@ function modelSourceLabel(source: ModelProvider['source']): string {
 
 function AgentManagementWorkspace({
   capabilities,
+  creating,
   profiles,
   warnings,
   selectedId,
+  onCreate,
+  onCreatingChange,
+  onDelete,
+  onRefresh,
   onSelect,
+  onUpdate,
 }: {
   capabilities: CapabilityDefinition[];
+  creating: boolean;
   profiles: AgentProfile[];
   warnings: ProfileWarning[];
   selectedId: string;
+  onCreate: (name: string, content: string) => Promise<AgentProfile>;
+  onCreatingChange: (creating: boolean) => void;
+  onDelete: (name: string) => Promise<void>;
+  onRefresh: (preferredProfileId?: string) => Promise<void>;
   onSelect: (id: string) => void;
+  onUpdate: (name: string, content: string) => Promise<AgentProfile>;
 }) {
   const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0] ?? null;
   const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent');
   const capabilityRows = agentCapabilities.length
     ? agentCapabilities
     : capabilities.filter((capability) => capability.enabled).slice(0, 3);
+  const [draftName, setDraftName] = useState('');
+  const [draftContent, setDraftContent] = useState('');
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+  const canEdit = creating || Boolean(selected?.editable);
+  const isDirty = creating || Boolean(selected && draftContent !== selected.content);
 
   useEffect(() => {
     if (!selected && profiles[0]) onSelect(profiles[0].id);
   }, [onSelect, profiles, selected]);
 
+  useEffect(() => {
+    if (creating) {
+      setDraftName(uniqueProfileName('agent', profiles));
+      setDraftContent('# New Agent\n\n');
+      setMessage('');
+    }
+  }, [creating, profiles]);
+
+  useEffect(() => {
+    if (creating || !selected) return;
+    setDraftName(selected.name);
+    setDraftContent(selected.content || '');
+    setMessage('');
+  }, [creating, selected]);
+
+  const startCopy = () => {
+    if (!selected) return;
+    setDraftName(uniqueProfileName(`${selected.name}_copy`, profiles));
+    setDraftContent(selected.content || '');
+    setMessage('');
+    onCreatingChange(true);
+  };
+  const cancelCreate = () => {
+    onCreatingChange(false);
+    if (profiles[0]) onSelect(profiles[0].id);
+  };
+  const saveDraft = async () => {
+    setSaving(true);
+    setMessage('');
+    try {
+      if (creating) {
+        const profile = await onCreate(draftName, draftContent);
+        onSelect(profile.id);
+      } else if (selected?.editable) {
+        const profile = await onUpdate(selected.name, draftContent);
+        onSelect(profile.id);
+      }
+      setMessage('已保存。');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteSelected = async () => {
+    if (!selected?.deletable) return;
+    setSaving(true);
+    setMessage('');
+    try {
+      await onDelete(selected.name);
+      setMessage('已删除。');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <section className="design-agents-workspace">
       <div className="agent-prompt-editor">
-        {selected ? (
+        {selected || creating ? (
           <>
             <div className="agent-editor-toolbar">
               <div className="agent-editor-icon">
                 <Bot size={15} />
               </div>
               <div>
-                <strong>{selected.name}</strong>
-                <span>{profilePathLabel(selected)}</span>
+                <strong>{creating ? '新建本地配置' : selected?.name}</strong>
+                <span>{creating ? '本地受管配置' : selected ? profileSourceLabel(selected) : ''}</span>
               </div>
               <div>
-                <button className="secondary-button compact-button" type="button" disabled title="后端暂未提供导入 profile 接口">
-                  <Upload size={14} />
-                  导入
-                </button>
-                <button className="primary-button compact-button" type="button" disabled title="后端暂未提供保存 profile 接口">
+                {creating ? (
+                  <button className="secondary-button compact-button" onClick={cancelCreate} type="button" disabled={saving}>
+                    <X size={14} />
+                    取消
+                  </button>
+                ) : (
+                  <button className="secondary-button compact-button" onClick={startCopy} type="button" disabled={!selected || saving}>
+                    <Copy size={14} />
+                    复制为本地
+                  </button>
+                )}
+                <button className="primary-button compact-button" onClick={() => void saveDraft()} type="button" disabled={!canEdit || !isDirty || saving}>
                   <Save size={14} />
                   保存
                 </button>
               </div>
             </div>
             <div className="agent-editor-body">
+              {creating ? (
+                <label className="agent-name-field">
+                  <span>配置名称</span>
+                  <input
+                    value={draftName}
+                    onChange={(event) => setDraftName(event.target.value)}
+                    placeholder="agent_name"
+                  />
+                </label>
+              ) : null}
               <div className="agent-editor-title-row">
                 <span>系统提示词</span>
-                <em>{selected.content.length} chars</em>
+                <em>{draftContent.length} chars</em>
               </div>
-              <textarea value={selected.content || ''} readOnly spellCheck={false} />
+              <textarea
+                value={draftContent}
+                readOnly={!canEdit}
+                spellCheck={false}
+                onChange={(event) => setDraftContent(event.target.value)}
+              />
               <div className="agent-path-note">
                 <AlertTriangle size={14} />
-                配置文件路径：<code>{profilePathLabel(selected)}</code>
+                <span>{creating ? '保存后会生成可用于静态编排的 agent capability。' : `来源：${selected ? profileSourceLabel(selected) : ''}`}</span>
               </div>
+              {message ? <p className="form-message">{message}</p> : null}
             </div>
           </>
         ) : (
@@ -6551,8 +7497,9 @@ function AgentManagementWorkspace({
             <div className="agent-info-table">
               <div><span>名称</span><strong>{selected.name}</strong></div>
               <div><span>描述</span><strong>{selected.description || 'Markdown profile'}</strong></div>
-              <div><span>来源</span><strong>{selected.source}</strong></div>
+              <div><span>来源</span><strong>{profileSourceLabel(selected)}</strong></div>
               <div><span>字符数</span><strong>{selected.content.length}</strong></div>
+              <div><span>可编辑</span><strong>{selected.editable ? '是' : '否'}</strong></div>
             </div>
             <div className="agent-panel-label">能力范围</div>
             <div className="agent-capability-list">
@@ -6574,9 +7521,13 @@ function AgentManagementWorkspace({
               </>
             ) : null}
             <div className="agent-panel-label">危险操作</div>
-            <button className="danger-line-button" type="button" disabled title="后端暂未提供删除 profile 接口">
+            <button className="danger-line-button" onClick={() => void deleteSelected()} type="button" disabled={!selected.deletable || saving}>
               <Trash2 size={14} />
               删除配置
+            </button>
+            <button className="secondary-button compact-button" onClick={() => void onRefresh(selected.id)} type="button" disabled={saving}>
+              <RefreshCw size={14} />
+              刷新
             </button>
           </>
         ) : null}

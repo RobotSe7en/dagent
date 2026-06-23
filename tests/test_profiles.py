@@ -20,6 +20,21 @@ def test_profile_store_loads_markdown_profile(tmp_path: Path) -> None:
     assert profile.render() == "# DAG Agent\n\nGenerate compact PlanSpec DSL."
 
 
+def test_profile_store_saves_and_deletes_markdown_profile(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path / "profiles")
+
+    profile = store.save("analyst", "# Analyst\n\nRead carefully.")
+
+    assert profile.name == "analyst"
+    assert profile.description == "Analyst"
+    assert store.list_names() == ["analyst"]
+    assert store.load("analyst").content == "# Analyst\n\nRead carefully."
+
+    store.delete("analyst")
+
+    assert store.list_names() == []
+
+
 def test_profile_store_rejects_path_like_profile_names(tmp_path: Path) -> None:
     store = ProfileStore(tmp_path / "profiles")
 

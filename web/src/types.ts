@@ -154,6 +154,25 @@ export interface UserDagNode {
   artifact_outputs?: string[];
   title?: string;
   boundary?: Boundary | null;
+  agent?: UserDagAgentConfig | null;
+}
+
+export interface UserDagAgentConfig {
+  capabilities?: string[] | null;
+  skills?: string[] | null;
+}
+
+export interface DagValidationIssue {
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+  node_id?: string | null;
+  path?: ValuePathItem[];
+}
+
+export interface DagValidationResult {
+  valid: boolean;
+  issues: DagValidationIssue[];
 }
 
 export interface Artifact {
@@ -341,7 +360,9 @@ export interface AgentProfile {
   name: string;
   description: string;
   content: string;
-  source: 'builtin' | 'user';
+  source: 'builtin' | 'managed' | 'config';
+  editable: boolean;
+  deletable: boolean;
 }
 
 export interface ProfileWarning {

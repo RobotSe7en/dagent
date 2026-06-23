@@ -14,6 +14,16 @@ continuation 和 execution dispatch。
 
 当图结构属于代码时，使用静态 `Dag` 而不是 agent。见[静态 DAG](static-dag.md)。
 
+## 本地 Web UI 的受管 Profiles
+
+内置 profiles 位于 `dagent/resources/profiles/*.md`。本地 FastAPI/Web UI 会把可编辑
+profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户通过“智能体管理”工作区创建、
+复制、编辑和删除这些 profiles，而不是在界面里填写 Markdown 文件路径。
+
+受管 profile 名称也是 agent capability 的产品标识，必须以字母开头，并且只能包含字母、
+数字、`_` 和 `-`。名为 `analyst` 的受管 profile 会在静态 DAG 编辑器中暴露为
+`agent.analyst`。
+
 ## ToolAgent
 
 ```python

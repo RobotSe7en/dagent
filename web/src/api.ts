@@ -10,6 +10,7 @@ import type {
   ReviewLevel,
   ReviewEventPayload,
   CapabilityStreamEvent,
+  DagValidationResult,
   TraceLogEvent,
   ValidationFeedbackEvent,
   RunTrace,
@@ -124,6 +125,20 @@ export async function saveDag(spec: UserDag): Promise<UserDag> {
   return data.dag;
 }
 
+export async function validateDag(spec: UserDag): Promise<DagValidationResult> {
+  const res = await fetch(`${API_BASE}/dags/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    valid: Boolean(data.valid),
+    issues: Array.isArray(data.issues) ? data.issues : [],
+  };
+}
+
 export async function uploadDagArtifact(
   specId: string,
   artifactId: string,
@@ -175,6 +190,35 @@ export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnin
     profiles: data.profiles ?? [],
     warnings: data.warnings ?? [],
   };
+}
+
+export async function createProfile(payload: { name: string; content: string }): Promise<AgentProfile> {
+  const res = await fetch(`${API_BASE}/profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.profile;
+}
+
+export async function updateProfile(name: string, content: string): Promise<AgentProfile> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.profile;
+}
+
+export async function deleteProfile(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/profiles/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
 }
 
 export async function listSkills(): Promise<SkillSummary[]> {

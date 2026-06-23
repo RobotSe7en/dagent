@@ -538,7 +538,7 @@ def test_dag_agent_loop_runs_static_dag_spec_as_dag_lifecycle_owner(tmp_path: Pa
     assert dag_node_trace(outcome.state.trace, "write").children[0].capability_execution.result.content.startswith("wrote:")
 
 
-def test_dag_agent_loop_static_artifact_paths_are_relative_to_capability_workspace(
+def test_dag_agent_loop_static_artifact_paths_are_relative_to_run_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -570,7 +570,8 @@ def test_dag_agent_loop_static_artifact_paths_are_relative_to_capability_workspa
         encoding="utf-8"
     ) == "hi"
     invocation = dag_node_trace(outcome.state.trace, "write").children[0].capability_execution.invocation
-    assert invocation.arguments["path"] == "runs/static_test/notes/output.txt"
+    assert invocation.arguments["path"] == "notes/output.txt"
+    assert not (tmp_path / ".dagent" / "notes" / "output.txt").exists()
 
 
 def test_dag_agent_loop_run_static_respects_enabled_toolsets(tmp_path: Path) -> None:

@@ -1,4 +1,4 @@
-import type { Artifact, CapabilityStreamEvent, RiskLevel, UserDag, UserDagNode } from './types';
+import type { Artifact, CapabilityStreamEvent, RiskLevel, TraceLogEvent, UserDag, UserDagNode } from './types';
 
 export interface RunArtifactSummary {
   id: string;
@@ -30,7 +30,8 @@ export interface RunDialogSummary {
 
 export type RunTranscriptItem =
   | { type: 'text'; content: string }
-  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent };
+  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
+  | { type: 'trace'; event: TraceLogEvent };
 
 export function buildRunDialogSummary(spec: UserDag): RunDialogSummary {
   const artifacts = spec.artifacts ?? {};
@@ -102,7 +103,39 @@ export function appendRunTranscriptCapability(
       return next;
     }
   }
+  const traceIndex = next.findIndex(
+    (item) => item.type === 'trace'
+      && item.event.payload?.invocation_id === event.invocation_id,
+  );
+  if (traceIndex !== -1) {
+    return next;
+  }
   return [...next, { type: 'capability', event }];
+}
+
+export function appendRunTranscriptTraceEvent(
+  timeline: RunTranscriptItem[],
+  event: TraceLogEvent,
+): RunTranscriptItem[] {
+  if (event.type !== 'capability') return timeline;
+  const payload = event.payload ?? {};
+  const invocationId = typeof payload.invocation_id === 'string' ? payload.invocation_id : '';
+  const next = [...timeline];
+  const traceIndex = next.findIndex((item) => item.type === 'trace' && item.event.event_id === event.event_id);
+  if (traceIndex !== -1) {
+    next[traceIndex] = { type: 'trace', event };
+    return next;
+  }
+  if (invocationId) {
+    const capabilityIndex = next.findIndex(
+      (item) => item.type === 'capability' && item.event.invocation_id === invocationId,
+    );
+    if (capabilityIndex !== -1) {
+      next[capabilityIndex] = { type: 'trace', event };
+      return next;
+    }
+  }
+  return [...next, { type: 'trace', event }];
 }
 
 function collectArtifactReferences(

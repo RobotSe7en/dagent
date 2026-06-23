@@ -368,14 +368,15 @@ class DAGAgentLoop:
             capabilities=self.tool_adapter.capabilities(self.enabled_toolsets),
         )
         dag = self.prepare_for_review(dag)
-        capability_workspace_root = (
+        workspace_parent_root = (
             self.dag_executor.capability_workspace_root
             or self.dag_executor.capability_executor.workspace_root
         )
         workspace = create_run_workspace(
-            resolve_run_workspace_root(capability_workspace_root, workspace_root),
+            resolve_run_workspace_root(workspace_parent_root, workspace_root),
             run_id=run_id,
         )
+        capability_workspace_root = workspace
         artifact_states = init_artifact_states(spec.artifacts)
         materialized_artifact_ids = materialize_artifact_uploads(
             artifact_uploads or {},

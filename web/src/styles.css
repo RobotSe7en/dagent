@@ -703,7 +703,24 @@ button:focus-visible {
   padding: 6px 8px;
 }
 
-.sidebar-artifact-row span {
+.sidebar-artifact-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-artifact-main:hover strong {
+  color: #5b5bd6;
+}
+
+.sidebar-artifact-main span {
   flex-shrink: 0;
   border-radius: 5px;
   background: #f0f1f4;
@@ -714,7 +731,7 @@ button:focus-visible {
   font-weight: 800;
 }
 
-.sidebar-artifact-row strong {
+.sidebar-artifact-main strong {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -725,7 +742,7 @@ button:focus-visible {
   white-space: nowrap;
 }
 
-.sidebar-artifact-row button {
+.sidebar-artifact-delete {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
@@ -737,7 +754,7 @@ button:focus-visible {
   cursor: pointer;
 }
 
-.sidebar-artifact-row button:hover {
+.sidebar-artifact-delete:hover {
   color: #cf3d3d;
 }
 
@@ -1819,6 +1836,46 @@ details[open] .timeline-chevron {
   background-size: 20px 20px;
 }
 
+.canvas-viewport-controls {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #e2e4ea;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 4px;
+  box-shadow: 0 8px 18px rgba(19, 23, 31, 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.canvas-viewport-controls button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #5a606b;
+  cursor: pointer;
+}
+
+.canvas-viewport-controls button:hover:not(:disabled),
+.canvas-viewport-controls button:focus-visible {
+  background: #eeeefb;
+  color: #4d4dc7;
+}
+
+.canvas-viewport-controls button:disabled {
+  color: #c2c6cd;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
 .dynamic-orchestration-workspace {
   grid-template-columns: 320px minmax(0, 1fr);
 }
@@ -2349,6 +2406,10 @@ details[open] .timeline-chevron {
   background: #fff;
 }
 
+.static-node-inspector {
+  width: clamp(420px, 32vw, 520px);
+}
+
 .node-inspector-body {
   height: 100%;
   display: flex;
@@ -2516,7 +2577,7 @@ details[open] .timeline-chevron {
 .inspector-argument-header,
 .inspector-argument-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 28px;
+  grid-template-columns: minmax(96px, 0.7fr) minmax(0, 1.5fr) 28px;
   gap: 5px;
   align-items: center;
 }
@@ -2562,7 +2623,7 @@ details[open] .timeline-chevron {
   box-shadow: 0 0 0 2px rgba(91, 91, 214, 0.1);
 }
 
-.inspector-argument-row button {
+.inspector-argument-row > button {
   width: 28px;
   height: 28px;
   display: grid;
@@ -2574,14 +2635,71 @@ details[open] .timeline-chevron {
   cursor: pointer;
 }
 
-.inspector-argument-row button:disabled {
+.inspector-argument-row > button:disabled {
   border-color: #eef0f3;
   color: #c2c6cd;
   cursor: default;
 }
 
-.inspector-argument-row button:not(:disabled):hover {
+.inspector-argument-row > button:not(:disabled):hover {
   background: #fbeaea;
+}
+
+.value-binding-editor {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+}
+
+.value-binding-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid #e2e4ea;
+  border-radius: 7px;
+  background: #f5f6f8;
+}
+
+.value-binding-toggle button {
+  height: 24px;
+  min-width: 42px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #7d8591;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.value-binding-toggle button.active {
+  background: #fff;
+  color: #4d4dc7;
+  box-shadow: 0 1px 2px rgba(19, 23, 31, 0.08);
+}
+
+.value-binding-editor select,
+.value-binding-editor input {
+  width: 100%;
+  height: 30px;
+  min-width: 0;
+  border: 1px solid #e2e4ea;
+  border-radius: 7px;
+  background: #fff;
+  color: #3b414b;
+  padding: 0 8px;
+  outline: none;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.value-binding-editor select:focus,
+.value-binding-editor input:focus {
+  border-color: #5b5bd6;
+  box-shadow: 0 0 0 2px rgba(91, 91, 214, 0.1);
 }
 
 .inspector-argument-add {
@@ -2620,6 +2738,76 @@ details[open] .timeline-chevron {
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.agent-node-scope {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e7e8ec;
+  border-radius: 10px;
+  background: #fbfbfd;
+  padding: 10px;
+}
+
+.agent-node-scope-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-node-scope-head span {
+  color: #aab0b9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.agent-node-scope-head strong {
+  color: #5b5bd6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agent-node-scope-mode {
+  padding: 0;
+}
+
+.agent-node-scope-actions,
+.agent-node-mcp-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-node-mcp-groups .scope-server-button {
+  min-width: 112px;
+  flex: 1 1 132px;
+}
+
+.agent-node-scope-list {
+  max-height: 360px;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.agent-node-scope-list .scope-row {
+  background: #fff;
+}
+
+.agent-node-scope-default {
+  border: 1px dashed #d8dade;
+  border-radius: 8px;
+  background: #fff;
+  color: #7d8591;
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .inspector-artifact-list {
@@ -3502,6 +3690,37 @@ details[open] .timeline-chevron {
   gap: 8px;
 }
 
+.agent-name-field {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-name-field span {
+  color: #aab0b9;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.agent-name-field input {
+  height: 36px;
+  border: 1px solid #e2e4ea;
+  border-radius: 9px;
+  background: #fff;
+  color: #16181d;
+  outline: none;
+  padding: 0 12px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.agent-name-field input:focus {
+  border-color: #5b5bd6;
+  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
+}
+
 .agent-editor-title-row span,
 .agent-panel-label {
   color: #aab0b9;
@@ -3534,6 +3753,11 @@ details[open] .timeline-chevron {
   font-size: 13px;
   line-height: 1.7;
   resize: none;
+}
+
+.agent-editor-body textarea:read-only {
+  background: #fbfbfd;
+  color: #5a606b;
 }
 
 .agent-path-note {
@@ -4598,6 +4822,14 @@ details[open] .timeline-chevron {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.capability-event-card[open] {
+  max-height: min(760px, 78vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
 .timeline-card-head strong,
 .capability-event-head strong {
   min-width: 0;
@@ -4660,6 +4892,32 @@ details[open] .timeline-chevron {
   background: #fafbfc;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
+}
+
+.capability-code-block {
+  width: 100%;
+  min-height: 132px;
+  max-height: min(420px, 44vh);
+  overflow: auto;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: #fafbfc;
+  color: var(--text-secondary);
+  padding: 12px 14px;
+  outline: none;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+.capability-code-block:focus {
+  box-shadow: inset 0 0 0 2px rgba(91, 91, 214, 0.14);
 }
 
 /* ── Error banner ── */
@@ -4923,8 +5181,8 @@ button:disabled {
 }
 
 .run-dialog {
-  width: min(860px, 100%);
-  height: min(620px, 100%);
+  width: min(980px, 100%);
+  height: min(900px, calc(100vh - 48px));
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -4946,6 +5204,108 @@ button:disabled {
   overflow: hidden;
   background: var(--bg-surface);
   box-shadow: var(--shadow-xl);
+}
+
+.artifact-edit-dialog {
+  width: min(520px, 100%);
+  display: grid;
+  grid-template-rows: auto auto auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xl);
+}
+
+.artifact-edit-head {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #eef0f3;
+  padding: 0 18px;
+}
+
+.artifact-edit-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.artifact-edit-head span {
+  color: #9aa0a8;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.artifact-edit-head strong {
+  overflow: hidden;
+  color: #16181d;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-edit-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.artifact-edit-body label {
+  display: grid;
+  gap: 6px;
+  color: #6b717b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.artifact-edit-body input:not([type="checkbox"]),
+.artifact-edit-body textarea {
+  width: 100%;
+  border: 1px solid #dfe2e8;
+  border-radius: 9px;
+  background: #fff;
+  color: #16181d;
+  padding: 9px 10px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+}
+
+.artifact-edit-body input:disabled {
+  background: #f5f6f8;
+  color: #8e95a1;
+  cursor: not-allowed;
+}
+
+.artifact-edit-body textarea {
+  min-height: 82px;
+  resize: vertical;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.artifact-edit-required {
+  display: flex !important;
+  align-items: center;
+}
+
+.artifact-edit-error {
+  margin: 0;
+  color: #cf3d3d;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.artifact-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid #eef0f3;
+  padding: 14px 18px;
 }
 
 .capability-scope-body {
@@ -5725,17 +6085,25 @@ button:disabled {
   flex-direction: column;
   gap: 14px;
   padding: 18px 20px;
-  overflow-y: auto;
+  overflow: hidden;
   scrollbar-width: thin;
   scrollbar-color: #d8dade transparent;
 }
 
 .run-timeline-list {
-  display: grid;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #d8dade transparent;
 }
 
 .run-timeline-row {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid #e7e8ec;
   border-radius: 10px;
@@ -5794,16 +6162,60 @@ button:disabled {
 
 .run-timeline-row[open] summary {
   border-bottom: 1px solid #f0f1f4;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
 }
 
-.run-timeline-row p {
+.run-timeline-row[open] {
+  max-height: min(560px, calc(100vh - 180px));
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d8dade transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+.run-timeline-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px 34px;
+}
+
+.run-timeline-section {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.run-timeline-section > span {
+  color: #9aa0a8;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.run-timeline-code {
   margin: 0;
-  padding: 11px 34px;
-  color: #6b717b;
+  width: 100%;
+  overflow: visible;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  background: #fbfbfd;
+  color: #3b414b;
+  padding: 10px 11px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.run-timeline-section.failed .run-timeline-code {
+  border-color: #f3cccc;
+  background: #fff7f7;
+  color: #9f2f2f;
 }
 
 .run-timeline-empty {
