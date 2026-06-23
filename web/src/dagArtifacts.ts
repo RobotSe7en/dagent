@@ -62,8 +62,29 @@ export function removeArtifactBinding(spec: UserDag, artifactId: string): UserDa
     nodes: spec.nodes.map((node) => ({
       ...node,
       inputs: removeArtifactValueRefs(node.inputs ?? {}, artifactId) as Record<string, unknown>,
+      ...(node.boundary === undefined ? {} : {
+        boundary: removeArtifactValueRefs(node.boundary, artifactId) as UserDag['nodes'][number]['boundary'],
+      }),
       artifact_inputs: (node.artifact_inputs ?? []).filter((id) => id !== artifactId),
       artifact_outputs: (node.artifact_outputs ?? []).filter((id) => id !== artifactId),
+    })),
+  };
+}
+
+export function updateArtifactBinding(spec: UserDag, previousId: string, artifact: ArtifactDraft): UserDag {
+  const normalized = normalizeArtifact(artifact);
+  if (!normalized.id) return spec;
+  return {
+    ...spec,
+    artifacts: upsertArtifact(spec.artifacts ?? {}, normalized, previousId),
+    nodes: spec.nodes.map((node) => ({
+      ...node,
+      inputs: rewriteArtifactValueRefs(node.inputs ?? {}, previousId, normalized.id) as Record<string, unknown>,
+      ...(node.boundary === undefined ? {} : {
+        boundary: rewriteArtifactValueRefs(node.boundary, previousId, normalized.id) as UserDag['nodes'][number]['boundary'],
+      }),
+      artifact_inputs: rewriteArtifactIds(node.artifact_inputs ?? [], previousId, normalized.id),
+      artifact_outputs: rewriteArtifactIds(node.artifact_outputs ?? [], previousId, normalized.id),
     })),
   };
 }
@@ -178,6 +199,45 @@ function removeArtifactValueRefs(value: unknown, artifactId: string): unknown {
       .map(([key, item]) => [key, removeArtifactValueRefs(item, artifactId)] as const)
       .filter(([, item]) => item !== undefined),
   );
+}
+
+function rewriteArtifactValueRefs(value: unknown, previousId: string, nextId: string): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => rewriteArtifactValueRefs(item, previousId, nextId));
+  }
+
+  const record = value as Record<string, unknown>;
+  const expr = record.$expr;
+  if (expr && typeof expr === 'object' && !Array.isArray(expr)) {
+    const typedExpr = expr as Record<string, unknown>;
+    if (typedExpr.type === 'artifact' && typedExpr.artifact_id === previousId) {
+      return {
+        $expr: {
+          ...typedExpr,
+          artifact_id: nextId,
+        },
+      };
+    }
+    if (typedExpr.type === 'format') {
+      return {
+        $expr: {
+          ...typedExpr,
+          values: rewriteArtifactValueRefs(typedExpr.values ?? {}, previousId, nextId),
+        },
+      };
+    }
+    return record;
+  }
+
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, item]) => [key, rewriteArtifactValueRefs(item, previousId, nextId)] as const),
+  );
+}
+
+function rewriteArtifactIds(ids: string[], previousId: string, nextId: string): string[] {
+  return [...new Set(ids.map((id) => (id === previousId ? nextId : id)))].sort();
 }
 
 function slugForId(value: string): string {

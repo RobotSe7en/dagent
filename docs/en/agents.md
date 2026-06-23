@@ -15,6 +15,18 @@ capabilities, runtime state, review continuation, and execution dispatch.
 Use static `Dag` instead of an agent when the graph shape belongs in code. See
 [Static DAGs](static-dag.md).
 
+## Managed Profiles in the Local Web UI
+
+Built-in profiles live in `dagent/resources/profiles/*.md`. The local FastAPI/Web
+UI manages editable profiles under `~/.dagent/profiles/<name>.md`; users create,
+copy, edit, and delete those profiles through the Agent Management workspace
+instead of entering Markdown file paths.
+
+Managed profile names are product identifiers used by agent capabilities, so
+they must start with a letter and may contain only letters, numbers, `_`, and
+`-`. A managed profile named `analyst` is exposed to the static DAG editor as
+`agent.analyst`.
+
 ## ToolAgent
 
 ```python

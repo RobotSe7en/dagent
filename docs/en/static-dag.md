@@ -116,6 +116,23 @@ dag.add_edge(found, rendered)
 Validation fails closed when a node reads from a non-upstream node, references an
 unknown artifact, or uses a malformed expression.
 
+## Agent Nodes
+
+Static DAG nodes can target `ToolAgent` objects in Python. In the local Web UI,
+managed agent profiles are exposed as `agent.<name>` capabilities. For example,
+the profile `~/.dagent/profiles/analyst.md` appears as `agent.analyst`; selecting
+it creates an agent node whose `prompt` argument can be a fixed value or a
+structured value reference from graph input, artifacts, or upstream nodes.
+Agent nodes also expose `max_steps` for the bounded inner tool loop.
+
+The Web UI maps agent-node capability controls onto the public SDK fields:
+`ToolAgent(capabilities=[...], skills=[...])`. Tool and MCP selections become
+capability ids such as `tool.search` or `mcp.browser.open`; skill selections
+become skill names. Leaving the scope on "All" uses the surrounding `Runner`'s
+default visible capabilities. Provider, workspace root, profile storage, and
+MCP/skill registration are still owned by the surrounding `Runner` and API
+configuration.
+
 ## Artifacts and Boundaries
 
 Artifacts declare files produced or consumed by the DAG. Boundaries constrain

@@ -253,6 +253,10 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     assert mcp_result.content == "mcp:x"
     assert "Use concise summaries." in json.loads(skill_result.content)["content"]
     assert agent_result.content == "agent:done"
+    agent_definition = registry.get("agent.helper")
+    assert agent_definition is not None
+    assert agent_definition.parameters["properties"]["prompt"]["default"] == ""
+    assert agent_definition.parameters["properties"]["max_steps"]["default"] == 8
     assert provider.requests[0]["messages"][0]["role"] == "system"
 
 

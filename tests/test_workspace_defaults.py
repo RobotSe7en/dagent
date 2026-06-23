@@ -254,7 +254,8 @@ def test_static_dag_artifacts_live_under_dagent_runs(
     assert workspace_path.parent == tmp_path / ".dagent" / "runs"
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hi"
     invocation = result.trace.root.children[0].children[0].capability_execution.invocation
-    assert invocation.arguments["path"] == f"runs/{workspace_path.name}/notes/output.txt"
+    assert invocation.arguments["path"] == "notes/output.txt"
+    assert not (tmp_path / ".dagent" / "notes" / "output.txt").exists()
 
 
 def test_static_dag_uses_resolved_workspace_after_cwd_changes(

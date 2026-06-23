@@ -29,10 +29,24 @@ const {
   isUploadedFileArtifact,
   removeArtifactBinding,
   uploadFormFilename,
+  updateArtifactBinding,
   upsertArtifact,
 } = await importTypeScript('../src/dagArtifacts.ts');
 const {
+  bindingLabel,
+  buildVariableCatalog,
+  collectNodeOutputRefs,
+  isValueBinding,
+  makeArtifactBinding,
+  makeGraphInputBinding,
+  makeNodeOutputBinding,
+  removeNodeOutputRefs,
+  rewriteNodeOutputRefs,
+  wouldCreateCycle,
+} = await importTypeScript('../src/valueBindings.ts');
+const {
   appendRunTranscriptCapability,
+  appendRunTranscriptTraceEvent,
   appendRunTranscriptToken,
   buildRunDialogSummary,
 } = await importTypeScript('../src/orchestrationRun.ts');
@@ -79,6 +93,9 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /appendValidatingTimeline/);
   assert.match(appSource, /appendValidationTimeline/);
   assert.match(appSource, /function ValidationCard/);
+  assert.match(appSource, /function CapabilityEventCard/);
+  assert.match(appSource, /function CapabilityCodeBlock/);
+  assert.match(appSource, /className="capability-code-block"/);
   assert.doesNotMatch(appSource, /function ValidatingIndicator|function ValidationFeedbackCard/);
   assert.match(appSource, /'打开审查' : '查看流程'/);
   assert.match(appSource, /const \[artifactPanelOpen, setArtifactPanelOpen\] = useState\(false\);/);
@@ -104,6 +121,8 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /\.user-avatar\s*\{[^}]*margin-right:\s*calc\(var\(--user-avatar-offset\) \* -1\);/s);
   assert.match(css, /@media \(max-width: 760px\) \{[\s\S]*\.user-row\s*\{[^}]*--user-avatar-offset:\s*0px;/s);
   assert.match(css, /\.design-workspace-placeholder/);
+  assert.match(css, /\.capability-event-card\[open\]\s*\{[^}]*max-height:\s*min\(760px,\s*78vh\);[^}]*overflow-y:\s*auto;/s);
+  assert.match(css, /\.capability-code-block/);
   assert.match(css, /\.chat-workspace\s*\{[^}]*--chat-content-max-width:\s*1040px;/s);
   assert.match(css, /\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-content-max-width:\s*1280px;/s);
   assert.match(css, /\.conversation-frame\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
@@ -126,9 +145,73 @@ test('composer uses upload placeholder instead of creating chats from the input 
   assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
 });
 
+test('value binding helpers create labels and rewrite node output references', () => {
+  const binding = makeNodeOutputBinding('search', 'value', ['title']);
+
+  assert.deepEqual(binding, {
+    $expr: {
+      type: 'node_output',
+      node_id: 'search',
+      field: 'value',
+      path: ['title'],
+    },
+  });
+  assert.equal(isValueBinding(binding), true);
+  assert.equal(isValueBinding({ $expr: { type: 'missing' } }), false);
+  assert.deepEqual(makeGraphInputBinding(['topic']), {
+    $expr: {
+      type: 'graph_input',
+      path: ['topic'],
+    },
+  });
+  assert.deepEqual(makeArtifactBinding('report', 'absolute_path'), {
+    $expr: {
+      type: 'artifact',
+      artifact_id: 'report',
+      field: 'absolute_path',
+    },
+  });
+  assert.equal(bindingLabel(makeGraphInputBinding(['topic'])), 'DAG input.topic');
+  assert.equal(bindingLabel(binding), 'search.output.title');
+  assert.equal(bindingLabel(makeArtifactBinding('report')), 'artifact.report.path');
+  assert.deepEqual(collectNodeOutputRefs({ result: binding, nested: [makeNodeOutputBinding('score', 'status')] }), [
+    { nodeId: 'search', field: 'value', path: ['title'] },
+    { nodeId: 'score', field: 'status', path: [] },
+  ]);
+  assert.deepEqual(rewriteNodeOutputRefs({ result: binding }, 'search', 'lookup'), {
+    result: makeNodeOutputBinding('lookup', 'value', ['title']),
+  });
+  assert.deepEqual(removeNodeOutputRefs({ result: binding, keep: 'literal' }, 'search'), {
+    keep: 'literal',
+  });
+  assert.equal(wouldCreateCycle([{ source: 'render', target: 'publish', reason: '' }], 'publish', 'render'), true);
+  const catalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [
+        { id: 'search', payload: { type: 'start' } },
+        { id: 'render', payload: { type: 'start' } },
+        { id: 'publish', payload: { type: 'start' } },
+      ],
+      edges: [{ source: 'render', target: 'publish', reason: '' }],
+    },
+    'render',
+    { properties: { topic: { type: 'string' } } },
+    { report: { id: 'report', paths: ['outputs/report.md'] } },
+  );
+  assert.deepEqual(catalog.graphInputs.map((item) => item.label), ['DAG input.topic']);
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output'));
+  assert.equal(catalog.nodeOutputs.some((item) => item.label === 'publish.output'), false);
+  assert.ok(catalog.artifacts.some((item) => item.label === 'artifact.report.path'));
+});
+
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
@@ -148,11 +231,31 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /<code>\.dagent\/runs<\/code>/);
   assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
-  assert.match(appSource, /<OrchestrationWorkspace[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
+  assert.match(appSource, /<OrchestrationWorkspace[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
+  assert.match(orchestrationSource, /function AgentNodeScopeEditor/);
+  assert.match(orchestrationSource, /config=\{selectedUserNode\?\.agent\}/);
+  assert.match(orchestrationSource, /node\.id === selectedNode\.id[\s\S]*normalizeUserDagNode\(\{ \.\.\.node, agent \}\)/);
+  assert.match(orchestrationSource, /capability\.enabled && capability\.kind !== 'agent' && capability\.kind !== 'skill'/);
+  assert.match(typesSource, /export interface UserDagAgentConfig/);
   assert.match(appSource, /const \[orchestrationMode, setOrchestrationMode\] = useState<OrchestrationMode>\('dynamic'\)/);
   assert.match(appSource, /activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' \? \([\s\S]*<DynamicOrchestrationWorkspace/);
   assert.match(appSource, /activeWorkspace === 'orchestration' && orchestrationMode === 'static' \? \([\s\S]*<OrchestrationWorkspace/);
   assert.match(appSource, /<CapabilityDirectory[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*onRefresh=\{refreshConsoleData\}/);
+  assert.match(runDialogSource, /function RunTimelineCapabilityDetails/);
+  assert.match(runDialogSource, /function RunTimelineTraceDetails/);
+  assert.match(runDialogSource, /function RunTimelineCodeBlock/);
+  assert.match(appSource, /appendRunTranscriptTraceEvent\(items, event\)/);
+  assert.match(runDialogSource, /<span>参数<\/span>/);
+  assert.match(runDialogSource, /执行结果/);
+  assert.match(runDialogSource, /item\.result \?\? \(item\.event\.type === 'capability\.call\.started'/);
+  assert.match(runDialogSource, /className="run-timeline-detail"/);
+  assert.match(appSource, /type StaticDagEditorDraft = \{[\s\S]*spec: UserDag;[\s\S]*layoutPositions: Record<string, XYPosition>;[\s\S]*\};/);
+  assert.match(appSource, /const \[editorDagDrafts, setEditorDagDraftsState\] = useState<Record<string, StaticDagEditorDraft>>\(\{\}\);/);
+  assert.match(appSource, /const editorDagDraftsRef = useRef<Record<string, StaticDagEditorDraft>>\(\{\}\);/);
+  assert.match(appSource, /const visibleSavedDags = useMemo\(\(\) => savedDags\.map/);
+  assert.match(appSource, /savedDags=\{visibleSavedDags\}/);
+  assert.match(appSource, /function loadEditorUserDag|const loadEditorUserDag = \(spec: UserDag\) => \{/);
+  assert.match(appSource, /rememberCurrentEditorDraft\(\);[\s\S]*const draft = editorDagDraftsRef\.current\[spec\.id\];[\s\S]*setEditorUserDagAndRuntimeDag\(draft\?\.spec \?\? spec, draft\?\.layoutPositions \?\? \{\}\);/);
   assert.match(sidebarSource, /orchestrationSubnav/);
   assert.match(sidebarSource, /动态编排/);
   assert.match(sidebarSource, /静态编排/);
@@ -161,6 +264,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(sidebarSource, /className="sidebar-artifact-section"/);
   assert.match(sidebarSource, /onUploadFiles\(event\.target\.files\)/);
   assert.match(sidebarSource, /onCreateArtifact/);
+  assert.match(sidebarSource, /onEditArtifact\(artifact\.id\)/);
   assert.match(sidebarSource, /onDeleteArtifact\(artifact\.id\)/);
   assert.match(sidebarSource, /sidebar-capability-nav/);
   assert.match(sidebarSource, /toolsSub/);
@@ -168,24 +272,50 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(orchestrationSource, /className="design-orchestration-workspace"/);
   assert.match(orchestrationSource, /className="orchestration-canvas"/);
   assert.match(orchestrationSource, /<ReactFlow/);
+  assert.match(orchestrationSource, /key=\{spec\.id\}/);
   assert.match(orchestrationSource, /nodeTypes=\{designNodeTypes\}/);
   assert.match(orchestrationSource, /className="orchestration-flow"/);
   assert.match(appSource, /function dagNameInputCh\(value: string\)/);
   assert.match(orchestrationSource, /style=\{\{ width: `\$\{dagNameInputCh\(spec\.name \|\| 'untitled_dag'\)\}ch` \}\}/);
   assert.match(orchestrationSource, /proOptions=\{\{ hideAttribution: true \}\}/);
   assert.match(orchestrationSource, /onInit=\{setFlowInstance\}/);
+  assert.match(orchestrationSource, /<ReactFlow[\s\S]*<CanvasViewportControls hasNodes=\{nodes\.length > 0\} \/>[\s\S]*<\/ReactFlow>/);
   assert.match(orchestrationSource, /screenToFlowPosition/);
   assert.match(orchestrationSource, /onPaneClick=\{handlePaneClick\}/);
   assert.match(orchestrationSource, /onAddNode\(contextCapability, contextMenu\.flowPosition\)/);
   assert.doesNotMatch(orchestrationSource, /fitView=\{nodes\.length > 1\}/);
-  assert.match(orchestrationSource, /className="node-inspector"/);
+  assert.match(orchestrationSource, /className="node-inspector static-node-inspector"/);
+  assert.doesNotMatch(orchestrationSource, /<label>节点 ID<\/label>/);
+  assert.doesNotMatch(orchestrationSource, /节点：\$\{contextMenu\.nodeId\}/);
   assert.match(orchestrationSource, /\n\s+运行\n/);
   assert.doesNotMatch(orchestrationSource, /运行编排/);
   assert.match(orchestrationSource, /节点检查器/);
   assert.match(orchestrationSource, /<InspectorArgumentEditor[\s\S]*value=\{selectedInvocation\.arguments \?\? \{\}\}[\s\S]*parameters=\{selectedCapability\?\.parameters\}/);
+  assert.match(orchestrationSource, /dag=\{dag\}/);
+  assert.match(orchestrationSource, /nodeId=\{selectedNormalized\.id\}/);
+  assert.match(orchestrationSource, /onEnsureDependency=\{ensureBindingDependency\}/);
   assert.match(orchestrationSource, /参数/);
   assert.match(orchestrationSource, /键值/);
   assert.match(orchestrationSource, /Raw/);
+  assert.match(orchestrationSource, /固定值/);
+  assert.match(orchestrationSource, /变量/);
+  assert.match(appSource, /function ValueBindingEditor/);
+  assert.match(appSource, /function CanvasViewportControls/);
+  assert.match(appSource, /const flowInstance = useReactFlow\(\);/);
+  assert.match(appSource, /const viewportReady = flowInstance\.viewportInitialized;/);
+  assert.match(appSource, /const visibleNodes = flowInstance\.getNodes\(\);/);
+  assert.match(appSource, /const bounds = flowInstance\.getNodesBounds\(visibleNodes\);/);
+  assert.match(appSource, /flowInstance\.fitBounds\(bounds, \{ padding: 0\.25, duration: 220 \}\)/);
+  assert.doesNotMatch(appSource, /flowInstance\.fitView\(\{ padding: 0\.25, duration: 220 \}\)/);
+  assert.match(appSource, /flowInstance\.zoomIn\(\{ duration: 160 \}\)/);
+  assert.match(appSource, /flowInstance\.zoomOut\(\{ duration: 160 \}\)/);
+  assert.match(appSource, /className="canvas-viewport-controls nopan nodrag"/);
+  assert.match(appSource, /onPointerDown=\{stopCanvasEvent\}/);
+  assert.match(appSource, /function buildVariableOptionGroups/);
+  assert.match(appSource, /function ensureBindingDependency/);
+  assert.match(appSource, /function capabilityOptionGroups/);
+  assert.match(orchestrationSource, /<optgroup key=\{group\.kind\} label=\{group\.label\}>/);
+  assert.match(appSource, /Parameter binding\./);
   assert.match(orchestrationSource, /KEY/);
   assert.match(orchestrationSource, /VALUE/);
   assert.match(orchestrationSource, /添加参数/);
@@ -231,6 +361,9 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '', /dynamicAdjust|onDynamicAdjustChange|动态调整/);
   assert.match(appSource, /function DynamicOrchestrationWorkspace/);
   assert.match(apiSource, /export interface ChatStreamMessage/);
+  assert.match(typesSource, /export interface DagValidationIssue/);
+  assert.match(typesSource, /export interface DagValidationResult/);
+  assert.match(apiSource, /export async function validateDag/);
   assert.match(apiSource, /export async function streamMessagesTask/);
   assert.match(apiSource, /messages,\s*target,\s*review_level: reviewLevel/);
   assert.match(appSource, /streamMessagesTask/);
@@ -264,6 +397,8 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /nodesDraggable/);
   assert.match(dynamicSource, /defaultViewport=\{\{ x: 0, y: 0, zoom: 1 \}\}/);
   assert.match(dynamicSource, /fitView=\{false\}/);
+  assert.doesNotMatch(dynamicSource, /onInit=\{setFlowInstance\}/);
+  assert.match(dynamicSource, /<ReactFlow[\s\S]*<CanvasViewportControls hasNodes=\{nodes\.length > 0\} \/>[\s\S]*<\/ReactFlow>/);
   assert.doesNotMatch(dynamicSource, /fitView=\{!nodes\.length\}/);
   assert.doesNotMatch(dynamicSource, /\{nodes\.length \? \([\s\S]*<ReactFlow/);
   assert.match(dynamicSource, /<ReactFlow[\s\S]*\{!nodes\.length \? \(/);
@@ -304,14 +439,23 @@ test('updated orchestration and tools workspaces use real backend data with the 
 
   assert.match(css, /\.design-orchestration-workspace/);
   assert.match(css, /\.orchestration-canvas/);
+  assert.match(css, /\.canvas-viewport-controls/);
+  assert.match(css, /\.canvas-viewport-controls button/);
   assert.doesNotMatch(css, /\.orchestration-name-input\s*\{[^}]*\n\s*width:\s*min\(280px, 28vw\);/s);
   assert.match(css, /\.orchestration-name-input\s*\{[^}]*max-width:\s*min\(280px, 28vw\);/s);
   assert.match(css, /\.node-inspector/);
+  assert.match(css, /\.static-node-inspector\s*\{[^}]*width:\s*clamp\(420px,\s*32vw,\s*520px\);/s);
   assert.match(css, /\.sidebar-artifact-section/);
+  assert.match(css, /\.artifact-edit-dialog/);
   assert.match(css, /\.inspector-argument-toggle/);
   assert.match(css, /\.inspector-argument-header/);
   assert.match(css, /\.inspector-argument-add/);
   assert.match(css, /\.run-dialog-body\s*\{[^}]*grid-template-columns:\s*260px minmax\(0, 1fr\);/s);
+  assert.match(css, /\.run-timeline-section/);
+  assert.match(css, /\.run-timeline-code/);
+  assert.match(css, /\.run-timeline-list\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow-y:\s*auto;/s);
+  assert.match(css, /\.run-timeline-row\s*\{[^}]*flex:\s*0 0 auto;/s);
+  assert.match(css, /\.run-timeline-list\s*\{[^}]*overflow-y:\s*auto;/s);
   assert.doesNotMatch(css, /\.orchestration-canvas-inner|\.orchestration-edges|\.orchestration-node(?:[\s:{\[]|$)|\.flow-workbench/);
   assert.match(css, /\.design-tools-workspace/);
   assert.match(css, /\.tools-detail-panel/);
@@ -441,8 +585,8 @@ test('tools management ports the full design columns while keeping backend actio
   const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
 
   assert.ok(directorySource, 'CapabilityDirectory should end before AgentManagementWorkspace');
-  assert.match(directorySource, /const toolRows = capabilities\.filter/);
-  assert.match(directorySource, /const selectedTool = capabilities\.find/);
+  assert.match(directorySource, /const toolRows = capabilities\.filter\(\(capability\) => capability\.kind !== 'agent'/);
+  assert.match(directorySource, /const selectedTool = toolRows\.find/);
   assert.match(directorySource, /tool-info-table/);
   assert.match(directorySource, /tool-schema-block/);
   assert.match(directorySource, /skill-editor-toolbar/);
@@ -527,6 +671,7 @@ test('model management is a first-class workspace backed by runtime model APIs',
 
 test('agent management uses real profiles and no longer renders the placeholder workspace', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
   const agentSource = appSource.match(/function AgentManagementWorkspace[\s\S]*?\nfunction DagReviewDialog/)?.[0] ?? '';
@@ -535,18 +680,25 @@ test('agent management uses real profiles and no longer renders the placeholder 
   assert.match(appReturnSource, /activeWorkspace === 'agents' \? \([\s\S]*<AgentManagementWorkspace/);
   assert.doesNotMatch(appReturnSource, /<DesignWorkspacePlaceholder/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*profiles=\{profiles\}[\s\S]*selectedProfileId=\{selectedProfileId\}/);
-  assert.match(appSource, /<AgentManagementWorkspace[\s\S]*profiles=\{profiles\}[\s\S]*selectedId=\{selectedProfileId\}[\s\S]*warnings=\{profileWarnings\}/);
+  assert.match(appSource, /<AgentManagementWorkspace[\s\S]*creating=\{creatingProfile\}[\s\S]*profiles=\{profiles\}[\s\S]*selectedId=\{selectedProfileId\}[\s\S]*warnings=\{profileWarnings\}/);
   assert.match(agentSource, /className="design-agents-workspace"/);
   assert.match(agentSource, /className="agent-prompt-editor"/);
   assert.match(agentSource, /className="agent-metadata-panel"/);
-  assert.match(agentSource, /selected\.content\.length/);
+  assert.match(agentSource, /draftContent\.length/);
   assert.match(agentSource, /capabilities\.filter\(\(capability\) => capability\.kind === 'agent'/);
-  assert.match(agentSource, /配置文件路径/);
+  assert.match(agentSource, /复制为本地/);
+  assert.match(agentSource, /配置名称/);
+  assert.match(agentSource, /profileSourceLabel/);
   assert.match(agentSource, /删除配置/);
+  assert.doesNotMatch(agentSource, /配置文件路径|后端暂未提供/);
   assert.doesNotMatch(agentSource, /Profiles|Agent Profile|Profiles are read-only in this MVP/);
+  assert.match(apiSource, /export async function createProfile/);
+  assert.match(apiSource, /export async function updateProfile/);
+  assert.match(apiSource, /export async function deleteProfile/);
 
   assert.match(css, /\.design-agents-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 380px;/s);
   assert.match(css, /\.agent-prompt-editor/);
+  assert.match(css, /\.agent-name-field/);
   assert.match(css, /\.agent-metadata-panel/);
   assert.match(css, /\.agent-config-list/);
 });
@@ -1106,6 +1258,60 @@ test('removeArtifactBinding deletes artifacts and node input/output references',
   });
 });
 
+test('updateArtifactBinding renames artifacts and rewrites node references', () => {
+  const spec = {
+    id: 'example',
+    name: 'Example',
+    artifacts: {
+      source: { id: 'source', paths: ['uploads/source.md'] },
+      report: { id: 'report', paths: ['outputs/report.md'] },
+    },
+    nodes: [
+      {
+        id: 'write',
+        target: 'tool.write_file',
+        inputs: {
+          path: artifactPathExpr('report'),
+          message: {
+            $expr: {
+              type: 'format',
+              template: 'write {file}',
+              values: { file: artifactPathExpr('report') },
+            },
+          },
+        },
+        artifact_inputs: ['source'],
+        artifact_outputs: ['report'],
+        boundary: {
+          allowed_paths: [artifactPathExpr('report')],
+        },
+      },
+    ],
+    edges: [],
+  };
+
+  const next = updateArtifactBinding(spec, 'report', {
+    id: 'final_report',
+    paths: ['outputs/final.md'],
+    description: 'Final report',
+    required: true,
+  });
+
+  assert.deepEqual(Object.keys(next.artifacts), ['source', 'final_report']);
+  assert.deepEqual(next.artifacts.final_report, {
+    id: 'final_report',
+    paths: ['outputs/final.md'],
+    description: 'Final report',
+    required: true,
+    metadata: {},
+  });
+  assert.deepEqual(next.nodes[0].artifact_inputs, ['source']);
+  assert.deepEqual(next.nodes[0].artifact_outputs, ['final_report']);
+  assert.deepEqual(next.nodes[0].inputs.path, artifactPathExpr('final_report'));
+  assert.deepEqual(next.nodes[0].inputs.message.$expr.values.file, artifactPathExpr('final_report'));
+  assert.deepEqual(next.nodes[0].boundary.allowed_paths, [artifactPathExpr('final_report')]);
+});
+
 test('artifactPathExpr builds structured executor artifact value expressions', () => {
   assert.deepEqual(artifactPathExpr('report'), {
     $expr: {
@@ -1302,6 +1508,47 @@ test('appendRunTranscriptCapability pairs capability results with prior calls', 
     type: 'capability',
     event: call,
     result,
+  });
+});
+
+test('appendRunTranscriptTraceEvent records static tool results from trace snapshots', () => {
+  const call = {
+    type: 'capability.call.started',
+    invocation_id: 'invoke_1',
+    capability_id: 'tool.read_file',
+    arguments: { path: 'inputs/source.md' },
+  };
+  const traceEvent = {
+    id: 'trace_read:completed',
+    event_id: 'trace_read',
+    type: 'capability',
+    label: 'tool.read_file',
+    detail: 'hello',
+    status: 'completed',
+    timestamp: '10:00:00',
+    node_id: 'read',
+    payload: {
+      invocation_id: 'invoke_1',
+      capability_id: 'tool.read_file',
+      input: { path: 'inputs/source.md' },
+      output: 'hello',
+      result: {
+        invocation_id: 'invoke_1',
+        capability_id: 'tool.read_file',
+        kind: 'tool',
+        status: 'completed',
+        content: 'hello',
+      },
+    },
+  };
+
+  const started = appendRunTranscriptCapability([], call);
+  const next = appendRunTranscriptTraceEvent(started, traceEvent);
+
+  assert.equal(next.length, 1);
+  assert.deepEqual(next[0], {
+    type: 'trace',
+    event: traceEvent,
   });
 });
 

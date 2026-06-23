@@ -984,10 +984,14 @@ def test_api_capability_status_endpoints() -> None:
 
 def test_api_profiles_lists_markdown_profiles(tmp_path, monkeypatch) -> None:
     profile_dir = tmp_path / "profiles"
+    managed_dir = tmp_path / "managed-profiles"
     profile_dir.mkdir()
+    managed_dir.mkdir()
     (profile_dir / "assistant.md").write_text("# Assistant\n\nYou are helpful.", encoding="utf-8")
     (profile_dir / "conversation.md").write_text("# Custom Conversation\n\nUse project style.", encoding="utf-8")
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
     monkeypatch.setattr(state, "profile_directory", str(profile_dir))
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
     client = TestClient(app)
 
     response = client.get("/profiles")
@@ -998,13 +1002,16 @@ def test_api_profiles_lists_markdown_profiles(tmp_path, monkeypatch) -> None:
     profiles = {(profile["source"], profile["name"]): profile for profile in payload["profiles"]}
     assert ("builtin", "conversation") in profiles
     assert profiles[("builtin", "conversation")]["id"] == "builtin:conversation"
-    assert profiles[("user", "conversation")]["id"] == "user:conversation"
-    assert profiles[("user", "assistant")] == {
-        "id": "user:assistant",
+    assert profiles[("config", "conversation")]["id"] == "config:conversation"
+    assert profiles[("managed", "analyst")]["editable"] is True
+    assert profiles[("config", "assistant")] == {
+        "id": "config:assistant",
         "name": "assistant",
         "description": "Assistant",
         "content": "# Assistant\n\nYou are helpful.",
-        "source": "user",
+        "source": "config",
+        "editable": False,
+        "deletable": False,
     }
 
 
@@ -1020,10 +1027,59 @@ def test_api_profiles_warns_when_markdown_profile_cannot_be_loaded(tmp_path, mon
 
     assert response.status_code == 200
     payload = response.json()
-    user_profiles = [profile for profile in payload["profiles"] if profile["source"] == "user"]
-    assert [profile["name"] for profile in user_profiles] == ["good"]
+    config_profiles = [profile for profile in payload["profiles"] if profile["source"] == "config"]
+    assert [profile["name"] for profile in config_profiles] == ["good"]
     assert len(payload["warnings"]) == 1
     assert payload["warnings"][0]["name"] == "bad"
+
+
+def test_api_managed_profile_crud_and_validation(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    client = TestClient(app)
+
+    created = client.post("/profiles", json={"name": "analyst", "content": "# Analyst\n\nRead carefully."})
+    listed = client.get("/profiles")
+
+    assert created.status_code == 200
+    assert created.json()["profile"]["source"] == "managed"
+    assert created.json()["profile"]["editable"] is True
+    assert (managed_dir / "analyst.md").read_text(encoding="utf-8") == "# Analyst\n\nRead carefully."
+    assert ("managed", "analyst") in {
+        (profile["source"], profile["name"])
+        for profile in listed.json()["profiles"]
+    }
+    updated = client.put("/profiles/analyst", json={"content": "# Analyst\n\nUse terse answers."})
+
+    assert updated.status_code == 200
+    assert updated.json()["profile"]["content"] == "# Analyst\n\nUse terse answers."
+
+    deleted = client.delete("/profiles/analyst")
+    invalid = client.post("/profiles", json={"name": "../bad", "content": "Nope."})
+
+    assert deleted.status_code == 200
+    assert not (managed_dir / "analyst.md").exists()
+    assert invalid.status_code == 400
+
+
+def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.get("/capabilities", params={"kind": "agent"})
+
+    assert response.status_code == 200
+    capabilities = {capability["id"]: capability for capability in response.json()["capabilities"]}
+    assert capabilities["agent.analyst"]["kind"] == "agent"
+    assert capabilities["agent.analyst"]["config"] == {"profile": "analyst", "source": "managed"}
+    assert capabilities["agent.analyst"]["parameters"]["properties"]["prompt"]["default"] == ""
+    assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
 
 
 def test_api_dag_create_run_and_artifacts() -> None:
@@ -1127,6 +1183,203 @@ def test_api_dag_create_run_and_artifacts() -> None:
         "truncated": False,
         "truncated_at": 200000,
     }
+
+
+def test_validate_static_dag_accepts_node_output_reference_with_dependency() -> None:
+    state.dags.clear()
+    client = TestClient(app)
+    spec = {
+        "id": "valid_binding",
+        "name": "Valid binding",
+        "nodes": [
+            {
+                "id": "search",
+                "target": "tool.echo",
+                "inputs": {"text": "dagent"},
+            },
+            {
+                "id": "render",
+                "target": "tool.echo",
+                "inputs": {
+                    "text": {
+                        "$expr": {
+                            "type": "node_output",
+                            "node_id": "search",
+                            "field": "value",
+                        }
+                    }
+                },
+            },
+        ],
+        "edges": [
+            {"source": "search", "target": "render", "reason": "Parameter binding."}
+        ],
+    }
+
+    response = client.post("/dags/validate", json=spec)
+
+    assert response.status_code == 200
+    assert response.json() == {"valid": True, "issues": []}
+    assert "valid_binding" not in state.dags
+
+
+def test_validate_static_dag_reports_node_output_dependency_errors() -> None:
+    state.dags.clear()
+    client = TestClient(app)
+    spec = {
+        "id": "missing_binding_edge",
+        "name": "Missing binding edge",
+        "nodes": [
+            {
+                "id": "search",
+                "target": "tool.echo",
+                "inputs": {"text": "dagent"},
+            },
+            {
+                "id": "render",
+                "target": "tool.echo",
+                "inputs": {
+                    "text": {
+                        "$expr": {
+                            "type": "node_output",
+                            "node_id": "search",
+                            "field": "value",
+                        }
+                    }
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    response = client.post("/dags/validate", json=spec)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["valid"] is False
+    assert payload["issues"][0]["severity"] == "error"
+    assert payload["issues"][0]["code"] == "dag_validation_error"
+    assert "must depend on it" in payload["issues"][0]["message"]
+    assert "missing_binding_edge" not in state.dags
+
+
+def test_static_dag_runs_managed_profile_agent_node(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    state.runner = _runner(MockProvider([ChatResponse(content="agent answer")]))
+    client = TestClient(app)
+    spec = {
+        "id": "agent_dag",
+        "name": "Agent DAG",
+        "nodes": [
+            {
+                "id": "ask",
+                "title": "Ask analyst",
+                "target": "agent.analyst",
+                "inputs": {"prompt": "Summarize the run."},
+            }
+        ],
+        "edges": [],
+    }
+
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post("/dags/agent_dag/run")
+
+    assert create_response.status_code == 200
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    assert run_payload["dag"]["nodes"][0]["status"] == "completed"
+    node_trace = run_payload["trace"]["root"]["children"][0]
+    assert node_trace["ref"] == {"node_id": "ask"}
+    assert node_trace["output"] == "agent answer"
+    assert "Read carefully." in state.runner.runtime.provider.requests[0]["messages"][0]["content"]
+
+
+def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    provider = MockProvider([ChatResponse(content="scoped answer")])
+    state.runner = _runner(provider)
+    client = TestClient(app)
+    spec = {
+        "id": "scoped_agent_dag",
+        "name": "Scoped Agent DAG",
+        "nodes": [
+            {
+                "id": "ask",
+                "target": "agent.analyst",
+                "inputs": {"prompt": "Use the allowed tools."},
+                "agent": {
+                    "capabilities": ["tool.echo"],
+                    "skills": [],
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post("/dags/scoped_agent_dag/run")
+
+    assert create_response.status_code == 200
+    assert run_response.status_code == 200
+    assert [
+        tool["function"]["name"]
+        for tool in provider.requests[0]["tools"]
+    ] == ["echo"]
+
+
+def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    skill_scope_response = client.post(
+        "/dags/validate",
+        json={
+            "id": "bad_agent_scope",
+            "name": "Bad Agent Scope",
+            "nodes": [
+                {
+                    "id": "ask",
+                    "target": "agent.analyst",
+                    "agent": {"capabilities": ["skill.list"]},
+                }
+            ],
+            "edges": [],
+        },
+    )
+    non_agent_response = client.post(
+        "/dags",
+        json={
+            "id": "bad_non_agent_scope",
+            "name": "Bad Non-Agent Scope",
+            "nodes": [
+                {
+                    "id": "echo",
+                    "target": "tool.echo",
+                    "agent": {"capabilities": ["tool.echo"]},
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    assert skill_scope_response.status_code == 200
+    assert skill_scope_response.json()["valid"] is False
+    assert "cannot be used in an agent node capability scope" in skill_scope_response.json()["issues"][0]["message"]
+    assert non_agent_response.status_code == 400
+    assert "does not target an agent capability" in non_agent_response.json()["detail"]
 
 
 def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
@@ -1378,7 +1631,7 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
 
 
-def test_api_dag_run_fails_artifact_path_outside_capability_workspace(tmp_path: Path) -> None:
+def test_api_dag_run_resolves_artifact_path_against_requested_run_workspace(tmp_path: Path) -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     workspace_root = tmp_path / "outside-runs"
@@ -1421,9 +1674,51 @@ def test_api_dag_run_fails_artifact_path_outside_capability_workspace(tmp_path: 
 
     assert run_response.status_code == 200
     run_payload = _result_dag_run(run_response.json()["result"])
-    assert run_payload["status"] == "failed"
-    assert "outside capability workspace" in run_payload["trace"]["root"]["error"]["message"]
-    assert "outside capability workspace" in run_payload["trace"]["artifacts"]["note"]["error"]
+    workspace_path = Path(run_payload["workspace_path"])
+    assert run_payload["status"] == "completed"
+    assert workspace_path.parent == workspace_root
+    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+    invocation = run_payload["trace"]["root"]["children"][0]["children"][0]["capability_execution"]["invocation"]
+    assert invocation["arguments"]["path"] == "notes/output.txt"
+
+
+def test_api_static_dag_write_file_literal_path_uses_run_workspace(tmp_path: Path) -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "runs"
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "literal_path_note",
+            "name": "Literal path note",
+            "nodes": [
+                {
+                    "id": "write",
+                    "target": "tool.write_file",
+                    "inputs": {
+                        "path": "notes/plain.txt",
+                        "content": "hello",
+                    },
+                    "boundary": {"allowed_paths": ["notes/plain.txt"]},
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    run_response = client.post(
+        "/dags/literal_path_note/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    workspace_path = Path(run_payload["workspace_path"])
+    assert run_payload["status"] == "completed"
+    assert workspace_path.parent == workspace_root
+    assert (workspace_path / "notes" / "plain.txt").read_text(encoding="utf-8") == "hello"
+    assert not (state.runner.runtime.capability_catalog.workspace_root / "notes" / "plain.txt").exists()
 
 
 def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None:
@@ -1480,6 +1775,69 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
     assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
     assert run_payload["trace"]["root"]["children"][0]["output"] == "hello from upload"
     assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
+
+
+def test_api_dag_artifact_upload_materializes_input_file_on_each_run(tmp_path: Path) -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    workspace_root = tmp_path / "runs"
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "uploaded_source_repeat",
+            "name": "Uploaded source repeat",
+            "artifacts": {
+                "source": {
+                    "id": "source",
+                    "paths": ["inputs/source.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "read",
+                    "target": "tool.read_file",
+                    "inputs": {
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}},
+                    },
+                    "artifact_inputs": ["source"],
+                    "boundary": {
+                        "allowed_paths": [
+                            {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}}
+                        ],
+                    },
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    upload_response = client.post(
+        "/dags/uploaded_source_repeat/artifacts/source/upload",
+        files=[("files", ("source.txt", b"repeat upload", "text/plain"))],
+    )
+    assert upload_response.status_code == 200
+
+    first_response = client.post(
+        "/dags/uploaded_source_repeat/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+    second_response = client.post(
+        "/dags/uploaded_source_repeat/run",
+        json={"workspace_root": str(workspace_root)},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_payload = _result_dag_run(first_response.json()["result"])
+    second_payload = _result_dag_run(second_response.json()["result"])
+    first_workspace = Path(first_payload["workspace_path"])
+    second_workspace = Path(second_payload["workspace_path"])
+    assert first_workspace != second_workspace
+    assert (first_workspace / "inputs" / "source.txt").read_text(encoding="utf-8") == "repeat upload"
+    assert (second_workspace / "inputs" / "source.txt").read_text(encoding="utf-8") == "repeat upload"
+    assert first_payload["trace"]["root"]["children"][0]["output"] == "repeat upload"
+    assert second_payload["trace"]["root"]["children"][0]["output"] == "repeat upload"
 
 
 def test_api_created_tool_capability_can_run_in_dag() -> None:
