@@ -8,7 +8,7 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 | 来源 | Id 格式 |
 | --- | --- |
 | Python function tools | `tool.<name>` |
-| MCP stdio tools | `mcp.<server>.<tool>` |
+| MCP tools | `mcp.<server>.<tool>` |
 | 内置 skill accessors | `skill.list`, `skill.view` |
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。

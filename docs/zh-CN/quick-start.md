@@ -9,7 +9,7 @@
 pip install dagent-ai
 ```
 
-只有在需要注册 stdio MCP server 时才需要 MCP extra：
+只有在需要注册 MCP server 时才需要 MCP extra：
 
 ```bash
 pip install "dagent-ai[mcp]"

@@ -49,7 +49,7 @@ subgraphs, and bounded loops.
 Capabilities are executable things known to the runner:
 
 - Python tools use `tool.<name>` ids.
-- MCP stdio tools use `mcp.<server>.<tool>` ids.
+- MCP tools use `mcp.<server>.<tool>` ids.
 - Built-in skill accessors use `skill.list` and `skill.view`.
 
 Agents receive an allowlist of capability ids or `@dagent.tool` bindings. The

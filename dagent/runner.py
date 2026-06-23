@@ -380,7 +380,7 @@ class Runner:
         name: str,
         config: dict[str, Any],
     ) -> list[CapabilityDefinition]:
-        """Register a stdio MCP server and expose its tools as ``mcp.*`` capabilities.
+        """Register an MCP server and expose its tools as ``mcp.*`` capabilities.
 
         Registration is all-or-nothing: if any discovered tool fails to register
         or the server fails to connect, every capability registered by this call

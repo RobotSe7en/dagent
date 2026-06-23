@@ -45,7 +45,7 @@ boundaries、conditional edges、map fan-out、subgraphs 和 bounded loops。
 Capabilities 是 runner 已知的可执行对象：
 
 - Python tools 使用 `tool.<name>` ids。
-- MCP stdio tools 使用 `mcp.<server>.<tool>` ids。
+- MCP tools 使用 `mcp.<server>.<tool>` ids。
 - 内置 skill accessors 使用 `skill.list` 和 `skill.view`。
 
 Agents 接收 capability ids 或 `@dagent.tool` bindings 的 allowlist。runtime 通过共享

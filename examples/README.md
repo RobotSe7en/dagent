@@ -46,6 +46,6 @@ MCP runtime registration is available through:
 - `Runner.replace_mcp_server(name, config)`
 - `Runner.remove_mcp_server(name)`
 
-It requires the optional MCP extra and a real stdio MCP server, so it is covered
+It requires the optional MCP extra and a real MCP server, so it is covered
 in [Runner and Configuration](../docs/en/runner-and-configuration.md) rather than
 exercised by these offline examples.

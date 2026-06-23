@@ -48,7 +48,7 @@ Treat the following as released behavior:
 - Python import name: `dagent`
 - public exports listed in [Python SDK Reference Map](python-sdk.md)
 - Python tool capability ids using `tool.<name>`
-- MCP stdio capability ids using `mcp.<server>.<tool>`
+- MCP capability ids using `mcp.<server>.<tool>`
 - explicit `Runner(...)` inputs
 - config-file loading through `Runner.from_config(...)`
 - static DAG explicit dependency requirements

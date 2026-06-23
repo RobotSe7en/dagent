@@ -244,8 +244,9 @@ def test_mcp_server_task_uses_streamable_http_transport(monkeypatch) -> None:
     events: list[tuple] = []
 
     class FakeHTTPClient:
-        def __init__(self, *, headers):
+        def __init__(self, *, headers, timeout):
             self.headers = headers
+            self.timeout = timeout
             events.append(("http_client", headers))
 
         async def __aenter__(self):
@@ -261,7 +262,11 @@ def test_mcp_server_task_uses_streamable_http_transport(monkeypatch) -> None:
         yield "read", "write", lambda: "session-1"
 
     monkeypatch.setenv("DAGENT_MCP_TOKEN", "token")
-    monkeypatch.setattr(server_task_module, "httpx", SimpleNamespace(AsyncClient=FakeHTTPClient))
+    monkeypatch.setattr(
+        server_task_module,
+        "create_mcp_http_client",
+        lambda headers=None, timeout=None: FakeHTTPClient(headers=headers, timeout=timeout),
+    )
     monkeypatch.setattr(server_task_module, "streamable_http_client", fake_streamable_http_client)
 
     task = MCPServerTask(
@@ -270,6 +275,8 @@ def test_mcp_server_task_uses_streamable_http_transport(monkeypatch) -> None:
             "transport": "http",
             "url": "https://mcp.example.test/mcp",
             "headers": {"Authorization": "Bearer ${DAGENT_MCP_TOKEN}"},
+            "connect_timeout": 12,
+            "tool_timeout": 90,
         },
     )
 
@@ -293,6 +300,51 @@ def test_mcp_server_task_uses_streamable_http_transport(monkeypatch) -> None:
     ]
 
 
+def test_mcp_server_task_uses_separate_http_timeouts(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeHTTPClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    @asynccontextmanager
+    async def fake_streamable_http_client(url, *, http_client=None):
+        yield "read", "write", lambda: None
+
+    def fake_create_mcp_http_client(headers=None, timeout=None):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeHTTPClient()
+
+    monkeypatch.setattr(server_task_module, "create_mcp_http_client", fake_create_mcp_http_client)
+    monkeypatch.setattr(server_task_module, "streamable_http_client", fake_streamable_http_client)
+
+    task = MCPServerTask(
+        "remote",
+        {
+            "transport": "http",
+            "url": "https://mcp.example.test/mcp",
+            "connect_timeout": 7,
+            "tool_timeout": 55,
+        },
+    )
+
+    async def open_streams():
+        async with AsyncExitStack() as stack:
+            return await task._open_streams(stack)
+
+    run(open_streams())
+
+    timeout = captured["timeout"]
+    assert timeout.connect == 7
+    assert timeout.write == 7
+    assert timeout.pool == 7
+    assert timeout.read == 55
+
+
 def test_mcp_server_task_requires_explicit_http_transport_for_url() -> None:
     task = MCPServerTask("remote", {"url": "https://mcp.example.test/mcp"})
 
@@ -302,3 +354,21 @@ def test_mcp_server_task_requires_explicit_http_transport_for_url() -> None:
         assert "transport: http" in str(exc)
     else:
         raise AssertionError("url-based MCP configs should require explicit HTTP transport")
+
+
+def test_mcp_server_task_rejects_transport_aliases() -> None:
+    for transport in ("HTTP", " http ", "streamable_http", "sse"):
+        task = MCPServerTask(
+            "remote",
+            {
+                "transport": transport,
+                "url": "https://mcp.example.test/mcp",
+            },
+        )
+
+        try:
+            task._transport()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"transport {transport!r} should be rejected")

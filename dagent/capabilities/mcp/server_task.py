@@ -14,6 +14,7 @@ try:  # pragma: no cover - exercised in integration environments with mcp instal
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
 
     MCP_SDK_AVAILABLE = True
 except Exception:  # pragma: no cover - import depends on optional extra
@@ -22,6 +23,7 @@ except Exception:  # pragma: no cover - import depends on optional extra
     StdioServerParameters = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
     streamable_http_client = None  # type: ignore[assignment]
+    create_mcp_http_client = None  # type: ignore[assignment]
     MCP_SDK_AVAILABLE = False
 
 
@@ -86,7 +88,7 @@ class MCPServerTask:
             return await stack.enter_async_context(
                 stdio_client(self._stdio_params(), errlog=stderr_file)
             )
-        http_client = await stack.enter_async_context(httpx.AsyncClient(**self._http_client_params()))
+        http_client = await stack.enter_async_context(create_mcp_http_client(**self._http_client_params()))
         read_stream, write_stream, _get_session_id = await stack.enter_async_context(
             streamable_http_client(self._http_url(), http_client=http_client)
         )
@@ -98,10 +100,9 @@ class MCPServerTask:
             if self.config.get("url"):
                 raise ValueError(f"MCP server '{self.name}' has url but is missing transport: http.")
             return "stdio"
-        transport = str(raw_transport).strip().lower()
-        if transport not in {"stdio", "http"}:
-            raise ValueError(f"MCP server '{self.name}' has unknown transport '{transport}'.")
-        return transport
+        if not isinstance(raw_transport, str) or raw_transport not in {"stdio", "http"}:
+            raise ValueError(f"MCP server '{self.name}' has unknown transport '{raw_transport}'.")
+        return raw_transport
 
     def _stdio_params(self) -> Any:
         command = str(self.config.get("command") or "")
@@ -124,8 +125,12 @@ class MCPServerTask:
         params: dict[str, Any] = {
             "headers": build_http_headers(self.config.get("headers") or {}),
         }
-        if self.config.get("connect_timeout") is not None:
-            params["timeout"] = float(self.config["connect_timeout"])
+        connect_timeout = self.config.get("connect_timeout")
+        tool_timeout = self.config.get("tool_timeout")
+        if connect_timeout is not None or tool_timeout is not None:
+            connect = float(connect_timeout if connect_timeout is not None else 30)
+            read = float(tool_timeout if tool_timeout is not None else 300)
+            params["timeout"] = httpx.Timeout(connect, read=read)
         return params
 
 

@@ -9,7 +9,7 @@ runtime capability catalog.
 | Source | Id format |
 | --- | --- |
 | Python function tools | `tool.<name>` |
-| MCP stdio tools | `mcp.<server>.<tool>` |
+| MCP tools | `mcp.<server>.<tool>` |
 | Built-in skill accessors | `skill.list`, `skill.view` |
 
 Capability ids are public behavior. Do not depend on legacy aliases that are not

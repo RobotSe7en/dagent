@@ -15,8 +15,7 @@ dagent is published on PyPI as `dagent-ai` and imported in Python as `dagent`.
 pip install dagent-ai
 ```
 
-Install the MCP optional extra when you want `Runner` to register stdio MCP
-servers:
+Install the MCP optional extra when you want `Runner` to register MCP servers:
 
 ```bash
 pip install "dagent-ai[mcp]"
