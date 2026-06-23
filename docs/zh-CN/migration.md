@@ -4,10 +4,17 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.5.1`。
+当前包版本是 `0.5.2`。
 
 ## Unreleased
 
+- 暂无未发布迁移说明。
+
+## 0.5.2
+
+- Breaking change：`Runner(...)` 和 `Runner.from_config(...)` 的默认 workspace
+  现在是 `.dagent`，每次 run 默认记录在 `.dagent/runs/<run_id>` 下，除非显式设置
+  `workspace` 或 `workspace_root`。
 - Breaking change：内置 file 和 shell tools 现在会从当前 ToolAgent 或 DagAgent
   message run workspace 解析相对路径，而不是从 runner workspace root 解析。普通
   agent run 中的 `write_file(path="notes.txt", ...)` 现在会写到
@@ -15,6 +22,13 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   文件放在 runner workspace 下，请传入绝对路径，或把共享输入复制到每次运行的
   workspace 中。静态 DAG artifact path 仍使用已有 artifact 映射；内置 path-aware
   tools 继续传入 `artifact.path`。
+- Breaking change：`Boundary` 现在只声明 `allowed_paths`。请从 SDK 代码、已保存的
+  DAG specs 和 API payloads 中移除 `mode=` 与 `allowed_commands=`。Shell command
+  safety checks 由内置 shell tool 负责，不再通过每个 node 的 `allowed_commands`
+  配置。
+- MCP 配置现在支持通过显式 `transport: "http"`、`url` 和可选 `headers` 接入
+  Streamable HTTP servers。Header 值会在连接时展开 `${ENV_NAME}`。可选 MCP extra
+  现在要求 `mcp>=1.27.1,<2`。
 
 ## 0.5.1
 

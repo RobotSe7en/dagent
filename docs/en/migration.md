@@ -5,10 +5,18 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.5.1`.
+The current package version is `0.5.2`.
 
 ## Unreleased
 
+- No unreleased migration notes.
+
+## 0.5.2
+
+- Breaking change: `Runner(...)` and `Runner.from_config(...)` now default their
+  workspace to `.dagent`, and each run records a workspace under
+  `.dagent/runs/<run_id>` unless `workspace` or `workspace_root` is set
+  explicitly.
 - Breaking change: built-in file and shell tools now resolve relative paths from
   the current ToolAgent or DagAgent message run workspace, not from the runner
   workspace root. A `write_file(path="notes.txt", ...)` call in a normal agent
@@ -17,6 +25,14 @@ The current package version is `0.5.1`.
   workspace should pass absolute paths or move shared inputs into each run
   workspace. Static DAG artifact paths still use their documented artifact
   mapping; pass `artifact.path` for built-in path-aware tools.
+- Breaking change: `Boundary` now declares only `allowed_paths`. Remove
+  `mode=` and `allowed_commands=` from SDK code, saved DAG specs, and API
+  payloads. Shell command safety checks are enforced by the built-in shell tool
+  rather than by per-node `allowed_commands`.
+- MCP configs now support Streamable HTTP servers through explicit
+  `transport: "http"`, `url`, and optional `headers`. Header values expand
+  `${ENV_NAME}` at connection time. The optional MCP extra now requires
+  `mcp>=1.27.1,<2`.
 
 ## 0.5.1
 
