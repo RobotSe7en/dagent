@@ -56,7 +56,8 @@ runner = dagent.Runner.from_config("/path/to/config.yaml")
 pip install "dagent-ai[mcp]"
 ```
 
-然后确认配置的 stdio server command 可以在 dagent 外部正常运行。如果 server 无法连接或
+然后确认配置的 stdio server command 可以在 dagent 外部正常运行，或者确认
+Streamable HTTP `url` 和 `headers` 可以访问远程 MCP server。如果 server 无法连接或
 某个 discovered tool 无法注册，MCP registration 会回滚。
 
 ## Unknown Capability

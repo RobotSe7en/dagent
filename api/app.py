@@ -201,10 +201,13 @@ class ProfileUpdateRequest(BaseModel):
 
 class MCPServerRequest(BaseModel):
     name: str = Field(min_length=1)
+    transport: Literal["stdio", "http"] = "stdio"
     command: str = ""
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     risk: RiskLevel = "medium"
     connect_timeout: float = 30
@@ -1764,20 +1767,28 @@ def _configured_mcp_server_names() -> set[str]:
 
 
 def _mcp_server_config(request: MCPServerRequest) -> dict[str, Any]:
-    command = request.command.strip()
-    if request.enabled and not command:
-        raise HTTPException(status_code=400, detail="Enabled MCP servers require a command.")
     config: dict[str, Any] = {
-        "command": command,
-        "args": [str(arg) for arg in request.args],
-        "env": {str(key): str(value) for key, value in request.env.items()},
+        "transport": request.transport,
         "enabled": request.enabled,
         "risk": request.risk,
         "connect_timeout": request.connect_timeout,
         "tool_timeout": request.tool_timeout,
     }
-    if request.cwd:
-        config["cwd"] = request.cwd
+    if request.transport == "stdio":
+        command = request.command.strip()
+        if request.enabled and not command:
+            raise HTTPException(status_code=400, detail="Enabled stdio MCP servers require a command.")
+        config["command"] = command
+        config["args"] = [str(arg) for arg in request.args]
+        config["env"] = {str(key): str(value) for key, value in request.env.items()}
+        if request.cwd:
+            config["cwd"] = request.cwd
+    else:
+        url = request.url.strip()
+        if request.enabled and not url:
+            raise HTTPException(status_code=400, detail="Enabled HTTP MCP servers require a url.")
+        config["url"] = url
+        config["headers"] = {str(key): str(value) for key, value in request.headers.items()}
     if request.include_tools:
         config["include_tools"] = [str(tool) for tool in request.include_tools]
     if request.exclude_tools:

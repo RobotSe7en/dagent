@@ -84,6 +84,11 @@ mcp_servers:
   fs:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  remote_docs:
+    transport: "http"
+    url: "https://mcp.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${MCP_TOKEN}"
 ```
 
 如果没有传入 path，`Runner.from_config(...)` 会解析 `DAGENT_CONFIG` 或
@@ -103,6 +108,11 @@ runner = dagent.Runner(
         "fs": {
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        },
+        "remote_docs": {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
         },
     },
 )
@@ -133,6 +143,10 @@ runner.replace_mcp_server(
 )
 runner.remove_mcp_server("team_fs")
 ```
+
+MCP server config 支持两种 transport。本地命令型 stdio server 可以省略
+`transport`。Streamable HTTP server 使用 `transport: "http"` 和 `url`。
+HTTP `headers` 的值会展开 host 环境中的 `${ENV_NAME}` 引用。
 
 MCP 需要可选依赖：
 

@@ -271,6 +271,85 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
     assert "mcp.mock.lookup" not in capability_ids_after_delete
 
 
+def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        description="Lookup.",
+                        policy=CapabilityPolicy(
+                            risk=config.get("risk", "medium"),
+                            network=bool(config.get("url")),
+                        ),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult(
+                        invocation_id=invocation.invocation_id,
+                        capability_id=invocation.capability_id,
+                        kind=invocation.kind,
+                        status="completed",
+                        content="found",
+                    ),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/servers",
+        json={
+            "name": "remote",
+            "transport": "http",
+            "url": "https://mcp.example.test/mcp",
+            "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+            "risk": "high",
+        },
+    )
+
+    assert response.status_code == 200
+    server = response.json()["server"]
+    assert server["status"] == "connected"
+    assert server["config"] == {
+        "transport": "http",
+        "url": "https://mcp.example.test/mcp",
+        "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+        "enabled": True,
+        "risk": "high",
+        "connect_timeout": 30,
+        "tool_timeout": 60,
+    }
+    assert server["tools"][0]["policy"]["network"] is True
+
+
+def test_api_rejects_enabled_http_mcp_server_without_url() -> None:
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/servers",
+        json={"name": "remote", "transport": "http"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Enabled HTTP MCP servers require a url."
+
+
 def test_api_session_reset_clears_in_memory_workbench_state() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

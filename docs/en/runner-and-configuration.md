@@ -87,6 +87,11 @@ mcp_servers:
   fs:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  remote_docs:
+    transport: "http"
+    url: "https://mcp.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${MCP_TOKEN}"
 ```
 
 If no path is passed, `Runner.from_config(...)` resolves `DAGENT_CONFIG` or
@@ -107,6 +112,11 @@ runner = dagent.Runner(
         "fs": {
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        },
+        "remote_docs": {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
         },
     },
 )
@@ -137,6 +147,11 @@ runner.replace_mcp_server(
 )
 runner.remove_mcp_server("team_fs")
 ```
+
+MCP server configs support two transports. Omit `transport` for stdio servers
+that launch a local command. Use `transport: "http"` with `url` for Streamable
+HTTP servers. HTTP `headers` values expand `${ENV_NAME}` references from the
+host environment.
 
 MCP requires the optional extra:
 
