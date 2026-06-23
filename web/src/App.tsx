@@ -14,6 +14,7 @@ import {
   addEdge,
   applyEdgeChanges,
   applyNodeChanges,
+  useReactFlow,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -599,6 +600,10 @@ type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type TokenChannel = 'reasoning' | 'content';
 type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
 type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
+type StaticDagEditorDraft = {
+  spec: UserDag;
+  layoutPositions: Record<string, XYPosition>;
+};
 
 interface QueuedAssistantToken {
   channel: TokenChannel;
@@ -842,6 +847,8 @@ export function App() {
   const [editorDag, setEditorDag] = useState<Dag>(() => runtimeDagFromUserDag(editorUserDag));
   const [editorLayoutPositions, setEditorLayoutPositionsState] = useState<Record<string, XYPosition>>({});
   const editorLayoutPositionsRef = useRef<Record<string, XYPosition>>({});
+  const [editorDagDrafts, setEditorDagDraftsState] = useState<Record<string, StaticDagEditorDraft>>({});
+  const editorDagDraftsRef = useRef<Record<string, StaticDagEditorDraft>>({});
   const [editorSelectedId, setEditorSelectedId] = useState('');
   const [editorTrace, setEditorTrace] = useState<TraceLogEvent[]>([]);
   const [editorRun, setEditorRun] = useState<DagRun | null>(null);
@@ -891,6 +898,11 @@ export function App() {
   const setEditorLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
     editorLayoutPositionsRef.current = positions;
     setEditorLayoutPositionsState(positions);
+  }, []);
+  const updateEditorDagDrafts = useCallback((updater: (current: Record<string, StaticDagEditorDraft>) => Record<string, StaticDagEditorDraft>) => {
+    const nextDrafts = updater(editorDagDraftsRef.current);
+    editorDagDraftsRef.current = nextDrafts;
+    setEditorDagDraftsState(nextDrafts);
   }, []);
   const setDynamicLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
     dynamicLayoutPositionsRef.current = positions;
@@ -1057,6 +1069,10 @@ export function App() {
     () => Object.values(editorUserDag.artifacts ?? {}).sort(compareArtifactsByPath),
     [editorUserDag.artifacts],
   );
+  const visibleSavedDags = useMemo(() => savedDags.map((spec) => {
+    if (spec.id === editorUserDag.id) return userDagFromRuntimeDag(editorUserDag, editorDag);
+    return editorDagDrafts[spec.id]?.spec ?? spec;
+  }), [editorDag, editorDagDrafts, editorUserDag, savedDags]);
   const editingArtifact = editingArtifactId ? editorUserDag.artifacts?.[editingArtifactId] ?? null : null;
 
   const refreshConsoleData = useCallback(async () => {
@@ -1350,9 +1366,9 @@ export function App() {
     }
   }, [selectedId]);
 
-  const syncEditorDag = useCallback((nextDag: Dag) => {
+  const syncEditorDag = useCallback((nextDag: Dag, layoutPositions?: Record<string, XYPosition>) => {
     setEditorDag(nextDag);
-    const nextPositions = pruneNodePositions(editorLayoutPositionsRef.current, nextDag);
+    const nextPositions = pruneNodePositions(layoutPositions ?? editorLayoutPositionsRef.current, nextDag);
     setEditorLayoutPositions(nextPositions);
     const nextGraph = graphFromDag(nextDag, nextPositions);
     setEditorNodes(nextGraph.nodes);
@@ -1362,7 +1378,7 @@ export function App() {
     );
   }, [setEditorLayoutPositions]);
 
-  const setEditorUserDagAndRuntimeDag = useCallback((spec: UserDag) => {
+  const setEditorUserDagAndRuntimeDag = useCallback((spec: UserDag, layoutPositions: Record<string, XYPosition> = {}) => {
     const normalizedSpec = {
       ...spec,
       version: spec.version ?? 1,
@@ -1374,7 +1390,7 @@ export function App() {
       metadata: spec.metadata ?? {},
     };
     setEditorUserDag(normalizedSpec);
-    syncEditorDag(runtimeDagFromUserDag(normalizedSpec));
+    syncEditorDag(runtimeDagFromUserDag(normalizedSpec), layoutPositions);
     setEditorTrace([]);
     setEditorRun(null);
     setEditorRunTimeline([]);
@@ -1396,6 +1412,16 @@ export function App() {
     syncEditorDag(nextDag);
     setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
   };
+
+  const rememberCurrentEditorDraft = useCallback(() => {
+    if (!editorUserDag.id) return;
+    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    const layoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, editorDag);
+    updateEditorDagDrafts((current) => ({
+      ...current,
+      [spec.id]: { spec, layoutPositions },
+    }));
+  }, [editorDag, editorUserDag, updateEditorDagDrafts]);
 
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
@@ -1888,13 +1914,16 @@ export function App() {
   };
 
   const newEditorUserDag = () => {
-    setEditorUserDagAndRuntimeDag(createEmptyUserDag());
+    rememberCurrentEditorDraft();
+    setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
     setEditorWorkspaceRoot(defaultWorkspaceRoot);
     setEditorRunInputText('');
   };
 
   const loadEditorUserDag = (spec: UserDag) => {
-    setEditorUserDagAndRuntimeDag(spec);
+    rememberCurrentEditorDraft();
+    const draft = editorDagDraftsRef.current[spec.id];
+    setEditorUserDagAndRuntimeDag(draft?.spec ?? spec, draft?.layoutPositions ?? {});
   };
 
   const addEditorNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
@@ -2021,7 +2050,15 @@ export function App() {
       }
       setEditorMessage(savingMessage);
       const saved = await saveDag(spec);
-      setEditorUserDagAndRuntimeDag(saved);
+      const savedDag = runtimeDagFromUserDag(saved);
+      const savedLayoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, savedDag);
+      updateEditorDagDrafts((current) => {
+        const next = { ...current };
+        if (spec.id && spec.id !== saved.id) delete next[spec.id];
+        next[saved.id] = { spec: saved, layoutPositions: savedLayoutPositions };
+        return next;
+      });
+      setEditorUserDagAndRuntimeDag(saved, savedLayoutPositions);
       await refreshConsoleData();
       setEditorMessage(savedMessage ? savedMessage(saved) : `已保存 ${saved.name || 'DAG'}。`);
       return saved;
@@ -2546,7 +2583,7 @@ export function App() {
         mcpServers={mcpServers}
         profiles={profiles}
         orchestrationMode={orchestrationMode}
-        savedDags={savedDags}
+        savedDags={visibleSavedDags}
         selectedDagId={editorUserDag.id}
         selectedModelId={selectedModelId}
         selectedProfileId={selectedProfileId}
@@ -4826,7 +4863,6 @@ function DynamicOrchestrationWorkspace({
   onRun: () => void;
 }) {
   const badgeStatus: Dag['status'] = running ? 'running' : dag.status;
-  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const canGenerate = prompt.trim().length > 0 && !running;
   const canRun = canRunDag && !running;
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
@@ -4938,7 +4974,6 @@ function DynamicOrchestrationWorkspace({
               onConnect={onConnect}
               onNodeClick={(_, node) => onSelectNode(node.id)}
               onPaneClick={() => onSelectNode('')}
-              onInit={setFlowInstance}
               nodesDraggable
               nodesConnectable
               elementsSelectable
@@ -4947,8 +4982,8 @@ function DynamicOrchestrationWorkspace({
               proOptions={{ hideAttribution: true }}
             >
               <Background color="#d8dade" gap={20} />
+              <CanvasViewportControls hasNodes={nodes.length > 0} />
             </ReactFlow>
-            <CanvasViewportControls flowInstance={flowInstance} hasNodes={nodes.length > 0} />
             {!nodes.length ? (
               <button className="orchestration-empty-canvas dynamic-orchestration-empty" onClick={() => onAddNode()} type="button">
                 <Plus size={15} />
@@ -5048,38 +5083,48 @@ function DynamicOrchestrationWorkspace({
 }
 
 function CanvasViewportControls({
-  flowInstance,
   hasNodes,
 }: {
-  flowInstance: ReactFlowInstance | null;
   hasNodes: boolean;
 }) {
-  const stopCanvasEvent = (event: React.MouseEvent) => {
+  const flowInstance = useReactFlow();
+  const viewportReady = flowInstance.viewportInitialized;
+  const stopCanvasEvent = (event: React.SyntheticEvent) => {
     event.preventDefault();
     event.stopPropagation();
   };
   const centerCanvas = () => {
-    if (!flowInstance || !hasNodes) return;
-    void flowInstance.fitView({ padding: 0.25, duration: 220 });
+    if (!viewportReady || !hasNodes) return;
+    const visibleNodes = flowInstance.getNodes();
+    if (!visibleNodes.length) return;
+    const bounds = flowInstance.getNodesBounds(visibleNodes);
+    void flowInstance.fitBounds(bounds, { padding: 0.25, duration: 220 });
   };
   const zoomInCanvas = () => {
-    if (!flowInstance) return;
+    if (!viewportReady) return;
     void flowInstance.zoomIn({ duration: 160 });
   };
   const zoomOutCanvas = () => {
-    if (!flowInstance) return;
+    if (!viewportReady) return;
     void flowInstance.zoomOut({ duration: 160 });
   };
 
   return (
-    <div className="canvas-viewport-controls" onMouseDown={stopCanvasEvent} onClick={stopCanvasEvent}>
-      <button onClick={centerCanvas} disabled={!flowInstance || !hasNodes} title="居中显示" type="button">
+    <div
+      className="canvas-viewport-controls nopan nodrag"
+      onPointerDown={stopCanvasEvent}
+      onMouseDown={stopCanvasEvent}
+      onClick={stopCanvasEvent}
+      onDoubleClick={stopCanvasEvent}
+      onContextMenu={stopCanvasEvent}
+    >
+      <button onClick={centerCanvas} disabled={!viewportReady || !hasNodes} title="居中显示" type="button">
         <Crosshair size={15} />
       </button>
-      <button onClick={zoomInCanvas} disabled={!flowInstance} title="放大" type="button">
+      <button onClick={zoomInCanvas} disabled={!viewportReady} title="放大" type="button">
         <ZoomIn size={15} />
       </button>
-      <button onClick={zoomOutCanvas} disabled={!flowInstance} title="缩小" type="button">
+      <button onClick={zoomOutCanvas} disabled={!viewportReady} title="缩小" type="button">
         <ZoomOut size={15} />
       </button>
     </div>
@@ -5302,6 +5347,7 @@ function OrchestrationWorkspace({
 
         <div className="orchestration-canvas">
           <ReactFlow
+            key={spec.id}
             className="orchestration-flow"
             nodes={nodes}
             edges={edges}
@@ -5319,8 +5365,8 @@ function OrchestrationWorkspace({
             proOptions={{ hideAttribution: true }}
           >
             <Background color="#d8dade" gap={20} />
+            <CanvasViewportControls hasNodes={nodes.length > 0} />
           </ReactFlow>
-          <CanvasViewportControls flowInstance={flowInstance} hasNodes={nodes.length > 0} />
           {!nodes.length ? (
             <button className="orchestration-empty-canvas" onClick={() => onAddNode()} type="button">
               <Plus size={15} />
