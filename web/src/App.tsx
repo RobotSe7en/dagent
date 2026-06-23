@@ -6762,12 +6762,31 @@ function CapabilityDirectory({
   };
   const renderMcpConnectionFields = () => {
     const transport = mcpDraft.transport ?? 'stdio';
+    const setTransport = (nextTransport: MCPServerConfig['transport']) =>
+      setMcpDraft((current) => ({ ...current, transport: nextTransport }));
     return (
       <>
-        <label>传输<select value={transport} onChange={(event) => setMcpDraft((current) => ({ ...current, transport: event.target.value as MCPServerConfig['transport'] }))}>
-          <option value="stdio">stdio</option>
-          <option value="http">http</option>
-        </select></label>
+        <div className="mcp-transport-field">
+          <span>传输</span>
+          <div className="mcp-transport-toggle" role="group" aria-label="MCP transport">
+            <button
+              type="button"
+              className={transport === 'stdio' ? 'active' : ''}
+              aria-pressed={transport === 'stdio'}
+              onClick={() => setTransport('stdio')}
+            >
+              本地 stdio
+            </button>
+            <button
+              type="button"
+              className={transport === 'http' ? 'active' : ''}
+              aria-pressed={transport === 'http'}
+              onClick={() => setTransport('http')}
+            >
+              HTTP
+            </button>
+          </div>
+        </div>
         {transport === 'http' ? (
           <>
             <label>URL<input value={mcpDraft.url ?? ''} onChange={(event) => setMcpDraft((current) => ({ ...current, url: event.target.value }))} /></label>
