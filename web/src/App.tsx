@@ -180,7 +180,6 @@ import {
   collectNodeOutputRefs,
   isValueBinding,
   removeNodeOutputRefs,
-  rewriteNodeOutputRefs,
   wouldCreateCycle,
   type VariableCatalog,
   type VariableCatalogItem,
@@ -1961,49 +1960,14 @@ export function App() {
   };
 
   const patchEditorNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
-    updateEditorDag((current) => {
-      const updatedNodes = current.nodes.map((node) => {
-        if (node.id !== nodeId) return node;
-        const merged = normalizeNode({ ...node, ...patch });
-        if (patch.id && patch.id !== nodeId) {
-          setEditorSelectedId(patch.id);
-          const positions = { ...editorLayoutPositionsRef.current };
-          positions[patch.id] = positions[nodeId] ?? editorNodes.find((item) => item.id === nodeId)?.position ?? nextHorizontalNodePosition(editorNodes);
-          delete positions[nodeId];
-          setEditorLayoutPositions(positions);
-        }
-        return merged;
-      });
-      const nodesWithUpdatedRefs = patch.id && patch.id !== nodeId
-        ? updatedNodes.map((node) => {
-            if (!isCapabilityNode(node)) return node;
-            const invocation = node.payload.invocation;
-            return {
-              ...node,
-              payload: {
-                type: 'capability' as const,
-                invocation: {
-                  ...invocation,
-                  arguments: rewriteNodeOutputRefs(invocation.arguments ?? {}, nodeId, patch.id as string),
-                },
-              },
-            };
-          })
-        : updatedNodes;
-      const edgesForRename = patch.id && patch.id !== nodeId
-        ? current.edges.map((edge) => ({
-            ...edge,
-            source: edge.source === nodeId ? patch.id as string : edge.source,
-            target: edge.target === nodeId ? patch.id as string : edge.target,
-          }))
-        : current.edges;
-      return {
-        ...current,
-        status: 'draft',
-        nodes: nodesWithUpdatedRefs,
-        edges: nextEdges ?? edgesForRename,
-      };
-    });
+    updateEditorDag((current) => ({
+      ...current,
+      status: 'draft',
+      nodes: current.nodes.map((node) =>
+        node.id === nodeId ? normalizeNode({ ...node, ...patch }) : node,
+      ),
+      edges: nextEdges ?? current.edges,
+    }));
   };
 
   const deleteEditorNode = (nodeId: string = editorSelectedId) => {
@@ -2098,7 +2062,7 @@ export function App() {
       return false;
     }
     const nextSpec = updateArtifactBinding(spec, previousId, artifact);
-    setEditorUserDagAndRuntimeDag(nextSpec);
+    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current);
     setEditingArtifactId('');
     setEditorMessage(previousId === artifact.id ? `已更新 artifact ${artifact.id}。` : `已重命名 artifact ${previousId} -> ${artifact.id}。`);
     return true;
@@ -2108,7 +2072,7 @@ export function App() {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const nextSpec = removeArtifactBinding(spec, artifactId);
     if (editingArtifactId === artifactId) setEditingArtifactId('');
-    setEditorUserDagAndRuntimeDag(nextSpec);
+    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current);
     setEditorMessage(`已删除 artifact ${artifactId}。`);
   };
 
@@ -5290,7 +5254,7 @@ function OrchestrationWorkspace({
       changed = true;
     }
     return changed ? nextEdges : undefined;
-  };
+  }
   const patchArtifactList = (field: 'inputs' | 'outputs', artifactId: string, checked: boolean) => {
     if (!selectedNode || !selectedInvocation) return;
     const current = selectedNode[field] ?? [];
@@ -5597,8 +5561,7 @@ function AgentNodeScopeEditor({
     capabilities: capabilityIds,
     skills: skillNames,
   });
-  const enableCustom = () => onChange(customConfig(availableCapabilityIds, availableSkillNames));
-  const selectAll = () => onChange(customConfig(availableCapabilityIds, availableSkillNames));
+  const selectAllScope = () => onChange(customConfig(availableCapabilityIds, availableSkillNames));
   const clearAll = () => onChange(customConfig([], []));
   const patchCapabilities = (capabilityIds: string[]) => onChange(customConfig(capabilityIds, selectedSkillNames));
   const patchSkills = (skillNames: string[]) => onChange(customConfig(selectedCapabilityIds, skillNames));
@@ -5614,14 +5577,14 @@ function AgentNodeScopeEditor({
         <button className={!isCustom ? 'active' : ''} onClick={() => onChange(undefined)} type="button">
           全部
         </button>
-        <button className={isCustom ? 'active' : ''} onClick={enableCustom} type="button">
+        <button className={isCustom ? 'active' : ''} onClick={selectAllScope} type="button">
           自定义
         </button>
       </div>
       {isCustom ? (
         <>
           <div className="agent-node-scope-actions">
-            <button className="secondary-button compact-button" onClick={selectAll} type="button">
+            <button className="secondary-button compact-button" onClick={selectAllScope} type="button">
               全选
             </button>
             <button className="secondary-button compact-button" onClick={clearAll} type="button">
