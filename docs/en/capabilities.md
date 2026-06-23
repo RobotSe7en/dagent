@@ -9,7 +9,7 @@ runtime capability catalog.
 | Source | Id format |
 | --- | --- |
 | Python function tools | `tool.<name>` |
-| MCP stdio tools | `mcp.<server>.<tool>` |
+| MCP tools | `mcp.<server>.<tool>` |
 | Built-in skill accessors | `skill.list`, `skill.view` |
 
 Capability ids are public behavior. Do not depend on legacy aliases that are not
@@ -164,8 +164,8 @@ system commands, are not reviewable.
 
 ## MCP Tools
 
-MCP stdio server tools become ordinary `mcp.<server>.<tool>` capabilities after
-server registration:
+MCP stdio and Streamable HTTP server tools become ordinary
+`mcp.<server>.<tool>` capabilities after server registration:
 
 ```python
 runner.add_mcp_server(
@@ -179,6 +179,19 @@ runner.add_mcp_server(
 agent = dagent.ToolAgent(
     profile="conversation",
     capabilities=["mcp.fs.read_file"],
+)
+```
+
+For a remote Streamable HTTP server, register an explicit HTTP transport:
+
+```python
+runner.add_mcp_server(
+    "remote_docs",
+    {
+        "transport": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+    },
 )
 ```
 

@@ -46,6 +46,15 @@ def build_stdio_env(explicit_env: Mapping[str, str] | None = None) -> dict[str, 
     return env
 
 
+def build_http_headers(explicit_headers: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build static HTTP headers for streamable HTTP MCP connections."""
+
+    return {
+        str(key): _expand_env_refs(str(value))
+        for key, value in (explicit_headers or {}).items()
+    }
+
+
 def _expand_env_refs(value: str) -> str:
     def replace(match: re.Match[str]) -> str:
         return os.environ.get(match.group(1), "")

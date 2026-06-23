@@ -232,9 +232,12 @@ const defaultCustomCapability: CapabilityDefinition = {
 
 const defaultMcpConfig: { name: string } & MCPServerConfig = {
   name: 'local',
+  transport: 'stdio',
   command: '',
   args: [],
   env: {},
+  url: '',
+  headers: {},
   enabled: true,
   risk: 'medium',
   connect_timeout: 30,
@@ -6602,6 +6605,7 @@ function CapabilityDirectory({
   const [mcpDraft, setMcpDraft] = useState<{ name: string } & MCPServerConfig>(defaultMcpConfig);
   const [mcpArgsText, setMcpArgsText] = useState('');
   const [mcpEnvText, setMcpEnvText] = useState('');
+  const [mcpHeadersText, setMcpHeadersText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
   const normalizedQuery = query.toLowerCase();
   const toolRows = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedQuery));
@@ -6616,15 +6620,18 @@ function CapabilityDirectory({
       setMcpDraft(defaultMcpConfig);
       setMcpArgsText('');
       setMcpEnvText('');
+      setMcpHeadersText('');
       return;
     }
     setMcpDraft({
       ...defaultMcpConfig,
       name: selectedMcp.name,
       ...selectedMcp.config,
+      transport: selectedMcp.config.transport ?? 'stdio',
     });
     setMcpArgsText((selectedMcp.config.args ?? []).join('\n'));
     setMcpEnvText(formatEnvText(selectedMcp.config.env ?? {}));
+    setMcpHeadersText(formatEnvText(selectedMcp.config.headers ?? {}));
   }, [selectedMcp]);
 
   useEffect(() => {
@@ -6632,6 +6639,7 @@ function CapabilityDirectory({
     setMcpDraft(defaultMcpConfig);
     setMcpArgsText('');
     setMcpEnvText('');
+    setMcpHeadersText('');
   }, [creationIntent]);
 
   const runCreate = async () => {
@@ -6706,10 +6714,13 @@ function CapabilityDirectory({
   const saveMcpServer = async () => {
     setMcpMessage('Saving MCP server...');
     try {
+      const transport = mcpDraft.transport ?? 'stdio';
       const payload = {
         ...mcpDraft,
-        args: linesFromText(mcpArgsText),
-        env: parseEnvText(mcpEnvText),
+        transport,
+        args: transport === 'stdio' ? linesFromText(mcpArgsText) : [],
+        env: transport === 'stdio' ? parseEnvText(mcpEnvText) : {},
+        headers: transport === 'http' ? parseEnvText(mcpHeadersText) : {},
       };
       const editingExistingMemoryServer = selectedMcp?.source === 'memory' && selectedMcp.name === payload.name;
       if (editingExistingMemoryServer) {
@@ -6748,6 +6759,29 @@ function CapabilityDirectory({
     } catch (exc) {
       setMcpMessage(exc instanceof Error ? exc.message : String(exc));
     }
+  };
+  const renderMcpConnectionFields = () => {
+    const transport = mcpDraft.transport ?? 'stdio';
+    return (
+      <>
+        <label>传输<select value={transport} onChange={(event) => setMcpDraft((current) => ({ ...current, transport: event.target.value as MCPServerConfig['transport'] }))}>
+          <option value="stdio">stdio</option>
+          <option value="http">http</option>
+        </select></label>
+        {transport === 'http' ? (
+          <>
+            <label>URL<input value={mcpDraft.url ?? ''} onChange={(event) => setMcpDraft((current) => ({ ...current, url: event.target.value }))} /></label>
+            <label>Headers<textarea value={mcpHeadersText} onChange={(event) => setMcpHeadersText(event.target.value)} placeholder="KEY=value" /></label>
+          </>
+        ) : (
+          <>
+            <label>命令<input value={mcpDraft.command ?? ''} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
+            <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
+            <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+          </>
+        )}
+      </>
+    );
   };
   const createDialogTitle = creationIntent === 'tools'
     ? '新建工具'
@@ -6834,9 +6868,7 @@ function CapabilityDirectory({
             {creationIntent === 'mcp' ? (
               <section className="mcp-config-form">
                 <label>名称<input value={mcpDraft.name} onChange={(event) => setMcpDraft((current) => ({ ...current, name: event.target.value }))} /></label>
-                <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
-                <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
-                <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+                {renderMcpConnectionFields()}
                 {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
                 <div className="capability-create-actions">
                   <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
@@ -6943,9 +6975,7 @@ function CapabilityDirectory({
                   </div>
                   {selectedMcp?.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
                   <div className="mcp-config-form">
-                    <label>命令<input value={mcpDraft.command} onChange={(event) => setMcpDraft((current) => ({ ...current, command: event.target.value }))} /></label>
-                    <label>Args<textarea value={mcpArgsText} onChange={(event) => setMcpArgsText(event.target.value)} placeholder="每行一个参数" /></label>
-                    <label>环境变量<textarea value={mcpEnvText} onChange={(event) => setMcpEnvText(event.target.value)} placeholder="KEY=value" /></label>
+                    {renderMcpConnectionFields()}
                     <div className="inline-actions">
                       <button className="primary-button compact-button" onClick={saveMcpServer} type="button">
                         <Save size={13} />

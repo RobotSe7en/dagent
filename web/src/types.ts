@@ -401,10 +401,13 @@ export interface SkillFileDetail {
 }
 
 export interface MCPServerConfig {
-  command: string;
+  transport?: 'stdio' | 'http';
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string | null;
+  url?: string;
+  headers?: Record<string, string>;
   enabled?: boolean;
   risk?: RiskLevel;
   connect_timeout?: number;

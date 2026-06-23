@@ -14,7 +14,7 @@ dagent 在 PyPI 上的包名是 `dagent-ai`，在 Python 中导入时使用 `dag
 pip install dagent-ai
 ```
 
-如果希望 `Runner` 注册 stdio MCP servers，请安装 MCP 可选依赖：
+如果希望 `Runner` 注册 MCP servers，请安装 MCP 可选依赖：
 
 ```bash
 pip install "dagent-ai[mcp]"

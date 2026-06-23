@@ -44,7 +44,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - Python import name: `dagent`
 - [Python SDK 参考地图](python-sdk.md)中列出的 public exports
 - Python tool capability ids 使用 `tool.<name>`
-- MCP stdio capability ids 使用 `mcp.<server>.<tool>`
+- MCP capability ids 使用 `mcp.<server>.<tool>`
 - 显式 `Runner(...)` inputs
 - 通过 `Runner.from_config(...)` 加载配置文件
 - 静态 DAG 显式 dependency 要求

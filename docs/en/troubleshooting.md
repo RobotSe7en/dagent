@@ -57,9 +57,10 @@ Install the MCP extra:
 pip install "dagent-ai[mcp]"
 ```
 
-Then confirm the configured stdio server command works outside dagent. MCP
-registration is rolled back if the server cannot connect or a discovered tool
-cannot register.
+Then confirm the configured stdio server command works outside dagent, or that
+the configured Streamable HTTP `url` and `headers` work against the remote MCP
+server. MCP registration is rolled back if the server cannot connect or a
+discovered tool cannot register.
 
 ## Unknown Capability
 

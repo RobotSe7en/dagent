@@ -1,4 +1,4 @@
-"""Async stdio MCP server task."""
+"""Async MCP server task."""
 
 from __future__ import annotations
 
@@ -7,17 +7,23 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-from .config import build_stdio_env
+from .config import build_http_headers, build_stdio_env
 
 try:  # pragma: no cover - exercised in integration environments with mcp installed
+    import httpx
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
 
     MCP_SDK_AVAILABLE = True
 except Exception:  # pragma: no cover - import depends on optional extra
+    httpx = None  # type: ignore[assignment]
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
+    streamable_http_client = None  # type: ignore[assignment]
+    create_mcp_http_client = None  # type: ignore[assignment]
     MCP_SDK_AVAILABLE = False
 
 
@@ -48,11 +54,7 @@ class MCPServerTask:
     async def run(self) -> None:
         try:
             async with AsyncExitStack() as stack:
-                stderr_file = _stderr_log_path().open("a", encoding="utf-8")
-                stack.callback(stderr_file.close)
-                read_stream, write_stream = await stack.enter_async_context(
-                    stdio_client(self._stdio_params(), errlog=stderr_file)
-                )
+                read_stream, write_stream = await self._open_streams(stack)
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 self._session = session
                 self.initialize_result = await session.initialize()
@@ -78,6 +80,30 @@ class MCPServerTask:
         if self._task is not None:
             await self._task
 
+    async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
+        transport = self._transport()
+        if transport == "stdio":
+            stderr_file = _stderr_log_path().open("a", encoding="utf-8")
+            stack.callback(stderr_file.close)
+            return await stack.enter_async_context(
+                stdio_client(self._stdio_params(), errlog=stderr_file)
+            )
+        http_client = await stack.enter_async_context(create_mcp_http_client(**self._http_client_params()))
+        read_stream, write_stream, _get_session_id = await stack.enter_async_context(
+            streamable_http_client(self._http_url(), http_client=http_client)
+        )
+        return read_stream, write_stream
+
+    def _transport(self) -> str:
+        raw_transport = self.config.get("transport")
+        if raw_transport is None:
+            if self.config.get("url"):
+                raise ValueError(f"MCP server '{self.name}' has url but is missing transport: http.")
+            return "stdio"
+        if not isinstance(raw_transport, str) or raw_transport not in {"stdio", "http"}:
+            raise ValueError(f"MCP server '{self.name}' has unknown transport '{raw_transport}'.")
+        return raw_transport
+
     def _stdio_params(self) -> Any:
         command = str(self.config.get("command") or "")
         if not command:
@@ -88,6 +114,24 @@ class MCPServerTask:
             env=build_stdio_env(self.config.get("env") or {}),
             cwd=self.config.get("cwd"),
         )
+
+    def _http_url(self) -> str:
+        url = str(self.config.get("url") or "").strip()
+        if not url:
+            raise ValueError(f"MCP server '{self.name}' is missing url.")
+        return url
+
+    def _http_client_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "headers": build_http_headers(self.config.get("headers") or {}),
+        }
+        connect_timeout = self.config.get("connect_timeout")
+        tool_timeout = self.config.get("tool_timeout")
+        if connect_timeout is not None or tool_timeout is not None:
+            connect = float(connect_timeout if connect_timeout is not None else 30)
+            read = float(tool_timeout if tool_timeout is not None else 300)
+            params["timeout"] = httpx.Timeout(connect, read=read)
+        return params
 
 
 def _stderr_log_path() -> Path:

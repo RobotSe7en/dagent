@@ -9,7 +9,7 @@ register a Python tool, run a `ToolAgent`, and build a tiny static DAG.
 pip install dagent-ai
 ```
 
-Use the MCP extra only when you need stdio MCP server registration:
+Use the MCP extra only when you need MCP server registration:
 
 ```bash
 pip install "dagent-ai[mcp]"

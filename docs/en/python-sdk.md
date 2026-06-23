@@ -67,7 +67,7 @@ def search(q: str) -> str:
 runner.add_tool(search)
 ```
 
-Python function tools use `tool.<name>` capability ids. MCP stdio tools use
+Python function tools use `tool.<name>` capability ids. MCP tools use
 `mcp.<server>.<tool>` capability ids. The old `custom_tool.*` kind is not a
 public compatibility alias.
 

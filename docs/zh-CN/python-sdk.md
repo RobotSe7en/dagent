@@ -66,7 +66,7 @@ def search(q: str) -> str:
 runner.add_tool(search)
 ```
 
-Python function tools 使用 `tool.<name>` capability ids。MCP stdio tools 使用
+Python function tools 使用 `tool.<name>` capability ids。MCP tools 使用
 `mcp.<server>.<tool>` capability ids。旧的 `custom_tool.*` kind 不是公开兼容别名。
 
 ## 最小 Agent Run

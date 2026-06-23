@@ -8,7 +8,7 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 | 来源 | Id 格式 |
 | --- | --- |
 | Python function tools | `tool.<name>` |
-| MCP stdio tools | `mcp.<server>.<tool>` |
+| MCP tools | `mcp.<server>.<tool>` |
 | 内置 skill accessors | `skill.list`, `skill.view` |
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。
@@ -155,7 +155,8 @@ shell 危险模式（例如破坏性系统命令）不可通过 review 放行。
 
 ## MCP Tools
 
-MCP stdio server tools 在 server 注册后会变成普通 `mcp.<server>.<tool>` capabilities：
+MCP stdio 和 Streamable HTTP server tools 在 server 注册后会变成普通
+`mcp.<server>.<tool>` capabilities：
 
 ```python
 runner.add_mcp_server(
@@ -169,6 +170,19 @@ runner.add_mcp_server(
 agent = dagent.ToolAgent(
     profile="conversation",
     capabilities=["mcp.fs.read_file"],
+)
+```
+
+远程 Streamable HTTP server 使用显式 HTTP transport 注册：
+
+```python
+runner.add_mcp_server(
+    "remote_docs",
+    {
+        "transport": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+    },
 )
 ```
 
