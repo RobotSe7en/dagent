@@ -9,8 +9,12 @@ from typing import Any
 
 from .config import build_http_headers, build_stdio_env
 
-try:  # pragma: no cover - exercised in integration environments with mcp installed
+try:  # pragma: no cover - optional dependency is installed by dev and mcp extras
     import httpx
+except Exception:  # pragma: no cover
+    httpx = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - exercised in integration environments with mcp installed
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamable_http_client
@@ -18,7 +22,6 @@ try:  # pragma: no cover - exercised in integration environments with mcp instal
 
     MCP_SDK_AVAILABLE = True
 except Exception:  # pragma: no cover - import depends on optional extra
-    httpx = None  # type: ignore[assignment]
     ClientSession = None  # type: ignore[assignment]
     StdioServerParameters = None  # type: ignore[assignment]
     stdio_client = None  # type: ignore[assignment]
