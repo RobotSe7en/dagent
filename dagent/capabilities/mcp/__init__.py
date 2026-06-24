@@ -61,10 +61,9 @@ class MCPCapabilityProvider:
         safe_server = _safe_component(server_name)
         safe_tool = _safe_component(tool_name)
         capability_id = f"mcp.{safe_server}.{safe_tool}"
-        function_name = f"mcp_{safe_server}__{safe_tool}"
-        if catalog.get(capability_id) is not None or catalog.get_by_name(function_name) is not None:
+        if catalog.get(capability_id) is not None:
             self.registration_errors.append(
-                f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{function_name}'."
+                f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{capability_id}'."
             )
             return
         input_schema = getattr(tool, "inputSchema", None)
@@ -73,7 +72,7 @@ class MCPCapabilityProvider:
         server_config = self.servers.get(server_name, {})
         definition = CapabilityDefinition(
             id=capability_id,
-            name=function_name,
+            name=safe_tool,
             kind="mcp",
             description=str(getattr(tool, "description", "") or ""),
             parameters=normalize_mcp_input_schema(input_schema),

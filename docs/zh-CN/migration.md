@@ -17,7 +17,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   `workspace` 或 `workspace_root`。
 - Breaking change：内置 file 和 shell tools 现在会从当前 ToolAgent 或 DagAgent
   message run workspace 解析相对路径，而不是从 runner workspace root 解析。普通
-  agent run 中的 `write_file(path="notes.txt", ...)` 现在会写到
+  agent run 中的 `tool_write_file(path="notes.txt", ...)` 现在会写到
   `.dagent/runs/<run_id>/notes.txt`，不再写到 `.dagent/notes.txt`。如果代码需要把
   文件放在 runner workspace 下，请传入绝对路径，或把共享输入复制到每次运行的
   workspace 中。静态 DAG artifact path 仍使用已有 artifact 映射；内置 path-aware
@@ -46,7 +46,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 ## 0.4.2
 
 - 内置 shell 命令 capability 现在是 `tool.shell`，DAG DSL 调用写作
-  `shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
+  `tool_shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
   capability ids 和 `run_command(...)` plan calls 改成新名字。不会注册旧名
   兼容别名。
 

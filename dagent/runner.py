@@ -27,7 +27,6 @@ from dagent.capabilities.sandbox_context import (
 )
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, visible_skills
 from dagent.capabilities.workspace import workspace_context
-from dagent.capabilities.toolsets import ensure_unique_capability_function_names
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
@@ -183,8 +182,6 @@ class Runner:
         """Register a single ``@dagent.tool`` binding."""
 
         self._ensure_open()
-        definition, _, _ = _capability_parts(capability)
-        self._ensure_capability_function_name_available(definition)
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
         return definition
@@ -211,7 +208,6 @@ class Runner:
         """Register a raw capability definition with an executable handler."""
 
         self._ensure_open()
-        self._ensure_capability_function_name_available(definition)
         registered = self._runtime.register_capability(
             definition, handler, supports_context=supports_context
         )
@@ -228,7 +224,6 @@ class Runner:
         """Replace an already-registered capability definition and handler."""
 
         self._ensure_open()
-        self._ensure_capability_function_name_available(definition)
         replaced = self._runtime.replace_capability(
             definition, handler, supports_context=supports_context
         )
@@ -492,7 +487,6 @@ class Runner:
                 errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
             if errors:
                 raise RuntimeError("; ".join(errors))
-            self._ensure_catalog_function_names_unique()
         except Exception:
             new_ids = sorted(set(catalog.ids()) - before)
             self._rollback_mcp_registration(catalog, new_ids, getattr(provider, "manager", manager))
@@ -972,9 +966,6 @@ class Runner:
                 raise RuntimeError(f"Agent capability '{capability_id}' is missing from the catalog.")
             return definition
 
-        self._ensure_capability_function_name_available(
-            CapabilityDefinition(id=capability_id, name=name, kind="agent")
-        )
         config = self._registered_agent_runtime_config(agent)
         AgentCapabilityProvider({name: config}).register_into(self._runtime.capability_catalog)
         self._registered_agent_configs[name] = agent
@@ -1053,24 +1044,6 @@ class Runner:
             joined_ids = ", ".join(sorted(target_ids))
             joined_agents = ", ".join(dependents)
             raise ValueError(f"Cannot {action}; {joined_agents} depends on {joined_ids}.")
-
-    def _ensure_capability_function_name_available(self, candidate: CapabilityDefinition) -> None:
-        definitions = [
-            definition
-            for capability_id in sorted(self._runtime.capability_catalog.ids())
-            if (definition := self._runtime.capability_catalog.get(capability_id)) is not None
-            and definition.id != candidate.id
-        ]
-        ensure_unique_capability_function_names([*definitions, candidate])
-
-    def _ensure_catalog_function_names_unique(self) -> None:
-        ensure_unique_capability_function_names(
-            [
-                definition
-                for capability_id in sorted(self._runtime.capability_catalog.ids())
-                if (definition := self._runtime.capability_catalog.get(capability_id)) is not None
-            ]
-        )
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)

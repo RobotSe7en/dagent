@@ -19,8 +19,8 @@ The current package version is `0.5.2`.
   explicitly.
 - Breaking change: built-in file and shell tools now resolve relative paths from
   the current ToolAgent or DagAgent message run workspace, not from the runner
-  workspace root. A `write_file(path="notes.txt", ...)` call in a normal agent
-  run now writes under `.dagent/runs/<run_id>/notes.txt` instead of
+  workspace root. A `tool_write_file(path="notes.txt", ...)` call in a normal
+  agent run now writes under `.dagent/runs/<run_id>/notes.txt` instead of
   `.dagent/notes.txt`. Code that expects files directly under the runner
   workspace should pass absolute paths or move shared inputs into each run
   workspace. Static DAG artifact paths still use their documented artifact
@@ -52,9 +52,9 @@ The current package version is `0.5.2`.
 ## 0.4.2
 
 - The built-in shell command capability is now `tool.shell`, with DAG DSL calls
-  written as `shell(command="...", cwd=".")`. Replace saved `tool.run_command`
-  capability ids and `run_command(...)` plan calls before upgrading. No legacy
-  alias is registered.
+  written as `tool_shell(command="...", cwd=".")`. Replace saved
+  `tool.run_command` capability ids and `run_command(...)` plan calls before
+  upgrading. No legacy alias is registered.
 
 ## Public Surface Expectations
 

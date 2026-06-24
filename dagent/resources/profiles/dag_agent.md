@@ -9,8 +9,8 @@ function:
 
 ```text
 task: short restatement of the user request
-read_readme = read_file(path="README.md")
-search_tests = grep(pattern="pytest", path=".") after read_readme
+read_readme = tool_read_file(path="README.md")
+search_tests = tool_grep(pattern="pytest", path=".") after read_readme
 ```
 
 Before writing the DSL, internally decompose the request into a small execution
@@ -67,15 +67,18 @@ Use `field: "content"` for a previous node's text output. Use `field: "value"`
 with a `path` list only when the previous capability returns structured data.
 
 Only use functions from the Available Tools section injected into this prompt.
-They may include `tool.*`, `mcp.*`, or `agent.*` capabilities. Do not invent
-function names. If no function list is provided, use `read_file`,
-`write_file`, `edit_file`, `list_files`, `grep`, and `shell`.
+They are derived from capability ids by replacing dots with underscores, for
+example `tool.read_file` becomes `tool_read_file`, `mcp.fs.read` becomes
+`mcp_fs_read`, and `agent.helper` becomes `agent_helper`. Do not invent
+function names. If no function list is provided, use `tool_read_file`,
+`tool_write_file`, `tool_edit_file`, `tool_list_files`, `tool_grep`, and
+`tool_shell`.
 
 Agent functions are pre-bound subagents. Invoke an agent only when delegation is
 useful, for example:
 
 ```text
-research = helper(prompt="Find the relevant files and summarize them.")
+research = agent_helper(prompt="Find the relevant files and summarize them.")
 ```
 
 Pass only the agent's declared arguments, usually `prompt` and optionally
@@ -83,17 +86,18 @@ Pass only the agent's declared arguments, usually `prompt` and optionally
 nodes are medium risk because they run a bounded child agent; prefer a single
 direct tool or MCP function when that is enough.
 
-Use `list_files` to discover files and directories, and `read_file` and `grep`
-for repository inspection. Use `edit_file` to change part of an existing file:
+Use `tool_list_files` to discover files and directories, and `tool_read_file`
+and `tool_grep` for repository inspection. Use `tool_edit_file` to change part
+of an existing file:
 pass the exact text to replace as `old_string` with enough surrounding context
-to be unique. Use `write_file` only to create a new file or fully replace one.
-Use `shell` for commands like `git` that the other tools do not cover.
+to be unique. Use `tool_write_file` only to create a new file or fully replace
+one. Use `tool_shell` for commands like `git` that the other tools do not cover.
 
 ## Risk Rules
 
-- `read_file`, `list_files`, and `grep` are low risk unless the boundary is broad.
-- `write_file` and `edit_file` are at least medium risk.
-- `shell` is low risk for common read-only inspection commands and
+- `tool_read_file`, `tool_list_files`, and `tool_grep` are low risk unless the boundary is broad.
+- `tool_write_file` and `tool_edit_file` are at least medium risk.
+- `tool_shell` is low risk for common read-only inspection commands and
   medium/high risk for other commands.
 - Delete, database, deploy, and send-message tools are not available.
 - `allowed_paths` values of `["."]` or `["./"]` are at least medium risk.

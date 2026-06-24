@@ -853,18 +853,22 @@ async def delete_agent(name: str) -> dict[str, str]:
 
 def _profile_agent_capabilities() -> list[CapabilityDefinition]:
     profiles = _agent_profile_candidates()
-    return [
-        CapabilityDefinition(
-            id=f"agent.{profile.name}",
-            name=profile.name,
+    definitions: list[CapabilityDefinition] = []
+    for source, profile in profiles:
+        try:
+            name = clean_agent_preset_name(profile.name)
+        except ValueError:
+            continue
+        definitions.append(CapabilityDefinition(
+            id=f"agent.{name}",
+            name=name,
             kind="agent",
             description=profile.description,
             parameters=agent_capability_parameters(),
             policy=CapabilityPolicy(risk="medium", sandbox_required=True),
             config={"profile": profile.name, "source": source},
-        )
-        for source, profile in profiles
-    ]
+        ))
+    return definitions
 
 
 def _agent_preset_payload(preset: AgentPreset) -> dict[str, Any]:
@@ -1292,14 +1296,14 @@ def _clean_managed_profile_name(value: str) -> str:
     name = str(value or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Profile name is required.")
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
     if (
         not name[0].isalpha()
         or any(char not in allowed for char in name)
     ):
         raise HTTPException(
             status_code=400,
-            detail="Profile name may contain only letters, numbers, underscores, and dashes, and must start with a letter.",
+            detail="Profile name may contain only letters, numbers, and underscores, and must start with a letter.",
         )
     return name
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any, Sequence
 
 from dagent.capabilities.catalog import CapabilityCatalog
@@ -19,7 +18,6 @@ BUILTIN_CAPABILITY_IDS = (
     "tool.grep",
     "tool.shell",
 )
-_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -190,7 +188,6 @@ class CapabilityToolAdapter:
                 raise KeyError(f"Capability '{capability_id}' is not registered.")
             if definition.enabled:
                 definitions.append(definition)
-        self._check_name_collisions(definitions)
         return definitions
 
     def _capability_ids(self, enabled_toolsets: Sequence[str]) -> list[str]:
@@ -217,27 +214,5 @@ class CapabilityToolAdapter:
             for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         }
 
-    def _check_name_collisions(self, definitions: Sequence[CapabilityDefinition]) -> None:
-        ensure_unique_capability_function_names(definitions)
-
-
 def capability_function_name(definition: CapabilityDefinition) -> str:
-    if _FUNCTION_NAME_RE.match(definition.name):
-        return definition.name
-    name = re.sub(r"[^A-Za-z0-9_]+", "_", definition.id).strip("_")
-    if not name or not re.match(r"^[A-Za-z_]", name):
-        name = f"capability_{name}"
-    return name
-
-
-def ensure_unique_capability_function_names(definitions: Sequence[CapabilityDefinition]) -> None:
-    seen: dict[str, str] = {}
-    for definition in definitions:
-        name = capability_function_name(definition)
-        previous = seen.get(name)
-        if previous is not None:
-            raise ValueError(
-                "LLM tool name collision: "
-                f"'{previous}' and '{definition.id}' both map to '{name}'."
-            )
-        seen[name] = definition.id
+    return definition.id.replace(".", "_")

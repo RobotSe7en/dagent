@@ -98,7 +98,7 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
     executor = _capability_executor()
     loop = ToolAgentLoop(
         provider=MockProvider([
-            ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+            ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hi"})]),
             ChatResponse(content="done"),
         ]),
         capability_executor=executor,
@@ -121,7 +121,7 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
 
 def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "inside"})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "inside"})]),
         ChatResponse(content="agent done"),
     ])
     catalog = CapabilityCatalog(workspace_root=tmp_path)

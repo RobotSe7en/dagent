@@ -237,7 +237,7 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         description="Lookup.",
                         policy=CapabilityPolicy(risk=config.get("risk", "medium")),
@@ -287,7 +287,7 @@ def test_api_mcp_update_rejects_registered_agent_dependency_without_mutation(mon
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         policy=CapabilityPolicy(risk=config.get("risk", "medium")),
                         config={"server": name, "tool": "lookup"},
@@ -337,7 +337,7 @@ def test_api_mcp_delete_rejects_registered_agent_dependency_without_mutation(mon
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         config={"server": name, "tool": "lookup"},
                     ),
@@ -383,7 +383,7 @@ def test_api_mcp_create_allows_unrelated_server_when_agent_depends_on_existing_m
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         config={"server": name, "tool": "lookup"},
                     ),
@@ -432,7 +432,7 @@ def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         description="Lookup.",
                         policy=CapabilityPolicy(
@@ -560,7 +560,7 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
     monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
     monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skill_list", arguments={})]),
         ChatResponse(content="scoped answer"),
     ])
     state.runner = _runner(provider, skill_roots=[managed_root])
@@ -583,8 +583,8 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
     assert install_response.status_code == 200
     assert response.status_code == 200
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
-        "echo",
-        "skills_list",
+        "tool_echo",
+        "skill_list",
         "skill_view",
     ]
     system_content = provider.requests[0]["messages"][0]["content"]
@@ -645,7 +645,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "../blocked/secret.txt"},
                     )
                 ],
@@ -692,7 +692,7 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="read_file",
+                    name="tool_read_file",
                     arguments={"path": "../blocked/secret.txt"},
                 )
             ],
@@ -736,7 +736,7 @@ def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hello"})],
         ),
         ChatResponse(content="done"),
     ]))
@@ -824,8 +824,8 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # replan
+            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # replan
             ChatResponse(content="Recovered after replanning."),                       # execute observation
         ])
     )
@@ -848,8 +848,8 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # would replan if enabled
+            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # would replan if enabled
             ChatResponse(content="Recovered after replanning."),
         ])
     )
@@ -878,7 +878,7 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     state.runner = _runner(
         MockProvider([
-            ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
+            ChatResponse(content='task: fail\nbad = tool_fail_tool(text="boom")\n'),
             ChatResponse(content="NO_CHANGE"),
             ChatResponse(content="The DAG failed after retrying the failing node."),
         ])
@@ -993,7 +993,7 @@ def test_api_tool_validation_holds_answer_until_validation_passes() -> None:
         MockProvider([
             ChatResponse(
                 content="",
-                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+                tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hello"})],
             ),
             ChatResponse(content="Validated final answer."),
             ChatResponse(content='{"passed": true, "issues": [], "summary": "good"}'),
@@ -1351,6 +1351,19 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
 
 
+def test_api_profile_agent_capability_ids_use_clean_names(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "_agent_profile_candidates",
+        lambda: [("managed", AgentProfile(name=" analyst ", description="Analyst", content="Read carefully."))],
+    )
+
+    definitions = app_module._profile_agent_capabilities()
+
+    assert [definition.id for definition in definitions] == ["agent.analyst"]
+    assert definitions[0].name == "analyst"
+
+
 def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"
@@ -1528,11 +1541,11 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
-                ToolCall(
-                    id="call_1",
-                    name="helper",
-                    arguments={"prompt": "summarize this"},
-                )
+                    ToolCall(
+                        id="call_1",
+                        name="agent_helper",
+                        arguments={"prompt": "summarize this"},
+                    )
             ]
         ),
         ChatResponse(content="helper answer"),
@@ -1568,7 +1581,7 @@ def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, t
     events = _sse_events(stream_response.text)
     result = _stream_result(events[-1])
     assert result["output_text"] == "done"
-    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
     assert provider.requests[1]["tools"] == []
     state.close_runner()
 
@@ -1823,7 +1836,7 @@ def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypat
     assert [
         tool["function"]["name"]
         for tool in provider.requests[0]["tools"]
-    ] == ["echo"]
+    ] == ["tool_echo"]
 
 
 def test_static_dag_runs_registered_agent_capability_without_profile(tmp_path) -> None:
@@ -1949,7 +1962,7 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.md", "content": "# Hello\n\nBody"},
                     )
                 ],
@@ -2009,7 +2022,7 @@ def test_api_run_artifacts_preview_rejects_paths_outside_workspace() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.txt", "content": "hello"},
                     )
                 ],
@@ -2047,7 +2060,7 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.txt", "content": "hello"},
                     )
                 ],
@@ -2106,7 +2119,7 @@ def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.md", "content": "seed"},
                     )
                 ],
@@ -2919,7 +2932,7 @@ def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) ->
 
 
 def _dag_agent_dsl() -> str:
-    return 'task: mock\nanswer = echo(text="ok")\n'
+    return 'task: mock\nanswer = tool_echo(text="ok")\n'
 
 
 def _message_request(message: str, **fields) -> dict:

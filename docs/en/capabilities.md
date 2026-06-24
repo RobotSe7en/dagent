@@ -35,10 +35,15 @@ boundaries and fail closed on boundary violations.
 | `tool.grep` | low | Search files with Python regular-expression syntax and an optional `glob` filename filter. Delegates to ripgrep with compatible flags when `rg` is on `PATH` (argv invocation, never a shell) and falls back to a pure-Python scan otherwise. Project ignore files are not applied; built-in heavy directory exclusions are applied in both backends. Output is `file:line:content`, capped at 200 matches. |
 | `tool.shell` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, explicit shell path arguments are checked against the boundary, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. |
 
-`read_file` output carries no line-number prefixes, so text copied from a read
-result can be passed to `edit_file` as `old_string` unchanged. The intended
-editing flow is: read the file, copy the exact text to change, then call
-`edit_file` with enough surrounding context to make the match unique.
+LLM-visible function names are derived from capability ids by replacing dots
+with underscores. For example, `tool.read_file` is called as
+`tool_read_file(...)` in PlanSpec DSL, and `agent.helper` is called as
+`agent_helper(...)`.
+
+`tool_read_file` output carries no line-number prefixes, so text copied from a
+read result can be passed to `tool_edit_file` as `old_string` unchanged. The
+intended editing flow is: read the file, copy the exact text to change, then
+call `tool_edit_file` with enough surrounding context to make the match unique.
 
 ## Sandbox Execution
 

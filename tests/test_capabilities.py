@@ -142,7 +142,7 @@ def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> No
         {
             "type": "function",
             "function": {
-                "name": "read_file",
+                "name": "tool_read_file",
                 "description": "Read a file.",
                 "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
             },
@@ -162,7 +162,7 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     )
 
     invocation = adapter.invocation_from_tool_call(
-        ToolCall(id="call_1", name="read_file", arguments={"path": "README.md"}),
+        ToolCall(id="call_1", name="tool_read_file", arguments={"path": "README.md"}),
         Boundary(allowed_paths=["."]),
         enabled_toolsets=("builtin",),
     )
@@ -174,7 +174,7 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     assert invocation.boundary.allowed_paths == ["."]
 
 
-def test_capability_tool_adapter_rejects_name_collisions() -> None:
+def test_capability_tool_adapter_namespaces_capabilities_by_id() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
         CapabilityDefinition(id="tool.read", name="read", kind="tool"),
@@ -189,8 +189,12 @@ def test_capability_tool_adapter_rejects_name_collisions() -> None:
         toolsets=[CapabilityToolset(name="builtin", capability_ids=("tool.read", "memory.read"))],
     )
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        adapter.definitions(("builtin",))
+    names = [
+        definition["function"]["name"]
+        for definition in adapter.definitions(("builtin",))
+    ]
+
+    assert names == ["tool_read", "memory_read"]
 
 
 def test_capability_tool_adapter_rejects_unknown_toolset() -> None:
@@ -215,4 +219,11 @@ def test_default_builtin_toolset_exposes_read_write_search_and_shell() -> None:
         for definition in adapter.definitions(("builtin",))
     ]
 
-    assert names == ["read_file", "write_file", "edit_file", "list_files", "grep", "shell"]
+    assert names == [
+        "tool_read_file",
+        "tool_write_file",
+        "tool_edit_file",
+        "tool_list_files",
+        "tool_grep",
+        "tool_shell",
+    ]

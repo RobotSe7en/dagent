@@ -13,7 +13,7 @@ from dagent.review import ReviewLevel
 
 
 CapabilityRef = CapabilityBinding | str
-_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ def _default_profile_name(profile: str | AgentProfile) -> str:
 def validate_agent_name(value: Any, *, label: str = "Agent names") -> str:
     name = str(value or "").strip()
     if not _AGENT_NAME_RE.fullmatch(name):
-        raise ValueError(f"{label} may contain only letters, numbers, underscores, and hyphens.")
+        raise ValueError(f"{label} may contain only letters, numbers, and underscores.")
     return name
 
 

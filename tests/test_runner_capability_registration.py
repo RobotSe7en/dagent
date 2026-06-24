@@ -95,7 +95,7 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="mcp_mock_server__lookup",
+                    name="mcp_mock_server_lookup",
                     arguments={"query": "x"},
                 )
             ]
@@ -113,7 +113,7 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("lookup x")))
     assert result.output_text == "done"
-    assert any(tool["function"]["name"] == "mcp_mock_server__lookup" for tool in provider.requests[0]["tools"])
+    assert any(tool["function"]["name"] == "mcp_mock_server_lookup" for tool in provider.requests[0]["tools"])
 
     result = run(runner.runtime.capability_executor.execute(
         CapabilityInvocation(capability_id="mcp.mock_server.lookup", kind="mcp", arguments={"query": "x"})
@@ -129,7 +129,7 @@ def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) ->
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="helper",
+                    name="agent_helper",
                     arguments={"prompt": "summarize this"},
                 )
             ]
@@ -160,7 +160,7 @@ def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) ->
 
     assert definition.id == "agent.helper"
     assert result.output_text == "done"
-    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
     assert provider.requests[1]["tools"] == []
     runner.close()
 
@@ -171,7 +171,7 @@ def test_top_level_agent_can_expose_all_registered_agents(tmp_path) -> None:
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="helper",
+                    name="agent_helper",
                     arguments={"prompt": "summarize this"},
                 )
             ]
@@ -193,7 +193,7 @@ def test_top_level_agent_can_expose_all_registered_agents(tmp_path) -> None:
     ))
 
     assert result.output_text == "done"
-    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
     runner.close()
 
 
@@ -232,10 +232,12 @@ def test_add_agent_rejects_invalid_name(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Agent names"):
         runner.add_agent(dagent.ToolAgent(profile="conversation", name="../bad", capabilities=[], skills=[]))
+    with pytest.raises(ValueError, match="Agent names"):
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="bad-name", capabilities=[], skills=[]))
     runner.close()
 
 
-def test_add_agent_rejects_llm_function_name_collision(tmp_path) -> None:
+def test_add_agent_uses_namespaced_function_name_and_allows_tool_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
 
     @dagent.tool(name="helper")
@@ -243,13 +245,28 @@ def test_add_agent_rejects_llm_function_name_collision(tmp_path) -> None:
         return "tool"
 
     runner.add_tool(helper_tool)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+    assert runner.get_capability("tool.helper") is not None
+    assert runner.get_capability("agent.helper") is not None
+    assert (
+        runner.runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
+            "tool.helper",
+            enabled_toolsets=("builtin",),
+        )
+        == "tool_helper"
+    )
+    assert (
+        runner.runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
+            "agent.helper",
+            enabled_toolsets=("builtin",),
+        )
+        == "agent_helper"
+    )
     runner.close()
 
 
-def test_add_tool_rejects_registered_agent_llm_function_name_collision(tmp_path) -> None:
+def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
     runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
 
@@ -257,32 +274,29 @@ def test_add_tool_rejects_registered_agent_llm_function_name_collision(tmp_path)
     def helper_tool() -> str:
         return "tool"
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        runner.add_tool(helper_tool)
+    runner.add_tool(helper_tool)
 
-    assert runner.get_capability("tool.helper") is None
+    assert runner.get_capability("tool.helper") is not None
     assert runner.get_capability("agent.helper") is not None
     runner.close()
 
 
-def test_register_capability_rejects_registered_agent_llm_function_name_collision(tmp_path) -> None:
+def test_register_capability_rejects_invalid_capability_id(tmp_path) -> None:
     runner = _runner(tmp_path)
-    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
-    definition = CapabilityDefinition(id="tool.raw_helper", name="helper", kind="tool")
+    definition = CapabilityDefinition(id="tool.raw-helper", name="raw_helper", kind="tool")
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
+    with pytest.raises(ValueError, match="Capability ids"):
         runner.register_capability(
             definition,
             lambda invocation: CapabilityResult.completed(invocation, "raw"),
         )
 
-    assert runner.get_capability("tool.raw_helper") is None
-    assert runner.get_capability("agent.helper") is not None
+    assert runner.get_capability("tool.raw-helper") is None
     runner.close()
 
 
-def test_add_mcp_server_rolls_back_registered_agent_llm_function_name_collision(monkeypatch, tmp_path) -> None:
-    class CollidingMCPProvider:
+def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp_path) -> None:
+    class SameShortNameMCPProvider:
         def __init__(self, servers, *, manager=None):
             self.servers = servers
             self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
@@ -300,14 +314,13 @@ def test_add_mcp_server_rolls_back_registered_agent_llm_function_name_collision(
             )
 
     monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
-    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", CollidingMCPProvider)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", SameShortNameMCPProvider)
     runner = _runner(tmp_path)
     runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        runner.add_mcp_server("mock", {"command": "fake"})
+    runner.add_mcp_server("mock", {"command": "fake"})
 
-    assert runner.get_capability("mcp.mock.helper") is None
+    assert runner.get_capability("mcp.mock.helper") is not None
     assert runner.get_capability("agent.helper") is not None
     runner.close()
 
@@ -434,7 +447,7 @@ def test_reload_mcp_servers_records_dangling_subagent_dependency_without_raising
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
+                        name="lookup",
                         kind="mcp",
                         config={"server": name, "tool": "lookup"},
                     ),
@@ -484,7 +497,7 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
                     catalog.register(
                         CapabilityDefinition(
                             id=f"mcp.{name}.{safe_name}",
-                            name=f"mcp_{name}__{safe_name}",
+                            name=safe_name,
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -524,7 +537,7 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
                     catalog.register(
                         CapabilityDefinition(
                             id=f"mcp.{name}.{safe_name}",
-                            name=f"mcp_{name}__{safe_name}",
+                            name=safe_name,
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -577,19 +590,12 @@ def test_add_mcp_server_raises_on_connect_failure(tmp_path) -> None:
 def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> None:
     runner = _runner(tmp_path)
 
-    # A tool whose LLM function name collides with one of the MCP server's tools.
-    @dagent.tool(id="tool.collide", name="mcp_mock_server__dup")
-    def collide() -> str:
-        return "x"
-
-    runner.add_tool(collide)
-
     class TwoToolManager(FakeMCPManager):
         def discovered_tools(self):
             return {
                 "mock-server": [
                     SimpleNamespace(name="good", description="", inputSchema={"properties": {}}),
-                    SimpleNamespace(name="dup", description="", inputSchema={"properties": {}}),
+                    SimpleNamespace(name="good", description="", inputSchema={"properties": {}}),
                 ]
             }
 
@@ -601,8 +607,6 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
     catalog = runner.runtime.capability_catalog
     # The successfully-registered "good" tool must be rolled back...
     assert catalog.get("mcp.mock_server.good") is None
-    # ...the pre-existing colliding tool must survive...
-    assert catalog.get("tool.collide") is not None
     # ...and the manager must be shut down.
     assert manager.shutdown_calls == 1
     runner.close()

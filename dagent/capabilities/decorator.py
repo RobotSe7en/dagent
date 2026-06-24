@@ -17,6 +17,8 @@ from dagent.schemas import (
     CapabilityPolicy,
     CapabilityResult,
     RiskLevel,
+    validate_capability_id,
+    validate_capability_id_segment,
 )
 from dagent.schemas.common import json_schema_for_type
 
@@ -55,8 +57,8 @@ def tool(
 
     def decorate(func: Callable[..., Any]) -> CapabilityBinding:
         type_hints = _type_hints_for(func)
-        capability_name = name or func.__name__
-        capability_id = id or f"tool.{capability_name}"
+        capability_name = validate_capability_id_segment(name or func.__name__, label="Tool names")
+        capability_id = validate_capability_id(id or f"tool.{capability_name}", kind="tool")
         definition = CapabilityDefinition(
             id=capability_id,
             name=capability_name,

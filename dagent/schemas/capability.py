@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -18,6 +19,50 @@ CapabilityKind = Literal[
     "memory",
 ]
 CapabilityStatus = Literal["completed", "failed"]
+_CAPABILITY_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_CAPABILITY_ID_SEGMENT_COUNTS = {
+    "tool": 2,
+    "agent": 2,
+    "mcp": 3,
+    "skill": 2,
+    "memory": 2,
+}
+
+
+def validate_capability_id(
+    value: Any,
+    *,
+    kind: CapabilityKind | None = None,
+    label: str = "Capability ids",
+) -> str:
+    capability_id = str(value or "").strip()
+    parts = capability_id.split(".")
+    if not parts or any(not part for part in parts):
+        raise ValueError(f"{label} must use a supported dotted capability id form.")
+    prefix = parts[0]
+    if prefix not in _CAPABILITY_ID_SEGMENT_COUNTS:
+        raise ValueError(f"{label} must start with tool, agent, mcp, skill, or memory.")
+    if kind is not None and prefix != kind:
+        raise ValueError(f"{label} for kind '{kind}' must start with '{kind}.'.")
+    expected_count = _CAPABILITY_ID_SEGMENT_COUNTS[prefix]
+    if len(parts) != expected_count:
+        raise ValueError(f"{label} must use the form '{_capability_id_form(prefix)}'.")
+    for part in parts:
+        validate_capability_id_segment(part, label=label)
+    return capability_id
+
+
+def validate_capability_id_segment(value: Any, *, label: str = "Capability id segments") -> str:
+    segment = str(value or "").strip()
+    if not _CAPABILITY_ID_SEGMENT_RE.fullmatch(segment):
+        raise ValueError(f"{label} may contain only letters, numbers, and underscores.")
+    return segment
+
+
+def _capability_id_form(prefix: str) -> str:
+    if prefix == "mcp":
+        return "mcp.<server>.<tool>"
+    return f"{prefix}.<name>"
 
 
 class CapabilityPolicy(BaseModel):

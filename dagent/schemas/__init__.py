@@ -22,6 +22,8 @@ from dagent.schemas.capability import (
     CapabilityPolicy,
     CapabilityResult,
     CapabilityStatus,
+    validate_capability_id,
+    validate_capability_id_segment,
 )
 from dagent.schemas.results import (
     LoopOutcome,
@@ -81,6 +83,8 @@ __all__ = [
     "CapabilityPolicy",
     "CapabilityResult",
     "CapabilityStatus",
+    "validate_capability_id",
+    "validate_capability_id_segment",
     "NodePayload",
     "NodePayloadType",
     "CapabilityExecution",

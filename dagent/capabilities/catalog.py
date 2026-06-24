@@ -12,6 +12,7 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityKind,
     CapabilityResult,
+    validate_capability_id,
 )
 from dagent.config import DEFAULT_WORKSPACE
 
@@ -47,6 +48,7 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
+        validate_capability_id(definition.id, kind=definition.kind)
         if definition.id in self._entries:
             raise ValueError(f"Capability '{definition.id}' is already registered.")
         self._entries[definition.id] = CapabilityEntry(
@@ -64,6 +66,7 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
+        validate_capability_id(definition.id, kind=definition.kind)
         if definition.id not in self._entries:
             raise KeyError(f"Capability '{definition.id}' is not registered.")
         self._entries[definition.id] = CapabilityEntry(
