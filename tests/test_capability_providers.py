@@ -2,6 +2,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import (
@@ -258,6 +260,42 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     assert agent_definition.parameters["properties"]["prompt"]["default"] == ""
     assert agent_definition.parameters["properties"]["max_steps"]["default"] == 8
     assert provider.requests[0]["messages"][0]["role"] == "system"
+
+
+def test_agent_provider_rejects_nested_agent_capability_adapter(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    registry.register(
+        CapabilityDefinition(id="agent.child", name="child", kind="agent"),
+        lambda invocation: CapabilityResult(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content="child",
+        ),
+    )
+    tool_adapter = CapabilityToolAdapter(
+        registry,
+        toolsets=[CapabilityToolset("builtin", ("agent.child",))],
+    )
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(name="helper", content="You are a helper."),
+                "capability_executor": executor,
+                "tool_adapter": tool_adapter,
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(registry)
+
+    with pytest.raises(ValueError, match="cannot expose subagents"):
+        run(executor.execute(
+            CapabilityInvocation(capability_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
+        ))
 
 
 def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:

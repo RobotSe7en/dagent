@@ -27,6 +27,12 @@ they must start with a letter and may contain only letters, numbers, `_`, and
 `-`. A managed profile named `analyst` is exposed to the static DAG editor as
 `agent.analyst`.
 
+The Web UI also manages reusable agent presets under `~/.dagent/agents/*.json`.
+An agent preset chooses a profile plus the tools, MCP capabilities, and skills
+that the child agent may use. Chat and dynamic DAG runs can expose those presets
+with `agent_scope="selected"` and `agent_ids=["agent.<name>"]`, or with
+`agent_scope="registered"` for all registered presets.
+
 ## ToolAgent
 
 ```python
@@ -130,6 +136,41 @@ Run the offline dynamic DAG example:
 uv run python -m examples.dynamic_dag_agent
 ```
 
+## Subagent Delegation
+
+Top-level `ToolAgent`, `AutoAgent`, and `DagAgent` runs can expose registered
+`ToolAgent` subagents as `agent.*` capabilities. Subagents are leaf agents:
+they can use their configured tools, MCP capabilities, and skills, but they
+cannot call another subagent.
+
+```python
+helper = dagent.ToolAgent(
+    profile="conversation",
+    name="helper",
+    capabilities=["tool.search"],
+    skills=["research/briefing"],
+    max_steps=4,
+    description="Research helper.",
+)
+
+runner.add_agent(helper)
+
+agent = dagent.DagAgent(
+    capabilities=["tool.read_file"],
+    agents=["agent.helper"],
+)
+```
+
+You can also pass a `ToolAgent` object directly in `agents=[helper]`; the runner
+registers it before the run. Use `agents="registered"` to expose every agent
+registered on that runner. Passing `capabilities=None` still excludes `agent.*`
+capabilities by default; use `agents=...` or explicitly include an `agent.*`
+capability id when the top-level run should delegate.
+
+Dynamic DAG planners see exposed agents in the Available Tools section and call
+them like any other function, usually with `prompt="..."` and optionally
+`max_steps=...`.
+
 ## Shared Agent Fields
 
 | Field | Meaning |
@@ -138,6 +179,7 @@ uv run python -m examples.dynamic_dag_agent
 | `planner_profile` | Dynamic DAG planner profile for `AutoAgent` and `DagAgent`. |
 | `capabilities` | Capability ids or `@dagent.tool` bindings visible to the agent. |
 | `skills` | Concrete skills visible through `skill.list` and `skill.view`. |
+| `agents` | Subagent capabilities visible to a top-level run: `None`, `"registered"`, `ToolAgent` objects, or `agent.<name>` ids. |
 | `review` | Review level for risky work. |
 | `max_steps` | Tool-loop bound for `ToolAgent` and `AutoAgent`. |
 | `max_cycles` | Dynamic DAG replan bound for `AutoAgent` and `DagAgent`. |

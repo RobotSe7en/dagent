@@ -123,6 +123,12 @@ runner = dagent.Runner(
 ```python
 runner.add_tool(search)
 runner.add_skill_root("more-skills")
+runner.add_agent(dagent.ToolAgent(
+    profile="conversation",
+    name="research_helper",
+    capabilities=["tool.search"],
+    skills=["research/briefing"],
+))
 
 mcp_definitions = runner.add_mcp_server(
     "team_fs",
@@ -156,6 +162,10 @@ pip install "dagent-ai[mcp]"
 
 MCP 注册是 all-or-nothing：如果 server 连接失败或任何已发现工具无法注册，runner 会回滚
 这次注册尝试产生的 capabilities。
+
+`runner.add_agent(...)` 会把一个叶子 `ToolAgent` 注册为 `agent.<name>`。已注册 agent
+可以通过顶层 `ToolAgent`、`AutoAgent` 和 `DagAgent` 的 `agents` 字段暴露出来。
+已注册的子 agent 不能再暴露其他子 agent。
 
 ## Capability 管理
 

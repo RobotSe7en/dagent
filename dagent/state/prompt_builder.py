@@ -48,8 +48,20 @@ class PromptBuilder:
 def _tools_section(tools: list[CapabilityDefinition]) -> str:
     lines = ["## Available Tools"]
     for tool in tools:
-        lines.append(f"- {tool.name}: {tool.description or 'No description.'}")
+        args = _parameter_names(tool.parameters)
+        args_text = f" Args: {', '.join(args)}." if args else ""
+        lines.append(
+            f"- {tool.name} ({tool.kind}, id: {tool.id}): "
+            f"{tool.description or 'No description.'}{args_text}"
+        )
     return "\n".join(lines)
+
+
+def _parameter_names(parameters: dict[str, Any] | None) -> list[str]:
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    if not isinstance(properties, dict):
+        return []
+    return [str(name) for name in properties]
 
 
 def _named_section(title: str, content: str) -> str:

@@ -39,6 +39,7 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "Node")
     assert hasattr(dagent.Runner, "stream")
     assert hasattr(dagent.Runner, "resume_stream")
+    assert hasattr(dagent.Runner, "add_agent")
     assert not hasattr(dagent, "RunStreamChunk")
     assert not hasattr(dagent.Runner, "stream_events")
     assert not hasattr(dagent.Runner, "resume_stream_events")
@@ -485,6 +486,33 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     assert result.output_text == "hello from tool"
 
 
+def test_runner_auto_agent_tool_mode_can_delegate_to_registered_agent(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+    agent = dagent.AutoAgent(capabilities=[], skills=[], agents=[helper])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, messages=user_messages("delegate")))
+
+    assert result.kind == "tool"
+    assert result.output_text == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[1]["tools"]} == {"helper"}
+    assert provider.requests[2]["tools"] == []
+
+
 def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     @dagent.tool
     def search(q: str) -> str:
@@ -504,6 +532,24 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
     assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
+
+
+def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content='task: delegate\nask_helper = helper(prompt="summarize this")\n'),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="final answer"),
+    ])
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+    agent = dagent.DagAgent(capabilities=[], skills=[], agents=[helper])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, messages=user_messages("delegate")))
+
+    assert result.kind == "dynamic_dag"
+    assert result.output_text == "final answer"
+    assert result.dag is not None
+    assert result.dag.nodes[0].payload.invocation.capability_id == "agent.helper"
 
 
 def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path) -> None:

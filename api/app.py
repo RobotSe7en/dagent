@@ -14,6 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.agent_presets import (
+    AgentPreset,
+    AgentPresetRequest,
+    AgentPresetStore,
+    AgentPresetUpdateRequest,
+    clean_agent_preset_name as validate_agent_preset_name,
+)
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -57,6 +64,7 @@ from api.stream_gate import gate_chat_display
 
 
 MessageTarget = Literal["auto", "tool", "dag"]
+AgentScope = Literal["none", "selected", "registered"]
 CONFIG_MODEL_ID = "config"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "runtime"]
@@ -116,6 +124,9 @@ class MessageRequest(BaseModel):
     dynamic_adjust: bool = True
     capability_ids: list[str] | None = None
     skills: list[str] | None = None
+    agent_scope: AgentScope = "none"
+    agent_ids: list[str] | None = None
+    workspace_root: str | None = None
 
 
 class ResumeReviewRequest(BaseModel):
@@ -321,6 +332,7 @@ class ApiState:
             self.runner = self._create_runner()
             self._install_custom_capabilities()
             self.reload_custom_mcp()
+            self._install_agent_presets()
             if self.validation_override is not None:
                 self.runner.enable_validation = self.validation_override
         return self.runner
@@ -368,11 +380,17 @@ class ApiState:
     def get_managed_profile_root(self) -> Path:
         return Path.home() / ".dagent" / "profiles"
 
+    def get_agent_preset_root(self) -> Path:
+        return Path.home() / ".dagent" / "agents"
+
     def skill_store(self) -> SkillStore:
         return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
 
     def managed_profile_store(self) -> ProfileStore:
         return ProfileStore(self.get_managed_profile_root())
+
+    def agent_preset_store(self) -> AgentPresetStore:
+        return AgentPresetStore(self.get_agent_preset_root())
 
     def _install_custom_capabilities(self) -> None:
         if self.runner is None:
@@ -395,6 +413,12 @@ class ApiState:
                 self.custom_mcp_registered_names.add(name)
             except Exception as exc:
                 self.custom_mcp_errors[name] = str(exc)
+
+    def _install_agent_presets(self) -> None:
+        if self.runner is None:
+            return
+        for preset in self.agent_preset_store().list():
+            self.runner.add_agent(_tool_agent_from_preset(preset))
 
 
 state = ApiState()
@@ -746,6 +770,56 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     }
 
 
+@app.get("/agents")
+async def list_agents() -> dict[str, Any]:
+    return {
+        "agents": [
+            _agent_preset_payload(preset)
+            for preset in state.agent_preset_store().list()
+        ]
+    }
+
+
+@app.post("/agents")
+async def create_agent(request: AgentPresetRequest) -> dict[str, Any]:
+    name = _clean_agent_preset_name(request.name)
+    store = state.agent_preset_store()
+    if name in store.list_names():
+        raise HTTPException(status_code=400, detail=f"Agent preset '{name}' already exists.")
+    preset = _agent_preset_from_request(request, name=name)
+    tool_agent = _tool_agent_from_preset(preset)
+    saved = store.save(preset)
+    try:
+        state.get_runner().add_agent(tool_agent)
+    except Exception as exc:
+        store.delete(name)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"agent": _agent_preset_payload(saved)}
+
+
+@app.put("/agents/{name}")
+async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str, Any]:
+    preset_name = _clean_agent_preset_name(name)
+    store = state.agent_preset_store()
+    if preset_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Agent preset not found.")
+    preset = _agent_preset_from_request(request, name=preset_name)
+    saved = store.save(preset)
+    state.close_runner()
+    return {"agent": _agent_preset_payload(saved)}
+
+
+@app.delete("/agents/{name}")
+async def delete_agent(name: str) -> dict[str, str]:
+    preset_name = _clean_agent_preset_name(name)
+    store = state.agent_preset_store()
+    if preset_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Agent preset not found.")
+    store.delete(preset_name)
+    state.close_runner()
+    return {"status": "deleted"}
+
+
 def _profile_agent_capabilities() -> list[CapabilityDefinition]:
     profiles = _agent_profile_candidates()
     return [
@@ -760,6 +834,58 @@ def _profile_agent_capabilities() -> list[CapabilityDefinition]:
         )
         for source, profile in profiles
     ]
+
+
+def _agent_preset_payload(preset: AgentPreset) -> dict[str, Any]:
+    return {
+        **preset.model_dump(mode="json"),
+        "id": f"agent.{preset.name}",
+    }
+
+
+def _agent_preset_from_request(
+    request: AgentPresetRequest | AgentPresetUpdateRequest,
+    *,
+    name: str,
+) -> AgentPreset:
+    try:
+        preset = AgentPreset(
+            name=name,
+            profile=str(request.profile).strip(),
+            description=str(request.description or ""),
+            max_steps=request.max_steps,
+            capability_ids=(
+                None if request.capability_ids is None
+                else _validated_agent_node_capabilities(request.capability_ids)
+            ),
+            skills=(
+                None if request.skills is None
+                else _validated_agent_node_skills(request.skills)
+            ),
+        )
+        _resolve_agent_profile(preset.profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return preset
+
+
+def _tool_agent_from_preset(preset: AgentPreset) -> ToolAgent:
+    return ToolAgent(
+        profile=_resolve_agent_profile(preset.profile),
+        name=preset.name,
+        max_steps=preset.max_steps,
+        capabilities=None if preset.capability_ids is None else tuple(preset.capability_ids),
+        skills=None if preset.skills is None else tuple(preset.skills),
+        review="fast",
+        description=preset.description,
+    )
+
+
+def _clean_agent_preset_name(value: str) -> str:
+    try:
+        return validate_agent_preset_name(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _agent_profile_candidates() -> list[tuple[str, AgentProfile]]:
@@ -1339,11 +1465,13 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
     capability_ids: tuple[str, ...] | None = None
     if request.capability_ids is not None:
         capability_ids = tuple(_validated_capability_ids(request.capability_ids))
+    agents = _message_agent_refs(request)
 
     if request.target == "auto":
         return AutoAgent(
             capabilities=capability_ids,
             skills=skills,
+            agents=agents,
             review=request.review_level,
             dynamic_adjust=request.dynamic_adjust,
         )
@@ -1352,14 +1480,48 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
             profile="conversation",
             capabilities=capability_ids,
             skills=skills,
+            agents=agents,
             review=request.review_level,
         )
     return DagAgent(
         capabilities=capability_ids,
         skills=skills,
+        agents=agents,
         review=request.review_level,
         dynamic_adjust=request.dynamic_adjust,
     )
+
+
+def _message_agent_refs(request: MessageRequest) -> tuple[str, ...] | str | None:
+    agent_ids = request.agent_ids or []
+    if request.agent_scope == "none":
+        if agent_ids:
+            raise HTTPException(status_code=400, detail="agent_ids require agent_scope='selected'.")
+        return None
+    if request.agent_scope == "registered":
+        if agent_ids:
+            raise HTTPException(status_code=400, detail="agent_ids are not accepted when agent_scope='registered'.")
+        return "registered"
+    if not agent_ids:
+        return ()
+    return tuple(_validated_agent_ids(agent_ids))
+
+
+def _validated_agent_ids(agent_ids: list[str]) -> list[str]:
+    runner = state.get_runner()
+    validated: list[str] = []
+    for agent_id in _dedupe(agent_ids):
+        if not agent_id.startswith("agent."):
+            raise HTTPException(status_code=400, detail="agent_ids must use the 'agent.<name>' capability id form.")
+        definition = runner.get_capability(agent_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Agent capability '{agent_id}' was not found.")
+        if not definition.enabled:
+            raise HTTPException(status_code=400, detail=f"Agent capability '{agent_id}' is disabled.")
+        if definition.kind != "agent":
+            raise HTTPException(status_code=400, detail=f"Capability '{agent_id}' is not an agent.")
+        validated.append(agent_id)
+    return validated
 
 
 def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
@@ -1414,6 +1576,7 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     agent = _agent_from_message(request)
+    workspace_root = _workspace_root_from_message(request)
 
     async def events():
         sent_error = False
@@ -1424,6 +1587,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                     agent,
                     messages=request.messages,
                     state=request.state,
+                    workspace_root=workspace_root,
                 ),
                 validation_enabled=runner.enable_validation,
             ):
@@ -1440,6 +1604,12 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 })
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _workspace_root_from_message(request: MessageRequest) -> str:
+    if request.workspace_root is None or not request.workspace_root.strip():
+        return DEFAULT_RUNS_DIR
+    return request.workspace_root.strip()
 
 
 @app.post("/messages/resume")

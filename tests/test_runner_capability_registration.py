@@ -123,6 +123,140 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     runner.close()
 
 
+def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    helper = dagent.ToolAgent(
+        profile="conversation",
+        name="helper",
+        max_steps=1,
+        capabilities=[],
+        skills=[],
+        description="Summarizes text.",
+    )
+
+    definition = runner.add_agent(helper)
+    result = run(runner.run(
+        dagent.ToolAgent(
+            profile="conversation",
+            capabilities=[],
+            skills=[],
+            agents=["agent.helper"],
+        ),
+        messages=user_messages("delegate"),
+    ))
+
+    assert definition.id == "agent.helper"
+    assert result.output_text == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    assert provider.requests[1]["tools"] == []
+    runner.close()
+
+
+def test_top_level_agent_can_expose_all_registered_agents(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[]))
+
+    result = run(runner.run(
+        dagent.ToolAgent(
+            profile="conversation",
+            capabilities=[],
+            skills=[],
+            agents="registered",
+        ),
+        messages=user_messages("delegate"),
+    ))
+
+    assert result.output_text == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    runner.close()
+
+
+def test_add_agent_is_idempotent_for_same_config_and_rejects_conflict(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+
+    first = runner.add_agent(helper)
+    second = runner.add_agent(helper)
+
+    assert first.id == "agent.helper"
+    assert second.id == "agent.helper"
+    with pytest.raises(ValueError, match="already registered with different config"):
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", max_steps=2, capabilities=[], skills=[]))
+    runner.close()
+
+
+def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+    runner.add_agent(helper)
+
+    runner.remove_capability("agent.helper")
+    replacement = runner.add_agent(
+        dagent.ToolAgent(profile="conversation", name="helper", max_steps=2, capabilities=[], skills=[])
+    )
+
+    assert replacement.id == "agent.helper"
+    runner.close()
+
+
+def test_registered_subagent_cannot_expose_agents(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot expose subagents"):
+        runner.add_agent(
+            dagent.ToolAgent(
+                profile="conversation",
+                name="outer",
+                capabilities=[],
+                skills=[],
+                agents=[dagent.ToolAgent(profile="conversation", name="inner", capabilities=[], skills=[])],
+            )
+        )
+    runner.close()
+
+
+def test_registered_subagent_cannot_bind_agent_capabilities(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+
+    with pytest.raises(ValueError, match="cannot expose subagents"):
+        runner.add_agent(
+            dagent.ToolAgent(
+                profile="conversation",
+                name="outer",
+                capabilities=["agent.helper"],
+                skills=[],
+            )
+        )
+    runner.close()
+
+
 def test_remove_mcp_server_unregisters_tools_and_shutdowns_manager(tmp_path) -> None:
     runner = _runner(tmp_path)
     manager = FakeMCPManager()

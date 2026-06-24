@@ -24,6 +24,11 @@ profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户通过“智能体
 数字、`_` 和 `-`。名为 `analyst` 的受管 profile 会在静态 DAG 编辑器中暴露为
 `agent.analyst`。
 
+Web UI 还会把可复用 agent preset 管理在 `~/.dagent/agents/*.json` 下。一个 preset
+会选择 profile，并固定这个子 agent 可用的 tools、MCP capabilities 和 skills。聊天和
+dynamic DAG runs 可以用 `agent_scope="selected"` 加 `agent_ids=["agent.<name>"]`
+暴露指定 preset，也可以用 `agent_scope="registered"` 暴露所有已注册 presets。
+
 ## ToolAgent
 
 ```python
@@ -124,6 +129,38 @@ if result.requires_review and result.review is not None:
 uv run python -m examples.dynamic_dag_agent
 ```
 
+## 子 Agent 委派
+
+顶层 `ToolAgent`、`AutoAgent` 和 `DagAgent` run 可以把已注册的 `ToolAgent` 子 agent
+暴露为 `agent.*` capabilities。子 agent 是叶子 agent：它可以使用自己配置好的 tools、
+MCP capabilities 和 skills，但不能再调用另一个子 agent。
+
+```python
+helper = dagent.ToolAgent(
+    profile="conversation",
+    name="helper",
+    capabilities=["tool.search"],
+    skills=["research/briefing"],
+    max_steps=4,
+    description="Research helper.",
+)
+
+runner.add_agent(helper)
+
+agent = dagent.DagAgent(
+    capabilities=["tool.read_file"],
+    agents=["agent.helper"],
+)
+```
+
+也可以直接在 `agents=[helper]` 中传入 `ToolAgent` 对象；runner 会在 run 前注册它。
+使用 `agents="registered"` 会暴露该 runner 上已注册的全部 agent。`capabilities=None`
+默认仍会排除 `agent.*` capabilities；只有设置 `agents=...` 或显式包含 `agent.*`
+capability id 时，顶层 run 才能委派。
+
+Dynamic DAG planner 会在 Available Tools section 中看到已暴露的 agent，并像调用其他
+function 一样调用它们，通常只需要传 `prompt="..."`，必要时再传 `max_steps=...`。
+
 ## 共享 Agent 字段
 
 | 字段 | 含义 |
@@ -132,6 +169,7 @@ uv run python -m examples.dynamic_dag_agent
 | `planner_profile` | `AutoAgent` 和 `DagAgent` 使用的 dynamic DAG planner profile。 |
 | `capabilities` | 对 agent 可见的 capability ids 或 `@dagent.tool` bindings。 |
 | `skills` | 通过 `skill.list` 和 `skill.view` 可见的具体 skills。 |
+| `agents` | 顶层 run 可见的子 agent capabilities：`None`、`"registered"`、`ToolAgent` 对象或 `agent.<name>` ids。 |
 | `review` | risky work 的 review level。 |
 | `max_steps` | `ToolAgent` 和 `AutoAgent` 的 tool-loop bound。 |
 | `max_cycles` | `AutoAgent` 和 `DagAgent` 的 dynamic DAG replan bound。 |

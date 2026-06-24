@@ -1161,6 +1161,92 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
 
 
+def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    created = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "description": "Summarizes text.",
+            "max_steps": 1,
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+    listed = client.get("/agents")
+    capabilities = client.get("/capabilities", params={"kind": "agent"})
+    deleted = client.delete("/agents/helper")
+
+    assert created.status_code == 200
+    assert created.json()["agent"]["id"] == "agent.helper"
+    assert created.json()["agent"]["profile"] == "conversation"
+    assert listed.status_code == 200
+    assert [agent["id"] for agent in listed.json()["agents"]] == ["agent.helper"]
+    capability_ids = {capability["id"] for capability in capabilities.json()["capabilities"]}
+    assert "agent.helper" in capability_ids
+    assert deleted.status_code == 200
+    assert not (agent_root / "helper.json").exists()
+    state.close_runner()
+
+
+def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    state.runner = _runner(provider)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "max_steps": 1,
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+    stream_response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "delegate",
+            target="tool",
+            capability_ids=[],
+            skills=[],
+            agent_scope="selected",
+            agent_ids=["agent.helper"],
+        ),
+    )
+
+    assert create_response.status_code == 200
+    assert stream_response.status_code == 200
+    events = _sse_events(stream_response.text)
+    result = _stream_result(events[-1])
+    assert result["output_text"] == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"helper"}
+    assert provider.requests[1]["tools"] == []
+    state.close_runner()
+
+
 def test_api_dag_create_run_and_artifacts() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)

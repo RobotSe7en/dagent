@@ -212,6 +212,7 @@ class AgentCapabilityProvider:
                 toolsets=[CapabilityToolset("builtin", ())],
             )
         enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
+        _ensure_leaf_agent_adapter(agent_name, tool_adapter, enabled_toolsets)
         max_steps = int(invocation.arguments.get("max_steps", config.get("max_steps", 8)))
         loop = ToolAgentLoop(
             provider=provider,
@@ -329,6 +330,23 @@ def _profile_from_config(agent_name: str, config: dict[str, Any]) -> AgentProfil
         description="Agent capability",
         content=system_prompt,
     )
+
+
+def _ensure_leaf_agent_adapter(
+    agent_name: str,
+    tool_adapter: CapabilityToolAdapter,
+    enabled_toolsets: tuple[str, ...],
+) -> None:
+    nested = [
+        definition.id
+        for definition in tool_adapter.capabilities(enabled_toolsets)
+        if definition.kind == "agent"
+    ]
+    if nested:
+        raise ValueError(
+            f"Registered subagent 'agent.{agent_name}' cannot expose subagents: "
+            f"{', '.join(sorted(nested))}."
+        )
 
 
 def _agent_runtime_context(context: Any) -> str:
