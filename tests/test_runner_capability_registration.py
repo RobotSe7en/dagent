@@ -249,6 +249,69 @@ def test_add_agent_rejects_llm_function_name_collision(tmp_path) -> None:
     runner.close()
 
 
+def test_add_tool_rejects_registered_agent_llm_function_name_collision(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+
+    @dagent.tool(name="helper")
+    def helper_tool() -> str:
+        return "tool"
+
+    with pytest.raises(ValueError, match="LLM tool name collision"):
+        runner.add_tool(helper_tool)
+
+    assert runner.get_capability("tool.helper") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
+def test_register_capability_rejects_registered_agent_llm_function_name_collision(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+    definition = CapabilityDefinition(id="tool.raw_helper", name="helper", kind="tool")
+
+    with pytest.raises(ValueError, match="LLM tool name collision"):
+        runner.register_capability(
+            definition,
+            lambda invocation: CapabilityResult.completed(invocation, "raw"),
+        )
+
+    assert runner.get_capability("tool.raw_helper") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
+def test_add_mcp_server_rolls_back_registered_agent_llm_function_name_collision(monkeypatch, tmp_path) -> None:
+    class CollidingMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            catalog.register(
+                CapabilityDefinition(
+                    id="mcp.mock.helper",
+                    name="helper",
+                    kind="mcp",
+                    config={"server": "mock", "tool": "helper"},
+                ),
+                lambda invocation: CapabilityResult.completed(invocation, "mcp"),
+            )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", CollidingMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+
+    with pytest.raises(ValueError, match="LLM tool name collision"):
+        runner.add_mcp_server("mock", {"command": "fake"})
+
+    assert runner.get_capability("mcp.mock.helper") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
 def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
     runner = _runner(tmp_path)
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])

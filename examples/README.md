@@ -11,6 +11,7 @@ credentials.
 | Example | Demonstrates | Related docs |
 | --- | --- | --- |
 | `tool_agent.py` | Register a Python tool and run a profile-backed `ToolAgent`. | [Agents](../docs/en/agents.md), [Capabilities](../docs/en/capabilities.md) |
+| `agent_delegation.py` | Register a leaf subagent and expose it to a top-level `ToolAgent`. | [Agents](../docs/en/agents.md) |
 | `auto_agent.py` | Let the runtime choose direct tool use or dynamic DAG execution. | [Agents](../docs/en/agents.md) |
 | `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/en/static-dag.md), [Capabilities](../docs/en/capabilities.md) |
@@ -23,6 +24,7 @@ credentials.
 
 ```bash
 uv run python -m examples.tool_agent
+uv run python -m examples.agent_delegation
 uv run python -m examples.auto_agent
 uv run python -m examples.dynamic_dag_agent
 uv run python -m examples.static_dag

@@ -182,6 +182,8 @@ class Runner:
         """Register a single ``@dagent.tool`` binding."""
 
         self._ensure_open()
+        definition, _, _ = _capability_parts(capability)
+        self._ensure_capability_function_name_available(definition)
         definition = _register_capability(self._runtime, capability)
         self._refresh_registered_agent_runtime_configs()
         return definition
@@ -208,6 +210,7 @@ class Runner:
         """Register a raw capability definition with an executable handler."""
 
         self._ensure_open()
+        self._ensure_capability_function_name_available(definition)
         registered = self._runtime.register_capability(
             definition, handler, supports_context=supports_context
         )
@@ -224,6 +227,7 @@ class Runner:
         """Replace an already-registered capability definition and handler."""
 
         self._ensure_open()
+        self._ensure_capability_function_name_available(definition)
         replaced = self._runtime.replace_capability(
             definition, handler, supports_context=supports_context
         )
@@ -409,13 +413,19 @@ class Runner:
         """Remove a dynamically registered MCP server and its capabilities."""
 
         self._ensure_open()
+        self.ensure_mcp_server_removable(name)
+        self._remove_mcp_server_registration(name)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+
+    def ensure_mcp_server_removable(self, name: str) -> None:
+        """Raise if a registered subagent explicitly depends on an MCP server."""
+
+        self._ensure_open()
         self._ensure_no_registered_agent_dependencies(
             self._mcp_server_capability_ids.get(name, ()),
             f"remove MCP server '{name}'",
         )
-        self._remove_mcp_server_registration(name)
-        self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
 
     def replace_mcp_server(
         self,
@@ -457,6 +467,7 @@ class Runner:
                 errors.append(f"MCP server '{name}' failed to connect: {connect_error}")
             if errors:
                 raise RuntimeError("; ".join(errors))
+            self._ensure_catalog_function_names_unique()
         except Exception:
             new_ids = sorted(set(catalog.ids()) - before)
             self._rollback_mcp_registration(catalog, new_ids, getattr(provider, "manager", manager))
@@ -928,7 +939,9 @@ class Runner:
                 raise RuntimeError(f"Agent capability '{capability_id}' is missing from the catalog.")
             return definition
 
-        self._ensure_agent_function_name_available(name, capability_id)
+        self._ensure_capability_function_name_available(
+            CapabilityDefinition(id=capability_id, name=name, kind="agent")
+        )
         config = self._registered_agent_runtime_config(agent)
         AgentCapabilityProvider({name: config}).register_into(self._runtime.capability_catalog)
         self._registered_agent_configs[name] = agent
@@ -1008,19 +1021,34 @@ class Runner:
             joined_agents = ", ".join(dependents)
             raise ValueError(f"Cannot {action}; {joined_agents} depends on {joined_ids}.")
 
-    def _ensure_agent_function_name_available(self, name: str, capability_id: str) -> None:
+    def _ensure_capability_function_name_available(self, candidate: CapabilityDefinition) -> None:
         adapter = CapabilityToolAdapter(self._runtime.capability_catalog)
-        candidate = CapabilityDefinition(id=capability_id, name=name, kind="agent")
         candidate_name = adapter.function_name(candidate)
         for existing_id in sorted(self._runtime.capability_catalog.ids()):
             definition = self._runtime.capability_catalog.get(existing_id)
-            if definition is None or definition.id == capability_id:
+            if definition is None or definition.id == candidate.id:
                 continue
             if adapter.function_name(definition) == candidate_name:
                 raise ValueError(
                     "LLM tool name collision: "
-                    f"'{definition.id}' and '{capability_id}' both map to '{candidate_name}'."
+                    f"'{definition.id}' and '{candidate.id}' both map to '{candidate_name}'."
                 )
+
+    def _ensure_catalog_function_names_unique(self) -> None:
+        adapter = CapabilityToolAdapter(self._runtime.capability_catalog)
+        seen: dict[str, str] = {}
+        for capability_id in sorted(self._runtime.capability_catalog.ids()):
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is None:
+                continue
+            name = adapter.function_name(definition)
+            previous = seen.get(name)
+            if previous is not None:
+                raise ValueError(
+                    "LLM tool name collision: "
+                    f"'{previous}' and '{definition.id}' both map to '{name}'."
+                )
+            seen[name] = definition.id
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)

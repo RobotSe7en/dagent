@@ -274,6 +274,102 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
     assert "mcp.mock.lookup" not in capability_ids_after_delete
 
 
+def test_api_mcp_update_rejects_registered_agent_dependency_without_mutation(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        policy=CapabilityPolicy(risk=config.get("risk", "medium")),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/mcp/servers",
+        json={"name": "mock", "command": "fake", "risk": "low"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.mock.lookup"],
+        skills=[],
+    ))
+    update_response = client.put(
+        "/mcp/servers/mock",
+        json={"name": "mock", "command": "fake", "risk": "high"},
+    )
+
+    assert create_response.status_code == 200
+    assert update_response.status_code == 400
+    assert "agent.helper" in update_response.json()["detail"]
+    assert state.custom_mcp_servers["mock"]["risk"] == "low"
+    assert state.runner.get_capability("mcp.mock.lookup") is not None
+
+
+def test_api_mcp_delete_rejects_registered_agent_dependency_without_mutation(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    create_response = client.post(
+        "/mcp/servers",
+        json={"name": "mock", "command": "fake"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.mock.lookup"],
+        skills=[],
+    ))
+    delete_response = client.delete("/mcp/servers/mock")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 400
+    assert "agent.helper" in delete_response.json()["detail"]
+    assert "mock" in state.custom_mcp_servers
+    assert state.runner.get_capability("mcp.mock.lookup") is not None
+
+
 def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):
@@ -1053,6 +1149,34 @@ def test_api_rejects_removed_custom_tool_capability_kind() -> None:
     assert response.status_code == 422
 
 
+def test_api_delete_capability_rejects_registered_agent_dependency_without_mutation() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app, raise_server_exceptions=False)
+    create_response = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.search",
+            "name": "search",
+            "kind": "tool",
+            "config": {"template": "found:{q}"},
+        },
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["tool.search"],
+        skills=[],
+    ))
+
+    delete_response = client.delete("/capabilities/tool.search")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 400
+    assert "agent.helper" in delete_response.json()["detail"]
+    assert "tool.search" in state.custom_capabilities
+    assert state.runner.get_capability("tool.search") is not None
+
+
 def test_api_session_reset_closes_existing_runner() -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     closed: list[str] = []
@@ -1267,6 +1391,40 @@ def test_api_agents_skips_invalid_preset_files(monkeypatch, tmp_path) -> None:
     assert payload["errors"]["broken"]
     assert runner.get_capability("agent.helper") is not None
     assert state.agent_preset_errors["broken"]
+    state.close_runner()
+
+
+def test_api_agents_reports_persisted_preset_profile_name_collision(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    managed_dir = tmp_path / "managed-profiles"
+    agent_root.mkdir()
+    managed_dir.mkdir()
+    (managed_dir / "helper.md").write_text("# Helper\n\nProfile helper.", encoding="utf-8")
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capability_ids": [],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["agents"] == []
+    assert "conflicts with an agent profile" in payload["errors"]["helper"]
+    assert runner.get_capability("agent.helper") is None
     state.close_runner()
 
 

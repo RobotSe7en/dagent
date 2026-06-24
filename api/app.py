@@ -405,6 +405,8 @@ class ApiState:
             return
         runner = self.runner
         for name in list(self.custom_mcp_registered_names):
+            runner.ensure_mcp_server_removable(name)
+        for name in list(self.custom_mcp_registered_names):
             runner.remove_mcp_server(name)
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
@@ -418,7 +420,7 @@ class ApiState:
     def _install_agent_presets(self) -> None:
         if self.runner is None:
             return
-        presets, errors = self.agent_preset_store().list_valid()
+        presets, errors = _agent_presets_with_errors(self.agent_preset_store())
         self.agent_preset_errors = dict(errors)
         for preset in presets:
             try:
@@ -789,7 +791,7 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 @app.get("/agents")
 async def list_agents() -> dict[str, Any]:
     store = state.agent_preset_store()
-    presets, errors = store.list_valid()
+    presets, errors = _agent_presets_with_errors(store)
     names = set(store.list_names())
     registration_errors = {
         name: error
@@ -923,6 +925,19 @@ def _clean_agent_preset_name(value: str) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _agent_presets_with_errors(store: AgentPresetStore) -> tuple[list[AgentPreset], dict[str, str]]:
+    presets, errors = store.list_valid()
+    valid: list[AgentPreset] = []
+    for preset in presets:
+        try:
+            _ensure_agent_preset_name_available(preset.name)
+        except HTTPException as exc:
+            errors[preset.name] = str(exc.detail)
+            continue
+        valid.append(preset)
+    return valid, errors
+
+
 def _ensure_agent_preset_name_available(name: str) -> None:
     profile_names = {profile.name for _, profile in _agent_profile_candidates()}
     if name in profile_names:
@@ -981,7 +996,10 @@ async def delete_capability(capability_id: str) -> dict[str, str]:
     runner = state.get_runner()
     if runner.get_capability(capability_id) is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
-    runner.remove_capability(capability_id)
+    try:
+        runner.remove_capability(capability_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities.pop(capability_id, None)
     return {"status": "deleted"}
 
@@ -1086,6 +1104,9 @@ async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
     state.custom_mcp_servers[name] = _mcp_server_config(request)
     try:
         state.reload_custom_mcp()
+    except ValueError as exc:
+        state.custom_mcp_servers.pop(name, None)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         state.custom_mcp_errors[name] = str(exc)
     return {"server": _mcp_server_payload(name, "memory", state.custom_mcp_servers[name], state.get_runner())}
@@ -1099,11 +1120,14 @@ async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail="MCP server name mismatch.")
     if server_name not in state.custom_mcp_servers:
         raise HTTPException(status_code=404, detail="MCP server not found.")
+    _ensure_mcp_server_removable(server_name)
+    previous = dict(state.custom_mcp_servers[server_name])
     state.custom_mcp_servers[server_name] = _mcp_server_config(request)
     try:
         state.reload_custom_mcp()
-    except Exception as exc:
-        state.custom_mcp_errors[server_name] = str(exc)
+    except ValueError as exc:
+        state.custom_mcp_servers[server_name] = previous
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"server": _mcp_server_payload(server_name, "memory", state.custom_mcp_servers[server_name], state.get_runner())}
 
 
@@ -1112,15 +1136,30 @@ async def delete_mcp_server(name: str) -> dict[str, str]:
     server_name = _clean_name(name, field="MCP server name")
     if server_name not in state.custom_mcp_servers:
         raise HTTPException(status_code=404, detail="MCP server not found.")
-    state.custom_mcp_servers.pop(server_name, None)
-    state.reload_custom_mcp()
+    _ensure_mcp_server_removable(server_name)
+    previous = state.custom_mcp_servers.pop(server_name)
+    try:
+        state.reload_custom_mcp()
+    except ValueError as exc:
+        state.custom_mcp_servers[server_name] = previous
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "deleted"}
 
 
 @app.post("/mcp/reload")
 async def reload_mcp_servers() -> dict[str, Any]:
-    state.reload_custom_mcp()
+    try:
+        state.reload_custom_mcp()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await list_mcp_servers()
+
+
+def _ensure_mcp_server_removable(name: str) -> None:
+    try:
+        state.get_runner().ensure_mcp_server_removable(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/skills")
