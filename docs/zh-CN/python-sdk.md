@@ -20,6 +20,7 @@ import dagent
 | 配置 runtime、provider、MCP、profiles、validation | [Runner 和配置](runner-and-configuration.md) |
 | 注册 Python tools 或 MCP tools | [Capabilities](capabilities.md) |
 | 选择 agent 类型 | [Agents](agents.md) |
+| 注册用于单层委派的子 agent | [Agents](agents.md#子-agent-委派) |
 | 在代码中构建静态 workflow | [静态 DAGs](static-dag.md) |
 | 使用 skills 和 managed skill installs | [Skills](skills.md) |
 | 持久化、stream、review 或 resume runs | [结果、流式输出和 Review](results-streaming-review.md) |
@@ -80,6 +81,26 @@ result = await runner.run(
 )
 print(result.output_text)
 ```
+
+## 最小 Agent 委派
+
+```python
+helper = dagent.ToolAgent(
+    profile="conversation",
+    name="helper",
+    capabilities=["tool.search"],
+    review="fast",
+)
+runner.add_agent(helper)
+
+agent = dagent.DagAgent(
+    capabilities=["tool.read_file"],
+    agents=["agent.helper"],
+)
+```
+
+已注册子 agent 是单层委派目标。子 agent 自己的 `agents` 字段必须为空；顶层 run
+通过 `agents=[...]` 或 `agents="registered"` 暴露这些子 agent。
 
 ## 最小静态 DAG Run
 

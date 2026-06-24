@@ -211,6 +211,44 @@ def test_add_agent_is_idempotent_for_same_config_and_rejects_conflict(tmp_path) 
     runner.close()
 
 
+def test_add_agent_rejects_non_fast_review(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match='review="fast"'):
+        runner.add_agent(
+            dagent.ToolAgent(
+                profile="conversation",
+                name="helper",
+                capabilities=[],
+                skills=[],
+                review="careful",
+            )
+        )
+    runner.close()
+
+
+def test_add_agent_rejects_invalid_name(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match="Agent names"):
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="../bad", capabilities=[], skills=[]))
+    runner.close()
+
+
+def test_add_agent_rejects_llm_function_name_collision(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool(name="helper")
+    def helper_tool() -> str:
+        return "tool"
+
+    runner.add_tool(helper_tool)
+
+    with pytest.raises(ValueError, match="LLM tool name collision"):
+        runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
+    runner.close()
+
+
 def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
     runner = _runner(tmp_path)
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
@@ -222,6 +260,53 @@ def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> Non
     )
 
     assert replacement.id == "agent.helper"
+    runner.close()
+
+
+def test_remove_capability_rejects_registered_agent_dependency_without_mutation(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    runner.add_tool(search)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["tool.search"],
+            skills=[],
+        )
+    )
+
+    with pytest.raises(ValueError, match="agent.helper"):
+        runner.remove_capability("tool.search")
+
+    assert runner.get_capability("tool.search") is not None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
+def test_remove_mcp_server_rejects_registered_agent_dependency_without_mutation(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    manager = FakeMCPManager()
+    runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["mcp.mock_server.lookup"],
+            skills=[],
+        )
+    )
+
+    with pytest.raises(ValueError, match="agent.helper"):
+        runner.remove_mcp_server("mock-server")
+
+    assert runner.get_capability("mcp.mock_server.lookup") is not None
+    assert runner.get_capability("agent.helper") is not None
+    assert manager.shutdown_calls == 0
     runner.close()
 
 

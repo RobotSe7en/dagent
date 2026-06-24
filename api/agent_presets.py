@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+from dagent.agent import validate_agent_name
 
 
 class _AgentPresetFields(BaseModel):
@@ -25,10 +23,6 @@ class _AgentPresetFields(BaseModel):
 
 class AgentPreset(_AgentPresetFields):
     name: str = Field(min_length=1, max_length=64)
-
-
-class AgentPresetRequest(AgentPreset):
-    pass
 
 
 class AgentPresetUpdateRequest(_AgentPresetFields):
@@ -46,6 +40,16 @@ class AgentPresetStore:
 
     def list(self) -> list[AgentPreset]:
         return [self.load(name) for name in self.list_names()]
+
+    def list_valid(self) -> tuple[list[AgentPreset], dict[str, str]]:
+        presets: list[AgentPreset] = []
+        errors: dict[str, str] = {}
+        for name in self.list_names():
+            try:
+                presets.append(self.load(name))
+            except Exception as exc:
+                errors[name] = str(exc)
+        return presets, errors
 
     def load(self, name: str) -> AgentPreset:
         clean_name = clean_agent_preset_name(name)
@@ -75,7 +79,4 @@ class AgentPresetStore:
 
 
 def clean_agent_preset_name(value: Any) -> str:
-    name = str(value or "").strip()
-    if not _AGENT_NAME_RE.fullmatch(name):
-        raise ValueError("Agent preset names may contain only letters, numbers, underscores, and hyphens.")
-    return name
+    return validate_agent_name(value, label="Agent preset names")

@@ -16,10 +16,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.agent_presets import (
     AgentPreset,
-    AgentPresetRequest,
     AgentPresetStore,
     AgentPresetUpdateRequest,
-    clean_agent_preset_name as validate_agent_preset_name,
+    clean_agent_preset_name,
 )
 from dagent import (
     ArtifactUpload,
@@ -323,6 +322,7 @@ class ApiState:
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.agent_preset_errors: dict[str, str] = {}
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
         self.validation_override: bool | None = None
@@ -360,6 +360,7 @@ class ApiState:
         self.runner = None
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
+        self.agent_preset_errors.clear()
 
     def get_profile_directory(self) -> str | None:
         if self.profile_directory is not None:
@@ -417,8 +418,13 @@ class ApiState:
     def _install_agent_presets(self) -> None:
         if self.runner is None:
             return
-        for preset in self.agent_preset_store().list():
-            self.runner.add_agent(_tool_agent_from_preset(preset))
+        presets, errors = self.agent_preset_store().list_valid()
+        self.agent_preset_errors = dict(errors)
+        for preset in presets:
+            try:
+                self.runner.add_agent(_tool_agent_from_preset(preset))
+            except Exception as exc:
+                self.agent_preset_errors[preset.name] = str(exc)
 
 
 state = ApiState()
@@ -582,7 +588,7 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
 def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
     if request is None or request.workspace_root is None or not request.workspace_root.strip():
         return DEFAULT_RUNS_DIR
-    return request.workspace_root.strip()
+    return _clean_workspace_root(request.workspace_root)
 
 
 def _compile_user_dag(dag: UserDAG) -> Dag:
@@ -616,6 +622,16 @@ def _compile_user_dag_target(node: UserDAGNode) -> str | ToolAgent:
     if not capability_id.startswith("agent."):
         if node.agent is not None:
             raise ValueError(f"Node '{node.id}' has agent config but does not target an agent capability.")
+        return capability_id
+    definition = state.get_runner().get_capability(capability_id)
+    if definition is not None:
+        if definition.kind != "agent":
+            raise ValueError(f"Capability '{capability_id}' is not an agent capability.")
+        if node.agent is not None:
+            raise ValueError(
+                f"Node '{node.id}' targets registered agent capability '{capability_id}' "
+                "and cannot include node-level agent config."
+            )
         return capability_id
     profile_name = _clean_agent_profile_name(capability_id.removeprefix("agent."))
     agent_config = node.agent
@@ -772,20 +788,31 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 
 @app.get("/agents")
 async def list_agents() -> dict[str, Any]:
+    store = state.agent_preset_store()
+    presets, errors = store.list_valid()
+    names = set(store.list_names())
+    registration_errors = {
+        name: error
+        for name, error in state.agent_preset_errors.items()
+        if name in names and name not in errors
+    }
+    state.agent_preset_errors = {**errors, **registration_errors}
     return {
         "agents": [
             _agent_preset_payload(preset)
-            for preset in state.agent_preset_store().list()
-        ]
+            for preset in presets
+        ],
+        "errors": dict(state.agent_preset_errors),
     }
 
 
 @app.post("/agents")
-async def create_agent(request: AgentPresetRequest) -> dict[str, Any]:
+async def create_agent(request: AgentPreset) -> dict[str, Any]:
     name = _clean_agent_preset_name(request.name)
     store = state.agent_preset_store()
     if name in store.list_names():
         raise HTTPException(status_code=400, detail=f"Agent preset '{name}' already exists.")
+    _ensure_agent_preset_name_available(name)
     preset = _agent_preset_from_request(request, name=name)
     tool_agent = _tool_agent_from_preset(preset)
     saved = store.save(preset)
@@ -803,9 +830,17 @@ async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str
     store = state.agent_preset_store()
     if preset_name not in store.list_names():
         raise HTTPException(status_code=404, detail="Agent preset not found.")
+    _ensure_agent_preset_name_available(preset_name)
+    previous = store.load(preset_name)
     preset = _agent_preset_from_request(request, name=preset_name)
     saved = store.save(preset)
     state.close_runner()
+    state.get_runner()
+    error = state.agent_preset_errors.get(preset_name)
+    if error is not None:
+        store.save(previous)
+        state.close_runner()
+        raise HTTPException(status_code=400, detail=error)
     return {"agent": _agent_preset_payload(saved)}
 
 
@@ -844,7 +879,7 @@ def _agent_preset_payload(preset: AgentPreset) -> dict[str, Any]:
 
 
 def _agent_preset_from_request(
-    request: AgentPresetRequest | AgentPresetUpdateRequest,
+    request: AgentPreset | AgentPresetUpdateRequest,
     *,
     name: str,
 ) -> AgentPreset:
@@ -883,9 +918,15 @@ def _tool_agent_from_preset(preset: AgentPreset) -> ToolAgent:
 
 def _clean_agent_preset_name(value: str) -> str:
     try:
-        return validate_agent_preset_name(value)
+        return clean_agent_preset_name(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _ensure_agent_preset_name_available(name: str) -> None:
+    profile_names = {profile.name for _, profile in _agent_profile_candidates()}
+    if name in profile_names:
+        raise HTTPException(status_code=400, detail=f"Agent preset '{name}' conflicts with an agent profile.")
 
 
 def _agent_profile_candidates() -> list[tuple[str, AgentProfile]]:
@@ -1241,6 +1282,8 @@ def _validate_profile_content(content: str) -> None:
 def _ensure_managed_profile_name_available(name: str) -> None:
     if name in {profile.name for profile in list_builtin_profiles()}:
         raise HTTPException(status_code=400, detail=f"Profile '{name}' is built in.")
+    if name in state.agent_preset_store().list_names():
+        raise HTTPException(status_code=400, detail=f"Profile '{name}' conflicts with an agent preset.")
     managed_store = state.managed_profile_store()
     if name in managed_store.list_names():
         raise HTTPException(status_code=400, detail=f"Profile '{name}' already exists.")
@@ -1609,7 +1652,15 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
 def _workspace_root_from_message(request: MessageRequest) -> str:
     if request.workspace_root is None or not request.workspace_root.strip():
         return DEFAULT_RUNS_DIR
-    return request.workspace_root.strip()
+    return _clean_workspace_root(request.workspace_root)
+
+
+def _clean_workspace_root(value: str) -> str:
+    root = value.strip()
+    path = Path(root)
+    if not path.is_absolute() and (".." in path.parts or ".." in PureWindowsPath(root).parts):
+        raise HTTPException(status_code=400, detail="workspace_root cannot contain '..' in a relative path.")
+    return root
 
 
 @app.post("/messages/resume")

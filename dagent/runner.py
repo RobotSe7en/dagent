@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
+from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.catalog import CapabilityHandler
@@ -235,6 +235,8 @@ class Runner:
 
         self._ensure_open()
         definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is not None and definition.kind != "agent":
+            self._ensure_no_registered_agent_dependencies((capability_id,), f"remove capability '{capability_id}'")
         self._runtime.capability_catalog.delete(capability_id)
         if definition is not None and definition.kind == "agent":
             name = capability_id.removeprefix("agent.")
@@ -407,6 +409,10 @@ class Runner:
         """Remove a dynamically registered MCP server and its capabilities."""
 
         self._ensure_open()
+        self._ensure_no_registered_agent_dependencies(
+            self._mcp_server_capability_ids.get(name, ()),
+            f"remove MCP server '{name}'",
+        )
         self._remove_mcp_server_registration(name)
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
@@ -908,7 +914,9 @@ class Runner:
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
 
     def _register_agent_capability(self, agent: ToolAgent) -> CapabilityDefinition:
-        name = agent.name or ""
+        name = validate_agent_name(agent.name)
+        if agent.review != "fast":
+            raise ValueError("Registered subagents must use review=\"fast\".")
         existing = self._registered_agent_configs.get(name)
         capability_id = f"agent.{name}"
         if existing is not None:
@@ -920,6 +928,7 @@ class Runner:
                 raise RuntimeError(f"Agent capability '{capability_id}' is missing from the catalog.")
             return definition
 
+        self._ensure_agent_function_name_available(name, capability_id)
         config = self._registered_agent_runtime_config(agent)
         AgentCapabilityProvider({name: config}).register_into(self._runtime.capability_catalog)
         self._registered_agent_configs[name] = agent
@@ -931,7 +940,7 @@ class Runner:
         return definition
 
     def _registered_agent_runtime_config(self, agent: ToolAgent) -> dict[str, Any]:
-        name = agent.name or ""
+        name = validate_agent_name(agent.name)
         if _has_agent_refs(agent.agents):
             raise ValueError(f"Registered subagent 'agent.{name}' cannot expose subagents.")
         capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
@@ -984,6 +993,34 @@ class Runner:
                 nested.append(capability_id)
         if nested:
             raise ValueError(f"{message}: {', '.join(sorted(nested))}.")
+
+    def _ensure_no_registered_agent_dependencies(self, capability_ids: Iterable[str], action: str) -> None:
+        target_ids = set(capability_ids)
+        if not target_ids:
+            return
+        dependents = [
+            f"agent.{name}"
+            for name, agent in sorted(self._registered_agent_configs.items())
+            if target_ids.intersection(_explicit_agent_capability_ids(agent.capabilities))
+        ]
+        if dependents:
+            joined_ids = ", ".join(sorted(target_ids))
+            joined_agents = ", ".join(dependents)
+            raise ValueError(f"Cannot {action}; {joined_agents} depends on {joined_ids}.")
+
+    def _ensure_agent_function_name_available(self, name: str, capability_id: str) -> None:
+        adapter = CapabilityToolAdapter(self._runtime.capability_catalog)
+        candidate = CapabilityDefinition(id=capability_id, name=name, kind="agent")
+        candidate_name = adapter.function_name(candidate)
+        for existing_id in sorted(self._runtime.capability_catalog.ids()):
+            definition = self._runtime.capability_catalog.get(existing_id)
+            if definition is None or definition.id == capability_id:
+                continue
+            if adapter.function_name(definition) == candidate_name:
+                raise ValueError(
+                    "LLM tool name collision: "
+                    f"'{definition.id}' and '{capability_id}' both map to '{candidate_name}'."
+                )
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)
@@ -1190,12 +1227,23 @@ def _has_agent_refs(agents: Iterable[ToolAgent | str] | str | None) -> bool:
     return any(True for _ in agents)
 
 
+def _explicit_agent_capability_ids(refs: Iterable[CapabilityRef] | None) -> tuple[str, ...]:
+    if refs is None:
+        return ()
+    capability_ids: list[str] = []
+    for ref in refs:
+        if isinstance(ref, CapabilityBinding):
+            capability_ids.append(ref.definition.id)
+        elif isinstance(ref, str):
+            capability_ids.append(ref)
+    return tuple(dict.fromkeys(capability_ids))
+
+
 def _agent_capability_id(ref: str) -> str:
     if not ref.startswith("agent."):
         raise ValueError("agent ids must use the 'agent.<name>' capability id form.")
-    if ref == "agent.":
-        raise ValueError("agent ids must include an agent name.")
-    return ref
+    name = validate_agent_name(ref.removeprefix("agent."))
+    return f"agent.{name}"
 
 
 def _apply_skill_capabilities(

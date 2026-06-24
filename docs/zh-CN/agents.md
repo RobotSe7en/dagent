@@ -14,17 +14,17 @@ continuation 和 execution dispatch。
 
 当图结构属于代码时，使用静态 `Dag` 而不是 agent。见[静态 DAG](static-dag.md)。
 
-## 本地 Web UI 的受管 Profiles
+## 受管 Profiles 和 Agent Presets
 
-内置 profiles 位于 `dagent/resources/profiles/*.md`。本地 FastAPI/Web UI 会把可编辑
-profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户通过“智能体管理”工作区创建、
-复制、编辑和删除这些 profiles，而不是在界面里填写 Markdown 文件路径。
+内置 profiles 位于 `dagent/resources/profiles/*.md`。本地 FastAPI 服务会把可编辑
+profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户可以创建、复制、编辑和删除
+这些 profiles，而不必在每次 run 时传 Markdown 文件路径。
 
 受管 profile 名称也是 agent capability 的产品标识，必须以字母开头，并且只能包含字母、
 数字、`_` 和 `-`。名为 `analyst` 的受管 profile 会在静态 DAG 编辑器中暴露为
 `agent.analyst`。
 
-Web UI 还会把可复用 agent preset 管理在 `~/.dagent/agents/*.json` 下。一个 preset
+本地 API 还会把可复用 agent preset 存在 `~/.dagent/agents/*.json` 下。一个 preset
 会选择 profile，并固定这个子 agent 可用的 tools、MCP capabilities 和 skills。聊天和
 dynamic DAG runs 可以用 `agent_scope="selected"` 加 `agent_ids=["agent.<name>"]`
 暴露指定 preset，也可以用 `agent_scope="registered"` 暴露所有已注册 presets。

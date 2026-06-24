@@ -280,22 +280,18 @@ def test_agent_provider_rejects_nested_agent_capability_adapter(tmp_path) -> Non
         registry,
         toolsets=[CapabilityToolset("builtin", ("agent.child",))],
     )
-    AgentCapabilityProvider(
-        agents={
-            "helper": {
-                "provider": provider,
-                "profile": AgentProfile(name="helper", content="You are a helper."),
-                "capability_executor": executor,
-                "tool_adapter": tool_adapter,
-                "enabled_toolsets": ("builtin",),
-            }
-        }
-    ).register_into(registry)
-
     with pytest.raises(ValueError, match="cannot expose subagents"):
-        run(executor.execute(
-            CapabilityInvocation(capability_id="agent.helper", kind="agent", arguments={"prompt": "do it"})
-        ))
+        AgentCapabilityProvider(
+            agents={
+                "helper": {
+                    "provider": provider,
+                    "profile": AgentProfile(name="helper", content="You are a helper."),
+                    "capability_executor": executor,
+                    "tool_adapter": tool_adapter,
+                    "enabled_toolsets": ("builtin",),
+                }
+            }
+        ).register_into(registry)
 
 
 def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
@@ -393,6 +389,58 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     assert "Write requirements" in first_user
     assert "Draft the requirements. Keep it concise." in first_user
     assert "source_doc" not in first_user
+
+
+def test_agent_provider_resets_node_session_when_invocation_arguments_change(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="first"),
+        ChatResponse(content="second"),
+    ])
+    registry = CapabilityCatalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(registry)
+    tool_adapter = CapabilityToolAdapter(
+        registry,
+        toolsets=[CapabilityToolset("builtin", ())],
+    )
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(name="helper", content="You are a helper."),
+                "capability_executor": executor,
+                "tool_adapter": tool_adapter,
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(registry)
+    node = DAGNode(
+        id="ask",
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id="agent.helper",
+                kind="agent",
+                arguments={"prompt": "First prompt."},
+            ),
+        ),
+    )
+    context = CapabilityExecutionContext(task_id="run_1", node=node, workspace_path=tmp_path)
+
+    first = run(executor.execute(node.payload.invocation, context=context))
+    second_invocation = CapabilityInvocation(
+        capability_id="agent.helper",
+        kind="agent",
+        arguments={"prompt": "Second prompt."},
+    )
+    second = run(executor.execute(second_invocation, context=context))
+
+    assert first.content == "first"
+    assert second.content == "second"
+    first_user = provider.requests[0]["messages"][1]["content"]
+    second_user = provider.requests[1]["messages"][1]["content"]
+    assert "First prompt." in first_user
+    assert "Second prompt." in second_user
+    assert [message["role"] for message in provider.requests[1]["messages"]] == ["system", "user"]
 
 
 def test_agent_boundary_grants_run_workspace_with_artifact_paths(tmp_path) -> None:

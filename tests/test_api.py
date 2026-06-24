@@ -9,11 +9,14 @@ from fastapi.testclient import TestClient
 
 import api.app as app_module
 import dagent.runner as runner_module
+from api.agent_presets import AgentPreset
 from api.app import app, state
-from dagent.runner import Runner
+from dagent import ToolAgent
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.profiles import AgentProfile
+from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.runner import Runner
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityResult
 
 
@@ -390,6 +393,19 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert events[-1]["type"] == "run.finished"
     assert _result_dag(result) is None
     assert result["output_text"] == "hello there"
+
+
+def test_api_message_stream_rejects_relative_workspace_root_escape() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request("hello", target="tool", workspace_root="../outside"),
+    )
+
+    assert response.status_code == 400
+    assert "workspace_root" in response.json()["detail"]
 
 
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
@@ -1195,6 +1211,108 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
     state.close_runner()
 
 
+def test_api_agent_preset_rejects_profile_name_collision(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    managed_dir = tmp_path / "managed-profiles"
+    managed_dir.mkdir()
+    (managed_dir / "helper.md").write_text("# Helper\n\nProfile helper.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "profile" in response.json()["detail"]
+    assert not (agent_root / "helper.json").exists()
+    state.close_runner()
+
+
+def test_api_agents_skips_invalid_preset_files(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "broken.json").write_text("{not json", encoding="utf-8")
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capability_ids": [],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert [agent["id"] for agent in payload["agents"]] == ["agent.helper"]
+    assert payload["errors"]["broken"]
+    assert runner.get_capability("agent.helper") is not None
+    assert state.agent_preset_errors["broken"]
+    state.close_runner()
+
+
+def test_api_agent_update_validates_registration_before_overwriting(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    store = app_module.AgentPresetStore(agent_root)
+    store.save(AgentPreset(
+        name="helper",
+        profile="conversation",
+        max_steps=1,
+        capability_ids=[],
+        skills=[],
+    ))
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+
+    def conflicting_runner() -> Runner:
+        runner = _runner(MockProvider([ChatResponse(content="unused")]))
+        runner.register_capability(
+            CapabilityDefinition(id="agent.helper", name="helper", kind="agent"),
+            lambda invocation: CapabilityResult.completed(invocation, "raw"),
+        )
+        return runner
+
+    monkeypatch.setattr(state, "_create_runner", conflicting_runner)
+    client = TestClient(app)
+
+    response = client.put(
+        "/agents/helper",
+        json={
+            "profile": "conversation",
+            "description": "Updated.",
+            "max_steps": 2,
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "already registered" in response.json()["detail"]
+    saved = store.load("helper")
+    assert saved.max_steps == 1
+    assert saved.description == ""
+    state.close_runner()
+
+
 def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, tmp_path) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"
@@ -1500,6 +1618,74 @@ def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypat
     ] == ["echo"]
 
 
+def test_static_dag_runs_registered_agent_capability_without_profile(tmp_path) -> None:
+    state.close_runner()
+    provider = MockProvider([ChatResponse(content="registered answer")])
+    state.runner = _runner(provider)
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=[],
+        skills=[],
+    ))
+    client = TestClient(app)
+    spec = {
+        "id": "registered_agent_dag",
+        "name": "Registered Agent DAG",
+        "nodes": [
+            {
+                "id": "ask",
+                "target": "agent.helper",
+                "inputs": {"prompt": "Summarize the run."},
+            }
+        ],
+        "edges": [],
+    }
+
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post("/dags/registered_agent_dag/run")
+
+    assert create_response.status_code == 200
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    assert run_payload["dag"]["nodes"][0]["status"] == "completed"
+    assert run_payload["trace"]["root"]["children"][0]["output"] == "registered answer"
+    assert "Registered helper profile." in provider.requests[0]["messages"][0]["content"]
+    state.close_runner()
+
+
+def test_static_dag_rejects_node_config_for_registered_agent_capability(tmp_path) -> None:
+    state.close_runner()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=[],
+        skills=[],
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/dags",
+        json={
+            "id": "registered_agent_with_config",
+            "name": "Registered Agent With Config",
+            "nodes": [
+                {
+                    "id": "ask",
+                    "target": "agent.helper",
+                    "agent": {"capabilities": ["tool.echo"]},
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "cannot include node-level agent config" in response.json()["detail"]
+    state.close_runner()
+
+
 def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_dir = tmp_path / "managed-profiles"
@@ -1794,6 +1980,35 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     workspace_path = Path(run_payload["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_api_dag_run_rejects_relative_workspace_root_escape() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "workspace_escape",
+            "name": "Workspace Escape",
+            "nodes": [
+                {
+                    "id": "echo",
+                    "target": "tool.echo",
+                    "inputs": {"text": "ok"},
+                }
+            ],
+            "edges": [],
+        },
+    )
+    assert create_response.status_code == 200
+
+    response = client.post(
+        "/dags/workspace_escape/run",
+        json={"workspace_root": "../outside"},
+    )
+
+    assert response.status_code == 400
+    assert "workspace_root" in response.json()["detail"]
 
 
 def test_api_dag_run_resolves_artifact_path_against_requested_run_workspace(tmp_path: Path) -> None:

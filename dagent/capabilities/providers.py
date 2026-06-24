@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -129,14 +130,14 @@ class MemoryCapabilityProvider:
 class AgentNodeSessionStore:
     """Stores one local thread per DAG run node."""
 
-    _messages: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    _messages: dict[tuple[str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
 
-    def get(self, *, task_id: str, node_id: str) -> list[dict[str, Any]] | None:
-        messages = self._messages.get((task_id, node_id))
+    def get(self, *, task_id: str, node_id: str, fingerprint: str) -> list[dict[str, Any]] | None:
+        messages = self._messages.get((task_id, node_id, fingerprint))
         return [dict(message) for message in messages] if messages is not None else None
 
-    def save(self, *, task_id: str, node_id: str, messages: list[dict[str, Any]]) -> None:
-        self._messages[(task_id, node_id)] = [dict(message) for message in messages]
+    def save(self, *, task_id: str, node_id: str, fingerprint: str, messages: list[dict[str, Any]]) -> None:
+        self._messages[(task_id, node_id, fingerprint)] = [dict(message) for message in messages]
 
 
 class AgentCapabilityProvider:
@@ -158,6 +159,13 @@ class AgentCapabilityProvider:
             provider = config["provider"]
             if not hasattr(provider, "chat"):
                 raise TypeError(f"Agent capability '{name}' requires a chat provider.")
+            tool_adapter = config.get("tool_adapter")
+            if isinstance(tool_adapter, CapabilityToolAdapter):
+                _ensure_leaf_agent_adapter(
+                    name,
+                    tool_adapter,
+                    tuple(config.get("enabled_toolsets") or ("builtin",)),
+                )
             definition = CapabilityDefinition(
                 id=f"agent.{name}",
                 name=name,
@@ -212,7 +220,6 @@ class AgentCapabilityProvider:
                 toolsets=[CapabilityToolset("builtin", ())],
             )
         enabled_toolsets = tuple(config.get("enabled_toolsets") or ("builtin",))
-        _ensure_leaf_agent_adapter(agent_name, tool_adapter, enabled_toolsets)
         max_steps = int(invocation.arguments.get("max_steps", config.get("max_steps", 8)))
         loop = ToolAgentLoop(
             provider=provider,
@@ -220,11 +227,13 @@ class AgentCapabilityProvider:
             tool_adapter=tool_adapter,
             enabled_toolsets=enabled_toolsets,
         )
+        fingerprint = _agent_invocation_fingerprint(invocation)
         messages = self._messages_for_invocation(
             profile=profile,
             loop=loop,
             invocation=invocation,
             context=context,
+            fingerprint=fingerprint,
         )
         outcome = await loop.run(
             "",
@@ -241,6 +250,7 @@ class AgentCapabilityProvider:
             self.session_store.save(
                 task_id=context.task_id,
                 node_id=context.node.id,
+                fingerprint=fingerprint,
                 messages=outcome.state.internal_messages,
             )
         if outcome.state.status == "completed":
@@ -265,9 +275,14 @@ class AgentCapabilityProvider:
         loop: Any,
         invocation: CapabilityInvocation,
         context: Any,
+        fingerprint: str,
     ) -> list[dict[str, Any]]:
         if context is not None and context.node is not None:
-            existing = self.session_store.get(task_id=context.task_id, node_id=context.node.id)
+            existing = self.session_store.get(
+                task_id=context.task_id,
+                node_id=context.node.id,
+                fingerprint=fingerprint,
+            )
             if existing is not None:
                 return existing
         system = self.prompt_builder.build_system_message(
@@ -282,6 +297,18 @@ class AgentCapabilityProvider:
             _agent_node_request(context, invocation),
         )
         return [system, user]
+
+
+def _agent_invocation_fingerprint(invocation: CapabilityInvocation) -> str:
+    return json.dumps(
+        {
+            "arguments": invocation.arguments,
+            "boundary": invocation.boundary.model_dump(mode="json"),
+            "capability_id": invocation.capability_id,
+        },
+        default=str,
+        sort_keys=True,
+    )
 
 
 def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> Any:

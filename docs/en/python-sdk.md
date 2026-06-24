@@ -21,6 +21,7 @@ import dagent
 | Configure runtime, provider, MCP, profiles, validation | [Runner and Configuration](runner-and-configuration.md) |
 | Register Python tools or MCP tools | [Capabilities](capabilities.md) |
 | Choose an agent type | [Agents](agents.md) |
+| Register subagents for single-level delegation | [Agents](agents.md#subagent-delegation) |
 | Build static workflows in code | [Static DAGs](static-dag.md) |
 | Use skills and managed skill installs | [Skills](skills.md) |
 | Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
@@ -82,6 +83,27 @@ result = await runner.run(
 )
 print(result.output_text)
 ```
+
+## Minimal Agent Delegation
+
+```python
+helper = dagent.ToolAgent(
+    profile="conversation",
+    name="helper",
+    capabilities=["tool.search"],
+    review="fast",
+)
+runner.add_agent(helper)
+
+agent = dagent.DagAgent(
+    capabilities=["tool.read_file"],
+    agents=["agent.helper"],
+)
+```
+
+Registered subagents are single-level delegates. Their own `agents` field must
+be empty, and top-level runs expose them with `agents=[...]` or
+`agents="registered"`.
 
 ## Minimal Static DAG Run
 

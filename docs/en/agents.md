@@ -15,23 +15,24 @@ capabilities, runtime state, review continuation, and execution dispatch.
 Use static `Dag` instead of an agent when the graph shape belongs in code. See
 [Static DAGs](static-dag.md).
 
-## Managed Profiles in the Local Web UI
+## Managed Profiles and Agent Presets
 
-Built-in profiles live in `dagent/resources/profiles/*.md`. The local FastAPI/Web
-UI manages editable profiles under `~/.dagent/profiles/<name>.md`; users create,
-copy, edit, and delete those profiles through the Agent Management workspace
-instead of entering Markdown file paths.
+Built-in profiles live in `dagent/resources/profiles/*.md`. The local FastAPI
+service manages editable profiles under `~/.dagent/profiles/<name>.md`; users can
+create, copy, edit, and delete those profiles without passing Markdown file
+paths to each run.
 
 Managed profile names are product identifiers used by agent capabilities, so
 they must start with a letter and may contain only letters, numbers, `_`, and
 `-`. A managed profile named `analyst` is exposed to the static DAG editor as
 `agent.analyst`.
 
-The Web UI also manages reusable agent presets under `~/.dagent/agents/*.json`.
-An agent preset chooses a profile plus the tools, MCP capabilities, and skills
-that the child agent may use. Chat and dynamic DAG runs can expose those presets
-with `agent_scope="selected"` and `agent_ids=["agent.<name>"]`, or with
-`agent_scope="registered"` for all registered presets.
+The local API also stores reusable agent presets under
+`~/.dagent/agents/*.json`. An agent preset chooses a profile plus the tools, MCP
+capabilities, and skills that the child agent may use. Chat and dynamic DAG runs
+can expose those presets with `agent_scope="selected"` and
+`agent_ids=["agent.<name>"]`, or with `agent_scope="registered"` for all
+registered presets.
 
 ## ToolAgent
 
