@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +27,7 @@ from dagent.capabilities.sandbox_context import (
 )
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, visible_skills
 from dagent.capabilities.workspace import workspace_context
+from dagent.capabilities.toolsets import ensure_unique_capability_function_names
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
 from dagent.harness_runtime import (
@@ -437,12 +438,36 @@ class Runner:
         self.remove_mcp_server(name)
         return self.add_mcp_server(name, config)
 
+    def reload_mcp_servers(
+        self,
+        servers: Mapping[str, dict[str, Any]],
+        *,
+        replace_names: Iterable[str],
+    ) -> tuple[set[str], dict[str, str]]:
+        """Rebuild a group of MCP servers without treating it as user deletion."""
+
+        self._ensure_open()
+        for name in list(replace_names):
+            self._remove_mcp_server_registration(name)
+        registered: set[str] = set()
+        errors: dict[str, str] = {}
+        for name, config in servers.items():
+            try:
+                self._add_mcp_server(name, config, refresh=False)
+                registered.add(name)
+            except Exception as exc:
+                errors[name] = str(exc)
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+        return registered, errors
+
     def _add_mcp_server(
         self,
         name: str,
         config: dict[str, Any],
         *,
         manager: Any | None = None,
+        refresh: bool = True,
     ) -> list[CapabilityDefinition]:
         self._ensure_open()
         if name in self._mcp_server_capability_ids or name in self._mcp_server_managers:
@@ -476,8 +501,9 @@ class Runner:
         provider_manager = getattr(provider, "manager", manager)
         if provider_manager is not None:
             self._mcp_server_managers[name] = provider_manager
-        self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
+        if refresh:
+            self._runtime.refresh_toolsets()
+            self._refresh_registered_agent_runtime_configs()
         return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
 
     def _remove_mcp_server_registration(self, name: str) -> None:
@@ -1022,33 +1048,22 @@ class Runner:
             raise ValueError(f"Cannot {action}; {joined_agents} depends on {joined_ids}.")
 
     def _ensure_capability_function_name_available(self, candidate: CapabilityDefinition) -> None:
-        adapter = CapabilityToolAdapter(self._runtime.capability_catalog)
-        candidate_name = adapter.function_name(candidate)
-        for existing_id in sorted(self._runtime.capability_catalog.ids()):
-            definition = self._runtime.capability_catalog.get(existing_id)
-            if definition is None or definition.id == candidate.id:
-                continue
-            if adapter.function_name(definition) == candidate_name:
-                raise ValueError(
-                    "LLM tool name collision: "
-                    f"'{definition.id}' and '{candidate.id}' both map to '{candidate_name}'."
-                )
+        definitions = [
+            definition
+            for capability_id in sorted(self._runtime.capability_catalog.ids())
+            if (definition := self._runtime.capability_catalog.get(capability_id)) is not None
+            and definition.id != candidate.id
+        ]
+        ensure_unique_capability_function_names([*definitions, candidate])
 
     def _ensure_catalog_function_names_unique(self) -> None:
-        adapter = CapabilityToolAdapter(self._runtime.capability_catalog)
-        seen: dict[str, str] = {}
-        for capability_id in sorted(self._runtime.capability_catalog.ids()):
-            definition = self._runtime.capability_catalog.get(capability_id)
-            if definition is None:
-                continue
-            name = adapter.function_name(definition)
-            previous = seen.get(name)
-            if previous is not None:
-                raise ValueError(
-                    "LLM tool name collision: "
-                    f"'{previous}' and '{definition.id}' both map to '{name}'."
-                )
-            seen[name] = definition.id
+        ensure_unique_capability_function_names(
+            [
+                definition
+                for capability_id in sorted(self._runtime.capability_catalog.ids())
+                if (definition := self._runtime.capability_catalog.get(capability_id)) is not None
+            ]
+        )
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)

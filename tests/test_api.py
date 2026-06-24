@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import api.app as app_module
@@ -368,6 +369,55 @@ def test_api_mcp_delete_rejects_registered_agent_dependency_without_mutation(mon
     assert "agent.helper" in delete_response.json()["detail"]
     assert "mock" in state.custom_mcp_servers
     assert state.runner.get_capability("mcp.mock.lookup") is not None
+
+
+def test_api_mcp_create_allows_unrelated_server_when_agent_depends_on_existing_mcp(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app)
+
+    search_response = client.post(
+        "/mcp/servers",
+        json={"name": "search", "command": "fake"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.search.lookup"],
+        skills=[],
+    ))
+    weather_response = client.post(
+        "/mcp/servers",
+        json={"name": "weather", "command": "fake"},
+    )
+
+    assert search_response.status_code == 200
+    assert weather_response.status_code == 200
+    assert state.runner.get_capability("mcp.search.lookup") is not None
+    assert state.runner.get_capability("mcp.weather.lookup") is not None
+    assert set(state.custom_mcp_servers) == {"search", "weather"}
 
 
 def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
@@ -2167,6 +2217,16 @@ def test_api_dag_run_rejects_relative_workspace_root_escape() -> None:
 
     assert response.status_code == 400
     assert "workspace_root" in response.json()["detail"]
+
+
+def test_api_workspace_root_rejects_tilde_expansion() -> None:
+    try:
+        app_module._clean_workspace_root("~/dagent-runs")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "workspace_root" in str(exc.detail)
+    else:
+        raise AssertionError("workspace_root with '~' should be rejected")
 
 
 def test_api_dag_run_resolves_artifact_path_against_requested_run_workspace(tmp_path: Path) -> None:

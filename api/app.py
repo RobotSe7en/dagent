@@ -404,18 +404,12 @@ class ApiState:
         if self.runner is None:
             return
         runner = self.runner
-        for name in list(self.custom_mcp_registered_names):
-            runner.ensure_mcp_server_removable(name)
-        for name in list(self.custom_mcp_registered_names):
-            runner.remove_mcp_server(name)
-        self.custom_mcp_registered_names.clear()
-        self.custom_mcp_errors.clear()
-        for name, config in self.custom_mcp_servers.items():
-            try:
-                runner.add_mcp_server(name, config)
-                self.custom_mcp_registered_names.add(name)
-            except Exception as exc:
-                self.custom_mcp_errors[name] = str(exc)
+        registered_names, errors = runner.reload_mcp_servers(
+            self.custom_mcp_servers,
+            replace_names=self.custom_mcp_registered_names,
+        )
+        self.custom_mcp_registered_names = registered_names
+        self.custom_mcp_errors = errors
 
     def _install_agent_presets(self) -> None:
         if self.runner is None:
@@ -927,12 +921,11 @@ def _clean_agent_preset_name(value: str) -> str:
 
 def _agent_presets_with_errors(store: AgentPresetStore) -> tuple[list[AgentPreset], dict[str, str]]:
     presets, errors = store.list_valid()
+    profile_names = {profile.name for _, profile in _agent_profile_candidates()}
     valid: list[AgentPreset] = []
     for preset in presets:
-        try:
-            _ensure_agent_preset_name_available(preset.name)
-        except HTTPException as exc:
-            errors[preset.name] = str(exc.detail)
+        if preset.name in profile_names:
+            errors[preset.name] = f"Agent preset '{preset.name}' conflicts with an agent profile."
             continue
         valid.append(preset)
     return valid, errors
@@ -1696,6 +1689,8 @@ def _workspace_root_from_message(request: MessageRequest) -> str:
 
 def _clean_workspace_root(value: str) -> str:
     root = value.strip()
+    if root.startswith("~"):
+        raise HTTPException(status_code=400, detail="workspace_root cannot use '~' expansion.")
     path = Path(root)
     if not path.is_absolute() and (".." in path.parts or ".." in PureWindowsPath(root).parts):
         raise HTTPException(status_code=400, detail="workspace_root cannot contain '..' in a relative path.")
