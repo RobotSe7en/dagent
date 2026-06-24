@@ -1398,6 +1398,66 @@ def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path)
     state.close_runner()
 
 
+def test_api_capability_endpoints_reject_agent_preset_capabilities(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    created = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+
+    disabled = client.post("/capabilities/agent.helper/disable")
+    deleted = client.delete("/capabilities/agent.helper")
+
+    assert created.status_code == 200
+    assert disabled.status_code == 400
+    assert "agents" in disabled.json()["detail"]
+    assert deleted.status_code == 400
+    assert (agent_root / "helper.json").exists()
+    assert state.get_runner().get_capability("agent.helper") is not None
+    state.close_runner()
+
+
+def test_api_retries_agent_preset_registration_after_capability_dependency_is_created(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capability_ids": ["tool.late"],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    response = client.post(
+        "/capabilities",
+        json=CapabilityDefinition(id="tool.late", name="late", kind="tool").model_dump(mode="json"),
+    )
+
+    assert response.status_code == 200
+    assert state.get_runner().get_capability("agent.helper") is not None
+    assert "helper" not in state.agent_preset_errors
+    list_response = client.get("/agents")
+    assert "helper" not in list_response.json()["errors"]
+    state.close_runner()
+
+
 def test_api_agent_preset_rejects_profile_name_collision(monkeypatch, tmp_path) -> None:
     state.close_runner()
     agent_root = tmp_path / "agents"

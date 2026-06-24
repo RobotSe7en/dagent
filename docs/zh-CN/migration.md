@@ -8,7 +8,14 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-- 暂无未发布迁移说明。
+- Breaking change：LLM 可见的 PlanSpec 和 tool-call function names 现在由
+  capability id 派生，把点替换为下划线。例如使用 `tool_search(...)`、
+  `tool_shell(...)` 和 `agent_helper(...)`，不再使用 `search(...)`、`shell(...)`
+  或 `helper(...)` 这类短名。请同步更新已保存的 dynamic DAG PlanSpec 文本和
+  deterministic provider fixtures。
+- Breaking change：本地 API 管理的 profile 和 agent preset 名称现在只能包含字母、
+  数字和下划线。创建新的 managed profiles 或 agent presets 前，请把 dash 替换为
+  underscore。
 
 ## 0.5.2
 

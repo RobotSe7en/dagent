@@ -188,6 +188,7 @@ class CapabilityToolAdapter:
                 raise KeyError(f"Capability '{capability_id}' is not registered.")
             if definition.enabled:
                 definitions.append(definition)
+        self._check_name_collisions(definitions)
         return definitions
 
     def _capability_ids(self, enabled_toolsets: Sequence[str]) -> list[str]:
@@ -213,6 +214,19 @@ class CapabilityToolAdapter:
             self.function_name(definition): definition
             for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
         }
+
+    def _check_name_collisions(self, definitions: Sequence[CapabilityDefinition]) -> None:
+        seen: dict[str, str] = {}
+        for definition in definitions:
+            name = self.function_name(definition)
+            previous = seen.get(name)
+            if previous is not None:
+                raise ValueError(
+                    "LLM tool name collision: "
+                    f"'{previous}' and '{definition.id}' both map to '{name}'."
+                )
+            seen[name] = definition.id
+
 
 def capability_function_name(definition: CapabilityDefinition) -> str:
     return definition.id.replace(".", "_")

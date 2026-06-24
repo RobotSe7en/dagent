@@ -410,6 +410,7 @@ class ApiState:
         )
         self.custom_mcp_registered_names = registered_names
         self.custom_mcp_errors = errors
+        self._install_agent_presets()
 
     def _install_agent_presets(self) -> None:
         if self.runner is None:
@@ -970,6 +971,7 @@ async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    state._install_agent_presets()
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
@@ -978,21 +980,26 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
     runner = state.get_runner()
     if capability_id != definition.id:
         raise HTTPException(status_code=400, detail="Capability id mismatch.")
-    if runner.get_capability(capability_id) is None:
+    existing = runner.get_capability(capability_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
+    _ensure_generic_capability_mutation_allowed(existing)
     try:
         runner.replace_capability(definition, _handler_for_definition(definition))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    state._install_agent_presets()
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
 @app.delete("/capabilities/{capability_id}")
 async def delete_capability(capability_id: str) -> dict[str, str]:
     runner = state.get_runner()
-    if runner.get_capability(capability_id) is None:
+    definition = runner.get_capability(capability_id)
+    if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
+    _ensure_generic_capability_mutation_allowed(definition)
     try:
         runner.remove_capability(capability_id)
     except ValueError as exc:
@@ -1356,10 +1363,22 @@ def _handler_for_definition(definition: CapabilityDefinition):
 
 def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]:
     runner = state.get_runner()
-    if runner.get_capability(capability_id) is None:
+    definition = runner.get_capability(capability_id)
+    if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
+    _ensure_generic_capability_mutation_allowed(definition)
     updated = runner.set_capability_enabled(capability_id, enabled)
+    if enabled:
+        state._install_agent_presets()
     return {"capability": updated.model_dump(mode="json")}
+
+
+def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition) -> None:
+    if definition.kind == "agent":
+        raise HTTPException(
+            status_code=400,
+            detail="Agent capabilities are managed through /agents.",
+        )
 
 
 def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: list[Path]) -> Runner:

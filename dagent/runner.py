@@ -430,7 +430,8 @@ class Runner:
     ) -> list[CapabilityDefinition]:
         """Replace a dynamically registered MCP server configuration."""
 
-        self.remove_mcp_server(name)
+        self._ensure_open()
+        self._remove_mcp_server_registration(name)
         return self.add_mcp_server(name, config)
 
     def reload_mcp_servers(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
@@ -244,7 +245,7 @@ class AgentCapabilityProvider:
             skills=config.get("skills"),
             capability_context=_agent_capability_context(context, config.get("skills")),
             on_token=callbacks.on_token,
-            on_event=callbacks.on_event,
+            on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
         )
         if context is not None and context.node is not None:
             self.session_store.save(
@@ -315,6 +316,22 @@ def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> A
     if context is None:
         return None
     return replace(context, skills=skills)
+
+
+def _agent_event_emitter(
+    on_event: Callable[[dict[str, Any]], None] | None,
+    parent_capability_id: str,
+) -> Callable[[dict[str, Any]], None] | None:
+    if on_event is None:
+        return None
+
+    def emit(event: dict[str, Any]) -> None:
+        payload = dict(event)
+        if payload.get("parent_capability_id") is None:
+            payload["parent_capability_id"] = parent_capability_id
+        on_event(payload)
+
+    return emit
 
 
 def agent_capability_parameters() -> dict[str, Any]:

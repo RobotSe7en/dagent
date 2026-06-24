@@ -6,6 +6,8 @@ import pytest
 
 import dagent
 import dagent.runner as runner_module
+from dagent.capabilities.catalog import CapabilityCatalog
+from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
 
@@ -325,6 +327,22 @@ def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp
     runner.close()
 
 
+def test_adapter_rejects_mcp_function_name_collisions() -> None:
+    catalog = CapabilityCatalog()
+    for capability_id in ("mcp.foo.bar_baz", "mcp.foo_bar.baz"):
+        catalog.register(
+            CapabilityDefinition(id=capability_id, name=capability_id.rsplit(".", 1)[-1], kind="mcp"),
+            lambda invocation: CapabilityResult.completed(invocation, "ok"),
+        )
+    adapter = CapabilityToolAdapter(
+        catalog,
+        toolsets=[CapabilityToolset("builtin", ("mcp.foo.bar_baz", "mcp.foo_bar.baz"))],
+    )
+
+    with pytest.raises(ValueError, match="LLM tool name collision"):
+        adapter.definitions(("builtin",))
+
+
 def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
     runner = _runner(tmp_path)
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
@@ -383,6 +401,102 @@ def test_remove_mcp_server_rejects_registered_agent_dependency_without_mutation(
     assert runner.get_capability("mcp.mock_server.lookup") is not None
     assert runner.get_capability("agent.helper") is not None
     assert manager.shutdown_calls == 0
+    runner.close()
+
+
+def test_replace_mcp_server_allows_registered_agent_dependency_when_ids_stay_stable(monkeypatch, tmp_path) -> None:
+    class StableMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name="lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", StableMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_mcp_server("search", {"command": "old"})
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["mcp.search.lookup"],
+            skills=[],
+        )
+    )
+
+    definitions = runner.replace_mcp_server("search", {"command": "new"})
+
+    assert [definition.id for definition in definitions] == ["mcp.search.lookup"]
+    assert runner.get_capability("agent.helper") is not None
+    assert runner.get_capability("mcp.search.lookup") is not None
+    runner.close()
+
+
+def test_tool_agent_delegation_events_include_parent_capability_id(tmp_path) -> None:
+    @dagent.tool
+    def echo(text: str) -> str:
+        return f"echo:{text}"
+
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_agent",
+                    name="agent_helper",
+                    arguments={"prompt": "Use echo."},
+                )
+            ]
+        ),
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_echo",
+                    name="tool_echo",
+                    arguments={"text": "hi"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper done"),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[echo])
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            max_steps=2,
+            capabilities=["tool.echo"],
+            skills=[],
+        )
+    )
+    events: list[dict] = []
+
+    result = run(runner.run(
+        dagent.ToolAgent(profile="conversation", capabilities=[], skills=[], agents=["agent.helper"]),
+        messages=user_messages("delegate"),
+        on_event=events.append,
+    ))
+
+    assert result.output_text == "done"
+    child_events = [
+        event for event in events
+        if event.get("type", "").startswith("capability_")
+        and event.get("capability_id") == "tool.echo"
+    ]
+    assert child_events
+    assert {event.get("parent_capability_id") for event in child_events} == {"agent.helper"}
     runner.close()
 
 

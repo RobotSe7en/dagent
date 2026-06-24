@@ -23,8 +23,8 @@ create, copy, edit, and delete those profiles without passing Markdown file
 paths to each run.
 
 Managed profile names are product identifiers used by agent capabilities, so
-they must start with a letter and may contain only letters, numbers, `_`, and
-`-`. A managed profile named `analyst` is exposed to the static DAG editor as
+they must start with a letter and may contain only letters, numbers, and `_`.
+A managed profile named `analyst` is exposed to the static DAG editor as
 `agent.analyst`.
 
 The local API also stores reusable agent presets under
@@ -142,7 +142,8 @@ uv run python -m examples.dynamic_dag_agent
 Top-level `ToolAgent`, `AutoAgent`, and `DagAgent` runs can expose registered
 `ToolAgent` subagents as `agent.*` capabilities. Subagents are leaf agents:
 they can use their configured tools, MCP capabilities, and skills, but they
-cannot call another subagent.
+cannot call another subagent. Registered subagents must use `review="fast"`;
+the top-level agent owns review behavior for the delegated call.
 
 ```python
 helper = dagent.ToolAgent(

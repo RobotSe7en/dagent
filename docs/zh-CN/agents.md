@@ -21,7 +21,7 @@ profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户可以创建、复
 这些 profiles，而不必在每次 run 时传 Markdown 文件路径。
 
 受管 profile 名称也是 agent capability 的产品标识，必须以字母开头，并且只能包含字母、
-数字、`_` 和 `-`。名为 `analyst` 的受管 profile 会在静态 DAG 编辑器中暴露为
+数字和 `_`。名为 `analyst` 的受管 profile 会在静态 DAG 编辑器中暴露为
 `agent.analyst`。
 
 本地 API 还会把可复用 agent preset 存在 `~/.dagent/agents/*.json` 下。一个 preset
@@ -133,7 +133,8 @@ uv run python -m examples.dynamic_dag_agent
 
 顶层 `ToolAgent`、`AutoAgent` 和 `DagAgent` run 可以把已注册的 `ToolAgent` 子 agent
 暴露为 `agent.*` capabilities。子 agent 是叶子 agent：它可以使用自己配置好的 tools、
-MCP capabilities 和 skills，但不能再调用另一个子 agent。
+MCP capabilities 和 skills，但不能再调用另一个子 agent。已注册子 agent 必须使用
+`review="fast"`；顶层 agent 负责 delegated call 的 review 行为。
 
 ```python
 helper = dagent.ToolAgent(

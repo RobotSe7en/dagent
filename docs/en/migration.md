@@ -9,7 +9,14 @@ The current package version is `0.5.2`.
 
 ## Unreleased
 
-- No unreleased migration notes.
+- Breaking change: LLM-visible PlanSpec and tool-call function names are now
+  derived from capability ids by replacing dots with underscores. For example,
+  use `tool_search(...)`, `tool_shell(...)`, and `agent_helper(...)` instead of
+  short names such as `search(...)`, `shell(...)`, or `helper(...)`. Update saved
+  dynamic DAG PlanSpec text and deterministic provider fixtures accordingly.
+- Breaking change: local API managed profile and agent preset names may contain
+  only letters, numbers, and underscores. Replace dashes with underscores before
+  creating new managed profiles or agent presets.
 
 ## 0.5.2
 

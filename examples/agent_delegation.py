@@ -20,7 +20,7 @@ async def main() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="helper",
+                        name="agent_helper",
                         arguments={"prompt": "Summarize the request."},
                     )
                 ]
