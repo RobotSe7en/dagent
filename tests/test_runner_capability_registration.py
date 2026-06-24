@@ -418,6 +418,58 @@ def test_remove_mcp_server_unregisters_tools_and_shutdowns_manager(tmp_path) -> 
     assert manager.shutdown_calls == 1
 
 
+def test_reload_mcp_servers_records_dangling_subagent_dependency_without_raising(monkeypatch, tmp_path) -> None:
+    class FlakyMCPProvider:
+        offline = False
+
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            if FlakyMCPProvider.offline:
+                raise RuntimeError("search backend is offline")
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        name=f"mcp_{name}__lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FlakyMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_mcp_server("search", {"command": "fake"})
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["mcp.search.lookup"],
+            skills=[],
+        )
+    )
+
+    # The depended-on server fails to come back during the rebuild.
+    FlakyMCPProvider.offline = True
+    registered, errors = runner.reload_mcp_servers(
+        {"search": {"command": "fake"}},
+        replace_names={"search"},
+    )
+
+    assert registered == set()
+    assert "search" in errors
+    assert "agent.helper" in errors
+    assert "mcp.search.lookup" in errors["agent.helper"]
+    assert runner.get_capability("mcp.search.lookup") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
 def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(monkeypatch, tmp_path) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):

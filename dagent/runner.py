@@ -458,7 +458,7 @@ class Runner:
             except Exception as exc:
                 errors[name] = str(exc)
         self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
+        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
         return registered, errors
 
     def _add_mcp_server(
@@ -930,9 +930,16 @@ class Runner:
         for agent in dag.agents:
             self.add_agent(agent)
 
-    def _refresh_registered_agent_runtime_configs(self) -> None:
+    def _refresh_registered_agent_runtime_configs(self, *, collect_errors: bool = False) -> dict[str, str]:
+        errors: dict[str, str] = {}
         for name, agent in list(self._registered_agent_configs.items()):
-            self._refresh_registered_agent_runtime_config(name, agent)
+            try:
+                self._refresh_registered_agent_runtime_config(name, agent)
+            except KeyError as exc:
+                if not collect_errors:
+                    raise
+                errors[f"agent.{name}"] = str(exc.args[0]) if exc.args else str(exc)
+        return errors
 
     def _refresh_registered_agent_runtime_config(self, name: str, agent: ToolAgent) -> None:
         config = self._registered_agent_runtime_configs.get(name)
