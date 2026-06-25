@@ -29,6 +29,11 @@ profiles 管理在 `~/.dagent/profiles/<name>.md` 下；用户可以创建、复
 dynamic DAG runs 可以用 `agent_scope="selected"` 加 `agent_ids=["agent.<name>"]`
 暴露指定 preset，也可以用 `agent_scope="registered"` 暴露所有已注册 presets。
 
+Preset JSON 使用 `ToolAgent` 字段名：`name`、`profile`、`capabilities`、`skills`、
+`agents`、`review`、`max_steps` 和 `description`。已注册 presets 是叶子子 agent，
+因此 `agents` 必须为空，`review` 必须是 `"fast"`。本地 API 会先校验 preset，再写入
+workspace；`capability_ids` 这类旧字段会被拒绝，不会自动转换。
+
 ## ToolAgent
 
 ```python

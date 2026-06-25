@@ -38,7 +38,7 @@ async def main() -> None:
                     tool_calls=[
                         ToolCall(
                             id="call_1",
-                            name="summarize",
+                            name="tool_summarize",
                             arguments={"text": "One sentence. Another sentence."},
                         )
                     ]

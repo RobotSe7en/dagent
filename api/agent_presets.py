@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,8 +18,10 @@ class _AgentPresetFields(BaseModel):
     profile: str = Field(min_length=1)
     description: str = ""
     max_steps: int = Field(default=8, ge=1)
-    capability_ids: list[str] | None = None
+    capabilities: list[str] | None = None
     skills: list[str] | None = None
+    agents: list[str] | None = None
+    review: Literal["fast", "careful"] = "fast"
 
 
 class AgentPreset(_AgentPresetFields):

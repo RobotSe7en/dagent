@@ -28,10 +28,28 @@ def _result(invocation: CapabilityInvocation, content: str) -> CapabilityResult:
 
 def test_capability_kind_rejects_removed_file_and_shell_kinds() -> None:
     with pytest.raises(ValidationError):
-        CapabilityDefinition(id="file.read", name="file_read", kind="file")
+        CapabilityDefinition(id="file.read", kind="file")
 
     with pytest.raises(ValidationError):
         CapabilityInvocation(capability_id="shell.say_hello", kind="shell")
+
+
+def test_capability_definition_rejects_removed_name_field() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityDefinition(id="tool.echo", kind="tool", name="echo")
+
+
+def test_capability_catalog_rejects_whitespace_padded_ids() -> None:
+    catalog = CapabilityCatalog()
+
+    with pytest.raises(ValueError, match="Capability ids"):
+        catalog.register(
+            CapabilityDefinition(id=" tool.echo ", kind="tool"),
+            lambda invocation: _result(invocation, "echo"),
+        )
+
+    assert catalog.get(" tool.echo ") is None
+    assert catalog.get("tool.echo") is None
 
 
 def test_boundary_rejects_removed_mode_and_allowed_commands_fields() -> None:
@@ -61,7 +79,7 @@ def test_capability_invocation_rejects_removed_boundary_peer_fields() -> None:
 def test_capability_catalog_replaces_definition_and_handler_atomically() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
-    first = CapabilityDefinition(id="tool.echo", name="echo", kind="tool")
+    first = CapabilityDefinition(id="tool.echo", kind="tool")
     second = first.model_copy(update={"description": "second"})
 
     catalog.register(first, lambda invocation: _result(invocation, "first"))
@@ -78,7 +96,7 @@ def test_capability_catalog_replaces_definition_and_handler_atomically() -> None
 def test_capability_catalog_delete_removes_definition_and_handler() -> None:
     catalog = CapabilityCatalog()
     executor = CapabilityExecutor(catalog)
-    definition = CapabilityDefinition(id="tool.echo", name="echo", kind="tool")
+    definition = CapabilityDefinition(id="tool.echo", kind="tool")
 
     catalog.register(definition, lambda invocation: _result(invocation, "old"))
     catalog.delete("tool.echo")
@@ -99,7 +117,7 @@ def test_capability_executor_runs_sync_handlers_off_event_loop() -> None:
         time.sleep(0.2)
         return _result(invocation, "done")
 
-    catalog.register(CapabilityDefinition(id="tool.slow", name="slow", kind="tool"), handler)
+    catalog.register(CapabilityDefinition(id="tool.slow", kind="tool"), handler)
 
     async def run_with_tick() -> float:
         start = time.perf_counter()
@@ -120,7 +138,6 @@ def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> No
     catalog.register(
         CapabilityDefinition(
             id="tool.read_file",
-            name="read_file",
             kind="tool",
             description="Read a file.",
             parameters={"type": "object", "properties": {"path": {"type": "string"}}},
@@ -128,7 +145,7 @@ def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> No
         lambda invocation: _result(invocation, "read"),
     )
     catalog.register(
-        CapabilityDefinition(id="tool.write_file", name="write_file", kind="tool", enabled=False),
+        CapabilityDefinition(id="tool.write_file", kind="tool", enabled=False),
         lambda invocation: _result(invocation, "write"),
     )
     adapter = CapabilityToolAdapter(
@@ -153,7 +170,7 @@ def test_capability_tool_adapter_exposes_enabled_toolset_as_openai_tools() -> No
 def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
-        CapabilityDefinition(id="tool.read_file", name="read_file", kind="tool"),
+        CapabilityDefinition(id="tool.read_file", kind="tool"),
         lambda invocation: _result(invocation, "read"),
     )
     adapter = CapabilityToolAdapter(
@@ -177,11 +194,11 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
 def test_capability_tool_adapter_namespaces_capabilities_by_id() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
-        CapabilityDefinition(id="tool.read", name="read", kind="tool"),
+        CapabilityDefinition(id="tool.read", kind="tool"),
         lambda invocation: _result(invocation, "tool"),
     )
     catalog.register(
-        CapabilityDefinition(id="memory.read", name="read", kind="memory"),
+        CapabilityDefinition(id="memory.read", kind="memory"),
         lambda invocation: _result(invocation, "memory"),
     )
     adapter = CapabilityToolAdapter(

@@ -49,10 +49,7 @@ class CapabilityToolAdapter:
         *,
         capability_ids: Sequence[str] | None = None,
     ) -> list[CapabilityDefinition]:
-        return [
-            definition.model_copy(update={"name": self.function_name(definition)}, deep=True)
-            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
-        ]
+        return self._definitions(enabled_toolsets, capability_ids=capability_ids)
 
     def definitions(
         self,
@@ -64,7 +61,7 @@ class CapabilityToolAdapter:
             {
                 "type": "function",
                 "function": {
-                    "name": definition.name,
+                    "name": self.function_name(definition),
                     "description": definition.description,
                     "parameters": definition.parameters or {"type": "object"},
                 },

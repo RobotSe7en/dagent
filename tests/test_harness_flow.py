@@ -287,7 +287,6 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None
     catalog.register(
         CapabilityDefinition(
             id="tool.remote_search",
-            name="remote_search",
             kind="tool",
         ),
         lambda **_: None,

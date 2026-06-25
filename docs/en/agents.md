@@ -34,6 +34,13 @@ can expose those presets with `agent_scope="selected"` and
 `agent_ids=["agent.<name>"]`, or with `agent_scope="registered"` for all
 registered presets.
 
+Preset JSON uses the `ToolAgent` field names: `name`, `profile`,
+`capabilities`, `skills`, `agents`, `review`, `max_steps`, and `description`.
+Registered presets are leaf subagents, so `agents` must be empty and `review`
+must be `"fast"`. The local API validates the preset before writing it to the
+workspace; old fields such as `capability_ids` are rejected rather than
+converted.
+
 ## ToolAgent
 
 ```python

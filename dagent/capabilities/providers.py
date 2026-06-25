@@ -16,7 +16,6 @@ from dagent.capabilities.workspace import current_workspace_root
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
 from dagent.schemas import (
-    Boundary,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityPolicy,
@@ -49,7 +48,6 @@ class ToolCapabilityProvider:
             capability_id = _tool_capability_id(name)
             definition = CapabilityDefinition(
                 id=capability_id,
-                name=name,
                 kind="tool",
                 description=tool.description,
                 parameters=tool.parameters or {"type": "object"},
@@ -100,11 +98,11 @@ class MemoryCapabilityProvider:
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
         catalog.register(
-            CapabilityDefinition(id="memory.write", name="memory_write", kind="memory"),
+            CapabilityDefinition(id="memory.write", kind="memory"),
             self._write,
         )
         catalog.register(
-            CapabilityDefinition(id="memory.search", name="memory_search", kind="memory"),
+            CapabilityDefinition(id="memory.search", kind="memory"),
             self._search,
         )
 
@@ -169,7 +167,6 @@ class AgentCapabilityProvider:
                 )
             definition = CapabilityDefinition(
                 id=f"agent.{name}",
-                name=name,
                 kind="agent",
                 description=str(config.get("description", "")),
                 parameters=config.get("parameters") or agent_capability_parameters(),
@@ -236,17 +233,19 @@ class AgentCapabilityProvider:
             context=context,
             fingerprint=fingerprint,
         )
-        outcome = await loop.run(
-            "",
-            run_id=context.task_id if context is not None else None,
-            boundary=_agent_boundary(invocation, context),
-            max_steps=max_steps,
-            messages=messages,
-            skills=config.get("skills"),
-            capability_context=_agent_capability_context(context, config.get("skills")),
-            on_token=callbacks.on_token,
-            on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
-        )
+        workspace_path = None if context is None else context.workspace_path
+        with capability_executor.workspace_context(workspace_path):
+            outcome = await loop.run(
+                "",
+                run_id=context.task_id if context is not None else None,
+                boundary=invocation.boundary,
+                max_steps=max_steps,
+                messages=messages,
+                skills=config.get("skills"),
+                capability_context=_agent_capability_context(context, config.get("skills")),
+                on_token=callbacks.on_token,
+                on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+            )
         if context is not None and context.node is not None:
             self.session_store.save(
                 task_id=context.task_id,
@@ -446,21 +445,6 @@ def _agent_node_request(
     if prompt:
         lines.append(f"Prompt:\n{prompt}")
     return "\n\n".join(lines)
-
-
-def _agent_boundary(
-    invocation: CapabilityInvocation,
-    context: Any,
-) -> Boundary:
-    if context is None or context.workspace_path is None:
-        return invocation.boundary
-    workspace_path = str(context.workspace_path)
-    allowed_paths = list(invocation.boundary.allowed_paths or [])
-    if workspace_path not in allowed_paths:
-        allowed_paths.append(workspace_path)
-    return invocation.boundary.model_copy(update={
-        "allowed_paths": allowed_paths,
-    })
 
 
 def _agent_result(

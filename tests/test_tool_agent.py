@@ -815,7 +815,6 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
     catalog = CapabilityCatalog(workspace_root=tmp_path)
     definition = CapabilityDefinition(
         id="memory.read",
-        name="memory.read",
         kind="memory",
         policy=CapabilityPolicy(risk="medium"),
     )

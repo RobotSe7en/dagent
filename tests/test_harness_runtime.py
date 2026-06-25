@@ -61,8 +61,8 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
-    tool_names = {tool.name for tool in runtime.dag_agent.tools}
-    assert tool_names == {"tool_echo", "tool_fail_tool", "tool_write_file"}
+    tool_ids = {tool.id for tool in runtime.dag_agent.tools}
+    assert tool_ids == {"tool.echo", "tool.fail_tool", "tool.write_file"}
 
 
 def test_harness_runtime_session_owns_dag_task_store() -> None:
@@ -110,10 +110,13 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
     runtime._agent_capability_configs.append(agent_config)
 
-    @tool(id="tool.echo2", name="echo2")
-    def echo2(text: str) -> str:
-        return f"first:{text}"
+    def make_echo2(prefix: str):
+        def echo2(text: str) -> str:
+            return f"{prefix}:{text}"
 
+        return tool(echo2)
+
+    echo2 = make_echo2("first")
     registered = runtime.register_capability(echo2)
     invocation = CapabilityInvocation(
         capability_id="tool.echo2",
@@ -122,10 +125,7 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     )
     first = run(runtime.capability_executor.execute(invocation))
 
-    @tool(id="tool.echo2", name="echo2")
-    def echo2_replacement(text: str) -> str:
-        return f"second:{text}"
-
+    echo2_replacement = make_echo2("second")
     replaced = runtime.replace_capability(echo2_replacement)
     second = run(runtime.capability_executor.execute(invocation))
 
@@ -149,7 +149,6 @@ def test_harness_runtime_exposes_registered_mcp_capabilities_by_default() -> Non
 
     definition = CapabilityDefinition(
         id="mcp.mock.lookup",
-        name="lookup",
         kind="mcp",
         parameters={"type": "object"},
     )

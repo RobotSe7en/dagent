@@ -12,7 +12,6 @@ from dagent.harness_runtime.dag_builder import (
     validate_dag,
 )
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
-from dagent.capabilities.toolsets import capability_function_name
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
@@ -149,7 +148,7 @@ def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
         'b = tool_echo(text="b")\n'
     )
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
 
     start = dag.nodes[0]
     assert start.id == "start"
@@ -184,7 +183,7 @@ def test_compile_rejects_unknown_capability_function_name() -> None:
         DAGCreationError,
         match="Unknown capability function 'missing_tool'. Available functions: tool_echo.",
     ):
-        compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+        compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
 
 
 def test_compile_uses_registered_non_tool_capability_mapping() -> None:
@@ -196,7 +195,7 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     dag = compile_plan_spec(
         plan,
         task_id="task_1",
-        tools=[_capability("memory_read", "memory.read", kind="memory")],
+        tools=[_capability("memory.read", kind="memory")],
     )
 
     node = dag.nodes[0]
@@ -216,7 +215,6 @@ def test_compile_infers_boundary_for_command_capability() -> None:
         tools=[
             CapabilityDefinition(
                 id="tool.shell",
-                name="tool_shell",
                 kind="tool",
                 config={
                     "action": "command",
@@ -260,7 +258,7 @@ def test_compile_plan_spec_preserves_agent_prompt_argument() -> None:
         ],
     })
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("helper", "agent.helper", kind="agent")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("agent.helper", kind="agent")])
 
     assert dag.nodes[0].payload.invocation.arguments == {
         "prompt": "Write a requirement specification. Use acceptance criteria."
@@ -466,6 +464,5 @@ def _dag_agent_profile() -> AgentProfile:
     )
 
 
-def _capability(name: str, capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
-    definition = CapabilityDefinition(id=capability_id, name=name, kind=kind)
-    return definition.model_copy(update={"name": capability_function_name(definition)})
+def _capability(capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
+    return CapabilityDefinition(id=capability_id, kind=kind)

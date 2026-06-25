@@ -35,7 +35,9 @@ def validate_capability_id(
     kind: CapabilityKind | None = None,
     label: str = "Capability ids",
 ) -> str:
-    capability_id = str(value or "").strip()
+    capability_id = str(value or "")
+    if capability_id != capability_id.strip():
+        raise ValueError(f"{label} may not contain leading or trailing whitespace.")
     parts = capability_id.split(".")
     if not parts or any(not part for part in parts):
         raise ValueError(f"{label} must use a supported dotted capability id form.")
@@ -53,7 +55,9 @@ def validate_capability_id(
 
 
 def validate_capability_id_segment(value: Any, *, label: str = "Capability id segments") -> str:
-    segment = str(value or "").strip()
+    segment = str(value or "")
+    if segment != segment.strip():
+        raise ValueError(f"{label} may not contain leading or trailing whitespace.")
     if not _CAPABILITY_ID_SEGMENT_RE.fullmatch(segment):
         raise ValueError(f"{label} may contain only letters, numbers, and underscores.")
     return segment
@@ -74,8 +78,9 @@ class CapabilityPolicy(BaseModel):
 
 
 class CapabilityDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
-    name: str
     kind: CapabilityKind
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})

@@ -274,7 +274,7 @@ class ToolAgent:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
         control_tool_names.update(
-            definition.name
+            self.loop.tool_adapter.function_name(definition)
             for definition in self.loop.available_capabilities(capability_scope.capability_ids)
         )
         provider_messages = self._provider_messages(messages, capability_scope)

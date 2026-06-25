@@ -11,9 +11,15 @@ runtime capability catalog.
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
 | Built-in skill accessors | `skill.list`, `skill.view` |
+| Memory accessors | `memory.write`, `memory.search` |
+| Registered subagents | `agent.<name>` |
 
 Capability ids are public behavior. Do not depend on legacy aliases that are not
 documented here.
+
+Raw `CapabilityDefinition.id` values must use one of the dotted forms above.
+Every segment may contain only letters, numbers, and underscores; leading or
+trailing whitespace is rejected.
 
 ## Built-in Tools
 
@@ -64,7 +70,10 @@ present under `Runner(workspace=...)` are visible to supported built-in tools.
 ## Python Function Tools
 
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce
-tool input JSON schema; return annotations produce output schema.
+tool input JSON schema; return annotations produce output schema. The Python
+function name is the capability name: `search` registers `tool.search`, exposed
+to the LLM and PlanSpec DSL as `tool_search(...)`. The decorator does not accept
+separate `id` or `name` arguments.
 
 ```python
 from pydantic import BaseModel
@@ -97,6 +106,8 @@ agent = dagent.ToolAgent(
     capabilities=["tool.search"],
 )
 ```
+
+Rename the Python function if you need a different public capability id.
 
 ## Structured Results
 
@@ -171,6 +182,13 @@ system commands, are not reviewable.
 
 MCP stdio and Streamable HTTP server tools become ordinary
 `mcp.<server>.<tool>` capabilities after server registration:
+
+The `<server>` and `<tool>` segments are dagent public keys. Raw MCP server and
+tool names are preserved in capability `config`, and unsafe raw names are
+canonicalized with a stable short hash so different external names do not
+collide after normalization. Inspect the definitions returned by
+`runner.add_mcp_server(...)` or `/capabilities` instead of guessing ids for
+third-party tools.
 
 ```python
 runner.add_mcp_server(

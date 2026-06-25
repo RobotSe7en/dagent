@@ -20,7 +20,7 @@ def test_tool_decorator_builds_definition_from_function_signature() -> None:
 
     assert isinstance(echo, CapabilityBinding)
     assert echo.definition.id == "tool.echo"
-    assert echo.definition.name == "echo"
+    assert not hasattr(echo.definition, "name")
     assert echo.definition.kind == "tool"
     assert echo.definition.description == "Echo text for SDK callers."
     assert echo.definition.parameters == {
@@ -51,11 +51,11 @@ def test_tool_decorator_serializes_structured_results_and_failures() -> None:
         query: str
         matches: list[int]
 
-    @tool(id="tool.lookup")
+    @tool
     async def lookup(query: str) -> LookupResult:
         return LookupResult(query=query, matches=[1, 2])
 
-    @tool(id="tool.boom")
+    @tool
     def boom() -> str:
         raise ValueError("bad input")
 

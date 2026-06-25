@@ -122,6 +122,13 @@ runner = dagent.Runner(
 )
 ```
 
+MCP server names are dagent local workspace keys, not third-party MCP tool
+names. The local `/mcp/servers` API enforces letters, numbers, and underscores
+for this key, for example `remote_docs`; use the same convention for
+`mcp_servers` and `runner.add_mcp_server(...)` to keep ids predictable.
+Third-party MCP tool names are preserved in capability config and canonicalized
+when dagent builds `mcp.*` capability ids.
+
 You can also register resources after construction:
 
 ```python

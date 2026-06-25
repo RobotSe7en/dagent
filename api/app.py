@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 import mimetypes
+import re
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
@@ -74,6 +75,9 @@ RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
 PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
+_MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
+_LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -786,14 +790,8 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
 @app.get("/agents")
 async def list_agents() -> dict[str, Any]:
     store = state.agent_preset_store()
-    presets, errors = _agent_presets_with_errors(store)
-    names = set(store.list_names())
-    registration_errors = {
-        name: error
-        for name, error in state.agent_preset_errors.items()
-        if name in names and name not in errors
-    }
-    state.agent_preset_errors = {**errors, **registration_errors}
+    presets, errors = _agent_presets_available_for_registration(store)
+    state.agent_preset_errors = errors
     return {
         "agents": [
             _agent_preset_payload(preset)
@@ -812,6 +810,10 @@ async def create_agent(request: AgentPreset) -> dict[str, Any]:
     _ensure_agent_preset_name_available(name)
     preset = _agent_preset_from_request(request, name=name)
     tool_agent = _tool_agent_from_preset(preset)
+    try:
+        state.get_runner().validate_agent_registration(tool_agent)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     saved = store.save(preset)
     try:
         state.get_runner().add_agent(tool_agent)
@@ -830,6 +832,10 @@ async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str
     _ensure_agent_preset_name_available(preset_name)
     previous = store.load(preset_name)
     preset = _agent_preset_from_request(request, name=preset_name)
+    try:
+        state.get_runner().validate_agent_registration(_tool_agent_from_preset(preset), replacing=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     saved = store.save(preset)
     state.close_runner()
     state.get_runner()
@@ -862,7 +868,6 @@ def _profile_agent_capabilities() -> list[CapabilityDefinition]:
             continue
         definitions.append(CapabilityDefinition(
             id=f"agent.{name}",
-            name=name,
             kind="agent",
             description=profile.description,
             parameters=agent_capability_parameters(),
@@ -890,16 +895,22 @@ def _agent_preset_from_request(
             profile=str(request.profile).strip(),
             description=str(request.description or ""),
             max_steps=request.max_steps,
-            capability_ids=(
-                None if request.capability_ids is None
-                else _validated_agent_node_capabilities(request.capability_ids)
+            capabilities=(
+                None if request.capabilities is None
+                else _validated_agent_node_capabilities(request.capabilities)
             ),
             skills=(
                 None if request.skills is None
                 else _validated_agent_node_skills(request.skills)
             ),
+            agents=None if request.agents is None else [str(agent) for agent in request.agents],
+            review=request.review,
         )
         _resolve_agent_profile(preset.profile)
+        if preset.agents:
+            raise ValueError(f"Registered subagent 'agent.{name}' cannot expose subagents.")
+        if preset.review != "fast":
+            raise ValueError("Registered subagents must use review=\"fast\".")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return preset
@@ -910,9 +921,10 @@ def _tool_agent_from_preset(preset: AgentPreset) -> ToolAgent:
         profile=_resolve_agent_profile(preset.profile),
         name=preset.name,
         max_steps=preset.max_steps,
-        capabilities=None if preset.capability_ids is None else tuple(preset.capability_ids),
+        capabilities=None if preset.capabilities is None else tuple(preset.capabilities),
         skills=None if preset.skills is None else tuple(preset.skills),
-        review="fast",
+        agents=None if preset.agents is None else tuple(preset.agents),
+        review=preset.review,
         description=preset.description,
     )
 
@@ -931,6 +943,22 @@ def _agent_presets_with_errors(store: AgentPresetStore) -> tuple[list[AgentPrese
     for preset in presets:
         if preset.name in profile_names:
             errors[preset.name] = f"Agent preset '{preset.name}' conflicts with an agent profile."
+            continue
+        valid.append(preset)
+    return valid, errors
+
+
+def _agent_presets_available_for_registration(store: AgentPresetStore) -> tuple[list[AgentPreset], dict[str, str]]:
+    presets, errors = _agent_presets_with_errors(store)
+    if not presets:
+        return [], errors
+    runner = state.get_runner()
+    valid: list[AgentPreset] = []
+    for preset in presets:
+        try:
+            runner.validate_agent_registration(_tool_agent_from_preset(preset), replacing=True)
+        except Exception as exc:
+            errors[preset.name] = str(exc)
             continue
         valid.append(preset)
     return valid, errors
@@ -1303,11 +1331,7 @@ def _clean_managed_profile_name(value: str) -> str:
     name = str(value or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Profile name is required.")
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-    if (
-        not name[0].isalpha()
-        or any(char not in allowed for char in name)
-    ):
+    if _MANAGED_PROFILE_NAME_RE.fullmatch(name) is None:
         raise HTTPException(
             status_code=400,
             detail="Profile name may contain only letters, numbers, and underscores, and must start with a letter.",
@@ -1367,7 +1391,10 @@ def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]
     if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
     _ensure_generic_capability_mutation_allowed(definition)
-    updated = runner.set_capability_enabled(capability_id, enabled)
+    try:
+        updated = runner.set_capability_enabled(capability_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if enabled:
         state._install_agent_presets()
     return {"capability": updated.model_dump(mode="json")}
@@ -1528,8 +1555,7 @@ def _clean_model_id(value: str, *, allow_config: bool = False) -> str:
         if allow_config:
             return model_id
         raise HTTPException(status_code=400, detail=f"Model id '{CONFIG_MODEL_ID}' is reserved.")
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    if any(char not in allowed for char in model_id) or not any(char.isalnum() for char in model_id):
+    if _MODEL_ID_RE.fullmatch(model_id) is None:
         raise HTTPException(
             status_code=400,
             detail="Model id may contain only letters, numbers, dots, underscores, and dashes.",
@@ -1631,6 +1657,11 @@ def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
             raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' was not found.")
         if not definition.enabled:
             raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' is disabled.")
+        if definition.kind == "agent":
+            raise HTTPException(
+                status_code=400,
+                detail="Agent capabilities must be selected through agent_scope and agent_ids.",
+            )
         validated.append(capability_id)
     return validated
 
@@ -2121,6 +2152,15 @@ def _clean_name(value: Any, *, field: str) -> str:
         raise HTTPException(status_code=400, detail=f"{field} is required.")
     if "/" in text or "\\" in text:
         raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
+    if field == "MCP server name":
+        if _LOCAL_MCP_SERVER_NAME_RE.fullmatch(text) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "MCP server name is a local workspace key and may contain only "
+                    "letters, numbers, and underscores."
+                ),
+            )
     return text
 
 

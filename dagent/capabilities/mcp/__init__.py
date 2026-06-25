@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha1
 from typing import Any
 
 from dagent.capabilities.catalog import CapabilityCatalog
@@ -12,7 +13,8 @@ from .handlers import make_mcp_tool_handler
 from .manager import MCPServerManager
 from .schema import normalize_mcp_input_schema
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+_CAPABILITY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 
 class MCPCapabilityProvider:
@@ -72,7 +74,6 @@ class MCPCapabilityProvider:
         server_config = self.servers.get(server_name, {})
         definition = CapabilityDefinition(
             id=capability_id,
-            name=safe_tool,
             kind="mcp",
             description=str(getattr(tool, "description", "") or ""),
             parameters=normalize_mcp_input_schema(input_schema),
@@ -95,8 +96,15 @@ class MCPCapabilityProvider:
 
 
 def _safe_component(value: str) -> str:
-    safe = _SAFE_NAME_RE.sub("_", value.strip()).strip("_").lower()
-    return safe or "unnamed"
+    raw = value.strip()
+    if _CAPABILITY_SEGMENT_RE.fullmatch(raw):
+        return raw
+    slug = _UNSAFE_NAME_RE.sub("_", raw).strip("_").lower() or "unnamed"
+    return f"{slug}_{_short_hash(raw)}"
+
+
+def _short_hash(value: str) -> str:
+    return sha1(value.encode("utf-8")).hexdigest()[:8]
 
 
 __all__ = ["MCPCapabilityProvider", "MCPServerManager", "normalize_mcp_input_schema"]

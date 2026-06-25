@@ -10,8 +10,13 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
 | 内置 skill accessors | `skill.list`, `skill.view` |
+| Memory accessors | `memory.write`, `memory.search` |
+| 已注册 subagents | `agent.<name>` |
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。
+
+Raw `CapabilityDefinition.id` 必须使用上表中的 dotted forms。每个 segment
+只能包含字母、数字和下划线；首尾空白会被拒绝。
 
 ## 内置工具
 
@@ -56,7 +61,9 @@ workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下�
 ## Python Function Tools
 
 用 `@dagent.tool` 装饰 Python 函数。参数注解会生成 tool input JSON schema；返回注解会
-生成 output schema。
+生成 output schema。Python 函数名就是 capability name：`search` 会注册
+`tool.search`，并以 `tool_search(...)` 暴露给 LLM 和 PlanSpec DSL。decorator 不接收
+独立的 `id` 或 `name` 参数。
 
 ```python
 from pydantic import BaseModel
@@ -89,6 +96,8 @@ agent = dagent.ToolAgent(
     capabilities=["tool.search"],
 )
 ```
+
+如果需要不同的公开 capability id，请重命名 Python 函数。
 
 ## 结构化结果
 
@@ -161,6 +170,11 @@ shell 危险模式（例如破坏性系统命令）不可通过 review 放行。
 
 MCP stdio 和 Streamable HTTP server tools 在 server 注册后会变成普通
 `mcp.<server>.<tool>` capabilities：
+
+这里的 `<server>` 和 `<tool>` segment 是 dagent 的公开 key。原始 MCP server 和 tool
+名称会保存在 capability `config` 中；不安全的原始名称会通过稳定短 hash canonicalize，
+避免不同外部名称在 normalize 后发生碰撞。第三方工具的 id 请通过
+`runner.add_mcp_server(...)` 返回值或 `/capabilities` 查看，不要手写猜测。
 
 ```python
 runner.add_mcp_server(

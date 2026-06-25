@@ -519,7 +519,7 @@ def test_sandbox_rejects_raw_host_tool_capability(tmp_path: Path):
         called.append("host")
         return CapabilityResult.completed(invocation, "HOST_HANDLER_RAN")
 
-    definition = CapabilityDefinition(id="tool.host_raw", name="host_raw", kind="tool")
+    definition = CapabilityDefinition(id="tool.host_raw", kind="tool")
     catalog = create_default_capability_catalog(workspace_root=tmp_path)
     catalog.register(definition, handler)
     executor = CapabilityExecutor(catalog)

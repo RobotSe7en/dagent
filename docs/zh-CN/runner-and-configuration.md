@@ -118,6 +118,12 @@ runner = dagent.Runner(
 )
 ```
 
+MCP server name 是 dagent 的本地 workspace key，不是第三方 MCP tool 名。本地
+`/mcp/servers` API 会强制这个 key 只能包含字母、数字和下划线，例如 `remote_docs`；
+`mcp_servers` 和 `runner.add_mcp_server(...)` 也建议使用同样约定，让 id 保持可预测。
+第三方 MCP tool 原始名称会保存在 capability config 中，并在 dagent 生成 `mcp.*`
+capability ids 时 canonicalize。
+
 也可以在构造后注册资源：
 
 ```python

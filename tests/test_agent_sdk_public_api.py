@@ -106,6 +106,8 @@ def test_review_handle_decisions_accept_reviewer_feedback() -> None:
 
 
 def test_tool_decorator_has_tool_only_signature() -> None:
+    assert "id" not in inspect.signature(dagent.tool).parameters
+    assert "name" not in inspect.signature(dagent.tool).parameters
     assert "kind" not in inspect.signature(dagent.tool).parameters
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
     assert hasattr(dagent.Runner, "remove_mcp_server")
@@ -124,6 +126,7 @@ def test_tool_decorator_matches_tool_default_kind() -> None:
         return f"wrote:{path}"
 
     assert search.definition.id == "tool.search"
+    assert not hasattr(search.definition, "name")
     assert search.definition.kind == "tool"
     assert search.definition.policy.risk == "low"
     assert write_file.definition.id == "tool.write_file"
@@ -137,7 +140,7 @@ def test_tool_decorator_registers_tool_capability() -> None:
         return f"found:{q}"
 
     assert search.definition.id == "tool.search"
-    assert search.definition.name == "search"
+    assert not hasattr(search.definition, "name")
     assert search.definition.kind == "tool"
 
 
@@ -1092,13 +1095,14 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
-    @dagent.tool(id="tool.same", name="same")
-    def first() -> str:
-        return "first"
+    def make_same_tool(output: str) -> dagent.CapabilityBinding:
+        def same() -> str:
+            return output
 
-    @dagent.tool(id="tool.same", name="same")
-    def second() -> str:
-        return "second"
+        return dagent.tool(same)
+
+    first = make_same_tool("first")
+    second = make_same_tool("second")
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[first])
 

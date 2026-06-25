@@ -1,6 +1,16 @@
 import asyncio
 
-from examples import agent_delegation
+from examples import agent_delegation, runtime_registration_and_skills, tool_agent
+
+
+def test_tool_agent_example_uses_derived_tool_function_name(capsys) -> None:
+    asyncio.run(tool_agent.main())
+
+    lines = capsys.readouterr().out.strip().splitlines()
+
+    assert lines[0] == "completed"
+    assert lines[1] == "The echo tool returned hello."
+    assert "tool_echo" in lines[2]
 
 
 def test_agent_delegation_example_executes_registered_agent(capsys) -> None:
@@ -11,3 +21,11 @@ def test_agent_delegation_example_executes_registered_agent(capsys) -> None:
     assert lines[0] == "completed"
     assert lines[1] == "Final answer using the helper summary."
     assert "agent_helper" in lines[2]
+
+
+def test_runtime_registration_example_uses_derived_tool_function_name(capsys) -> None:
+    asyncio.run(runtime_registration_and_skills.main())
+
+    lines = capsys.readouterr().out.strip().splitlines()
+
+    assert lines == ["One sentence", "terse", "writing/drafting"]

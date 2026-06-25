@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -18,6 +19,14 @@ def run(coro):
 
 def user_messages(content: str) -> list[dict[str, str]]:
     return [{"role": "user", "content": content}]
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
+
+
+def _mock_server_capability_id(tool_name: str = "lookup") -> str:
+    return f"mcp.mock_server_{_short_hash('mock-server')}.{tool_name}"
 
 
 class FakeMCPManager:
@@ -92,12 +101,14 @@ def test_add_skill_root_is_idempotent(tmp_path) -> None:
 
 
 def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None:
+    capability_id = _mock_server_capability_id()
+    function_name = capability_id.replace(".", "_")
     provider = MockProvider([
         ChatResponse(
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="mcp_mock_server_lookup",
+                    name=function_name,
                     arguments={"query": "x"},
                 )
             ]
@@ -110,15 +121,15 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     definitions = runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     assert manager.started is True
-    assert [definition.id for definition in definitions] == ["mcp.mock_server.lookup"]
-    assert any(definition.id == "mcp.mock_server.lookup" for definition in runner.capabilities)
+    assert [definition.id for definition in definitions] == [capability_id]
+    assert any(definition.id == capability_id for definition in runner.capabilities)
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("lookup x")))
     assert result.output_text == "done"
-    assert any(tool["function"]["name"] == "mcp_mock_server_lookup" for tool in provider.requests[0]["tools"])
+    assert any(tool["function"]["name"] == function_name for tool in provider.requests[0]["tools"])
 
     result = run(runner.runtime.capability_executor.execute(
-        CapabilityInvocation(capability_id="mcp.mock_server.lookup", kind="mcp", arguments={"query": "x"})
+        CapabilityInvocation(capability_id=capability_id, kind="mcp", arguments={"query": "x"})
     ))
     assert result.status == "completed"
     assert result.content == "found:x"
@@ -242,11 +253,11 @@ def test_add_agent_rejects_invalid_name(tmp_path) -> None:
 def test_add_agent_uses_namespaced_function_name_and_allows_tool_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
 
-    @dagent.tool(name="helper")
-    def helper_tool() -> str:
+    @dagent.tool
+    def helper() -> str:
         return "tool"
 
-    runner.add_tool(helper_tool)
+    runner.add_tool(helper)
     runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
 
     assert runner.get_capability("tool.helper") is not None
@@ -272,11 +283,11 @@ def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
     runner.add_agent(dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[]))
 
-    @dagent.tool(name="helper")
-    def helper_tool() -> str:
+    @dagent.tool
+    def helper() -> str:
         return "tool"
 
-    runner.add_tool(helper_tool)
+    runner.add_tool(helper)
 
     assert runner.get_capability("tool.helper") is not None
     assert runner.get_capability("agent.helper") is not None
@@ -285,15 +296,19 @@ def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
 
 def test_register_capability_rejects_invalid_capability_id(tmp_path) -> None:
     runner = _runner(tmp_path)
-    definition = CapabilityDefinition(id="tool.raw-helper", name="raw_helper", kind="tool")
+    invalid_ids = ("tool.raw-helper", " tool.raw ")
 
-    with pytest.raises(ValueError, match="Capability ids"):
-        runner.register_capability(
-            definition,
-            lambda invocation: CapabilityResult.completed(invocation, "raw"),
-        )
+    for invalid_id in invalid_ids:
+        definition = CapabilityDefinition(id=invalid_id, kind="tool")
 
-    assert runner.get_capability("tool.raw-helper") is None
+        with pytest.raises(ValueError, match="Capability ids"):
+            runner.register_capability(
+                definition,
+                lambda invocation: CapabilityResult.completed(invocation, "raw"),
+            )
+
+        assert runner.get_capability(invalid_id) is None
+        assert runner.get_capability(invalid_id.strip()) is None
     runner.close()
 
 
@@ -308,7 +323,6 @@ def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp
             catalog.register(
                 CapabilityDefinition(
                     id="mcp.mock.helper",
-                    name="helper",
                     kind="mcp",
                     config={"server": "mock", "tool": "helper"},
                 ),
@@ -331,7 +345,7 @@ def test_adapter_rejects_mcp_function_name_collisions() -> None:
     catalog = CapabilityCatalog()
     for capability_id in ("mcp.foo.bar_baz", "mcp.foo_bar.baz"):
         catalog.register(
-            CapabilityDefinition(id=capability_id, name=capability_id.rsplit(".", 1)[-1], kind="mcp"),
+            CapabilityDefinition(id=capability_id, kind="mcp"),
             lambda invocation: CapabilityResult.completed(invocation, "ok"),
         )
     adapter = CapabilityToolAdapter(
@@ -382,7 +396,33 @@ def test_remove_capability_rejects_registered_agent_dependency_without_mutation(
     runner.close()
 
 
+def test_disable_capability_rejects_registered_agent_dependency_without_mutation(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def search(q: str) -> str:
+        return f"found:{q}"
+
+    runner.add_tool(search)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["tool.search"],
+            skills=[],
+        )
+    )
+
+    with pytest.raises(ValueError, match="agent.helper"):
+        runner.set_capability_enabled("tool.search", False)
+
+    assert runner.get_capability("tool.search").enabled is True
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
 def test_remove_mcp_server_rejects_registered_agent_dependency_without_mutation(tmp_path) -> None:
+    capability_id = _mock_server_capability_id()
     runner = _runner(tmp_path)
     manager = FakeMCPManager()
     runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
@@ -390,7 +430,7 @@ def test_remove_mcp_server_rejects_registered_agent_dependency_without_mutation(
         dagent.ToolAgent(
             profile="conversation",
             name="helper",
-            capabilities=["mcp.mock_server.lookup"],
+            capabilities=[capability_id],
             skills=[],
         )
     )
@@ -398,7 +438,7 @@ def test_remove_mcp_server_rejects_registered_agent_dependency_without_mutation(
     with pytest.raises(ValueError, match="agent.helper"):
         runner.remove_mcp_server("mock-server")
 
-    assert runner.get_capability("mcp.mock_server.lookup") is not None
+    assert runner.get_capability(capability_id) is not None
     assert runner.get_capability("agent.helper") is not None
     assert manager.shutdown_calls == 0
     runner.close()
@@ -416,7 +456,6 @@ def test_replace_mcp_server_allows_registered_agent_dependency_when_ids_stay_sta
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name="lookup",
                         kind="mcp",
                         config={"server": name, "tool": "lookup"},
                     ),
@@ -441,6 +480,91 @@ def test_replace_mcp_server_allows_registered_agent_dependency_when_ids_stay_sta
     assert [definition.id for definition in definitions] == ["mcp.search.lookup"]
     assert runner.get_capability("agent.helper") is not None
     assert runner.get_capability("mcp.search.lookup") is not None
+    runner.close()
+
+
+def test_replace_mcp_server_rejects_registered_agent_dependency_when_ids_change(monkeypatch, tmp_path) -> None:
+    class ConfiguredMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                for tool_name in config["tools"]:
+                    catalog.register(
+                        CapabilityDefinition(
+                            id=f"mcp.{name}.{tool_name}",
+                            kind="mcp",
+                            config={"server": name, "tool": tool_name},
+                        ),
+                        lambda invocation: CapabilityResult.completed(invocation, "found"),
+                    )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", ConfiguredMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_mcp_server("search", {"command": "old", "tools": ["lookup"]})
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["mcp.search.lookup"],
+            skills=[],
+        )
+    )
+
+    with pytest.raises(ValueError, match="agent.helper"):
+        runner.replace_mcp_server("search", {"command": "new", "tools": ["query"]})
+
+    assert runner.get_capability("mcp.search.lookup") is not None
+    assert runner.get_capability("mcp.search.query") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
+def test_replace_mcp_server_rolls_back_registered_agent_dependency_on_error(monkeypatch, tmp_path) -> None:
+    class FlakyMCPProvider:
+        fail = False
+
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            if FlakyMCPProvider.fail:
+                raise RuntimeError("search backend is offline")
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FlakyMCPProvider)
+    runner = _runner(tmp_path)
+    runner.add_mcp_server("search", {"command": "old"})
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["mcp.search.lookup"],
+            skills=[],
+        )
+    )
+
+    FlakyMCPProvider.fail = True
+    with pytest.raises(RuntimeError, match="offline"):
+        runner.replace_mcp_server("search", {"command": "new"})
+
+    assert runner.get_capability("mcp.search.lookup") is not None
+    assert runner.get_capability("agent.helper") is not None
     runner.close()
 
 
@@ -533,13 +657,14 @@ def test_registered_subagent_cannot_bind_agent_capabilities(tmp_path) -> None:
 
 
 def test_remove_mcp_server_unregisters_tools_and_shutdowns_manager(tmp_path) -> None:
+    capability_id = _mock_server_capability_id()
     runner = _runner(tmp_path)
     manager = FakeMCPManager()
     runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     runner.remove_mcp_server("mock-server")
 
-    assert runner.runtime.capability_catalog.get("mcp.mock_server.lookup") is None
+    assert runner.runtime.capability_catalog.get(capability_id) is None
     assert manager.shutdown_calls == 1
     runner.close()
     assert manager.shutdown_calls == 1
@@ -561,7 +686,6 @@ def test_reload_mcp_servers_records_dangling_subagent_dependency_without_raising
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name="lookup",
                         kind="mcp",
                         config={"server": name, "tool": "lookup"},
                     ),
@@ -611,7 +735,6 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
                     catalog.register(
                         CapabilityDefinition(
                             id=f"mcp.{name}.{safe_name}",
-                            name=safe_name,
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -651,7 +774,6 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
                     catalog.register(
                         CapabilityDefinition(
                             id=f"mcp.{name}.{safe_name}",
-                            name=safe_name,
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -720,7 +842,7 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
 
     catalog = runner.runtime.capability_catalog
     # The successfully-registered "good" tool must be rolled back...
-    assert catalog.get("mcp.mock_server.good") is None
+    assert catalog.get(_mock_server_capability_id("good")) is None
     # ...and the manager must be shut down.
     assert manager.shutdown_calls == 1
     runner.close()
@@ -740,7 +862,10 @@ def test_add_mcp_server_rolls_back_if_discovery_raises(tmp_path) -> None:
 
     assert manager.started is True
     assert manager.shutdown_calls == 1
-    assert not any(capability_id.startswith("mcp.mock_server.") for capability_id in runner.runtime.capability_catalog.ids())
+    assert not any(
+        capability_id.startswith(f"mcp.mock_server_{_short_hash('mock-server')}.")
+        for capability_id in runner.runtime.capability_catalog.ids()
+    )
     runner.close()
 
 
