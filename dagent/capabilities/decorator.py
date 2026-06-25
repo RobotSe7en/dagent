@@ -17,6 +17,8 @@ from dagent.schemas import (
     CapabilityPolicy,
     CapabilityResult,
     RiskLevel,
+    validate_capability_id,
+    validate_capability_id_segment,
 )
 from dagent.schemas.common import json_schema_for_type
 
@@ -33,8 +35,6 @@ class CapabilityBinding:
 def tool(
     fn: Callable[..., Any] | None = None,
     *,
-    id: str | None = None,
-    name: str | None = None,
     description: str = "",
     risk: RiskLevel = "low",
     requires_review: bool = False,
@@ -49,17 +49,17 @@ def tool(
     """Decorate a Python function as a dagent tool capability.
 
     This is the public way to expose a Python function as an LLM-callable
-    tool. MCP and skill capabilities are registered through
+    tool. The capability id is always ``tool.<function_name>``. MCP and skill
+    capabilities are registered through
     ``Runner.add_mcp_server`` and ``Runner.add_skill_root``.
     """
 
     def decorate(func: Callable[..., Any]) -> CapabilityBinding:
         type_hints = _type_hints_for(func)
-        capability_name = name or func.__name__
-        capability_id = id or f"tool.{capability_name}"
+        capability_name = validate_capability_id_segment(func.__name__, label="Tool function names")
+        capability_id = validate_capability_id(f"tool.{capability_name}", kind="tool")
         definition = CapabilityDefinition(
             id=capability_id,
-            name=capability_name,
             kind="tool",
             description=description or inspect.getdoc(func) or "",
             parameters=parameters or _schema_from_signature(func, type_hints),

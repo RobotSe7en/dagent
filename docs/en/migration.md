@@ -9,7 +9,37 @@ The current package version is `0.5.2`.
 
 ## Unreleased
 
-- No unreleased migration notes.
+- Breaking change: `@dagent.tool` no longer accepts `id=` or `name=`.
+  Python function tools always derive their capability id from the function
+  name as `tool.<function_name>`. Rename the function or wrap the implementation
+  with a differently named function when changing the public id.
+- Breaking change: `CapabilityDefinition.name` has been removed. Raw
+  capability definitions now carry only `id` as their stable public identifier;
+  LLM-visible function names are derived from that id.
+- Breaking change: raw `CapabilityDefinition.id` values must use supported
+  dotted capability id forms: `tool.<name>`, `agent.<name>`,
+  `mcp.<server>.<tool>`, `skill.<name>`, or `memory.<name>`. Each segment may
+  contain only letters, numbers, and underscores; leading or trailing whitespace
+  is rejected.
+- Breaking change: LLM-visible PlanSpec and tool-call function names are now
+  derived from capability ids by replacing dots with underscores. For example,
+  use `tool_search(...)`, `tool_shell(...)`, and `agent_helper(...)` instead of
+  short names such as `search(...)`, `shell(...)`, or `helper(...)`. Update saved
+  dynamic DAG PlanSpec text and deterministic provider fixtures accordingly.
+- Breaking change: MCP capability ids now use stable canonical keys for raw MCP
+  server or tool names that are not already valid id segments. For example,
+  `mock-server` no longer maps to `mock_server`; inspect registered capability
+  definitions and update saved capability allowlists or DAG specs.
+- Breaking change: local API managed profile and agent preset names may contain
+  only letters, numbers, and underscores. Replace dashes with underscores before
+  creating new managed profiles or agent presets.
+- Breaking change: local API MCP server names are strict workspace keys and may
+  contain only letters, numbers, and underscores. This does not restrict
+  third-party MCP tool names, which are preserved in capability config.
+- Breaking change: local API agent preset JSON now uses `ToolAgent` field names.
+  Replace `capability_ids` with `capabilities`; registered presets must keep
+  `agents` empty and `review` set to `"fast"`. Old preset files are reported as
+  errors and are not migrated automatically.
 
 ## 0.5.2
 
@@ -19,8 +49,8 @@ The current package version is `0.5.2`.
   explicitly.
 - Breaking change: built-in file and shell tools now resolve relative paths from
   the current ToolAgent or DagAgent message run workspace, not from the runner
-  workspace root. A `write_file(path="notes.txt", ...)` call in a normal agent
-  run now writes under `.dagent/runs/<run_id>/notes.txt` instead of
+  workspace root. A `tool_write_file(path="notes.txt", ...)` call in a normal
+  agent run now writes under `.dagent/runs/<run_id>/notes.txt` instead of
   `.dagent/notes.txt`. Code that expects files directly under the runner
   workspace should pass absolute paths or move shared inputs into each run
   workspace. Static DAG artifact paths still use their documented artifact
@@ -52,9 +82,9 @@ The current package version is `0.5.2`.
 ## 0.4.2
 
 - The built-in shell command capability is now `tool.shell`, with DAG DSL calls
-  written as `shell(command="...", cwd=".")`. Replace saved `tool.run_command`
-  capability ids and `run_command(...)` plan calls before upgrading. No legacy
-  alias is registered.
+  written as `tool_shell(command="...", cwd=".")`. Replace saved
+  `tool.run_command` capability ids and `run_command(...)` plan calls before
+  upgrading. No legacy alias is registered.
 
 ## Public Surface Expectations
 

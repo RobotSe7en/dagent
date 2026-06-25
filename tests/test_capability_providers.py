@@ -2,13 +2,14 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
     MemoryCapabilityProvider,
     ToolCapabilityProvider,
-    _agent_boundary,
 )
 from dagent.capabilities.skills import SkillsCapabilityProvider
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
@@ -31,7 +32,6 @@ def test_capability_catalog_rejects_duplicate_ids() -> None:
     registry = CapabilityCatalog()
     definition = CapabilityDefinition(
         id="tool.echo",
-        name="echo",
         kind="tool",
         parameters={"type": "object"},
     )
@@ -72,7 +72,7 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
         )
     ))
 
-    assert registry.get("tool.echo").name == "echo"
+    assert registry.get("tool.echo") is not None
     assert result.status == "completed"
     assert result.content == "echo:ok"
     assert result.kind == "tool"
@@ -170,7 +170,7 @@ def test_capability_executor_passes_context_to_async_handler(tmp_path) -> None:
         )
 
     registry.register(
-        CapabilityDefinition(id="agent.contextual", name="contextual", kind="agent"),
+        CapabilityDefinition(id="agent.contextual", kind="agent"),
         handler,
         supports_context=True,
     )
@@ -253,11 +253,45 @@ def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     assert mcp_result.content == "mcp:x"
     assert "Use concise summaries." in json.loads(skill_result.content)["content"]
     assert agent_result.content == "agent:done"
+    assert registry.get("skill.list") is not None
+    assert registry.get("skill.view") is not None
     agent_definition = registry.get("agent.helper")
     assert agent_definition is not None
     assert agent_definition.parameters["properties"]["prompt"]["default"] == ""
     assert agent_definition.parameters["properties"]["max_steps"]["default"] == 8
     assert provider.requests[0]["messages"][0]["role"] == "system"
+
+
+def test_agent_provider_rejects_nested_agent_capability_adapter(tmp_path) -> None:
+    provider = MockProvider([ChatResponse(content="unused")])
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    registry.register(
+        CapabilityDefinition(id="agent.child", kind="agent"),
+        lambda invocation: CapabilityResult(
+            invocation_id=invocation.invocation_id,
+            capability_id=invocation.capability_id,
+            kind=invocation.kind,
+            status="completed",
+            content="child",
+        ),
+    )
+    tool_adapter = CapabilityToolAdapter(
+        registry,
+        toolsets=[CapabilityToolset("builtin", ("agent.child",))],
+    )
+    with pytest.raises(ValueError, match="cannot expose subagents"):
+        AgentCapabilityProvider(
+            agents={
+                "helper": {
+                    "provider": provider,
+                    "profile": AgentProfile(name="helper", content="You are a helper."),
+                    "capability_executor": executor,
+                    "tool_adapter": tool_adapter,
+                    "enabled_toolsets": ("builtin",),
+                }
+            }
+        ).register_into(registry)
 
 
 def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
@@ -357,19 +391,53 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     assert "source_doc" not in first_user
 
 
-def test_agent_boundary_grants_run_workspace_with_artifact_paths(tmp_path) -> None:
-    uploaded_file = tmp_path / "inputs" / "uploads" / "source.txt"
-    invocation = CapabilityInvocation(
+def test_agent_provider_resets_node_session_when_invocation_arguments_change(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="first"),
+        ChatResponse(content="second"),
+    ])
+    registry = CapabilityCatalog(workspace_root=tmp_path)
+    executor = CapabilityExecutor(registry)
+    tool_adapter = CapabilityToolAdapter(
+        registry,
+        toolsets=[CapabilityToolset("builtin", ())],
+    )
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(name="helper", content="You are a helper."),
+                "capability_executor": executor,
+                "tool_adapter": tool_adapter,
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(registry)
+    node = DAGNode(
+        id="ask",
+        payload=dict(
+            type="capability",
+            invocation=CapabilityInvocation(
+                capability_id="agent.helper",
+                kind="agent",
+                arguments={"prompt": "First prompt."},
+            ),
+        ),
+    )
+    context = CapabilityExecutionContext(task_id="run_1", node=node, workspace_path=tmp_path)
+
+    first = run(executor.execute(node.payload.invocation, context=context))
+    second_invocation = CapabilityInvocation(
         capability_id="agent.helper",
         kind="agent",
-        boundary=Boundary(allowed_paths=[str(uploaded_file)]),
+        arguments={"prompt": "Second prompt."},
     )
-    context = CapabilityExecutionContext(
-        task_id="run_1",
-        workspace_path=tmp_path,
-    )
+    second = run(executor.execute(second_invocation, context=context))
 
-    boundary = _agent_boundary(invocation, context)
-
-    assert str(tmp_path) in boundary.allowed_paths
-    assert str(uploaded_file) in boundary.allowed_paths
+    assert first.content == "first"
+    assert second.content == "second"
+    first_user = provider.requests[0]["messages"][1]["content"]
+    second_user = provider.requests[1]["messages"][1]["content"]
+    assert "First prompt." in first_user
+    assert "Second prompt." in second_user
+    assert [message["role"] for message in provider.requests[1]["messages"]] == ["system", "user"]

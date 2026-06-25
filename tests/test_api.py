@@ -5,15 +5,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import api.app as app_module
 import dagent.runner as runner_module
+from api.agent_presets import AgentPreset
 from api.app import app, state
-from dagent.runner import Runner
+from dagent import ToolAgent
 from dagent.capabilities.providers import ToolCapabilityProvider
-from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.capabilities.tools.registry import ToolRegistry
+from dagent.profiles import AgentProfile
+from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.runner import Runner
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityResult
 
 
@@ -233,7 +237,6 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
                         kind="mcp",
                         description="Lookup.",
                         policy=CapabilityPolicy(risk=config.get("risk", "medium")),
@@ -271,6 +274,166 @@ def test_api_memory_mcp_server_reload_updates_runtime_catalog(monkeypatch) -> No
     assert "mcp.mock.lookup" not in capability_ids_after_delete
 
 
+def test_api_mcp_server_name_is_strict_local_key() -> None:
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    client = TestClient(app)
+
+    response = client.post(
+        "/mcp/servers",
+        json={"name": "github-search", "command": "fake"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "MCP server name is a local workspace key and may contain only letters, numbers, and underscores."
+    )
+    assert "github-search" not in state.custom_mcp_servers
+
+
+def test_api_mcp_update_rejects_registered_agent_dependency_without_mutation(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        policy=CapabilityPolicy(risk=config.get("risk", "medium")),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/mcp/servers",
+        json={"name": "mock", "command": "fake", "risk": "low"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.mock.lookup"],
+        skills=[],
+    ))
+    update_response = client.put(
+        "/mcp/servers/mock",
+        json={"name": "mock", "command": "fake", "risk": "high"},
+    )
+
+    assert create_response.status_code == 200
+    assert update_response.status_code == 400
+    assert "agent.helper" in update_response.json()["detail"]
+    assert state.custom_mcp_servers["mock"]["risk"] == "low"
+    assert state.runner.get_capability("mcp.mock.lookup") is not None
+
+
+def test_api_mcp_delete_rejects_registered_agent_dependency_without_mutation(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    create_response = client.post(
+        "/mcp/servers",
+        json={"name": "mock", "command": "fake"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.mock.lookup"],
+        skills=[],
+    ))
+    delete_response = client.delete("/mcp/servers/mock")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 400
+    assert "agent.helper" in delete_response.json()["detail"]
+    assert "mock" in state.custom_mcp_servers
+    assert state.runner.get_capability("mcp.mock.lookup") is not None
+
+
+def test_api_mcp_create_allows_unrelated_server_when_agent_depends_on_existing_mcp(monkeypatch) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    client = TestClient(app)
+
+    search_response = client.post(
+        "/mcp/servers",
+        json={"name": "search", "command": "fake"},
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["mcp.search.lookup"],
+        skills=[],
+    ))
+    weather_response = client.post(
+        "/mcp/servers",
+        json={"name": "weather", "command": "fake"},
+    )
+
+    assert search_response.status_code == 200
+    assert weather_response.status_code == 200
+    assert state.runner.get_capability("mcp.search.lookup") is not None
+    assert state.runner.get_capability("mcp.weather.lookup") is not None
+    assert set(state.custom_mcp_servers) == {"search", "weather"}
+
+
 def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):
@@ -283,7 +446,6 @@ def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
                 catalog.register(
                     CapabilityDefinition(
                         id=f"mcp.{name}.lookup",
-                        name=f"mcp_{name}__lookup",
                         kind="mcp",
                         description="Lookup.",
                         policy=CapabilityPolicy(
@@ -392,13 +554,26 @@ def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     assert result["output_text"] == "hello there"
 
 
+def test_api_message_stream_rejects_relative_workspace_root_escape() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request("hello", target="tool", workspace_root="../outside"),
+    )
+
+    assert response.status_code == 400
+    assert "workspace_root" in response.json()["detail"]
+
+
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_root = tmp_path / "managed-skills"
     monkeypatch.setattr(state, "get_managed_skill_root", lambda: managed_root)
     monkeypatch.setattr(state, "get_skill_roots", lambda: [managed_root])
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skill_list", arguments={})]),
         ChatResponse(content="scoped answer"),
     ])
     state.runner = _runner(provider, skill_roots=[managed_root])
@@ -421,8 +596,8 @@ def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path
     assert install_response.status_code == 200
     assert response.status_code == 200
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
-        "echo",
-        "skills_list",
+        "tool_echo",
+        "skill_list",
         "skill_view",
     ]
     system_content = provider.requests[0]["messages"][0]["content"]
@@ -483,7 +658,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "../blocked/secret.txt"},
                     )
                 ],
@@ -530,7 +705,7 @@ def test_api_resume_capability_review_forwards_reviewer_feedback(tmp_path) -> No
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="read_file",
+                    name="tool_read_file",
                     arguments={"path": "../blocked/secret.txt"},
                 )
             ],
@@ -574,7 +749,7 @@ def test_api_run_trace_endpoint_reads_tool_mode_run_trace() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hello"})],
         ),
         ChatResponse(content="done"),
     ]))
@@ -662,8 +837,8 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # replan
+            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # replan
             ChatResponse(content="Recovered after replanning."),                       # execute observation
         ])
     )
@@ -686,8 +861,8 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),        # would replan if enabled
+            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
+            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # would replan if enabled
             ChatResponse(content="Recovered after replanning."),
         ])
     )
@@ -716,7 +891,7 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     state.runner = _runner(
         MockProvider([
-            ChatResponse(content='task: fail\nbad = fail_tool(text="boom")\n'),
+            ChatResponse(content='task: fail\nbad = tool_fail_tool(text="boom")\n'),
             ChatResponse(content="NO_CHANGE"),
             ChatResponse(content="The DAG failed after retrying the failing node."),
         ])
@@ -831,7 +1006,7 @@ def test_api_tool_validation_holds_answer_until_validation_passes() -> None:
         MockProvider([
             ChatResponse(
                 content="",
-                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hello"})],
+                tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hello"})],
             ),
             ChatResponse(content="Validated final answer."),
             ChatResponse(content='{"passed": true, "issues": [], "summary": "good"}'),
@@ -932,7 +1107,6 @@ def test_api_capability_list_create_and_test() -> None:
         "/capabilities",
         json={
             "id": "tool.upper",
-            "name": "upper",
             "kind": "tool",
             "description": "Uppercase text.",
             "config": {"template": "upper:{text}"},
@@ -1027,7 +1201,6 @@ def test_api_rejects_removed_custom_tool_capability_kind() -> None:
         "/capabilities",
         json={
             "id": "custom_tool.upper",
-            "name": "upper",
             "kind": "custom_tool",
             "description": "Uppercase text.",
             "config": {"template": "upper:{text}"},
@@ -1035,6 +1208,82 @@ def test_api_rejects_removed_custom_tool_capability_kind() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_api_rejects_whitespace_padded_capability_id_without_persisting() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.upper ",
+            "kind": "tool",
+            "description": "Uppercase text.",
+            "config": {"template": "upper:{text}"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Capability ids" in response.json()["detail"]
+    assert state.runner.get_capability("tool.upper ") is None
+    assert state.runner.get_capability("tool.upper") is None
+    assert "tool.upper " not in state.custom_capabilities
+    state.close_runner()
+
+
+def test_api_delete_capability_rejects_registered_agent_dependency_without_mutation() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app, raise_server_exceptions=False)
+    create_response = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.search",
+            "kind": "tool",
+            "config": {"template": "found:{q}"},
+        },
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["tool.search"],
+        skills=[],
+    ))
+
+    delete_response = client.delete("/capabilities/tool.search")
+
+    assert create_response.status_code == 200
+    assert delete_response.status_code == 400
+    assert "agent.helper" in delete_response.json()["detail"]
+    assert "tool.search" in state.custom_capabilities
+    assert state.runner.get_capability("tool.search") is not None
+
+
+def test_api_disable_capability_rejects_registered_agent_dependency_without_mutation() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app, raise_server_exceptions=False)
+    create_response = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.search",
+            "kind": "tool",
+            "config": {"template": "found:{q}"},
+        },
+    )
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=["tool.search"],
+        skills=[],
+    ))
+
+    disable_response = client.post("/capabilities/tool.search/disable")
+
+    assert create_response.status_code == 200
+    assert disable_response.status_code == 400
+    assert "agent.helper" in disable_response.json()["detail"]
+    assert state.runner.get_capability("tool.search").enabled is True
+    assert state.runner.get_capability("agent.helper") is not None
 
 
 def test_api_session_reset_closes_existing_runner() -> None:
@@ -1159,6 +1408,520 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["config"] == {"profile": "analyst", "source": "managed"}
     assert capabilities["agent.analyst"]["parameters"]["properties"]["prompt"]["default"] == ""
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
+
+
+def test_api_profile_agent_capability_ids_use_clean_names(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_module,
+        "_agent_profile_candidates",
+        lambda: [("managed", AgentProfile(name=" analyst ", description="Analyst", content="Read carefully."))],
+    )
+
+    definitions = app_module._profile_agent_capabilities()
+
+    assert [definition.id for definition in definitions] == ["agent.analyst"]
+
+
+def test_api_agent_preset_crud_registers_agent_capability(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    created = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "description": "Summarizes text.",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+            "agents": [],
+            "review": "fast",
+        },
+    )
+    listed = client.get("/agents")
+    capabilities = client.get("/capabilities", params={"kind": "agent"})
+    deleted = client.delete("/agents/helper")
+
+    assert created.status_code == 200
+    assert created.json()["agent"]["id"] == "agent.helper"
+    assert created.json()["agent"]["profile"] == "conversation"
+    assert created.json()["agent"]["capabilities"] == []
+    assert listed.status_code == 200
+    assert [agent["id"] for agent in listed.json()["agents"]] == ["agent.helper"]
+    capability_ids = {capability["id"] for capability in capabilities.json()["capabilities"]}
+    assert "agent.helper" in capability_ids
+    assert deleted.status_code == 200
+    assert not (agent_root / "helper.json").exists()
+    state.close_runner()
+
+
+def test_api_capability_endpoints_reject_agent_preset_capabilities(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    created = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capabilities": [],
+            "skills": [],
+        },
+    )
+
+    disabled = client.post("/capabilities/agent.helper/disable")
+    deleted = client.delete("/capabilities/agent.helper")
+
+    assert created.status_code == 200
+    assert disabled.status_code == 400
+    assert "agents" in disabled.json()["detail"]
+    assert deleted.status_code == 400
+    assert (agent_root / "helper.json").exists()
+    assert state.get_runner().get_capability("agent.helper") is not None
+    state.close_runner()
+
+
+def test_api_agent_preset_rejects_legacy_capability_ids_request(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capability_ids": [],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 422
+    assert not (agent_root / "helper.json").exists()
+    assert state.get_runner().get_capability("agent.helper") is None
+    state.close_runner()
+
+
+def test_api_agent_preset_rejects_missing_capability_without_persisting(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capabilities": ["tool.missing"],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "tool.missing" in response.json()["detail"]
+    assert not (agent_root / "helper.json").exists()
+    assert state.get_runner().get_capability("agent.helper") is None
+    state.close_runner()
+
+
+def test_api_agent_preset_rejects_nested_agents_and_non_fast_review(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    nested = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capabilities": [],
+            "skills": [],
+            "agents": ["agent.other"],
+        },
+    )
+    careful = client.post(
+        "/agents",
+        json={
+            "name": "reviewed",
+            "profile": "conversation",
+            "capabilities": [],
+            "skills": [],
+            "review": "careful",
+        },
+    )
+
+    assert nested.status_code == 400
+    assert "cannot expose subagents" in nested.json()["detail"]
+    assert careful.status_code == 400
+    assert "review=\"fast\"" in careful.json()["detail"]
+    assert not (agent_root / "helper.json").exists()
+    assert not (agent_root / "reviewed.json").exists()
+    state.close_runner()
+
+
+def test_api_retries_agent_preset_registration_after_capability_dependency_is_created(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": ["tool.late"],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    response = client.post(
+        "/capabilities",
+        json=CapabilityDefinition(id="tool.late", kind="tool").model_dump(mode="json"),
+    )
+
+    assert response.status_code == 200
+    assert state.get_runner().get_capability("agent.helper") is not None
+    assert "helper" not in state.agent_preset_errors
+    list_response = client.get("/agents")
+    assert "helper" not in list_response.json()["errors"]
+    state.close_runner()
+
+
+def test_api_agent_preset_rejects_profile_name_collision(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    managed_dir = tmp_path / "managed-profiles"
+    managed_dir.mkdir()
+    (managed_dir / "helper.md").write_text("# Helper\n\nProfile helper.", encoding="utf-8")
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capabilities": [],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "profile" in response.json()["detail"]
+    assert not (agent_root / "helper.json").exists()
+    state.close_runner()
+
+
+def test_api_agents_skips_invalid_preset_files(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "broken.json").write_text("{not json", encoding="utf-8")
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert [agent["id"] for agent in payload["agents"]] == ["agent.helper"]
+    assert payload["errors"]["broken"]
+    assert runner.get_capability("agent.helper") is not None
+    assert state.agent_preset_errors["broken"]
+    state.close_runner()
+
+
+def test_api_agents_reports_persisted_preset_profile_name_collision(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    managed_dir = tmp_path / "managed-profiles"
+    agent_root.mkdir()
+    managed_dir.mkdir()
+    (managed_dir / "helper.md").write_text("# Helper\n\nProfile helper.", encoding="utf-8")
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["agents"] == []
+    assert "conflicts with an agent profile" in payload["errors"]["helper"]
+    assert runner.get_capability("agent.helper") is None
+    state.close_runner()
+
+
+def test_api_agents_reports_legacy_persisted_preset_without_migration(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "legacy.json").write_text(
+        json.dumps({
+            "name": "legacy",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capability_ids": [],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["agents"] == []
+    assert "capability_ids" in payload["errors"]["legacy"]
+    assert runner.get_capability("agent.legacy") is None
+    state.close_runner()
+
+
+def test_api_agents_reports_persisted_presets_that_fail_registration(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    presets = {
+        "helper": {
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        },
+        "missing_cap": {
+            "name": "missing_cap",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": ["tool.missing"],
+            "skills": [],
+        },
+        "nested": {
+            "name": "nested",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+            "agents": ["agent.helper"],
+        },
+        "reviewed": {
+            "name": "reviewed",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+            "review": "careful",
+        },
+        "unknown_profile": {
+            "name": "unknown_profile",
+            "profile": "missing_profile",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        },
+    }
+    for name, payload in presets.items():
+        (agent_root / f"{name}.json").write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: _runner(MockProvider([ChatResponse(content="unused")])))
+    client = TestClient(app)
+
+    list_response = client.get("/agents")
+    runner = state.get_runner()
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert [agent["id"] for agent in payload["agents"]] == ["agent.helper"]
+    assert "tool.missing" in payload["errors"]["missing_cap"]
+    assert "cannot expose subagents" in payload["errors"]["nested"]
+    assert "review=\"fast\"" in payload["errors"]["reviewed"]
+    assert "missing_profile" in payload["errors"]["unknown_profile"]
+    for name in ("missing_cap", "nested", "reviewed", "unknown_profile"):
+        assert runner.get_capability(f"agent.{name}") is None
+    state.close_runner()
+
+
+def test_api_agent_update_validates_registration_before_overwriting(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    store = app_module.AgentPresetStore(agent_root)
+    store.save(AgentPreset(
+        name="helper",
+        profile="conversation",
+        max_steps=1,
+        capabilities=[],
+        skills=[],
+    ))
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+
+    def conflicting_runner() -> Runner:
+        runner = _runner(MockProvider([ChatResponse(content="unused")]))
+        runner.register_capability(
+            CapabilityDefinition(id="agent.helper", kind="agent"),
+            lambda invocation: CapabilityResult.completed(invocation, "raw"),
+        )
+        return runner
+
+    monkeypatch.setattr(state, "_create_runner", conflicting_runner)
+    client = TestClient(app)
+
+    response = client.put(
+        "/agents/helper",
+        json={
+            "profile": "conversation",
+            "description": "Updated.",
+            "max_steps": 2,
+            "capabilities": [],
+            "skills": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "already registered" in response.json()["detail"]
+    saved = store.load("helper")
+    assert saved.max_steps == 1
+    assert saved.description == ""
+    state.close_runner()
+
+
+def test_api_message_stream_can_delegate_to_selected_agent_preset(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="agent_helper",
+                        arguments={"prompt": "summarize this"},
+                    )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    state.runner = _runner(provider)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        },
+    )
+    stream_response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "delegate",
+            target="tool",
+            capability_ids=[],
+            skills=[],
+            agent_scope="selected",
+            agent_ids=["agent.helper"],
+        ),
+    )
+
+    assert create_response.status_code == 200
+    assert stream_response.status_code == 200
+    events = _sse_events(stream_response.text)
+    result = _stream_result(events[-1])
+    assert result["output_text"] == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[0]["tools"]} == {"agent_helper"}
+    assert provider.requests[1]["tools"] == []
+    state.close_runner()
+
+
+def test_api_message_stream_rejects_agent_capability_ids_when_agent_scope_is_none(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "max_steps": 1,
+            "capabilities": [],
+            "skills": [],
+        },
+    )
+    stream_response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "delegate",
+            target="tool",
+            capability_ids=["agent.helper"],
+            skills=[],
+            agent_scope="none",
+        ),
+    )
+
+    assert create_response.status_code == 200
+    assert stream_response.status_code == 400
+    assert "agent_scope" in stream_response.json()["detail"]
+    state.close_runner()
 
 
 def test_api_dag_create_run_and_artifacts() -> None:
@@ -1411,7 +2174,75 @@ def test_static_dag_agent_node_uses_public_tool_agent_capability_scope(monkeypat
     assert [
         tool["function"]["name"]
         for tool in provider.requests[0]["tools"]
-    ] == ["echo"]
+    ] == ["tool_echo"]
+
+
+def test_static_dag_runs_registered_agent_capability_without_profile(tmp_path) -> None:
+    state.close_runner()
+    provider = MockProvider([ChatResponse(content="registered answer")])
+    state.runner = _runner(provider)
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=[],
+        skills=[],
+    ))
+    client = TestClient(app)
+    spec = {
+        "id": "registered_agent_dag",
+        "name": "Registered Agent DAG",
+        "nodes": [
+            {
+                "id": "ask",
+                "target": "agent.helper",
+                "inputs": {"prompt": "Summarize the run."},
+            }
+        ],
+        "edges": [],
+    }
+
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post("/dags/registered_agent_dag/run")
+
+    assert create_response.status_code == 200
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    assert run_payload["dag"]["nodes"][0]["status"] == "completed"
+    assert run_payload["trace"]["root"]["children"][0]["output"] == "registered answer"
+    assert "Registered helper profile." in provider.requests[0]["messages"][0]["content"]
+    state.close_runner()
+
+
+def test_static_dag_rejects_node_config_for_registered_agent_capability(tmp_path) -> None:
+    state.close_runner()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.runner.add_agent(ToolAgent(
+        profile=AgentProfile(name="helper_profile", content="Registered helper profile."),
+        name="helper",
+        capabilities=[],
+        skills=[],
+    ))
+    client = TestClient(app)
+
+    response = client.post(
+        "/dags",
+        json={
+            "id": "registered_agent_with_config",
+            "name": "Registered Agent With Config",
+            "nodes": [
+                {
+                    "id": "ask",
+                    "target": "agent.helper",
+                    "agent": {"capabilities": ["tool.echo"]},
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "cannot include node-level agent config" in response.json()["detail"]
+    state.close_runner()
 
 
 def test_static_dag_agent_node_rejects_invalid_agent_scope(monkeypatch, tmp_path) -> None:
@@ -1469,7 +2300,7 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.md", "content": "# Hello\n\nBody"},
                     )
                 ],
@@ -1529,7 +2360,7 @@ def test_api_run_artifacts_preview_rejects_paths_outside_workspace() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.txt", "content": "hello"},
                     )
                 ],
@@ -1567,7 +2398,7 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.txt", "content": "hello"},
                     )
                 ],
@@ -1626,7 +2457,7 @@ def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes/output.md", "content": "seed"},
                     )
                 ],
@@ -1708,6 +2539,45 @@ def test_api_dag_run_uses_requested_workspace_root(tmp_path: Path) -> None:
     workspace_path = Path(run_payload["workspace_path"])
     assert workspace_path.parent == workspace_root
     assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+
+
+def test_api_dag_run_rejects_relative_workspace_root_escape() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "workspace_escape",
+            "name": "Workspace Escape",
+            "nodes": [
+                {
+                    "id": "echo",
+                    "target": "tool.echo",
+                    "inputs": {"text": "ok"},
+                }
+            ],
+            "edges": [],
+        },
+    )
+    assert create_response.status_code == 200
+
+    response = client.post(
+        "/dags/workspace_escape/run",
+        json={"workspace_root": "../outside"},
+    )
+
+    assert response.status_code == 400
+    assert "workspace_root" in response.json()["detail"]
+
+
+def test_api_workspace_root_rejects_tilde_expansion() -> None:
+    try:
+        app_module._clean_workspace_root("~/dagent-runs")
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "workspace_root" in str(exc.detail)
+    else:
+        raise AssertionError("workspace_root with '~' should be rejected")
 
 
 def test_api_dag_run_resolves_artifact_path_against_requested_run_workspace(tmp_path: Path) -> None:
@@ -1927,7 +2797,6 @@ def test_api_created_tool_capability_can_run_in_dag() -> None:
         "/capabilities",
         json={
             "id": "tool.upper",
-            "name": "upper",
             "kind": "tool",
             "description": "Uppercase-ish text.",
             "config": {"template": "upper:{text}"},
@@ -2400,7 +3269,7 @@ def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) ->
 
 
 def _dag_agent_dsl() -> str:
-    return 'task: mock\nanswer = echo(text="ok")\n'
+    return 'task: mock\nanswer = tool_echo(text="ok")\n'
 
 
 def _message_request(message: str, **fields) -> dict:

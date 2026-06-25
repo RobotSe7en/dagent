@@ -37,7 +37,7 @@ def test_tool_agent_uses_run_workspace_for_relative_tool_paths(
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "shared/tool.txt", "content": "hi"},
                 )
             ]
@@ -74,7 +74,7 @@ def test_runner_uses_resolved_workspace_after_cwd_changes(
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "shared/chdir.txt", "content": "hi"},
                 )
             ]
@@ -108,7 +108,7 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
         ChatResponse(
             content=(
                 "task: write a DAG note\n"
-                "write = write_file(path=\"shared/dag.txt\", content=\"hi\")\n"
+                "write = tool_write_file(path=\"shared/dag.txt\", content=\"hi\")\n"
             )
         ),
         ChatResponse(content="done"),
@@ -139,7 +139,7 @@ def test_tool_agent_continuation_reuses_run_id_and_workspace(
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "shared/first.txt", "content": "one"},
                 )
             ]
@@ -149,7 +149,7 @@ def test_tool_agent_continuation_reuses_run_id_and_workspace(
             tool_calls=[
                 ToolCall(
                     id="call_2",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "shared/second.txt", "content": "two"},
                 )
             ]
@@ -191,14 +191,14 @@ def test_dag_agent_continuation_reuses_run_id_and_workspace(
         ChatResponse(
             content=(
                 "task: write first DAG note\n"
-                "write = write_file(path=\"shared/dag_first.txt\", content=\"one\")\n"
+                "write = tool_write_file(path=\"shared/dag_first.txt\", content=\"one\")\n"
             )
         ),
         ChatResponse(content="first done"),
         ChatResponse(
             content=(
                 "task: write second DAG note\n"
-                "write = write_file(path=\"shared/dag_second.txt\", content=\"two\")\n"
+                "write = tool_write_file(path=\"shared/dag_second.txt\", content=\"two\")\n"
             )
         ),
         ChatResponse(content="second done"),
@@ -324,7 +324,7 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "shared/sandbox.txt", "content": "hi"},
                 )
             ]

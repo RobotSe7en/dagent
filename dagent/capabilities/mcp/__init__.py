@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from hashlib import sha1
 from typing import Any
 
 from dagent.capabilities.catalog import CapabilityCatalog
@@ -12,7 +13,8 @@ from .handlers import make_mcp_tool_handler
 from .manager import MCPServerManager
 from .schema import normalize_mcp_input_schema
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+_CAPABILITY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 
 class MCPCapabilityProvider:
@@ -61,10 +63,9 @@ class MCPCapabilityProvider:
         safe_server = _safe_component(server_name)
         safe_tool = _safe_component(tool_name)
         capability_id = f"mcp.{safe_server}.{safe_tool}"
-        function_name = f"mcp_{safe_server}__{safe_tool}"
-        if catalog.get(capability_id) is not None or catalog.get_by_name(function_name) is not None:
+        if catalog.get(capability_id) is not None:
             self.registration_errors.append(
-                f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{function_name}'."
+                f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{capability_id}'."
             )
             return
         input_schema = getattr(tool, "inputSchema", None)
@@ -73,7 +74,6 @@ class MCPCapabilityProvider:
         server_config = self.servers.get(server_name, {})
         definition = CapabilityDefinition(
             id=capability_id,
-            name=function_name,
             kind="mcp",
             description=str(getattr(tool, "description", "") or ""),
             parameters=normalize_mcp_input_schema(input_schema),
@@ -96,8 +96,15 @@ class MCPCapabilityProvider:
 
 
 def _safe_component(value: str) -> str:
-    safe = _SAFE_NAME_RE.sub("_", value.strip()).strip("_").lower()
-    return safe or "unnamed"
+    raw = value.strip()
+    if _CAPABILITY_SEGMENT_RE.fullmatch(raw):
+        return raw
+    slug = _UNSAFE_NAME_RE.sub("_", raw).strip("_").lower() or "unnamed"
+    return f"{slug}_{_short_hash(raw)}"
+
+
+def _short_hash(value: str) -> str:
+    return sha1(value.encode("utf-8")).hexdigest()[:8]
 
 
 __all__ = ["MCPCapabilityProvider", "MCPServerManager", "normalize_mcp_input_schema"]

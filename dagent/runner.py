@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent
+from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.boundaries import infer_capability_boundary
 from dagent.capabilities.catalog import CapabilityHandler
@@ -189,6 +189,21 @@ class Runner:
     def add_tools(self, capabilities: Iterable[CapabilityBinding]) -> list[CapabilityDefinition]:
         return [self.add_tool(capability) for capability in capabilities]
 
+    def add_agent(self, agent: ToolAgent) -> CapabilityDefinition:
+        """Register a leaf ``ToolAgent`` as an ``agent.*`` capability."""
+
+        self._ensure_open()
+        return self._register_agent_capability(agent)
+
+    def add_agents(self, agents: Iterable[ToolAgent]) -> list[CapabilityDefinition]:
+        return [self.add_agent(agent) for agent in agents]
+
+    def validate_agent_registration(self, agent: ToolAgent, *, replacing: bool = False) -> None:
+        """Validate that a leaf ``ToolAgent`` can be registered without mutating runtime state."""
+
+        self._ensure_open()
+        self._validate_agent_registration(agent, replacing=replacing)
+
     def register_capability(
         self,
         definition: CapabilityDefinition,
@@ -225,7 +240,14 @@ class Runner:
         """Remove a registered capability by id."""
 
         self._ensure_open()
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is not None and definition.kind != "agent":
+            self._ensure_no_registered_agent_dependencies((capability_id,), f"remove capability '{capability_id}'")
         self._runtime.capability_catalog.delete(capability_id)
+        if definition is not None and definition.kind == "agent":
+            name = capability_id.removeprefix("agent.")
+            self._registered_agent_configs.pop(name, None)
+            self._registered_agent_runtime_configs.pop(name, None)
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
 
@@ -248,6 +270,9 @@ class Runner:
         """Enable or disable a registered capability."""
 
         self._ensure_open()
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is not None and not enabled and definition.kind != "agent":
+            self._ensure_no_registered_agent_dependencies((capability_id,), f"disable capability '{capability_id}'")
         updated = self._runtime.capability_catalog.set_enabled(capability_id, enabled)
         self._runtime.refresh_toolsets()
         return updated
@@ -393,9 +418,19 @@ class Runner:
         """Remove a dynamically registered MCP server and its capabilities."""
 
         self._ensure_open()
+        self.ensure_mcp_server_removable(name)
         self._remove_mcp_server_registration(name)
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
+
+    def ensure_mcp_server_removable(self, name: str) -> None:
+        """Raise if a registered subagent explicitly depends on an MCP server."""
+
+        self._ensure_open()
+        self._ensure_no_registered_agent_dependencies(
+            self._mcp_server_capability_ids.get(name, ()),
+            f"remove MCP server '{name}'",
+        )
 
     def replace_mcp_server(
         self,
@@ -404,8 +439,60 @@ class Runner:
     ) -> list[CapabilityDefinition]:
         """Replace a dynamically registered MCP server configuration."""
 
-        self.remove_mcp_server(name)
-        return self.add_mcp_server(name, config)
+        self._ensure_open()
+        catalog = self._runtime.capability_catalog
+        old_ids = self._mcp_server_capability_ids.get(name, ())
+        old_entries = {
+            capability_id: catalog.get_entry(capability_id)
+            for capability_id in old_ids
+        }
+        old_manager = self._mcp_server_managers.get(name)
+        self._remove_mcp_server_registration(name, shutdown=False)
+        try:
+            definitions = self._add_mcp_server(name, config, refresh=False)
+            new_ids = self._mcp_server_capability_ids.get(name, ())
+            missing_ids = set(old_ids) - set(new_ids)
+            self._ensure_no_registered_agent_dependencies(
+                missing_ids,
+                f"replace MCP server '{name}'",
+            )
+            self._runtime.refresh_toolsets()
+            self._refresh_registered_agent_runtime_configs()
+        except Exception:
+            self._remove_mcp_server_registration(name)
+            self._restore_mcp_server_registration(name, old_entries, old_manager)
+            self._runtime.refresh_toolsets()
+            self._refresh_registered_agent_runtime_configs()
+            raise
+        if old_manager is not None and hasattr(old_manager, "shutdown"):
+            try:
+                old_manager.shutdown()
+            except Exception:
+                pass
+        return definitions
+
+    def reload_mcp_servers(
+        self,
+        servers: Mapping[str, dict[str, Any]],
+        *,
+        replace_names: Iterable[str],
+    ) -> tuple[set[str], dict[str, str]]:
+        """Rebuild a group of MCP servers without treating it as user deletion."""
+
+        self._ensure_open()
+        for name in list(replace_names):
+            self._remove_mcp_server_registration(name)
+        registered: set[str] = set()
+        errors: dict[str, str] = {}
+        for name, config in servers.items():
+            try:
+                self._add_mcp_server(name, config, refresh=False)
+                registered.add(name)
+            except Exception as exc:
+                errors[name] = str(exc)
+        self._runtime.refresh_toolsets()
+        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
+        return registered, errors
 
     def _add_mcp_server(
         self,
@@ -413,6 +500,7 @@ class Runner:
         config: dict[str, Any],
         *,
         manager: Any | None = None,
+        refresh: bool = True,
     ) -> list[CapabilityDefinition]:
         self._ensure_open()
         if name in self._mcp_server_capability_ids or name in self._mcp_server_managers:
@@ -445,21 +533,42 @@ class Runner:
         provider_manager = getattr(provider, "manager", manager)
         if provider_manager is not None:
             self._mcp_server_managers[name] = provider_manager
-        self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
+        if refresh:
+            self._runtime.refresh_toolsets()
+            self._refresh_registered_agent_runtime_configs()
         return [definition for definition in (catalog.get(new_id) for new_id in new_ids) if definition is not None]
 
-    def _remove_mcp_server_registration(self, name: str) -> None:
+    def _remove_mcp_server_registration(self, name: str, *, shutdown: bool = True) -> None:
         catalog = self._runtime.capability_catalog
         for capability_id in self._mcp_server_capability_ids.pop(name, ()):
             catalog.delete(capability_id)
         manager = self._mcp_server_managers.pop(name, None)
         if manager is not None and hasattr(manager, "shutdown"):
             catalog.remove_shutdown_hook(manager.shutdown)
-            try:
-                manager.shutdown()
-            except Exception:
-                pass
+            if shutdown:
+                try:
+                    manager.shutdown()
+                except Exception:
+                    pass
+
+    def _restore_mcp_server_registration(
+        self,
+        name: str,
+        entries: dict[str, Any],
+        manager: Any | None,
+    ) -> None:
+        catalog = self._runtime.capability_catalog
+        restored_ids: list[str] = []
+        for capability_id, entry in entries.items():
+            if entry is not None:
+                catalog._entries[capability_id] = entry
+                restored_ids.append(capability_id)
+        if restored_ids:
+            self._mcp_server_capability_ids[name] = tuple(restored_ids)
+        if manager is not None:
+            self._mcp_server_managers[name] = manager
+            if hasattr(manager, "shutdown"):
+                catalog.add_shutdown_hook(manager.shutdown)
 
     def _rollback_mcp_registration(self, catalog: Any, capability_ids: list[str], manager: Any) -> None:
         for capability_id in capability_ids:
@@ -773,7 +882,11 @@ class Runner:
             )
 
     def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            agent.skills,
+            agents=agent.agents,
+        )
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
@@ -786,7 +899,11 @@ class Runner:
         return runtime
 
     def _runtime_for_tool_agent(self, agent: ToolAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            agent.skills,
+            agents=agent.agents,
+        )
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
@@ -799,7 +916,11 @@ class Runner:
         return runtime
 
     def _runtime_for_dag_agent(self, agent: DagAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            agent.skills,
+            agents=agent.agents,
+        )
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile="conversation",
@@ -816,10 +937,12 @@ class Runner:
         refs: Iterable[CapabilityRef] | None,
         skills: Iterable[str] | None,
         *,
+        agents: Iterable[ToolAgent | str] | str | None = None,
         register_bindings: bool = True,
     ) -> tuple[str, ...]:
         capability_ids = self._resolve_capability_refs(refs, register_bindings=register_bindings)
-        return _apply_skill_capabilities(capability_ids, skills)
+        agent_ids = self._resolve_agent_refs(agents)
+        return _apply_skill_capabilities(tuple(dict.fromkeys((*capability_ids, *agent_ids))), skills)
 
     def _resolve_capability_refs(
         self,
@@ -856,35 +979,19 @@ class Runner:
     def _ensure_dag_capabilities(self, dag: Dag) -> None:
         for capability in dag.capabilities:
             self.add_tool(capability)
-        new_agent_configs: dict[str, dict[str, Any]] = {}
         for agent in dag.agents:
-            name = agent.name or ""
-            existing = self._registered_agent_configs.get(name)
-            if existing is not None:
-                if existing != agent:
-                    raise ValueError(f"Agent capability 'agent.{name}' is already registered with different config.")
-                self._refresh_registered_agent_runtime_config(name, agent)
-                continue
-            capability_ids = self._resolve_agent_capability_refs(agent.capabilities, agent.skills)
-            profile = _resolve_profile(agent.profile, profile_root=self.profile_root)
-            new_agent_configs[name] = {
-                "provider": self._runtime.provider,
-                "profile": profile,
-                "description": agent.description,
-                "max_steps": agent.max_steps,
-                "skills": _agent_skills(agent),
-                "capability_executor": self._runtime.capability_executor,
-                "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
-            }
-            self._registered_agent_configs[name] = agent
-            self._registered_agent_runtime_configs[name] = new_agent_configs[name]
-        if new_agent_configs:
-            AgentCapabilityProvider(new_agent_configs).register_into(self._runtime.capability_catalog)
-            self._runtime.refresh_toolsets()
+            self.add_agent(agent)
 
-    def _refresh_registered_agent_runtime_configs(self) -> None:
+    def _refresh_registered_agent_runtime_configs(self, *, collect_errors: bool = False) -> dict[str, str]:
+        errors: dict[str, str] = {}
         for name, agent in list(self._registered_agent_configs.items()):
-            self._refresh_registered_agent_runtime_config(name, agent)
+            try:
+                self._refresh_registered_agent_runtime_config(name, agent)
+            except KeyError as exc:
+                if not collect_errors:
+                    raise
+                errors[f"agent.{name}"] = str(exc.args[0]) if exc.args else str(exc)
+        return errors
 
     def _refresh_registered_agent_runtime_config(self, name: str, agent: ToolAgent) -> None:
         config = self._registered_agent_runtime_configs.get(name)
@@ -895,8 +1002,127 @@ class Runner:
             agent.skills,
             register_bindings=False,
         )
+        self._ensure_no_agent_capabilities(
+            capability_ids,
+            f"Registered subagent 'agent.{name}' cannot expose subagents",
+        )
         config["skills"] = _agent_skills(agent)
         config["tool_adapter"] = _tool_adapter(self._runtime.capability_catalog, capability_ids)
+
+    def _validate_agent_registration(self, agent: ToolAgent, *, replacing: bool) -> None:
+        name = validate_agent_name(agent.name)
+        if agent.review != "fast":
+            raise ValueError("Registered subagents must use review=\"fast\".")
+        capability_id = f"agent.{name}"
+        existing = self._registered_agent_configs.get(name)
+        if existing is None and self._runtime.capability_catalog.get(capability_id) is not None:
+            raise ValueError(f"Agent capability '{capability_id}' is already registered.")
+        if existing is not None and not replacing and existing != agent:
+            raise ValueError(f"Agent capability '{capability_id}' is already registered with different config.")
+        self._registered_agent_runtime_config(agent, register_bindings=False)
+
+    def _register_agent_capability(self, agent: ToolAgent) -> CapabilityDefinition:
+        name = validate_agent_name(agent.name)
+        if agent.review != "fast":
+            raise ValueError("Registered subagents must use review=\"fast\".")
+        existing = self._registered_agent_configs.get(name)
+        capability_id = f"agent.{name}"
+        if existing is not None:
+            if existing != agent:
+                raise ValueError(f"Agent capability '{capability_id}' is already registered with different config.")
+            self._refresh_registered_agent_runtime_config(name, agent)
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is None:
+                raise RuntimeError(f"Agent capability '{capability_id}' is missing from the catalog.")
+            return definition
+
+        config = self._registered_agent_runtime_config(agent)
+        AgentCapabilityProvider({name: config}).register_into(self._runtime.capability_catalog)
+        self._registered_agent_configs[name] = agent
+        self._registered_agent_runtime_configs[name] = config
+        self._runtime.refresh_toolsets()
+        definition = self._runtime.capability_catalog.get(capability_id)
+        if definition is None:
+            raise RuntimeError(f"Agent capability '{capability_id}' was not registered.")
+        return definition
+
+    def _registered_agent_runtime_config(
+        self,
+        agent: ToolAgent,
+        *,
+        register_bindings: bool = True,
+    ) -> dict[str, Any]:
+        name = validate_agent_name(agent.name)
+        if _has_agent_refs(agent.agents):
+            raise ValueError(f"Registered subagent 'agent.{name}' cannot expose subagents.")
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            agent.skills,
+            register_bindings=register_bindings,
+        )
+        self._ensure_no_agent_capabilities(
+            capability_ids,
+            f"Registered subagent 'agent.{name}' cannot expose subagents",
+        )
+        return {
+            "provider": self._runtime.provider,
+            "profile": _resolve_profile(agent.profile, profile_root=self.profile_root),
+            "description": agent.description,
+            "max_steps": agent.max_steps,
+            "skills": _agent_skills(agent),
+            "capability_executor": self._runtime.capability_executor,
+            "tool_adapter": _tool_adapter(self._runtime.capability_catalog, capability_ids),
+        }
+
+    def _resolve_agent_refs(self, agents: Iterable[ToolAgent | str] | str | None) -> tuple[str, ...]:
+        if agents is None:
+            return ()
+        if isinstance(agents, str):
+            if agents != "registered":
+                raise ValueError("agents must be 'registered' or an iterable of ToolAgent objects or agent ids.")
+            return self._registered_agent_capability_ids()
+
+        capability_ids: list[str] = []
+        for ref in agents:
+            if isinstance(ref, ToolAgent):
+                capability_ids.append(self.add_agent(ref).id)
+            elif isinstance(ref, str):
+                capability_id = _agent_capability_id(ref)
+                definition = self._runtime.capability_catalog.get(capability_id)
+                if definition is None:
+                    raise KeyError(f"Agent capability '{capability_id}' is not registered.")
+                if definition.kind != "agent":
+                    raise ValueError(f"Capability '{capability_id}' is not an agent capability.")
+                capability_ids.append(capability_id)
+            else:
+                raise TypeError("agents must contain ToolAgent objects or agent capability id strings.")
+        return tuple(dict.fromkeys(capability_ids))
+
+    def _registered_agent_capability_ids(self) -> tuple[str, ...]:
+        return tuple(f"agent.{name}" for name in sorted(self._registered_agent_configs))
+
+    def _ensure_no_agent_capabilities(self, capability_ids: Iterable[str], message: str) -> None:
+        nested = []
+        for capability_id in capability_ids:
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is not None and definition.kind == "agent":
+                nested.append(capability_id)
+        if nested:
+            raise ValueError(f"{message}: {', '.join(sorted(nested))}.")
+
+    def _ensure_no_registered_agent_dependencies(self, capability_ids: Iterable[str], action: str) -> None:
+        target_ids = set(capability_ids)
+        if not target_ids:
+            return
+        dependents = [
+            f"agent.{name}"
+            for name, agent in sorted(self._registered_agent_configs.items())
+            if target_ids.intersection(_explicit_agent_capability_ids(agent.capabilities))
+        ]
+        if dependents:
+            joined_ids = ", ".join(sorted(target_ids))
+            joined_agents = ", ".join(dependents)
+            raise ValueError(f"Cannot {action}; {joined_agents} depends on {joined_ids}.")
 
     def _resolve_spec_capability_metadata(self, spec: DAGSpec) -> DAGSpec:
         resolved = spec.model_copy(deep=True)
@@ -1093,6 +1319,33 @@ def _agent_skills(agent: AutoAgent | ToolAgent | DagAgent) -> tuple[str, ...] | 
     if agent.skills is None:
         return None
     return tuple(agent.skills)
+
+
+def _has_agent_refs(agents: Iterable[ToolAgent | str] | str | None) -> bool:
+    if agents is None:
+        return False
+    if isinstance(agents, str):
+        return True
+    return any(True for _ in agents)
+
+
+def _explicit_agent_capability_ids(refs: Iterable[CapabilityRef] | None) -> tuple[str, ...]:
+    if refs is None:
+        return ()
+    capability_ids: list[str] = []
+    for ref in refs:
+        if isinstance(ref, CapabilityBinding):
+            capability_ids.append(ref.definition.id)
+        elif isinstance(ref, str):
+            capability_ids.append(ref)
+    return tuple(dict.fromkeys(capability_ids))
+
+
+def _agent_capability_id(ref: str) -> str:
+    if not ref.startswith("agent."):
+        raise ValueError("agent ids must use the 'agent.<name>' capability id form.")
+    name = validate_agent_name(ref.removeprefix("agent."))
+    return f"agent.{name}"
 
 
 def _apply_skill_capabilities(

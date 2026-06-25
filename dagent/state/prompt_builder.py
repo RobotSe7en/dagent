@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from dagent.capabilities.toolsets import capability_function_name
 from dagent.profiles import AgentProfile
 from dagent.schemas import CapabilityDefinition
 
@@ -48,8 +49,21 @@ class PromptBuilder:
 def _tools_section(tools: list[CapabilityDefinition]) -> str:
     lines = ["## Available Tools"]
     for tool in tools:
-        lines.append(f"- {tool.name}: {tool.description or 'No description.'}")
+        args = _parameter_names(tool.parameters)
+        args_text = f" Args: {', '.join(args)}." if args else ""
+        function_name = capability_function_name(tool)
+        lines.append(
+            f"- {function_name} ({tool.kind}, id: {tool.id}): "
+            f"{tool.description or 'No description.'}{args_text}"
+        )
     return "\n".join(lines)
+
+
+def _parameter_names(parameters: dict[str, Any] | None) -> list[str]:
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    if not isinstance(properties, dict):
+        return []
+    return [str(name) for name in properties]
 
 
 def _named_section(title: str, content: str) -> str:

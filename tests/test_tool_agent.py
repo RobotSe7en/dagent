@@ -135,10 +135,10 @@ def test_tool_agent_scope_filters_tools_without_injecting_skill_prompt(tmp_path:
     assert result.state.status == "completed"
     assert result.state.capability_scope.capability_ids == ("tool.read_file",)
     assert result.state.capability_scope.skills == ("writing/summarize",)
-    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["read_file"]
+    assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == ["tool_read_file"]
     system_content = provider.requests[0]["messages"][0]["content"]
     assert "writing/summarize" not in system_content
-    assert "write_file" not in system_content
+    assert "tool_write_file" not in system_content
 
 
 def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ def test_tool_agent_fast_review_guard_preserves_execution_context(tmp_path: Path
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="needs_context",
+                        name="tool_needs_context",
                         arguments={"text": "hello"},
                     )
                 ]
@@ -192,7 +192,7 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "notes.txt", "content": "hi"},
                     )
                 ]
@@ -219,9 +219,9 @@ def test_tool_agent_scope_rejects_model_call_to_excluded_tool(tmp_path: Path) ->
     assert not (tmp_path / "notes.txt").exists()
     tool_message = next(message for message in result.state.internal_messages if message["role"] == "tool")
     assert tool_message["role"] == "tool"
-    assert tool_message["name"] == "write_file"
+    assert tool_message["name"] == "tool_write_file"
     assert "[TOOL_ERROR]" in tool_message["content"]
-    assert "write_file" in tool_message["content"]
+    assert "tool_write_file" in tool_message["content"]
 
 
 def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tmp_path: Path) -> None:
@@ -234,7 +234,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "blocked/secret.txt"},
                     )
                 ]
@@ -274,7 +274,7 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "blocked/secret.txt"},
                     )
                 ]
@@ -298,7 +298,7 @@ def test_tool_agent_approves_boundary_review_for_one_tool_call(tmp_path: Path) -
     assert agent.messages[2] == {
         "role": "tool",
         "tool_call_id": "call_1",
-        "name": "read_file",
+        "name": "tool_read_file",
         "content": "secret",
     }
 
@@ -314,7 +314,7 @@ def test_tool_agent_rejects_boundary_review_without_executing_tool(tmp_path: Pat
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/secret.txt", "content": "changed"},
                     )
                 ]
@@ -355,12 +355,12 @@ def test_tool_agent_rejects_review_with_sibling_tool_call_keeps_provider_history
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/secret.txt", "content": "changed"},
                     ),
                     ToolCall(
                         id="call_2",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "allowed/notes.txt"},
                     ),
                 ]
@@ -398,7 +398,7 @@ def test_tool_agent_rejected_review_includes_reviewer_feedback(tmp_path: Path) -
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/secret.txt", "content": "changed"},
                     )
                 ]
@@ -437,7 +437,7 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/notes.txt", "content": "approved"},
                     )
                 ]
@@ -478,7 +478,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/first.txt", "content": "one"},
                     )
                 ]
@@ -487,7 +487,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
                 tool_calls=[
                     ToolCall(
                         id="call_2",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/second.txt", "content": "two"},
                     )
                 ]
@@ -529,7 +529,7 @@ def test_tool_agent_shell_cross_boundary_path_requires_review(tmp_path: Path) ->
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="shell",
+                        name="tool_shell",
                         arguments={
                             "cwd": "allowed",
                             "command": "cat ../blocked/secret.txt",
@@ -563,7 +563,7 @@ def test_tool_agent_hard_blocked_command_is_not_reviewable(tmp_path: Path) -> No
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="shell",
+                        name="tool_shell",
                         arguments={"cwd": ".", "command": "rm -rf /"},
                     )
                 ]
@@ -598,7 +598,7 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "notes.txt"},
                     )
                 ]
@@ -618,14 +618,14 @@ def test_tool_agent_loop_executes_tool_call_and_writes_result_to_messages(
     assert result.state.status == "completed"
     assert result.output_text == "I read it."
     assert result.state.internal_messages[1]["role"] == "assistant"
-    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert result.state.internal_messages[1]["tool_calls"][0]["function"]["name"] == "tool_read_file"
     assert result.state.internal_messages[1]["tool_calls"][0]["function"]["arguments"] == (
         '{"path": "notes.txt"}'
     )
     assert result.state.internal_messages[2] == {
         "role": "tool",
         "tool_call_id": "call_1",
-        "name": "read_file",
+        "name": "tool_read_file",
         "content": "hello from file",
     }
     assert provider.requests[1]["messages"][-1]["role"] == "tool"
@@ -642,7 +642,7 @@ def test_tool_agent_loop_execution_context_keeps_evidence_after_500_chars(
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "notes.txt"},
                     )
                 ]
@@ -671,7 +671,7 @@ def test_tool_agent_loop_marks_truncated_execution_context(tmp_path: Path) -> No
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "notes.txt"},
                     )
                 ]
@@ -699,7 +699,7 @@ def test_tool_agent_loop_emits_tool_events_in_execution_order(tmp_path: Path) ->
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "notes.txt"},
                     )
                 ]
@@ -758,7 +758,7 @@ def test_tool_agent_loop_stops_at_max_steps(tmp_path: Path) -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="read_file",
+                        name="tool_read_file",
                         arguments={"path": "notes.txt"},
                     )
                 ]
@@ -788,7 +788,7 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="write_file",
+                        name="tool_write_file",
                         arguments={"path": "blocked/notes.txt", "content": "nope"},
                     )
                 ]
@@ -815,7 +815,6 @@ def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_
     catalog = CapabilityCatalog(workspace_root=tmp_path)
     definition = CapabilityDefinition(
         id="memory.read",
-        name="memory.read",
         kind="memory",
         policy=CapabilityPolicy(risk="medium"),
     )

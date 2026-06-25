@@ -311,7 +311,6 @@ def test_compile_dag_spec_copies_capability_policy_risk() -> None:
         capabilities=[
             CapabilityDefinition(
                 id="tool.write_file",
-                name="write_file",
                 kind="tool",
                 policy=CapabilityPolicy(risk="medium"),
             )

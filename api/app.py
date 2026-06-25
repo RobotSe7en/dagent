@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import json
 import mimetypes
+import re
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
@@ -14,6 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from api.agent_presets import (
+    AgentPreset,
+    AgentPresetStore,
+    AgentPresetUpdateRequest,
+    clean_agent_preset_name,
+)
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -57,6 +64,7 @@ from api.stream_gate import gate_chat_display
 
 
 MessageTarget = Literal["auto", "tool", "dag"]
+AgentScope = Literal["none", "selected", "registered"]
 CONFIG_MODEL_ID = "config"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "runtime"]
@@ -67,6 +75,9 @@ RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
 PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
+_MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
+_LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -116,6 +127,9 @@ class MessageRequest(BaseModel):
     dynamic_adjust: bool = True
     capability_ids: list[str] | None = None
     skills: list[str] | None = None
+    agent_scope: AgentScope = "none"
+    agent_ids: list[str] | None = None
+    workspace_root: str | None = None
 
 
 class ResumeReviewRequest(BaseModel):
@@ -312,6 +326,7 @@ class ApiState:
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.agent_preset_errors: dict[str, str] = {}
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
         self.validation_override: bool | None = None
@@ -321,6 +336,7 @@ class ApiState:
             self.runner = self._create_runner()
             self._install_custom_capabilities()
             self.reload_custom_mcp()
+            self._install_agent_presets()
             if self.validation_override is not None:
                 self.runner.enable_validation = self.validation_override
         return self.runner
@@ -348,6 +364,7 @@ class ApiState:
         self.runner = None
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
+        self.agent_preset_errors.clear()
 
     def get_profile_directory(self) -> str | None:
         if self.profile_directory is not None:
@@ -368,11 +385,17 @@ class ApiState:
     def get_managed_profile_root(self) -> Path:
         return Path.home() / ".dagent" / "profiles"
 
+    def get_agent_preset_root(self) -> Path:
+        return Path.home() / ".dagent" / "agents"
+
     def skill_store(self) -> SkillStore:
         return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
 
     def managed_profile_store(self) -> ProfileStore:
         return ProfileStore(self.get_managed_profile_root())
+
+    def agent_preset_store(self) -> AgentPresetStore:
+        return AgentPresetStore(self.get_agent_preset_root())
 
     def _install_custom_capabilities(self) -> None:
         if self.runner is None:
@@ -385,16 +408,24 @@ class ApiState:
         if self.runner is None:
             return
         runner = self.runner
-        for name in list(self.custom_mcp_registered_names):
-            runner.remove_mcp_server(name)
-        self.custom_mcp_registered_names.clear()
-        self.custom_mcp_errors.clear()
-        for name, config in self.custom_mcp_servers.items():
+        registered_names, errors = runner.reload_mcp_servers(
+            self.custom_mcp_servers,
+            replace_names=self.custom_mcp_registered_names,
+        )
+        self.custom_mcp_registered_names = registered_names
+        self.custom_mcp_errors = errors
+        self._install_agent_presets()
+
+    def _install_agent_presets(self) -> None:
+        if self.runner is None:
+            return
+        presets, errors = _agent_presets_with_errors(self.agent_preset_store())
+        self.agent_preset_errors = dict(errors)
+        for preset in presets:
             try:
-                runner.add_mcp_server(name, config)
-                self.custom_mcp_registered_names.add(name)
+                self.runner.add_agent(_tool_agent_from_preset(preset))
             except Exception as exc:
-                self.custom_mcp_errors[name] = str(exc)
+                self.agent_preset_errors[preset.name] = str(exc)
 
 
 state = ApiState()
@@ -558,7 +589,7 @@ async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> S
 def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
     if request is None or request.workspace_root is None or not request.workspace_root.strip():
         return DEFAULT_RUNS_DIR
-    return request.workspace_root.strip()
+    return _clean_workspace_root(request.workspace_root)
 
 
 def _compile_user_dag(dag: UserDAG) -> Dag:
@@ -592,6 +623,16 @@ def _compile_user_dag_target(node: UserDAGNode) -> str | ToolAgent:
     if not capability_id.startswith("agent."):
         if node.agent is not None:
             raise ValueError(f"Node '{node.id}' has agent config but does not target an agent capability.")
+        return capability_id
+    definition = state.get_runner().get_capability(capability_id)
+    if definition is not None:
+        if definition.kind != "agent":
+            raise ValueError(f"Capability '{capability_id}' is not an agent capability.")
+        if node.agent is not None:
+            raise ValueError(
+                f"Node '{node.id}' targets registered agent capability '{capability_id}' "
+                "and cannot include node-level agent config."
+            )
         return capability_id
     profile_name = _clean_agent_profile_name(capability_id.removeprefix("agent."))
     agent_config = node.agent
@@ -746,20 +787,187 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     }
 
 
+@app.get("/agents")
+async def list_agents() -> dict[str, Any]:
+    store = state.agent_preset_store()
+    presets, errors = _agent_presets_available_for_registration(store)
+    state.agent_preset_errors = errors
+    return {
+        "agents": [
+            _agent_preset_payload(preset)
+            for preset in presets
+        ],
+        "errors": dict(state.agent_preset_errors),
+    }
+
+
+@app.post("/agents")
+async def create_agent(request: AgentPreset) -> dict[str, Any]:
+    name = _clean_agent_preset_name(request.name)
+    store = state.agent_preset_store()
+    if name in store.list_names():
+        raise HTTPException(status_code=400, detail=f"Agent preset '{name}' already exists.")
+    _ensure_agent_preset_name_available(name)
+    preset = _agent_preset_from_request(request, name=name)
+    tool_agent = _tool_agent_from_preset(preset)
+    try:
+        state.get_runner().validate_agent_registration(tool_agent)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    saved = store.save(preset)
+    try:
+        state.get_runner().add_agent(tool_agent)
+    except Exception as exc:
+        store.delete(name)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"agent": _agent_preset_payload(saved)}
+
+
+@app.put("/agents/{name}")
+async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str, Any]:
+    preset_name = _clean_agent_preset_name(name)
+    store = state.agent_preset_store()
+    if preset_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Agent preset not found.")
+    _ensure_agent_preset_name_available(preset_name)
+    previous = store.load(preset_name)
+    preset = _agent_preset_from_request(request, name=preset_name)
+    try:
+        state.get_runner().validate_agent_registration(_tool_agent_from_preset(preset), replacing=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    saved = store.save(preset)
+    state.close_runner()
+    state.get_runner()
+    error = state.agent_preset_errors.get(preset_name)
+    if error is not None:
+        store.save(previous)
+        state.close_runner()
+        raise HTTPException(status_code=400, detail=error)
+    return {"agent": _agent_preset_payload(saved)}
+
+
+@app.delete("/agents/{name}")
+async def delete_agent(name: str) -> dict[str, str]:
+    preset_name = _clean_agent_preset_name(name)
+    store = state.agent_preset_store()
+    if preset_name not in store.list_names():
+        raise HTTPException(status_code=404, detail="Agent preset not found.")
+    store.delete(preset_name)
+    state.close_runner()
+    return {"status": "deleted"}
+
+
 def _profile_agent_capabilities() -> list[CapabilityDefinition]:
     profiles = _agent_profile_candidates()
-    return [
-        CapabilityDefinition(
-            id=f"agent.{profile.name}",
-            name=profile.name,
+    definitions: list[CapabilityDefinition] = []
+    for source, profile in profiles:
+        try:
+            name = clean_agent_preset_name(profile.name)
+        except ValueError:
+            continue
+        definitions.append(CapabilityDefinition(
+            id=f"agent.{name}",
             kind="agent",
             description=profile.description,
             parameters=agent_capability_parameters(),
             policy=CapabilityPolicy(risk="medium", sandbox_required=True),
             config={"profile": profile.name, "source": source},
+        ))
+    return definitions
+
+
+def _agent_preset_payload(preset: AgentPreset) -> dict[str, Any]:
+    return {
+        **preset.model_dump(mode="json"),
+        "id": f"agent.{preset.name}",
+    }
+
+
+def _agent_preset_from_request(
+    request: AgentPreset | AgentPresetUpdateRequest,
+    *,
+    name: str,
+) -> AgentPreset:
+    try:
+        preset = AgentPreset(
+            name=name,
+            profile=str(request.profile).strip(),
+            description=str(request.description or ""),
+            max_steps=request.max_steps,
+            capabilities=(
+                None if request.capabilities is None
+                else _validated_agent_node_capabilities(request.capabilities)
+            ),
+            skills=(
+                None if request.skills is None
+                else _validated_agent_node_skills(request.skills)
+            ),
+            agents=None if request.agents is None else [str(agent) for agent in request.agents],
+            review=request.review,
         )
-        for source, profile in profiles
-    ]
+        _resolve_agent_profile(preset.profile)
+        if preset.agents:
+            raise ValueError(f"Registered subagent 'agent.{name}' cannot expose subagents.")
+        if preset.review != "fast":
+            raise ValueError("Registered subagents must use review=\"fast\".")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return preset
+
+
+def _tool_agent_from_preset(preset: AgentPreset) -> ToolAgent:
+    return ToolAgent(
+        profile=_resolve_agent_profile(preset.profile),
+        name=preset.name,
+        max_steps=preset.max_steps,
+        capabilities=None if preset.capabilities is None else tuple(preset.capabilities),
+        skills=None if preset.skills is None else tuple(preset.skills),
+        agents=None if preset.agents is None else tuple(preset.agents),
+        review=preset.review,
+        description=preset.description,
+    )
+
+
+def _clean_agent_preset_name(value: str) -> str:
+    try:
+        return clean_agent_preset_name(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _agent_presets_with_errors(store: AgentPresetStore) -> tuple[list[AgentPreset], dict[str, str]]:
+    presets, errors = store.list_valid()
+    profile_names = {profile.name for _, profile in _agent_profile_candidates()}
+    valid: list[AgentPreset] = []
+    for preset in presets:
+        if preset.name in profile_names:
+            errors[preset.name] = f"Agent preset '{preset.name}' conflicts with an agent profile."
+            continue
+        valid.append(preset)
+    return valid, errors
+
+
+def _agent_presets_available_for_registration(store: AgentPresetStore) -> tuple[list[AgentPreset], dict[str, str]]:
+    presets, errors = _agent_presets_with_errors(store)
+    if not presets:
+        return [], errors
+    runner = state.get_runner()
+    valid: list[AgentPreset] = []
+    for preset in presets:
+        try:
+            runner.validate_agent_registration(_tool_agent_from_preset(preset), replacing=True)
+        except Exception as exc:
+            errors[preset.name] = str(exc)
+            continue
+        valid.append(preset)
+    return valid, errors
+
+
+def _ensure_agent_preset_name_available(name: str) -> None:
+    profile_names = {profile.name for _, profile in _agent_profile_candidates()}
+    if name in profile_names:
+        raise HTTPException(status_code=400, detail=f"Agent preset '{name}' conflicts with an agent profile.")
 
 
 def _agent_profile_candidates() -> list[tuple[str, AgentProfile]]:
@@ -791,6 +999,7 @@ async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    state._install_agent_presets()
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
@@ -799,22 +1008,30 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
     runner = state.get_runner()
     if capability_id != definition.id:
         raise HTTPException(status_code=400, detail="Capability id mismatch.")
-    if runner.get_capability(capability_id) is None:
+    existing = runner.get_capability(capability_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
+    _ensure_generic_capability_mutation_allowed(existing)
     try:
         runner.replace_capability(definition, _handler_for_definition(definition))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities[definition.id] = definition.model_copy(deep=True)
+    state._install_agent_presets()
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
 @app.delete("/capabilities/{capability_id}")
 async def delete_capability(capability_id: str) -> dict[str, str]:
     runner = state.get_runner()
-    if runner.get_capability(capability_id) is None:
+    definition = runner.get_capability(capability_id)
+    if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
-    runner.remove_capability(capability_id)
+    _ensure_generic_capability_mutation_allowed(definition)
+    try:
+        runner.remove_capability(capability_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     state.custom_capabilities.pop(capability_id, None)
     return {"status": "deleted"}
 
@@ -919,6 +1136,9 @@ async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
     state.custom_mcp_servers[name] = _mcp_server_config(request)
     try:
         state.reload_custom_mcp()
+    except ValueError as exc:
+        state.custom_mcp_servers.pop(name, None)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         state.custom_mcp_errors[name] = str(exc)
     return {"server": _mcp_server_payload(name, "memory", state.custom_mcp_servers[name], state.get_runner())}
@@ -932,11 +1152,14 @@ async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail="MCP server name mismatch.")
     if server_name not in state.custom_mcp_servers:
         raise HTTPException(status_code=404, detail="MCP server not found.")
+    _ensure_mcp_server_removable(server_name)
+    previous = dict(state.custom_mcp_servers[server_name])
     state.custom_mcp_servers[server_name] = _mcp_server_config(request)
     try:
         state.reload_custom_mcp()
-    except Exception as exc:
-        state.custom_mcp_errors[server_name] = str(exc)
+    except ValueError as exc:
+        state.custom_mcp_servers[server_name] = previous
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"server": _mcp_server_payload(server_name, "memory", state.custom_mcp_servers[server_name], state.get_runner())}
 
 
@@ -945,15 +1168,30 @@ async def delete_mcp_server(name: str) -> dict[str, str]:
     server_name = _clean_name(name, field="MCP server name")
     if server_name not in state.custom_mcp_servers:
         raise HTTPException(status_code=404, detail="MCP server not found.")
-    state.custom_mcp_servers.pop(server_name, None)
-    state.reload_custom_mcp()
+    _ensure_mcp_server_removable(server_name)
+    previous = state.custom_mcp_servers.pop(server_name)
+    try:
+        state.reload_custom_mcp()
+    except ValueError as exc:
+        state.custom_mcp_servers[server_name] = previous
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "deleted"}
 
 
 @app.post("/mcp/reload")
 async def reload_mcp_servers() -> dict[str, Any]:
-    state.reload_custom_mcp()
+    try:
+        state.reload_custom_mcp()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await list_mcp_servers()
+
+
+def _ensure_mcp_server_removable(name: str) -> None:
+    try:
+        state.get_runner().ensure_mcp_server_removable(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/skills")
@@ -1093,14 +1331,10 @@ def _clean_managed_profile_name(value: str) -> str:
     name = str(value or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Profile name is required.")
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-    if (
-        not name[0].isalpha()
-        or any(char not in allowed for char in name)
-    ):
+    if _MANAGED_PROFILE_NAME_RE.fullmatch(name) is None:
         raise HTTPException(
             status_code=400,
-            detail="Profile name may contain only letters, numbers, underscores, and dashes, and must start with a letter.",
+            detail="Profile name may contain only letters, numbers, and underscores, and must start with a letter.",
         )
     return name
 
@@ -1115,6 +1349,8 @@ def _validate_profile_content(content: str) -> None:
 def _ensure_managed_profile_name_available(name: str) -> None:
     if name in {profile.name for profile in list_builtin_profiles()}:
         raise HTTPException(status_code=400, detail=f"Profile '{name}' is built in.")
+    if name in state.agent_preset_store().list_names():
+        raise HTTPException(status_code=400, detail=f"Profile '{name}' conflicts with an agent preset.")
     managed_store = state.managed_profile_store()
     if name in managed_store.list_names():
         raise HTTPException(status_code=400, detail=f"Profile '{name}' already exists.")
@@ -1151,10 +1387,25 @@ def _handler_for_definition(definition: CapabilityDefinition):
 
 def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]:
     runner = state.get_runner()
-    if runner.get_capability(capability_id) is None:
+    definition = runner.get_capability(capability_id)
+    if definition is None:
         raise HTTPException(status_code=404, detail="Capability not found.")
-    updated = runner.set_capability_enabled(capability_id, enabled)
+    _ensure_generic_capability_mutation_allowed(definition)
+    try:
+        updated = runner.set_capability_enabled(capability_id, enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if enabled:
+        state._install_agent_presets()
     return {"capability": updated.model_dump(mode="json")}
+
+
+def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition) -> None:
+    if definition.kind == "agent":
+        raise HTTPException(
+            status_code=400,
+            detail="Agent capabilities are managed through /agents.",
+        )
 
 
 def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: list[Path]) -> Runner:
@@ -1304,8 +1555,7 @@ def _clean_model_id(value: str, *, allow_config: bool = False) -> str:
         if allow_config:
             return model_id
         raise HTTPException(status_code=400, detail=f"Model id '{CONFIG_MODEL_ID}' is reserved.")
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
-    if any(char not in allowed for char in model_id) or not any(char.isalnum() for char in model_id):
+    if _MODEL_ID_RE.fullmatch(model_id) is None:
         raise HTTPException(
             status_code=400,
             detail="Model id may contain only letters, numbers, dots, underscores, and dashes.",
@@ -1339,11 +1589,13 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
     capability_ids: tuple[str, ...] | None = None
     if request.capability_ids is not None:
         capability_ids = tuple(_validated_capability_ids(request.capability_ids))
+    agents = _message_agent_refs(request)
 
     if request.target == "auto":
         return AutoAgent(
             capabilities=capability_ids,
             skills=skills,
+            agents=agents,
             review=request.review_level,
             dynamic_adjust=request.dynamic_adjust,
         )
@@ -1352,14 +1604,48 @@ def _agent_from_message(request: MessageRequest) -> AutoAgent | ToolAgent | DagA
             profile="conversation",
             capabilities=capability_ids,
             skills=skills,
+            agents=agents,
             review=request.review_level,
         )
     return DagAgent(
         capabilities=capability_ids,
         skills=skills,
+        agents=agents,
         review=request.review_level,
         dynamic_adjust=request.dynamic_adjust,
     )
+
+
+def _message_agent_refs(request: MessageRequest) -> tuple[str, ...] | str | None:
+    agent_ids = request.agent_ids or []
+    if request.agent_scope == "none":
+        if agent_ids:
+            raise HTTPException(status_code=400, detail="agent_ids require agent_scope='selected'.")
+        return None
+    if request.agent_scope == "registered":
+        if agent_ids:
+            raise HTTPException(status_code=400, detail="agent_ids are not accepted when agent_scope='registered'.")
+        return "registered"
+    if not agent_ids:
+        return ()
+    return tuple(_validated_agent_ids(agent_ids))
+
+
+def _validated_agent_ids(agent_ids: list[str]) -> list[str]:
+    runner = state.get_runner()
+    validated: list[str] = []
+    for agent_id in _dedupe(agent_ids):
+        if not agent_id.startswith("agent."):
+            raise HTTPException(status_code=400, detail="agent_ids must use the 'agent.<name>' capability id form.")
+        definition = runner.get_capability(agent_id)
+        if definition is None:
+            raise HTTPException(status_code=400, detail=f"Agent capability '{agent_id}' was not found.")
+        if not definition.enabled:
+            raise HTTPException(status_code=400, detail=f"Agent capability '{agent_id}' is disabled.")
+        if definition.kind != "agent":
+            raise HTTPException(status_code=400, detail=f"Capability '{agent_id}' is not an agent.")
+        validated.append(agent_id)
+    return validated
 
 
 def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
@@ -1371,6 +1657,11 @@ def _validated_capability_ids(capability_ids: list[str]) -> list[str]:
             raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' was not found.")
         if not definition.enabled:
             raise HTTPException(status_code=400, detail=f"Capability '{capability_id}' is disabled.")
+        if definition.kind == "agent":
+            raise HTTPException(
+                status_code=400,
+                detail="Agent capabilities must be selected through agent_scope and agent_ids.",
+            )
         validated.append(capability_id)
     return validated
 
@@ -1414,6 +1705,7 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 @app.post("/messages/stream")
 async def message_stream(request: MessageRequest) -> StreamingResponse:
     agent = _agent_from_message(request)
+    workspace_root = _workspace_root_from_message(request)
 
     async def events():
         sent_error = False
@@ -1424,6 +1716,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                     agent,
                     messages=request.messages,
                     state=request.state,
+                    workspace_root=workspace_root,
                 ),
                 validation_enabled=runner.enable_validation,
             ):
@@ -1440,6 +1733,22 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 })
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _workspace_root_from_message(request: MessageRequest) -> str:
+    if request.workspace_root is None or not request.workspace_root.strip():
+        return DEFAULT_RUNS_DIR
+    return _clean_workspace_root(request.workspace_root)
+
+
+def _clean_workspace_root(value: str) -> str:
+    root = value.strip()
+    if root.startswith("~"):
+        raise HTTPException(status_code=400, detail="workspace_root cannot use '~' expansion.")
+    path = Path(root)
+    if not path.is_absolute() and (".." in path.parts or ".." in PureWindowsPath(root).parts):
+        raise HTTPException(status_code=400, detail="workspace_root cannot contain '..' in a relative path.")
+    return root
 
 
 @app.post("/messages/resume")
@@ -1843,6 +2152,15 @@ def _clean_name(value: Any, *, field: str) -> str:
         raise HTTPException(status_code=400, detail=f"{field} is required.")
     if "/" in text or "\\" in text:
         raise HTTPException(status_code=400, detail=f"{field} cannot contain path separators.")
+    if field == "MCP server name":
+        if _LOCAL_MCP_SERVER_NAME_RE.fullmatch(text) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "MCP server name is a local workspace key and may contain only "
+                    "letters, numbers, and underscores."
+                ),
+            )
     return text
 
 

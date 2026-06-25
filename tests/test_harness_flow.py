@@ -287,7 +287,6 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None
     catalog.register(
         CapabilityDefinition(
             id="tool.remote_search",
-            name="remote_search",
             kind="tool",
         ),
         lambda **_: None,
@@ -321,7 +320,7 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None
         enabled_toolsets=("selected",),
     )
 
-    assert dsl == "search = remote_search(query='status')"
+    assert dsl == "search = tool_remote_search(query='status')"
 
 
 
@@ -331,8 +330,8 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
         ChatResponse(
             content=(
                 "task: inspect project\n"
-                "list_files = shell(command=\"dir\", cwd=\".\")\n"
-                "show_result = echo(text=\"done\") after list_files\n"
+                "list_files = tool_shell(command=\"dir\", cwd=\".\")\n"
+                "show_result = tool_echo(text=\"done\") after list_files\n"
             )
         )
     ])
@@ -365,7 +364,7 @@ def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
         """
         PLAN_SPEC
         task: inspect project
-        inspect = shell({"command": "dir", "cwd": "."})
+        inspect = tool_shell({"command": "dir", "cwd": "."})
         END_PLAN_SPEC
         """
     )
@@ -389,8 +388,8 @@ def test_parse_plan_spec_dsl_accepts_value_expr_args() -> None:
     plan = parse_plan_spec_dsl(
         "\n".join([
             "task: summarize",
-            'inspect = read_file(path="README.md")',
-            f"summarize = echo({args!r}) after inspect",
+            'inspect = tool_read_file(path="README.md")',
+            f"summarize = tool_echo({args!r}) after inspect",
         ])
     )
 
@@ -403,7 +402,7 @@ def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
         <think>The user wants repository inspection.</think>
         Here is the requested plan.
         task: inspect project
-        inspect = shell(command="dir", cwd=".")
+        inspect = tool_shell(command="dir", cwd=".")
         """
     )
 
@@ -414,7 +413,7 @@ def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
 
 def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
     provider = MockProvider([
-        ChatResponse(content='inspect = echo(text="ok")'),
+        ChatResponse(content='inspect = tool_echo(text="ok")'),
         ChatResponse(content="NO_CHANGE"),
     ])
     dag_agent = dag_loop_for(provider)
@@ -433,7 +432,7 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
 
 
 def test_harness_runtime_careful_reviews_initial_dag() -> None:
-    provider = MockProvider([ChatResponse(content='inspect = echo(text="ok")')])
+    provider = MockProvider([ChatResponse(content='inspect = tool_echo(text="ok")')])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
@@ -574,8 +573,8 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'inspect = echo(text="discovered_path")\n'
-        'answer = echo(text="adjusted_value") after inspect\n'
+        'inspect = tool_echo(text="discovered_path")\n'
+        'answer = tool_echo(text="adjusted_value") after inspect\n'
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([
@@ -621,8 +620,8 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'inspect = echo(text="discovered_path")\n'
-        'answer = echo(text="adjusted_value") after inspect\n'
+        'inspect = tool_echo(text="discovered_path")\n'
+        'answer = tool_echo(text="adjusted_value") after inspect\n'
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=adjusted_dsl)])),
@@ -754,13 +753,13 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
     """Replan LLM call includes the initial planning exchange in the agent thread."""
     initial_dsl = (
         'task: initial\n'
-        'inspect = echo(text="hello")\n'
-        'answer = echo(text="placeholder") after inspect\n'
+        'inspect = tool_echo(text="hello")\n'
+        'answer = tool_echo(text="placeholder") after inspect\n'
     )
     adjusted_dsl = (
         'task: adjusted\n'
-        'inspect = echo(text="hello")\n'
-        'answer = echo(text="fixed") after inspect\n'
+        'inspect = tool_echo(text="hello")\n'
+        'answer = tool_echo(text="fixed") after inspect\n'
     )
     provider = MockProvider([
         ChatResponse(content=initial_dsl),

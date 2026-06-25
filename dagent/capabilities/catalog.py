@@ -12,6 +12,7 @@ from dagent.schemas import (
     CapabilityInvocation,
     CapabilityKind,
     CapabilityResult,
+    validate_capability_id,
 )
 from dagent.config import DEFAULT_WORKSPACE
 
@@ -47,6 +48,7 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
+        validate_capability_id(definition.id, kind=definition.kind)
         if definition.id in self._entries:
             raise ValueError(f"Capability '{definition.id}' is already registered.")
         self._entries[definition.id] = CapabilityEntry(
@@ -64,6 +66,7 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
+        validate_capability_id(definition.id, kind=definition.kind)
         if definition.id not in self._entries:
             raise KeyError(f"Capability '{definition.id}' is not registered.")
         self._entries[definition.id] = CapabilityEntry(
@@ -96,13 +99,6 @@ class CapabilityCatalog:
     def get_entry(self, capability_id: str) -> CapabilityEntry | None:
         return self._entries.get(capability_id)
 
-    def get_by_name(self, name: str, *, kind: CapabilityKind | None = None) -> CapabilityDefinition | None:
-        for entry in self._entries.values():
-            definition = entry.definition
-            if definition.name == name and (kind is None or definition.kind == kind):
-                return definition.model_copy(deep=True)
-        return None
-
     def list(self, *, kind: CapabilityKind | None = None, enabled_only: bool = False) -> list[CapabilityDefinition]:
         definitions = [entry.definition for entry in self._entries.values()]
         if kind is not None:
@@ -113,9 +109,6 @@ class CapabilityCatalog:
             [definition.model_copy(deep=True) for definition in definitions],
             key=lambda definition: definition.id,
         )
-
-    def names(self, *, kind: CapabilityKind | None = None) -> set[str]:
-        return {definition.name for definition in self.list(kind=kind)}
 
     def ids(self) -> set[str]:
         return set(self._entries)

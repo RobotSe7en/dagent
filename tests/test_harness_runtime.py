@@ -61,8 +61,8 @@ def test_harness_runtime_injects_registry_tools_into_dag_agent() -> None:
     provider = MockProvider([ChatResponse(content="unused")])
     runtime = _runtime(provider)
 
-    tool_names = {tool.name for tool in runtime.dag_agent.tools}
-    assert tool_names == {"echo", "fail_tool", "write_file"}
+    tool_ids = {tool.id for tool in runtime.dag_agent.tools}
+    assert tool_ids == {"tool.echo", "tool.fail_tool", "tool.write_file"}
 
 
 def test_harness_runtime_session_owns_dag_task_store() -> None:
@@ -110,10 +110,13 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     agent_config = {"tool_adapter": runtime.tool_agent.loop.tool_adapter}
     runtime._agent_capability_configs.append(agent_config)
 
-    @tool(id="tool.echo2", name="echo2")
-    def echo2(text: str) -> str:
-        return f"first:{text}"
+    def make_echo2(prefix: str):
+        def echo2(text: str) -> str:
+            return f"{prefix}:{text}"
 
+        return tool(echo2)
+
+    echo2 = make_echo2("first")
     registered = runtime.register_capability(echo2)
     invocation = CapabilityInvocation(
         capability_id="tool.echo2",
@@ -122,10 +125,7 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     )
     first = run(runtime.capability_executor.execute(invocation))
 
-    @tool(id="tool.echo2", name="echo2")
-    def echo2_replacement(text: str) -> str:
-        return f"second:{text}"
-
+    echo2_replacement = make_echo2("second")
     replaced = runtime.replace_capability(echo2_replacement)
     second = run(runtime.capability_executor.execute(invocation))
 
@@ -136,11 +136,11 @@ def test_harness_runtime_registers_and_replaces_public_capabilities() -> None:
     assert runtime.tool_agent.loop.tool_adapter.function_name_for_capability(
         "tool.echo2",
         enabled_toolsets=("builtin",),
-    ) == "echo2"
+    ) == "tool_echo2"
     assert runtime.dag_agent.loop.tool_adapter.function_name_for_capability(
         "tool.echo2",
         enabled_toolsets=("builtin",),
-    ) == "echo2"
+    ) == "tool_echo2"
     assert agent_config["tool_adapter"] is runtime.tool_agent.loop.tool_adapter
 
 
@@ -149,7 +149,6 @@ def test_harness_runtime_exposes_registered_mcp_capabilities_by_default() -> Non
 
     definition = CapabilityDefinition(
         id="mcp.mock.lookup",
-        name="mcp_mock__lookup",
         kind="mcp",
         parameters={"type": "object"},
     )
@@ -169,7 +168,7 @@ def test_harness_runtime_exposes_registered_mcp_capabilities_by_default() -> Non
         tool["function"]["name"]
         for tool in runtime.tool_agent.loop.tool_adapter.definitions(("builtin",))
     }
-    assert "mcp_mock__lookup" in names
+    assert "mcp_mock_lookup" in names
 
 
 def test_harness_runtime_tool_message_does_not_create_dag() -> None:
@@ -272,7 +271,7 @@ def test_harness_runtime_auto_routes_to_dag() -> None:
 def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     provider = MockProvider([
         ChatResponse(content="dag"),                              # _route()
-        ChatResponse(content=_dag_agent_dsl(tools=["write_file"])),  # DAG agent
+        ChatResponse(content=_dag_agent_dsl(tools=["tool_write_file"])),  # DAG agent
     ])
     runtime = _runtime(provider)
 
@@ -318,7 +317,7 @@ def test_harness_runtime_dag_agent_waits_for_human_review() -> None:
 def test_harness_runtime_dag_scope_filters_prompt_and_retry_feedback() -> None:
     provider = MockProvider(
         [
-            ChatResponse(content=_dag_agent_dsl(tools=["write_file"])),
+            ChatResponse(content=_dag_agent_dsl(tools=["tool_write_file"])),
             ChatResponse(content=_dag_agent_dsl()),
         ]
     )
@@ -341,7 +340,7 @@ def test_harness_runtime_dag_scope_filters_prompt_and_retry_feedback() -> None:
     assert "echo" in system_content
     assert "write_file" not in system_content
     retry_content = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown capability function 'write_file'" in retry_content
+    assert "Unknown capability function 'tool_write_file'" in retry_content
     assert "Available functions:" in retry_content
     assert "echo" in retry_content
 
@@ -561,7 +560,7 @@ def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
 
 def test_harness_runtime_dag_mode_fails_without_review() -> None:
     provider = MockProvider([
-        ChatResponse(content=_dag_agent_dsl(tools=["fail_tool"], text="boom")),
+        ChatResponse(content=_dag_agent_dsl(tools=["tool_fail_tool"], text="boom")),
         ChatResponse(content="NO_CHANGE"),
         ChatResponse(content="The DAG failed after exhausting repair attempts."),
     ])
@@ -601,10 +600,10 @@ def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation(
 def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None:
     provider = MockProvider([
         ChatResponse(
-            content='a = echo(text="a")\nb = echo(text="b") after nonexistent'
+            content='a = tool_echo(text="a")\nb = tool_echo(text="b") after nonexistent'
         ),
         ChatResponse(
-            content='a = echo(text="a")\nb = echo(text="b") after a'
+            content='a = tool_echo(text="a")\nb = tool_echo(text="b") after a'
         ),
     ])
     runtime = _runtime(provider)
@@ -633,7 +632,7 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
         ChatResponse(
             content=(
                 "task: inspect current directory\n"
-                "inspect = echo(text=\"use available tools\")\n"
+                "inspect = tool_echo(text=\"use available tools\")\n"
             )
         ),
     ])
@@ -665,7 +664,7 @@ def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None
         ChatResponse(
             content=(
                 "task: inspect current directory\n"
-                "inspect = echo(text=\"ok\")\n"
+                "inspect = tool_echo(text=\"ok\")\n"
             )
         ),
         ChatResponse(content="The DAG completed after inspection."),
@@ -894,7 +893,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
             tool_calls=[
                 ToolCall(
                     id="call_1",
-                    name="write_file",
+                    name="tool_write_file",
                     arguments={"path": "notes.md", "content": "hi"},
                 )
             ]
@@ -1212,6 +1211,6 @@ def _dag_agent_dsl(
     node_id: str = "node_1",
     text: str = "ok",
 ) -> str:
-    tool = (tools or ["echo"])[0]
-    args = 'path="notes.md", content="hi"' if tool == "write_file" else f'text="{text}"'
+    tool = (tools or ["tool_echo"])[0]
+    args = 'path="notes.md", content="hi"' if tool == "tool_write_file" else f'text="{text}"'
     return f"task: mock\n{node_id} = {tool}({args})\n"

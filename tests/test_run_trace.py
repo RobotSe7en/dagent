@@ -18,6 +18,7 @@ from dagent.schemas import (
     RunTrace,
     RunTraceNode,
 )
+from dagent.capabilities.tools.file_tools import create_file_tool_registry
 from dagent.capabilities.tools.registry import ToolRegistry
 
 
@@ -98,7 +99,7 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
     executor = _capability_executor()
     loop = ToolAgentLoop(
         provider=MockProvider([
-            ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+            ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hi"})]),
             ChatResponse(content="done"),
         ]),
         capability_executor=executor,
@@ -121,7 +122,7 @@ def test_tool_agent_loop_returns_run_trace_for_capability_call() -> None:
 
 def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "inside"})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "inside"})]),
         ChatResponse(content="agent done"),
     ])
     catalog = CapabilityCatalog(workspace_root=tmp_path)
@@ -169,6 +170,65 @@ def test_agent_capability_trace_contains_inner_loop_children(tmp_path) -> None:
     assert any(child.kind == "capability_call" for child in agent_loop.children)
 
 
+def test_agent_capability_inherits_parent_workspace_without_rewriting_boundary(tmp_path) -> None:
+    run_workspace = tmp_path / "runs" / "run_1"
+    run_workspace.mkdir(parents=True)
+    provider = MockProvider([
+        ChatResponse(tool_calls=[
+            ToolCall(
+                id="call_1",
+                name="tool_write_file",
+                arguments={"path": "notes.txt", "content": "from helper"},
+            )
+        ]),
+        ChatResponse(content="agent done"),
+    ])
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
+    capability_executor = CapabilityExecutor(catalog)
+    AgentCapabilityProvider(
+        agents={
+            "helper": {
+                "provider": provider,
+                "profile": AgentProfile(
+                    name="helper",
+                    content="You are a helper.",
+                ),
+                "capability_executor": capability_executor,
+                "tool_adapter": CapabilityToolAdapter(
+                    catalog,
+                    toolsets=[CapabilityToolset("builtin", ("tool.write_file",))],
+                ),
+                "enabled_toolsets": ("builtin",),
+            }
+        }
+    ).register_into(catalog)
+    dag = DAG(
+        dag_id="dag_1",
+        task_id="run_1",
+        nodes=[
+            DAGNode(
+                id="agent_node",
+                payload=dict(
+                    type="capability",
+                    invocation=CapabilityInvocation(capability_id="agent.helper", kind="agent"),
+                ),
+            )
+        ],
+    )
+
+    trace = run(DAGExecutor(
+        capability_executor=capability_executor,
+        workspace_path=run_workspace,
+        capability_workspace_root=tmp_path,
+    ).execute_next_ready_layer(dag))
+
+    assert (run_workspace / "notes.txt").read_text(encoding="utf-8") == "from helper"
+    assert not (tmp_path / "notes.txt").exists()
+    tool_invocation = _capability_invocation(trace, "tool.write_file")
+    assert str(run_workspace) not in (tool_invocation.boundary.allowed_paths or [])
+
+
 def _capability_executor() -> CapabilityExecutor:
     catalog = CapabilityCatalog()
     ToolCapabilityProvider(_echo_registry()).register_into(catalog)
@@ -197,3 +257,17 @@ def _tool_adapter(catalog):
         catalog,
         toolsets=[CapabilityToolset("builtin", ("tool.echo",))],
     )
+
+
+def _capability_invocation(trace: RunTrace, capability_id: str) -> CapabilityInvocation:
+    stack = [trace.root]
+    while stack:
+        node = stack.pop()
+        if (
+            node.kind == "capability_call"
+            and node.capability_execution is not None
+            and node.capability_execution.invocation.capability_id == capability_id
+        ):
+            return node.capability_execution.invocation
+        stack.extend(reversed(node.children))
+    raise AssertionError(f"Missing capability invocation for {capability_id}")

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from concurrent.futures import TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -66,14 +67,14 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
         manager=manager,
     ).register_into(catalog)
 
-    definition = catalog.get("mcp.mock_server.lookup")
+    capability_id = f"mcp.mock_server_{_short_hash('mock-server')}.lookup"
+    definition = catalog.get(capability_id)
     assert manager.started is True
     assert definition is not None
-    assert definition.name == "mcp_mock_server__lookup"
     assert definition.parameters["required"] == ["query"]
     result = run(executor.execute(
         CapabilityInvocation(
-            capability_id="mcp.mock_server.lookup",
+            capability_id=capability_id,
             kind="mcp",
             arguments={"query": "x"},
         )
@@ -82,6 +83,38 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert payload == {"result": "found:x", "structuredContent": {"ok": True}}
     assert result.value == {"ok": True}
     assert manager.calls == [("mock-server", "lookup", {"query": "x"})]
+
+
+def test_mcp_provider_disambiguates_normalized_mcp_name_collisions() -> None:
+    class CollidingNameManager(FakeMCPManager):
+        def discovered_tools(self):
+            return {
+                "mock-server": [
+                    SimpleNamespace(name="lookup-tool", description="", inputSchema={"type": "object"}),
+                    SimpleNamespace(name="lookup_tool", description="", inputSchema={"type": "object"}),
+                ]
+            }
+
+    manager = CollidingNameManager()
+    catalog = CapabilityCatalog()
+    provider = MCPCapabilityProvider(
+        servers={"mock-server": {"command": "fake"}},
+        manager=manager,
+    )
+
+    provider.register_into(catalog)
+
+    server_key = f"mock_server_{_short_hash('mock-server')}"
+    transformed_tool_id = f"mcp.{server_key}.lookup_tool_{_short_hash('lookup-tool')}"
+    already_safe_tool_id = f"mcp.{server_key}.lookup_tool"
+    transformed = catalog.get(transformed_tool_id)
+    already_safe = catalog.get(already_safe_tool_id)
+
+    assert provider.registration_errors == []
+    assert transformed is not None
+    assert already_safe is not None
+    assert transformed.config == {"server": "mock-server", "tool": "lookup-tool"}
+    assert already_safe.config == {"server": "mock-server", "tool": "lookup_tool"}
 
 
 def test_mcp_provider_registers_manager_shutdown_with_catalog() -> None:
@@ -98,14 +131,14 @@ def test_mcp_provider_registers_manager_shutdown_with_catalog() -> None:
     assert manager.shutdown_calls == 1
 
 
-def test_mcp_provider_skips_function_name_collisions() -> None:
+def test_mcp_provider_skips_capability_id_collisions() -> None:
     manager = FakeMCPManager()
     catalog = CapabilityCatalog()
+    capability_id = f"mcp.mock_server_{_short_hash('mock-server')}.lookup"
     catalog.register(
         CapabilityDefinition(
-            id="tool.collision",
-            name="mcp_mock_server__lookup",
-            kind="tool",
+            id=capability_id,
+            kind="mcp",
         ),
         handler=lambda invocation: None,
     )
@@ -116,29 +149,27 @@ def test_mcp_provider_skips_function_name_collisions() -> None:
 
     provider.register_into(catalog)
 
-    assert catalog.get("mcp.mock_server.lookup") is None
+    assert catalog.get(capability_id) is not None
     assert provider.registration_errors
     assert "collides" in provider.registration_errors[0]
 
 
-def test_mcp_provider_detects_name_collision_through_catalog_public_api() -> None:
+def test_mcp_provider_detects_capability_id_collision_through_catalog_public_api() -> None:
     class PublicCatalog:
         def __init__(self) -> None:
             self.registered = False
 
         def get(self, capability_id: str):
-            return None
-
-        def get_by_name(self, name: str):
-            return CapabilityDefinition(id="tool.collision", name=name, kind="tool")
+            return CapabilityDefinition(id=capability_id, kind="mcp")
 
         def register(self, definition, handler):
             self.registered = True
 
     provider = MCPCapabilityProvider(servers={"mock-server": {"command": "fake"}})
+    catalog = PublicCatalog()
 
     provider._register_tool(
-        PublicCatalog(),
+        catalog,
         "mock-server",
         "lookup",
         SimpleNamespace(name="lookup", description="", inputSchema={"type": "object"}),
@@ -146,6 +177,11 @@ def test_mcp_provider_detects_name_collision_through_catalog_public_api() -> Non
 
     assert provider.registration_errors
     assert "collides" in provider.registration_errors[0]
+    assert catalog.registered is False
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
 
 
 def test_mcp_manager_cancels_tool_call_future_on_timeout(monkeypatch) -> None:

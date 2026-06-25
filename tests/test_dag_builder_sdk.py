@@ -412,7 +412,7 @@ def test_runner_stream_static_dag_capability_events_keep_node_context(tmp_path: 
         return f"echo:{text}"
 
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hi"})]),
         ChatResponse(content="done"),
     ])
     writer = dagent.ToolAgent(
@@ -612,9 +612,9 @@ def test_agent_node_uses_its_own_skill_scope(tmp_path: Path) -> None:
             encoding="utf-8",
         )
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skill_list", arguments={})]),
         ChatResponse(content="researched"),
-        ChatResponse(tool_calls=[ToolCall(id="call_2", name="skills_list", arguments={})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_2", name="skill_list", arguments={})]),
         ChatResponse(content="written"),
     ])
     researcher = dagent.ToolAgent(

@@ -8,7 +8,33 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-- 暂无未发布迁移说明。
+- Breaking change：`@dagent.tool` 不再接收 `id=` 或 `name=`。Python function
+  tools 一律从函数名派生 capability id，格式为 `tool.<function_name>`。需要改变公开
+  id 时，请重命名函数，或用另一个函数名包一层实现。
+- Breaking change：`CapabilityDefinition.name` 已删除。Raw capability
+  definitions 现在只用 `id` 作为稳定公开标识；LLM 可见函数名由该 id 派生。
+- Breaking change：raw `CapabilityDefinition.id` 必须使用受支持的 dotted
+  capability id forms：`tool.<name>`、`agent.<name>`、`mcp.<server>.<tool>`、
+  `skill.<name>` 或 `memory.<name>`。每个 segment 只能包含字母、数字和下划线；
+  首尾空白会被拒绝。
+- Breaking change：LLM 可见的 PlanSpec 和 tool-call function names 现在由
+  capability id 派生，把点替换为下划线。例如使用 `tool_search(...)`、
+  `tool_shell(...)` 和 `agent_helper(...)`，不再使用 `search(...)`、`shell(...)`
+  或 `helper(...)` 这类短名。请同步更新已保存的 dynamic DAG PlanSpec 文本和
+  deterministic provider fixtures。
+- Breaking change：MCP capability ids 现在会对不符合 id segment 规则的原始 MCP
+  server 或 tool 名称生成稳定 canonical key。例如 `mock-server` 不再映射为
+  `mock_server`；请查看已注册 capability definitions，并更新已保存的 capability
+  allowlists 或 DAG specs。
+- Breaking change：本地 API 管理的 profile 和 agent preset 名称现在只能包含字母、
+  数字和下划线。创建新的 managed profiles 或 agent presets 前，请把 dash 替换为
+  underscore。
+- Breaking change：本地 API MCP server name 是严格的 workspace key，现在只能包含
+  字母、数字和下划线。这不限制第三方 MCP tool 原始名称；原始名称仍保存在 capability
+  config 中。
+- Breaking change：本地 API agent preset JSON 现在使用 `ToolAgent` 字段名。请将
+  `capability_ids` 改为 `capabilities`；已注册 preset 的 `agents` 必须为空，`review`
+  必须为 `"fast"`。旧 preset 文件会作为错误报告，不会自动迁移。
 
 ## 0.5.2
 
@@ -17,7 +43,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   `workspace` 或 `workspace_root`。
 - Breaking change：内置 file 和 shell tools 现在会从当前 ToolAgent 或 DagAgent
   message run workspace 解析相对路径，而不是从 runner workspace root 解析。普通
-  agent run 中的 `write_file(path="notes.txt", ...)` 现在会写到
+  agent run 中的 `tool_write_file(path="notes.txt", ...)` 现在会写到
   `.dagent/runs/<run_id>/notes.txt`，不再写到 `.dagent/notes.txt`。如果代码需要把
   文件放在 runner workspace 下，请传入绝对路径，或把共享输入复制到每次运行的
   workspace 中。静态 DAG artifact path 仍使用已有 artifact 映射；内置 path-aware
@@ -46,7 +72,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 ## 0.4.2
 
 - 内置 shell 命令 capability 现在是 `tool.shell`，DAG DSL 调用写作
-  `shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
+  `tool_shell(command="...", cwd=".")`。升级前请把已保存的 `tool.run_command`
   capability ids 和 `run_command(...)` plan calls 改成新名字。不会注册旧名
   兼容别名。
 

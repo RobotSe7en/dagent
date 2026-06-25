@@ -21,6 +21,7 @@ import dagent
 | Configure runtime, provider, MCP, profiles, validation | [Runner and Configuration](runner-and-configuration.md) |
 | Register Python tools or MCP tools | [Capabilities](capabilities.md) |
 | Choose an agent type | [Agents](agents.md) |
+| Register subagents for single-level delegation | [Agents](agents.md#subagent-delegation) |
 | Build static workflows in code | [Static DAGs](static-dag.md) |
 | Use skills and managed skill installs | [Skills](skills.md) |
 | Persist, stream, review, or resume runs | [Results, Streaming, and Review](results-streaming-review.md) |
@@ -39,7 +40,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunState`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
-| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunState`, `RunTrace`, `ArtifactUpload` |
+| Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunState`, `RunTrace`, `ArtifactUpload`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
 ## Minimal Runner
@@ -82,6 +83,27 @@ result = await runner.run(
 )
 print(result.output_text)
 ```
+
+## Minimal Agent Delegation
+
+```python
+helper = dagent.ToolAgent(
+    profile="conversation",
+    name="helper",
+    capabilities=["tool.search"],
+    review="fast",
+)
+runner.add_agent(helper)
+
+agent = dagent.DagAgent(
+    capabilities=["tool.read_file"],
+    agents=["agent.helper"],
+)
+```
+
+Registered subagents are single-level delegates. Their own `agents` field must
+be empty, and top-level runs expose them with `agents=[...]` or
+`agents="registered"`.
 
 ## Minimal Static DAG Run
 

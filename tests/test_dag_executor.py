@@ -509,7 +509,7 @@ def test_executor_passes_node_context_to_agent_capability(tmp_path) -> None:
 
 def test_executor_tags_agent_inner_tool_events_with_node_context(tmp_path) -> None:
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "hi"})]),
         ChatResponse(content="done"),
     ])
     registry = ToolRegistry()

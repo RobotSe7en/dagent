@@ -23,7 +23,7 @@ def search(q: str) -> str:
 async def main() -> None:
     provider = MockProvider(
         [
-            ChatResponse(content='task: research\nlookup = search(q="dagent")'),
+            ChatResponse(content='task: research\nlookup = tool_search(q="dagent")'),
             ChatResponse(content="Report: found:dagent"),
         ]
     )

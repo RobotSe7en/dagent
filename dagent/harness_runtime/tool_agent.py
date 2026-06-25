@@ -16,7 +16,11 @@ from dagent.harness_runtime.dag_builder import (
     context_excerpt,
     strip_thinking_blocks,
 )
-from dagent.harness_runtime.capability_executor import CapabilityExecutionContext, CapabilityExecutor
+from dagent.harness_runtime.capability_executor import (
+    CapabilityExecutionCallbacks,
+    CapabilityExecutionContext,
+    CapabilityExecutor,
+)
 from dagent.harness_runtime.capability_scope import (
     CapabilityScope,
     DEFAULT_CAPABILITY_SCOPE,
@@ -270,7 +274,7 @@ class ToolAgent:
         """Resume a tool-agent conversation from already-built messages."""
         control_tool_names = self.reviewable_tool_names(capability_scope)
         control_tool_names.update(
-            definition.name
+            self.loop.tool_adapter.function_name(definition)
             for definition in self.loop.available_capabilities(capability_scope.capability_ids)
         )
         provider_messages = self._provider_messages(messages, capability_scope)
@@ -338,6 +342,7 @@ class ToolAgentLoop:
         capability_ids: Sequence[str] | None = None,
         *,
         context: CapabilityExecutionContext | None = None,
+        callbacks: CapabilityExecutionCallbacks | None = None,
     ) -> ControlToolHandler:
         policy = _review_policy(review_level)
 
@@ -381,6 +386,7 @@ class ToolAgentLoop:
                     capability_result = await self.capability_executor.execute(
                         invocation,
                         context=context,
+                        callbacks=callbacks,
                     )
                 except Exception as exc:
                     return ControlToolResult(
@@ -436,12 +442,14 @@ class ToolAgentLoop:
             skills=skills,
         )
         control_tool_handler: ControlToolHandler | None = None
+        capability_callbacks = CapabilityExecutionCallbacks(on_token=on_token, on_event=on_event)
         if control_tool_names and review_level is not None:
             control_tool_handler = self.create_tool_guard(
                 review_level,
                 boundary,
                 capability_ids,
                 context=execution_context,
+                callbacks=capability_callbacks,
             )
 
         for step in range(1, max_steps + 1):
@@ -619,6 +627,7 @@ class ToolAgentLoop:
                     capability_result = await self.capability_executor.execute(
                         invocation,
                         context=execution_context,
+                        callbacks=capability_callbacks,
                     )
                     tool_result = _tool_content(capability_result)
                 except Exception as exc:

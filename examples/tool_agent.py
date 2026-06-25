@@ -27,7 +27,7 @@ async def main() -> None:
                 tool_calls=[
                     ToolCall(
                         id="call_1",
-                        name="echo",
+                        name="tool_echo",
                         arguments={"text": "hello"},
                     )
                 ]

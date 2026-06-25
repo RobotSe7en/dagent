@@ -144,11 +144,11 @@ def test_multi_node_dag_without_edges_is_rejected() -> None:
 def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
     plan = parse_plan_spec_dsl(
         'task: parallel\n'
-        'a = echo(text="a")\n'
-        'b = echo(text="b")\n'
+        'a = tool_echo(text="a")\n'
+        'b = tool_echo(text="b")\n'
     )
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
 
     start = dag.nodes[0]
     assert start.id == "start"
@@ -166,7 +166,7 @@ def test_explicit_dag_start_is_rejected_as_reserved_internal_node() -> None:
     plan = parse_plan_spec_dsl(
         'task: explicit start\n'
         'start = dag_start()\n'
-        'a = echo(text="a") after start\n'
+        'a = tool_echo(text="a") after start\n'
     )
 
     with pytest.raises(DAGCreationError, match="reserved"):
@@ -181,9 +181,9 @@ def test_compile_rejects_unknown_capability_function_name() -> None:
 
     with pytest.raises(
         DAGCreationError,
-        match="Unknown capability function 'missing_tool'. Available functions: echo.",
+        match="Unknown capability function 'missing_tool'. Available functions: tool_echo.",
     ):
-        compile_plan_spec(plan, task_id="task_1", tools=[_capability("echo", "tool.echo")])
+        compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
 
 
 def test_compile_uses_registered_non_tool_capability_mapping() -> None:
@@ -195,7 +195,7 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     dag = compile_plan_spec(
         plan,
         task_id="task_1",
-        tools=[_capability("memory_read", "memory.read", kind="memory")],
+        tools=[_capability("memory.read", kind="memory")],
     )
 
     node = dag.nodes[0]
@@ -206,7 +206,7 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
 def test_compile_infers_boundary_for_command_capability() -> None:
     plan = parse_plan_spec_dsl(
         'task: run command\n'
-        'run = shell(command="node -e \\"console.log(1);\\"", cwd=".")\n'
+        'run = tool_shell(command="node -e \\"console.log(1);\\"", cwd=".")\n'
     )
 
     dag = compile_plan_spec(
@@ -215,7 +215,6 @@ def test_compile_infers_boundary_for_command_capability() -> None:
         tools=[
             CapabilityDefinition(
                 id="tool.shell",
-                name="shell",
                 kind="tool",
                 config={
                     "action": "command",
@@ -253,13 +252,13 @@ def test_compile_plan_spec_preserves_agent_prompt_argument() -> None:
         "nodes": [
             {
                 "id": "write_requirements",
-                "tool": "helper",
+                    "tool": "agent_helper",
                 "args": {"prompt": "Write a requirement specification. Use acceptance criteria."},
             }
         ],
     })
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("helper", "agent.helper", kind="agent")])
+    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("agent.helper", kind="agent")])
 
     assert dag.nodes[0].payload.invocation.arguments == {
         "prompt": "Write a requirement specification. Use acceptance criteria."
@@ -286,7 +285,7 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
     provider = MockProvider(
         [
             ChatResponse(
-                content='inspect = shell(command="dir", cwd=".")'
+                content='inspect = tool_shell(command="dir", cwd=".")'
             )
         ]
     )
@@ -465,5 +464,5 @@ def _dag_agent_profile() -> AgentProfile:
     )
 
 
-def _capability(name: str, capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
-    return CapabilityDefinition(id=capability_id, name=name, kind=kind)
+def _capability(capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
+    return CapabilityDefinition(id=capability_id, kind=kind)

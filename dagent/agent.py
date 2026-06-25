@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+import re
+from typing import Any, Iterable
 
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.profiles import AgentProfile
@@ -12,6 +13,7 @@ from dagent.review import ReviewLevel
 
 
 CapabilityRef = CapabilityBinding | str
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,7 @@ class AutoAgent:
     max_cycles: int = 6
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
+    agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
 
@@ -38,6 +41,7 @@ class AutoAgent:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if self.skills is not None:
             object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
+        object.__setattr__(self, "agents", _freeze_agents(self.agents))
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,7 @@ class ToolAgent:
     max_steps: int = 8
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
+    agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     description: str = ""
 
@@ -60,6 +65,7 @@ class ToolAgent:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if self.skills is not None:
             object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
+        object.__setattr__(self, "agents", _freeze_agents(self.agents))
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,7 @@ class DagAgent:
     max_cycles: int = 6
     capabilities: Iterable[CapabilityRef] | None = None
     skills: Iterable[str] | None = None
+    agents: Iterable[ToolAgent | str] | str | None = None
     review: ReviewLevel = "fast"
     dynamic_adjust: bool = True
 
@@ -82,6 +89,7 @@ class DagAgent:
             object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if self.skills is not None:
             object.__setattr__(self, "skills", tuple(str(skill) for skill in self.skills))
+        object.__setattr__(self, "agents", _freeze_agents(self.agents))
 
 
 def _default_profile_name(profile: str | AgentProfile) -> str:
@@ -89,3 +97,20 @@ def _default_profile_name(profile: str | AgentProfile) -> str:
         return profile.name
     path = Path(profile)
     return path.stem if path.suffix == ".md" else path.name
+
+
+def validate_agent_name(value: Any, *, label: str = "Agent names") -> str:
+    name = str(value or "").strip()
+    if not _AGENT_NAME_RE.fullmatch(name):
+        raise ValueError(f"{label} may contain only letters, numbers, and underscores.")
+    return name
+
+
+def _freeze_agents(agents: Any) -> tuple[Any, ...] | str | None:
+    if agents is None:
+        return None
+    if isinstance(agents, str):
+        if agents == "registered":
+            return agents
+        raise ValueError("agents must be 'registered' or an iterable of ToolAgent objects or agent ids.")
+    return tuple(agents)

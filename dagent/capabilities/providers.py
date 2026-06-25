@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import json
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,7 +16,6 @@ from dagent.capabilities.workspace import current_workspace_root
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
 from dagent.schemas import (
-    Boundary,
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityPolicy,
@@ -47,7 +48,6 @@ class ToolCapabilityProvider:
             capability_id = _tool_capability_id(name)
             definition = CapabilityDefinition(
                 id=capability_id,
-                name=name,
                 kind="tool",
                 description=tool.description,
                 parameters=tool.parameters or {"type": "object"},
@@ -98,11 +98,11 @@ class MemoryCapabilityProvider:
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
         catalog.register(
-            CapabilityDefinition(id="memory.write", name="memory_write", kind="memory"),
+            CapabilityDefinition(id="memory.write", kind="memory"),
             self._write,
         )
         catalog.register(
-            CapabilityDefinition(id="memory.search", name="memory_search", kind="memory"),
+            CapabilityDefinition(id="memory.search", kind="memory"),
             self._search,
         )
 
@@ -129,14 +129,14 @@ class MemoryCapabilityProvider:
 class AgentNodeSessionStore:
     """Stores one local thread per DAG run node."""
 
-    _messages: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
+    _messages: dict[tuple[str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
 
-    def get(self, *, task_id: str, node_id: str) -> list[dict[str, Any]] | None:
-        messages = self._messages.get((task_id, node_id))
+    def get(self, *, task_id: str, node_id: str, fingerprint: str) -> list[dict[str, Any]] | None:
+        messages = self._messages.get((task_id, node_id, fingerprint))
         return [dict(message) for message in messages] if messages is not None else None
 
-    def save(self, *, task_id: str, node_id: str, messages: list[dict[str, Any]]) -> None:
-        self._messages[(task_id, node_id)] = [dict(message) for message in messages]
+    def save(self, *, task_id: str, node_id: str, fingerprint: str, messages: list[dict[str, Any]]) -> None:
+        self._messages[(task_id, node_id, fingerprint)] = [dict(message) for message in messages]
 
 
 class AgentCapabilityProvider:
@@ -158,9 +158,15 @@ class AgentCapabilityProvider:
             provider = config["provider"]
             if not hasattr(provider, "chat"):
                 raise TypeError(f"Agent capability '{name}' requires a chat provider.")
+            tool_adapter = config.get("tool_adapter")
+            if isinstance(tool_adapter, CapabilityToolAdapter):
+                _ensure_leaf_agent_adapter(
+                    name,
+                    tool_adapter,
+                    tuple(config.get("enabled_toolsets") or ("builtin",)),
+                )
             definition = CapabilityDefinition(
                 id=f"agent.{name}",
-                name=name,
                 kind="agent",
                 description=str(config.get("description", "")),
                 parameters=config.get("parameters") or agent_capability_parameters(),
@@ -219,27 +225,32 @@ class AgentCapabilityProvider:
             tool_adapter=tool_adapter,
             enabled_toolsets=enabled_toolsets,
         )
+        fingerprint = _agent_invocation_fingerprint(invocation)
         messages = self._messages_for_invocation(
             profile=profile,
             loop=loop,
             invocation=invocation,
             context=context,
+            fingerprint=fingerprint,
         )
-        outcome = await loop.run(
-            "",
-            run_id=context.task_id if context is not None else None,
-            boundary=_agent_boundary(invocation, context),
-            max_steps=max_steps,
-            messages=messages,
-            skills=config.get("skills"),
-            capability_context=_agent_capability_context(context, config.get("skills")),
-            on_token=callbacks.on_token,
-            on_event=callbacks.on_event,
-        )
+        workspace_path = None if context is None else context.workspace_path
+        with capability_executor.workspace_context(workspace_path):
+            outcome = await loop.run(
+                "",
+                run_id=context.task_id if context is not None else None,
+                boundary=invocation.boundary,
+                max_steps=max_steps,
+                messages=messages,
+                skills=config.get("skills"),
+                capability_context=_agent_capability_context(context, config.get("skills")),
+                on_token=callbacks.on_token,
+                on_event=_agent_event_emitter(callbacks.on_event, invocation.capability_id),
+            )
         if context is not None and context.node is not None:
             self.session_store.save(
                 task_id=context.task_id,
                 node_id=context.node.id,
+                fingerprint=fingerprint,
                 messages=outcome.state.internal_messages,
             )
         if outcome.state.status == "completed":
@@ -264,9 +275,14 @@ class AgentCapabilityProvider:
         loop: Any,
         invocation: CapabilityInvocation,
         context: Any,
+        fingerprint: str,
     ) -> list[dict[str, Any]]:
         if context is not None and context.node is not None:
-            existing = self.session_store.get(task_id=context.task_id, node_id=context.node.id)
+            existing = self.session_store.get(
+                task_id=context.task_id,
+                node_id=context.node.id,
+                fingerprint=fingerprint,
+            )
             if existing is not None:
                 return existing
         system = self.prompt_builder.build_system_message(
@@ -283,10 +299,38 @@ class AgentCapabilityProvider:
         return [system, user]
 
 
+def _agent_invocation_fingerprint(invocation: CapabilityInvocation) -> str:
+    return json.dumps(
+        {
+            "arguments": invocation.arguments,
+            "boundary": invocation.boundary.model_dump(mode="json"),
+            "capability_id": invocation.capability_id,
+        },
+        default=str,
+        sort_keys=True,
+    )
+
+
 def _agent_capability_context(context: Any, skills: tuple[str, ...] | None) -> Any:
     if context is None:
         return None
     return replace(context, skills=skills)
+
+
+def _agent_event_emitter(
+    on_event: Callable[[dict[str, Any]], None] | None,
+    parent_capability_id: str,
+) -> Callable[[dict[str, Any]], None] | None:
+    if on_event is None:
+        return None
+
+    def emit(event: dict[str, Any]) -> None:
+        payload = dict(event)
+        if payload.get("parent_capability_id") is None:
+            payload["parent_capability_id"] = parent_capability_id
+        on_event(payload)
+
+    return emit
 
 
 def agent_capability_parameters() -> dict[str, Any]:
@@ -329,6 +373,23 @@ def _profile_from_config(agent_name: str, config: dict[str, Any]) -> AgentProfil
         description="Agent capability",
         content=system_prompt,
     )
+
+
+def _ensure_leaf_agent_adapter(
+    agent_name: str,
+    tool_adapter: CapabilityToolAdapter,
+    enabled_toolsets: tuple[str, ...],
+) -> None:
+    nested = [
+        definition.id
+        for definition in tool_adapter.capabilities(enabled_toolsets)
+        if definition.kind == "agent"
+    ]
+    if nested:
+        raise ValueError(
+            f"Registered subagent 'agent.{agent_name}' cannot expose subagents: "
+            f"{', '.join(sorted(nested))}."
+        )
 
 
 def _agent_runtime_context(context: Any) -> str:
@@ -384,21 +445,6 @@ def _agent_node_request(
     if prompt:
         lines.append(f"Prompt:\n{prompt}")
     return "\n\n".join(lines)
-
-
-def _agent_boundary(
-    invocation: CapabilityInvocation,
-    context: Any,
-) -> Boundary:
-    if context is None or context.workspace_path is None:
-        return invocation.boundary
-    workspace_path = str(context.workspace_path)
-    allowed_paths = list(invocation.boundary.allowed_paths or [])
-    if workspace_path not in allowed_paths:
-        allowed_paths.append(workspace_path)
-    return invocation.boundary.model_copy(update={
-        "allowed_paths": allowed_paths,
-    })
 
 
 def _agent_result(

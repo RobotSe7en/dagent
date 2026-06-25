@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any, Sequence
 
 from dagent.capabilities.catalog import CapabilityCatalog
@@ -19,7 +18,6 @@ BUILTIN_CAPABILITY_IDS = (
     "tool.grep",
     "tool.shell",
 )
-_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -51,10 +49,7 @@ class CapabilityToolAdapter:
         *,
         capability_ids: Sequence[str] | None = None,
     ) -> list[CapabilityDefinition]:
-        return [
-            definition.model_copy(update={"name": self.function_name(definition)}, deep=True)
-            for definition in self._definitions(enabled_toolsets, capability_ids=capability_ids)
-        ]
+        return self._definitions(enabled_toolsets, capability_ids=capability_ids)
 
     def definitions(
         self,
@@ -66,7 +61,7 @@ class CapabilityToolAdapter:
             {
                 "type": "function",
                 "function": {
-                    "name": definition.name,
+                    "name": self.function_name(definition),
                     "description": definition.description,
                     "parameters": definition.parameters or {"type": "object"},
                 },
@@ -163,12 +158,7 @@ class CapabilityToolAdapter:
         return self.function_name(definition)
 
     def function_name(self, definition: CapabilityDefinition) -> str:
-        if _FUNCTION_NAME_RE.match(definition.name):
-            return definition.name
-        name = re.sub(r"[^A-Za-z0-9_]+", "_", definition.id).strip("_")
-        if not name or not re.match(r"^[A-Za-z_]", name):
-            name = f"capability_{name}"
-        return name
+        return capability_function_name(definition)
 
     def _definitions(
         self,
@@ -233,3 +223,7 @@ class CapabilityToolAdapter:
                     f"'{previous}' and '{definition.id}' both map to '{name}'."
                 )
             seen[name] = definition.id
+
+
+def capability_function_name(definition: CapabilityDefinition) -> str:
+    return definition.id.replace(".", "_")

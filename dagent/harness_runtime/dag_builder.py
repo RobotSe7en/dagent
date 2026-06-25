@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from dagent.capabilities.boundaries import infer_capability_boundary
+from dagent.capabilities.toolsets import capability_function_name
 from dagent.harness_runtime.artifacts import validate_artifact_paths
 from dagent.schemas.dag import PlanSpec, iter_dag_invocations
 from dagent.schemas import (
@@ -96,7 +97,7 @@ def compile_plan_spec(
     task_id: str,
     tools: list[CapabilityDefinition] | None = None,
 ) -> DAG:
-    tool_index = {tool.name: tool for tool in (tools or [])}
+    tool_index = {capability_function_name(tool): tool for tool in (tools or [])}
     nodes = [_compile_plan_node(node, tool_index=tool_index) for node in plan.nodes]
     edges = [
         DAGEdge(

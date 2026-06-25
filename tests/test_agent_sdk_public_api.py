@@ -39,6 +39,7 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "Node")
     assert hasattr(dagent.Runner, "stream")
     assert hasattr(dagent.Runner, "resume_stream")
+    assert hasattr(dagent.Runner, "add_agent")
     assert not hasattr(dagent, "RunStreamChunk")
     assert not hasattr(dagent.Runner, "stream_events")
     assert not hasattr(dagent.Runner, "resume_stream_events")
@@ -105,6 +106,8 @@ def test_review_handle_decisions_accept_reviewer_feedback() -> None:
 
 
 def test_tool_decorator_has_tool_only_signature() -> None:
+    assert "id" not in inspect.signature(dagent.tool).parameters
+    assert "name" not in inspect.signature(dagent.tool).parameters
     assert "kind" not in inspect.signature(dagent.tool).parameters
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
     assert hasattr(dagent.Runner, "remove_mcp_server")
@@ -123,6 +126,7 @@ def test_tool_decorator_matches_tool_default_kind() -> None:
         return f"wrote:{path}"
 
     assert search.definition.id == "tool.search"
+    assert not hasattr(search.definition, "name")
     assert search.definition.kind == "tool"
     assert search.definition.policy.risk == "low"
     assert write_file.definition.id == "tool.write_file"
@@ -136,7 +140,7 @@ def test_tool_decorator_registers_tool_capability() -> None:
         return f"found:{q}"
 
     assert search.definition.id == "tool.search"
-    assert search.definition.name == "search"
+    assert not hasattr(search.definition, "name")
     assert search.definition.kind == "tool"
 
 
@@ -485,6 +489,33 @@ def test_runner_auto_agent_routes_to_tool_result(tmp_path) -> None:
     assert result.output_text == "hello from tool"
 
 
+def test_runner_auto_agent_tool_mode_can_delegate_to_registered_agent(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content="tool"),
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="agent_helper",
+                    arguments={"prompt": "summarize this"},
+                )
+            ]
+        ),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="done"),
+    ])
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+    agent = dagent.AutoAgent(capabilities=[], skills=[], agents=[helper])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, messages=user_messages("delegate")))
+
+    assert result.kind == "tool"
+    assert result.output_text == "done"
+    assert {tool["function"]["name"] for tool in provider.requests[1]["tools"]} == {"agent_helper"}
+    assert provider.requests[2]["tools"] == []
+
+
 def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     @dagent.tool
     def search(q: str) -> str:
@@ -492,7 +523,7 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
 
     provider = MockProvider([
         ChatResponse(content="dag"),
-        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
         ChatResponse(content="Report: found:X"),
     ])
     agent = dagent.AutoAgent(capabilities=[search], skills=[])
@@ -506,6 +537,24 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
 
 
+def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
+    provider = MockProvider([
+        ChatResponse(content='task: delegate\nask_helper = agent_helper(prompt="summarize this")\n'),
+        ChatResponse(content="helper answer"),
+        ChatResponse(content="final answer"),
+    ])
+    helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
+    agent = dagent.DagAgent(capabilities=[], skills=[], agents=[helper])
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+
+    result = run(runner.run(agent, messages=user_messages("delegate")))
+
+    assert result.kind == "dynamic_dag"
+    assert result.output_text == "final answer"
+    assert result.dag is not None
+    assert result.dag.nodes[0].payload.invocation.capability_id == "agent.helper"
+
+
 def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path) -> None:
     @dagent.tool
     def fail_tool(text: str) -> str:
@@ -517,8 +566,8 @@ def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path)
 
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: fail first\nbad = fail_tool(text="boom")\n'),
-        ChatResponse(content='task: repaired\nanswer = echo(text="ok")\n'),
+        ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),
+        ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),
         ChatResponse(content="Recovered after replanning."),
     ])
     agent = dagent.DagAgent(
@@ -552,7 +601,7 @@ def test_runner_resume_stream_continues_pending_review(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
         ChatResponse(content="<think>checking</think>done"),
     ])
@@ -595,7 +644,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
@@ -667,7 +716,7 @@ def test_tool_agent_capability_stream_events_include_run_id(tmp_path) -> None:
         return f"echo:{text}"
 
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "ok"})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="tool_echo", arguments={"text": "ok"})]),
         ChatResponse(content="done"),
     ])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
@@ -719,7 +768,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         dagent.DagAgent(profile="conversation")
 
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
         ChatResponse(content="Report: found:X"),
     ])
     agent = dagent.DagAgent(
@@ -809,7 +858,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
             encoding="utf-8",
         )
     provider = MockProvider([
-        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skills_list", arguments={})]),
+        ChatResponse(tool_calls=[ToolCall(id="call_1", name="skill_list", arguments={})]),
         ChatResponse(content="done"),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[], skills=["writing/brief"])
@@ -819,7 +868,7 @@ def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_pat
 
     assert result.output_text == "done"
     assert [tool["function"]["name"] for tool in provider.requests[0]["tools"]] == [
-        "skills_list",
+        "skill_list",
         "skill_view",
     ]
     system_message = provider.requests[0]["messages"][0]["content"]
@@ -867,7 +916,7 @@ def test_runner_resume_continues_pending_tool_agent_runtime(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
         ChatResponse(content="done"),
     ])
@@ -892,7 +941,7 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
         ChatResponse(content="done"),
     ])
@@ -917,7 +966,7 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     assert resumed.messages[1] == {
         "role": "tool",
         "tool_call_id": "call_1",
-        "name": "write",
+        "name": "tool_write",
         "content": "wrote:hello",
     }
     assert resumed.messages[-1]["content"] == "done"
@@ -931,7 +980,7 @@ def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
@@ -946,7 +995,7 @@ def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
 def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
         ChatResponse(content="Report: found:X"),
     ])
 
@@ -979,7 +1028,7 @@ def test_runner_resume_rejects_mismatched_serialized_review_state(tmp_path) -> N
     provider = MockProvider([
         ChatResponse(
             content="",
-            tool_calls=[ToolCall(id="call_1", name="write", arguments={"text": "hello"})],
+            tool_calls=[ToolCall(id="call_1", name="tool_write", arguments={"text": "hello"})],
         ),
     ])
     agent = dagent.ToolAgent(profile="conversation", capabilities=[write], review="careful")
@@ -1023,7 +1072,7 @@ def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_pa
 def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = search(q="X")'),
+        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
         ChatResponse(content="Report: found:X"),
     ])
 
@@ -1046,13 +1095,14 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
 
 
 def test_runner_rejects_conflicting_capability_registration(tmp_path) -> None:
-    @dagent.tool(id="tool.same", name="same")
-    def first() -> str:
-        return "first"
+    def make_same_tool(output: str) -> dagent.CapabilityBinding:
+        def same() -> str:
+            return output
 
-    @dagent.tool(id="tool.same", name="same")
-    def second() -> str:
-        return "second"
+        return dagent.tool(same)
+
+    first = make_same_tool("first")
+    second = make_same_tool("second")
 
     runner = dagent.Runner(workspace=tmp_path, provider=MockProvider([]), capabilities=[first])
 

@@ -10,8 +10,13 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
 | 内置 skill accessors | `skill.list`, `skill.view` |
+| Memory accessors | `memory.write`, `memory.search` |
+| 已注册 subagents | `agent.<name>` |
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。
+
+Raw `CapabilityDefinition.id` 必须使用上表中的 dotted forms。每个 segment
+只能包含字母、数字和下划线；首尾空白会被拒绝。
 
 ## 内置工具
 
@@ -31,9 +36,13 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 | `tool.grep` | low | 使用 Python 正则语法搜索文件，可选 `glob` 文件名过滤。`PATH` 上有 `rg` 时使用兼容参数委托 ripgrep（argv 调用，绝不经过 shell），否则回退纯 Python 扫描。两种后端都不应用项目 ignore 文件，但都会排除内置的重型目录。输出为 `file:line:content`，上限 200 条。 |
 | `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。 |
 
-`read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
-`edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，再用
-足够的上下文调用 `edit_file` 使匹配唯一。
+LLM 可见函数名由 capability id 派生：把点替换为下划线。例如
+`tool.read_file` 在 PlanSpec DSL 中调用为 `tool_read_file(...)`，
+`agent.helper` 调用为 `agent_helper(...)`。
+
+`tool_read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
+`tool_edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，
+再用足够的上下文调用 `tool_edit_file` 使匹配唯一。
 
 ## Sandbox 执行
 
@@ -52,7 +61,9 @@ workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下�
 ## Python Function Tools
 
 用 `@dagent.tool` 装饰 Python 函数。参数注解会生成 tool input JSON schema；返回注解会
-生成 output schema。
+生成 output schema。Python 函数名就是 capability name：`search` 会注册
+`tool.search`，并以 `tool_search(...)` 暴露给 LLM 和 PlanSpec DSL。decorator 不接收
+独立的 `id` 或 `name` 参数。
 
 ```python
 from pydantic import BaseModel
@@ -85,6 +96,8 @@ agent = dagent.ToolAgent(
     capabilities=["tool.search"],
 )
 ```
+
+如果需要不同的公开 capability id，请重命名 Python 函数。
 
 ## 结构化结果
 
@@ -157,6 +170,11 @@ shell 危险模式（例如破坏性系统命令）不可通过 review 放行。
 
 MCP stdio 和 Streamable HTTP server tools 在 server 注册后会变成普通
 `mcp.<server>.<tool>` capabilities：
+
+这里的 `<server>` 和 `<tool>` segment 是 dagent 的公开 key。原始 MCP server 和 tool
+名称会保存在 capability `config` 中；不安全的原始名称会通过稳定短 hash canonicalize，
+避免不同外部名称在 normalize 后发生碰撞。第三方工具的 id 请通过
+`runner.add_mcp_server(...)` 返回值或 `/capabilities` 查看，不要手写猜测。
 
 ```python
 runner.add_mcp_server(

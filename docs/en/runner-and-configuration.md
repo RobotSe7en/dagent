@@ -122,11 +122,24 @@ runner = dagent.Runner(
 )
 ```
 
+MCP server names are dagent local workspace keys, not third-party MCP tool
+names. The local `/mcp/servers` API enforces letters, numbers, and underscores
+for this key, for example `remote_docs`; use the same convention for
+`mcp_servers` and `runner.add_mcp_server(...)` to keep ids predictable.
+Third-party MCP tool names are preserved in capability config and canonicalized
+when dagent builds `mcp.*` capability ids.
+
 You can also register resources after construction:
 
 ```python
 runner.add_tool(search)
 runner.add_skill_root("more-skills")
+runner.add_agent(dagent.ToolAgent(
+    profile="conversation",
+    name="research_helper",
+    capabilities=["tool.search"],
+    skills=["research/briefing"],
+))
 
 mcp_definitions = runner.add_mcp_server(
     "team_fs",
@@ -162,6 +175,11 @@ pip install "dagent-ai[mcp]"
 MCP registration is all-or-nothing: if a server fails to connect or any
 discovered tool cannot register, the runner rolls back the capabilities from
 that registration attempt.
+
+`runner.add_agent(...)` registers a leaf `ToolAgent` as `agent.<name>`. The
+registered agent can be exposed to top-level `ToolAgent`, `AutoAgent`, and
+`DagAgent` runs through their `agents` field. Registered subagents cannot expose
+other subagents.
 
 ## Capability Management
 

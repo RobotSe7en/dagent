@@ -317,7 +317,6 @@ class SkillsCapabilityProvider:
         catalog.register(
             CapabilityDefinition(
                 id="skill.list",
-                name="skills_list",
                 kind="skill",
                 description="List locally configured skills.",
                 parameters={
@@ -335,7 +334,6 @@ class SkillsCapabilityProvider:
         catalog.register(
             CapabilityDefinition(
                 id="skill.view",
-                name="skill_view",
                 kind="skill",
                 description=(
                     "Read a skill's SKILL.md or a linked file inside the skill directory. "
