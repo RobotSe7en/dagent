@@ -150,5 +150,8 @@ changed, verify it in a browser when the UI behavior matters.
 - Inspect `git status` before staging.
 - Stage only files that belong to the requested change.
 - Keep commits focused and messages terse.
+- Every new version release must include clear release notes. At minimum, call
+  out user-facing additions, behavior changes, breaking changes, migration
+  steps, and relevant verification or known limitations.
 - Push only after the requested checks pass or after clearly reporting why a
   check could not be run.
