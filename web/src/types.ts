@@ -40,7 +40,6 @@ export interface CapabilityPolicy {
 
 export interface CapabilityDefinition {
   id: string;
-  name: string;
   kind: CapabilityKind;
   description: string;
   parameters: Record<string, unknown>;
@@ -369,6 +368,20 @@ export interface ProfileWarning {
   name: string;
   error: string;
 }
+
+export interface AgentPreset {
+  id: string;
+  name: string;
+  profile: string;
+  description: string;
+  max_steps: number;
+  capabilities?: string[] | null;
+  skills?: string[] | null;
+  agents?: string[] | null;
+  review: ReviewLevel;
+}
+
+export type AgentPresetInput = Omit<AgentPreset, 'id'>;
 
 export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents' | 'models';
 

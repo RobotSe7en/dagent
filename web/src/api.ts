@@ -1,4 +1,6 @@
 import type {
+  AgentPreset,
+  AgentPresetInput,
   AgentProfile,
   CapabilityDefinition,
   CapabilityKind,
@@ -26,6 +28,7 @@ import type {
   RunArtifactPreview,
   RunArtifactsResponse,
 } from './types';
+import { chatScopeRequestFields, type ChatCapabilityScopePayload } from './agentScope';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 import {
   responseDeltaPayload,
@@ -221,6 +224,45 @@ export async function deleteProfile(name: string): Promise<void> {
   if (!res.ok) throw new Error(await errorMessage(res));
 }
 
+export async function listAgents(): Promise<{ agents: AgentPreset[]; errors: Record<string, string> }> {
+  const res = await fetch(`${API_BASE}/agents`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    agents: data.agents ?? [],
+    errors: data.errors ?? {},
+  };
+}
+
+export async function createAgent(payload: AgentPresetInput): Promise<AgentPreset> {
+  const res = await fetch(`${API_BASE}/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.agent;
+}
+
+export async function updateAgent(name: string, payload: Omit<AgentPresetInput, 'name'>): Promise<AgentPreset> {
+  const res = await fetch(`${API_BASE}/agents/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.agent;
+}
+
+export async function deleteAgent(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/agents/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
 export async function listSkills(): Promise<SkillSummary[]> {
   const res = await fetch(`${API_BASE}/skills`);
   if (!res.ok) throw new Error(await errorMessage(res));
@@ -410,11 +452,6 @@ interface StreamRequestOptions {
   signal?: AbortSignal;
 }
 
-export interface ChatCapabilityScopePayload {
-  capabilityIds: string[] | null;
-  skills: string[];
-}
-
 export interface ChatStreamMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -435,8 +472,7 @@ export async function streamMessagesTask(
     review_level: reviewLevel,
   };
   if (capabilityScope) {
-    body.capability_ids = capabilityScope.capabilityIds;
-    body.skills = capabilityScope.skills;
+    Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   const response = await fetch(`${API_BASE}/messages/stream`, {
@@ -468,8 +504,7 @@ export async function streamTask(
     review_level: reviewLevel,
   };
   if (capabilityScope) {
-    body.capability_ids = capabilityScope.capabilityIds;
-    body.skills = capabilityScope.skills;
+    Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (state) body.state = state;
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;

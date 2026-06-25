@@ -22,6 +22,15 @@ const {
   resetSchemaArguments,
   visibleCapabilitiesForPicker,
 } = await importTypeScript('../src/schemaArguments.ts');
+const {
+  capabilityDisplayName,
+  capabilityFunctionName,
+  cleanWorkspaceKeyDraft,
+  isValidCapabilityId,
+} = await importTypeScript('../src/capabilityContracts.ts');
+const {
+  chatScopeRequestFields,
+} = await importTypeScript('../src/agentScope.ts');
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 const {
   artifactPathExpr,
@@ -77,7 +86,7 @@ test('chat workbench ports the design shell without mock run data', async () => 
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
-  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'chat', label: '智能对话'/);
+  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'chat', label: '智能工作台'/);
   assert.match(appSource, /\{ key: 'orchestration', label: '智能体编排'/);
   assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
   assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
@@ -143,6 +152,61 @@ test('composer uses upload placeholder instead of creating chats from the input 
   assert.doesNotMatch(chatWorkspaceSource, /onNewChat/);
   assert.doesNotMatch(chatWorkspaceSource, /title="新建会话"/);
   assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
+});
+
+test('capability helpers follow 0.6.0 id-only contracts', () => {
+  const capability = {
+    id: 'agent.helper',
+    kind: 'agent',
+    description: 'Summarizes delegated work.',
+    parameters: {},
+    output_schema: {},
+    policy: { risk: 'medium', requires_review: false, sandbox_required: true, network: false, secrets: [] },
+    config: {},
+    enabled: true,
+  };
+
+  assert.equal(capabilityDisplayName(capability), 'agent.helper');
+  assert.equal(capabilityFunctionName(capability), 'agent_helper');
+  assert.equal(isValidCapabilityId('tool.search'), true);
+  assert.equal(isValidCapabilityId('mcp.remote_docs.lookup'), true);
+  assert.equal(isValidCapabilityId('agent.bad-name'), false);
+  assert.equal(isValidCapabilityId(' search'), false);
+  assert.equal(cleanWorkspaceKeyDraft('helper-agent'), 'helper_agent');
+});
+
+test('chat scope request fields keep agent delegation separate from capabilities', () => {
+  assert.deepEqual(chatScopeRequestFields(undefined), {});
+  assert.deepEqual(chatScopeRequestFields({
+    capabilityIds: ['tool.echo'],
+    skills: ['writing/brief'],
+    agentScope: 'selected',
+    agentIds: ['agent.helper'],
+  }), {
+    capability_ids: ['tool.echo'],
+    skills: ['writing/brief'],
+    agent_scope: 'selected',
+    agent_ids: ['agent.helper'],
+  });
+  assert.deepEqual(chatScopeRequestFields({
+    capabilityIds: null,
+    skills: [],
+    agentScope: 'registered',
+    agentIds: [],
+  }), {
+    capability_ids: null,
+    skills: [],
+    agent_scope: 'registered',
+  });
+  assert.throws(
+    () => chatScopeRequestFields({
+      capabilityIds: ['agent.helper'],
+      skills: [],
+      agentScope: 'none',
+      agentIds: [],
+    }),
+    /Agent capabilities must use agentScope/,
+  );
 });
 
 test('value binding helpers create labels and rewrite node output references', () => {
@@ -309,6 +373,10 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource, /flowInstance\.fitView\(\{ padding: 0\.25, duration: 220 \}\)/);
   assert.match(appSource, /flowInstance\.zoomIn\(\{ duration: 160 \}\)/);
   assert.match(appSource, /flowInstance\.zoomOut\(\{ duration: 160 \}\)/);
+  assert.match(appSource, /function canvasCenterNodePosition\(flowInstance: ReactFlowInstance \| null, canvasElement: HTMLDivElement \| null\): XYPosition/);
+  assert.match(appSource, /flowInstance\.screenToFlowPosition\(\{ x: bounds\.left \+ bounds\.width \/ 2, y: bounds\.top \+ bounds\.height \/ 2 \}\)/);
+  assert.match(appSource, /x: Math\.round\(center\.x - 96\)/);
+  assert.match(appSource, /y: Math\.round\(center\.y - 32\)/);
   assert.match(appSource, /className="canvas-viewport-controls nopan nodrag"/);
   assert.match(appSource, /onPointerDown=\{stopCanvasEvent\}/);
   assert.match(appSource, /function buildVariableOptionGroups/);
@@ -341,6 +409,10 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /onAddNode: \(capability\?: CapabilityDefinition, position\?: XYPosition\) => void;/);
   assert.match(appSource, /graphFromDag\(nextDag, nextPositions\)/);
   assert.match(appSource, /const selectedNode = dag\.nodes\.find\(\(node\) => node\.id === selectedId\) \?\? null;/);
+  assert.match(orchestrationSource, /const canvasRef = useRef<HTMLDivElement \| null>\(null\);/);
+  assert.match(orchestrationSource, /const firstNodePosition = \(\) => nodes\.length \? undefined : canvasCenterNodePosition\(flowInstance, canvasRef\.current\);/);
+  assert.match(orchestrationSource, /<div className="orchestration-canvas" ref=\{canvasRef\}>/);
+  assert.match(orchestrationSource, /onClick=\{\(\) => onAddNode\(undefined, firstNodePosition\(\)\)\}[\s\S]*添加第一个节点/);
   assert.match(appSource, /key: 'orchestration', label: '智能体编排'/);
 
   assert.match(runDialogSource, /运行编排/);
@@ -397,8 +469,13 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /nodesDraggable/);
   assert.match(dynamicSource, /defaultViewport=\{\{ x: 0, y: 0, zoom: 1 \}\}/);
   assert.match(dynamicSource, /fitView=\{false\}/);
-  assert.doesNotMatch(dynamicSource, /onInit=\{setFlowInstance\}/);
+  assert.match(dynamicSource, /const \[flowInstance, setFlowInstance\] = useState<ReactFlowInstance \| null>\(null\);/);
+  assert.match(dynamicSource, /const canvasRef = useRef<HTMLDivElement \| null>\(null\);/);
+  assert.match(dynamicSource, /const firstNodePosition = \(\) => nodes\.length \? undefined : canvasCenterNodePosition\(flowInstance, canvasRef\.current\);/);
+  assert.match(dynamicSource, /onInit=\{setFlowInstance\}/);
   assert.match(dynamicSource, /<ReactFlow[\s\S]*<CanvasViewportControls hasNodes=\{nodes\.length > 0\} \/>[\s\S]*<\/ReactFlow>/);
+  assert.match(dynamicSource, /<div className="orchestration-canvas dynamic-orchestration-canvas" ref=\{canvasRef\}>/);
+  assert.match(dynamicSource, /onClick=\{\(\) => onAddNode\(undefined, firstNodePosition\(\)\)\}[\s\S]*添加第一个节点/);
   assert.doesNotMatch(dynamicSource, /fitView=\{!nodes\.length\}/);
   assert.doesNotMatch(dynamicSource, /\{nodes\.length \? \([\s\S]*<ReactFlow/);
   assert.match(dynamicSource, /<ReactFlow[\s\S]*\{!nodes\.length \? \(/);
@@ -439,6 +516,8 @@ test('updated orchestration and tools workspaces use real backend data with the 
 
   assert.match(css, /\.design-orchestration-workspace/);
   assert.match(css, /\.orchestration-canvas/);
+  assert.match(css, /\.orchestration-empty-canvas\s*\{[^}]*left:\s*50%;[^}]*top:\s*50%;[^}]*transform:\s*translate\(-50%, -50%\);/s);
+  assert.doesNotMatch(css, /\.orchestration-empty-canvas\s*\{[^}]*left:\s*80px;[^}]*top:\s*80px;/s);
   assert.match(css, /\.canvas-viewport-controls/);
   assert.match(css, /\.canvas-viewport-controls button/);
   assert.doesNotMatch(css, /\.orchestration-name-input\s*\{[^}]*\n\s*width:\s*min\(280px, 28vw\);/s);
@@ -669,25 +748,36 @@ test('model management is a first-class workspace backed by runtime model APIs',
   assert.match(css, /\.model-advanced-toggle/);
 });
 
-test('agent management uses real profiles and no longer renders the placeholder workspace', async () => {
+test('agent management uses real profiles and presets instead of the placeholder workspace', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const agentSource = appSource.match(/function AgentManagementWorkspace[\s\S]*?\nfunction DagReviewDialog/)?.[0] ?? '';
 
+  assert.ok(sidebarSource, 'WorkspaceSidebar should exist');
   assert.ok(agentSource, 'AgentManagementWorkspace should exist');
   assert.match(appReturnSource, /activeWorkspace === 'agents' \? \([\s\S]*<AgentManagementWorkspace/);
   assert.doesNotMatch(appReturnSource, /<DesignWorkspacePlaceholder/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*profiles=\{profiles\}[\s\S]*selectedProfileId=\{selectedProfileId\}/);
+  assert.match(appSource, /const \[agentManagementSub, setAgentManagementSub\] = useState<AgentManagementSub>\('profiles'\);/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*agentsSub=\{agentManagementSub\}[\s\S]*profiles=\{profiles\}[\s\S]*selectedProfileId=\{selectedProfileId\}/);
   assert.match(appSource, /<AgentManagementWorkspace[\s\S]*creating=\{creatingProfile\}[\s\S]*profiles=\{profiles\}[\s\S]*selectedId=\{selectedProfileId\}[\s\S]*warnings=\{profileWarnings\}/);
+  assert.match(sidebarSource, /const agentSubnav = \[/);
+  assert.match(sidebarSource, /label: '角色设定'/);
+  assert.match(sidebarSource, /label: '智能体预设'/);
+  assert.match(sidebarSource, /onAgentsSubChange\(subitem\.key\)/);
+  assert.match(sidebarSource, /agentPresets\.length \? agentPresets\.map/);
   assert.match(agentSource, /className="design-agents-workspace"/);
+  assert.doesNotMatch(agentSource, /className="agent-management-tabs"/);
   assert.match(agentSource, /className="agent-prompt-editor"/);
   assert.match(agentSource, /className="agent-metadata-panel"/);
   assert.match(agentSource, /draftContent\.length/);
-  assert.match(agentSource, /capabilities\.filter\(\(capability\) => capability\.kind === 'agent'/);
+  assert.doesNotMatch(agentSource, /能力范围/);
   assert.match(agentSource, /复制为本地/);
   assert.match(agentSource, /配置名称/);
+  assert.match(agentSource, /智能体预设/);
+  assert.match(agentSource, /function AgentPresetManagementPane/);
   assert.match(agentSource, /profileSourceLabel/);
   assert.match(agentSource, /删除配置/);
   assert.doesNotMatch(agentSource, /配置文件路径|后端暂未提供/);
@@ -695,8 +785,13 @@ test('agent management uses real profiles and no longer renders the placeholder 
   assert.match(apiSource, /export async function createProfile/);
   assert.match(apiSource, /export async function updateProfile/);
   assert.match(apiSource, /export async function deleteProfile/);
+  assert.match(apiSource, /export async function listAgents/);
+  assert.match(apiSource, /export async function createAgent/);
+  assert.match(apiSource, /export async function updateAgent/);
+  assert.match(apiSource, /export async function deleteAgent/);
 
   assert.match(css, /\.design-agents-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 380px;/s);
+  assert.doesNotMatch(css, /\.agent-management-tabs/);
   assert.match(css, /\.agent-prompt-editor/);
   assert.match(css, /\.agent-name-field/);
   assert.match(css, /\.agent-metadata-panel/);
