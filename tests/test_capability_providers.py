@@ -191,6 +191,10 @@ def test_capability_provider_legacy_import_shims_are_removed() -> None:
     assert not hasattr(capabilities_module, "SkillCapabilityProvider")
 
 
+def test_template_capability_handler_is_not_exposed_from_sdk_providers() -> None:
+    assert not hasattr(providers_module, "template_capability_handler")
+
+
 def test_mcp_skill_and_agent_providers_register_and_execute(tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "summarize"
     skill_dir.mkdir(parents=True)

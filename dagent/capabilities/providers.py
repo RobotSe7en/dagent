@@ -352,17 +352,6 @@ def agent_capability_parameters() -> dict[str, Any]:
     }
 
 
-def template_capability_handler(template: str):
-    def execute(invocation: CapabilityInvocation) -> CapabilityResult:
-        try:
-            content = template.format(**invocation.arguments) if template else ""
-        except Exception as exc:
-            return _failed(invocation, str(exc), stop_reason=type(exc).__name__)
-        return _completed(invocation, content)
-
-    return execute
-
-
 def _profile_from_config(agent_name: str, config: dict[str, Any]) -> AgentProfile:
     profile = config.get("profile")
     if isinstance(profile, AgentProfile):
@@ -522,7 +511,7 @@ def _execute_tool(
         result = session.run_tool(tool_name, checked_args)
     else:
         result = tool.handler(**checked_args)
-    return _content_and_value_from_tool_result(result)
+    return content_and_value_from_result(result)
 
 
 def check_tool_boundary(
@@ -579,10 +568,6 @@ def _merge_definition_arguments(
     return merged
 
 
-def _tool_default_arguments(tool: Any) -> dict[str, Any]:
-    return _default_arguments(tool.default_args or {}, tool.parameters or {})
-
-
 def _default_arguments(default_args: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
     defaults = dict(default_args)
     properties = parameters.get("properties") if isinstance(parameters, dict) else None
@@ -592,10 +577,6 @@ def _default_arguments(default_args: dict[str, Any], parameters: dict[str, Any])
                 continue
             defaults[name] = schema["default"]
     return defaults
-
-
-def _content_and_value_from_tool_result(result: Any) -> tuple[str, Any]:
-    return content_and_value_from_result(result)
 
 
 def _tool_capability_id(tool_name: str) -> str:
