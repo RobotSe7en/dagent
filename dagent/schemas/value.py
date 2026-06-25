@@ -119,17 +119,7 @@ def iter_value_exprs(value: Any):
             yield from iter_value_exprs(item)
 
 
-def iter_node_output_exprs(value: Any):
-    for expr in iter_value_exprs(value):
-        if isinstance(expr, NodeOutputExpr):
-            yield expr
-
-
 def iter_artifact_exprs(value: Any):
     for expr in iter_value_exprs(value):
         if isinstance(expr, ArtifactExpr):
             yield expr
-
-
-def has_item_expr(value: Any) -> bool:
-    return any(isinstance(expr, ItemExpr) for expr in iter_value_exprs(value))

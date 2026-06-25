@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import inspect
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, get_type_hints
 
-from pydantic import BaseModel
-
 from dagent.capabilities.catalog import CapabilityHandler
+from dagent.capabilities.tools.registry import content_and_value_from_result
 from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
@@ -93,7 +91,7 @@ def tool(
                     result = await result
                 if isinstance(result, CapabilityResult):
                     return result
-                content, value = _content_and_value_from_result(result)
+                content, value = content_and_value_from_result(result)
                 return CapabilityResult(
                     invocation_id=invocation.invocation_id,
                     capability_id=invocation.capability_id,
@@ -134,25 +132,6 @@ def _invoke_function(
     if supports_context:
         return func(**arguments, context=context, callbacks=callbacks)
     return func(**arguments)
-
-
-def _content_and_value_from_result(result: Any) -> tuple[str, Any]:
-    """Split a tool return into string content and a structured value (None for plain text)."""
-    if result is None:
-        return "", None
-    if isinstance(result, BaseModel):
-        value = result.model_dump(mode="json")
-        return result.model_dump_json(), value
-    if isinstance(result, str):
-        return result, None
-    if isinstance(result, bytes):
-        return result.decode("utf-8", errors="replace"), None
-    if isinstance(result, tuple):
-        value = list(result)
-        return json.dumps(value, ensure_ascii=False), value
-    if isinstance(result, (dict, list, bool, int, float)):
-        return json.dumps(result, ensure_ascii=False), result
-    return str(result), None
 
 
 def _schema_from_signature(func: Callable[..., Any], type_hints: dict[str, Any]) -> dict[str, Any]:

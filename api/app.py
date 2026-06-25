@@ -26,7 +26,9 @@ from dagent import (
     AutoAgent,
     Boundary,
     CapabilityDefinition,
+    CapabilityInvocation,
     CapabilityPolicy,
+    CapabilityResult,
     DAG,
     DAGRun,
     Dag,
@@ -56,7 +58,7 @@ from dagent.config import (
     resolve_config_path,
     resolve_config_relative_path,
 )
-from dagent.capabilities.providers import agent_capability_parameters, template_capability_handler
+from dagent.capabilities.providers import agent_capability_parameters
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
 from dagent.schemas import Artifact, DAGEdge
 
@@ -1382,7 +1384,28 @@ def _handler_for_definition(definition: CapabilityDefinition):
             status_code=400,
             detail="Tool capability ids must start with 'tool.'.",
         )
-    return template_capability_handler(str(definition.config.get("template", "")))
+    return _template_capability_handler(str(definition.config.get("template", "")))
+
+
+def _template_capability_handler(template: str):
+    def execute(invocation: CapabilityInvocation) -> CapabilityResult:
+        policy_decision = invocation.boundary.policy_decision()
+        try:
+            content = template.format(**invocation.arguments) if template else ""
+        except Exception as exc:
+            return CapabilityResult.failed(
+                invocation,
+                str(exc),
+                stop_reason=type(exc).__name__,
+                policy_decision=policy_decision,
+            )
+        return CapabilityResult.completed(
+            invocation,
+            content,
+            policy_decision=policy_decision,
+        )
+
+    return execute
 
 
 def _set_capability_enabled(capability_id: str, enabled: bool) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from dagent import CapabilityBinding, tool
 from dagent.capabilities import tool as tool_from_subsystem
+from dagent.capabilities.tools.registry import ToolOutput
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
 
@@ -137,3 +138,19 @@ def test_tool_decorator_keeps_explicit_result_value_unset_for_plain_text() -> No
 
     assert result.content == "hello"
     assert result.value is None
+
+
+def test_tool_decorator_uses_registry_output_normalization() -> None:
+    @tool
+    def structured() -> ToolOutput:
+        return ToolOutput(content="ready", value={"ok": True})
+
+    result = run(structured.handler(
+        CapabilityInvocation(
+            capability_id=structured.definition.id,
+            kind=structured.definition.kind,
+        )
+    ))
+
+    assert result.content == "ready"
+    assert result.value == {"ok": True}
