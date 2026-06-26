@@ -799,6 +799,9 @@ test('tools management ports the full design columns while keeping backend actio
   assert.match(directorySource, /tool-schema-block/);
   assert.match(directorySource, /skill-editor-toolbar/);
   assert.match(directorySource, /mcp-config-form/);
+  assert.match(directorySource, /className="status-badge mcp-status-badge"/);
+  assert.match(appSource, /if \(status === 'connected'\) return '已连接';/);
+  assert.doesNotMatch(appSource, /if \(status === 'connected'\) return 'connected';/);
   assert.match(directorySource, /testCapability\(selectedTool\.id, parsed\)/);
   assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);
@@ -812,6 +815,7 @@ test('tools management ports the full design columns while keeping backend actio
   assert.match(css, /\.tool-info-table/);
   assert.match(css, /\.skill-editor-toolbar/);
   assert.match(css, /\.mcp-config-form/);
+  assert.match(css, /\.agent-editor-toolbar \.mcp-status-badge\s*\{[^}]*height:\s*34px;[^}]*min-height:\s*34px;[^}]*border-radius:\s*9px;[^}]*padding:\s*0 14px;[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*font-size:\s*13px;[^}]*line-height:\s*1;/s);
 });
 
 test('model management is a first-class workspace backed by runtime model APIs', async () => {

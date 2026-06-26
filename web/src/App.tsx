@@ -7339,7 +7339,7 @@ function CapabilityDirectory({
               </div>
               <div>
                 {selectedMcp ? (
-                  <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
+                  <span className="status-badge mcp-status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
                     {mcpStatusLabel(selectedMcp.status)}
                   </span>
                 ) : null}
@@ -7477,10 +7477,10 @@ function capabilityStatusLabel(capability: CapabilityDefinition): string {
 }
 
 function mcpStatusLabel(status: MCPServer['status']): string {
-  if (status === 'connected') return 'connected';
-  if (status === 'disabled') return 'disabled';
-  if (status === 'error') return 'error';
-  return 'pending';
+  if (status === 'connected') return '已连接';
+  if (status === 'disabled') return '已停用';
+  if (status === 'error') return '连接错误';
+  return '连接中';
 }
 
 function ModelManagementWorkspace({
