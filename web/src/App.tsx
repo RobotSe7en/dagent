@@ -259,7 +259,7 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
 };
 
 const defaultModelDraft: ModelProviderInput = {
-  id: 'runtime-model',
+  id: 'user-model',
   name: '',
   base_url: 'https://api.openai.com/v1',
   model: '',
@@ -7061,8 +7061,8 @@ function CapabilityDirectory({
         env: transport === 'stdio' ? parseEnvText(mcpEnvText) : {},
         headers: transport === 'http' ? parseEnvText(mcpHeadersText) : {},
       };
-      const editingExistingMemoryServer = selectedMcp?.source === 'memory' && selectedMcp.name === payload.name;
-      if (editingExistingMemoryServer) {
+      const editingExistingUserServer = selectedMcp && isEditableMcpSource(selectedMcp.source) && selectedMcp.name === payload.name;
+      if (editingExistingUserServer) {
         await updateMcpServer(selectedMcp.name, payload);
       } else {
         await createMcpServer(payload);
@@ -7077,7 +7077,7 @@ function CapabilityDirectory({
   };
 
   const removeMcpServer = async () => {
-    if (!selectedMcp || selectedMcp.source !== 'memory') return;
+    if (!selectedMcp || !isEditableMcpSource(selectedMcp.source)) return;
     setMcpMessage('Deleting MCP server...');
     try {
       await deleteMcpServer(selectedMcp.name);
@@ -7343,7 +7343,7 @@ function CapabilityDirectory({
                     {mcpStatusLabel(selectedMcp.status)}
                   </span>
                 ) : null}
-                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || selectedMcp.source !== 'memory'} type="button">
+                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || !isEditableMcpSource(selectedMcp.source)} type="button">
                   <Trash2 size={13} />
                   删除
                 </button>
@@ -7483,6 +7483,10 @@ function mcpStatusLabel(status: MCPServer['status']): string {
   return '连接中';
 }
 
+function isEditableMcpSource(source: MCPServer['source']): boolean {
+  return source === 'user';
+}
+
 function ModelManagementWorkspace({
   activeModelId,
   creating,
@@ -7512,9 +7516,9 @@ function ModelManagementWorkspace({
   const [extraBodyText, setExtraBodyText] = useState('{}');
   const [modelAdvancedOpen, setModelAdvancedOpen] = useState(false);
   const [message, setMessage] = useState('');
-  const source = creating ? 'runtime' : selected?.source ?? 'runtime';
+  const source = creating ? 'user' : selected?.source ?? 'user';
   const isConfigModel = source === 'config';
-  const editable = creating || source === 'runtime';
+  const editable = creating || source === 'user';
 
   useEffect(() => {
     if (creating) return;
@@ -7539,10 +7543,10 @@ function ModelManagementWorkspace({
 
   useEffect(() => {
     if (!creating) return;
-    const runtimeCount = models.filter((model) => model.source === 'runtime').length + 1;
+    const userModelCount = models.filter((model) => model.source === 'user').length + 1;
     setDraft({
       ...defaultModelDraft,
-      id: `runtime-model-${runtimeCount}`,
+      id: `user-model-${userModelCount}`,
     });
     setApiKeyText('');
     setApiKeyAction('replace');
@@ -7644,7 +7648,7 @@ function ModelManagementWorkspace({
   };
 
   const removeModel = async () => {
-    if (!selected || selected.source !== 'runtime' || creating) return;
+    if (!selected || selected.source !== 'user' || creating) return;
     setMessage(`Deleting ${selected.name}...`);
     try {
       const result = await deleteModelProvider(selected.id);
@@ -7665,7 +7669,7 @@ function ModelManagementWorkspace({
           </div>
           <div>
             <strong>{creating ? '新建模型' : selected?.name ?? '模型管理'}</strong>
-            <span>{creating ? 'runtime' : selected ? `${modelSourceLabel(selected.source)} · ${selected.model}` : 'runtime'}</span>
+            <span>{creating ? 'user' : selected ? `${modelSourceLabel(selected.source)} · ${selected.model}` : 'user'}</span>
           </div>
           <div>
             {creating ? (
@@ -7702,7 +7706,7 @@ function ModelManagementWorkspace({
               <label>Model<input disabled={!editable} value={draft.model} onChange={(event) => patchModelValue(event.target.value)} /></label>
               <label>显示名称<input disabled={!editable} value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} /></label>
               <label>API Key<input disabled={!editable} value={apiKeyText} onChange={(event) => updateApiKeyText(event.target.value)} type="password" placeholder="不会回显已保存密钥" /></label>
-              {editable && selected?.source === 'runtime' && selected.api_key_saved ? (
+              {editable && selected?.source === 'user' && selected.api_key_saved ? (
                 <button className="secondary-button compact-button model-secret-clear" onClick={clearSavedApiKey} disabled={apiKeyAction === 'clear'} type="button">
                   清除已保存密钥
                 </button>
@@ -7737,7 +7741,7 @@ function ModelManagementWorkspace({
                 <Check size={13} />
                 设为当前模型
               </button>
-              <button className="secondary-button danger-button compact-button" onClick={removeModel} disabled={creating || !selected || selected.source !== 'runtime'} type="button">
+              <button className="secondary-button danger-button compact-button" onClick={removeModel} disabled={creating || !selected || selected.source !== 'user'} type="button">
                 <Trash2 size={13} />
                 删除
               </button>
@@ -7776,7 +7780,7 @@ function modelDisplayNameForDraft(currentName: string, previousModel: string, ne
 }
 
 function uniqueModelDraftId(label: string, models: ModelProvider[]): string {
-  const base = slugValue(label || 'runtime-model') || 'runtime-model';
+  const base = slugValue(label || 'user-model') || 'user-model';
   const used = new Set(models.map((model) => model.id));
   if (!used.has(base)) return base;
   let suffix = 2;
@@ -7798,7 +7802,7 @@ function formatModelJson(value: Record<string, unknown> | null | undefined, empt
 }
 
 function modelSourceLabel(source: ModelProvider['source']): string {
-  return source === 'config' ? 'config.yaml' : 'runtime';
+  return source === 'config' ? 'config.yaml' : 'user';
 }
 
 function AgentManagementWorkspace({

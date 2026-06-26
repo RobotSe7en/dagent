@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZipFile
 
+import pytest
+import yaml
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,11 @@ from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.runner import Runner
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityResult
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(state, "get_user_config_path", lambda: tmp_path / ".dagent" / "config.yaml")
 
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
@@ -3059,7 +3066,7 @@ def test_api_validation_toggle_overrides_config_default_and_survives_reset(monke
         setattr(state, "validation_override", original_override)
 
 
-def test_api_model_management_adds_runtime_model_and_activates_with_redacted_secret(monkeypatch, tmp_path) -> None:
+def test_api_model_management_adds_user_model_and_activates_with_redacted_secret(monkeypatch, tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
         "\n".join([
@@ -3112,7 +3119,7 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         assert created.status_code == 200
         created_model = created.json()["model"]
         assert created_model["id"] == "local-qwen"
-        assert created_model["source"] == "runtime"
+        assert created_model["source"] == "user"
         assert created_model["api_key_configured"] is True
         assert "api_key" not in created_model
         assert created_model["extra_request_args"]["headers"]["Authorization"] == "[redacted]"
@@ -3195,7 +3202,7 @@ def test_api_model_management_adds_runtime_model_and_activates_with_redacted_sec
         state.active_model_id = None
 
 
-def test_api_model_management_deletes_active_runtime_model_and_returns_to_config(monkeypatch, tmp_path) -> None:
+def test_api_model_management_deletes_active_user_model_and_returns_to_config(monkeypatch, tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
         "\n".join([
@@ -3216,16 +3223,16 @@ def test_api_model_management_deletes_active_runtime_model_and_returns_to_config
         assert client.post(
             "/models",
             json={
-                "id": "runtime-model",
-                "name": "Runtime Model",
-                "base_url": "https://runtime.example/v1",
-                "model": "runtime-model",
-                "api_key_env": "RUNTIME_API_KEY",
+                "id": "user-model",
+                "name": "User Model",
+                "base_url": "https://user.example/v1",
+                "model": "user-model",
+                "api_key_env": "USER_MODEL_API_KEY",
             },
         ).status_code == 200
-        assert client.post("/models/runtime-model/activate").status_code == 200
+        assert client.post("/models/user-model/activate").status_code == 200
 
-        deleted = client.delete("/models/runtime-model")
+        deleted = client.delete("/models/user-model")
         listed = client.get("/models")
 
         assert deleted.status_code == 200
@@ -3238,6 +3245,273 @@ def test_api_model_management_deletes_active_runtime_model_and_returns_to_config
         state.close_runner()
         state.custom_model_providers.clear()
         state.active_model_id = None
+
+
+def test_api_model_management_persists_user_models_to_user_config(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+        ]),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".dagent" / "config.yaml"
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    monkeypatch.setattr(state, "get_user_config_path", lambda: user_config, raising=False)
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        created = client.post(
+            "/models",
+            json={
+                "id": "local-qwen",
+                "name": "Local Qwen",
+                "base_url": "http://localhost:8000/v1",
+                "model": "qwen3-coder",
+                "api_key_env": "LOCAL_QWEN_API_KEY",
+            },
+        )
+        activated = client.post("/models/local-qwen/activate")
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+        listed = client.get("/models")
+
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert created.status_code == 200
+        assert activated.status_code == 200
+        assert raw["active_model"] == "local-qwen"
+        assert raw["model_providers"]["local-qwen"] == {
+            "name": "Local Qwen",
+            "base_url": "http://localhost:8000/v1",
+            "model": "qwen3-coder",
+            "api_key_env": "LOCAL_QWEN_API_KEY",
+            "timeout_seconds": 60,
+            "strip_thinking": False,
+        }
+        assert listed.status_code == 200
+        assert listed.json()["active_model_id"] == "local-qwen"
+        assert [model["id"] for model in listed.json()["models"]] == ["config", "local-qwen"]
+        assert listed.json()["models"][1]["source"] == "user"
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
+def test_api_user_config_env_model_never_persists_resolved_secret(monkeypatch, tmp_path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+        ]),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".dagent" / "config.yaml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(
+        yaml.safe_dump({
+            "model_providers": {
+                "env-model": {
+                    "name": "Env Model",
+                    "base_url": "https://env.example/v1",
+                    "model": "env-model",
+                    "api_key_env": "ENV_MODEL_API_KEY",
+                }
+            },
+            "active_model": "env-model",
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    monkeypatch.setenv("ENV_MODEL_API_KEY", "resolved-secret")
+    monkeypatch.setattr(state, "get_user_config_path", lambda: user_config, raising=False)
+    state.close_runner()
+    state.custom_model_providers.clear()
+    state.active_model_id = None
+    client = TestClient(app)
+
+    try:
+        listed = client.get("/models")
+        created = client.post(
+            "/models",
+            json={
+                "id": "other-model",
+                "name": "Other Model",
+                "base_url": "https://other.example/v1",
+                "model": "other-model",
+                "api_key_env": "OTHER_MODEL_API_KEY",
+            },
+        )
+
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        env_payload = next(model for model in listed.json()["models"] if model["id"] == "env-model")
+        assert listed.status_code == 200
+        assert env_payload["source"] == "user"
+        assert env_payload["api_key_configured"] is True
+        assert env_payload["api_key_saved"] is False
+        assert created.status_code == 200
+        assert "api_key" not in raw["model_providers"]["env-model"]
+        assert raw["model_providers"]["env-model"]["api_key_env"] == "ENV_MODEL_API_KEY"
+    finally:
+        state.close_runner()
+        state.custom_model_providers.clear()
+        state.active_model_id = None
+
+
+def test_api_mcp_management_persists_user_servers_to_user_config(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        description="Lookup.",
+                        policy=CapabilityPolicy(risk=config.get("risk", "medium")),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+        ]),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".dagent" / "config.yaml"
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    monkeypatch.setattr(state, "get_user_config_path", lambda: user_config, raising=False)
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    client = TestClient(app)
+
+    try:
+        created = client.post(
+            "/mcp/servers",
+            json={"name": "mock", "command": "fake", "risk": "low"},
+        )
+        state.close_runner()
+        state.custom_mcp_servers.clear()
+        state.custom_mcp_errors.clear()
+        listed = client.get("/mcp/servers")
+
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        servers = {server["name"]: server for server in listed.json()["servers"]}
+        assert created.status_code == 200
+        assert raw["mcp_servers"]["mock"] == {
+            "transport": "stdio",
+            "command": "fake",
+            "enabled": True,
+            "risk": "low",
+            "connect_timeout": 30,
+            "tool_timeout": 60,
+        }
+        assert servers["mock"]["source"] == "user"
+        assert servers["mock"]["status"] == "connected"
+    finally:
+        state.close_runner()
+        state.custom_mcp_servers.clear()
+        state.custom_mcp_errors.clear()
+
+
+def test_api_mcp_project_user_conflicts_are_reported_and_preserved(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={})
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name, config in self.servers.items():
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        description="Lookup.",
+                        policy=CapabilityPolicy(risk=config.get("risk", "medium")),
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "\n".join([
+            "provider:",
+            "  base_url: https://config.example/v1",
+            "  model: config-model",
+            "  api_key: config-secret",
+            "mcp_servers:",
+            "  mock:",
+            "    command: project",
+            "    risk: low",
+        ]),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".dagent" / "config.yaml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(
+        yaml.safe_dump({
+            "mcp_servers": {
+                "mock": {"command": "user", "risk": "high"},
+                "user_only": {"command": "user-only", "risk": "medium"},
+            }
+        }, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAGENT_CONFIG", str(config))
+    monkeypatch.setattr(state, "get_user_config_path", lambda: user_config, raising=False)
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    state.close_runner()
+    state.custom_mcp_servers.clear()
+    state.custom_mcp_errors.clear()
+    client = TestClient(app)
+
+    try:
+        listed = client.get("/mcp/servers")
+        created = client.post(
+            "/mcp/servers",
+            json={"name": "extra", "command": "extra", "risk": "low"},
+        )
+
+        raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        servers = {server["name"]: server for server in listed.json()["servers"]}
+        assert listed.status_code == 200
+        assert servers["mock"]["source"] == "config"
+        assert "defined in both project config and user config" in servers["mock"]["error"]
+        assert servers["user_only"]["source"] == "user"
+        assert created.status_code == 200
+        assert raw["mcp_servers"]["mock"] == {"command": "user", "risk": "high"}
+        assert raw["mcp_servers"]["user_only"]["command"] == "user-only"
+        assert raw["mcp_servers"]["extra"]["command"] == "extra"
+    finally:
+        state.close_runner()
+        state.custom_mcp_servers.clear()
+        state.custom_mcp_errors.clear()
 
 
 def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) -> Runner:

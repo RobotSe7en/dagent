@@ -98,6 +98,42 @@ If no path is passed, `Runner.from_config(...)` resolves `DAGENT_CONFIG` or
 `./config.yaml`. Relative `profiles.directory` values resolve from the config
 file directory.
 
+## User WebUI Configuration
+
+The local FastAPI/WebUI backend also reads and writes a user-level config at
+`~/.dagent/config.yaml`. This file is for local UI state and user defaults; it
+does not change what `Runner.from_config(...)` loads in SDK code.
+
+User config uses the same YAML style for provider-shaped model entries and MCP
+servers, but it is scoped to WebUI-managed models, the active WebUI model, and
+user MCP servers:
+
+```yaml
+model_providers:
+  local-qwen:
+    name: "Local Qwen"
+    base_url: "http://localhost:8000/v1"
+    model: "qwen3-coder"
+    api_key_env: "LOCAL_QWEN_API_KEY"
+active_model: "local-qwen"
+mcp_servers:
+  local_fs:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+The WebUI model list includes the project `config.yaml` provider plus user
+`model_providers`. If `active_model` names a user model, the backend rebuilds
+the runner with that provider; otherwise the project `config.yaml` provider
+remains the default. The WebUI registers both project and user MCP servers.
+Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
+are reported instead of silently overriding project configuration.
+
+`api_key_env` is the recommended way to configure secrets. The WebUI can save a
+literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly
+chooses to save it. The file is written with owner-only permissions where the
+platform supports it, and API responses continue to redact saved secrets.
+
 ## Runtime Registration
 
 Register tools, skill roots, and MCP servers when the runner is constructed:
@@ -218,8 +254,8 @@ runner = dagent.Runner(
 ```
 
 The local WebUI model manager follows this pattern. The `config.yaml` provider
-remains the default model. Runtime-added model entries are session state unless
-the host application chooses to persist them.
+remains the default model unless the user activates a persisted WebUI model from
+`~/.dagent/config.yaml`.
 
 ## Validation
 

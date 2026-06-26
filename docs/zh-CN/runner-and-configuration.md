@@ -94,6 +94,37 @@ mcp_servers:
 如果没有传入 path，`Runner.from_config(...)` 会解析 `DAGENT_CONFIG` 或
 `./config.yaml`。相对的 `profiles.directory` 会从配置文件所在目录解析。
 
+## WebUI 用户配置
+
+本地 FastAPI/WebUI backend 还会读写用户级配置 `~/.dagent/config.yaml`。这个文件用于本机
+UI 状态和用户默认值；它不会改变 SDK 代码中 `Runner.from_config(...)` 的加载行为。
+
+用户配置复用 provider-shaped 模型条目和 MCP servers 的 YAML 风格，但范围限定为
+WebUI 管理的模型、当前 WebUI 模型和用户 MCP servers：
+
+```yaml
+model_providers:
+  local-qwen:
+    name: "Local Qwen"
+    base_url: "http://localhost:8000/v1"
+    model: "qwen3-coder"
+    api_key_env: "LOCAL_QWEN_API_KEY"
+active_model: "local-qwen"
+mcp_servers:
+  local_fs:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+```
+
+WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
+如果 `active_model` 指向一个用户模型，backend 会用该 provider 重建 runner；否则项目
+`config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
+项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
+
+推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
+写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；
+API 响应仍会 redact 已保存的密钥。
+
 ## 运行时注册
 
 可以在 runner 构造时注册 tools、skill roots 和 MCP servers：
@@ -210,7 +241,7 @@ runner = dagent.Runner(
 ```
 
 本地 WebUI 的模型管理遵循这个模式。`config.yaml` 中的 provider 仍是默认模型。
-运行时新增的模型条目属于 session state，除非 host 应用明确选择持久化它们。
+除非用户激活了 `~/.dagent/config.yaml` 中持久化的 WebUI 模型。
 
 ## Validation
 

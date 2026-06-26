@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +51,10 @@ class ProviderConfig(BaseModel):
             env_value = os.environ.get(self.api_key_env)
             if env_value:
                 self.api_key = env_value
+                self.__pydantic_fields_set__.discard("api_key")
                 return self
         self.api_key = "not-needed"
+        self.__pydantic_fields_set__.discard("api_key")
         return self
 
 
@@ -61,6 +64,16 @@ class DagentConfig(BaseModel):
     enable_result_validation: bool = False
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+
+
+class UserModelProviderConfig(ProviderConfig):
+    name: str | None = None
+
+
+class UserDagentConfig(BaseModel):
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    model_providers: dict[str, UserModelProviderConfig] = Field(default_factory=dict)
+    active_model: str | None = None
 
 
 class ProfilesConfig(BaseModel):
@@ -91,6 +104,67 @@ def load_config(path: str | Path | None = None) -> DagentConfig:
     if not isinstance(data, dict):
         raise ValueError(f"Config file '{config_path}' must contain a YAML mapping.")
     return DagentConfig.model_validate(data)
+
+
+def default_user_config_path() -> Path:
+    return Path.home() / ".dagent" / "config.yaml"
+
+
+def load_user_config(path: str | Path | None = None) -> UserDagentConfig:
+    config_path = Path(path or default_user_config_path()).expanduser()
+    if not config_path.exists():
+        return UserDagentConfig()
+    _load_dotenv(config_path.parent / ".env")
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if data is None:
+        return UserDagentConfig()
+    if not isinstance(data, dict):
+        raise ValueError(f"User config file '{config_path}' must contain a YAML mapping.")
+    return UserDagentConfig.model_validate(data)
+
+
+def save_user_config(config: UserDagentConfig, path: str | Path | None = None) -> None:
+    config_path = Path(path or default_user_config_path()).expanduser()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data = _user_config_storage_data(config)
+    content = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    temp_path = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+        os.replace(temp_path, config_path)
+        config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _user_config_storage_data(config: UserDagentConfig) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    if config.mcp_servers:
+        data["mcp_servers"] = config.mcp_servers
+    if config.model_providers:
+        data["model_providers"] = {
+            name: _provider_storage_data(provider)
+            for name, provider in config.model_providers.items()
+        }
+    if config.active_model is not None:
+        data["active_model"] = config.active_model
+    return data
+
+
+def _provider_storage_data(provider: ProviderConfig) -> dict[str, Any]:
+    data = provider.model_dump(mode="json", exclude_none=True)
+    if data.get("api_key") == "not-needed":
+        data.pop("api_key", None)
+    if "api_key" not in provider.model_fields_set:
+        data.pop("api_key", None)
+    if not data.get("extra_request_args"):
+        data.pop("extra_request_args", None)
+    if not data.get("extra_body"):
+        data.pop("extra_body", None)
+    return data
 
 
 def _load_dotenv(path: Path) -> None:

@@ -54,9 +54,14 @@ from dagent import (
 from dagent.config import (
     DEFAULT_RUNS_DIR,
     DEFAULT_WORKSPACE,
+    UserDagentConfig,
+    UserModelProviderConfig,
+    default_user_config_path,
     load_config,
+    load_user_config,
     resolve_config_path,
     resolve_config_relative_path,
+    save_user_config,
 )
 from dagent.capabilities.providers import agent_capability_parameters
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
@@ -69,7 +74,7 @@ MessageTarget = Literal["auto", "tool", "dag"]
 AgentScope = Literal["none", "selected", "registered"]
 CONFIG_MODEL_ID = "config"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
-ModelProviderSource = Literal["config", "runtime"]
+ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
 RunArtifactSource = Literal["dag_artifact", "run_file"]
 RunArtifactPreviewKind = Literal["markdown", "code", "text"]
@@ -326,8 +331,10 @@ class ApiState:
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
+        self.custom_mcp_conflicts: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.custom_mcp_conflict_errors: dict[str, str] = {}
         self.agent_preset_errors: dict[str, str] = {}
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
@@ -335,6 +342,7 @@ class ApiState:
 
     def get_runner(self) -> Runner:
         if self.runner is None:
+            self.sync_user_config()
             self.runner = self._create_runner()
             self._install_custom_capabilities()
             self.reload_custom_mcp()
@@ -366,6 +374,7 @@ class ApiState:
         self.runner = None
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
+        self.custom_mcp_conflict_errors.clear()
         self.agent_preset_errors.clear()
 
     def get_profile_directory(self) -> str | None:
@@ -389,6 +398,71 @@ class ApiState:
 
     def get_agent_preset_root(self) -> Path:
         return Path.home() / ".dagent" / "agents"
+
+    def get_user_config_path(self) -> Path:
+        return default_user_config_path()
+
+    def sync_user_config(self) -> None:
+        config = load_user_config(self.get_user_config_path())
+        self.custom_model_providers = {
+            model_id: _model_request_from_user_config(model_id, model)
+            for model_id, model in config.model_providers.items()
+        }
+        self.active_model_id = (
+            config.active_model
+            if config.active_model in self.custom_model_providers
+            else None
+        )
+        configured_mcp_names = _configured_mcp_server_names()
+        user_mcp_servers: dict[str, dict[str, Any]] = {}
+        user_mcp_conflicts: dict[str, dict[str, Any]] = {}
+        conflict_errors: dict[str, str] = {}
+        for name, server_config in config.mcp_servers.items():
+            server_name = str(name)
+            if server_name in configured_mcp_names:
+                conflict_errors[server_name] = (
+                    f"MCP server '{server_name}' is defined in both project config and user config."
+                )
+                user_mcp_conflicts[server_name] = dict(server_config)
+                continue
+            user_mcp_servers[server_name] = dict(server_config)
+        self.custom_mcp_servers = user_mcp_servers
+        self.custom_mcp_conflicts = user_mcp_conflicts
+        self.custom_mcp_errors = {
+            name: error
+            for name, error in self.custom_mcp_errors.items()
+            if name in user_mcp_servers
+        }
+        self.custom_mcp_conflict_errors = conflict_errors
+
+    def persist_user_models(self) -> None:
+        config = self._current_user_config()
+        config.model_providers = {
+            model_id: _user_model_provider_config(model)
+            for model_id, model in sorted(self.custom_model_providers.items())
+        }
+        config.active_model = (
+            self.active_model_id
+            if self.active_model_id in self.custom_model_providers
+            else None
+        )
+        save_user_config(config, self.get_user_config_path())
+
+    def persist_user_mcp_servers(self) -> None:
+        config = self._current_user_config()
+        mcp_servers = {
+            name: dict(server_config)
+            for name, server_config in sorted(self.custom_mcp_conflicts.items())
+        }
+        mcp_servers.update({
+            name: _mcp_storage_config(server_config)
+            for name, server_config in sorted(self.custom_mcp_servers.items())
+        })
+        config.mcp_servers = mcp_servers
+        save_user_config(config, self.get_user_config_path())
+
+    def _current_user_config(self) -> UserDagentConfig:
+        return load_user_config(self.get_user_config_path())
 
     def skill_store(self) -> SkillStore:
         return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
@@ -415,7 +489,7 @@ class ApiState:
             replace_names=self.custom_mcp_registered_names,
         )
         self.custom_mcp_registered_names = registered_names
-        self.custom_mcp_errors = errors
+        self.custom_mcp_errors = {**errors, **self.custom_mcp_conflict_errors}
         self._install_agent_presets()
 
     def _install_agent_presets(self) -> None:
@@ -465,6 +539,8 @@ async def reset_session() -> dict[str, str]:
     state.dag_artifact_uploads.clear()
     state.custom_capabilities.clear()
     state.custom_mcp_servers.clear()
+    state.custom_mcp_conflicts.clear()
+    state.custom_mcp_conflict_errors.clear()
     return {"status": "ok"}
 
 
@@ -1058,6 +1134,7 @@ async def list_models() -> ModelListResponse:
 
 @app.post("/models", response_model=ModelMutationResponse)
 async def create_model_provider(request: ModelProviderRequest) -> ModelMutationResponse:
+    state.sync_user_config()
     model_id = _clean_model_id(request.id)
     if model_id in state.custom_model_providers:
         raise HTTPException(status_code=400, detail=f"Model '{model_id}' already exists.")
@@ -1067,14 +1144,16 @@ async def create_model_provider(request: ModelProviderRequest) -> ModelMutationR
     if request.api_key_action == "clear":
         model = model.model_copy(update={"api_key": None}, deep=True)
     state.custom_model_providers[model_id] = model
+    state.persist_user_models()
     return ModelMutationResponse(
-        model=_runtime_model_payload(model, active=_active_model_id() == model_id),
+        model=_user_model_payload(model, active=_active_model_id() == model_id),
         active_model_id=_active_model_id(),
     )
 
 
 @app.put("/models/{model_id}", response_model=ModelMutationResponse)
 async def update_model_provider(model_id: str, request: ModelProviderRequest) -> ModelMutationResponse:
+    state.sync_user_config()
     clean_model_id = _clean_model_id(model_id)
     body_model_id = _clean_model_id(request.id)
     if clean_model_id != body_model_id:
@@ -1088,16 +1167,18 @@ async def update_model_provider(model_id: str, request: ModelProviderRequest) ->
     elif request.api_key_action == "clear":
         model = model.model_copy(update={"api_key": None}, deep=True)
     state.custom_model_providers[clean_model_id] = model
+    state.persist_user_models()
     if state.active_model_id == clean_model_id:
         state.close_runner()
     return ModelMutationResponse(
-        model=_runtime_model_payload(model, active=_active_model_id() == clean_model_id),
+        model=_user_model_payload(model, active=_active_model_id() == clean_model_id),
         active_model_id=_active_model_id(),
     )
 
 
 @app.delete("/models/{model_id}", response_model=ModelDeleteResponse)
 async def delete_model_provider(model_id: str) -> ModelDeleteResponse:
+    state.sync_user_config()
     clean_model_id = _clean_model_id(model_id)
     if clean_model_id not in state.custom_model_providers:
         raise HTTPException(status_code=404, detail="Model not found.")
@@ -1105,22 +1186,26 @@ async def delete_model_provider(model_id: str) -> ModelDeleteResponse:
     if state.active_model_id == clean_model_id:
         state.active_model_id = None
         state.close_runner()
+    state.persist_user_models()
     return ModelDeleteResponse(status="deleted", active_model_id=_active_model_id())
 
 
 @app.post("/models/{model_id}/activate", response_model=ModelMutationResponse)
 async def activate_model_provider(model_id: str) -> ModelMutationResponse:
+    state.sync_user_config()
     clean_model_id = _clean_model_id(model_id, allow_config=True)
     if clean_model_id == CONFIG_MODEL_ID:
         state.active_model_id = None
+        state.persist_user_models()
         state.close_runner()
         return ModelMutationResponse(model=_config_model_payload(active=True), active_model_id=CONFIG_MODEL_ID)
     model = state.custom_model_providers.get(clean_model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found.")
     state.active_model_id = clean_model_id
+    state.persist_user_models()
     state.close_runner()
-    return ModelMutationResponse(model=_runtime_model_payload(model, active=True), active_model_id=clean_model_id)
+    return ModelMutationResponse(model=_user_model_payload(model, active=True), active_model_id=clean_model_id)
 
 
 @app.get("/mcp/servers")
@@ -1130,6 +1215,7 @@ async def list_mcp_servers() -> dict[str, Any]:
 
 @app.post("/mcp/servers")
 async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
+    state.sync_user_config()
     name = _clean_name(request.name, field="MCP server name")
     if name in _configured_mcp_server_names():
         raise HTTPException(status_code=400, detail=f"MCP server '{name}' is already configured.")
@@ -1143,11 +1229,13 @@ async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         state.custom_mcp_errors[name] = str(exc)
-    return {"server": _mcp_server_payload(name, "memory", state.custom_mcp_servers[name], state.get_runner())}
+    state.persist_user_mcp_servers()
+    return {"server": _mcp_server_payload(name, "user", state.custom_mcp_servers[name], state.get_runner())}
 
 
 @app.put("/mcp/servers/{name}")
 async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, Any]:
+    state.sync_user_config()
     server_name = _clean_name(name, field="MCP server name")
     body_name = _clean_name(request.name, field="MCP server name")
     if body_name != server_name:
@@ -1162,11 +1250,13 @@ async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, A
     except ValueError as exc:
         state.custom_mcp_servers[server_name] = previous
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"server": _mcp_server_payload(server_name, "memory", state.custom_mcp_servers[server_name], state.get_runner())}
+    state.persist_user_mcp_servers()
+    return {"server": _mcp_server_payload(server_name, "user", state.custom_mcp_servers[server_name], state.get_runner())}
 
 
 @app.delete("/mcp/servers/{name}")
 async def delete_mcp_server(name: str) -> dict[str, str]:
+    state.sync_user_config()
     server_name = _clean_name(name, field="MCP server name")
     if server_name not in state.custom_mcp_servers:
         raise HTTPException(status_code=404, detail="MCP server not found.")
@@ -1177,11 +1267,13 @@ async def delete_mcp_server(name: str) -> dict[str, str]:
     except ValueError as exc:
         state.custom_mcp_servers[server_name] = previous
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.persist_user_mcp_servers()
     return {"status": "deleted"}
 
 
 @app.post("/mcp/reload")
 async def reload_mcp_servers() -> dict[str, Any]:
+    state.sync_user_config()
     try:
         state.reload_custom_mcp()
     except ValueError as exc:
@@ -1461,12 +1553,49 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
     }
 
 
+def _model_request_from_user_config(model_id: str, model: UserModelProviderConfig) -> ModelProviderRequest:
+    api_key = (
+        model.api_key
+        if "api_key" in model.model_fields_set and model.api_key != "not-needed"
+        else None
+    )
+    return ModelProviderRequest(
+        id=model_id,
+        name=model.name or model_id,
+        base_url=model.base_url,
+        model=model.model,
+        api_key=api_key,
+        api_key_env=model.api_key_env,
+        timeout_seconds=model.timeout_seconds,
+        strip_thinking=model.strip_thinking,
+        reasoning=model.reasoning.model_dump(mode="json") if model.reasoning is not None else None,
+        extra_request_args=dict(model.extra_request_args),
+        extra_body=dict(model.extra_body),
+    )
+
+
+def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProviderConfig:
+    return UserModelProviderConfig(
+        name=model.name,
+        base_url=model.base_url,
+        model=model.model,
+        api_key=model.api_key,
+        api_key_env=model.api_key_env,
+        timeout_seconds=model.timeout_seconds,
+        strip_thinking=model.strip_thinking,
+        reasoning=model.reasoning,
+        extra_request_args=dict(model.extra_request_args),
+        extra_body=dict(model.extra_body),
+    )
+
+
 def _model_provider_payloads() -> list[ModelProviderPayload]:
+    state.sync_user_config()
     active_id = _active_model_id()
     return [
         _config_model_payload(active=active_id == CONFIG_MODEL_ID),
         *[
-            _runtime_model_payload(model, active=model.id == active_id)
+            _user_model_payload(model, active=model.id == active_id)
             for model in sorted(state.custom_model_providers.values(), key=lambda item: (item.name.lower(), item.id))
         ],
     ]
@@ -1497,11 +1626,11 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
     )
 
 
-def _runtime_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelProviderPayload:
+def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelProviderPayload:
     return ModelProviderPayload(
         id=model.id,
         name=model.name,
-        source="runtime",
+        source="user",
         active=active,
         base_url=model.base_url,
         model=model.model,
@@ -2128,6 +2257,16 @@ def _mcp_server_config(request: MCPServerRequest) -> dict[str, Any]:
     return config
 
 
+def _mcp_storage_config(config: dict[str, Any]) -> dict[str, Any]:
+    stored = dict(config)
+    for key in ("args", "env", "headers", "include_tools", "exclude_tools"):
+        if not stored.get(key):
+            stored.pop(key, None)
+    if stored.get("cwd") is None:
+        stored.pop("cwd", None)
+    return stored
+
+
 def _mcp_server_payloads(runner: Runner) -> list[dict[str, Any]]:
     servers: dict[str, tuple[str, dict[str, Any]]] = {}
     try:
@@ -2136,7 +2275,7 @@ def _mcp_server_payloads(runner: Runner) -> list[dict[str, Any]]:
     except Exception:
         pass
     for name, config in state.custom_mcp_servers.items():
-        servers[str(name)] = ("memory", dict(config))
+        servers.setdefault(str(name), ("user", dict(config)))
     capability_servers = {
         str(definition.config.get("server"))
         for definition in runner.list_capabilities(kind="mcp")
