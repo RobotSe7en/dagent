@@ -35,6 +35,7 @@ import {
   FileText,
   Folder,
   GitBranch,
+  LayoutDashboard,
   Loader,
   MessageSquare,
   Plus,
@@ -54,8 +55,10 @@ import {
 } from 'lucide-react';
 import {
   createCapability,
+  createAgent,
   createMcpServer,
   createModelProvider,
+  deleteAgent,
   deleteCapability,
   deleteMcpServer,
   deleteModelProvider,
@@ -64,6 +67,7 @@ import {
   getSkillFile,
   getValidationStatus,
   installSkill,
+  listAgents,
   listCapabilities,
   listDags,
   listMcpServers,
@@ -86,6 +90,7 @@ import {
   uploadDagArtifact,
   updateMcpServer,
   updateModelProvider,
+  updateAgent,
   activateModelProvider,
   validateDag,
   createProfile,
@@ -94,6 +99,8 @@ import {
 } from './api';
 import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
+  AgentPreset,
+  AgentPresetInput,
   AgentProfile,
   CapabilityDefinition,
   CapabilityInvocation,
@@ -131,6 +138,13 @@ import type {
   UserDagNode,
   ValueBinding,
 } from './types';
+import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
+import {
+  capabilityDisplayName,
+  cleanWorkspaceKeyDraft,
+  isValidCapabilityId,
+} from './capabilityContracts';
+import { canvasCenterNodePosition } from './canvasPositions';
 import {
   buildSchemaArgumentFields,
   coerceArgumentValue,
@@ -184,6 +198,7 @@ import {
   type VariableCatalog,
   type VariableCatalogItem,
 } from './valueBindings';
+import dagentMark from './assets/dagent-mark.svg';
 
 const riskClass: Record<RiskLevel, string> = {
   low: 'risk-low',
@@ -215,7 +230,6 @@ const defaultCapabilityPolicy = {
 
 const defaultCustomCapability: CapabilityDefinition = {
   id: 'tool.example',
-  name: 'example',
   kind: 'tool',
   description: '',
   parameters: {
@@ -260,7 +274,7 @@ const defaultModelDraft: ModelProviderInput = {
 };
 
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
-  { key: 'chat', label: '智能对话', icon: <MessageSquare size={16} /> },
+  { key: 'chat', label: '智能工作台', icon: <LayoutDashboard size={16} /> },
   { key: 'orchestration', label: '智能体编排', icon: <GitBranch size={16} /> },
   { key: 'tools', label: '能力管理', icon: <Wrench size={16} /> },
   { key: 'agents', label: '智能体管理', icon: <Bot size={16} /> },
@@ -568,10 +582,6 @@ function dagValidationIssueMessage(issues: DagValidationIssue[]): string {
   return `${owner}${issue.message}`;
 }
 
-function capabilityDisplayName(capability: CapabilityDefinition): string {
-  return `${capability.name} (${capability.id})`;
-}
-
 function capabilityKindLabel(kind: CapabilityKind): string {
   if (kind === 'agent') return 'Agent';
   if (kind === 'mcp') return 'MCP';
@@ -599,6 +609,7 @@ type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
+type AgentManagementSub = 'profiles' | 'presets';
 type TokenChannel = 'reasoning' | 'content';
 type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
 type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
@@ -813,6 +824,8 @@ export function App() {
   const [chatScopeMode, setChatScopeMode] = useState<ChatScopeMode>('all');
   const [selectedChatCapabilityIds, setSelectedChatCapabilityIds] = useState<string[]>([]);
   const [selectedChatSkillNames, setSelectedChatSkillNames] = useState<string[]>([]);
+  const [chatAgentScope, setChatAgentScope] = useState<AgentScopeMode>('none');
+  const [selectedChatAgentIds, setSelectedChatAgentIds] = useState<string[]>([]);
   const [capabilityScopeOpen, setCapabilityScopeOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceLogEvent[]>([]);
@@ -877,10 +890,15 @@ export function App() {
   const [dynamicMessage, setDynamicMessage] = useState('');
   const [dynamicMessageOrder, setDynamicMessageOrder] = useState(0);
   const [dynamicRunning, setDynamicRunning] = useState(false);
+  const [agentManagementSub, setAgentManagementSub] = useState<AgentManagementSub>('profiles');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [creatingProfile, setCreatingProfile] = useState(false);
+  const [agentPresets, setAgentPresets] = useState<AgentPreset[]>([]);
+  const [agentPresetErrors, setAgentPresetErrors] = useState<Record<string, string>>({});
+  const [selectedAgentPresetId, setSelectedAgentPresetId] = useState('');
+  const [creatingAgentPreset, setCreatingAgentPreset] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [models, setModels] = useState<ModelProvider[]>([]);
@@ -934,6 +952,8 @@ export function App() {
     chatScopeMode,
     selectedChatCapabilityIds.length,
     selectedChatSkillNames.length,
+    chatAgentScope,
+    selectedChatAgentIds.length,
   );
   const activeRunId = runState?.run_id ?? null;
   const chatArtifacts = useMemo(
@@ -1002,6 +1022,25 @@ export function App() {
     setSelectedArtifactId('');
   }, [activeRunId]);
 
+  // 流式结束后再拉一次产物：run_id 在多轮对话中可能不变，仅靠 activeRunId 变化无法刷新本轮新增的文件。
+  const streamingWasActiveRef = useRef(false);
+  useEffect(() => {
+    if (streamingWasActiveRef.current && !streaming) {
+      void refreshRunArtifacts();
+    }
+    streamingWasActiveRef.current = streaming;
+  }, [streaming, refreshRunArtifacts]);
+
+  // 产物从无到有时自动展开抽屉，避免用户手动点开才看到新产物。
+  const artifactsPresentRef = useRef(false);
+  useEffect(() => {
+    const hasArtifacts = chatArtifacts.length > 0;
+    if (hasArtifacts && !artifactsPresentRef.current) {
+      setArtifactPanelOpen(true);
+    }
+    artifactsPresentRef.current = hasArtifacts;
+  }, [chatArtifacts.length]);
+
   useEffect(() => {
     if (!artifactPanelOpen || !selectedArtifact?.previewable || !selectedArtifact.runId || !selectedArtifact.path) return;
     const cacheKey = artifactPreviewCacheKey(selectedArtifact);
@@ -1055,9 +1094,27 @@ export function App() {
     setCreatingModel(true);
   }, []);
 
+  const selectAgentManagementSub = useCallback((sub: AgentManagementSub) => {
+    setAgentManagementSub(sub);
+    if (sub === 'profiles') {
+      setCreatingAgentPreset(false);
+    } else {
+      setCreatingProfile(false);
+    }
+  }, []);
+
   const requestProfileCreation = useCallback(() => {
     setActiveWorkspace('agents');
+    setAgentManagementSub('profiles');
+    setCreatingAgentPreset(false);
     setCreatingProfile(true);
+  }, []);
+
+  const requestAgentPresetCreation = useCallback(() => {
+    setActiveWorkspace('agents');
+    setAgentManagementSub('presets');
+    setCreatingProfile(false);
+    setCreatingAgentPreset(true);
   }, []);
 
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? dag.nodes[0];
@@ -1080,10 +1137,11 @@ export function App() {
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
     try {
-      const [nextCapabilities, nextSpecs, nextProfiles, nextSkills, nextMcpServers, nextModels] = await Promise.all([
+      const [nextCapabilities, nextSpecs, nextProfiles, nextAgents, nextSkills, nextMcpServers, nextModels] = await Promise.all([
         listCapabilities(),
         listDags(),
         listProfiles(),
+        listAgents(),
         listSkills(),
         listMcpServers(),
         listModels(),
@@ -1092,29 +1150,52 @@ export function App() {
       setSavedDags(nextSpecs);
       setProfiles(nextProfiles.profiles);
       setProfileWarnings(nextProfiles.warnings);
+      setAgentPresets(nextAgents.agents);
+      setAgentPresetErrors(nextAgents.errors);
       setSkills(nextSkills);
       setMcpServers(nextMcpServers);
       setModels(nextModels.models);
       setActiveModelId(nextModels.active_model_id);
-      setSelectedProfileId((current) => current || nextProfiles.profiles[0]?.id || '');
+      setSelectedProfileId((current) => (
+        current && nextProfiles.profiles.some((profile) => profile.id === current)
+          ? current
+          : nextProfiles.profiles[0]?.id || ''
+      ));
+      setSelectedAgentPresetId((current) => (
+        current && nextAgents.agents.some((preset) => preset.id === current)
+          ? current
+          : nextAgents.agents[0]?.id || ''
+      ));
     } catch (exc) {
       setConsoleError(exc instanceof Error ? exc.message : String(exc));
     }
   }, []);
 
-  const refreshAgentData = useCallback(async (preferredProfileId?: string) => {
-    const [nextCapabilities, nextProfiles] = await Promise.all([
+  const refreshAgentData = useCallback(async (preferredProfileId?: string, preferredAgentPresetId?: string) => {
+    const [nextCapabilities, nextProfiles, nextAgents] = await Promise.all([
       listCapabilities(),
       listProfiles(),
+      listAgents(),
     ]);
     setCapabilities(nextCapabilities);
     setProfiles(nextProfiles.profiles);
     setProfileWarnings(nextProfiles.warnings);
-    setSelectedProfileId(
-      preferredProfileId && nextProfiles.profiles.some((profile) => profile.id === preferredProfileId)
-        ? preferredProfileId
-        : nextProfiles.profiles[0]?.id || '',
-    );
+    setAgentPresets(nextAgents.agents);
+    setAgentPresetErrors(nextAgents.errors);
+    setSelectedProfileId((current) => {
+      if (preferredProfileId && nextProfiles.profiles.some((profile) => profile.id === preferredProfileId)) {
+        return preferredProfileId;
+      }
+      if (current && nextProfiles.profiles.some((profile) => profile.id === current)) return current;
+      return nextProfiles.profiles[0]?.id || '';
+    });
+    setSelectedAgentPresetId((current) => {
+      if (preferredAgentPresetId && nextAgents.agents.some((preset) => preset.id === preferredAgentPresetId)) {
+        return preferredAgentPresetId;
+      }
+      if (current && nextAgents.agents.some((preset) => preset.id === current)) return current;
+      return nextAgents.agents[0]?.id || '';
+    });
   }, []);
 
   const createManagedProfile = useCallback(async (name: string, content: string) => {
@@ -1133,6 +1214,25 @@ export function App() {
   const removeManagedProfile = useCallback(async (name: string) => {
     await deleteProfile(name);
     setCreatingProfile(false);
+    await refreshAgentData();
+  }, [refreshAgentData]);
+
+  const createAgentPreset = useCallback(async (payload: AgentPresetInput) => {
+    const preset = await createAgent(payload);
+    setCreatingAgentPreset(false);
+    await refreshAgentData(undefined, preset.id);
+    return preset;
+  }, [refreshAgentData]);
+
+  const updateAgentPreset = useCallback(async (name: string, payload: Omit<AgentPresetInput, 'name'>) => {
+    const preset = await updateAgent(name, payload);
+    await refreshAgentData(undefined, preset.id);
+    return preset;
+  }, [refreshAgentData]);
+
+  const removeAgentPreset = useCallback(async (name: string) => {
+    await deleteAgent(name);
+    setCreatingAgentPreset(false);
     await refreshAgentData();
   }, [refreshAgentData]);
 
@@ -1303,6 +1403,10 @@ export function App() {
         : skills[0] ? skillLookupName(skills[0]) : '',
     );
   }, [skills]);
+
+  useEffect(() => {
+    setSelectedChatAgentIds((items) => pruneSelectedAgentIds(items, agentPresets));
+  }, [agentPresets]);
 
   useEffect(() => {
     setSelectedToolMcpName((current) =>
@@ -1796,7 +1900,7 @@ export function App() {
         ...current.nodes,
         normalizeNode({
           id,
-          title: selectedCapability?.name || selectedCapability?.id || '未命名节点',
+          title: selectedCapability ? capabilityDisplayName(selectedCapability) : '未命名节点',
           payload: {
             type: 'capability',
             invocation: {
@@ -2265,9 +2369,13 @@ export function App() {
       { role: 'user', kind: 'text', content: prompt },
       { role: 'assistant', kind: 'text', content: '' },
     ]);
-    const capabilityScope = chatScopeMode === 'all'
+    const capabilityScope = chatScopeMode === 'all' && chatAgentScope === 'none'
       ? undefined
-      : { capabilityIds: selectedChatCapabilityIds, skills: selectedChatSkillNames };
+      : {
+        ...(chatScopeMode === 'custom' ? { capabilityIds: selectedChatCapabilityIds, skills: selectedChatSkillNames } : {}),
+        agentScope: chatAgentScope,
+        agentIds: selectedChatAgentIds,
+      };
     appendTrace({
       type: 'model',
       label: 'runtime_started',
@@ -2539,10 +2647,14 @@ export function App() {
     <div className={`app-shell ${navCollapsed ? 'nav-collapsed' : ''}`}>
       <WorkspaceSidebar
         activeWorkspace={activeWorkspace}
+        agentsSub={agentManagementSub}
+        agentPresetCount={agentPresets.length}
+        agentPresets={agentPresets}
         artifacts={editorArtifacts}
         collapsed={navCollapsed}
         capabilities={capabilities}
         capabilityCount={capabilities.filter((capability) => capability.kind !== 'agent').length}
+        creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
         history={chatHistory}
         models={models}
@@ -2552,6 +2664,7 @@ export function App() {
         orchestrationMode={orchestrationMode}
         savedDags={visibleSavedDags}
         selectedDagId={editorUserDag.id}
+        selectedAgentPresetId={selectedAgentPresetId}
         selectedModelId={selectedModelId}
         selectedProfileId={selectedProfileId}
         selectedToolCapabilityId={selectedToolCapabilityId}
@@ -2564,6 +2677,7 @@ export function App() {
         toolsSub={toolsDirectoryTab}
         toolsQuery={toolsDirectoryQuery}
         onCreateArtifact={createEditorArtifact}
+        onCreateAgentPreset={requestAgentPresetCreation}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
         onCreateModel={requestModelCreation}
         onCreateProfile={requestProfileCreation}
@@ -2575,6 +2689,10 @@ export function App() {
         onNewChat={() => void newChat()}
         onNewDag={newEditorUserDag}
         onSelectProfile={setSelectedProfileId}
+        onSelectAgentPreset={(id) => {
+          setCreatingAgentPreset(false);
+          setSelectedAgentPresetId(id);
+        }}
         onSelectModel={(id) => {
           setCreatingModel(false);
           setSelectedModelId(id);
@@ -2585,6 +2703,7 @@ export function App() {
         onSelectToolSkill={selectToolSkill}
         onSelectWorkspace={setActiveWorkspace}
         onOrchestrationModeChange={setOrchestrationMode}
+        onAgentsSubChange={selectAgentManagementSub}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
         onToolsQueryChange={setToolsDirectoryQuery}
@@ -2728,11 +2847,22 @@ export function App() {
           />
         ) : activeWorkspace === 'agents' ? (
           <AgentManagementWorkspace
+            activeSub={agentManagementSub}
+            agentPresetErrors={agentPresetErrors}
+            agentPresets={agentPresets}
             capabilities={capabilities}
+            creatingAgentPreset={creatingAgentPreset}
             creating={creatingProfile}
             profiles={profiles}
+            selectedAgentPresetId={selectedAgentPresetId}
             selectedId={selectedProfileId}
+            skills={skills}
             warnings={profileWarnings}
+            onAgentPresetCreate={createAgentPreset}
+            onAgentPresetCreatingChange={setCreatingAgentPreset}
+            onAgentPresetDelete={removeAgentPreset}
+            onAgentPresetSelect={setSelectedAgentPresetId}
+            onAgentPresetUpdate={updateAgentPreset}
             onCreate={createManagedProfile}
             onCreatingChange={setCreatingProfile}
             onDelete={removeManagedProfile}
@@ -2747,12 +2877,17 @@ export function App() {
 
       {capabilityScopeOpen ? (
         <ChatCapabilityScopeDialog
+          agentPresets={agentPresets}
+          agentScope={chatAgentScope}
           capabilities={capabilities}
           skills={skills}
           mcpServers={mcpServers}
           mode={chatScopeMode}
+          selectedAgentIds={selectedChatAgentIds}
           selectedCapabilityIds={selectedChatCapabilityIds}
           selectedSkillNames={selectedChatSkillNames}
+          onAgentIdsChange={setSelectedChatAgentIds}
+          onAgentScopeChange={setChatAgentScope}
           onModeChange={setChatScopeMode}
           onCapabilityIdsChange={setSelectedChatCapabilityIds}
           onSkillNamesChange={setSelectedChatSkillNames}
@@ -2809,10 +2944,14 @@ export function App() {
 
 function WorkspaceSidebar({
   activeWorkspace,
+  agentsSub,
+  agentPresetCount,
+  agentPresets,
   artifacts,
   collapsed,
   capabilities,
   capabilityCount,
+  creatingAgentPreset,
   creatingModel,
   history,
   models,
@@ -2822,6 +2961,7 @@ function WorkspaceSidebar({
   profiles,
   savedDags,
   selectedDagId,
+  selectedAgentPresetId,
   selectedModelId,
   selectedProfileId,
   selectedToolCapabilityId,
@@ -2834,6 +2974,7 @@ function WorkspaceSidebar({
   toolsSub,
   toolsQuery,
   onCreateArtifact,
+  onCreateAgentPreset,
   onCreateMcp,
   onCreateModel,
   onCreateProfile,
@@ -2844,6 +2985,7 @@ function WorkspaceSidebar({
   onLoadDag,
   onNewChat,
   onNewDag,
+  onSelectAgentPreset,
   onSelectProfile,
   onSelectModel,
   onSelectSkillFile,
@@ -2852,6 +2994,7 @@ function WorkspaceSidebar({
   onSelectToolSkill,
   onSelectWorkspace,
   onOrchestrationModeChange,
+  onAgentsSubChange,
   onToolsSubChange,
   onToggleCollapsed,
   onToolsQueryChange,
@@ -2859,10 +3002,14 @@ function WorkspaceSidebar({
   onUploadFiles,
 }: {
   activeWorkspace: WorkspaceKey;
+  agentsSub: AgentManagementSub;
+  agentPresetCount: number;
+  agentPresets: AgentPreset[];
   artifacts: Artifact[];
   collapsed: boolean;
   capabilities: CapabilityDefinition[];
   capabilityCount: number;
+  creatingAgentPreset: boolean;
   creatingModel: boolean;
   history: Array<{ id: string; title: string; time: string }>;
   models: ModelProvider[];
@@ -2872,6 +3019,7 @@ function WorkspaceSidebar({
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
+  selectedAgentPresetId: string;
   selectedModelId: string;
   selectedProfileId: string;
   selectedToolCapabilityId: string;
@@ -2884,6 +3032,7 @@ function WorkspaceSidebar({
   toolsSub: ToolDirectoryTab;
   toolsQuery: string;
   onCreateArtifact: () => void;
+  onCreateAgentPreset: () => void;
   onCreateMcp: () => void;
   onCreateModel: () => void;
   onCreateProfile: () => void;
@@ -2894,6 +3043,7 @@ function WorkspaceSidebar({
   onLoadDag: (spec: UserDag) => void;
   onNewChat: () => void;
   onNewDag: () => void;
+  onSelectAgentPreset: (id: string) => void;
   onSelectProfile: (id: string) => void;
   onSelectModel: (id: string) => void;
   onSelectSkillFile: (filePath: string | null) => void;
@@ -2902,6 +3052,7 @@ function WorkspaceSidebar({
   onSelectToolSkill: (name: string) => void;
   onSelectWorkspace: (workspace: WorkspaceKey) => void;
   onOrchestrationModeChange: (mode: OrchestrationMode) => void;
+  onAgentsSubChange: (sub: AgentManagementSub) => void;
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
   onToolsQueryChange: (query: string) => void;
@@ -2917,6 +3068,10 @@ function WorkspaceSidebar({
     { key: 'skills' as const, label: '技能', icon: <FileText size={16} />, count: skillCount },
     { key: 'mcp' as const, label: 'MCP 服务', icon: <Database size={16} />, count: mcpCount },
   ];
+  const agentSubnav = [
+    { key: 'profiles' as const, label: '角色设定', icon: <UserCog size={16} />, count: profiles.length },
+    { key: 'presets' as const, label: '智能体预设', icon: <Bot size={16} />, count: agentPresetCount },
+  ];
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
   const sidebarCapabilities = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedToolsQuery));
   const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
@@ -2925,10 +3080,27 @@ function WorkspaceSidebar({
     || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery),
   );
   const activeToolSubnav = toolSubnav.find((item) => item.key === toolsSub) ?? toolSubnav[0];
+  const activeAgentSubnav = agentSubnav.find((item) => item.key === agentsSub) ?? agentSubnav[0];
   const skillFileGroups = Object.entries(selectedSkillDetail?.linked_files ?? {})
     .filter(([, files]) => files.length);
   const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
   const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
+  // 手风琴式子菜单：同一时间最多展开一个，展开新的会收起其它。
+  const [expandedMenu, setExpandedMenu] = useState<WorkspaceKey | null>(activeWorkspace);
+  const onCapabilityNavClick = (key: WorkspaceKey) => {
+    if (activeWorkspace === key) {
+      // 已在该工作区：切换其子菜单展开/收起。
+      setExpandedMenu((current) => (current === key ? null : key));
+      return;
+    }
+    // 切到其它工作区：展开它、收起其它。
+    onSelectWorkspace(key);
+    setExpandedMenu(key);
+  };
+  // 通过非侧栏入口（如“新建工具/预设”）切换工作区时，展开目标的子菜单并收起其它。
+  useEffect(() => {
+    setExpandedMenu(activeWorkspace);
+  }, [activeWorkspace]);
   const createCapabilityResource = () => {
     if (toolsSub === 'tools') {
       onCreateTool();
@@ -2943,6 +3115,14 @@ function WorkspaceSidebar({
     : toolsSub === 'skills'
       ? '导入技能'
       : '新建 MCP';
+  const createAgentResource = () => {
+    if (agentsSub === 'profiles') {
+      onCreateProfile();
+    } else {
+      onCreateAgentPreset();
+    }
+  };
+  const agentCreateTitle = agentsSub === 'profiles' ? '新建角色设定' : '新建智能体预设';
   const toggleSkillTree = (name: string) => {
     onSelectToolSkill(name);
     setExpandedSkillNames((current) => {
@@ -2972,7 +3152,7 @@ function WorkspaceSidebar({
     <aside className="workspace-sidebar" data-collapsed={collapsed}>
       <div className="sidebar-brand-row">
         <button className="brand-mark" onClick={collapsed ? onToggleCollapsed : undefined} title={collapsed ? '展开侧栏' : 'dagent'} type="button">
-          <GitBranch className="brand-logo-glyph" size={18} />
+          <img className="brand-logo-glyph" src={dagentMark} alt="dagent" />
           <ChevronRight className="brand-logo-expand" size={19} />
         </button>
         <div className="sidebar-brand-copy">
@@ -2992,17 +3172,17 @@ function WorkspaceSidebar({
               <div className="sidebar-capability-nav" key={item.key}>
                 <button
                   className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
-                  onClick={() => onSelectWorkspace(item.key)}
+                  onClick={() => onCapabilityNavClick(item.key)}
                   title={item.label}
                   type="button"
                 >
                   {item.icon}
                   <span>{item.label}</span>
-                  <span className="sidebar-capability-chevron" data-open={activeWorkspace === 'orchestration'}>
+                  <span className="sidebar-capability-chevron" data-open={expandedMenu === item.key}>
                     <ChevronRight size={14} />
                   </span>
                 </button>
-                {activeWorkspace === 'orchestration' ? (
+                {expandedMenu === item.key ? (
                   <div className="sidebar-subnav nested">
                     {orchestrationSubnav.map((subitem) => (
                       <button
@@ -3030,17 +3210,17 @@ function WorkspaceSidebar({
               <div className="sidebar-capability-nav" key={item.key}>
                 <button
                   className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
-                  onClick={() => onSelectWorkspace(item.key)}
+                  onClick={() => onCapabilityNavClick(item.key)}
                   title={item.label}
                   type="button"
                 >
                   {item.icon}
                   <span>{item.label}</span>
-                  <span className="sidebar-capability-chevron" data-open={activeWorkspace === 'tools'}>
+                  <span className="sidebar-capability-chevron" data-open={expandedMenu === item.key}>
                     <ChevronRight size={14} />
                   </span>
                 </button>
-                {activeWorkspace === 'tools' ? (
+                {expandedMenu === item.key ? (
                   <div className="sidebar-subnav nested">
                     {toolSubnav.map((subitem) => (
                       <button
@@ -3049,6 +3229,44 @@ function WorkspaceSidebar({
                         onClick={() => {
                           onSelectWorkspace('tools');
                           onToolsSubChange(subitem.key);
+                        }}
+                        title={subitem.label}
+                        type="button"
+                      >
+                        {subitem.icon}
+                        <span>{subitem.label}</span>
+                        <em>{subitem.count}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
+          if (item.key === 'agents') {
+            return (
+              <div className="sidebar-capability-nav" key={item.key}>
+                <button
+                  className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
+                  onClick={() => onCapabilityNavClick(item.key)}
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <span className="sidebar-capability-chevron" data-open={expandedMenu === item.key}>
+                    <ChevronRight size={14} />
+                  </span>
+                </button>
+                {expandedMenu === item.key ? (
+                  <div className="sidebar-subnav nested">
+                    {agentSubnav.map((subitem) => (
+                      <button
+                        className={agentsSub === subitem.key ? 'active' : ''}
+                        key={subitem.key}
+                        onClick={() => {
+                          onSelectWorkspace('agents');
+                          onAgentsSubChange(subitem.key);
                         }}
                         title={subitem.label}
                         type="button"
@@ -3337,28 +3555,47 @@ function WorkspaceSidebar({
       {activeWorkspace === 'agents' ? (
         <section className="sidebar-context-section agent-config-list">
           <div className="sidebar-history-head">
-            <span>智能体配置</span>
-            <button onClick={onCreateProfile} title="新建配置" type="button">
+            <span>{activeAgentSubnav.label}</span>
+            <button onClick={createAgentResource} title={agentCreateTitle} type="button">
               <Plus size={14} />
             </button>
           </div>
           <div className="sidebar-agent-list">
-            {profiles.length ? profiles.map((profile) => (
-              <button
-                className={selectedProfileId === profile.id ? 'active' : ''}
-                key={profile.id}
-                onClick={() => onSelectProfile(profile.id)}
-                type="button"
-              >
-                <span className="sidebar-agent-icon">
-                  <Bot size={14} />
-                </span>
-                <span>
-                  <strong>{profile.name}</strong>
-                  <em>{profile.description || profileSourceLabel(profile)}</em>
-                </span>
-              </button>
-            )) : <div className="sidebar-empty-row">暂无智能体配置</div>}
+            {agentsSub === 'profiles' ? (
+              profiles.length ? profiles.map((profile) => (
+                <button
+                  className={selectedProfileId === profile.id ? 'active' : ''}
+                  key={profile.id}
+                  onClick={() => onSelectProfile(profile.id)}
+                  type="button"
+                >
+                  <span className="sidebar-agent-icon">
+                    <UserCog size={14} />
+                  </span>
+                  <span>
+                    <strong>{profile.name}</strong>
+                    <em>{profile.description || profileSourceLabel(profile)}</em>
+                  </span>
+                </button>
+              )) : <div className="sidebar-empty-row">暂无角色设定</div>
+            ) : (
+              agentPresets.length ? agentPresets.map((preset) => (
+                <button
+                  className={!creatingAgentPreset && selectedAgentPresetId === preset.id ? 'active' : ''}
+                  key={preset.id}
+                  onClick={() => onSelectAgentPreset(preset.id)}
+                  type="button"
+                >
+                  <span className="sidebar-agent-icon">
+                    <Bot size={14} />
+                  </span>
+                  <span>
+                    <strong>{preset.name}</strong>
+                    <em>{preset.profile} · {preset.capabilities?.length ?? 0} 能力 · {preset.skills?.length ?? 0} 技能</em>
+                  </span>
+                </button>
+              )) : <div className="sidebar-empty-row">暂无智能体预设</div>
+            )}
           </div>
         </section>
       ) : null}
@@ -3387,7 +3624,7 @@ function DesignWorkspacePlaceholder({
   workspace: WorkspaceKey;
   onBackToChat: () => void;
 }) {
-  const label = workspace === 'chat' ? '智能对话' : workspacePlaceholderLabels[workspace];
+  const label = workspace === 'chat' ? '智能工作台' : workspacePlaceholderLabels[workspace];
   return (
     <section className="design-workspace-placeholder">
       <div>
@@ -3395,9 +3632,9 @@ function DesignWorkspacePlaceholder({
           <GitBranch size={26} />
         </div>
         <strong>{label}</strong>
-        <p>先评审「智能对话」这一版的视觉方案。确认方向后,我会把同一套设计语言铺到这个工作区。</p>
+        <p>先评审「智能工作台」这一版的视觉方案。确认方向后,我会把同一套设计语言铺到这个工作区。</p>
         <button onClick={onBackToChat} type="button">
-          ← 返回智能对话
+          ← 返回智能工作台
         </button>
       </div>
     </section>
@@ -3638,6 +3875,53 @@ function ChatMessageRow({
   );
 }
 
+// 可复用的面板宽度：localStorage 持久化 + 夹取，供右侧可拖拽面板使用。
+function usePanelWidth(storageKey: string, fallback: number, min: number, max: number) {
+  const [width, setWidth] = useState<number>(() => {
+    const saved = Number(window.localStorage.getItem(storageKey));
+    return Number.isFinite(saved) && saved >= min && saved <= max ? saved : fallback;
+  });
+  const resize = useCallback((next: number) => {
+    const clamped = Math.min(max, Math.max(min, next));
+    setWidth(clamped);
+    window.localStorage.setItem(storageKey, String(Math.round(clamped)));
+  }, [storageKey, min, max]);
+  return [width, resize] as const;
+}
+
+// 右侧面板的拖拽手柄：放在面板左缘，向左拖变宽、向右拖变窄。
+function PanelResizeHandle({ width, onResize }: { width: number; onResize: (next: number) => void }) {
+  const [dragging, setDragging] = useState(false);
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = width;
+    setDragging(true);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    const onMove = (moveEvent: PointerEvent) => onResize(startWidth + (startX - moveEvent.clientX));
+    const onUp = () => {
+      setDragging(false);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+  return (
+    <div
+      className="panel-resize-handle"
+      data-dragging={dragging}
+      onPointerDown={onPointerDown}
+      role="separator"
+      aria-orientation="vertical"
+      title="拖动调整宽度"
+    />
+  );
+}
+
 function ArtifactPanel({
   error,
   loading,
@@ -3667,6 +3951,7 @@ function ArtifactPanel({
   onSelect: (id: string) => void;
   onToggle: () => void;
 }) {
+  const [artifactWidth, setArtifactWidth] = usePanelWidth('dagent.artifact-width', 380, 280, 720);
   if (!open) {
     return (
       <aside className="artifact-rail">
@@ -3687,7 +3972,8 @@ function ArtifactPanel({
   }
 
   return (
-    <aside className="artifact-drawer">
+    <aside className="artifact-drawer" style={{ width: artifactWidth }}>
+      <PanelResizeHandle width={artifactWidth} onResize={setArtifactWidth} />
       <div className="artifact-drawer-head">
         <Folder size={17} />
         <strong>产物</strong>
@@ -4378,23 +4664,33 @@ function riskFromPayload(value: unknown): RiskLevel {
 }
 
 function ChatCapabilityScopeDialog({
+  agentPresets,
+  agentScope,
   capabilities,
   skills,
   mcpServers,
   mode,
+  selectedAgentIds,
   selectedCapabilityIds,
   selectedSkillNames,
+  onAgentIdsChange,
+  onAgentScopeChange,
   onModeChange,
   onCapabilityIdsChange,
   onSkillNamesChange,
   onClose,
 }: {
+  agentPresets: AgentPreset[];
+  agentScope: AgentScopeMode;
   capabilities: CapabilityDefinition[];
   skills: SkillSummary[];
   mcpServers: MCPServer[];
   mode: ChatScopeMode;
+  selectedAgentIds: string[];
   selectedCapabilityIds: string[];
   selectedSkillNames: string[];
+  onAgentIdsChange: React.Dispatch<React.SetStateAction<string[]>>;
+  onAgentScopeChange: React.Dispatch<React.SetStateAction<AgentScopeMode>>;
   onModeChange: React.Dispatch<React.SetStateAction<ChatScopeMode>>;
   onCapabilityIdsChange: React.Dispatch<React.SetStateAction<string[]>>;
   onSkillNamesChange: React.Dispatch<React.SetStateAction<string[]>>;
@@ -4403,10 +4699,12 @@ function ChatCapabilityScopeDialog({
   const [query, setQuery] = useState('');
   const selectedCapabilities = new Set(selectedCapabilityIds);
   const selectedSkills = new Set(selectedSkillNames);
+  const selectedAgents = new Set(selectedAgentIds);
   const normalizedQuery = query.trim().toLowerCase();
   const enabledCapabilities = capabilities.filter((capability) => capability.enabled && capability.kind !== 'agent');
   const visibleCapabilities = enabledCapabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
+  const visibleAgents = agentPresets.filter((agent) => matchesAgentPresetQuery(agent, normalizedQuery));
   const groups = capabilityKinds
     .map((kind) => ({ kind, items: visibleCapabilities.filter((capability) => capability.kind === kind) }))
     .filter((group) => group.items.length);
@@ -4427,6 +4725,8 @@ function ChatCapabilityScopeDialog({
     onModeChange('custom');
     onCapabilityIdsChange([]);
     onSkillNamesChange([]);
+    onAgentScopeChange('none');
+    onAgentIdsChange([]);
   };
 
   return (
@@ -4438,7 +4738,7 @@ function ChatCapabilityScopeDialog({
               <SlidersHorizontal size={20} />
               <span>Chat Capabilities</span>
             </div>
-            <p>{chatCapabilityScopeLabel(mode, selectedCapabilityIds.length, selectedSkillNames.length)}</p>
+            <p>{chatCapabilityScopeLabel(mode, selectedCapabilityIds.length, selectedSkillNames.length, agentScope, selectedAgentIds.length)}</p>
           </div>
           <div className="modal-actions">
             <button className="secondary-button compact-button" onClick={selectVisible} type="button">
@@ -4485,8 +4785,41 @@ function ChatCapabilityScopeDialog({
                 ))}
               </div>
             ) : null}
+            <div className="scope-server-list">
+              <h3>Agent Delegation</h3>
+              <div className="scope-mode-switch" role="tablist" aria-label="Agent delegation mode">
+                <button className={agentScope === 'none' ? 'active' : ''} onClick={() => { onAgentScopeChange('none'); onAgentIdsChange([]); }} type="button">
+                  不启用
+                </button>
+                <button className={agentScope === 'selected' ? 'active' : ''} onClick={() => onAgentScopeChange('selected')} type="button">
+                  指定预设
+                </button>
+                <button className={agentScope === 'registered' ? 'active' : ''} onClick={() => { onAgentScopeChange('registered'); onAgentIdsChange([]); }} type="button">
+                  全部预设
+                </button>
+              </div>
+            </div>
           </aside>
           <div className="capability-scope-list">
+            {agentScope === 'selected' ? (
+              <section className="scope-group">
+                <h3>智能体预设</h3>
+                {visibleAgents.map((agent) => (
+                  <label className="scope-row" key={agent.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedAgents.has(agent.id)}
+                      onChange={(event) => onAgentIdsChange((current) => toggleValue(current, agent.id, event.target.checked))}
+                    />
+                    <span>
+                      <strong>{agent.id}</strong>
+                      <span>{agent.profile}{agent.description ? ` · ${agent.description}` : ''}</span>
+                    </span>
+                  </label>
+                ))}
+                {!visibleAgents.length ? <div className="empty-state compact">没有匹配的智能体预设。</div> : null}
+              </section>
+            ) : null}
             {groups.map((group) => (
               <section className="scope-group" key={group.kind}>
                 <h3>{group.kind}</h3>
@@ -4501,7 +4834,7 @@ function ChatCapabilityScopeDialog({
                       }}
                     />
                     <span>
-                      <strong>{capability.name}</strong>
+                      <strong>{capabilityDisplayName(capability)}</strong>
                       <span>{capabilityScopeDetail(capability)}</span>
                     </span>
                   </label>
@@ -4532,7 +4865,7 @@ function ChatCapabilityScopeDialog({
                 })}
               </section>
             ) : null}
-            {!groups.length && !visibleSkills.length ? <div className="empty-state compact">No matching capabilities.</div> : null}
+            {!groups.length && !visibleSkills.length && !(agentScope === 'selected' && visibleAgents.length) ? <div className="empty-state compact">No matching capabilities.</div> : null}
           </div>
         </div>
       </div>
@@ -4844,6 +5177,9 @@ function DynamicOrchestrationWorkspace({
   const selectableCapabilities = selectedCapability && !enabledCapabilities.some((capability) => capability.id === selectedCapability.id)
     ? [selectedCapability, ...enabledCapabilities]
     : enabledCapabilities;
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const firstNodePosition = () => nodes.length ? undefined : canvasCenterNodePosition(flowInstance, canvasRef.current);
   const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
     if (!selectedNode || !selectedInvocation) return;
     onPatchNode(selectedNode.id, {
@@ -4922,7 +5258,7 @@ function DynamicOrchestrationWorkspace({
               <span />
               {dynamicAdjust ? '动态调整 开' : '动态调整 关'}
             </button>
-            <button className="secondary-button compact-button" onClick={() => onAddNode()} type="button">
+            <button className="secondary-button compact-button" onClick={() => onAddNode(undefined, firstNodePosition())} type="button">
               <Plus size={14} />
               添加节点
             </button>
@@ -4930,7 +5266,7 @@ function DynamicOrchestrationWorkspace({
         </div>
 
         <div className={`dynamic-orchestration-body ${selectedNormalized ? 'with-inspector' : ''}`}>
-          <div className="orchestration-canvas dynamic-orchestration-canvas">
+          <div className="orchestration-canvas dynamic-orchestration-canvas" ref={canvasRef}>
             <ReactFlow
               className="orchestration-flow"
               nodes={nodes}
@@ -4944,6 +5280,7 @@ function DynamicOrchestrationWorkspace({
               nodesDraggable
               nodesConnectable
               elementsSelectable
+              onInit={setFlowInstance}
               defaultViewport={{ x: 0, y: 0, zoom: 1 }}
               fitView={false}
               proOptions={{ hideAttribution: true }}
@@ -4952,7 +5289,7 @@ function DynamicOrchestrationWorkspace({
               <CanvasViewportControls hasNodes={nodes.length > 0} />
             </ReactFlow>
             {!nodes.length ? (
-              <button className="orchestration-empty-canvas dynamic-orchestration-empty" onClick={() => onAddNode()} type="button">
+              <button className="orchestration-empty-canvas dynamic-orchestration-empty" onClick={() => onAddNode(undefined, firstNodePosition())} type="button">
                 <Plus size={15} />
                 添加第一个节点
               </button>
@@ -5166,6 +5503,7 @@ function OrchestrationWorkspace({
   const selectedInvocation = selectedNormalized && isCapabilityNode(selectedNormalized)
     ? selectedNormalized.payload.invocation
     : null;
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const selectedCapability = selectedInvocation
     ? capabilities.find((capability) => capability.id === selectedInvocation.capability_id)
     : null;
@@ -5174,7 +5512,7 @@ function OrchestrationWorkspace({
     if (title) return title;
     if (isCapabilityNode(node)) {
       const capability = capabilities.find((item) => item.id === node.payload.invocation.capability_id);
-      return capability?.name || node.payload.invocation.capability_id || '未命名节点';
+      return capability ? capabilityDisplayName(capability) : node.payload.invocation.capability_id || '未命名节点';
     }
     return nodeDisplayTitle(node);
   };
@@ -5189,6 +5527,7 @@ function OrchestrationWorkspace({
   const contextMenuTitle = contextNode ? `节点：${staticNodeTitle(contextNode)}` : '画布';
   const flowPositionFromEvent = (event: MouseEvent | React.MouseEvent<Element>) =>
     flowInstance?.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+  const firstNodePosition = () => nodes.length ? undefined : canvasCenterNodePosition(flowInstance, canvasRef.current);
 
   const openCanvasMenu = (event: MouseEvent | React.MouseEvent<Element>) => {
     event.preventDefault();
@@ -5312,7 +5651,7 @@ function OrchestrationWorkspace({
           </div>
         </div>
 
-        <div className="orchestration-canvas">
+        <div className="orchestration-canvas" ref={canvasRef}>
           <ReactFlow
             key={spec.id}
             className="orchestration-flow"
@@ -5335,7 +5674,7 @@ function OrchestrationWorkspace({
             <CanvasViewportControls hasNodes={nodes.length > 0} />
           </ReactFlow>
           {!nodes.length ? (
-            <button className="orchestration-empty-canvas" onClick={() => onAddNode()} type="button">
+            <button className="orchestration-empty-canvas" onClick={() => onAddNode(undefined, firstNodePosition())} type="button">
               <Plus size={15} />
               添加第一个节点
             </button>
@@ -5623,7 +5962,7 @@ function AgentNodeScopeEditor({
                       }}
                     />
                     <span>
-                      <strong>{capability.name}</strong>
+                      <strong>{capabilityDisplayName(capability)}</strong>
                       <span>{capabilityScopeDetail(capability)}</span>
                     </span>
                   </label>
@@ -6648,8 +6987,8 @@ function CapabilityDirectory({
       setMessage('Parameters must be a JSON object.');
       return;
     }
-    if (!draftCapability.id.startsWith('tool.')) {
-      setMessage('Tool ID must start with tool.');
+    if (!isValidCapabilityId(draftCapability.id) || !draftCapability.id.startsWith('tool.')) {
+      setMessage('Tool ID must use the form tool.<name>, with letters, numbers, and underscores.');
       return;
     }
     setMessage('Creating tool...');
@@ -6832,7 +7171,6 @@ function CapabilityDirectory({
               <section className="tool-create-drawer">
                 <div className="compact-form-grid">
                   <label>ID<input value={draftCapability.id} onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))} /></label>
-                  <label>名称<input value={draftCapability.name} onChange={(event) => setDraftCapability((current) => ({ ...current, name: event.target.value, kind: 'tool' }))} /></label>
                   <label>描述<textarea value={draftCapability.description} onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))} /></label>
                   <label>参数 Schema<textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} /></label>
                   <label>Template<textarea value={String(draftCapability.config.template ?? '')} onChange={(event) => setDraftCapability((current) => ({ ...current, kind: 'tool', config: { ...current.config, template: event.target.value } }))} /></label>
@@ -6905,54 +7243,65 @@ function CapabilityDirectory({
       ) : null}
       <aside className="tools-detail-panel">
         {activeTab === 'tools' ? (
-          <div className="tools-detail-scroll">
-            {selectedTool ? (
-              <div className="tool-detail-surface">
-                <div className="tool-detail-head">
-                  <div>
-                    <h2>{selectedTool.id}</h2>
-                    <p>{selectedTool.description || selectedTool.name}</p>
-                  </div>
-                  <button className="secondary-button compact-button" onClick={runTest} type="button">
-                    <Play size={13} />
-                    测试
-                  </button>
-                </div>
-                <div className="tool-info-table">
-                  <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
-                  <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
-                  <div><span>执行</span><strong>{toolExecutionLabel(selectedTool)}</strong></div>
-                  <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
-                </div>
-                <section>
-                  <h3>参数 Schema</h3>
-                  <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
-                </section>
-                <section>
-                  <h3>测试调用</h3>
-                  <textarea
-                    value={argumentsText}
-                    onChange={(event) => setArgumentsText(event.target.value)}
-                    placeholder='{ "pattern": "DAG", "path": "." }'
-                    spellCheck={false}
-                  />
-                  <div className="inline-actions">
-                    <button className="primary-button compact-button" onClick={runTest} type="button">
-                      <Play size={13} />
-                      执行测试
-                    </button>
-                    <button className="secondary-button compact-button" onClick={() => void toggleCapability(!selectedTool.enabled)} disabled={!selectedEditable} type="button">
-                      {selectedTool.enabled ? '停用' : '启用'}
-                    </button>
-                    <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedEditable} type="button">
-                      删除
-                    </button>
-                  </div>
-                  {message ? <p className="form-message">{message}</p> : null}
-                  {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
-                </section>
+          <div className="capability-detail-pane">
+            <div className="agent-editor-toolbar">
+              <div className="agent-editor-icon">
+                <Wrench size={15} />
               </div>
-            ) : <div className="empty-state compact">没有加载到工具。</div>}
+              <div>
+                <strong>{selectedTool?.id ?? '工具'}</strong>
+                <span>{selectedTool ? `${selectedTool.kind} · ${capabilityStatusLabel(selectedTool)}` : 'tool capability'}</span>
+              </div>
+              <div>
+                <button className="secondary-button compact-button" onClick={() => selectedTool && void toggleCapability(!selectedTool.enabled)} disabled={!selectedTool || !selectedEditable} type="button">
+                  {selectedTool?.enabled ? '停用' : '启用'}
+                </button>
+                <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedTool || !selectedEditable} type="button">
+                  <Trash2 size={13} />
+                  删除
+                </button>
+              </div>
+            </div>
+            {selectedTool ? (
+              <div className="tools-detail-scroll">
+                <div className="tool-detail-surface">
+                  <p className="tool-detail-summary">{selectedTool.description || selectedTool.id}</p>
+                  <div className="tool-info-table">
+                    <div><span>类型</span><strong>{selectedTool.kind}</strong></div>
+                    <div><span>风险</span><strong><i className={`risk-chip risk-${selectedTool.policy.risk}`}>{selectedTool.policy.risk}</i></strong></div>
+                    <div><span>执行</span><strong>{toolExecutionLabel(selectedTool)}</strong></div>
+                    <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
+                  </div>
+                  <section>
+                    <h3>参数 Schema</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
+                  </section>
+                  <section>
+                    <h3>测试调用</h3>
+                    <textarea
+                      value={argumentsText}
+                      onChange={(event) => setArgumentsText(event.target.value)}
+                      placeholder='{ "pattern": "DAG", "path": "." }'
+                      spellCheck={false}
+                    />
+                    <div className="inline-actions">
+                      <button className="primary-button compact-button" onClick={runTest} type="button">
+                        <Play size={13} />
+                        执行测试
+                      </button>
+                    </div>
+                    {message ? <p className="form-message">{message}</p> : null}
+                    {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
+                  </section>
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state agent-empty-card">
+                <Wrench size={28} />
+                <strong>没有加载到工具</strong>
+                <p>从左侧选择一个工具，查看它的参数与测试调用。</p>
+              </div>
+            )}
           </div>
         ) : activeTab === 'skills' ? (
           <div className="skill-editor">
@@ -6979,20 +7328,31 @@ function CapabilityDirectory({
             </div>
           </div>
         ) : (
-          <div className="tools-detail-scroll">
-            <div className="mcp-detail-surface">
-              {selectedMcp ? (
-                <>
-                  <div className="tool-detail-head">
-                    <div>
-                      <h2>{selectedMcp.name}</h2>
-                      <p>{`${selectedMcp.source} · ${selectedMcp.tools.length} tools`}</p>
-                    </div>
-                    <span className="status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
-                      {mcpStatusLabel(selectedMcp.status)}
-                    </span>
-                  </div>
-                  {selectedMcp?.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
+          <div className="capability-detail-pane">
+            <div className="agent-editor-toolbar">
+              <div className="agent-editor-icon">
+                <Database size={15} />
+              </div>
+              <div>
+                <strong>{selectedMcp?.name ?? 'MCP 服务'}</strong>
+                <span>{selectedMcp ? `${selectedMcp.source} · ${selectedMcp.tools.length} tools` : 'MCP server'}</span>
+              </div>
+              <div>
+                {selectedMcp ? (
+                  <span className="status-badge mcp-status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
+                    {mcpStatusLabel(selectedMcp.status)}
+                  </span>
+                ) : null}
+                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || selectedMcp.source !== 'memory'} type="button">
+                  <Trash2 size={13} />
+                  删除
+                </button>
+              </div>
+            </div>
+            {selectedMcp ? (
+              <div className="tools-detail-scroll">
+                <div className="mcp-detail-surface">
+                  {selectedMcp.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
                   <div className="mcp-config-form">
                     {renderMcpConnectionFields()}
                     <div className="inline-actions">
@@ -7004,9 +7364,6 @@ function CapabilityDirectory({
                         <RefreshCw size={13} />
                         重载
                       </button>
-                      <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={selectedMcp.source !== 'memory'} type="button">
-                        删除
-                      </button>
                     </div>
                   </div>
                   <section>
@@ -7014,11 +7371,19 @@ function CapabilityDirectory({
                     <pre className="tool-schema-block">{JSON.stringify(selectedMcp.tools, null, 2)}</pre>
                   </section>
                   {mcpMessage ? <p className="form-message">{mcpMessage}</p> : null}
-                </>
-              ) : (
-                <div className="empty-state compact">暂无 MCP 服务，点击左侧列表中的 + 新建。</div>
-              )}
-            </div>
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state agent-empty-card">
+                <Database size={28} />
+                <strong>暂无 MCP 服务</strong>
+                <p>连接一个 MCP 服务，把它发现的工具接入能力库。</p>
+                <button className="primary-button compact-button" onClick={() => onCreationIntentChange('mcp')} type="button">
+                  <Plus size={14} />
+                  新建 MCP 服务
+                </button>
+              </div>
+            )}
           </div>
         )}
       </aside>
@@ -7045,9 +7410,60 @@ function uniqueProfileName(baseName: string, profiles: AgentProfile[]): string {
 }
 
 function cleanProfileNameDraft(value: string): string {
-  const cleaned = value.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
-  if (!cleaned) return '';
-  return /^[A-Za-z]/.test(cleaned) ? cleaned : `agent_${cleaned}`;
+  return cleanWorkspaceKeyDraft(value, { requireLeadingLetter: true });
+}
+
+function uniqueAgentPresetName(baseName: string, presets: AgentPreset[]): string {
+  const safeBase = cleanWorkspaceKeyDraft(baseName) || 'helper';
+  const names = new Set(presets.map((preset) => preset.name));
+  let candidate = safeBase;
+  let index = 2;
+  while (names.has(candidate)) {
+    candidate = `${safeBase}_${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function emptyAgentPresetDraft(profiles: AgentProfile[], presets: AgentPreset[]): AgentPresetInput {
+  return {
+    name: uniqueAgentPresetName('helper', presets),
+    profile: profiles[0]?.name ?? 'conversation',
+    description: '',
+    max_steps: 4,
+    capabilities: [],
+    skills: [],
+    agents: [],
+    review: 'fast',
+  };
+}
+
+function agentPresetToInput(preset: AgentPreset): AgentPresetInput {
+  return {
+    name: preset.name,
+    profile: preset.profile,
+    description: preset.description,
+    max_steps: preset.max_steps,
+    capabilities: preset.capabilities ?? [],
+    skills: preset.skills ?? [],
+    agents: [],
+    review: 'fast',
+  };
+}
+
+function agentPresetDraftEquals(preset: AgentPreset, draft: AgentPresetInput): boolean {
+  const normalized = agentPresetToInput(preset);
+  return normalized.name === draft.name
+    && normalized.profile === draft.profile
+    && normalized.description === draft.description
+    && normalized.max_steps === draft.max_steps
+    && arrayEqual(normalized.capabilities ?? [], draft.capabilities ?? [])
+    && arrayEqual(normalized.skills ?? [], draft.skills ?? []);
+}
+
+function arrayEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => item === right[index]);
 }
 
 function toolExecutionLabel(capability: CapabilityDefinition): string {
@@ -7061,10 +7477,10 @@ function capabilityStatusLabel(capability: CapabilityDefinition): string {
 }
 
 function mcpStatusLabel(status: MCPServer['status']): string {
-  if (status === 'connected') return 'connected';
-  if (status === 'disabled') return 'disabled';
-  if (status === 'error') return 'error';
-  return 'pending';
+  if (status === 'connected') return '已连接';
+  if (status === 'disabled') return '已停用';
+  if (status === 'error') return '连接错误';
+  return '连接中';
 }
 
 function ModelManagementWorkspace({
@@ -7386,11 +7802,22 @@ function modelSourceLabel(source: ModelProvider['source']): string {
 }
 
 function AgentManagementWorkspace({
+  activeSub,
+  agentPresetErrors,
+  agentPresets,
   capabilities,
+  creatingAgentPreset,
   creating,
   profiles,
+  selectedAgentPresetId,
   warnings,
   selectedId,
+  skills,
+  onAgentPresetCreate,
+  onAgentPresetCreatingChange,
+  onAgentPresetDelete,
+  onAgentPresetSelect,
+  onAgentPresetUpdate,
   onCreate,
   onCreatingChange,
   onDelete,
@@ -7398,11 +7825,22 @@ function AgentManagementWorkspace({
   onSelect,
   onUpdate,
 }: {
+  activeSub: AgentManagementSub;
+  agentPresetErrors: Record<string, string>;
+  agentPresets: AgentPreset[];
   capabilities: CapabilityDefinition[];
+  creatingAgentPreset: boolean;
   creating: boolean;
   profiles: AgentProfile[];
+  selectedAgentPresetId: string;
   warnings: ProfileWarning[];
   selectedId: string;
+  skills: SkillSummary[];
+  onAgentPresetCreate: (payload: AgentPresetInput) => Promise<AgentPreset>;
+  onAgentPresetCreatingChange: (creating: boolean) => void;
+  onAgentPresetDelete: (name: string) => Promise<void>;
+  onAgentPresetSelect: (id: string) => void;
+  onAgentPresetUpdate: (name: string, payload: Omit<AgentPresetInput, 'name'>) => Promise<AgentPreset>;
   onCreate: (name: string, content: string) => Promise<AgentProfile>;
   onCreatingChange: (creating: boolean) => void;
   onDelete: (name: string) => Promise<void>;
@@ -7411,10 +7849,6 @@ function AgentManagementWorkspace({
   onUpdate: (name: string, content: string) => Promise<AgentProfile>;
 }) {
   const selected = profiles.find((profile) => profile.id === selectedId) ?? profiles[0] ?? null;
-  const agentCapabilities = capabilities.filter((capability) => capability.kind === 'agent');
-  const capabilityRows = agentCapabilities.length
-    ? agentCapabilities
-    : capabilities.filter((capability) => capability.enabled).slice(0, 3);
   const [draftName, setDraftName] = useState('');
   const [draftContent, setDraftContent] = useState('');
   const [message, setMessage] = useState('');
@@ -7484,67 +7918,88 @@ function AgentManagementWorkspace({
     }
   };
 
+  if (activeSub === 'presets') {
+    return (
+      <AgentPresetManagementPane
+        capabilities={capabilities}
+        creating={creatingAgentPreset}
+        errors={agentPresetErrors}
+        presets={agentPresets}
+        profiles={profiles}
+        selectedId={selectedAgentPresetId}
+        skills={skills}
+        onCreate={onAgentPresetCreate}
+        onCreatingChange={onAgentPresetCreatingChange}
+        onDelete={onAgentPresetDelete}
+        onSelect={onAgentPresetSelect}
+        onUpdate={onAgentPresetUpdate}
+      />
+    );
+  }
+
   return (
     <section className="design-agents-workspace">
       <div className="agent-prompt-editor">
+        <div className="agent-editor-toolbar">
+          <div className="agent-editor-icon">
+            <Bot size={15} />
+          </div>
+          <div>
+            <strong>{creating ? '新建本地配置' : selected?.name ?? '角色设定'}</strong>
+            <span>{creating ? '本地受管配置' : selected ? profileSourceLabel(selected) : 'Markdown profile'}</span>
+          </div>
+          <div>
+            {creating ? (
+              <button className="secondary-button compact-button" onClick={cancelCreate} type="button" disabled={saving}>
+                <X size={14} />
+                取消
+              </button>
+            ) : (
+              <button className="secondary-button compact-button" onClick={startCopy} type="button" disabled={!selected || saving}>
+                <Copy size={14} />
+                复制为本地
+              </button>
+            )}
+            <button className="primary-button compact-button" onClick={() => void saveDraft()} type="button" disabled={!canEdit || !isDirty || saving}>
+              <Save size={14} />
+              保存
+            </button>
+          </div>
+        </div>
         {selected || creating ? (
-          <>
-            <div className="agent-editor-toolbar">
-              <div className="agent-editor-icon">
-                <Bot size={15} />
-              </div>
-              <div>
-                <strong>{creating ? '新建本地配置' : selected?.name}</strong>
-                <span>{creating ? '本地受管配置' : selected ? profileSourceLabel(selected) : ''}</span>
-              </div>
-              <div>
-                {creating ? (
-                  <button className="secondary-button compact-button" onClick={cancelCreate} type="button" disabled={saving}>
-                    <X size={14} />
-                    取消
-                  </button>
-                ) : (
-                  <button className="secondary-button compact-button" onClick={startCopy} type="button" disabled={!selected || saving}>
-                    <Copy size={14} />
-                    复制为本地
-                  </button>
-                )}
-                <button className="primary-button compact-button" onClick={() => void saveDraft()} type="button" disabled={!canEdit || !isDirty || saving}>
-                  <Save size={14} />
-                  保存
-                </button>
-              </div>
+          <div className="agent-editor-body">
+            {creating ? (
+              <label className="agent-name-field">
+                <span>配置名称</span>
+                <input
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  placeholder="agent_name"
+                />
+              </label>
+            ) : null}
+            <div className="agent-editor-title-row">
+              <span>系统提示词</span>
+              <em>{draftContent.length} chars</em>
             </div>
-            <div className="agent-editor-body">
-              {creating ? (
-                <label className="agent-name-field">
-                  <span>配置名称</span>
-                  <input
-                    value={draftName}
-                    onChange={(event) => setDraftName(event.target.value)}
-                    placeholder="agent_name"
-                  />
-                </label>
-              ) : null}
-              <div className="agent-editor-title-row">
-                <span>系统提示词</span>
-                <em>{draftContent.length} chars</em>
-              </div>
-              <textarea
-                value={draftContent}
-                readOnly={!canEdit}
-                spellCheck={false}
-                onChange={(event) => setDraftContent(event.target.value)}
-              />
-              <div className="agent-path-note">
-                <AlertTriangle size={14} />
-                <span>{creating ? '保存后会生成可用于静态编排的 agent capability。' : `来源：${selected ? profileSourceLabel(selected) : ''}`}</span>
-              </div>
-              {message ? <p className="form-message">{message}</p> : null}
+            <textarea
+              value={draftContent}
+              readOnly={!canEdit}
+              spellCheck={false}
+              onChange={(event) => setDraftContent(event.target.value)}
+            />
+            <div className="agent-path-note">
+              <AlertTriangle size={14} />
+              <span>{creating ? '保存后会生成可用于静态编排的 agent capability。' : `来源：${selected ? profileSourceLabel(selected) : ''}`}</span>
             </div>
-          </>
+            {message ? <p className="form-message">{message}</p> : null}
+          </div>
         ) : (
-          <div className="empty-state compact">暂无智能体配置。</div>
+          <div className="empty-state agent-empty-card">
+            <UserCog size={28} />
+            <strong>还没有角色设定</strong>
+            <p>角色设定是一份 Markdown 系统提示词,用来描述智能体的身份与风格。</p>
+          </div>
         )}
       </div>
 
@@ -7558,15 +8013,6 @@ function AgentManagementWorkspace({
               <div><span>来源</span><strong>{profileSourceLabel(selected)}</strong></div>
               <div><span>字符数</span><strong>{selected.content.length}</strong></div>
               <div><span>可编辑</span><strong>{selected.editable ? '是' : '否'}</strong></div>
-            </div>
-            <div className="agent-panel-label">能力范围</div>
-            <div className="agent-capability-list">
-              {capabilityRows.length ? capabilityRows.map((capability) => (
-                <div key={capability.id}>
-                  <Wrench size={13} />
-                  <span>{capability.id}</span>
-                </div>
-              )) : <div className="sidebar-empty-row">暂无可展示能力</div>}
             </div>
             {warnings.length ? (
               <>
@@ -7594,25 +8040,325 @@ function AgentManagementWorkspace({
   );
 }
 
-function chatCapabilityScopeLabel(mode: ChatScopeMode, capabilityCount: number, skillCount: number): string {
-  if (mode === 'all') return '全部能力';
+function AgentPresetManagementPane({
+  capabilities,
+  creating,
+  errors,
+  presets,
+  profiles,
+  selectedId,
+  skills,
+  onCreate,
+  onCreatingChange,
+  onDelete,
+  onSelect,
+  onUpdate,
+}: {
+  capabilities: CapabilityDefinition[];
+  creating: boolean;
+  errors: Record<string, string>;
+  presets: AgentPreset[];
+  profiles: AgentProfile[];
+  selectedId: string;
+  skills: SkillSummary[];
+  onCreate: (payload: AgentPresetInput) => Promise<AgentPreset>;
+  onCreatingChange: (creating: boolean) => void;
+  onDelete: (name: string) => Promise<void>;
+  onSelect: (id: string) => void;
+  onUpdate: (name: string, payload: Omit<AgentPresetInput, 'name'>) => Promise<AgentPreset>;
+}) {
+  const selected = presets.find((preset) => preset.id === selectedId) ?? presets[0] ?? null;
+  const [draft, setDraft] = useState<AgentPresetInput>(() => emptyAgentPresetDraft(profiles, presets));
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+  const editableCapabilities = capabilities.filter(
+    (capability) => capability.enabled && capability.kind !== 'agent' && capability.kind !== 'skill',
+  );
+  const capabilityGroups = capabilityOptionGroups(editableCapabilities);
+  const selectedCapabilities = new Set(draft.capabilities ?? []);
+  const selectedSkills = new Set(draft.skills ?? []);
+  const errorEntries = Object.entries(errors).sort(([left], [right]) => left.localeCompare(right));
+  const isDirty = creating || Boolean(selected && !agentPresetDraftEquals(selected, draft));
+
+  useEffect(() => {
+    if (!selected && presets[0]) onSelect(presets[0].id);
+  }, [onSelect, presets, selected]);
+
+  useEffect(() => {
+    if (!creating) return;
+    setDraft(emptyAgentPresetDraft(profiles, presets));
+    setMessage('');
+  }, [creating, presets, profiles]);
+
+  useEffect(() => {
+    if (creating || !selected) return;
+    setDraft(agentPresetToInput(selected));
+    setMessage('');
+  }, [creating, selected]);
+
+  const startCreate = () => {
+    onCreatingChange(true);
+    setDraft(emptyAgentPresetDraft(profiles, presets));
+    setMessage('');
+  };
+  const cancelCreate = () => {
+    onCreatingChange(false);
+    if (presets[0]) onSelect(presets[0].id);
+  };
+  const patchDraft = (patch: Partial<AgentPresetInput>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+  const patchCapability = (capabilityId: string, checked: boolean) => {
+    patchDraft({ capabilities: toggleValue(draft.capabilities ?? [], capabilityId, checked) });
+  };
+  const patchSkill = (skillName: string, checked: boolean) => {
+    patchDraft({ skills: toggleValue(draft.skills ?? [], skillName, checked) });
+  };
+  const saveDraft = async () => {
+    const name = cleanWorkspaceKeyDraft(draft.name);
+    if (!name) {
+      setMessage('预设名称不能为空。');
+      return;
+    }
+    if (!draft.profile) {
+      setMessage('请选择角色设定。');
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    const payload: AgentPresetInput = {
+      ...draft,
+      name,
+      agents: [],
+      review: 'fast',
+      max_steps: Math.max(1, Number(draft.max_steps) || 1),
+      capabilities: draft.capabilities ?? [],
+      skills: draft.skills ?? [],
+    };
+    try {
+      if (creating) {
+        await onCreate(payload);
+      } else if (selected) {
+        const { name: _name, ...updatePayload } = payload;
+        await onUpdate(selected.name, updatePayload);
+      }
+      setMessage('已保存。');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const deleteSelected = async () => {
+    if (!selected) return;
+    setSaving(true);
+    setMessage('');
+    try {
+      await onDelete(selected.name);
+      setMessage('已删除。');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="design-agents-workspace">
+      <div className="agent-prompt-editor">
+        <div className="agent-editor-toolbar">
+          <div className="agent-editor-icon">
+            <Bot size={15} />
+          </div>
+          <div>
+            <strong>{creating ? '新建智能体预设' : selected?.name ?? '智能体预设'}</strong>
+            <span>{creating ? '智能体能力预设' : selected?.id ?? '智能体能力预设'}</span>
+          </div>
+          <div>
+            {creating ? (
+              <button className="secondary-button compact-button" onClick={cancelCreate} type="button" disabled={saving}>
+                <X size={14} />
+                取消
+              </button>
+            ) : (
+              <button className="secondary-button compact-button" onClick={startCreate} type="button" disabled={saving}>
+                <Plus size={14} />
+                新建
+              </button>
+            )}
+            <button className="primary-button compact-button" onClick={() => void saveDraft()} type="button" disabled={!isDirty || saving}>
+              <Save size={14} />
+              保存
+            </button>
+          </div>
+        </div>
+        {selected || creating ? (
+          <div className="agent-editor-body agent-preset-editor-body">
+            <div className="compact-form-grid">
+              <label>
+                预设名称
+                <input
+                  value={draft.name}
+                  disabled={!creating}
+                  onChange={(event) => patchDraft({ name: cleanWorkspaceKeyDraft(event.target.value) })}
+                  placeholder="helper"
+                />
+              </label>
+              <label>
+                角色设定
+                <select value={draft.profile} onChange={(event) => patchDraft({ profile: event.target.value })}>
+                  {profiles.map((profile) => (
+                    <option key={profile.id} value={profile.name}>{profile.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                最大步数
+                <input
+                  min={1}
+                  type="number"
+                  value={draft.max_steps}
+                  onChange={(event) => patchDraft({ max_steps: Math.max(1, Number(event.target.value) || 1) })}
+                />
+              </label>
+              <label>
+                审查
+                <input value="fast" disabled />
+              </label>
+            </div>
+            <label className="agent-preset-description">
+              描述
+              <textarea value={draft.description} onChange={(event) => patchDraft({ description: event.target.value })} />
+            </label>
+            <div className="agent-node-scope-list agent-preset-scope-list">
+              {capabilityGroups.map((group) => (
+                <section className="scope-group" key={group.kind}>
+                  <h3>{group.label}</h3>
+                  {group.items.map((capability) => (
+                    <label className="scope-row" key={capability.id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedCapabilities.has(capability.id)}
+                        onChange={(event) => patchCapability(capability.id, event.target.checked)}
+                      />
+                      <span>
+                        <strong>{capabilityDisplayName(capability)}</strong>
+                        <span>{capabilityScopeDetail(capability)}</span>
+                      </span>
+                    </label>
+                  ))}
+                </section>
+              ))}
+              {skills.length ? (
+                <section className="scope-group">
+                  <h3>技能</h3>
+                  {skills.map((skill) => {
+                    const lookup = skillLookupName(skill);
+                    return (
+                      <label className="scope-row" key={skill.path}>
+                        <input
+                          type="checkbox"
+                          checked={selectedSkills.has(lookup)}
+                          onChange={(event) => patchSkill(lookup, event.target.checked)}
+                        />
+                        <span>
+                          <strong>{skill.name}</strong>
+                          <span>{skill.category ? `${skill.category} · ${skill.path}` : skill.path}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </section>
+              ) : null}
+            </div>
+            {message ? <p className="form-message">{message}</p> : null}
+          </div>
+        ) : (
+          <div className="empty-state agent-empty-card">
+            <Bot size={28} />
+            <strong>还没有智能体预设</strong>
+            <p>把角色设定与能力、技能组合成一个可复用的智能体。</p>
+            <button className="primary-button compact-button" onClick={startCreate} type="button">
+              <Plus size={14} />
+              新建智能体预设
+            </button>
+          </div>
+        )}
+      </div>
+
+      <aside className="agent-metadata-panel">
+        <div className="agent-panel-label">预设信息</div>
+        {selected ? (
+          <>
+            <div className="agent-info-table">
+              <div><span>ID</span><strong>{selected.id}</strong></div>
+              <div><span>角色设定</span><strong>{selected.profile}</strong></div>
+              <div><span>能力</span><strong>{selected.capabilities?.length ?? 0}</strong></div>
+              <div><span>技能</span><strong>{selected.skills?.length ?? 0}</strong></div>
+              <div><span>最大步数</span><strong>{selected.max_steps}</strong></div>
+            </div>
+            <div className="agent-panel-label">危险操作</div>
+            <button className="danger-line-button" onClick={() => void deleteSelected()} type="button" disabled={saving}>
+              <Trash2 size={14} />
+              删除预设
+            </button>
+          </>
+        ) : null}
+        {errorEntries.length ? (
+          <>
+            <div className="agent-panel-label">加载错误</div>
+            <div className="agent-warning-list">
+              {errorEntries.map(([name, error]) => (
+                <p key={name}><strong>{name}</strong>: {error}</p>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </aside>
+    </section>
+  );
+}
+
+function chatCapabilityScopeLabel(
+  mode: ChatScopeMode,
+  capabilityCount: number,
+  skillCount: number,
+  agentScope: AgentScopeMode = 'none',
+  agentCount = 0,
+): string {
+  const agentText = agentScope === 'registered'
+    ? '全部智能体预设'
+    : agentScope === 'selected'
+      ? `${agentCount} 个智能体预设`
+      : '';
+  if (mode === 'all') return agentText ? `全部能力 · ${agentText}` : '全部能力';
   const total = capabilityCount + skillCount;
-  if (total === 0) return 'No capabilities';
-  if (skillCount === 0) return `${capabilityCount} capabilities`;
-  if (capabilityCount === 0) return `${skillCount} skills`;
-  return `${capabilityCount} capabilities · ${skillCount} skills`;
+  const base = total === 0
+    ? 'No capabilities'
+    : skillCount === 0
+      ? `${capabilityCount} capabilities`
+      : capabilityCount === 0
+        ? `${skillCount} skills`
+        : `${capabilityCount} capabilities · ${skillCount} skills`;
+  return agentText ? `${base} · ${agentText}` : base;
 }
 
 function matchesCapabilityQuery(capability: CapabilityDefinition, query: string): boolean {
   if (!query) return true;
   const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
-  const haystack = `${capability.id} ${capability.name} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
+  const haystack = `${capability.id} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
   return haystack.includes(query);
 }
 
 function matchesSkillQuery(skill: SkillSummary, query: string): boolean {
   if (!query) return true;
   const haystack = `${skill.name} ${skill.category ?? ''} ${skill.description} ${skill.path}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function matchesAgentPresetQuery(agent: AgentPreset, query: string): boolean {
+  if (!query) return true;
+  const haystack = `${agent.id} ${agent.name} ${agent.profile} ${agent.description}`.toLowerCase();
   return haystack.includes(query);
 }
 
