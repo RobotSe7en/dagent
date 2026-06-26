@@ -431,7 +431,7 @@ export interface MCPServerConfig {
 
 export interface MCPServer {
   name: string;
-  source: 'memory' | 'config' | 'runtime';
+  source: 'user' | 'memory' | 'config' | 'runtime';
   config: MCPServerConfig;
   status: 'disabled' | 'connected' | 'error' | 'pending';
   error?: string | null;

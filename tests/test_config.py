@@ -1,4 +1,7 @@
+import stat
 from pathlib import Path
+
+import yaml
 
 from dagent.config import load_config, resolve_config_relative_path
 
@@ -96,3 +99,49 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
     assert config.provider.extra_body == {
         "chat_template_kwargs": {"enable_thinking": True},
     }
+
+
+def test_user_config_round_trips_runtime_models_without_materializing_env_secret(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from dagent.config import (
+        UserDagentConfig,
+        UserModelProviderConfig,
+        load_user_config,
+        save_user_config,
+    )
+
+    monkeypatch.setenv("LOCAL_QWEN_API_KEY", "secret-from-env")
+    config_path = tmp_path / ".dagent" / "config.yaml"
+    config = UserDagentConfig(
+        model_providers={
+            "local-qwen": UserModelProviderConfig(
+                name="Local Qwen",
+                base_url="http://localhost:8000/v1",
+                model="qwen3-coder",
+                api_key_env="LOCAL_QWEN_API_KEY",
+            ),
+            "saved-key": UserModelProviderConfig(
+                name="Saved Key",
+                base_url="https://api.example.test/v1",
+                model="saved-key-model",
+                api_key="literal-secret",
+            ),
+        },
+        active_model="local-qwen",
+        mcp_servers={"search": {"command": "fake", "args": ["--stdio"]}},
+    )
+
+    save_user_config(config, config_path)
+    loaded = load_user_config(config_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert loaded.active_model == "local-qwen"
+    assert loaded.model_providers["local-qwen"].api_key == "secret-from-env"
+    assert loaded.model_providers["local-qwen"].api_key_env == "LOCAL_QWEN_API_KEY"
+    assert raw["model_providers"]["local-qwen"]["api_key_env"] == "LOCAL_QWEN_API_KEY"
+    assert "api_key" not in raw["model_providers"]["local-qwen"]
+    assert raw["model_providers"]["saved-key"]["api_key"] == "literal-secret"
+    assert raw["mcp_servers"]["search"] == {"command": "fake", "args": ["--stdio"]}
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600

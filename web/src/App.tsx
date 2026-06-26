@@ -7061,8 +7061,8 @@ function CapabilityDirectory({
         env: transport === 'stdio' ? parseEnvText(mcpEnvText) : {},
         headers: transport === 'http' ? parseEnvText(mcpHeadersText) : {},
       };
-      const editingExistingMemoryServer = selectedMcp?.source === 'memory' && selectedMcp.name === payload.name;
-      if (editingExistingMemoryServer) {
+      const editingExistingUserServer = selectedMcp && isEditableMcpSource(selectedMcp.source) && selectedMcp.name === payload.name;
+      if (editingExistingUserServer) {
         await updateMcpServer(selectedMcp.name, payload);
       } else {
         await createMcpServer(payload);
@@ -7077,7 +7077,7 @@ function CapabilityDirectory({
   };
 
   const removeMcpServer = async () => {
-    if (!selectedMcp || selectedMcp.source !== 'memory') return;
+    if (!selectedMcp || !isEditableMcpSource(selectedMcp.source)) return;
     setMcpMessage('Deleting MCP server...');
     try {
       await deleteMcpServer(selectedMcp.name);
@@ -7343,7 +7343,7 @@ function CapabilityDirectory({
                     {mcpStatusLabel(selectedMcp.status)}
                   </span>
                 ) : null}
-                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || selectedMcp.source !== 'memory'} type="button">
+                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || !isEditableMcpSource(selectedMcp.source)} type="button">
                   <Trash2 size={13} />
                   删除
                 </button>
@@ -7481,6 +7481,10 @@ function mcpStatusLabel(status: MCPServer['status']): string {
   if (status === 'disabled') return '已停用';
   if (status === 'error') return '连接错误';
   return '连接中';
+}
+
+function isEditableMcpSource(source: MCPServer['source']): boolean {
+  return source === 'user' || source === 'memory';
 }
 
 function ModelManagementWorkspace({
