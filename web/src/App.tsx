@@ -138,12 +138,13 @@ import type {
   UserDagNode,
   ValueBinding,
 } from './types';
-import { type AgentScopeMode } from './agentScope';
+import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
 import {
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
   isValidCapabilityId,
 } from './capabilityContracts';
+import { canvasCenterNodePosition } from './canvasPositions';
 import {
   buildSchemaArgumentFields,
   coerceArgumentValue,
@@ -690,16 +691,6 @@ function nextHorizontalNodePosition(nodes: Node[]): XYPosition {
   return {
     x: Math.round(last.position.x + 240),
     y: Math.round(first.position.y),
-  };
-}
-
-function canvasCenterNodePosition(flowInstance: ReactFlowInstance | null, canvasElement: HTMLDivElement | null): XYPosition {
-  if (!flowInstance || !canvasElement) return { x: 300, y: 220 };
-  const bounds = canvasElement.getBoundingClientRect();
-  const center = flowInstance.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 });
-  return {
-    x: Math.round(center.x - 96),
-    y: Math.round(center.y - 32),
   };
 }
 
@@ -1412,6 +1403,10 @@ export function App() {
         : skills[0] ? skillLookupName(skills[0]) : '',
     );
   }, [skills]);
+
+  useEffect(() => {
+    setSelectedChatAgentIds((items) => pruneSelectedAgentIds(items, agentPresets));
+  }, [agentPresets]);
 
   useEffect(() => {
     setSelectedToolMcpName((current) =>
@@ -4808,7 +4803,7 @@ function ChatCapabilityScopeDialog({
           <div className="capability-scope-list">
             {agentScope === 'selected' ? (
               <section className="scope-group">
-                <h3>agent presets</h3>
+                <h3>智能体预设</h3>
                 {visibleAgents.map((agent) => (
                   <label className="scope-row" key={agent.id}>
                     <input
@@ -4822,7 +4817,7 @@ function ChatCapabilityScopeDialog({
                     </span>
                   </label>
                 ))}
-                {!visibleAgents.length ? <div className="empty-state compact">No matching agent presets.</div> : null}
+                {!visibleAgents.length ? <div className="empty-state compact">没有匹配的智能体预设。</div> : null}
               </section>
             ) : null}
             {groups.map((group) => (
@@ -8177,7 +8172,7 @@ function AgentPresetManagementPane({
           </div>
           <div>
             <strong>{creating ? '新建智能体预设' : selected?.name ?? '智能体预设'}</strong>
-            <span>{creating ? 'agent capability preset' : selected?.id ?? 'agent capability preset'}</span>
+            <span>{creating ? '智能体能力预设' : selected?.id ?? '智能体能力预设'}</span>
           </div>
           <div>
             {creating ? (
@@ -8227,7 +8222,7 @@ function AgentPresetManagementPane({
                 />
               </label>
               <label>
-                Review
+                审查
                 <input value="fast" disabled />
               </label>
             </div>
@@ -8256,7 +8251,7 @@ function AgentPresetManagementPane({
               ))}
               {skills.length ? (
                 <section className="scope-group">
-                  <h3>Skills</h3>
+                  <h3>技能</h3>
                   {skills.map((skill) => {
                     const lookup = skillLookupName(skill);
                     return (
@@ -8334,7 +8329,7 @@ function chatCapabilityScopeLabel(
   const agentText = agentScope === 'registered'
     ? '全部智能体预设'
     : agentScope === 'selected'
-      ? `${agentCount} agent presets`
+      ? `${agentCount} 个智能体预设`
       : '';
   if (mode === 'all') return agentText ? `全部能力 · ${agentText}` : '全部能力';
   const total = capabilityCount + skillCount;

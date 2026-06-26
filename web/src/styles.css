@@ -3926,6 +3926,19 @@ details[open] .timeline-chevron {
   padding: 20px;
 }
 
+@media (max-width: 900px) {
+  .design-agents-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow-y: auto;
+  }
+
+  .agent-metadata-panel {
+    border-left: 0;
+    border-top: 1px solid #e7e8ec;
+  }
+}
+
 .agent-info-table {
   margin-bottom: 10px;
 }

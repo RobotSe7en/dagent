@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 
 async function importTypeScript(relativePath) {
@@ -16,6 +19,32 @@ async function importTypeScript(relativePath) {
   return import(dataUrl);
 }
 
+async function importTypeScriptModule(entryRelativePath, relativePaths) {
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'dagent-web-test-'));
+  for (const relativePath of relativePaths) {
+    const sourceUrl = new URL(relativePath, import.meta.url);
+    const source = await readFile(sourceUrl, 'utf8');
+    let output = ts.transpileModule(source, {
+      compilerOptions: {
+        module: ts.ModuleKind.ES2022,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText;
+    output = output
+      .replace(/from '(\.\/[^']+)'/g, "from '$1.js'")
+      .replace(/import\.meta\.env\.VITE_API_BASE/g, 'undefined');
+    const outputPath = path.join(tempDir, relativePath.replace(/^\.\.\//, '').replace(/\.ts$/, '.js'));
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, output, 'utf8');
+  }
+  const entryPath = path.join(tempDir, entryRelativePath.replace(/^\.\.\//, '').replace(/\.ts$/, '.js'));
+  try {
+    return await import(pathToFileURL(entryPath).href);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 const {
   buildSchemaArgumentFields,
   ensureSchemaArguments,
@@ -24,13 +53,16 @@ const {
 } = await importTypeScript('../src/schemaArguments.ts');
 const {
   capabilityDisplayName,
-  capabilityFunctionName,
   cleanWorkspaceKeyDraft,
   isValidCapabilityId,
 } = await importTypeScript('../src/capabilityContracts.ts');
 const {
   chatScopeRequestFields,
+  pruneSelectedAgentIds,
 } = await importTypeScript('../src/agentScope.ts');
+const {
+  canvasCenterNodePosition,
+} = await importTypeScript('../src/canvasPositions.ts');
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 const {
   artifactPathExpr,
@@ -167,7 +199,6 @@ test('capability helpers follow 0.6.0 id-only contracts', () => {
   };
 
   assert.equal(capabilityDisplayName(capability), 'agent.helper');
-  assert.equal(capabilityFunctionName(capability), 'agent_helper');
   assert.equal(isValidCapabilityId('tool.search'), true);
   assert.equal(isValidCapabilityId('mcp.remote_docs.lookup'), true);
   assert.equal(isValidCapabilityId('agent.bad-name'), false);
@@ -207,6 +238,106 @@ test('chat scope request fields keep agent delegation separate from capabilities
     }),
     /Agent capabilities must use agentScope/,
   );
+  assert.deepEqual(
+    pruneSelectedAgentIds(['agent.keep', 'agent.drop'], [{ id: 'agent.keep' }, { id: 'agent.other' }]),
+    ['agent.keep'],
+  );
+});
+
+test('canvas center node position uses the live canvas center without hard-coded fallback', () => {
+  const canvasElement = {
+    getBoundingClientRect: () => ({ left: 100, top: 50, width: 800, height: 400 }),
+  };
+  const flowInstance = {
+    screenToFlowPosition: (point) => ({ x: point.x + 10, y: point.y + 20 }),
+  };
+
+  assert.deepEqual(canvasCenterNodePosition(flowInstance, canvasElement), { x: 414, y: 238 });
+  assert.deepEqual(canvasCenterNodePosition(null, canvasElement), { x: 304, y: 168 });
+  assert.deepEqual(canvasCenterNodePosition(flowInstance, null), { x: 0, y: 0 });
+});
+
+test('api helpers send agent preset and chat scope request bodies', async () => {
+  const { createAgent, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      body: new ReadableStream({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      json: async () => ({
+        agent: { id: 'agent.helper', name: 'helper', profile: 'conversation', max_steps: 4 },
+        agents: [],
+        errors: {},
+      }),
+      text: async () => '',
+    };
+  };
+
+  try {
+    await createAgent({
+      name: 'helper',
+      profile: 'conversation',
+      description: 'delegates work',
+      max_steps: 4,
+      capabilities: ['tool.echo'],
+      skills: ['writing/brief'],
+      agents: [],
+      review: 'fast',
+    });
+    await updateAgent('helper', {
+      name: 'helper',
+      profile: 'conversation',
+      description: '',
+      max_steps: 5,
+      capabilities: ['tool.search'],
+      skills: [],
+      agents: [],
+      review: 'fast',
+    });
+    await streamTask('hello', 'auto', 'fast', {}, {
+      capabilityIds: ['tool.echo'],
+      skills: ['writing/brief'],
+      agentScope: 'selected',
+      agentIds: ['agent.helper'],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/agents');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    name: 'helper',
+    profile: 'conversation',
+    description: 'delegates work',
+    max_steps: 4,
+    capabilities: ['tool.echo'],
+    skills: ['writing/brief'],
+    agents: [],
+    review: 'fast',
+  });
+  assert.equal(calls[1].url, '/api/agents/helper');
+  assert.equal(calls[1].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[2].init.body), {
+    messages: [{ role: 'user', content: 'hello' }],
+    target: 'auto',
+    review_level: 'fast',
+    capability_ids: ['tool.echo'],
+    skills: ['writing/brief'],
+    agent_scope: 'selected',
+    agent_ids: ['agent.helper'],
+  });
 });
 
 test('value binding helpers create labels and rewrite node output references', () => {
@@ -373,10 +504,8 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(appSource, /flowInstance\.fitView\(\{ padding: 0\.25, duration: 220 \}\)/);
   assert.match(appSource, /flowInstance\.zoomIn\(\{ duration: 160 \}\)/);
   assert.match(appSource, /flowInstance\.zoomOut\(\{ duration: 160 \}\)/);
-  assert.match(appSource, /function canvasCenterNodePosition\(flowInstance: ReactFlowInstance \| null, canvasElement: HTMLDivElement \| null\): XYPosition/);
-  assert.match(appSource, /flowInstance\.screenToFlowPosition\(\{ x: bounds\.left \+ bounds\.width \/ 2, y: bounds\.top \+ bounds\.height \/ 2 \}\)/);
-  assert.match(appSource, /x: Math\.round\(center\.x - 96\)/);
-  assert.match(appSource, /y: Math\.round\(center\.y - 32\)/);
+  assert.match(appSource, /import \{ canvasCenterNodePosition \} from '\.\/canvasPositions';/);
+  assert.doesNotMatch(appSource, /return \{ x: 300, y: 220 \};/);
   assert.match(appSource, /className="canvas-viewport-controls nopan nodrag"/);
   assert.match(appSource, /onPointerDown=\{stopCanvasEvent\}/);
   assert.match(appSource, /function buildVariableOptionGroups/);
@@ -763,6 +892,7 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(appSource, /const \[agentManagementSub, setAgentManagementSub\] = useState<AgentManagementSub>\('profiles'\);/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*agentsSub=\{agentManagementSub\}[\s\S]*profiles=\{profiles\}[\s\S]*selectedProfileId=\{selectedProfileId\}/);
   assert.match(appSource, /<AgentManagementWorkspace[\s\S]*creating=\{creatingProfile\}[\s\S]*profiles=\{profiles\}[\s\S]*selectedId=\{selectedProfileId\}[\s\S]*warnings=\{profileWarnings\}/);
+  assert.match(appSource, /setSelectedChatAgentIds\(\(items\) => pruneSelectedAgentIds\(items, agentPresets\)\);/);
   assert.match(sidebarSource, /const agentSubnav = \[/);
   assert.match(sidebarSource, /label: '角色设定'/);
   assert.match(sidebarSource, /label: '智能体预设'/);
@@ -780,6 +910,8 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(agentSource, /function AgentPresetManagementPane/);
   assert.match(agentSource, /profileSourceLabel/);
   assert.match(agentSource, /删除配置/);
+  assert.doesNotMatch(agentSource, /'agent capability preset'|>Review<|>Skills</);
+  assert.doesNotMatch(appSource, /agent presets|No matching agent presets/);
   assert.doesNotMatch(agentSource, /配置文件路径|后端暂未提供/);
   assert.doesNotMatch(agentSource, /Profiles|Agent Profile|Profiles are read-only in this MVP/);
   assert.match(apiSource, /export async function createProfile/);
@@ -791,6 +923,7 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(apiSource, /export async function deleteAgent/);
 
   assert.match(css, /\.design-agents-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 380px;/s);
+  assert.match(css, /@media \(max-width: 900px\) \{[\s\S]*\.design-agents-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s);
   assert.doesNotMatch(css, /\.agent-management-tabs/);
   assert.match(css, /\.agent-prompt-editor/);
   assert.match(css, /\.agent-name-field/);
@@ -1246,9 +1379,9 @@ test('buildSchemaArgumentFields marks schema fields as fixed before extra fields
 
 test('visibleCapabilitiesForPicker keeps enabled capabilities and drops disabled ones', () => {
   const capabilities = [
-    { id: 'tool.read_file', name: 'read_file', kind: 'tool', enabled: true },
-    { id: 'tool.write_file', name: 'write_file', kind: 'tool', enabled: false },
-    { id: 'agent.conversation', name: 'conversation', kind: 'agent', enabled: true },
+    { id: 'tool.read_file', kind: 'tool', enabled: true },
+    { id: 'tool.write_file', kind: 'tool', enabled: false },
+    { id: 'agent.conversation', kind: 'agent', enabled: true },
   ];
 
   assert.deepEqual(

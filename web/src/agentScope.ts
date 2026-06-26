@@ -7,6 +7,11 @@ export interface ChatCapabilityScopePayload {
   agentIds?: string[];
 }
 
+export function pruneSelectedAgentIds(selectedIds: string[], agents: Array<{ id: string }>): string[] {
+  const availableAgentIds = new Set(agents.map((agent) => agent.id));
+  return selectedIds.filter((id) => availableAgentIds.has(id));
+}
+
 export function chatScopeRequestFields(scope?: ChatCapabilityScopePayload): Record<string, unknown> {
   if (!scope) return {};
   const capabilityIds = scope.capabilityIds;

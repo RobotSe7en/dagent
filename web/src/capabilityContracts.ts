@@ -13,11 +13,6 @@ export function capabilityDisplayName(capability: { id: string }): string {
   return capability.id;
 }
 
-export function capabilityFunctionName(capability: { id: string } | string): string {
-  const capabilityId = typeof capability === 'string' ? capability : capability.id;
-  return capabilityId.replace(/\./g, '_');
-}
-
 export function isValidCapabilityId(value: string): boolean {
   if (value !== value.trim()) return false;
   const parts = value.split('.');
