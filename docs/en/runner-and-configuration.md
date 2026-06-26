@@ -104,14 +104,11 @@ The local FastAPI/WebUI backend also reads and writes a user-level config at
 `~/.dagent/config.yaml`. This file is for local UI state and user defaults; it
 does not change what `Runner.from_config(...)` loads in SDK code.
 
-User config uses the same YAML style for shared fields and adds WebUI model
-management fields:
+User config uses the same YAML style for provider-shaped model entries and MCP
+servers, but it is scoped to WebUI-managed models, the active WebUI model, and
+user MCP servers:
 
 ```yaml
-provider:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-flash"
-  api_key_env: "DEEPSEEK_API_KEY"
 model_providers:
   local-qwen:
     name: "Local Qwen"

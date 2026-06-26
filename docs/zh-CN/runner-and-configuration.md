@@ -99,13 +99,10 @@ mcp_servers:
 本地 FastAPI/WebUI backend 还会读写用户级配置 `~/.dagent/config.yaml`。这个文件用于本机
 UI 状态和用户默认值；它不会改变 SDK 代码中 `Runner.from_config(...)` 的加载行为。
 
-用户配置复用相同的 YAML 风格，并额外支持 WebUI 模型管理字段：
+用户配置复用 provider-shaped 模型条目和 MCP servers 的 YAML 风格，但范围限定为
+WebUI 管理的模型、当前 WebUI 模型和用户 MCP servers：
 
 ```yaml
-provider:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-flash"
-  api_key_env: "DEEPSEEK_API_KEY"
 model_providers:
   local-qwen:
     name: "Local Qwen"

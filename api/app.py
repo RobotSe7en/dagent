@@ -74,7 +74,7 @@ MessageTarget = Literal["auto", "tool", "dag"]
 AgentScope = Literal["none", "selected", "registered"]
 CONFIG_MODEL_ID = "config"
 ApiKeyAction = Literal["preserve", "replace", "clear"]
-ModelProviderSource = Literal["config", "runtime"]
+ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
 RunArtifactSource = Literal["dag_artifact", "run_file"]
 RunArtifactPreviewKind = Literal["markdown", "code", "text"]
@@ -331,8 +331,10 @@ class ApiState:
         self.profile_directory: str | None = None
         self.custom_capabilities: dict[str, CapabilityDefinition] = {}
         self.custom_mcp_servers: dict[str, dict[str, Any]] = {}
+        self.custom_mcp_conflicts: dict[str, dict[str, Any]] = {}
         self.custom_mcp_registered_names: set[str] = set()
         self.custom_mcp_errors: dict[str, str] = {}
+        self.custom_mcp_conflict_errors: dict[str, str] = {}
         self.agent_preset_errors: dict[str, str] = {}
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
@@ -372,6 +374,7 @@ class ApiState:
         self.runner = None
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
+        self.custom_mcp_conflict_errors.clear()
         self.agent_preset_errors.clear()
 
     def get_profile_directory(self) -> str | None:
@@ -412,6 +415,7 @@ class ApiState:
         )
         configured_mcp_names = _configured_mcp_server_names()
         user_mcp_servers: dict[str, dict[str, Any]] = {}
+        user_mcp_conflicts: dict[str, dict[str, Any]] = {}
         conflict_errors: dict[str, str] = {}
         for name, server_config in config.mcp_servers.items():
             server_name = str(name)
@@ -419,15 +423,17 @@ class ApiState:
                 conflict_errors[server_name] = (
                     f"MCP server '{server_name}' is defined in both project config and user config."
                 )
+                user_mcp_conflicts[server_name] = dict(server_config)
                 continue
             user_mcp_servers[server_name] = dict(server_config)
         self.custom_mcp_servers = user_mcp_servers
+        self.custom_mcp_conflicts = user_mcp_conflicts
         self.custom_mcp_errors = {
             name: error
             for name, error in self.custom_mcp_errors.items()
             if name in user_mcp_servers
         }
-        self.custom_mcp_errors.update(conflict_errors)
+        self.custom_mcp_conflict_errors = conflict_errors
 
     def persist_user_models(self) -> None:
         config = self._current_user_config()
@@ -444,10 +450,15 @@ class ApiState:
 
     def persist_user_mcp_servers(self) -> None:
         config = self._current_user_config()
-        config.mcp_servers = {
+        mcp_servers = {
+            name: dict(server_config)
+            for name, server_config in sorted(self.custom_mcp_conflicts.items())
+        }
+        mcp_servers.update({
             name: _mcp_storage_config(server_config)
             for name, server_config in sorted(self.custom_mcp_servers.items())
-        }
+        })
+        config.mcp_servers = mcp_servers
         save_user_config(config, self.get_user_config_path())
 
     def _current_user_config(self) -> UserDagentConfig:
@@ -478,7 +489,7 @@ class ApiState:
             replace_names=self.custom_mcp_registered_names,
         )
         self.custom_mcp_registered_names = registered_names
-        self.custom_mcp_errors = errors
+        self.custom_mcp_errors = {**errors, **self.custom_mcp_conflict_errors}
         self._install_agent_presets()
 
     def _install_agent_presets(self) -> None:
@@ -528,6 +539,8 @@ async def reset_session() -> dict[str, str]:
     state.dag_artifact_uploads.clear()
     state.custom_capabilities.clear()
     state.custom_mcp_servers.clear()
+    state.custom_mcp_conflicts.clear()
+    state.custom_mcp_conflict_errors.clear()
     return {"status": "ok"}
 
 
@@ -1133,7 +1146,7 @@ async def create_model_provider(request: ModelProviderRequest) -> ModelMutationR
     state.custom_model_providers[model_id] = model
     state.persist_user_models()
     return ModelMutationResponse(
-        model=_runtime_model_payload(model, active=_active_model_id() == model_id),
+        model=_user_model_payload(model, active=_active_model_id() == model_id),
         active_model_id=_active_model_id(),
     )
 
@@ -1158,7 +1171,7 @@ async def update_model_provider(model_id: str, request: ModelProviderRequest) ->
     if state.active_model_id == clean_model_id:
         state.close_runner()
     return ModelMutationResponse(
-        model=_runtime_model_payload(model, active=_active_model_id() == clean_model_id),
+        model=_user_model_payload(model, active=_active_model_id() == clean_model_id),
         active_model_id=_active_model_id(),
     )
 
@@ -1192,7 +1205,7 @@ async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     state.active_model_id = clean_model_id
     state.persist_user_models()
     state.close_runner()
-    return ModelMutationResponse(model=_runtime_model_payload(model, active=True), active_model_id=clean_model_id)
+    return ModelMutationResponse(model=_user_model_payload(model, active=True), active_model_id=clean_model_id)
 
 
 @app.get("/mcp/servers")
@@ -1541,12 +1554,17 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
 
 
 def _model_request_from_user_config(model_id: str, model: UserModelProviderConfig) -> ModelProviderRequest:
+    api_key = (
+        model.api_key
+        if "api_key" in model.model_fields_set and model.api_key != "not-needed"
+        else None
+    )
     return ModelProviderRequest(
         id=model_id,
         name=model.name or model_id,
         base_url=model.base_url,
         model=model.model,
-        api_key=model.api_key if model.api_key != "not-needed" else None,
+        api_key=api_key,
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
         strip_thinking=model.strip_thinking,
@@ -1577,7 +1595,7 @@ def _model_provider_payloads() -> list[ModelProviderPayload]:
     return [
         _config_model_payload(active=active_id == CONFIG_MODEL_ID),
         *[
-            _runtime_model_payload(model, active=model.id == active_id)
+            _user_model_payload(model, active=model.id == active_id)
             for model in sorted(state.custom_model_providers.values(), key=lambda item: (item.name.lower(), item.id))
         ],
     ]
@@ -1608,11 +1626,11 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
     )
 
 
-def _runtime_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelProviderPayload:
+def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelProviderPayload:
     return ModelProviderPayload(
         id=model.id,
         name=model.name,
-        source="runtime",
+        source="user",
         active=active,
         base_url=model.base_url,
         model=model.model,

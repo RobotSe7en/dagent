@@ -71,11 +71,7 @@ class UserModelProviderConfig(ProviderConfig):
 
 
 class UserDagentConfig(BaseModel):
-    provider: ProviderConfig | None = None
-    profiles: "ProfilesConfig | None" = None
-    enable_result_validation: bool | None = None
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    sandbox: SandboxConfig | None = None
     model_providers: dict[str, UserModelProviderConfig] = Field(default_factory=dict)
     active_model: str | None = None
 
@@ -131,22 +127,23 @@ def save_user_config(config: UserDagentConfig, path: str | Path | None = None) -
     config_path = Path(path or default_user_config_path()).expanduser()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     data = _user_config_storage_data(config)
-    config_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    content = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    temp_path = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+        os.replace(temp_path, config_path)
+        config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _user_config_storage_data(config: UserDagentConfig) -> dict[str, Any]:
     data: dict[str, Any] = {}
-    if config.provider is not None:
-        data["provider"] = _provider_storage_data(config.provider)
-    if config.profiles is not None:
-        data["profiles"] = config.profiles.model_dump(mode="json", exclude_none=True)
-    if config.enable_result_validation is not None:
-        data["enable_result_validation"] = config.enable_result_validation
     if config.mcp_servers:
         data["mcp_servers"] = config.mcp_servers
-    if config.sandbox is not None:
-        data["sandbox"] = config.sandbox.model_dump(mode="json", exclude_none=True)
     if config.model_providers:
         data["model_providers"] = {
             name: _provider_storage_data(provider)

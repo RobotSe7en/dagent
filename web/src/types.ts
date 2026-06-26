@@ -431,7 +431,7 @@ export interface MCPServerConfig {
 
 export interface MCPServer {
   name: string;
-  source: 'user' | 'memory' | 'config' | 'runtime';
+  source: 'user' | 'config' | 'runtime';
   config: MCPServerConfig;
   status: 'disabled' | 'connected' | 'error' | 'pending';
   error?: string | null;
@@ -441,7 +441,7 @@ export interface MCPServer {
 export interface ModelProvider {
   id: string;
   name: string;
-  source: 'config' | 'runtime';
+  source: 'config' | 'user';
   active: boolean;
   base_url: string;
   model: string;
