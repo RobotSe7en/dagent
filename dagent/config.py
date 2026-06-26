@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -70,10 +70,20 @@ class UserModelProviderConfig(ProviderConfig):
     name: str | None = None
 
 
+class UserPythonToolConfig(BaseModel):
+    id: str
+    source: Literal["path", "managed", "module"] = "path"
+    path: str | None = None
+    module: str | None = None
+    names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
 class UserDagentConfig(BaseModel):
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     model_providers: dict[str, UserModelProviderConfig] = Field(default_factory=dict)
     active_model: str | None = None
+    python_tools: list[UserPythonToolConfig] = Field(default_factory=list)
 
 
 class ProfilesConfig(BaseModel):
@@ -151,6 +161,11 @@ def _user_config_storage_data(config: UserDagentConfig) -> dict[str, Any]:
         }
     if config.active_model is not None:
         data["active_model"] = config.active_model
+    if config.python_tools:
+        data["python_tools"] = [
+            tool.model_dump(mode="json", exclude_none=True)
+            for tool in config.python_tools
+        ]
     return data
 
 

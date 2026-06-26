@@ -438,6 +438,24 @@ export interface MCPServer {
   tools: CapabilityDefinition[];
 }
 
+export type PythonToolSource = 'path' | 'managed' | 'module';
+export type PythonToolStatus = 'loaded' | 'disabled' | 'error';
+
+export interface PythonToolConfig {
+  id: string;
+  source: PythonToolSource;
+  path?: string | null;
+  module?: string | null;
+  names: string[];
+  enabled: boolean;
+}
+
+export interface PythonToolEntry extends PythonToolConfig {
+  status: PythonToolStatus;
+  capabilities: string[];
+  error?: string | null;
+}
+
 export interface ModelProvider {
   id: string;
   name: string;

@@ -553,8 +553,10 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(directorySource, /design-tools-workspace/);
   assert.match(directorySource, /className="tools-detail-panel"/);
   assert.match(directorySource, /skill-editor-toolbar/);
-  assert.match(directorySource, /新建工具|导入技能|保存配置/);
-  assert.match(directorySource, /createCapability\(/);
+  assert.match(directorySource, /导入 Python 工具|导入技能|保存配置/);
+  assert.match(directorySource, /createPythonTool\(/);
+  assert.match(directorySource, /uploadPythonTool\(/);
+  assert.match(directorySource, /validatePythonTool\(/);
   assert.match(directorySource, /testCapability\(/);
   assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);

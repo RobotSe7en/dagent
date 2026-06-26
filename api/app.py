@@ -21,6 +21,7 @@ from api.agent_presets import (
     AgentPresetUpdateRequest,
     clean_agent_preset_name,
 )
+from api.python_tools import load_python_tool_sources
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -56,6 +57,7 @@ from dagent.config import (
     DEFAULT_WORKSPACE,
     UserDagentConfig,
     UserModelProviderConfig,
+    UserPythonToolConfig,
     default_user_config_path,
     load_config,
     load_user_config,
@@ -85,6 +87,7 @@ PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_LOCAL_PYTHON_TOOL_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -286,6 +289,23 @@ class ModelDeleteResponse(BaseModel):
     active_model_id: str
 
 
+class PythonToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    source: Literal["path", "managed", "module"] = "path"
+    path: str | None = None
+    module: str | None = None
+    names: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class PythonToolPayload(PythonToolRequest):
+    status: Literal["loaded", "disabled", "error"]
+    capabilities: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
 class RunArtifactFile(BaseModel):
     id: str
     artifact_id: str | None = None
@@ -338,6 +358,10 @@ class ApiState:
         self.agent_preset_errors: dict[str, str] = {}
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
+        self.custom_python_tools: list[UserPythonToolConfig] = []
+        self.custom_python_tool_errors: dict[str, str] = {}
+        self.custom_python_tool_capabilities: dict[str, list[str]] = {}
+        self.custom_python_tool_capability_ids: set[str] = set()
         self.validation_override: bool | None = None
 
     def get_runner(self) -> Runner:
@@ -345,6 +369,7 @@ class ApiState:
             self.sync_user_config()
             self.runner = self._create_runner()
             self._install_custom_capabilities()
+            self._install_python_tools()
             self.reload_custom_mcp()
             self._install_agent_presets()
             if self.validation_override is not None:
@@ -375,6 +400,9 @@ class ApiState:
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
         self.custom_mcp_conflict_errors.clear()
+        self.custom_python_tool_errors.clear()
+        self.custom_python_tool_capabilities.clear()
+        self.custom_python_tool_capability_ids.clear()
         self.agent_preset_errors.clear()
 
     def get_profile_directory(self) -> str | None:
@@ -398,6 +426,9 @@ class ApiState:
 
     def get_agent_preset_root(self) -> Path:
         return Path.home() / ".dagent" / "agents"
+
+    def get_managed_python_tool_root(self) -> Path:
+        return Path.home() / ".dagent" / "python-tools"
 
     def get_user_config_path(self) -> Path:
         return default_user_config_path()
@@ -434,6 +465,7 @@ class ApiState:
             if name in user_mcp_servers
         }
         self.custom_mcp_conflict_errors = conflict_errors
+        self.custom_python_tools = list(config.python_tools)
 
     def persist_user_models(self) -> None:
         config = self._current_user_config()
@@ -461,6 +493,11 @@ class ApiState:
         config.mcp_servers = mcp_servers
         save_user_config(config, self.get_user_config_path())
 
+    def persist_user_python_tools(self) -> None:
+        config = self._current_user_config()
+        config.python_tools = list(self.custom_python_tools)
+        save_user_config(config, self.get_user_config_path())
+
     def _current_user_config(self) -> UserDagentConfig:
         return load_user_config(self.get_user_config_path())
 
@@ -479,6 +516,40 @@ class ApiState:
         for definition in self.custom_capabilities.values():
             if self.runner.get_capability(definition.id) is None:
                 self.runner.register_capability(definition, _handler_for_definition(definition))
+
+    def _install_python_tools(self) -> None:
+        if self.runner is None:
+            return
+        result = load_python_tool_sources(
+            self.custom_python_tools,
+            user_config_dir=self.get_user_config_path().parent,
+            existing_capability_ids={definition.id for definition in self.runner.list_capabilities()},
+        )
+        self.custom_python_tool_errors = dict(result.errors)
+        self.custom_python_tool_capabilities = {
+            status.config.id: list(status.capability_ids)
+            for status in result.statuses
+        }
+        self.custom_python_tool_capability_ids = set()
+        source_by_capability_id = {
+            capability_id: source_id
+            for source_id, capability_ids in self.custom_python_tool_capabilities.items()
+            for capability_id in capability_ids
+        }
+        for binding in result.bindings:
+            capability_id = binding.definition.id
+            source_id = source_by_capability_id.get(capability_id)
+            try:
+                self.runner.add_tool(binding)
+                self.custom_python_tool_capability_ids.add(capability_id)
+            except Exception as exc:
+                if source_id is not None:
+                    self.custom_python_tool_errors[source_id] = str(exc)
+                    self.custom_python_tool_capabilities[source_id] = [
+                        value
+                        for value in self.custom_python_tool_capabilities.get(source_id, [])
+                        if value != capability_id
+                    ]
 
     def reload_custom_mcp(self) -> None:
         if self.runner is None:
@@ -541,6 +612,10 @@ async def reset_session() -> dict[str, str]:
     state.custom_mcp_servers.clear()
     state.custom_mcp_conflicts.clear()
     state.custom_mcp_conflict_errors.clear()
+    state.custom_python_tools.clear()
+    state.custom_python_tool_errors.clear()
+    state.custom_python_tool_capabilities.clear()
+    state.custom_python_tool_capability_ids.clear()
     return {"status": "ok"}
 
 
@@ -1124,6 +1199,112 @@ async def disable_capability(capability_id: str) -> dict[str, Any]:
     return _set_capability_enabled(capability_id, False)
 
 
+@app.get("/python-tools")
+async def list_python_tools() -> dict[str, Any]:
+    state.get_runner()
+    return {"tools": [_python_tool_payload(config) for config in state.custom_python_tools]}
+
+
+@app.post("/python-tools")
+async def create_python_tool(request: PythonToolRequest) -> dict[str, Any]:
+    state.sync_user_config()
+    config = _python_tool_config_from_request(request)
+    if _python_tool_config_by_id(config.id) is not None:
+        raise HTTPException(status_code=400, detail=f"Python tool source '{config.id}' already exists.")
+    state.custom_python_tools.append(config)
+    state.persist_user_python_tools()
+    _reload_python_tools()
+    return {"tool": _python_tool_payload(config)}
+
+
+@app.post("/python-tools/validate")
+async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
+    config = _python_tool_config_from_request(request)
+    result = load_python_tool_sources(
+        [config],
+        user_config_dir=state.get_user_config_path().parent,
+        existing_capability_ids={definition.id for definition in state.get_runner().list_capabilities()},
+    )
+    status = result.statuses[0] if result.statuses else None
+    return {
+        "tool": _python_tool_payload(
+            config,
+            capabilities=[] if status is None else status.capability_ids,
+            error=None if status is None else status.error,
+        )
+    }
+
+
+@app.post("/python-tools/upload")
+async def upload_python_tool(
+    file: UploadFile = File(...),
+    id: str = Form(...),
+    names: str = Form(...),
+    enabled: bool = Form(True),
+) -> dict[str, Any]:
+    source_id = _clean_python_tool_source_id(id)
+    state.sync_user_config()
+    if _python_tool_config_by_id(source_id) is not None:
+        raise HTTPException(status_code=400, detail=f"Python tool source '{source_id}' already exists.")
+    filename = file.filename or ""
+    if Path(filename).suffix != ".py":
+        raise HTTPException(status_code=400, detail="Python tool uploads must use the .py extension.")
+    name_list = _parse_python_tool_names(names)
+    managed_root = state.get_managed_python_tool_root()
+    managed_root.mkdir(parents=True, exist_ok=True)
+    target = managed_root / f"{source_id}.py"
+    target.write_bytes(await file.read())
+    relative_path = _python_tool_storage_path(target)
+    request = PythonToolRequest(
+        id=source_id,
+        source="managed",
+        path=relative_path,
+        names=name_list,
+        enabled=enabled,
+    )
+    config = _python_tool_config_from_request(request)
+    state.custom_python_tools.append(config)
+    state.persist_user_python_tools()
+    _reload_python_tools()
+    return {"tool": _python_tool_payload(config)}
+
+
+@app.post("/python-tools/reload")
+async def reload_python_tools() -> dict[str, Any]:
+    _reload_python_tools()
+    return await list_python_tools()
+
+
+@app.put("/python-tools/{tool_id}")
+async def update_python_tool(tool_id: str, request: PythonToolRequest) -> dict[str, Any]:
+    state.sync_user_config()
+    source_id = _clean_python_tool_source_id(tool_id)
+    config = _python_tool_config_from_request(request)
+    if source_id != config.id:
+        raise HTTPException(status_code=400, detail="Python tool source id mismatch.")
+    index = _python_tool_config_index(source_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Python tool source not found.")
+    state.custom_python_tools[index] = config
+    state.persist_user_python_tools()
+    _reload_python_tools()
+    return {"tool": _python_tool_payload(config)}
+
+
+@app.delete("/python-tools/{tool_id}")
+async def delete_python_tool(tool_id: str) -> dict[str, str]:
+    state.sync_user_config()
+    source_id = _clean_python_tool_source_id(tool_id)
+    index = _python_tool_config_index(source_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Python tool source not found.")
+    config = state.custom_python_tools.pop(index)
+    _delete_managed_python_tool_file(config)
+    state.persist_user_python_tools()
+    _reload_python_tools()
+    return {"status": "deleted"}
+
+
 @app.get("/models", response_model=ModelListResponse)
 async def list_models() -> ModelListResponse:
     return ModelListResponse(
@@ -1521,6 +1702,132 @@ def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition
             status_code=400,
             detail="Agent capabilities are managed through /agents.",
         )
+
+
+def _reload_python_tools() -> None:
+    state.close_runner()
+    state.get_runner()
+
+
+def _python_tool_payload(
+    config: UserPythonToolConfig,
+    *,
+    capabilities: list[str] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    resolved_error = state.custom_python_tool_errors.get(config.id) if error is None else error
+    resolved_capabilities = (
+        list(state.custom_python_tool_capabilities.get(config.id, []))
+        if capabilities is None
+        else list(capabilities)
+    )
+    status: Literal["loaded", "disabled", "error"]
+    if not config.enabled:
+        status = "disabled"
+    elif resolved_error:
+        status = "error"
+    else:
+        status = "loaded"
+    return PythonToolPayload(
+        id=config.id,
+        source=config.source,
+        path=config.path,
+        module=config.module,
+        names=list(config.names),
+        enabled=config.enabled,
+        status=status,
+        capabilities=resolved_capabilities,
+        error=resolved_error,
+    ).model_dump(mode="json")
+
+
+def _python_tool_config_from_request(request: PythonToolRequest) -> UserPythonToolConfig:
+    source_id = _clean_python_tool_source_id(request.id)
+    names = [_clean_python_tool_name(name) for name in request.names]
+    if not names:
+        raise HTTPException(status_code=400, detail="Python tool names are required.")
+    path = request.path.strip() if request.path is not None else None
+    module = request.module.strip() if request.module is not None else None
+    if request.source in {"path", "managed"} and not path:
+        raise HTTPException(status_code=400, detail="Python tool path is required.")
+    if request.source == "module" and not module:
+        raise HTTPException(status_code=400, detail="Python tool module is required.")
+    return UserPythonToolConfig(
+        id=source_id,
+        source=request.source,
+        path=path,
+        module=module,
+        names=names,
+        enabled=request.enabled,
+    )
+
+
+def _clean_python_tool_source_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Python tool source id is required.")
+    if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(text) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Python tool source ids may contain only letters, numbers, and underscores.",
+        )
+    return text
+
+
+def _clean_python_tool_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Python tool names cannot be empty.")
+    if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(text) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Python tool names may contain only letters, numbers, and underscores.",
+        )
+    return text
+
+
+def _parse_python_tool_names(value: str) -> list[str]:
+    names = [
+        item.strip()
+        for item in re.split(r"[\n,]+", value)
+        if item.strip()
+    ]
+    return [_clean_python_tool_name(name) for name in names]
+
+
+def _python_tool_config_index(source_id: str) -> int | None:
+    for index, config in enumerate(state.custom_python_tools):
+        if config.id == source_id:
+            return index
+    return None
+
+
+def _python_tool_config_by_id(source_id: str) -> UserPythonToolConfig | None:
+    index = _python_tool_config_index(source_id)
+    if index is None:
+        return None
+    return state.custom_python_tools[index]
+
+
+def _python_tool_storage_path(path: Path) -> str:
+    config_dir = state.get_user_config_path().parent.resolve()
+    resolved = path.resolve(strict=False)
+    try:
+        return resolved.relative_to(config_dir).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _delete_managed_python_tool_file(config: UserPythonToolConfig) -> None:
+    if config.source != "managed" or not config.path:
+        return
+    config_dir = state.get_user_config_path().parent.resolve()
+    candidate = (config_dir / config.path).resolve(strict=False)
+    try:
+        candidate.relative_to(config_dir)
+    except ValueError:
+        return
+    candidate.unlink(missing_ok=True)
 
 
 def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: list[Path]) -> Runner:

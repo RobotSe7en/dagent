@@ -25,6 +25,8 @@ import type {
   MCPServerConfig,
   ModelProvider,
   ModelProviderInput,
+  PythonToolConfig,
+  PythonToolEntry,
   RunArtifactPreview,
   RunArtifactsResponse,
 } from './types';
@@ -353,6 +355,78 @@ export async function reloadMcpServers(): Promise<MCPServer[]> {
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.servers ?? [];
+}
+
+export async function listPythonTools(): Promise<PythonToolEntry[]> {
+  const res = await fetch(`${API_BASE}/python-tools`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tools ?? [];
+}
+
+export async function createPythonTool(payload: PythonToolConfig): Promise<PythonToolEntry> {
+  const res = await fetch(`${API_BASE}/python-tools`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tool;
+}
+
+export async function updatePythonTool(id: string, payload: PythonToolConfig): Promise<PythonToolEntry> {
+  const res = await fetch(`${API_BASE}/python-tools/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tool;
+}
+
+export async function deletePythonTool(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/python-tools/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function reloadPythonTools(): Promise<PythonToolEntry[]> {
+  const res = await fetch(`${API_BASE}/python-tools/reload`, { method: 'POST' });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tools ?? [];
+}
+
+export async function validatePythonTool(payload: PythonToolConfig): Promise<PythonToolEntry> {
+  const res = await fetch(`${API_BASE}/python-tools/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tool;
+}
+
+export async function uploadPythonTool(
+  file: File,
+  payload: Pick<PythonToolConfig, 'id' | 'names' | 'enabled'>,
+): Promise<PythonToolEntry> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('id', payload.id);
+  form.append('names', payload.names.join(','));
+  form.append('enabled', String(payload.enabled));
+  const res = await fetch(`${API_BASE}/python-tools/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.tool;
 }
 
 export async function listModels(): Promise<{ models: ModelProvider[]; active_model_id: string }> {
