@@ -120,6 +120,11 @@ python_tools:
     path: "/Users/olivia/tools/local_tools.py"
     names: ["search_docs", "summarize_page"]
     enabled: true
+  - id: "package_tools"
+    source: "module"
+    module: "my_project.tools"
+    names: ["lookup"]
+    enabled: true
 ```
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
@@ -132,6 +137,8 @@ WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `
 导出对象。每个对象都必须由 `@dagent.tool` 创建，因此它是一个 `CapabilityBinding`，
 并使用 `tool.<function_name>` capability id。WebUI 也支持上传 `.py` 文件；上传文件会复制到
 `~/.dagent/python-tools/`，并在同一个用户配置文件中保存为 `source: "managed"` 条目。
+`module` 条目会按名称 import 已安装或可导入的 Python module；`/python-tools/reload`
+会 invalidate import caches，并 reload 已在 `sys.modules` 中的 module。
 
 Python 文件会作为本地代码导入，因此模块顶层代码会在加载时执行。WebUI 不会扫描目录，
 也不会自动注册文件中的所有对象；它只加载显式配置的条目和显式列出的 `names`。import
@@ -235,6 +242,10 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+本地 `/capabilities` mutation API 是 host/debug 用的 runtime raw capability surface。
+用户管理的 Python tools 应通过 `/python-tools` 或 WebUI 导入流程添加和持久化，而不是通过
+template-backed runtime capability creation。
 
 ## 运行时切换 Provider
 

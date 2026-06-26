@@ -7243,6 +7243,43 @@ function CapabilityDirectory({
     : creationIntent === 'skills'
       ? '导入技能'
       : '新建 MCP 服务';
+  const renderPythonToolSources = () => (
+    <section>
+      <div className="section-heading-row">
+        <h3>Python 工具源</h3>
+        <button className="secondary-button compact-button" onClick={() => void reloadPythonToolSources()} type="button">
+          <RefreshCw size={13} />
+          重载
+        </button>
+      </div>
+      {pythonTools.length ? (
+        <div className="python-tool-source-list">
+          {pythonTools.map((source) => (
+            <div className="python-tool-source-row" key={source.id} data-status={source.status}>
+              <div>
+                <strong>{source.id}</strong>
+                <span>{pythonToolSourcePath(source)}</span>
+                {source.error ? <em>{source.error}</em> : null}
+              </div>
+              <div>
+                <span className="status-badge" data-status={source.status === 'loaded' ? 'completed' : source.status === 'error' ? 'failed' : 'queued'}>
+                  {pythonToolStatusLabel(source.status)}
+                </span>
+                <button className="secondary-button compact-button" onClick={() => void togglePythonToolSource(source, !source.enabled)} type="button">
+                  {source.enabled ? '停用' : '启用'}
+                </button>
+                <button className="secondary-button danger-button compact-button" onClick={() => void removePythonToolSource(source)} type="button">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="form-message">还没有配置 Python 工具源。</p>
+      )}
+    </section>
+  );
 
   return (
     <section className={`design-tools-workspace ${activeTab === 'skills' ? 'skills-mode' : ''}`}>
@@ -7470,48 +7507,19 @@ function CapabilityDirectory({
                     {message ? <p className="form-message">{message}</p> : null}
                     {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
                   </section>
-                  <section>
-                    <div className="section-heading-row">
-                      <h3>Python 工具源</h3>
-                      <button className="secondary-button compact-button" onClick={() => void reloadPythonToolSources()} type="button">
-                        <RefreshCw size={13} />
-                        重载
-                      </button>
-                    </div>
-                    {pythonTools.length ? (
-                      <div className="python-tool-source-list">
-                        {pythonTools.map((source) => (
-                          <div className="python-tool-source-row" key={source.id} data-status={source.status}>
-                            <div>
-                              <strong>{source.id}</strong>
-                              <span>{pythonToolSourcePath(source)}</span>
-                              {source.error ? <em>{source.error}</em> : null}
-                            </div>
-                            <div>
-                              <span className="status-badge" data-status={source.status === 'loaded' ? 'completed' : source.status === 'error' ? 'failed' : 'queued'}>
-                                {pythonToolStatusLabel(source.status)}
-                              </span>
-                              <button className="secondary-button compact-button" onClick={() => void togglePythonToolSource(source, !source.enabled)} type="button">
-                                {source.enabled ? '停用' : '启用'}
-                              </button>
-                              <button className="secondary-button danger-button compact-button" onClick={() => void removePythonToolSource(source)} type="button">
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="form-message">还没有配置 Python 工具源。</p>
-                    )}
-                  </section>
+                  {renderPythonToolSources()}
                 </div>
               </div>
             ) : (
-              <div className="empty-state agent-empty-card">
-                <Wrench size={28} />
-                <strong>没有加载到工具</strong>
-                <p>从左侧选择一个工具，查看它的参数与测试调用。</p>
+              <div className="tools-detail-scroll">
+                <div className="tool-detail-surface">
+                  <div className="empty-state agent-empty-card">
+                    <Wrench size={28} />
+                    <strong>没有加载到工具</strong>
+                    <p>导入 Python 工具，或从左侧选择一个已有工具查看参数与测试调用。</p>
+                  </div>
+                  {renderPythonToolSources()}
+                </div>
               </div>
             )}
           </div>

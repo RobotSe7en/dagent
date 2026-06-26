@@ -6,14 +6,16 @@ import codecs
 import json
 import mimetypes
 import re
+import threading
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
 
+import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api.agent_presets import (
     AgentPreset,
@@ -359,9 +361,11 @@ class ApiState:
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
         self.custom_python_tools: list[UserPythonToolConfig] = []
+        self.custom_python_tool_config_errors: dict[str, str] = {}
         self.custom_python_tool_errors: dict[str, str] = {}
         self.custom_python_tool_capabilities: dict[str, list[str]] = {}
         self.custom_python_tool_capability_ids: set[str] = set()
+        self.python_tool_lock = threading.Lock()
         self.validation_override: bool | None = None
 
     def get_runner(self) -> Runner:
@@ -400,6 +404,7 @@ class ApiState:
         self.custom_mcp_registered_names.clear()
         self.custom_mcp_errors.clear()
         self.custom_mcp_conflict_errors.clear()
+        self.custom_python_tool_config_errors.clear()
         self.custom_python_tool_errors.clear()
         self.custom_python_tool_capabilities.clear()
         self.custom_python_tool_capability_ids.clear()
@@ -434,7 +439,7 @@ class ApiState:
         return default_user_config_path()
 
     def sync_user_config(self) -> None:
-        config = load_user_config(self.get_user_config_path())
+        config, python_tool_config_errors = _load_user_config_for_webui(self.get_user_config_path())
         self.custom_model_providers = {
             model_id: _model_request_from_user_config(model_id, model)
             for model_id, model in config.model_providers.items()
@@ -465,6 +470,7 @@ class ApiState:
             if name in user_mcp_servers
         }
         self.custom_mcp_conflict_errors = conflict_errors
+        self.custom_python_tool_config_errors = python_tool_config_errors
         self.custom_python_tools = list(config.python_tools)
 
     def persist_user_models(self) -> None:
@@ -499,7 +505,8 @@ class ApiState:
         save_user_config(config, self.get_user_config_path())
 
     def _current_user_config(self) -> UserDagentConfig:
-        return load_user_config(self.get_user_config_path())
+        config, _ = _load_user_config_for_webui(self.get_user_config_path())
+        return config
 
     def skill_store(self) -> SkillStore:
         return SkillStore(self.get_skill_roots(), managed_root=self.get_managed_skill_root())
@@ -523,9 +530,13 @@ class ApiState:
         result = load_python_tool_sources(
             self.custom_python_tools,
             user_config_dir=self.get_user_config_path().parent,
+            managed_root=self.get_managed_python_tool_root(),
             existing_capability_ids={definition.id for definition in self.runner.list_capabilities()},
         )
-        self.custom_python_tool_errors = dict(result.errors)
+        self.custom_python_tool_errors = {
+            **self.custom_python_tool_config_errors,
+            **result.errors,
+        }
         self.custom_python_tool_capabilities = {
             status.config.id: list(status.capability_ids)
             for status in result.statuses
@@ -613,6 +624,7 @@ async def reset_session() -> dict[str, str]:
     state.custom_mcp_conflicts.clear()
     state.custom_mcp_conflict_errors.clear()
     state.custom_python_tools.clear()
+    state.custom_python_tool_config_errors.clear()
     state.custom_python_tool_errors.clear()
     state.custom_python_tool_capabilities.clear()
     state.custom_python_tool_capability_ids.clear()
@@ -1207,14 +1219,15 @@ async def list_python_tools() -> dict[str, Any]:
 
 @app.post("/python-tools")
 async def create_python_tool(request: PythonToolRequest) -> dict[str, Any]:
-    state.sync_user_config()
-    config = _python_tool_config_from_request(request)
-    if _python_tool_config_by_id(config.id) is not None:
-        raise HTTPException(status_code=400, detail=f"Python tool source '{config.id}' already exists.")
-    state.custom_python_tools.append(config)
-    state.persist_user_python_tools()
-    _reload_python_tools()
-    return {"tool": _python_tool_payload(config)}
+    with state.python_tool_lock:
+        state.sync_user_config()
+        config = _python_tool_config_from_request(request)
+        if _python_tool_config_by_id(config.id) is not None:
+            raise HTTPException(status_code=400, detail=f"Python tool source '{config.id}' already exists.")
+        state.custom_python_tools.append(config)
+        state.persist_user_python_tools()
+        _reload_python_tools()
+        return {"tool": _python_tool_payload(config)}
 
 
 @app.post("/python-tools/validate")
@@ -1223,6 +1236,7 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     result = load_python_tool_sources(
         [config],
         user_config_dir=state.get_user_config_path().parent,
+        managed_root=state.get_managed_python_tool_root(),
         existing_capability_ids={definition.id for definition in state.get_runner().list_capabilities()},
     )
     status = result.statuses[0] if result.statuses else None
@@ -1243,66 +1257,84 @@ async def upload_python_tool(
     enabled: bool = Form(True),
 ) -> dict[str, Any]:
     source_id = _clean_python_tool_source_id(id)
-    state.sync_user_config()
-    if _python_tool_config_by_id(source_id) is not None:
-        raise HTTPException(status_code=400, detail=f"Python tool source '{source_id}' already exists.")
     filename = file.filename or ""
     if Path(filename).suffix != ".py":
         raise HTTPException(status_code=400, detail="Python tool uploads must use the .py extension.")
     name_list = _parse_python_tool_names(names)
-    managed_root = state.get_managed_python_tool_root()
-    managed_root.mkdir(parents=True, exist_ok=True)
-    target = managed_root / f"{source_id}.py"
-    target.write_bytes(await file.read())
-    relative_path = _python_tool_storage_path(target)
-    request = PythonToolRequest(
-        id=source_id,
-        source="managed",
-        path=relative_path,
-        names=name_list,
-        enabled=enabled,
-    )
-    config = _python_tool_config_from_request(request)
-    state.custom_python_tools.append(config)
-    state.persist_user_python_tools()
-    _reload_python_tools()
-    return {"tool": _python_tool_payload(config)}
+    content = await file.read()
+    with state.python_tool_lock:
+        state.sync_user_config()
+        if _python_tool_config_by_id(source_id) is not None:
+            raise HTTPException(status_code=400, detail=f"Python tool source '{source_id}' already exists.")
+        managed_root = state.get_managed_python_tool_root()
+        managed_root.mkdir(parents=True, exist_ok=True)
+        target = managed_root / f"{source_id}.py"
+        target.write_bytes(content)
+        try:
+            relative_path = _python_tool_storage_path(target)
+            request = PythonToolRequest(
+                id=source_id,
+                source="managed",
+                path=relative_path,
+                names=name_list,
+                enabled=enabled,
+            )
+            config = _python_tool_config_from_request(request, allow_managed=True)
+            state.custom_python_tools.append(config)
+            state.persist_user_python_tools()
+            _reload_python_tools()
+            return {"tool": _python_tool_payload(config)}
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
 
 
 @app.post("/python-tools/reload")
 async def reload_python_tools() -> dict[str, Any]:
-    _reload_python_tools()
-    return await list_python_tools()
+    with state.python_tool_lock:
+        _reload_python_tools()
+        return await list_python_tools()
 
 
 @app.put("/python-tools/{tool_id}")
 async def update_python_tool(tool_id: str, request: PythonToolRequest) -> dict[str, Any]:
-    state.sync_user_config()
-    source_id = _clean_python_tool_source_id(tool_id)
-    config = _python_tool_config_from_request(request)
-    if source_id != config.id:
-        raise HTTPException(status_code=400, detail="Python tool source id mismatch.")
-    index = _python_tool_config_index(source_id)
-    if index is None:
-        raise HTTPException(status_code=404, detail="Python tool source not found.")
-    state.custom_python_tools[index] = config
-    state.persist_user_python_tools()
-    _reload_python_tools()
-    return {"tool": _python_tool_payload(config)}
+    with state.python_tool_lock:
+        state.sync_user_config()
+        source_id = _clean_python_tool_source_id(tool_id)
+        index = _python_tool_config_index(source_id)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Python tool source not found.")
+        existing = state.custom_python_tools[index]
+        config = _python_tool_config_from_request(
+            request,
+            allow_managed=existing.source == "managed",
+        )
+        if source_id != config.id:
+            raise HTTPException(status_code=400, detail="Python tool source id mismatch.")
+        if existing.source == "managed" and (config.source != "managed" or config.path != existing.path):
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded Python tool sources cannot change their managed path.",
+            )
+        state.custom_python_tools[index] = config
+        state.persist_user_python_tools()
+        _reload_python_tools()
+        return {"tool": _python_tool_payload(config)}
 
 
 @app.delete("/python-tools/{tool_id}")
 async def delete_python_tool(tool_id: str) -> dict[str, str]:
-    state.sync_user_config()
-    source_id = _clean_python_tool_source_id(tool_id)
-    index = _python_tool_config_index(source_id)
-    if index is None:
-        raise HTTPException(status_code=404, detail="Python tool source not found.")
-    config = state.custom_python_tools.pop(index)
-    _delete_managed_python_tool_file(config)
-    state.persist_user_python_tools()
-    _reload_python_tools()
-    return {"status": "deleted"}
+    with state.python_tool_lock:
+        state.sync_user_config()
+        source_id = _clean_python_tool_source_id(tool_id)
+        index = _python_tool_config_index(source_id)
+        if index is None:
+            raise HTTPException(status_code=404, detail="Python tool source not found.")
+        config = state.custom_python_tools.pop(index)
+        _delete_managed_python_tool_file(config)
+        state.persist_user_python_tools()
+        _reload_python_tools()
+        return {"status": "deleted"}
 
 
 @app.get("/models", response_model=ModelListResponse)
@@ -1702,6 +1734,86 @@ def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition
             status_code=400,
             detail="Agent capabilities are managed through /agents.",
         )
+    if definition.id in state.custom_python_tool_capability_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Python tool capabilities must be managed through their Python tool source.",
+        )
+
+
+def _load_user_config_for_webui(path: Path) -> tuple[UserDagentConfig, dict[str, str]]:
+    try:
+        return load_user_config(path), {}
+    except ValidationError:
+        config_path = Path(path).expanduser()
+        if not config_path.exists():
+            return UserDagentConfig(), {}
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if data is None:
+            return UserDagentConfig(), {}
+        if not isinstance(data, dict):
+            raise ValueError(f"User config file '{config_path}' must contain a YAML mapping.")
+        raw_python_tools = data.pop("python_tools", [])
+        config = UserDagentConfig.model_validate(data)
+        config.python_tools, errors = _validated_python_tool_configs(raw_python_tools)
+        return config, errors
+
+
+def _validated_python_tool_configs(value: Any) -> tuple[list[UserPythonToolConfig], dict[str, str]]:
+    if value is None:
+        return [], {}
+    if not isinstance(value, list):
+        source_id = "python_tool_1"
+        return [
+            UserPythonToolConfig(id=source_id, source="path", enabled=False)
+        ], {source_id: "python_tools must be a list."}
+    configs: list[UserPythonToolConfig] = []
+    errors: dict[str, str] = {}
+    for index, item in enumerate(value):
+        source_id = _python_tool_source_id_from_raw(item, index)
+        try:
+            configs.append(UserPythonToolConfig.model_validate(item))
+        except ValidationError as exc:
+            configs.append(_placeholder_python_tool_config(item, source_id))
+            errors[source_id] = _validation_error_message(exc)
+    return configs, errors
+
+
+def _python_tool_source_id_from_raw(value: Any, index: int) -> str:
+    if isinstance(value, dict):
+        raw_id = str(value.get("id") or "").strip()
+        if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(raw_id):
+            return raw_id
+    return f"python_tool_{index + 1}"
+
+
+def _placeholder_python_tool_config(value: Any, source_id: str) -> UserPythonToolConfig:
+    path = None
+    module = None
+    names: list[str] = []
+    if isinstance(value, dict):
+        raw_path = value.get("path")
+        raw_module = value.get("module")
+        raw_names = value.get("names")
+        path = str(raw_path) if raw_path is not None else None
+        module = str(raw_module) if raw_module is not None else None
+        if isinstance(raw_names, list):
+            names = [str(name) for name in raw_names]
+    return UserPythonToolConfig(
+        id=source_id,
+        source="path",
+        path=path,
+        module=module,
+        names=names,
+        enabled=False,
+    )
+
+
+def _validation_error_message(exc: ValidationError) -> str:
+    first = exc.errors()[0] if exc.errors() else {}
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    message = str(first.get("msg") or str(exc))
+    return f"{location}: {message}" if location else message
 
 
 def _reload_python_tools() -> None:
@@ -1722,10 +1834,10 @@ def _python_tool_payload(
         else list(capabilities)
     )
     status: Literal["loaded", "disabled", "error"]
-    if not config.enabled:
-        status = "disabled"
-    elif resolved_error:
+    if resolved_error:
         status = "error"
+    elif not config.enabled:
+        status = "disabled"
     else:
         status = "loaded"
     return PythonToolPayload(
@@ -1741,13 +1853,22 @@ def _python_tool_payload(
     ).model_dump(mode="json")
 
 
-def _python_tool_config_from_request(request: PythonToolRequest) -> UserPythonToolConfig:
+def _python_tool_config_from_request(
+    request: PythonToolRequest,
+    *,
+    allow_managed: bool = False,
+) -> UserPythonToolConfig:
     source_id = _clean_python_tool_source_id(request.id)
     names = [_clean_python_tool_name(name) for name in request.names]
     if not names:
         raise HTTPException(status_code=400, detail="Python tool names are required.")
     path = request.path.strip() if request.path is not None else None
     module = request.module.strip() if request.module is not None else None
+    if request.source == "managed" and not allow_managed:
+        raise HTTPException(
+            status_code=400,
+            detail="Managed Python tool sources must be uploaded through /python-tools/upload.",
+        )
     if request.source in {"path", "managed"} and not path:
         raise HTTPException(status_code=400, detail="Python tool path is required.")
     if request.source == "module" and not module:
@@ -1792,6 +1913,8 @@ def _parse_python_tool_names(value: str) -> list[str]:
         for item in re.split(r"[\n,]+", value)
         if item.strip()
     ]
+    if not names:
+        raise HTTPException(status_code=400, detail="Python tool names are required.")
     return [_clean_python_tool_name(name) for name in names]
 
 
@@ -1822,10 +1945,13 @@ def _delete_managed_python_tool_file(config: UserPythonToolConfig) -> None:
     if config.source != "managed" or not config.path:
         return
     config_dir = state.get_user_config_path().parent.resolve()
+    managed_root = state.get_managed_python_tool_root().resolve()
     candidate = (config_dir / config.path).resolve(strict=False)
     try:
-        candidate.relative_to(config_dir)
+        candidate.relative_to(managed_root)
     except ValueError:
+        return
+    if candidate != managed_root / f"{config.id}.py":
         return
     candidate.unlink(missing_ok=True)
 

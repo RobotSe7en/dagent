@@ -126,6 +126,11 @@ python_tools:
     path: "/Users/olivia/tools/local_tools.py"
     names: ["search_docs", "summarize_page"]
     enabled: true
+  - id: "package_tools"
+    source: "module"
+    module: "my_project.tools"
+    names: ["lookup"]
+    enabled: true
 ```
 
 The WebUI model list includes the project `config.yaml` provider plus user
@@ -142,7 +147,9 @@ objects to register. Each named object must be created with `@dagent.tool`, so
 it is a `CapabilityBinding` with a `tool.<function_name>` capability id. The
 WebUI also supports uploading a `.py` file; uploads are copied to
 `~/.dagent/python-tools/` and stored as `source: "managed"` entries in this
-same user config file.
+same user config file. A `module` entry imports an installed Python module by
+name; `/python-tools/reload` invalidates import caches and reloads modules that
+are already present in `sys.modules`.
 
 Python files are imported as local code, so top-level module code runs during
 loading. The WebUI never scans directories or registers every object
@@ -253,6 +260,11 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+The local `/capabilities` mutation API is a runtime host/debug surface for raw
+capability definitions. User-managed Python tools should be added and persisted
+through `/python-tools` or the WebUI import flow, not through template-backed
+runtime capability creation.
 
 ## Runtime Provider Switching
 

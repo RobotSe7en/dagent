@@ -36,6 +36,7 @@ def load_python_tool_sources(
     configs: Iterable[UserPythonToolConfig],
     *,
     user_config_dir: Path,
+    managed_root: Path | None = None,
     existing_capability_ids: set[str] | None = None,
 ) -> PythonToolLoadResult:
     bindings: list[CapabilityBinding] = []
@@ -43,6 +44,7 @@ def load_python_tool_sources(
     statuses: list[PythonToolSourceStatus] = []
     seen_config_ids: set[str] = set()
     seen_capability_ids = set(existing_capability_ids or set())
+    resolved_managed_root = managed_root or user_config_dir / "python-tools"
 
     for config in configs:
         status = PythonToolSourceStatus(config=config)
@@ -52,15 +54,23 @@ def load_python_tool_sources(
         try:
             _validate_source_id(config.id, seen_config_ids)
             seen_config_ids.add(config.id)
-            module = _load_source_module(config, user_config_dir=user_config_dir)
+            module = _load_source_module(
+                config,
+                user_config_dir=user_config_dir,
+                managed_root=resolved_managed_root,
+            )
             source_bindings = _bindings_from_module(module, config)
+            source_capability_ids: list[str] = []
+            source_seen: set[str] = set()
             for binding in source_bindings:
                 capability_id = validate_capability_id(binding.definition.id, kind="tool")
-                if capability_id in seen_capability_ids:
+                if capability_id in seen_capability_ids or capability_id in source_seen:
                     raise ValueError(f"Capability '{capability_id}' is already registered.")
-                seen_capability_ids.add(capability_id)
-                status.capability_ids.append(capability_id)
-                bindings.append(binding)
+                source_seen.add(capability_id)
+                source_capability_ids.append(capability_id)
+            seen_capability_ids.update(source_capability_ids)
+            status.capability_ids.extend(source_capability_ids)
+            bindings.extend(source_bindings)
         except Exception as exc:
             status.error = str(exc)
             errors[config.id] = str(exc)
@@ -74,13 +84,21 @@ def _validate_source_id(value: str, seen: set[str]) -> None:
         raise ValueError(f"Python tool source id '{source_id}' is duplicated.")
 
 
-def _load_source_module(config: UserPythonToolConfig, *, user_config_dir: Path) -> ModuleType:
+def _load_source_module(
+    config: UserPythonToolConfig,
+    *,
+    user_config_dir: Path,
+    managed_root: Path,
+) -> ModuleType:
     if config.source == "module":
         if not config.module:
             raise ValueError(f"Python tool source '{config.id}' requires module.")
+        importlib.invalidate_caches()
+        if config.module in sys.modules:
+            return importlib.reload(sys.modules[config.module])
         return importlib.import_module(config.module)
 
-    path = _source_path(config, user_config_dir=user_config_dir)
+    path = _source_path(config, user_config_dir=user_config_dir, managed_root=managed_root)
     if not path.exists():
         raise FileNotFoundError(f"Python tool file '{path}' does not exist.")
     if not path.is_file():
@@ -90,13 +108,13 @@ def _load_source_module(config: UserPythonToolConfig, *, user_config_dir: Path) 
     return _load_module_from_path(path, source_id=config.id)
 
 
-def _source_path(config: UserPythonToolConfig, *, user_config_dir: Path) -> Path:
+def _source_path(config: UserPythonToolConfig, *, user_config_dir: Path, managed_root: Path) -> Path:
     if not config.path:
         raise ValueError(f"Python tool source '{config.id}' requires path.")
     raw_path = Path(config.path).expanduser()
     if config.source == "managed":
-        base = user_config_dir.expanduser().resolve()
-        candidate = raw_path if raw_path.is_absolute() else base / raw_path
+        base = managed_root.expanduser().resolve()
+        candidate = raw_path if raw_path.is_absolute() else user_config_dir / raw_path
         resolved = candidate.resolve(strict=False)
         if not _is_relative_to(resolved, base):
             raise ValueError(f"Managed Python tool path '{config.path}' must stay under '{base}'.")
