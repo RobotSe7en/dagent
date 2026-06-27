@@ -137,8 +137,9 @@ WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `
 导出对象。每个对象都必须由 `@dagent.tool` 创建，因此它是一个 `CapabilityBinding`，
 并使用 `tool.<function_name>` capability id。WebUI 也支持上传 `.py` 文件；上传文件会复制到
 `~/.dagent/python-tools/`，并在同一个用户配置文件中保存为 `source: "managed"` 条目。
-`module` 条目会按名称 import 已安装或可导入的 Python module；`/python-tools/reload`
-会 invalidate import caches，并 reload 已在 `sys.modules` 中的 module。
+`module` 条目会按名称 import 已安装或可导入的 Python module。`/python-tools/reload`
+会 invalidate import caches，但不会 reload 已在 `sys.modules` 中的 module；需要类似
+reload 的开发体验时，请使用 `path` 或上传后的 `managed` source。
 
 Python 文件会作为本地代码导入，因此模块顶层代码会在加载时执行。WebUI 不会扫描目录，
 也不会自动注册文件中的所有对象；它只加载显式配置的条目和显式列出的 `names`。import

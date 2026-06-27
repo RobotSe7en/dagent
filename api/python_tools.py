@@ -94,7 +94,7 @@ def _load_source_module(
             raise ValueError(f"Python tool source '{config.id}' requires module.")
         importlib.invalidate_caches()
         if config.module in sys.modules:
-            return importlib.reload(sys.modules[config.module])
+            return sys.modules[config.module]
         return importlib.import_module(config.module)
 
     path = _source_path(config, user_config_dir=user_config_dir, managed_root=managed_root)
@@ -115,7 +115,7 @@ def _source_path(config: UserPythonToolConfig, *, user_config_dir: Path, managed
         base = managed_root.expanduser().resolve()
         candidate = raw_path if raw_path.is_absolute() else user_config_dir / raw_path
         resolved = candidate.resolve(strict=False)
-        if not _is_relative_to(resolved, base):
+        if not resolved.is_relative_to(base):
             raise ValueError(f"Managed Python tool path '{config.path}' must stay under '{base}'.")
         return resolved
     if raw_path.is_absolute():
@@ -154,14 +154,6 @@ def _bindings_from_module(module: ModuleType, config: UserPythonToolConfig) -> l
             raise TypeError(f"Python tool '{export_name}' must be a CapabilityBinding created with @dagent.tool.")
         bindings.append(value)
     return bindings
-
-
-def _is_relative_to(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-        return True
-    except ValueError:
-        return False
 
 
 @contextmanager

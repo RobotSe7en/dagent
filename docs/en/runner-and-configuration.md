@@ -148,8 +148,9 @@ it is a `CapabilityBinding` with a `tool.<function_name>` capability id. The
 WebUI also supports uploading a `.py` file; uploads are copied to
 `~/.dagent/python-tools/` and stored as `source: "managed"` entries in this
 same user config file. A `module` entry imports an installed Python module by
-name; `/python-tools/reload` invalidates import caches and reloads modules that
-are already present in `sys.modules`.
+name. `/python-tools/reload` invalidates import caches, but it does not reload
+modules already present in `sys.modules`; use `path` or uploaded `managed`
+sources for reload-style development.
 
 Python files are imported as local code, so top-level module code runs during
 loading. The WebUI never scans directories or registers every object

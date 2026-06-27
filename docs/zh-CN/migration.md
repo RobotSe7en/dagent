@@ -12,6 +12,11 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 - Capability definitions 现在把稳定 id 和调用名分开。`id` 仍是执行身份；
   `name` 是 LLM/PlanSpec 函数名；`display_name` 只用于 UI 展示。
+- Runner.add_tools 现在是原子的：批量中的任一 binding 无法注册时，runner 会保持
+  catalog 不变。重复注册完全相同的已有 binding 仍保持幂等。
+- 本地 WebUI Python tool 条目使用 `source: "module"` 时，不再 reload 已存在于
+  `sys.modules` 的 module。需要类似 reload 的开发体验时，请使用 `path` 或上传后的
+  `managed` source。
 
 ### 破坏性改变
 

@@ -44,6 +44,12 @@ def test_api_does_not_keep_stream_payload_shims() -> None:
     assert not hasattr(app_module, "_target_kind_and_risk")
 
 
+def test_api_uses_runner_capability_validation_surface() -> None:
+    source = Path(app_module.__file__).read_text(encoding="utf-8")
+
+    assert "runtime.capability_catalog.validate_registerable" not in source
+
+
 def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
     skill_dir = tmp_path / "skills" / "writing" / "summarize"
     skill_dir.mkdir(parents=True)

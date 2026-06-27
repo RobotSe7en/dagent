@@ -11,11 +11,10 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
 
-import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from api.agent_presets import (
     AgentPreset,
@@ -63,6 +62,7 @@ from dagent.config import (
     default_user_config_path,
     load_config,
     load_user_config,
+    load_user_config_with_python_tool_errors,
     resolve_config_path,
     resolve_config_relative_path,
     save_user_config,
@@ -540,22 +540,14 @@ class ApiState:
             for status in result.statuses
         }
         self.custom_python_tool_capability_ids = set()
-        catalog = self.runner.runtime.capability_catalog
         for status in result.statuses:
             if status.error is not None or not status.config.enabled:
                 continue
-            registered_ids: list[str] = []
             try:
-                catalog.validate_registerable_batch(
-                    binding.definition for binding in status.bindings
-                )
-                for binding in status.bindings:
-                    self.runner.add_tool(binding)
-                    registered_ids.append(binding.definition.id)
+                registered = self.runner.add_tools(status.bindings)
+                registered_ids = [definition.id for definition in registered]
                 self.custom_python_tool_capability_ids.update(registered_ids)
             except Exception as exc:
-                for capability_id in reversed(registered_ids):
-                    self.runner.remove_capability(capability_id)
                 self.custom_python_tool_errors[status.config.id] = str(exc)
                 self.custom_python_tool_capabilities[status.config.id] = []
 
@@ -1040,7 +1032,7 @@ def _profile_agent_capabilities() -> list[CapabilityDefinition]:
 
 def _capability_can_be_listed_as_profile_agent(definition: CapabilityDefinition) -> bool:
     try:
-        state.get_runner().runtime.capability_catalog.validate_registerable(definition)
+        state.get_runner().validate_capability_registerable(definition)
     except ValueError:
         return False
     return True
@@ -1226,7 +1218,7 @@ async def create_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     with state.python_tool_lock:
         state.sync_user_config()
         config = _python_tool_config_from_request(request)
-        if _python_tool_config_by_id(config.id) is not None:
+        if _python_tool_config_index(config.id) is not None:
             raise HTTPException(status_code=400, detail=f"Python tool source '{config.id}' already exists.")
         state.custom_python_tools.append(config)
         state.persist_user_python_tools()
@@ -1246,8 +1238,8 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     if status is not None and status.error is None and status.config.enabled:
         runner = state.get_runner()
         try:
-            runner.runtime.capability_catalog.validate_registerable_batch(
-                (binding.definition for binding in status.bindings),
+            runner.validate_tools_registerable(
+                status.bindings,
                 ignore_ids=state.custom_python_tool_capabilities.get(config.id, []),
             )
         except Exception as exc:
@@ -1277,12 +1269,13 @@ async def upload_python_tool(
     content = await file.read()
     with state.python_tool_lock:
         state.sync_user_config()
-        if _python_tool_config_by_id(source_id) is not None:
+        if _python_tool_config_index(source_id) is not None:
             raise HTTPException(status_code=400, detail=f"Python tool source '{source_id}' already exists.")
         managed_root = state.get_managed_python_tool_root()
         managed_root.mkdir(parents=True, exist_ok=True)
         target = managed_root / f"{source_id}.py"
         target.write_bytes(content)
+        previous_tools = list(state.custom_python_tools)
         try:
             relative_path = _python_tool_storage_path(target)
             request = PythonToolRequest(
@@ -1298,6 +1291,8 @@ async def upload_python_tool(
             _reload_python_tools()
             return {"tool": _python_tool_payload(config)}
         except Exception:
+            state.custom_python_tools = previous_tools
+            state.persist_user_python_tools()
             target.unlink(missing_ok=True)
             raise
 
@@ -1755,85 +1750,7 @@ def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition
 
 
 def _load_user_config_for_webui(path: Path) -> tuple[UserDagentConfig, dict[str, str]]:
-    try:
-        config = load_user_config(path)
-        config.python_tools, errors = _validated_python_tool_configs(
-            [tool.model_dump(mode="json") for tool in config.python_tools]
-        )
-        return config, errors
-    except ValidationError:
-        config_path = Path(path).expanduser()
-        if not config_path.exists():
-            return UserDagentConfig(), {}
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if data is None:
-            return UserDagentConfig(), {}
-        if not isinstance(data, dict):
-            raise ValueError(f"User config file '{config_path}' must contain a YAML mapping.")
-        raw_python_tools = data.pop("python_tools", [])
-        config = UserDagentConfig.model_validate(data)
-        config.python_tools, errors = _validated_python_tool_configs(raw_python_tools)
-        return config, errors
-
-
-def _validated_python_tool_configs(value: Any) -> tuple[list[UserPythonToolConfig], dict[str, str]]:
-    if value is None:
-        return [], {}
-    if not isinstance(value, list):
-        source_id = "python_tool_1"
-        return [
-            UserPythonToolConfig(id=source_id, source="path", enabled=False)
-        ], {source_id: "python_tools must be a list."}
-    configs: list[UserPythonToolConfig] = []
-    errors: dict[str, str] = {}
-    for index, item in enumerate(value):
-        source_id = _python_tool_source_id_from_raw(item, index)
-        try:
-            config = UserPythonToolConfig.model_validate(item)
-            if config.id != source_id:
-                raise ValueError("Python tool source ids may contain only letters, numbers, and underscores.")
-            configs.append(config)
-        except (ValidationError, ValueError) as exc:
-            configs.append(_placeholder_python_tool_config(item, source_id))
-            errors[source_id] = _validation_error_message(exc) if isinstance(exc, ValidationError) else str(exc)
-    return configs, errors
-
-
-def _python_tool_source_id_from_raw(value: Any, index: int) -> str:
-    if isinstance(value, dict):
-        raw_id = str(value.get("id") or "").strip()
-        if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(raw_id):
-            return raw_id
-    return f"python_tool_{index + 1}"
-
-
-def _placeholder_python_tool_config(value: Any, source_id: str) -> UserPythonToolConfig:
-    path = None
-    module = None
-    names: list[str] = []
-    if isinstance(value, dict):
-        raw_path = value.get("path")
-        raw_module = value.get("module")
-        raw_names = value.get("names")
-        path = str(raw_path) if raw_path is not None else None
-        module = str(raw_module) if raw_module is not None else None
-        if isinstance(raw_names, list):
-            names = [str(name) for name in raw_names]
-    return UserPythonToolConfig(
-        id=source_id,
-        source="path",
-        path=path,
-        module=module,
-        names=names,
-        enabled=False,
-    )
-
-
-def _validation_error_message(exc: ValidationError) -> str:
-    first = exc.errors()[0] if exc.errors() else {}
-    location = ".".join(str(part) for part in first.get("loc", ()))
-    message = str(first.get("msg") or str(exc))
-    return f"{location}: {message}" if location else message
+    return load_user_config_with_python_tool_errors(path)
 
 
 def _reload_python_tools() -> None:
@@ -1943,13 +1860,6 @@ def _python_tool_config_index(source_id: str) -> int | None:
         if config.id == source_id:
             return index
     return None
-
-
-def _python_tool_config_by_id(source_id: str) -> UserPythonToolConfig | None:
-    index = _python_tool_config_index(source_id)
-    if index is None:
-        return None
-    return state.custom_python_tools[index]
 
 
 def _python_tool_storage_path(path: Path) -> str:

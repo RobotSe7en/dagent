@@ -14,6 +14,12 @@ The current package version is `0.6.0`.
 - Capability definitions now separate stable ids from call names. `id` remains
   the execution identity; `name` is the LLM/PlanSpec function name; and
   `display_name` is UI-only text.
+- Runner.add_tools is now atomic: if any binding in a batch cannot be
+  registered, the runner leaves the catalog unchanged. Re-registering an
+  identical existing binding remains idempotent.
+- Local WebUI Python tool entries using `source: "module"` no longer reload
+  modules that are already present in `sys.modules`. Use `path` or uploaded
+  `managed` sources when you need reload-style development behavior.
 
 ### Breaking Changes
 

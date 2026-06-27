@@ -187,7 +187,48 @@ class Runner:
         return definition
 
     def add_tools(self, capabilities: Iterable[CapabilityBinding]) -> list[CapabilityDefinition]:
-        return [self.add_tool(capability) for capability in capabilities]
+        """Register ``@dagent.tool`` bindings as one atomic batch."""
+
+        self._ensure_open()
+        bindings = list(capabilities)
+        catalog = self._runtime.capability_catalog
+        _validate_capability_binding_batch(catalog, bindings)
+        registered_ids: list[str] = []
+        definitions: list[CapabilityDefinition] = []
+        try:
+            for capability in bindings:
+                definition, handler, supports_context = _capability_parts(capability)
+                existing = catalog.get_entry(definition.id)
+                if _entry_matches_binding(existing, definition, handler, supports_context):
+                    definitions.append(existing.definition)
+                    continue
+                catalog.register(definition, handler, supports_context=supports_context)
+                registered_ids.append(definition.id)
+                definitions.append(catalog.get(definition.id) or definition)
+        except Exception:
+            for capability_id in reversed(registered_ids):
+                catalog.delete(capability_id)
+            self._runtime.refresh_toolsets()
+            self._refresh_registered_agent_runtime_configs()
+            raise
+        self._runtime.refresh_toolsets()
+        self._refresh_registered_agent_runtime_configs()
+        return definitions
+
+    def validate_tools_registerable(
+        self,
+        capabilities: Iterable[CapabilityBinding],
+        *,
+        ignore_ids: Iterable[str] = (),
+    ) -> None:
+        """Validate a batch of tool bindings without mutating runtime state."""
+
+        self._ensure_open()
+        _validate_capability_binding_batch(
+            self._runtime.capability_catalog,
+            list(capabilities),
+            ignore_ids=ignore_ids,
+        )
 
     def add_agent(self, agent: ToolAgent) -> CapabilityDefinition:
         """Register a leaf ``ToolAgent`` as an ``agent.*`` capability."""
@@ -219,6 +260,12 @@ class Runner:
         )
         self._refresh_registered_agent_runtime_configs()
         return registered
+
+    def validate_capability_registerable(self, definition: CapabilityDefinition) -> None:
+        """Validate a raw capability definition without mutating runtime state."""
+
+        self._ensure_open()
+        self._runtime.capability_catalog.validate_registerable(definition)
 
     def replace_capability(
         self,
@@ -1555,17 +1602,62 @@ def _register_capability_parts(
 ) -> None:
     definition, handler, supports_context = _capability_parts(capability)
     existing = catalog.get_entry(definition.id)
+    expected_handler = expected_handler or handler
+    expected_supports_context = (
+        supports_context if expected_supports_context is None else expected_supports_context
+    )
     if existing is not None:
-        if (
-            existing.definition == definition
-            and existing.handler is (expected_handler or handler)
-            and existing.supports_context == (
-                supports_context if expected_supports_context is None else expected_supports_context
-            )
-        ):
+        if _entry_matches_binding(existing, definition, expected_handler, expected_supports_context):
             return
         raise ValueError(f"Capability '{definition.id}' is already registered with different config.")
     catalog.register(definition, handler, supports_context=supports_context)
+
+
+def _validate_capability_binding_batch(
+    catalog,
+    capabilities: Iterable[CapabilityBinding],
+    *,
+    ignore_ids: Iterable[str] = (),
+) -> None:
+    ignored = set(ignore_ids)
+    seen_ids: set[str] = set()
+    seen_names: dict[str, str] = {}
+    for capability in capabilities:
+        definition, handler, supports_context = _capability_parts(capability)
+        if definition.id in seen_ids:
+            raise ValueError(f"Capability '{definition.id}' is already registered.")
+        existing_seen_id = seen_names.get(definition.name)
+        if existing_seen_id is not None:
+            raise ValueError(
+                f"Capability name '{definition.name}' is already registered by '{existing_seen_id}'."
+            )
+        existing = catalog.get_entry(definition.id)
+        if definition.id not in ignored and _entry_matches_binding(
+            existing,
+            definition,
+            handler,
+            supports_context,
+        ):
+            continue
+        if existing is not None and definition.id not in ignored:
+            raise ValueError(f"Capability '{definition.id}' is already registered with different config.")
+        catalog.validate_registerable(definition, ignore_ids=ignored)
+        seen_ids.add(definition.id)
+        seen_names[definition.name] = definition.id
+
+
+def _entry_matches_binding(
+    entry,
+    definition: CapabilityDefinition,
+    handler: CapabilityHandler,
+    supports_context: bool,
+) -> bool:
+    return (
+        entry is not None
+        and entry.definition == definition
+        and entry.handler is handler
+        and entry.supports_context == supports_context
+    )
 
 
 def _capability_parts(capability: CapabilityBinding) -> tuple[CapabilityDefinition, CapabilityHandler, bool]:

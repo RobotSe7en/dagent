@@ -17,6 +17,8 @@ def test_migration_notes_keep_capability_identity_changes_unreleased() -> None:
     chinese_released = _section(chinese, "## 0.6.0", "## 0.5.2")
 
     assert "Capability definitions now separate stable ids from call names" in english_unreleased
+    assert "Runner.add_tools is now atomic" in english_unreleased
     assert "Capability definitions now separate stable ids from call names" not in english_released
     assert "Capability definitions 现在把稳定 id 和调用名分开" in chinese_unreleased
+    assert "Runner.add_tools 现在是原子的" in chinese_unreleased
     assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_released

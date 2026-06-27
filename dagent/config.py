@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from dagent.schemas.capability import validate_capability_id_segment
 from dagent.schemas.sandbox import SandboxConfig
 
 
@@ -133,6 +134,24 @@ def load_user_config(path: str | Path | None = None) -> UserDagentConfig:
     return UserDagentConfig.model_validate(data)
 
 
+def load_user_config_with_python_tool_errors(
+    path: str | Path | None = None,
+) -> tuple[UserDagentConfig, dict[str, str]]:
+    config_path = Path(path or default_user_config_path()).expanduser()
+    if not config_path.exists():
+        return UserDagentConfig(), {}
+    _load_dotenv(config_path.parent / ".env")
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if data is None:
+        return UserDagentConfig(), {}
+    if not isinstance(data, dict):
+        raise ValueError(f"User config file '{config_path}' must contain a YAML mapping.")
+    raw_python_tools = data.pop("python_tools", [])
+    python_tools, python_tool_errors = _validated_python_tool_configs(raw_python_tools)
+    config = UserDagentConfig.model_validate({**data, "python_tools": python_tools})
+    return config, python_tool_errors
+
+
 def save_user_config(config: UserDagentConfig, path: str | Path | None = None) -> None:
     config_path = Path(path or default_user_config_path()).expanduser()
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,6 +186,68 @@ def _user_config_storage_data(config: UserDagentConfig) -> dict[str, Any]:
             for tool in config.python_tools
         ]
     return data
+
+
+def _validated_python_tool_configs(value: Any) -> tuple[list[UserPythonToolConfig], dict[str, str]]:
+    if value is None:
+        return [], {}
+    if not isinstance(value, list):
+        source_id = "python_tool_1"
+        return [
+            UserPythonToolConfig(id=source_id, source="path", enabled=False)
+        ], {source_id: "python_tools must be a list."}
+    configs: list[UserPythonToolConfig] = []
+    errors: dict[str, str] = {}
+    for index, item in enumerate(value):
+        source_id = _python_tool_source_id_from_raw(item, index)
+        try:
+            config = UserPythonToolConfig.model_validate(item)
+            if config.id != source_id:
+                raise ValueError("Python tool source ids may contain only letters, numbers, and underscores.")
+            configs.append(config)
+        except (ValidationError, ValueError) as exc:
+            configs.append(_placeholder_python_tool_config(item, source_id))
+            errors[source_id] = _validation_error_message(exc) if isinstance(exc, ValidationError) else str(exc)
+    return configs, errors
+
+
+def _python_tool_source_id_from_raw(value: Any, index: int) -> str:
+    if isinstance(value, dict):
+        raw_id = str(value.get("id") or "").strip()
+        try:
+            return validate_capability_id_segment(raw_id, label="Python tool source ids")
+        except ValueError:
+            pass
+    return f"python_tool_{index + 1}"
+
+
+def _placeholder_python_tool_config(value: Any, source_id: str) -> UserPythonToolConfig:
+    path = None
+    module = None
+    names: list[str] = []
+    if isinstance(value, dict):
+        raw_path = value.get("path")
+        raw_module = value.get("module")
+        raw_names = value.get("names")
+        path = str(raw_path) if raw_path is not None else None
+        module = str(raw_module) if raw_module is not None else None
+        if isinstance(raw_names, list):
+            names = [str(name) for name in raw_names]
+    return UserPythonToolConfig(
+        id=source_id,
+        source="path",
+        path=path,
+        module=module,
+        names=names,
+        enabled=False,
+    )
+
+
+def _validation_error_message(exc: ValidationError) -> str:
+    first = exc.errors()[0] if exc.errors() else {}
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    message = str(first.get("msg") or str(exc))
+    return f"{location}: {message}" if location else message
 
 
 def _provider_storage_data(provider: ProviderConfig) -> dict[str, Any]:

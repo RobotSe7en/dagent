@@ -309,6 +309,60 @@ def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
     runner.close()
 
 
+def test_add_tools_is_atomic_when_later_binding_conflicts(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def batch_ok() -> str:
+        return "ok"
+
+    @dagent.tool(name="tool_read_file")
+    def batch_conflict() -> str:
+        return "conflict"
+
+    with pytest.raises(ValueError, match="Capability name 'tool_read_file' is already registered"):
+        runner.add_tools([batch_ok, batch_conflict])
+
+    assert runner.get_capability("tool.batch_ok") is None
+    assert runner.get_capability("tool.batch_conflict") is None
+    runner.close()
+
+
+def test_add_tools_keeps_existing_idempotent_bindings_valid(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def batch_idempotent() -> str:
+        return "ok"
+
+    first = runner.add_tool(batch_idempotent)
+    runner.validate_tools_registerable([batch_idempotent])
+    second = runner.add_tools([batch_idempotent])
+
+    assert first == second[0]
+    assert runner.get_capability("tool.batch_idempotent") == first
+    runner.close()
+
+
+def test_validate_tools_registerable_rejects_batch_name_collisions_without_mutation(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool(name="shared_batch_name")
+    def batch_first() -> str:
+        return "first"
+
+    @dagent.tool(name="shared_batch_name")
+    def batch_second() -> str:
+        return "second"
+
+    with pytest.raises(ValueError, match="Capability name 'shared_batch_name' is already registered"):
+        runner.validate_tools_registerable([batch_first, batch_second])
+
+    assert runner.get_capability("tool.batch_first") is None
+    assert runner.get_capability("tool.batch_second") is None
+    runner.close()
+
+
 def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp_path) -> None:
     class SameShortNameMCPProvider:
         def __init__(self, servers, *, manager=None):

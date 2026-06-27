@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+import api.app as app_module
+import api.python_tools as python_tools_module
+import dagent.config as config_module
 from api.app import app, state
 from api.python_tools import load_python_tool_sources
 from dagent.config import (
@@ -60,6 +64,56 @@ def test_user_config_persists_python_tools(tmp_path: Path) -> None:
             "enabled": True,
         }
     ]
+
+
+def test_user_config_with_python_tool_errors_tolerates_only_python_tool_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / ".dagent" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    (config_path.parent / ".env").write_text("ENV_MODEL_API_KEY=dotenv-secret\n", encoding="utf-8")
+    monkeypatch.delenv("ENV_MODEL_API_KEY", raising=False)
+    config_path.write_text(
+        "model_providers:\n"
+        "  local:\n"
+        "    base_url: https://example.test/v1\n"
+        "    model: local-model\n"
+        "    api_key_env: ENV_MODEL_API_KEY\n"
+        "python_tools:\n"
+        "  - id: bad-id\n"
+        "    source: path\n"
+        "    path: missing.py\n"
+        "    names: [missing]\n",
+        encoding="utf-8",
+    )
+
+    config, errors = config_module.load_user_config_with_python_tool_errors(config_path)
+
+    assert config.model_providers["local"].api_key == "dotenv-secret"
+    assert config.python_tools[0].id == "python_tool_1"
+    assert errors == {
+        "python_tool_1": "Python tool source ids may contain only letters, numbers, and underscores."
+    }
+
+
+def test_user_config_with_python_tool_errors_keeps_other_sections_strict(tmp_path: Path) -> None:
+    config_path = tmp_path / ".dagent" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "model_providers:\n"
+        "  broken:\n"
+        "    model: local-model\n"
+        "python_tools:\n"
+        "  - id: bad-id\n"
+        "    source: path\n"
+        "    path: missing.py\n"
+        "    names: [missing]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        config_module.load_user_config_with_python_tool_errors(config_path)
 
 
 def test_python_tool_loader_imports_explicit_path_bindings(tmp_path: Path) -> None:
@@ -146,7 +200,7 @@ def test_python_tool_loader_imports_module_bindings(monkeypatch: pytest.MonkeyPa
     assert result.errors == {}
 
 
-def test_python_tool_loader_reloads_existing_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_python_tool_loader_reuses_existing_module_without_reload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     package_dir = tmp_path / "pkg_reload"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -162,6 +216,11 @@ def test_python_tool_loader_reloads_existing_module(monkeypatch: pytest.MonkeyPa
     config = UserPythonToolConfig(id="package", source="module", module="pkg_reload.tools", names=["hello"])
 
     first = load_python_tool_sources([config], user_config_dir=tmp_path)
+    monkeypatch.setattr(
+        python_tools_module.importlib,
+        "reload",
+        lambda module: (_ for _ in ()).throw(AssertionError("module sources must not reload existing modules")),
+    )
     module_file.write_text(
         "from dagent import tool\n"
         "@tool(description='Second version')\n"
@@ -172,7 +231,8 @@ def test_python_tool_loader_reloads_existing_module(monkeypatch: pytest.MonkeyPa
     second = load_python_tool_sources([config], user_config_dir=tmp_path)
 
     assert first.bindings[0].definition.description == "First version"
-    assert second.bindings[0].definition.description == "Second version"
+    assert second.bindings[0].definition.description == "First version"
+    assert second.errors == {}
 
 
 def test_api_loads_user_python_tools_from_config(tmp_path: Path) -> None:
@@ -249,6 +309,37 @@ def test_api_uploads_python_tool_file_and_persists_managed_config(tmp_path: Path
     assert loaded.python_tools[0].source == "managed"
     assert loaded.python_tools[0].path == "python-tools/uploaded.py"
     assert (tmp_path / ".dagent" / "python-tools" / "uploaded.py").exists()
+
+
+def test_api_upload_rolls_back_file_and_config_when_reload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    save_user_config(UserDagentConfig(), config_path)
+    content = (
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n"
+    )
+
+    def fail_reload() -> None:
+        raise RuntimeError("reload failed")
+
+    monkeypatch.setattr(app_module, "_reload_python_tools", fail_reload)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/python-tools/upload",
+        data={"id": "uploaded", "names": "echo_text"},
+        files={"file": ("uploaded.py", content.encode("utf-8"), "text/x-python")},
+    )
+
+    assert response.status_code == 500
+    assert not (tmp_path / ".dagent" / "python-tools" / "uploaded.py").exists()
+    assert load_user_config(config_path).python_tools == []
 
 
 def test_api_updates_uploaded_python_tool_without_changing_managed_path(tmp_path: Path) -> None:
