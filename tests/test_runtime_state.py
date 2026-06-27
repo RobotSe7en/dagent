@@ -1,3 +1,7 @@
+import pytest
+from pydantic import ValidationError
+
+from dagent import RunResult
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.schemas import DAG, PendingReview, RunState, RunTrace, RunTraceNode
 
@@ -76,3 +80,26 @@ def test_session_replaces_trace_without_implicit_merge() -> None:
 
     assert saved.trace is not None
     assert saved.trace.root.children == []
+
+
+def test_pending_capability_review_requires_tool_name() -> None:
+    payload = {
+        "run_id": "run_1",
+        "kind": "tool",
+        "status": "awaiting_review",
+        "pending_review": {
+            "review_id": "review_1",
+            "kind": "capability_review",
+            "message": "Review capability call.",
+            "capability_call": {
+                "invocation_id": "call_1",
+                "capability_id": "tool.shell",
+                "arguments": {"command": "pwd"},
+            },
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        RunState.model_validate(payload)
+    with pytest.raises(ValidationError):
+        RunResult.model_validate({"state": payload, "output_text": ""})

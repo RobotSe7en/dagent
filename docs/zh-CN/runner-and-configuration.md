@@ -100,7 +100,7 @@ mcp_servers:
 UI 状态和用户默认值；它不会改变 SDK 代码中 `Runner.from_config(...)` 的加载行为。
 
 用户配置复用 provider-shaped 模型条目和 MCP servers 的 YAML 风格，但范围限定为
-WebUI 管理的模型、当前 WebUI 模型和用户 MCP servers：
+WebUI 管理的模型、当前 WebUI 模型、用户 MCP servers 和显式导入的 Python tools：
 
 ```yaml
 model_providers:
@@ -114,12 +114,37 @@ mcp_servers:
   local_fs:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+python_tools:
+  - id: "local_docs"
+    source: "path"
+    path: "/Users/olivia/tools/local_tools.py"
+    names: ["search_docs", "summarize_page"]
+    enabled: true
+  - id: "package_tools"
+    source: "module"
+    module: "my_project.tools"
+    names: ["lookup"]
+    enabled: true
 ```
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
 如果 `active_model` 指向一个用户模型，backend 会用该 provider 重建 runner；否则项目
 `config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
 项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
+
+`python_tools` 条目只由本地 WebUI backend 加载。它不会让 `Runner.from_config(...)`
+隐式 import 文件。`path` 条目指向 backend 进程可访问的 `.py` 文件，`names` 列出要注册的
+导出对象。每个对象都必须由 `@dagent.tool` 创建，因此它是一个 `CapabilityBinding`，
+并使用 `tool.<function_name>` capability id。WebUI 也支持上传 `.py` 文件；上传文件会复制到
+`~/.dagent/python-tools/`，并在同一个用户配置文件中保存为 `source: "managed"` 条目。
+`module` 条目会按名称 import 已安装或可导入的 Python module。`/python-tools/reload`
+会 invalidate import caches，但不会 reload 已在 `sys.modules` 中的 module；需要类似
+reload 的开发体验时，请使用 `path` 或上传后的 `managed` source。
+
+Python 文件会作为本地代码导入，因此模块顶层代码会在加载时执行。WebUI 不会扫描目录，
+也不会自动注册文件中的所有对象；它只加载显式配置的条目和显式列出的 `names`。import
+失败、名称缺失、非 `@dagent.tool` 导出以及 capability id 冲突都会显示在工具管理页，
+不会导致 backend 启动失败。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；
@@ -218,6 +243,10 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+本地 `/capabilities` mutation API 是 host/debug 用的 runtime raw capability surface。
+用户管理的 Python tools 应通过 `/python-tools` 或 WebUI 导入流程添加和持久化，而不是通过
+template-backed runtime capability creation。
 
 ## 运行时切换 Provider
 

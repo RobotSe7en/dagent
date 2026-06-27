@@ -54,14 +54,15 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import {
-  createCapability,
   createAgent,
   createMcpServer,
   createModelProvider,
+  createPythonTool,
   deleteAgent,
   deleteCapability,
   deleteMcpServer,
   deleteModelProvider,
+  deletePythonTool,
   deleteSkill,
   getSkill,
   getSkillFile,
@@ -72,11 +73,13 @@ import {
   listDags,
   listMcpServers,
   listModels,
+  listPythonTools,
   listProfiles,
   listRunArtifacts,
   listSkills,
   previewRunArtifact,
   reloadMcpServers,
+  reloadPythonTools,
   resetSession,
   resumeCapabilityReview,
   resumeDagReview,
@@ -88,9 +91,12 @@ import {
   streamTask,
   testCapability,
   uploadDagArtifact,
+  uploadPythonTool,
   updateMcpServer,
   updateModelProvider,
+  updatePythonTool,
   updateAgent,
+  validatePythonTool,
   activateModelProvider,
   validateDag,
   createProfile,
@@ -130,6 +136,8 @@ import type {
   ModelApiKeyAction,
   ModelProvider,
   ModelProviderInput,
+  PythonToolConfig,
+  PythonToolEntry,
   SkillDetail,
   SkillFileDetail,
   SkillSummary,
@@ -142,7 +150,6 @@ import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
 import {
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
-  isValidCapabilityId,
 } from './capabilityContracts';
 import { canvasCenterNodePosition } from './canvasPositions';
 import {
@@ -220,30 +227,6 @@ const emptyDag: Dag = {
   edges: [],
 };
 
-const defaultCapabilityPolicy = {
-  risk: 'low' as RiskLevel,
-  requires_review: false,
-  sandbox_required: false,
-  network: false,
-  secrets: [],
-};
-
-const defaultCustomCapability: CapabilityDefinition = {
-  id: 'tool.example',
-  kind: 'tool',
-  description: '',
-  parameters: {
-    type: 'object',
-    properties: {},
-  },
-  output_schema: {},
-  policy: defaultCapabilityPolicy,
-  config: {
-    template: 'result:{text}',
-  },
-  enabled: true,
-};
-
 const defaultMcpConfig: { name: string } & MCPServerConfig = {
   name: 'local',
   transport: 'stdio',
@@ -256,6 +239,15 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
   risk: 'medium',
   connect_timeout: 30,
   tool_timeout: 60,
+};
+
+const defaultPythonToolConfig: PythonToolConfig = {
+  id: 'local_tools',
+  source: 'path',
+  path: '',
+  module: '',
+  names: [],
+  enabled: true,
 };
 
 const defaultModelDraft: ModelProviderInput = {
@@ -901,6 +893,7 @@ export function App() {
   const [creatingAgentPreset, setCreatingAgentPreset] = useState(false);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [pythonTools, setPythonTools] = useState<PythonToolEntry[]>([]);
   const [models, setModels] = useState<ModelProvider[]>([]);
   const [activeModelId, setActiveModelId] = useState('config');
   const [selectedModelId, setSelectedModelId] = useState('config');
@@ -1137,13 +1130,14 @@ export function App() {
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
     try {
-      const [nextCapabilities, nextSpecs, nextProfiles, nextAgents, nextSkills, nextMcpServers, nextModels] = await Promise.all([
+      const [nextCapabilities, nextSpecs, nextProfiles, nextAgents, nextSkills, nextMcpServers, nextPythonTools, nextModels] = await Promise.all([
         listCapabilities(),
         listDags(),
         listProfiles(),
         listAgents(),
         listSkills(),
         listMcpServers(),
+        listPythonTools(),
         listModels(),
       ]);
       setCapabilities(nextCapabilities);
@@ -1154,6 +1148,7 @@ export function App() {
       setAgentPresetErrors(nextAgents.errors);
       setSkills(nextSkills);
       setMcpServers(nextMcpServers);
+      setPythonTools(nextPythonTools);
       setModels(nextModels.models);
       setActiveModelId(nextModels.active_model_id);
       setSelectedProfileId((current) => (
@@ -2814,6 +2809,7 @@ export function App() {
             capabilities={capabilities}
             skills={skills}
             mcpServers={mcpServers}
+            pythonTools={pythonTools}
             activeTab={toolsDirectoryTab}
             creationIntent={capabilityCreationIntent}
             query={toolsDirectoryQuery}
@@ -3111,7 +3107,7 @@ function WorkspaceSidebar({
     }
   };
   const capabilityCreateTitle = toolsSub === 'tools'
-    ? '新建工具'
+    ? '导入 Python 工具'
     : toolsSub === 'skills'
       ? '导入技能'
       : '新建 MCP';
@@ -3396,7 +3392,7 @@ function WorkspaceSidebar({
           <div className="sidebar-tool-list-head">
             <span>{activeToolSubnav.label}</span>
             <button onClick={createCapabilityResource} title={capabilityCreateTitle} type="button">
-              {toolsSub === 'skills' ? <Upload size={14} /> : <Plus size={14} />}
+              {toolsSub === 'skills' || toolsSub === 'tools' ? <Upload size={14} /> : <Plus size={14} />}
             </button>
           </div>
           <label className="sidebar-search-field">
@@ -3417,7 +3413,7 @@ function WorkspaceSidebar({
                   type="button"
                 >
                   <Wrench size={14} />
-                  <span>{capability.id}</span>
+                  <span>{capabilityDisplayName(capability)}</span>
                   <em data-enabled={capability.enabled} />
                 </button>
               )) : <div className="sidebar-empty-row">没有匹配的工具</div>
@@ -5339,7 +5335,7 @@ function DynamicOrchestrationWorkspace({
                         <option value="">选择能力...</option>
                         {selectableCapabilities.map((capability) => (
                           <option key={capability.id} value={capability.id}>
-                            {capability.id}
+                            {capabilityDisplayName(capability)}
                           </option>
                         ))}
                       </select>
@@ -5755,7 +5751,7 @@ function OrchestrationWorkspace({
                       <optgroup key={group.kind} label={group.label}>
                         {group.items.map((capability) => (
                           <option key={capability.id} value={capability.id}>
-                            {capability.id}
+                            {capabilityDisplayName(capability)}
                           </option>
                         ))}
                       </optgroup>
@@ -6891,6 +6887,7 @@ function CapabilityDirectory({
   capabilities,
   skills,
   mcpServers,
+  pythonTools,
   activeTab,
   creationIntent,
   query,
@@ -6915,6 +6912,7 @@ function CapabilityDirectory({
   capabilities: CapabilityDefinition[];
   skills: SkillSummary[];
   mcpServers: MCPServer[];
+  pythonTools: PythonToolEntry[];
   activeTab: ToolDirectoryTab;
   creationIntent: ToolDirectoryTab | null;
   query: string;
@@ -6936,8 +6934,11 @@ function CapabilityDirectory({
   onUploadSkillFile: (file: File | undefined) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [draftCapability, setDraftCapability] = useState<CapabilityDefinition>(defaultCustomCapability);
-  const [draftParametersText, setDraftParametersText] = useState(JSON.stringify(defaultCustomCapability.parameters, null, 2));
+  const [pythonToolMode, setPythonToolMode] = useState<'path' | 'managed'>('path');
+  const [pythonToolDraft, setPythonToolDraft] = useState<PythonToolConfig>(defaultPythonToolConfig);
+  const [pythonToolNamesText, setPythonToolNamesText] = useState('');
+  const [pythonToolFile, setPythonToolFile] = useState<File | null>(null);
+  const [pythonToolMessage, setPythonToolMessage] = useState('');
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
   const [result, setResult] = useState<CapabilityResult | null>(null);
   const [message, setMessage] = useState('');
@@ -6950,6 +6951,9 @@ function CapabilityDirectory({
   const toolRows = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedQuery));
   const selectedTool = toolRows.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0];
   const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
+  const selectedPythonToolSource = selectedTool
+    ? pythonTools.find((source) => source.capabilities.includes(selectedTool.id)) ?? null
+    : null;
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? visibleSkills[0] ?? skills[0];
   const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
@@ -6981,32 +6985,14 @@ function CapabilityDirectory({
     setMcpHeadersText('');
   }, [creationIntent]);
 
-  const runCreate = async () => {
-    const parameters = parseJsonObject(draftParametersText);
-    if (!parameters) {
-      setMessage('Parameters must be a JSON object.');
-      return;
-    }
-    if (!isValidCapabilityId(draftCapability.id) || !draftCapability.id.startsWith('tool.')) {
-      setMessage('Tool ID must use the form tool.<name>, with letters, numbers, and underscores.');
-      return;
-    }
-    setMessage('Creating tool...');
-    try {
-      const definition = {
-        ...draftCapability,
-        kind: 'tool' as const,
-        parameters,
-      };
-      await createCapability(definition);
-      await onRefresh();
-      onSelectedCapabilityIdChange(definition.id);
-      onCreationIntentChange(null);
-      setMessage(`Created ${definition.id}.`);
-    } catch (exc) {
-      setMessage(exc instanceof Error ? exc.message : String(exc));
-    }
-  };
+  useEffect(() => {
+    if (creationIntent !== 'tools') return;
+    setPythonToolMode('path');
+    setPythonToolDraft(defaultPythonToolConfig);
+    setPythonToolNamesText('');
+    setPythonToolFile(null);
+    setPythonToolMessage('');
+  }, [creationIntent]);
 
   const runTest = async () => {
     if (!selectedTool) return;
@@ -7045,6 +7031,125 @@ function CapabilityDirectory({
       onSelectedCapabilityIdChange('');
       await onRefresh();
       setMessage(`Deleted ${selectedTool.id}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const pythonToolPayloadFromDraft = (): PythonToolConfig | null => {
+    const names = pythonToolNamesFromText(pythonToolNamesText);
+    if (!pythonToolDraft.id.trim()) {
+      setPythonToolMessage('ID is required.');
+      return null;
+    }
+    if (!names.length) {
+      setPythonToolMessage('Function names are required.');
+      return null;
+    }
+    if (pythonToolMode === 'path' && !pythonToolDraft.path?.trim()) {
+      setPythonToolMessage('Script path is required.');
+      return null;
+    }
+    return {
+      ...pythonToolDraft,
+      source: pythonToolMode,
+      path: pythonToolMode === 'path' ? pythonToolDraft.path : null,
+      module: null,
+      names,
+    };
+  };
+
+  const validatePythonToolDraft = async () => {
+    if (pythonToolMode !== 'path') {
+      setPythonToolMessage('Uploaded files are checked when they are saved.');
+      return;
+    }
+    const payload = pythonToolPayloadFromDraft();
+    if (!payload) return;
+    setPythonToolMessage('Checking Python tool...');
+    try {
+      const result = await validatePythonTool(payload);
+      if (result.status === 'error') {
+        setPythonToolMessage(result.error ?? 'Python tool check failed.');
+      } else {
+        setPythonToolMessage(`Loaded ${result.capabilities.join(', ')}.`);
+      }
+    } catch (exc) {
+      setPythonToolMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const savePythonTool = async () => {
+    const payload = pythonToolPayloadFromDraft();
+    if (!payload) return;
+    setPythonToolMessage('Saving Python tool...');
+    try {
+      const result = pythonToolMode === 'managed'
+        ? (() => {
+            if (!pythonToolFile) throw new Error('Python file is required.');
+            return uploadPythonTool(pythonToolFile, {
+              id: payload.id,
+              names: payload.names,
+              enabled: payload.enabled,
+            });
+          })()
+        : createPythonTool(payload);
+      const saved = await result;
+      await onRefresh();
+      if (saved.status === 'error') {
+        setPythonToolMessage(saved.error ?? `Failed to load ${saved.id}.`);
+        return;
+      }
+      onSelectedCapabilityIdChange(saved.capabilities[0] ?? '');
+      onCreationIntentChange(null);
+      setPythonToolMessage(`${saved.id} saved.`);
+    } catch (exc) {
+      setPythonToolMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const togglePythonToolSource = async (source: PythonToolEntry, enabled: boolean) => {
+    setMessage(enabled ? 'Enabling Python tool source...' : 'Disabling Python tool source...');
+    try {
+      const updated = await updatePythonTool(source.id, {
+        id: source.id,
+        source: source.source,
+        path: source.path,
+        module: source.module,
+        names: source.names,
+        enabled,
+      });
+      await onRefresh();
+      if (updated.status === 'error') {
+        setMessage(updated.error ?? `Failed to load ${updated.id}.`);
+        return;
+      }
+      setMessage(`${updated.id} ${enabled ? 'enabled' : 'disabled'}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const removePythonToolSource = async (source: PythonToolEntry) => {
+    setMessage('Deleting Python tool source...');
+    try {
+      await deletePythonTool(source.id);
+      if (selectedTool && source.capabilities.includes(selectedTool.id)) {
+        onSelectedCapabilityIdChange('');
+      }
+      await onRefresh();
+      setMessage(`Deleted ${source.id}.`);
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const reloadPythonToolSources = async () => {
+    setMessage('Reloading Python tools...');
+    try {
+      await reloadPythonTools();
+      await onRefresh();
+      setMessage('Python tools reloaded.');
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -7142,10 +7247,47 @@ function CapabilityDirectory({
     );
   };
   const createDialogTitle = creationIntent === 'tools'
-    ? '新建工具'
+    ? '导入 Python 工具'
     : creationIntent === 'skills'
       ? '导入技能'
       : '新建 MCP 服务';
+  const renderPythonToolSources = () => (
+    <section>
+      <div className="section-heading-row">
+        <h3>Python 工具源</h3>
+        <button className="secondary-button compact-button" onClick={() => void reloadPythonToolSources()} type="button">
+          <RefreshCw size={13} />
+          重载
+        </button>
+      </div>
+      {pythonTools.length ? (
+        <div className="python-tool-source-list">
+          {pythonTools.map((source) => (
+            <div className="python-tool-source-row" key={source.id} data-status={source.status}>
+              <div>
+                <strong>{source.id}</strong>
+                <span>{pythonToolSourcePath(source)}</span>
+                {source.error ? <em>{source.error}</em> : null}
+              </div>
+              <div>
+                <span className="status-badge" data-status={source.status === 'loaded' ? 'completed' : source.status === 'error' ? 'failed' : 'queued'}>
+                  {pythonToolStatusLabel(source.status)}
+                </span>
+                <button className="secondary-button compact-button" onClick={() => void togglePythonToolSource(source, !source.enabled)} type="button">
+                  {source.enabled ? '停用' : '启用'}
+                </button>
+                <button className="secondary-button danger-button compact-button" onClick={() => void removePythonToolSource(source)} type="button">
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="form-message">还没有配置 Python 工具源。</p>
+      )}
+    </section>
+  );
 
   return (
     <section className={`design-tools-workspace ${activeTab === 'skills' ? 'skills-mode' : ''}`}>
@@ -7169,20 +7311,70 @@ function CapabilityDirectory({
             </div>
             {creationIntent === 'tools' ? (
               <section className="tool-create-drawer">
-                <div className="compact-form-grid">
-                  <label>ID<input value={draftCapability.id} onChange={(event) => setDraftCapability((current) => ({ ...current, id: event.target.value, kind: 'tool' }))} /></label>
-                  <label>描述<textarea value={draftCapability.description} onChange={(event) => setDraftCapability((current) => ({ ...current, description: event.target.value, kind: 'tool' }))} /></label>
-                  <label>参数 Schema<textarea value={draftParametersText} onChange={(event) => setDraftParametersText(event.target.value)} /></label>
-                  <label>Template<textarea value={String(draftCapability.config.template ?? '')} onChange={(event) => setDraftCapability((current) => ({ ...current, kind: 'tool', config: { ...current.config, template: event.target.value } }))} /></label>
+                <div className="mcp-transport-field">
+                  <span>来源</span>
+                  <div className="mcp-transport-toggle" role="group" aria-label="Python tool source">
+                    <button
+                      type="button"
+                      className={pythonToolMode === 'path' ? 'active' : ''}
+                      aria-pressed={pythonToolMode === 'path'}
+                      onClick={() => setPythonToolMode('path')}
+                    >
+                      脚本路径
+                    </button>
+                    <button
+                      type="button"
+                      className={pythonToolMode === 'managed' ? 'active' : ''}
+                      aria-pressed={pythonToolMode === 'managed'}
+                      onClick={() => setPythonToolMode('managed')}
+                    >
+                      上传文件
+                    </button>
+                  </div>
                 </div>
-                {message ? <p className="form-message">{message}</p> : null}
+                <div className="compact-form-grid">
+                  <label>ID<input value={pythonToolDraft.id} onChange={(event) => setPythonToolDraft((current) => ({ ...current, id: event.target.value }))} /></label>
+                  {pythonToolMode === 'path' ? (
+                    <label>脚本路径<input value={pythonToolDraft.path ?? ''} onChange={(event) => setPythonToolDraft((current) => ({ ...current, path: event.target.value }))} placeholder="/Users/olivia/tools/local_tools.py" /></label>
+                  ) : (
+                    <label className="skill-package-upload">
+                      <Upload size={15} />
+                      <span>
+                        <strong>{pythonToolFile?.name ?? '选择 .py 文件'}</strong>
+                        <em>文件会保存到 ~/.dagent/python-tools/</em>
+                      </span>
+                      <input
+                        type="file"
+                        accept=".py,text/x-python,text/plain"
+                        onChange={(event) => {
+                          setPythonToolFile(event.target.files?.[0] ?? null);
+                          event.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                  )}
+                  <label>函数名<textarea value={pythonToolNamesText} onChange={(event) => setPythonToolNamesText(event.target.value)} placeholder="search_docs, summarize_page" /></label>
+                  <label className="inline-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={pythonToolDraft.enabled}
+                      onChange={(event) => setPythonToolDraft((current) => ({ ...current, enabled: event.target.checked }))}
+                    />
+                    启用
+                  </label>
+                </div>
+                {pythonToolMessage ? <p className="form-message">{pythonToolMessage}</p> : null}
                 <div className="capability-create-actions">
                   <button className="secondary-button compact-button" onClick={() => onCreationIntentChange(null)} type="button">
                     取消
                   </button>
-                  <button className="primary-button compact-button" onClick={runCreate} type="button">
-                    <Plus size={14} />
-                    创建
+                  <button className="secondary-button compact-button" onClick={() => void validatePythonToolDraft()} disabled={pythonToolMode !== 'path'} type="button">
+                    <Check size={14} />
+                    检测
+                  </button>
+                  <button className="primary-button compact-button" onClick={() => void savePythonTool()} type="button">
+                    <Upload size={14} />
+                    保存
                   </button>
                 </div>
               </section>
@@ -7249,14 +7441,36 @@ function CapabilityDirectory({
                 <Wrench size={15} />
               </div>
               <div>
-                <strong>{selectedTool?.id ?? '工具'}</strong>
+                <strong>{selectedTool ? capabilityDisplayName(selectedTool) : '工具'}</strong>
                 <span>{selectedTool ? `${selectedTool.kind} · ${capabilityStatusLabel(selectedTool)}` : 'tool capability'}</span>
               </div>
               <div>
-                <button className="secondary-button compact-button" onClick={() => selectedTool && void toggleCapability(!selectedTool.enabled)} disabled={!selectedTool || !selectedEditable} type="button">
-                  {selectedTool?.enabled ? '停用' : '启用'}
+                <button
+                  className="secondary-button compact-button"
+                  onClick={() => {
+                    if (selectedPythonToolSource) {
+                      void togglePythonToolSource(selectedPythonToolSource, !selectedPythonToolSource.enabled);
+                    } else if (selectedTool) {
+                      void toggleCapability(!selectedTool.enabled);
+                    }
+                  }}
+                  disabled={!selectedTool || (!selectedEditable && !selectedPythonToolSource)}
+                  type="button"
+                >
+                  {selectedPythonToolSource ? (selectedPythonToolSource.enabled ? '停用' : '启用') : selectedTool?.enabled ? '停用' : '启用'}
                 </button>
-                <button className="secondary-button danger-button compact-button" onClick={removeCapability} disabled={!selectedTool || !selectedEditable} type="button">
+                <button
+                  className="secondary-button danger-button compact-button"
+                  onClick={() => {
+                    if (selectedPythonToolSource) {
+                      void removePythonToolSource(selectedPythonToolSource);
+                    } else {
+                      void removeCapability();
+                    }
+                  }}
+                  disabled={!selectedTool || (!selectedEditable && !selectedPythonToolSource)}
+                  type="button"
+                >
                   <Trash2 size={13} />
                   删除
                 </button>
@@ -7272,6 +7486,14 @@ function CapabilityDirectory({
                     <div><span>执行</span><strong>{toolExecutionLabel(selectedTool)}</strong></div>
                     <div><span>状态</span><strong>{capabilityStatusLabel(selectedTool)}</strong></div>
                   </div>
+                  {selectedPythonToolSource ? (
+                    <div className="tool-info-table">
+                      <div><span>来源</span><strong>Python</strong></div>
+                      <div><span>源 ID</span><strong>{selectedPythonToolSource.id}</strong></div>
+                      <div><span>模式</span><strong>{pythonToolSourceLabel(selectedPythonToolSource.source)}</strong></div>
+                      <div><span>源状态</span><strong>{pythonToolStatusLabel(selectedPythonToolSource.status)}</strong></div>
+                    </div>
+                  ) : null}
                   <section>
                     <h3>参数 Schema</h3>
                     <pre className="tool-schema-block">{JSON.stringify(selectedTool.parameters, null, 2)}</pre>
@@ -7293,13 +7515,19 @@ function CapabilityDirectory({
                     {message ? <p className="form-message">{message}</p> : null}
                     {result ? <pre className="tool-schema-block">{JSON.stringify(result, null, 2)}</pre> : null}
                   </section>
+                  {renderPythonToolSources()}
                 </div>
               </div>
             ) : (
-              <div className="empty-state agent-empty-card">
-                <Wrench size={28} />
-                <strong>没有加载到工具</strong>
-                <p>从左侧选择一个工具，查看它的参数与测试调用。</p>
+              <div className="tools-detail-scroll">
+                <div className="tool-detail-surface">
+                  <div className="empty-state agent-empty-card">
+                    <Wrench size={28} />
+                    <strong>没有加载到工具</strong>
+                    <p>导入 Python 工具，或从左侧选择一个已有工具查看参数与测试调用。</p>
+                  </div>
+                  {renderPythonToolSources()}
+                </div>
               </div>
             )}
           </div>
@@ -7481,6 +7709,30 @@ function mcpStatusLabel(status: MCPServer['status']): string {
   if (status === 'disabled') return '已停用';
   if (status === 'error') return '连接错误';
   return '连接中';
+}
+
+function pythonToolNamesFromText(value: string): string[] {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function pythonToolSourceLabel(source: PythonToolEntry['source']): string {
+  if (source === 'managed') return '上传文件';
+  if (source === 'module') return 'Python module';
+  return '脚本路径';
+}
+
+function pythonToolStatusLabel(status: PythonToolEntry['status']): string {
+  if (status === 'loaded') return '已加载';
+  if (status === 'disabled') return '已停用';
+  return '加载错误';
+}
+
+function pythonToolSourcePath(source: PythonToolEntry): string {
+  if (source.source === 'module') return source.module ?? '';
+  return source.path ?? '';
 }
 
 function isEditableMcpSource(source: MCPServer['source']): boolean {
@@ -8350,7 +8602,7 @@ function chatCapabilityScopeLabel(
 function matchesCapabilityQuery(capability: CapabilityDefinition, query: string): boolean {
   if (!query) return true;
   const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
-  const haystack = `${capability.id} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
+  const haystack = `${capability.id} ${capability.name} ${capability.display_name} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
   return haystack.includes(query);
 }
 

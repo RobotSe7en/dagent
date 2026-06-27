@@ -250,6 +250,21 @@ def test_add_agent_rejects_invalid_name(tmp_path) -> None:
     runner.close()
 
 
+def test_validate_agent_registration_rejects_capability_name_collision(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.register_capability(
+        CapabilityDefinition(id="tool.raw_helper", kind="tool", name="agent_helper"),
+        lambda invocation: CapabilityResult.completed(invocation, "raw"),
+    )
+
+    with pytest.raises(ValueError, match="Capability name 'agent_helper' is already registered"):
+        runner.validate_agent_registration(
+            dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[])
+        )
+    assert runner.get_capability("agent.helper") is None
+    runner.close()
+
+
 def test_add_agent_uses_namespaced_function_name_and_allows_tool_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
 
@@ -294,21 +309,74 @@ def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
     runner.close()
 
 
-def test_register_capability_rejects_invalid_capability_id(tmp_path) -> None:
+def test_add_tools_is_atomic_when_later_binding_conflicts(tmp_path) -> None:
     runner = _runner(tmp_path)
-    invalid_ids = ("tool.raw-helper", " tool.raw ")
 
-    for invalid_id in invalid_ids:
-        definition = CapabilityDefinition(id=invalid_id, kind="tool")
+    @dagent.tool
+    def batch_ok() -> str:
+        return "ok"
 
-        with pytest.raises(ValueError, match="Capability ids"):
-            runner.register_capability(
-                definition,
-                lambda invocation: CapabilityResult.completed(invocation, "raw"),
-            )
+    @dagent.tool(name="tool_read_file")
+    def batch_conflict() -> str:
+        return "conflict"
 
-        assert runner.get_capability(invalid_id) is None
-        assert runner.get_capability(invalid_id.strip()) is None
+    with pytest.raises(ValueError, match="Capability name 'tool_read_file' is already registered"):
+        runner.add_tools([batch_ok, batch_conflict])
+
+    assert runner.get_capability("tool.batch_ok") is None
+    assert runner.get_capability("tool.batch_conflict") is None
+    runner.close()
+
+
+def test_add_tools_keeps_existing_idempotent_bindings_valid(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def batch_idempotent() -> str:
+        return "ok"
+
+    first = runner.add_tool(batch_idempotent)
+    runner.validate_tools_registerable([batch_idempotent])
+    second = runner.add_tools([batch_idempotent])
+
+    assert first == second[0]
+    assert runner.get_capability("tool.batch_idempotent") == first
+    runner.close()
+
+
+def test_validate_tools_registerable_rejects_repeated_idempotent_binding(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def batch_repeated() -> str:
+        return "ok"
+
+    runner.add_tool(batch_repeated)
+
+    with pytest.raises(ValueError, match="Capability 'tool.batch_repeated' is already registered"):
+        runner.validate_tools_registerable([batch_repeated, batch_repeated])
+    with pytest.raises(ValueError, match="Capability 'tool.batch_repeated' is already registered"):
+        runner.add_tools([batch_repeated, batch_repeated])
+
+    runner.close()
+
+
+def test_validate_tools_registerable_rejects_batch_name_collisions_without_mutation(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool(name="shared_batch_name")
+    def batch_first() -> str:
+        return "first"
+
+    @dagent.tool(name="shared_batch_name")
+    def batch_second() -> str:
+        return "second"
+
+    with pytest.raises(ValueError, match="Capability name 'shared_batch_name' is already registered"):
+        runner.validate_tools_registerable([batch_first, batch_second])
+
+    assert runner.get_capability("tool.batch_first") is None
+    assert runner.get_capability("tool.batch_second") is None
     runner.close()
 
 
@@ -341,20 +409,18 @@ def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp
     runner.close()
 
 
-def test_adapter_rejects_mcp_function_name_collisions() -> None:
+def test_catalog_rejects_mcp_function_name_collisions() -> None:
     catalog = CapabilityCatalog()
-    for capability_id in ("mcp.foo.bar_baz", "mcp.foo_bar.baz"):
-        catalog.register(
-            CapabilityDefinition(id=capability_id, kind="mcp"),
-            lambda invocation: CapabilityResult.completed(invocation, "ok"),
-        )
-    adapter = CapabilityToolAdapter(
-        catalog,
-        toolsets=[CapabilityToolset("builtin", ("mcp.foo.bar_baz", "mcp.foo_bar.baz"))],
+    catalog.register(
+        CapabilityDefinition(id="mcp.foo.bar_baz", kind="mcp"),
+        lambda invocation: CapabilityResult.completed(invocation, "ok"),
     )
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        adapter.definitions(("builtin",))
+    with pytest.raises(ValueError, match="Capability name 'mcp_foo_bar_baz' is already registered"):
+        catalog.register(
+            CapabilityDefinition(id="mcp.foo_bar.baz", kind="mcp"),
+            lambda invocation: CapabilityResult.completed(invocation, "ok"),
+        )
 
 
 def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
@@ -565,6 +631,11 @@ def test_replace_mcp_server_rolls_back_registered_agent_dependency_on_error(monk
 
     assert runner.get_capability("mcp.search.lookup") is not None
     assert runner.get_capability("agent.helper") is not None
+    with pytest.raises(ValueError, match="Capability name 'mcp_search_lookup' is already registered"):
+        runner.register_capability(
+            CapabilityDefinition(id="tool.duplicate", kind="tool", name="mcp_search_lookup"),
+            lambda invocation: CapabilityResult.completed(invocation, "duplicate"),
+        )
     runner.close()
 
 
@@ -731,10 +802,9 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
         def register_into(self, catalog):
             for name, config in self.servers.items():
                 for tool_name in config.get("tools", []):
-                    safe_name = tool_name.replace("-", "_")
                     catalog.register(
                         CapabilityDefinition(
-                            id=f"mcp.{name}.{safe_name}",
+                            id=f"mcp.{name}.{tool_name}",
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -770,10 +840,9 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
         def register_into(self, catalog):
             for name, config in self.servers.items():
                 for tool_name in config.get("tools", []):
-                    safe_name = tool_name.replace("-", "_")
                     catalog.register(
                         CapabilityDefinition(
-                            id=f"mcp.{name}.{safe_name}",
+                            id=f"mcp.{name}.{tool_name}",
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -837,7 +906,7 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
 
     manager = TwoToolManager()
 
-    with pytest.raises(RuntimeError, match="collides"):
+    with pytest.raises(RuntimeError, match="already registered"):
         runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     catalog = runner.runtime.capability_catalog

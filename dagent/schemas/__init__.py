@@ -24,10 +24,12 @@ from dagent.schemas.capability import (
     CapabilityStatus,
     validate_capability_id,
     validate_capability_id_segment,
+    validate_capability_name,
 )
 from dagent.schemas.results import (
     LoopOutcome,
     LoopStatus,
+    PendingCapabilityCall,
     PendingReview,
     RunCapabilityScope,
     RunState,
@@ -66,6 +68,7 @@ __all__ = [
     "LoopOutcome",
     "LoopStatus",
     "MapNodePayload",
+    "PendingCapabilityCall",
     "PendingReview",
     "RunCapabilityScope",
     "RunState",
@@ -85,6 +88,7 @@ __all__ = [
     "CapabilityStatus",
     "validate_capability_id",
     "validate_capability_id_segment",
+    "validate_capability_name",
     "NodePayload",
     "NodePayloadType",
     "CapabilityExecution",

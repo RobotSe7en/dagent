@@ -63,11 +63,6 @@ class MCPCapabilityProvider:
         safe_server = _safe_component(server_name)
         safe_tool = _safe_component(tool_name)
         capability_id = f"mcp.{safe_server}.{safe_tool}"
-        if catalog.get(capability_id) is not None:
-            self.registration_errors.append(
-                f"MCP tool '{server_name}.{tool_name}' collides with existing capability '{capability_id}'."
-            )
-            return
         input_schema = getattr(tool, "inputSchema", None)
         if input_schema is None:
             input_schema = getattr(tool, "input_schema", None)
@@ -84,15 +79,16 @@ class MCPCapabilityProvider:
             ),
             config={"server": server_name, "tool": tool_name},
         )
-        catalog.register(
-            definition,
-            make_mcp_tool_handler(
-                self.manager,
-                server_name=server_name,
-                tool_name=tool_name,
-                timeout_seconds=float(server_config.get("tool_timeout", 60)),
-            ),
+        handler = make_mcp_tool_handler(
+            self.manager,
+            server_name=server_name,
+            tool_name=tool_name,
+            timeout_seconds=float(server_config.get("tool_timeout", 60)),
         )
+        try:
+            catalog.register(definition, handler)
+        except ValueError as exc:
+            self.registration_errors.append(str(exc))
 
 
 def _safe_component(value: str) -> str:

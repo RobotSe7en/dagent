@@ -5,7 +5,7 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 
 ## Capability Ids
 
-| 来源 | Id 格式 |
+| 来源 | 常见 id 形式 |
 | --- | --- |
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
@@ -15,8 +15,10 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。
 
-Raw `CapabilityDefinition.id` 必须使用上表中的 dotted forms。每个 segment
-只能包含字母、数字和下划线；首尾空白会被拒绝。
+Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`、`mcp`、
+`agent`、`skill`、`memory`），并且至少包含两个 dotted segments。每个 segment
+只能包含字母、数字和下划线；首尾空白会被拒绝。上表列出的是 dagent 默认使用的
+常见形式，不表示所有自定义 capability 都必须固定为同样的 segment 数量。
 
 ## 内置工具
 
@@ -36,9 +38,10 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 | `tool.grep` | low | 使用 Python 正则语法搜索文件，可选 `glob` 文件名过滤。`PATH` 上有 `rg` 时使用兼容参数委托 ripgrep（argv 调用，绝不经过 shell），否则回退纯 Python 扫描。两种后端都不应用项目 ignore 文件，但都会排除内置的重型目录。输出为 `file:line:content`，上限 200 条。 |
 | `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。 |
 
-LLM 可见函数名由 capability id 派生：把点替换为下划线。例如
-`tool.read_file` 在 PlanSpec DSL 中调用为 `tool_read_file(...)`，
-`agent.helper` 调用为 `agent_helper(...)`。
+每个 capability 有三个名字。`id` 是稳定执行身份，用于 scopes、traces、reviews 和
+DAG invocation payloads。`name` 是 LLM 可见函数名，用于 provider tool calls 和
+PlanSpec DSL。`display_name` 只用于 UI 展示。省略 `name` 时，dagent 默认把 capability
+id 中的点替换为下划线；省略 `display_name` 时，默认等于 `name`。
 
 `tool_read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
 `tool_edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，
@@ -61,9 +64,9 @@ workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下�
 ## Python Function Tools
 
 用 `@dagent.tool` 装饰 Python 函数。参数注解会生成 tool input JSON schema；返回注解会
-生成 output schema。Python 函数名就是 capability name：`search` 会注册
-`tool.search`，并以 `tool_search(...)` 暴露给 LLM 和 PlanSpec DSL。decorator 不接收
-独立的 `id` 或 `name` 参数。
+生成 output schema。Python 函数名仍决定 capability id：`search` 会注册
+`tool.search`。传入 `name=` 可以选择 LLM/PlanSpec 函数名，传入 `display_name=` 可以选择
+UI 文案。decorator 不接收 `id=`。
 
 ```python
 from pydantic import BaseModel

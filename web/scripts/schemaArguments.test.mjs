@@ -186,9 +186,11 @@ test('composer uses upload placeholder instead of creating chats from the input 
   assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
 });
 
-test('capability helpers follow 0.6.0 id-only contracts', () => {
+test('capability helpers use display names and dotted ids', () => {
   const capability = {
     id: 'agent.helper',
+    name: 'helper',
+    display_name: 'Helper',
     kind: 'agent',
     description: 'Summarizes delegated work.',
     parameters: {},
@@ -198,9 +200,12 @@ test('capability helpers follow 0.6.0 id-only contracts', () => {
     enabled: true,
   };
 
-  assert.equal(capabilityDisplayName(capability), 'agent.helper');
+  assert.equal(capabilityDisplayName(capability), 'Helper');
+  assert.equal(capabilityDisplayName({ id: 'tool.search', name: 'Search tool', display_name: '' }), 'Search tool');
+  assert.equal(capabilityDisplayName({ id: 'tool.search', name: '', display_name: '  ' }), 'tool.search');
   assert.equal(isValidCapabilityId('tool.search'), true);
   assert.equal(isValidCapabilityId('mcp.remote_docs.lookup'), true);
+  assert.equal(isValidCapabilityId('mcp.remote.docs.lookup'), true);
   assert.equal(isValidCapabilityId('agent.bad-name'), false);
   assert.equal(isValidCapabilityId(' search'), false);
   assert.equal(cleanWorkspaceKeyDraft('helper-agent'), 'helper_agent');
@@ -242,6 +247,28 @@ test('chat scope request fields keep agent delegation separate from capabilities
     pruneSelectedAgentIds(['agent.keep', 'agent.drop'], [{ id: 'agent.keep' }, { id: 'agent.other' }]),
     ['agent.keep'],
   );
+});
+
+test('tools workspace renders capability display names as primary labels', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /<span>\{capabilityDisplayName\(capability\)\}<\/span>/);
+  assert.doesNotMatch(appSource, /<span>\{capability\.id\}<\/span>/);
+  assert.match(appSource, /<strong>\{selectedTool \? capabilityDisplayName\(selectedTool\) : '工具'\}<\/strong>/);
+  assert.doesNotMatch(appSource, /<strong>\{selectedTool\?\.id \?\? '工具'\}<\/strong>/);
+  assert.doesNotMatch(appSource, /<option key=\{capability\.id\} value=\{capability\.id\}>\s*\{capability\.id\}\s*<\/option>/);
+});
+
+test('python tool save and toggle do not report success for errored sources', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const saveSource = appSource.match(/const savePythonTool = async[\s\S]*?\n  const togglePythonToolSource/)?.[0] ?? '';
+  const toggleSource = appSource.match(/const togglePythonToolSource = async[\s\S]*?\n  const removePythonToolSource/)?.[0] ?? '';
+
+  assert.ok(saveSource, 'savePythonTool function should exist');
+  assert.ok(toggleSource, 'togglePythonToolSource function should exist');
+  assert.match(saveSource, /saved\.status === 'error'/);
+  assert.match(toggleSource, /updated\.status === 'error'/);
+  assert.doesNotMatch(saveSource, /setPythonToolMessage\(`Saved \$\{saved\.id\}\.`\);/);
+  assert.doesNotMatch(toggleSource, /setMessage\(`\$\{enabled \? 'Enabled' : 'Disabled'\} \$\{source\.id\}\.`\);/);
 });
 
 test('canvas center node position uses the live canvas center without hard-coded fallback', () => {
@@ -553,8 +580,10 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(directorySource, /design-tools-workspace/);
   assert.match(directorySource, /className="tools-detail-panel"/);
   assert.match(directorySource, /skill-editor-toolbar/);
-  assert.match(directorySource, /新建工具|导入技能|保存配置/);
-  assert.match(directorySource, /createCapability\(/);
+  assert.match(directorySource, /导入 Python 工具|导入技能|保存配置/);
+  assert.match(directorySource, /createPythonTool\(/);
+  assert.match(directorySource, /uploadPythonTool\(/);
+  assert.match(directorySource, /validatePythonTool\(/);
   assert.match(directorySource, /testCapability\(/);
   assert.match(appSource, /installSkill\(/);
   assert.match(directorySource, /createMcpServer\(/);
@@ -1028,6 +1057,7 @@ test('capability review rejection settles the running tool card', () => {
     capability_call: {
       invocation_id: 'call_001',
       capability_id: 'tool.shell',
+      tool_name: 'tool_shell',
       arguments: { command: 'rm -rf ./tmp' },
     },
   };
@@ -1051,6 +1081,87 @@ test('capability review rejection settles the running tool card', () => {
   assert.equal(next[0].result.invocation_id, 'call_001');
   assert.match(next[0].result.content, /人工审核已拒绝/);
   assert.match(next[0].result.content, /不要删除文件/);
+});
+
+test('stream parser preserves capability review tool name', async () => {
+  const { streamTask } = await importTypeScriptModule('../src/api.ts', [
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const previousFetch = globalThis.fetch;
+  const frame = {
+    type: 'review.required',
+    data: {
+      review_id: 'review_tool_001',
+      kind: 'capability_review',
+      message: 'Review capability call.',
+      capability_call: {
+        invocation_id: 'call_001',
+        capability_id: 'tool.shell',
+        tool_name: 'tool_shell',
+        arguments: { command: 'rm -rf ./tmp' },
+      },
+    },
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async () => ({ ok: true, body });
+  try {
+    let parsedReview;
+    await streamTask('run shell', 'tool', 'none', {
+      onReview(review) {
+        parsedReview = review;
+      },
+    });
+
+    assert.equal(parsedReview.capability_call.tool_name, 'tool_shell');
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('stream parser rejects capability review payloads without tool name', async () => {
+  const { streamTask } = await importTypeScriptModule('../src/api.ts', [
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const previousFetch = globalThis.fetch;
+  const frame = {
+    type: 'review.required',
+    data: {
+      review_id: 'review_tool_001',
+      kind: 'capability_review',
+      message: 'Review capability call.',
+      capability_call: {
+        invocation_id: 'call_001',
+        capability_id: 'tool.shell',
+        arguments: { command: 'rm -rf ./tmp' },
+      },
+    },
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async () => ({ ok: true, body });
+  try {
+    await assert.rejects(
+      streamTask('run shell', 'tool', 'none', {}),
+      /Capability review payload missing tool_name/,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test('dag review resume reuses the DAG assistant turn instead of opening a new chat frame', async () => {

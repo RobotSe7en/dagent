@@ -105,8 +105,8 @@ The local FastAPI/WebUI backend also reads and writes a user-level config at
 does not change what `Runner.from_config(...)` loads in SDK code.
 
 User config uses the same YAML style for provider-shaped model entries and MCP
-servers, but it is scoped to WebUI-managed models, the active WebUI model, and
-user MCP servers:
+servers, but it is scoped to WebUI-managed models, the active WebUI model, user
+MCP servers, and explicitly imported Python tools:
 
 ```yaml
 model_providers:
@@ -120,6 +120,17 @@ mcp_servers:
   local_fs:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+python_tools:
+  - id: "local_docs"
+    source: "path"
+    path: "/Users/olivia/tools/local_tools.py"
+    names: ["search_docs", "summarize_page"]
+    enabled: true
+  - id: "package_tools"
+    source: "module"
+    module: "my_project.tools"
+    names: ["lookup"]
+    enabled: true
 ```
 
 The WebUI model list includes the project `config.yaml` provider plus user
@@ -128,6 +139,25 @@ the runner with that provider; otherwise the project `config.yaml` provider
 remains the default. The WebUI registers both project and user MCP servers.
 Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
 are reported instead of silently overriding project configuration.
+
+`python_tools` entries are loaded only by the local WebUI backend. They do not
+make `Runner.from_config(...)` import files implicitly. A `path` entry points to
+a `.py` file visible to the backend process and `names` lists the exported
+objects to register. Each named object must be created with `@dagent.tool`, so
+it is a `CapabilityBinding` with a `tool.<function_name>` capability id. The
+WebUI also supports uploading a `.py` file; uploads are copied to
+`~/.dagent/python-tools/` and stored as `source: "managed"` entries in this
+same user config file. A `module` entry imports an installed Python module by
+name. `/python-tools/reload` invalidates import caches, but it does not reload
+modules already present in `sys.modules`; use `path` or uploaded `managed`
+sources for reload-style development.
+
+Python files are imported as local code, so top-level module code runs during
+loading. The WebUI never scans directories or registers every object
+automatically; it loads only explicit config entries and explicit `names`.
+Import failures, missing names, non-`@dagent.tool` exports, and capability id
+collisions are reported in the tool management page without failing backend
+startup.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly
@@ -231,6 +261,11 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+The local `/capabilities` mutation API is a runtime host/debug surface for raw
+capability definitions. User-managed Python tools should be added and persisted
+through `/python-tools` or the WebUI import flow, not through template-backed
+runtime capability creation.
 
 ## Runtime Provider Switching
 

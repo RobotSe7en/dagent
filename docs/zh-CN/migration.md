@@ -8,7 +8,30 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-当前没有未发布变更。
+### 改变
+
+- Capability definitions 现在把稳定 id 和调用名分开。`id` 仍是执行身份；
+  `name` 是 LLM/PlanSpec 函数名；`display_name` 只用于 UI 展示。
+- Runner.add_tools 现在是原子的：批量中的任一 binding 无法注册时，runner 会保持
+  catalog 不变。重复注册完全相同的已有 binding 仍保持幂等。
+- 本地 WebUI Python tool 条目使用 `source: "module"` 时，不再 reload 已存在于
+  `sys.modules` 的 module。需要类似 reload 的开发体验时，请使用 `path` 或上传后的
+  `managed` source。
+
+### 破坏性改变
+
+- `@dagent.tool` 仍不接收 `id=`。Python function tools 一律从函数名派生
+  capability id，格式为 `tool.<function_name>`。`name=` 重新可用，但它只控制
+  LLM/PlanSpec 函数名，不改变 capability id。
+- `CapabilityDefinition.name` 和 `CapabilityDefinition.display_name` 是公开字段。
+  省略时，`name` 默认为 capability id 把点替换为下划线，`display_name` 默认为
+  `name`。
+- Raw `CapabilityDefinition.id` 必须是以 `tool`、`agent`、`mcp`、`skill` 或
+  `memory` 开头的 dotted capability id。每个 segment 只能包含字母、数字和下划线；
+  至少需要两个 segment。
+- LLM 可见的 PlanSpec 和 tool-call function names 现在使用
+  `CapabilityDefinition.name`。如果设置了自定义 name，请同步更新已保存的 dynamic
+  DAG PlanSpec 文本和 deterministic provider fixtures。
 
 ## 0.6.0
 

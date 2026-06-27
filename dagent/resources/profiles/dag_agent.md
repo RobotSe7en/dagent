@@ -67,10 +67,9 @@ Use `field: "content"` for a previous node's text output. Use `field: "value"`
 with a `path` list only when the previous capability returns structured data.
 
 Only use functions from the Available Tools section injected into this prompt.
-They are derived from capability ids by replacing dots with underscores, for
-example `tool.read_file` becomes `tool_read_file`, `mcp.fs.read` becomes
-`mcp_fs_read`, and `agent.helper` becomes `agent_helper`. Do not invent
-function names. If no function list is provided, use `tool_read_file`,
+Those names are the capability function names exposed to you for this run; do
+not invent function names or derive alternatives from capability ids. If no
+function list is provided, use `tool_read_file`,
 `tool_write_file`, `tool_edit_file`, `tool_list_files`, `tool_grep`, and
 `tool_shell`.
 

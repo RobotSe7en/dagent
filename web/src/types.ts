@@ -41,6 +41,8 @@ export interface CapabilityPolicy {
 export interface CapabilityDefinition {
   id: string;
   kind: CapabilityKind;
+  name: string;
+  display_name: string;
   description: string;
   parameters: Record<string, unknown>;
   output_schema: Record<string, unknown>;
@@ -329,6 +331,7 @@ export interface CapabilityStreamEvent {
 export interface CapabilityCallPayload {
   invocation_id: string;
   capability_id: string;
+  tool_name: string;
   arguments: Record<string, unknown>;
 }
 
@@ -436,6 +439,24 @@ export interface MCPServer {
   status: 'disabled' | 'connected' | 'error' | 'pending';
   error?: string | null;
   tools: CapabilityDefinition[];
+}
+
+export type PythonToolSource = 'path' | 'managed' | 'module';
+export type PythonToolStatus = 'loaded' | 'disabled' | 'error';
+
+export interface PythonToolConfig {
+  id: string;
+  source: PythonToolSource;
+  path?: string | null;
+  module?: string | null;
+  names: string[];
+  enabled: boolean;
+}
+
+export interface PythonToolEntry extends PythonToolConfig {
+  status: PythonToolStatus;
+  capabilities: string[];
+  error?: string | null;
 }
 
 export interface ModelProvider {

@@ -21,7 +21,8 @@ def test_tool_decorator_builds_definition_from_function_signature() -> None:
 
     assert isinstance(echo, CapabilityBinding)
     assert echo.definition.id == "tool.echo"
-    assert not hasattr(echo.definition, "name")
+    assert echo.definition.name == "tool_echo"
+    assert echo.definition.display_name == "tool_echo"
     assert echo.definition.kind == "tool"
     assert echo.definition.description == "Echo text for SDK callers."
     assert echo.definition.parameters == {
@@ -45,6 +46,16 @@ def test_tool_decorator_builds_definition_from_function_signature() -> None:
     assert result.status == "completed"
     assert result.content == "hi:1:False"
     assert tool_from_subsystem is tool
+
+
+def test_tool_decorator_accepts_llm_name_and_display_name_without_changing_id() -> None:
+    @tool(name="search", display_name="Search")
+    def lookup(query: str) -> str:
+        return query
+
+    assert lookup.definition.id == "tool.lookup"
+    assert lookup.definition.name == "search"
+    assert lookup.definition.display_name == "Search"
 
 
 def test_tool_decorator_serializes_structured_results_and_failures() -> None:

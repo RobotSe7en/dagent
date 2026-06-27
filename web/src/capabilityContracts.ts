@@ -1,16 +1,10 @@
 export type CapabilityIdPrefix = 'tool' | 'agent' | 'mcp' | 'skill' | 'memory';
 
 const capabilityIdSegmentPattern = /^[A-Za-z0-9_]+$/;
-const capabilityIdSegmentCounts: Record<CapabilityIdPrefix, number> = {
-  tool: 2,
-  agent: 2,
-  mcp: 3,
-  skill: 2,
-  memory: 2,
-};
+const capabilityIdPrefixes = new Set<CapabilityIdPrefix>(['tool', 'agent', 'mcp', 'skill', 'memory']);
 
-export function capabilityDisplayName(capability: { id: string }): string {
-  return capability.id;
+export function capabilityDisplayName(capability: { display_name?: string | null; name?: string | null; id?: string | null }): string {
+  return capability.display_name?.trim() || capability.name?.trim() || capability.id?.trim() || '';
 }
 
 export function isValidCapabilityId(value: string): boolean {
@@ -18,8 +12,7 @@ export function isValidCapabilityId(value: string): boolean {
   const parts = value.split('.');
   if (parts.some((part) => !part || !capabilityIdSegmentPattern.test(part))) return false;
   const prefix = parts[0] as CapabilityIdPrefix;
-  return Object.prototype.hasOwnProperty.call(capabilityIdSegmentCounts, prefix)
-    && parts.length === capabilityIdSegmentCounts[prefix];
+  return capabilityIdPrefixes.has(prefix) && parts.length >= 2;
 }
 
 export function cleanWorkspaceKeyDraft(value: string, options: { requireLeadingLetter?: boolean } = {}): string {

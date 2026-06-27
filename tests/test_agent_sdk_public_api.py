@@ -95,6 +95,12 @@ def test_review_handle_decisions_accept_reviewer_feedback() -> None:
             review_id="review_1",
             kind="capability_review",
             message="Review capability call.",
+            capability_call={
+                "invocation_id": "call_1",
+                "capability_id": "tool.search",
+                "tool_name": "tool_search",
+                "arguments": {},
+            },
         )
     )
 
@@ -107,7 +113,8 @@ def test_review_handle_decisions_accept_reviewer_feedback() -> None:
 
 def test_tool_decorator_has_tool_only_signature() -> None:
     assert "id" not in inspect.signature(dagent.tool).parameters
-    assert "name" not in inspect.signature(dagent.tool).parameters
+    assert "name" in inspect.signature(dagent.tool).parameters
+    assert "display_name" in inspect.signature(dagent.tool).parameters
     assert "kind" not in inspect.signature(dagent.tool).parameters
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
     assert hasattr(dagent.Runner, "remove_mcp_server")
@@ -126,7 +133,8 @@ def test_tool_decorator_matches_tool_default_kind() -> None:
         return f"wrote:{path}"
 
     assert search.definition.id == "tool.search"
-    assert not hasattr(search.definition, "name")
+    assert search.definition.name == "tool_search"
+    assert search.definition.display_name == "tool_search"
     assert search.definition.kind == "tool"
     assert search.definition.policy.risk == "low"
     assert write_file.definition.id == "tool.write_file"
@@ -140,7 +148,8 @@ def test_tool_decorator_registers_tool_capability() -> None:
         return f"found:{q}"
 
     assert search.definition.id == "tool.search"
-    assert not hasattr(search.definition, "name")
+    assert search.definition.name == "tool_search"
+    assert search.definition.display_name == "tool_search"
     assert search.definition.kind == "tool"
 
 
@@ -671,6 +680,7 @@ def test_runner_stream_yields_typed_review_event(tmp_path) -> None:
     assert pending_review["capability_call"] == {
         "invocation_id": "call_1",
         "capability_id": "tool.write",
+        "tool_name": "tool_write",
         "arguments": {"text": "hello"},
     }
     assert pending_review["payload"] == {"capability_id": "tool.write", "risk": "medium"}

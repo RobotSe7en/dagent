@@ -540,6 +540,23 @@ def test_api_session_reset_clears_in_memory_workbench_state() -> None:
     assert state.custom_mcp_servers == {}
 
 
+def test_api_custom_capability_install_does_not_skip_catalog_conflicts() -> None:
+    state.close_runner()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.custom_capabilities["tool.read_file"] = CapabilityDefinition(
+        id="tool.read_file",
+        kind="tool",
+        description="Conflicting custom capability.",
+    )
+
+    try:
+        with pytest.raises(ValueError, match="Capability 'tool.read_file' is already registered"):
+            state._install_custom_capabilities()
+    finally:
+        state.custom_capabilities.clear()
+        state.close_runner()
+
+
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(content="tool"),            # _route()
@@ -691,6 +708,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
     assert review["capability_call"] == {
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
+        "tool_name": "tool_read_file",
         "arguments": {"path": "../blocked/secret.txt"},
     }
     assert review["payload"]["capability_id"] == "tool.read_file"
@@ -1115,11 +1133,15 @@ def test_api_capability_list_create_and_test() -> None:
         json={
             "id": "tool.upper",
             "kind": "tool",
+            "name": "upper_text",
+            "display_name": "Upper text",
             "description": "Uppercase text.",
             "config": {"template": "upper:{text}"},
         },
     )
     assert create_response.status_code == 200
+    assert create_response.json()["capability"]["name"] == "upper_text"
+    assert create_response.json()["capability"]["display_name"] == "Upper text"
 
     test_response = client.post(
         "/capabilities/tool.upper/test",
@@ -1143,6 +1165,36 @@ def test_api_capability_list_create_and_test() -> None:
         "/capabilities/tool.upper/test",
         json={"arguments": {"text": "ok"}},
     ).status_code == 404
+
+
+def test_api_capability_rejects_duplicate_name_without_mutation() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    first = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.first_custom",
+            "kind": "tool",
+            "name": "shared_name",
+            "config": {"template": "first"},
+        },
+    )
+
+    duplicate = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.second_custom",
+            "kind": "tool",
+            "name": "shared_name",
+            "config": {"template": "second"},
+        },
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 400
+    assert "Capability name 'shared_name' is already registered" in duplicate.json()["detail"]
+    assert state.runner.get_capability("tool.first_custom") is not None
+    assert state.runner.get_capability("tool.second_custom") is None
 
 
 def test_api_capability_test_infers_shell_boundary() -> None:
@@ -1231,8 +1283,8 @@ def test_api_rejects_whitespace_padded_capability_id_without_persisting() -> Non
         },
     )
 
-    assert response.status_code == 400
-    assert "Capability ids" in response.json()["detail"]
+    assert response.status_code == 422
+    assert "Capability ids" in str(response.json()["detail"])
     assert state.runner.get_capability("tool.upper ") is None
     assert state.runner.get_capability("tool.upper") is None
     assert "tool.upper " not in state.custom_capabilities
@@ -1415,6 +1467,26 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["config"] == {"profile": "analyst", "source": "managed"}
     assert capabilities["agent.analyst"]["parameters"]["properties"]["prompt"]["default"] == ""
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
+
+
+def test_api_profile_agent_capabilities_skip_catalog_name_collisions(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.runner.register_capability(
+        CapabilityDefinition(id="tool.agent_name_collision", kind="tool", name="agent_analyst"),
+        lambda invocation: CapabilityResult.completed(invocation, "collision"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/capabilities", params={"kind": "agent"})
+
+    assert response.status_code == 200
+    ids = {capability["id"] for capability in response.json()["capabilities"]}
+    assert "agent.analyst" not in ids
 
 
 def test_api_profile_agent_capability_ids_use_clean_names(monkeypatch) -> None:

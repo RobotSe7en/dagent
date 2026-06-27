@@ -6,7 +6,7 @@ runtime capability catalog.
 
 ## Capability Ids
 
-| Source | Id format |
+| Source | Common id form |
 | --- | --- |
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
@@ -17,9 +17,12 @@ runtime capability catalog.
 Capability ids are public behavior. Do not depend on legacy aliases that are not
 documented here.
 
-Raw `CapabilityDefinition.id` values must use one of the dotted forms above.
-Every segment may contain only letters, numbers, and underscores; leading or
-trailing whitespace is rejected.
+Raw `CapabilityDefinition.id` values must start with one of the supported kind
+prefixes (`tool`, `mcp`, `agent`, `skill`, `memory`) and contain at least two
+dotted segments. Every segment may contain only letters, numbers, and
+underscores; leading or trailing whitespace is rejected. The table lists the
+forms dagent uses by default, not a fixed segment count for every custom
+capability.
 
 ## Built-in Tools
 
@@ -41,10 +44,12 @@ boundaries and fail closed on boundary violations.
 | `tool.grep` | low | Search files with Python regular-expression syntax and an optional `glob` filename filter. Delegates to ripgrep with compatible flags when `rg` is on `PATH` (argv invocation, never a shell) and falls back to a pure-Python scan otherwise. Project ignore files are not applied; built-in heavy directory exclusions are applied in both backends. Output is `file:line:content`, capped at 200 matches. |
 | `tool.shell` | high | Run a shell command in a bounded working directory with a 30s default timeout. Dangerous patterns are hard-blocked, the working directory must exist, explicit shell path arguments are checked against the boundary, and oversized output keeps the tail (200 lines / 100 KB) under a `[TRUNCATED]` header. |
 
-LLM-visible function names are derived from capability ids by replacing dots
-with underscores. For example, `tool.read_file` is called as
-`tool_read_file(...)` in PlanSpec DSL, and `agent.helper` is called as
-`agent_helper(...)`.
+Each capability has three names. `id` is the stable execution identity used in
+scopes, traces, reviews, and DAG invocation payloads. `name` is the LLM-visible
+function name used by provider tool calls and PlanSpec DSL. `display_name` is
+UI-only text. When `name` is omitted, dagent defaults it to the capability id
+with dots replaced by underscores; when `display_name` is omitted, it defaults
+to `name`.
 
 `tool_read_file` output carries no line-number prefixes, so text copied from a
 read result can be passed to `tool_edit_file` as `old_string` unchanged. The
@@ -71,9 +76,9 @@ present under `Runner(workspace=...)` are visible to supported built-in tools.
 
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce
 tool input JSON schema; return annotations produce output schema. The Python
-function name is the capability name: `search` registers `tool.search`, exposed
-to the LLM and PlanSpec DSL as `tool_search(...)`. The decorator does not accept
-separate `id` or `name` arguments.
+function name still determines the capability id: `search` registers
+`tool.search`. Pass `name=` to choose the LLM/PlanSpec function name, and
+`display_name=` to choose UI text. The decorator does not accept `id=`.
 
 ```python
 from pydantic import BaseModel

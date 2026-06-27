@@ -61,7 +61,9 @@ class ReviewHandle:
 
     @property
     def capability_call(self) -> dict[str, Any] | None:
-        return self.pending.capability_call
+        if self.pending.capability_call is None:
+            return None
+        return self.pending.capability_call.model_dump(mode="json")
 
     @property
     def payload(self) -> dict[str, Any]:

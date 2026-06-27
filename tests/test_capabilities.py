@@ -7,7 +7,12 @@ from pydantic import ValidationError
 from dagent.capabilities import CapabilityCatalog, create_default_capability_catalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.harness_runtime import CapabilityExecutor
-from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
+from dagent.schemas import (
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityResult,
+    validate_capability_name,
+)
 from dagent.providers import ToolCall
 from dagent.schemas import Boundary
 
@@ -34,9 +39,37 @@ def test_capability_kind_rejects_removed_file_and_shell_kinds() -> None:
         CapabilityInvocation(capability_id="shell.say_hello", kind="shell")
 
 
-def test_capability_definition_rejects_removed_name_field() -> None:
+def test_capability_definition_defaults_name_and_display_name() -> None:
+    definition = CapabilityDefinition(id="tool.echo", kind="tool")
+
+    assert definition.name == "tool_echo"
+    assert definition.display_name == "tool_echo"
+
+
+def test_capability_definition_accepts_explicit_name_and_display_name() -> None:
+    definition = CapabilityDefinition(
+        id="mcp.github.create_issue",
+        kind="mcp",
+        name="github_create_issue",
+        display_name="Create issue",
+    )
+
+    assert definition.name == "github_create_issue"
+    assert definition.display_name == "Create issue"
+
+
+def test_capability_definition_rejects_invalid_name() -> None:
+    with pytest.raises(ValueError, match="Capability names"):
+        validate_capability_name("bad-name")
+
     with pytest.raises(ValidationError):
-        CapabilityDefinition(id="tool.echo", kind="tool", name="echo")
+        CapabilityDefinition(id="tool.echo", kind="tool", name="bad-name")
+
+
+def test_capability_definition_rejects_invalid_ids() -> None:
+    for capability_id in ("tool.raw-helper", " tool.raw "):
+        with pytest.raises(ValidationError, match="Capability ids"):
+            CapabilityDefinition(id=capability_id, kind="tool")
 
 
 def test_capability_catalog_rejects_whitespace_padded_ids() -> None:
@@ -91,6 +124,108 @@ def test_capability_catalog_replaces_definition_and_handler_atomically() -> None
 
     assert catalog.get("tool.echo") == second
     assert result.content == "second"
+
+
+def test_capability_catalog_rejects_duplicate_names() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="shared")
+    second = CapabilityDefinition(id="tool.second", kind="tool", name="shared")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+
+    with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
+        catalog.register(second, lambda invocation: _result(invocation, "second"))
+
+    assert catalog.get("tool.first") == first
+    assert catalog.get("tool.second") is None
+
+
+def test_capability_catalog_validates_registerable_definition_without_mutation() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="shared")
+    second = CapabilityDefinition(id="tool.second", kind="tool", name="shared")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+
+    with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
+        catalog.validate_registerable(second)
+
+    assert catalog.get("tool.first") == first
+    assert catalog.get("tool.second") is None
+
+
+def test_capability_catalog_get_entry_does_not_expose_mutable_definition() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="first")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+    entry = catalog.get_entry("tool.first")
+    assert entry is not None
+
+    entry.definition.name = "shared"
+
+    assert catalog.get("tool.first") == first
+    updated = catalog.set_enabled("tool.first", False)
+    updated.name = "mutated"
+    stored = catalog.get("tool.first")
+    assert stored is not None
+    assert stored.name == "first"
+    assert stored.enabled is False
+    catalog.register(
+        CapabilityDefinition(id="tool.second", kind="tool", name="shared"),
+        lambda invocation: _result(invocation, "second"),
+    )
+    with pytest.raises(ValueError, match="Capability name 'first' is already registered"):
+        catalog.register(
+            CapabilityDefinition(id="tool.third", kind="tool", name="first"),
+            lambda invocation: _result(invocation, "third"),
+        )
+
+
+def test_capability_catalog_restore_entries_rebuilds_name_index() -> None:
+    catalog = CapabilityCatalog()
+    original = CapabilityDefinition(id="tool.original", kind="tool", name="shared")
+    replacement = CapabilityDefinition(id="tool.replacement", kind="tool", name="shared")
+
+    catalog.register(original, lambda invocation: _result(invocation, "original"))
+    entries = {"tool.original": catalog.get_entry("tool.original")}
+    catalog.delete("tool.original")
+
+    catalog.restore_entries(entries)
+    assert entries["tool.original"] is not None
+    entries["tool.original"].definition.name = "mutated"
+
+    with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
+        catalog.register(replacement, lambda invocation: _result(invocation, "replacement"))
+    assert catalog.get("tool.original") == original
+    assert catalog.get("tool.replacement") is None
+
+
+def test_capability_catalog_replace_maintains_name_index_atomically() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="first")
+    second = CapabilityDefinition(id="tool.second", kind="tool", name="second")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+    catalog.register(second, lambda invocation: _result(invocation, "second"))
+
+    with pytest.raises(ValueError, match="Capability name 'second' is already registered"):
+        catalog.replace(
+            first.model_copy(update={"name": "second"}),
+            lambda invocation: _result(invocation, "updated"),
+        )
+
+    assert catalog.get("tool.first") == first
+    assert catalog.get("tool.second") == second
+
+    updated = first.model_copy(update={"name": "updated"})
+    catalog.replace(updated, lambda invocation: _result(invocation, "updated"))
+    catalog.register(
+        CapabilityDefinition(id="tool.third", kind="tool", name="first"),
+        lambda invocation: _result(invocation, "third"),
+    )
+
+    assert catalog.get("tool.first") == updated
 
 
 def test_capability_catalog_delete_removes_definition_and_handler() -> None:
@@ -191,10 +326,10 @@ def test_capability_tool_adapter_maps_tool_call_to_invocation() -> None:
     assert invocation.boundary.allowed_paths == ["."]
 
 
-def test_capability_tool_adapter_namespaces_capabilities_by_id() -> None:
+def test_capability_tool_adapter_uses_definition_names() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
-        CapabilityDefinition(id="tool.read", kind="tool"),
+        CapabilityDefinition(id="tool.read", kind="tool", name="read"),
         lambda invocation: _result(invocation, "tool"),
     )
     catalog.register(
@@ -211,7 +346,14 @@ def test_capability_tool_adapter_namespaces_capabilities_by_id() -> None:
         for definition in adapter.definitions(("builtin",))
     ]
 
-    assert names == ["tool_read", "memory_read"]
+    assert names == ["read", "memory_read"]
+
+    invocation = adapter.invocation_from_tool_call(
+        ToolCall(id="call_1", name="read", arguments={}),
+        Boundary(),
+        enabled_toolsets=("builtin",),
+    )
+    assert invocation.capability_id == "tool.read"
 
 
 def test_capability_tool_adapter_rejects_unknown_toolset() -> None:

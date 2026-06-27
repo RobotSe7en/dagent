@@ -9,7 +9,33 @@ The current package version is `0.6.0`.
 
 ## Unreleased
 
-- No unreleased changes.
+### Changed
+
+- Capability definitions now separate stable ids from call names. `id` remains
+  the execution identity; `name` is the LLM/PlanSpec function name; and
+  `display_name` is UI-only text.
+- Runner.add_tools is now atomic: if any binding in a batch cannot be
+  registered, the runner leaves the catalog unchanged. Re-registering an
+  identical existing binding remains idempotent.
+- Local WebUI Python tool entries using `source: "module"` no longer reload
+  modules that are already present in `sys.modules`. Use `path` or uploaded
+  `managed` sources when you need reload-style development behavior.
+
+### Breaking Changes
+
+- `@dagent.tool` still does not accept `id=`. Python function tools always
+  derive their capability id from the function name as `tool.<function_name>`.
+  `name=` is accepted again, but it controls only the LLM/PlanSpec function
+  name; it does not change the capability id.
+- `CapabilityDefinition.name` and `CapabilityDefinition.display_name` are
+  public fields. If omitted, `name` defaults to the capability id with dots
+  replaced by underscores, and `display_name` defaults to `name`.
+- Raw `CapabilityDefinition.id` values must use dotted capability ids beginning
+  with `tool`, `agent`, `mcp`, `skill`, or `memory`. Each segment may contain
+  only letters, numbers, and underscores; at least two segments are required.
+- LLM-visible PlanSpec and tool-call function names now use
+  `CapabilityDefinition.name`. Update saved dynamic DAG PlanSpec text and
+  deterministic provider fixtures if you set custom names.
 
 ## 0.6.0
 
