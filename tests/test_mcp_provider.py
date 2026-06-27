@@ -5,6 +5,8 @@ from concurrent.futures import TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
+
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.mcp.config import build_http_headers, build_stdio_env
@@ -154,28 +156,19 @@ def test_mcp_provider_skips_capability_id_collisions() -> None:
     assert "already registered" in provider.registration_errors[0]
 
 
-def test_mcp_provider_detects_capability_id_collision_through_catalog_public_api() -> None:
-    class PublicCatalog:
-        def __init__(self) -> None:
-            self.registered = False
-
-        def register(self, definition, handler):
-            self.registered = True
-            raise ValueError(f"Capability '{definition.id}' is already registered.")
-
-    provider = MCPCapabilityProvider(servers={"mock-server": {"command": "fake"}})
-    catalog = PublicCatalog()
-
-    provider._register_tool(
-        catalog,
-        "mock-server",
-        "lookup",
-        SimpleNamespace(name="lookup", description="", inputSchema={"type": "object"}),
+def test_mcp_provider_does_not_downgrade_invalid_tool_timeout_to_registration_error() -> None:
+    manager = FakeMCPManager()
+    catalog = CapabilityCatalog()
+    provider = MCPCapabilityProvider(
+        servers={"mock-server": {"command": "fake", "tool_timeout": "not-a-number"}},
+        manager=manager,
     )
 
-    assert provider.registration_errors
-    assert "already registered" in provider.registration_errors[0]
-    assert catalog.registered is True
+    with pytest.raises(ValueError, match="could not convert string to float"):
+        provider.register_into(catalog)
+
+    assert provider.registration_errors == []
+    assert catalog.list(kind="mcp") == []
 
 
 def _short_hash(value: str) -> str:

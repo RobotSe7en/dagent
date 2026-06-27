@@ -1116,13 +1116,15 @@ def test_api_capability_list_create_and_test() -> None:
         json={
             "id": "tool.upper",
             "kind": "tool",
+            "name": "upper_text",
+            "display_name": "Upper text",
             "description": "Uppercase text.",
             "config": {"template": "upper:{text}"},
         },
     )
     assert create_response.status_code == 200
-    assert create_response.json()["capability"]["name"] == "tool_upper"
-    assert create_response.json()["capability"]["display_name"] == "tool_upper"
+    assert create_response.json()["capability"]["name"] == "upper_text"
+    assert create_response.json()["capability"]["display_name"] == "Upper text"
 
     test_response = client.post(
         "/capabilities/tool.upper/test",
@@ -1146,6 +1148,36 @@ def test_api_capability_list_create_and_test() -> None:
         "/capabilities/tool.upper/test",
         json={"arguments": {"text": "ok"}},
     ).status_code == 404
+
+
+def test_api_capability_rejects_duplicate_name_without_mutation() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    first = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.first_custom",
+            "kind": "tool",
+            "name": "shared_name",
+            "config": {"template": "first"},
+        },
+    )
+
+    duplicate = client.post(
+        "/capabilities",
+        json={
+            "id": "tool.second_custom",
+            "kind": "tool",
+            "name": "shared_name",
+            "config": {"template": "second"},
+        },
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 400
+    assert "Capability name 'shared_name' is already registered" in duplicate.json()["detail"]
+    assert state.runner.get_capability("tool.first_custom") is not None
+    assert state.runner.get_capability("tool.second_custom") is None
 
 
 def test_api_capability_test_infers_shell_boundary() -> None:

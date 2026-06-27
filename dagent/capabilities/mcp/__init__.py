@@ -79,16 +79,14 @@ class MCPCapabilityProvider:
             ),
             config={"server": server_name, "tool": tool_name},
         )
+        handler = make_mcp_tool_handler(
+            self.manager,
+            server_name=server_name,
+            tool_name=tool_name,
+            timeout_seconds=float(server_config.get("tool_timeout", 60)),
+        )
         try:
-            catalog.register(
-                definition,
-                make_mcp_tool_handler(
-                    self.manager,
-                    server_name=server_name,
-                    tool_name=tool_name,
-                    timeout_seconds=float(server_config.get("tool_timeout", 60)),
-                ),
-            )
+            catalog.register(definition, handler)
         except ValueError as exc:
             self.registration_errors.append(str(exc))
 

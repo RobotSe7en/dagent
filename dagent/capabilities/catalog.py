@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -50,15 +50,7 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
-        validate_capability_id(definition.id, kind=definition.kind)
-        validate_capability_name(definition.name)
-        if definition.id in self._entries:
-            raise ValueError(f"Capability '{definition.id}' is already registered.")
-        existing_id = self._ids_by_name.get(definition.name)
-        if existing_id is not None:
-            raise ValueError(
-                f"Capability name '{definition.name}' is already registered by '{existing_id}'."
-            )
+        self.validate_registerable(definition)
         stored = definition.model_copy(deep=True)
         self._entries[stored.id] = CapabilityEntry(
             definition=stored,
@@ -76,16 +68,10 @@ class CapabilityCatalog:
         supports_context: bool = False,
         sandbox_execution: SandboxExecution = "unsupported",
     ) -> None:
-        validate_capability_id(definition.id, kind=definition.kind)
-        validate_capability_name(definition.name)
         current = self._entries.get(definition.id)
         if current is None:
             raise KeyError(f"Capability '{definition.id}' is not registered.")
-        existing_id = self._ids_by_name.get(definition.name)
-        if existing_id is not None and existing_id != definition.id:
-            raise ValueError(
-                f"Capability name '{definition.name}' is already registered by '{existing_id}'."
-            )
+        self.validate_registerable(definition, ignore_ids=(definition.id,))
         stored = definition.model_copy(deep=True)
         if current.definition.name != stored.name:
             self._ids_by_name.pop(current.definition.name, None)
@@ -114,6 +100,64 @@ class CapabilityCatalog:
         entry = self._entries.pop(capability_id, None)
         if entry is not None:
             self._ids_by_name.pop(entry.definition.name, None)
+
+    def validate_registerable(
+        self,
+        definition: CapabilityDefinition,
+        *,
+        ignore_ids: Iterable[str] = (),
+    ) -> None:
+        ignored = set(ignore_ids)
+        validate_capability_id(definition.id, kind=definition.kind)
+        validate_capability_name(definition.name)
+        if definition.id in self._entries and definition.id not in ignored:
+            raise ValueError(f"Capability '{definition.id}' is already registered.")
+        existing_id = self._ids_by_name.get(definition.name)
+        if existing_id is not None and existing_id not in ignored:
+            raise ValueError(
+                f"Capability name '{definition.name}' is already registered by '{existing_id}'."
+            )
+
+    def validate_registerable_batch(
+        self,
+        definitions: Iterable[CapabilityDefinition],
+        *,
+        ignore_ids: Iterable[str] = (),
+    ) -> None:
+        ignored = set(ignore_ids)
+        seen_ids: set[str] = set()
+        seen_names: dict[str, str] = {}
+        for definition in definitions:
+            if definition.id in seen_ids:
+                raise ValueError(f"Capability '{definition.id}' is already registered.")
+            existing_seen_id = seen_names.get(definition.name)
+            if existing_seen_id is not None:
+                raise ValueError(
+                    f"Capability name '{definition.name}' is already registered by '{existing_seen_id}'."
+                )
+            self.validate_registerable(definition, ignore_ids=ignored)
+            seen_ids.add(definition.id)
+            seen_names[definition.name] = definition.id
+
+    def restore_entries(self, entries: Mapping[str, CapabilityEntry | None]) -> list[str]:
+        restored_ids: list[str] = []
+        try:
+            for capability_id, entry in entries.items():
+                if entry is None:
+                    continue
+                if capability_id != entry.definition.id:
+                    raise ValueError(
+                        f"Cannot restore capability entry '{capability_id}' with definition '{entry.definition.id}'."
+                    )
+                self.validate_registerable(entry.definition)
+                self._entries[capability_id] = entry
+                self._ids_by_name[entry.definition.name] = capability_id
+                restored_ids.append(capability_id)
+        except Exception:
+            for capability_id in restored_ids:
+                self.delete(capability_id)
+            raise
+        return restored_ids
 
     def get(self, capability_id: str) -> CapabilityDefinition | None:
         entry = self._entries.get(capability_id)

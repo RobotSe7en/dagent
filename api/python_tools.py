@@ -22,6 +22,7 @@ from dagent.schemas import validate_capability_id, validate_capability_id_segmen
 class PythonToolSourceStatus:
     config: UserPythonToolConfig
     capability_ids: list[str] = field(default_factory=list)
+    bindings: list[CapabilityBinding] = field(default_factory=list)
     error: str | None = None
 
 
@@ -67,6 +68,7 @@ def load_python_tool_sources(
                 source_seen.add(capability_id)
                 source_capability_ids.append(capability_id)
             status.capability_ids.extend(source_capability_ids)
+            status.bindings.extend(source_bindings)
             bindings.extend(source_bindings)
         except Exception as exc:
             status.error = str(exc)

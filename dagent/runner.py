@@ -558,11 +558,7 @@ class Runner:
         manager: Any | None,
     ) -> None:
         catalog = self._runtime.capability_catalog
-        restored_ids: list[str] = []
-        for capability_id, entry in entries.items():
-            if entry is not None:
-                catalog._entries[capability_id] = entry
-                restored_ids.append(capability_id)
+        restored_ids = catalog.restore_entries(entries)
         if restored_ids:
             self._mcp_server_capability_ids[name] = tuple(restored_ids)
         if manager is not None:

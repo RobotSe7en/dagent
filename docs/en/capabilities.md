@@ -6,7 +6,7 @@ runtime capability catalog.
 
 ## Capability Ids
 
-| Source | Id format |
+| Source | Common id form |
 | --- | --- |
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
@@ -17,9 +17,12 @@ runtime capability catalog.
 Capability ids are public behavior. Do not depend on legacy aliases that are not
 documented here.
 
-Raw `CapabilityDefinition.id` values must use one of the dotted forms above.
-Every segment may contain only letters, numbers, and underscores; leading or
-trailing whitespace is rejected.
+Raw `CapabilityDefinition.id` values must start with one of the supported kind
+prefixes (`tool`, `mcp`, `agent`, `skill`, `memory`) and contain at least two
+dotted segments. Every segment may contain only letters, numbers, and
+underscores; leading or trailing whitespace is rejected. The table lists the
+forms dagent uses by default, not a fixed segment count for every custom
+capability.
 
 ## Built-in Tools
 

@@ -1033,6 +1033,7 @@ test('capability review rejection settles the running tool card', () => {
     capability_call: {
       invocation_id: 'call_001',
       capability_id: 'tool.shell',
+      tool_name: 'tool_shell',
       arguments: { command: 'rm -rf ./tmp' },
     },
   };
@@ -1056,6 +1057,49 @@ test('capability review rejection settles the running tool card', () => {
   assert.equal(next[0].result.invocation_id, 'call_001');
   assert.match(next[0].result.content, /人工审核已拒绝/);
   assert.match(next[0].result.content, /不要删除文件/);
+});
+
+test('stream parser preserves capability review tool name', async () => {
+  const { streamTask } = await importTypeScriptModule('../src/api.ts', [
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const previousFetch = globalThis.fetch;
+  const frame = {
+    type: 'review.required',
+    data: {
+      review_id: 'review_tool_001',
+      kind: 'capability_review',
+      message: 'Review capability call.',
+      capability_call: {
+        invocation_id: 'call_001',
+        capability_id: 'tool.shell',
+        tool_name: 'tool_shell',
+        arguments: { command: 'rm -rf ./tmp' },
+      },
+    },
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async () => ({ ok: true, body });
+  try {
+    let parsedReview;
+    await streamTask('run shell', 'tool', 'none', {
+      onReview(review) {
+        parsedReview = review;
+      },
+    });
+
+    assert.equal(parsedReview.capability_call.tool_name, 'tool_shell');
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test('dag review resume reuses the DAG assistant turn instead of opening a new chat frame', async () => {

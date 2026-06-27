@@ -66,6 +66,12 @@ def test_capability_definition_rejects_invalid_name() -> None:
         CapabilityDefinition(id="tool.echo", kind="tool", name="bad-name")
 
 
+def test_capability_definition_rejects_invalid_ids() -> None:
+    for capability_id in ("tool.raw-helper", " tool.raw "):
+        with pytest.raises(ValidationError, match="Capability ids"):
+            CapabilityDefinition(id=capability_id, kind="tool")
+
+
 def test_capability_catalog_rejects_whitespace_padded_ids() -> None:
     catalog = CapabilityCatalog()
 
@@ -132,6 +138,37 @@ def test_capability_catalog_rejects_duplicate_names() -> None:
 
     assert catalog.get("tool.first") == first
     assert catalog.get("tool.second") is None
+
+
+def test_capability_catalog_validates_registerable_definition_without_mutation() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="shared")
+    second = CapabilityDefinition(id="tool.second", kind="tool", name="shared")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+
+    with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
+        catalog.validate_registerable(second)
+
+    assert catalog.get("tool.first") == first
+    assert catalog.get("tool.second") is None
+
+
+def test_capability_catalog_restore_entries_rebuilds_name_index() -> None:
+    catalog = CapabilityCatalog()
+    original = CapabilityDefinition(id="tool.original", kind="tool", name="shared")
+    replacement = CapabilityDefinition(id="tool.replacement", kind="tool", name="shared")
+
+    catalog.register(original, lambda invocation: _result(invocation, "original"))
+    entries = {"tool.original": catalog.get_entry("tool.original")}
+    catalog.delete("tool.original")
+
+    catalog.restore_entries(entries)
+
+    with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
+        catalog.register(replacement, lambda invocation: _result(invocation, "replacement"))
+    assert catalog.get("tool.original") == original
+    assert catalog.get("tool.replacement") is None
 
 
 def test_capability_catalog_replace_maintains_name_index_atomically() -> None:

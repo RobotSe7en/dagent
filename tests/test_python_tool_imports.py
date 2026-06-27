@@ -372,6 +372,73 @@ def test_api_rejects_generic_mutation_of_imported_python_tool(tmp_path: Path) ->
     assert "Python tool source" in disabled.json()["detail"]
 
 
+def test_api_python_tool_validation_rejects_existing_capability_name(tmp_path: Path) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(name='tool_read_file')\n"
+        "def custom_search() -> str:\n"
+        "    return 'search'\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/python-tools/validate",
+        json={
+            "id": "local",
+            "source": "path",
+            "path": str(script),
+            "names": ["custom_search"],
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["tool"]
+    assert payload["status"] == "error"
+    assert payload["capabilities"] == []
+    assert "Capability name 'tool_read_file' is already registered" in payload["error"]
+
+
+def test_api_python_tool_source_fails_closed_on_partial_registration_error(tmp_path: Path) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool\n"
+        "def custom_ok() -> str:\n"
+        "    return 'ok'\n"
+        "@tool(name='tool_read_file')\n"
+        "def custom_collision() -> str:\n"
+        "    return 'collision'\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [custom_ok, custom_collision]\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    listed = client.get("/python-tools")
+    capabilities = client.get("/capabilities")
+
+    assert listed.status_code == 200
+    payload = listed.json()["tools"][0]
+    assert payload["status"] == "error"
+    assert payload["capabilities"] == []
+    assert "Capability name 'tool_read_file' is already registered" in payload["error"]
+    assert capabilities.status_code == 200
+    ids = {item["id"] for item in capabilities.json()["capabilities"]}
+    assert "tool.custom_ok" not in ids
+    assert state.runner.get_capability("tool.custom_ok") is None
+
+
 def test_api_reports_malformed_python_tool_config_without_startup_failure(tmp_path: Path) -> None:
     config_path = state.get_user_config_path()
     config_path.parent.mkdir(parents=True)

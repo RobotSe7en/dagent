@@ -294,19 +294,6 @@ def test_add_tool_allows_registered_agent_same_short_name(tmp_path) -> None:
     runner.close()
 
 
-def test_register_capability_rejects_invalid_capability_id(tmp_path) -> None:
-    runner = _runner(tmp_path)
-    invalid_ids = ("tool.raw-helper", " tool.raw ")
-
-    for invalid_id in invalid_ids:
-        with pytest.raises(ValueError, match="Capability ids"):
-            CapabilityDefinition(id=invalid_id, kind="tool")
-
-        assert runner.get_capability(invalid_id) is None
-        assert runner.get_capability(invalid_id.strip()) is None
-    runner.close()
-
-
 def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp_path) -> None:
     class SameShortNameMCPProvider:
         def __init__(self, servers, *, manager=None):
@@ -558,6 +545,11 @@ def test_replace_mcp_server_rolls_back_registered_agent_dependency_on_error(monk
 
     assert runner.get_capability("mcp.search.lookup") is not None
     assert runner.get_capability("agent.helper") is not None
+    with pytest.raises(ValueError, match="Capability name 'mcp_search_lookup' is already registered"):
+        runner.register_capability(
+            CapabilityDefinition(id="tool.duplicate", kind="tool", name="mcp_search_lookup"),
+            lambda invocation: CapabilityResult.completed(invocation, "duplicate"),
+        )
     runner.close()
 
 

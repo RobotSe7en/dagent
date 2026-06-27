@@ -541,25 +541,24 @@ class ApiState:
             for status in result.statuses
         }
         self.custom_python_tool_capability_ids = set()
-        source_by_capability_id = {
-            capability_id: source_id
-            for source_id, capability_ids in self.custom_python_tool_capabilities.items()
-            for capability_id in capability_ids
-        }
-        for binding in result.bindings:
-            capability_id = binding.definition.id
-            source_id = source_by_capability_id.get(capability_id)
+        catalog = self.runner.runtime.capability_catalog
+        for status in result.statuses:
+            if status.error is not None or not status.config.enabled:
+                continue
+            registered_ids: list[str] = []
             try:
-                self.runner.add_tool(binding)
-                self.custom_python_tool_capability_ids.add(capability_id)
+                catalog.validate_registerable_batch(
+                    binding.definition for binding in status.bindings
+                )
+                for binding in status.bindings:
+                    self.runner.add_tool(binding)
+                    registered_ids.append(binding.definition.id)
+                self.custom_python_tool_capability_ids.update(registered_ids)
             except Exception as exc:
-                if source_id is not None:
-                    self.custom_python_tool_errors[source_id] = str(exc)
-                    self.custom_python_tool_capabilities[source_id] = [
-                        value
-                        for value in self.custom_python_tool_capabilities.get(source_id, [])
-                        if value != capability_id
-                    ]
+                for capability_id in reversed(registered_ids):
+                    self.runner.remove_capability(capability_id)
+                self.custom_python_tool_errors[status.config.id] = str(exc)
+                self.custom_python_tool_capabilities[status.config.id] = []
 
     def reload_custom_mcp(self) -> None:
         if self.runner is None:
@@ -1238,6 +1237,16 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
         managed_root=state.get_managed_python_tool_root(),
     )
     status = result.statuses[0] if result.statuses else None
+    if status is not None and status.error is None and status.config.enabled:
+        runner = state.get_runner()
+        try:
+            runner.runtime.capability_catalog.validate_registerable_batch(
+                (binding.definition for binding in status.bindings),
+                ignore_ids=state.custom_python_tool_capabilities.get(config.id, []),
+            )
+        except Exception as exc:
+            status.error = str(exc)
+            status.capability_ids.clear()
     return {
         "tool": _python_tool_payload(
             config,

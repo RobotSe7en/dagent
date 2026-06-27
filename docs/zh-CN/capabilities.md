@@ -5,7 +5,7 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 
 ## Capability Ids
 
-| 来源 | Id 格式 |
+| 来源 | 常见 id 形式 |
 | --- | --- |
 | Python function tools | `tool.<name>` |
 | MCP tools | `mcp.<server>.<tool>` |
@@ -15,8 +15,10 @@ Capabilities 是注册到 `Runner` 的可执行动作。Agents 和 DAG nodes 不
 
 Capability ids 是公开行为。不要依赖这里未记录的 legacy aliases。
 
-Raw `CapabilityDefinition.id` 必须使用上表中的 dotted forms。每个 segment
-只能包含字母、数字和下划线；首尾空白会被拒绝。
+Raw `CapabilityDefinition.id` 必须以受支持的 kind 前缀开头（`tool`、`mcp`、
+`agent`、`skill`、`memory`），并且至少包含两个 dotted segments。每个 segment
+只能包含字母、数字和下划线；首尾空白会被拒绝。上表列出的是 dagent 默认使用的
+常见形式，不表示所有自定义 capability 都必须固定为同样的 segment 数量。
 
 ## 内置工具
 
