@@ -357,6 +357,7 @@ class ApiState:
         self.custom_mcp_errors: dict[str, str] = {}
         self.custom_mcp_conflict_errors: dict[str, str] = {}
         self.agent_preset_errors: dict[str, str] = {}
+        self.agent_preset_registered_names: set[str] = set()
         self.custom_model_providers: dict[str, ModelProviderRequest] = {}
         self.active_model_id: str | None = None
         self.custom_python_tools: list[UserPythonToolConfig] = []
@@ -408,6 +409,7 @@ class ApiState:
         self.custom_python_tool_capabilities.clear()
         self.custom_python_tool_capability_ids.clear()
         self.agent_preset_errors.clear()
+        self.agent_preset_registered_names.clear()
 
     def get_profile_directory(self) -> str | None:
         if self.profile_directory is not None:
@@ -582,12 +584,32 @@ class ApiState:
         if self.runner is None:
             return
         presets, errors = _agent_presets_with_errors(self.agent_preset_store())
+        previous_registered = set(self.agent_preset_registered_names)
+        registered_names: set[str] = set()
+        configured_names = {preset.name for preset in presets}.union(errors)
         self.agent_preset_errors = dict(errors)
+        for name in previous_registered - configured_names:
+            self._remove_agent_preset_capability(name)
+        for name in errors:
+            if name not in previous_registered:
+                continue
+            self._remove_agent_preset_capability(name)
         for preset in presets:
             try:
                 self.runner.add_agent(_tool_agent_from_preset(preset))
+                registered_names.add(preset.name)
             except Exception as exc:
                 self.agent_preset_errors[preset.name] = str(exc)
+                if preset.name in previous_registered:
+                    self._remove_agent_preset_capability(preset.name)
+        self.agent_preset_registered_names = registered_names
+
+    def _remove_agent_preset_capability(self, name: str) -> None:
+        if self.runner is None:
+            return
+        capability_id = f"agent.{name}"
+        if self.runner.get_capability(capability_id) is not None:
+            self.runner.remove_capability(capability_id)
 
 
 state = ApiState()
@@ -985,6 +1007,7 @@ async def create_agent(request: AgentPreset) -> dict[str, Any]:
     saved = store.save(preset)
     try:
         state.get_runner().add_agent(tool_agent)
+        state.agent_preset_registered_names.add(name)
     except Exception as exc:
         store.delete(name)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1770,6 +1793,7 @@ def _load_user_config_for_webui(path: Path) -> tuple[UserDagentConfig, dict[str,
 
 
 def _reload_python_tools() -> None:
+    state.sync_user_config()
     if state.runner is None:
         state.get_runner()
         return

@@ -328,6 +328,44 @@ def test_api_python_tool_reload_keeps_runner_instance(
     assert state.runner is original_runner
 
 
+def test_api_python_tool_reload_reads_updated_user_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    save_user_config(UserDagentConfig(), config_path)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    assert client.get("/python-tools").json()["tools"] == []
+    original_runner = state.runner
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [echo_text]\n",
+        encoding="utf-8",
+    )
+
+    response = client.post("/python-tools/reload")
+
+    assert response.status_code == 200
+    assert state.runner is original_runner
+    assert response.json()["tools"][0]["id"] == "local"
+    assert response.json()["tools"][0]["capabilities"] == ["tool.echo_text"]
+    assert state.runner.get_capability("tool.echo_text") is not None
+
+
 def test_api_delete_python_tool_reports_dependent_preset_error_without_rebuilding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -378,7 +416,55 @@ def test_api_delete_python_tool_reports_dependent_preset_error_without_rebuildin
     assert state.runner is original_runner
     assert load_user_config(config_path).python_tools == []
     assert state.runner.get_capability("tool.echo_text") is None
+    assert state.runner.get_capability("agent.helper") is None
+    assert "helper" in state.agent_preset_errors
+    assert "tool.echo_text" in state.agent_preset_errors["helper"]
+
+
+def test_api_delete_python_tool_removes_agent_created_through_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [echo_text]\n",
+        encoding="utf-8",
+    )
+    agent_root = tmp_path / "agents"
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    assert client.get("/python-tools").status_code == 200
+    created = client.post(
+        "/agents",
+        json={
+            "name": "helper",
+            "profile": "conversation",
+            "capabilities": ["tool.echo_text"],
+            "skills": [],
+        },
+    )
+    assert created.status_code == 200
     assert state.runner.get_capability("agent.helper") is not None
+
+    deleted = client.delete("/python-tools/local")
+
+    assert deleted.status_code == 200
+    assert state.runner.get_capability("agent.helper") is None
     assert "helper" in state.agent_preset_errors
     assert "tool.echo_text" in state.agent_preset_errors["helper"]
 
