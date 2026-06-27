@@ -11,6 +11,7 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     tool = CapabilityDefinition(
         id="tool.read_file",
         kind="tool",
+        name="read",
         description="Read a file.",
         parameters={
             "type": "object",
@@ -32,7 +33,7 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert messages[0]["role"] == "system"
     assert "DAGAgent soul" in messages[0]["content"]
     assert "DAGAgent agent instructions" in messages[0]["content"]
-    assert "tool_read_file (tool, id: tool.read_file): Read a file. Args: path." in messages[0]["content"]
+    assert "read (tool, id: tool.read_file): Read a file. Args: path." in messages[0]["content"]
     assert "Project context." in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
 

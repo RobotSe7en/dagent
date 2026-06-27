@@ -691,6 +691,7 @@ def test_api_message_stream_capability_review_event_includes_call_and_payload(tm
     assert review["capability_call"] == {
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
+        "tool_name": "tool_read_file",
         "arguments": {"path": "../blocked/secret.txt"},
     }
     assert review["payload"]["capability_id"] == "tool.read_file"
@@ -1120,6 +1121,8 @@ def test_api_capability_list_create_and_test() -> None:
         },
     )
     assert create_response.status_code == 200
+    assert create_response.json()["capability"]["name"] == "tool_upper"
+    assert create_response.json()["capability"]["display_name"] == "tool_upper"
 
     test_response = client.post(
         "/capabilities/tool.upper/test",
@@ -1231,8 +1234,8 @@ def test_api_rejects_whitespace_padded_capability_id_without_persisting() -> Non
         },
     )
 
-    assert response.status_code == 400
-    assert "Capability ids" in response.json()["detail"]
+    assert response.status_code == 422
+    assert "Capability ids" in str(response.json()["detail"])
     assert state.runner.get_capability("tool.upper ") is None
     assert state.runner.get_capability("tool.upper") is None
     assert "tool.upper " not in state.custom_capabilities

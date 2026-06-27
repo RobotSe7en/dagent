@@ -33,6 +33,8 @@ class CapabilityBinding:
 def tool(
     fn: Callable[..., Any] | None = None,
     *,
+    name: str = "",
+    display_name: str = "",
     description: str = "",
     risk: RiskLevel = "low",
     requires_review: bool = False,
@@ -47,8 +49,9 @@ def tool(
     """Decorate a Python function as a dagent tool capability.
 
     This is the public way to expose a Python function as an LLM-callable
-    tool. The capability id is always ``tool.<function_name>``. MCP and skill
-    capabilities are registered through
+    tool. The capability id is always ``tool.<function_name>``. ``name``
+    controls the LLM/DAG function name only. MCP and skill capabilities are
+    registered through
     ``Runner.add_mcp_server`` and ``Runner.add_skill_root``.
     """
 
@@ -59,6 +62,8 @@ def tool(
         definition = CapabilityDefinition(
             id=capability_id,
             kind="tool",
+            name=name,
+            display_name=display_name,
             description=description or inspect.getdoc(func) or "",
             parameters=parameters or _schema_from_signature(func, type_hints),
             output_schema=_output_schema_from_signature(func, type_hints),

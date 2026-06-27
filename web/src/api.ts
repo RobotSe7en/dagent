@@ -737,6 +737,7 @@ function reviewPayload(data: Record<string, unknown>): ReviewEventPayload {
     payload.capability_call = {
       invocation_id: String(data.capability_call.invocation_id ?? ''),
       capability_id: String(data.capability_call.capability_id ?? ''),
+      tool_name: String(data.capability_call.tool_name ?? ''),
       arguments: isRecord(data.capability_call.arguments) ? data.capability_call.arguments : {},
     };
   }

@@ -936,6 +936,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert first.pending_review.capability_call == {
         "invocation_id": "call_1",
         "capability_id": "tool.write_file",
+        "tool_name": "tool_write_file",
         "arguments": {"path": "notes.md", "content": "hi"},
     }
     assert resumed.status == "completed"

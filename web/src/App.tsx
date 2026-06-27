@@ -8594,7 +8594,7 @@ function chatCapabilityScopeLabel(
 function matchesCapabilityQuery(capability: CapabilityDefinition, query: string): boolean {
   if (!query) return true;
   const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
-  const haystack = `${capability.id} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
+  const haystack = `${capability.id} ${capability.name} ${capability.display_name} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
   return haystack.includes(query);
 }
 

@@ -151,7 +151,7 @@ def test_mcp_provider_skips_capability_id_collisions() -> None:
 
     assert catalog.get(capability_id) is not None
     assert provider.registration_errors
-    assert "collides" in provider.registration_errors[0]
+    assert "already registered" in provider.registration_errors[0]
 
 
 def test_mcp_provider_detects_capability_id_collision_through_catalog_public_api() -> None:
@@ -159,11 +159,9 @@ def test_mcp_provider_detects_capability_id_collision_through_catalog_public_api
         def __init__(self) -> None:
             self.registered = False
 
-        def get(self, capability_id: str):
-            return CapabilityDefinition(id=capability_id, kind="mcp")
-
         def register(self, definition, handler):
             self.registered = True
+            raise ValueError(f"Capability '{definition.id}' is already registered.")
 
     provider = MCPCapabilityProvider(servers={"mock-server": {"command": "fake"}})
     catalog = PublicCatalog()
@@ -176,8 +174,8 @@ def test_mcp_provider_detects_capability_id_collision_through_catalog_public_api
     )
 
     assert provider.registration_errors
-    assert "collides" in provider.registration_errors[0]
-    assert catalog.registered is False
+    assert "already registered" in provider.registration_errors[0]
+    assert catalog.registered is True
 
 
 def _short_hash(value: str) -> str:

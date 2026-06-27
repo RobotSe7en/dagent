@@ -29,10 +29,9 @@ The current package version is `0.6.0`.
 
 ### Changed
 
-- LLM-visible function names are now consistently derived from stable
-  capability ids by replacing dots with underscores. For example,
-  `tool.search` becomes `tool_search(...)`, and `agent.helper` becomes
-  `agent_helper(...)`.
+- Capability definitions now separate stable ids from call names. `id` remains
+  the execution identity; `name` is the LLM/PlanSpec function name; and
+  `display_name` is UI-only text.
 - Runner capability registration now keeps registered subagent runtime scopes
   aligned as tools, MCP servers, raw capabilities, and skill visibility change.
 - Local API agent preset payloads now use public `ToolAgent` field names and
@@ -40,23 +39,19 @@ The current package version is `0.6.0`.
 
 ### Breaking Changes
 
-- `@dagent.tool` no longer accepts `id=` or `name=`.
-  Python function tools always derive their capability id from the function
-  name as `tool.<function_name>`. Rename the function or wrap the implementation
-  with a differently named function when changing the public id.
-- `CapabilityDefinition.name` has been removed. Raw capability definitions now
-  carry only `id` as their stable public identifier; LLM-visible function names
-  are derived from that id.
-- Raw `CapabilityDefinition.id` values must use supported dotted capability id
-  forms: `tool.<name>`, `agent.<name>`, `mcp.<server>.<tool>`, `skill.<name>`,
-  or `memory.<name>`. Each segment may contain only letters, numbers, and
-  underscores; leading or trailing whitespace is rejected.
-- LLM-visible PlanSpec and tool-call function names are now derived from
-  capability ids by replacing dots with underscores. For example, use
-  `tool_search(...)`, `tool_shell(...)`, and `agent_helper(...)` instead of
-  short names such as `search(...)`, `shell(...)`, or `helper(...)`. Update
-  saved dynamic DAG PlanSpec text and deterministic provider fixtures
-  accordingly.
+- `@dagent.tool` still does not accept `id=`. Python function tools always
+  derive their capability id from the function name as `tool.<function_name>`.
+  `name=` is accepted again, but it controls only the LLM/PlanSpec function
+  name; it does not change the capability id.
+- `CapabilityDefinition.name` and `CapabilityDefinition.display_name` are
+  public fields. If omitted, `name` defaults to the capability id with dots
+  replaced by underscores, and `display_name` defaults to `name`.
+- Raw `CapabilityDefinition.id` values must use dotted capability ids beginning
+  with `tool`, `agent`, `mcp`, `skill`, or `memory`. Each segment may contain
+  only letters, numbers, and underscores; at least two segments are required.
+- LLM-visible PlanSpec and tool-call function names now use
+  `CapabilityDefinition.name`. Update saved dynamic DAG PlanSpec text and
+  deterministic provider fixtures if you set custom names.
 - MCP capability ids now use stable canonical keys for raw MCP server or tool
   names that are not already valid id segments. For example, `mock-server` no
   longer maps to `mock_server`; inspect registered capability definitions and

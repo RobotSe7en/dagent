@@ -41,6 +41,8 @@ export interface CapabilityPolicy {
 export interface CapabilityDefinition {
   id: string;
   kind: CapabilityKind;
+  name: string;
+  display_name: string;
   description: string;
   parameters: Record<string, unknown>;
   output_schema: Record<string, unknown>;
@@ -329,6 +331,7 @@ export interface CapabilityStreamEvent {
 export interface CapabilityCallPayload {
   invocation_id: string;
   capability_id: string;
+  tool_name: string;
   arguments: Record<string, unknown>;
 }
 

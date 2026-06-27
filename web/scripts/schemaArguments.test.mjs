@@ -186,9 +186,11 @@ test('composer uses upload placeholder instead of creating chats from the input 
   assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
 });
 
-test('capability helpers follow 0.6.0 id-only contracts', () => {
+test('capability helpers use display names and dotted ids', () => {
   const capability = {
     id: 'agent.helper',
+    name: 'helper',
+    display_name: 'Helper',
     kind: 'agent',
     description: 'Summarizes delegated work.',
     parameters: {},
@@ -198,9 +200,10 @@ test('capability helpers follow 0.6.0 id-only contracts', () => {
     enabled: true,
   };
 
-  assert.equal(capabilityDisplayName(capability), 'agent.helper');
+  assert.equal(capabilityDisplayName(capability), 'Helper');
   assert.equal(isValidCapabilityId('tool.search'), true);
   assert.equal(isValidCapabilityId('mcp.remote_docs.lookup'), true);
+  assert.equal(isValidCapabilityId('mcp.remote.docs.lookup'), true);
   assert.equal(isValidCapabilityId('agent.bad-name'), false);
   assert.equal(isValidCapabilityId(' search'), false);
   assert.equal(cleanWorkspaceKeyDraft('helper-agent'), 'helper_agent');

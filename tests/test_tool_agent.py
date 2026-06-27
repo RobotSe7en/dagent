@@ -12,7 +12,7 @@ from dagent.harness_runtime import ToolAgent, ToolAgentLoop
 from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.profiles import AgentProfile
-from dagent.schemas import Boundary, CapabilityDefinition, CapabilityPolicy, CapabilityInvocation, CapabilityResult
+from dagent.schemas import Boundary
 from dagent.capabilities.tools.file_tools import create_file_tool_registry
 
 
@@ -258,6 +258,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
     assert result.state.pending_review.capability_call == {
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
+        "tool_name": "tool_read_file",
         "arguments": {"path": "blocked/secret.txt"},
     }
     assert result.state.pending_review.payload["reason"] == "boundary_violation"
@@ -469,6 +470,58 @@ def test_tool_agent_boundary_review_takes_precedence_over_careful_risk_review(tm
     assert target.read_text(encoding="utf-8") == "approved"
 
 
+def test_tool_agent_review_resume_reuses_original_tool_call_name(tmp_path: Path) -> None:
+    @tool(name="write", risk="medium")
+    def write_note(content: str) -> str:
+        return content
+
+    catalog = CapabilityCatalog(workspace_root=tmp_path)
+    catalog.register(write_note.definition, write_note.handler)
+    provider = MockProvider(
+        [
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write",
+                        arguments={"content": "approved"},
+                    )
+                ]
+            ),
+            ChatResponse(content="Done."),
+        ]
+    )
+    agent = ToolAgent(
+        loop=ToolAgentLoop(
+            provider=provider,
+            capability_executor=CapabilityExecutor(catalog),
+            tool_adapter=_tool_adapter(catalog),
+        ),
+        profile=_profile(),
+    )
+
+    first = run(agent.run("Write note", review_level="careful"))
+
+    assert first.state.status == "awaiting_review"
+    assert first.state.pending_review is not None
+    assert first.state.pending_review.capability_call == {
+        "invocation_id": "call_1",
+        "capability_id": "tool.write_note",
+        "tool_name": "write",
+        "arguments": {"content": "approved"},
+    }
+
+    resumed = run(agent.resume_review(first.state, approved=True))
+
+    assert resumed.state.status == "completed"
+    tool_message = next(
+        message
+        for message in provider.requests[1]["messages"]
+        if message.get("role") == "tool" and message.get("tool_call_id") == "call_1"
+    )
+    assert tool_message["name"] == "write"
+
+
 def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_path: Path) -> None:
     first_file = tmp_path / "blocked" / "first.txt"
     second_file = tmp_path / "blocked" / "second.txt"
@@ -512,6 +565,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     assert resumed.state.pending_review.capability_call == {
         "invocation_id": "call_2",
         "capability_id": "tool.write_file",
+        "tool_name": "tool_write_file",
         "arguments": {"path": "blocked/second.txt", "content": "two"},
     }
     assert resumed.state.pending_review.payload["reason"] == "boundary_violation"
@@ -809,68 +863,6 @@ def test_tool_agent_loop_feeds_boundary_violation_back_as_tool_message(tmp_path:
     tool_msg = result.state.internal_messages[2]
     assert tool_msg["role"] == "tool"
     assert "[BOUNDARY_VIOLATION]" in tool_msg["content"]
-
-
-def test_tool_agent_resume_review_uses_adapter_function_name_for_capability(tmp_path: Path) -> None:
-    catalog = CapabilityCatalog(workspace_root=tmp_path)
-    definition = CapabilityDefinition(
-        id="memory.read",
-        kind="memory",
-        policy=CapabilityPolicy(risk="medium"),
-    )
-    catalog.register(definition, _capability_result("file content"))
-    adapter = CapabilityToolAdapter(
-        catalog,
-        toolsets=[CapabilityToolset("builtin", ("memory.read",))],
-    )
-    provider = MockProvider(
-        [
-            ChatResponse(
-                tool_calls=[
-                    ToolCall(
-                        id="call_1",
-                        name="memory_read",
-                        arguments={"key": "notes"},
-                    )
-                ]
-            ),
-            ChatResponse(content="Read it."),
-        ]
-    )
-    agent = ToolAgent(
-        loop=ToolAgentLoop(
-            provider=provider,
-            capability_executor=CapabilityExecutor(catalog),
-            tool_adapter=adapter,
-        ),
-        profile=_profile(),
-    )
-
-    first = run(agent.run("Read notes", review_level="careful"))
-    state = first.state.model_copy(update={"user_request": "Read notes", "review_level": "careful"})
-
-    resumed = run(agent.resume_review(state, approved=True))
-
-    assert resumed.state.status == "completed"
-    assert agent.messages[2] == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "name": "memory_read",
-        "content": "file content",
-    }
-
-
-def _capability_result(content: str):
-    def handler(invocation: CapabilityInvocation) -> CapabilityResult:
-        return CapabilityResult(
-            invocation_id=invocation.invocation_id,
-            capability_id=invocation.capability_id,
-            kind=invocation.kind,
-            status="completed",
-            content=content,
-        )
-
-    return handler
 
 
 def _profile() -> AgentProfile:

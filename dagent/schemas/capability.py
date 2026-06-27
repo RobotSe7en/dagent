@@ -6,7 +6,7 @@ import re
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dagent.schemas.common import Boundary, RiskLevel
 
@@ -20,13 +20,7 @@ CapabilityKind = Literal[
 ]
 CapabilityStatus = Literal["completed", "failed"]
 _CAPABILITY_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
-_CAPABILITY_ID_SEGMENT_COUNTS = {
-    "tool": 2,
-    "agent": 2,
-    "mcp": 3,
-    "skill": 2,
-    "memory": 2,
-}
+_CAPABILITY_KINDS = {"tool", "agent", "mcp", "skill", "memory"}
 
 
 def validate_capability_id(
@@ -42,13 +36,12 @@ def validate_capability_id(
     if not parts or any(not part for part in parts):
         raise ValueError(f"{label} must use a supported dotted capability id form.")
     prefix = parts[0]
-    if prefix not in _CAPABILITY_ID_SEGMENT_COUNTS:
+    if prefix not in _CAPABILITY_KINDS:
         raise ValueError(f"{label} must start with tool, agent, mcp, skill, or memory.")
     if kind is not None and prefix != kind:
         raise ValueError(f"{label} for kind '{kind}' must start with '{kind}.'.")
-    expected_count = _CAPABILITY_ID_SEGMENT_COUNTS[prefix]
-    if len(parts) != expected_count:
-        raise ValueError(f"{label} must use the form '{_capability_id_form(prefix)}'.")
+    if len(parts) < 2:
+        raise ValueError(f"{label} must use the form '<kind>.<name>'.")
     for part in parts:
         validate_capability_id_segment(part, label=label)
     return capability_id
@@ -63,10 +56,13 @@ def validate_capability_id_segment(value: Any, *, label: str = "Capability id se
     return segment
 
 
-def _capability_id_form(prefix: str) -> str:
-    if prefix == "mcp":
-        return "mcp.<server>.<tool>"
-    return f"{prefix}.<name>"
+def validate_capability_name(value: Any, *, label: str = "Capability names") -> str:
+    name = str(value or "")
+    if name != name.strip():
+        raise ValueError(f"{label} may not contain leading or trailing whitespace.")
+    if not _CAPABILITY_ID_SEGMENT_RE.fullmatch(name):
+        raise ValueError(f"{label} may contain only letters, numbers, and underscores.")
+    return name
 
 
 class CapabilityPolicy(BaseModel):
@@ -82,12 +78,25 @@ class CapabilityDefinition(BaseModel):
 
     id: str
     kind: CapabilityKind
+    name: str = ""
+    display_name: str = ""
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
     output_schema: dict[str, Any] = Field(default_factory=dict)
     policy: CapabilityPolicy = Field(default_factory=CapabilityPolicy)
     config: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "CapabilityDefinition":
+        self.id = validate_capability_id(self.id, kind=self.kind)
+        self.name = validate_capability_name(self.name or self.id.replace(".", "_"))
+        self.display_name = str(self.display_name or self.name)
+        if self.display_name != self.display_name.strip():
+            raise ValueError("Capability display names may not contain leading or trailing whitespace.")
+        if not self.display_name:
+            raise ValueError("Capability display names may not be empty.")
+        return self
 
 
 class CapabilityInvocation(BaseModel):

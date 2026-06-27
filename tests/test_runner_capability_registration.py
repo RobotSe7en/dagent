@@ -299,13 +299,8 @@ def test_register_capability_rejects_invalid_capability_id(tmp_path) -> None:
     invalid_ids = ("tool.raw-helper", " tool.raw ")
 
     for invalid_id in invalid_ids:
-        definition = CapabilityDefinition(id=invalid_id, kind="tool")
-
         with pytest.raises(ValueError, match="Capability ids"):
-            runner.register_capability(
-                definition,
-                lambda invocation: CapabilityResult.completed(invocation, "raw"),
-            )
+            CapabilityDefinition(id=invalid_id, kind="tool")
 
         assert runner.get_capability(invalid_id) is None
         assert runner.get_capability(invalid_id.strip()) is None
@@ -341,20 +336,18 @@ def test_add_mcp_server_allows_registered_agent_same_short_name(monkeypatch, tmp
     runner.close()
 
 
-def test_adapter_rejects_mcp_function_name_collisions() -> None:
+def test_catalog_rejects_mcp_function_name_collisions() -> None:
     catalog = CapabilityCatalog()
-    for capability_id in ("mcp.foo.bar_baz", "mcp.foo_bar.baz"):
-        catalog.register(
-            CapabilityDefinition(id=capability_id, kind="mcp"),
-            lambda invocation: CapabilityResult.completed(invocation, "ok"),
-        )
-    adapter = CapabilityToolAdapter(
-        catalog,
-        toolsets=[CapabilityToolset("builtin", ("mcp.foo.bar_baz", "mcp.foo_bar.baz"))],
+    catalog.register(
+        CapabilityDefinition(id="mcp.foo.bar_baz", kind="mcp"),
+        lambda invocation: CapabilityResult.completed(invocation, "ok"),
     )
 
-    with pytest.raises(ValueError, match="LLM tool name collision"):
-        adapter.definitions(("builtin",))
+    with pytest.raises(ValueError, match="Capability name 'mcp_foo_bar_baz' is already registered"):
+        catalog.register(
+            CapabilityDefinition(id="mcp.foo_bar.baz", kind="mcp"),
+            lambda invocation: CapabilityResult.completed(invocation, "ok"),
+        )
 
 
 def test_remove_agent_capability_clears_registered_agent_config(tmp_path) -> None:
@@ -837,7 +830,7 @@ def test_add_mcp_server_rolls_back_partial_registration_on_error(tmp_path) -> No
 
     manager = TwoToolManager()
 
-    with pytest.raises(RuntimeError, match="collides"):
+    with pytest.raises(RuntimeError, match="already registered"):
         runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
 
     catalog = runner.runtime.capability_catalog

@@ -37,13 +37,11 @@ def load_python_tool_sources(
     *,
     user_config_dir: Path,
     managed_root: Path | None = None,
-    existing_capability_ids: set[str] | None = None,
 ) -> PythonToolLoadResult:
     bindings: list[CapabilityBinding] = []
     errors: dict[str, str] = {}
     statuses: list[PythonToolSourceStatus] = []
     seen_config_ids: set[str] = set()
-    seen_capability_ids = set(existing_capability_ids or set())
     resolved_managed_root = managed_root or user_config_dir / "python-tools"
 
     for config in configs:
@@ -64,11 +62,10 @@ def load_python_tool_sources(
             source_seen: set[str] = set()
             for binding in source_bindings:
                 capability_id = validate_capability_id(binding.definition.id, kind="tool")
-                if capability_id in seen_capability_ids or capability_id in source_seen:
-                    raise ValueError(f"Capability '{capability_id}' is already registered.")
+                if capability_id in source_seen:
+                    raise ValueError(f"Capability '{capability_id}' is exported more than once by source '{config.id}'.")
                 source_seen.add(capability_id)
                 source_capability_ids.append(capability_id)
-            seen_capability_ids.update(source_capability_ids)
             status.capability_ids.extend(source_capability_ids)
             bindings.extend(source_bindings)
         except Exception as exc:

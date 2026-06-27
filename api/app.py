@@ -531,7 +531,6 @@ class ApiState:
             self.custom_python_tools,
             user_config_dir=self.get_user_config_path().parent,
             managed_root=self.get_managed_python_tool_root(),
-            existing_capability_ids={definition.id for definition in self.runner.list_capabilities()},
         )
         self.custom_python_tool_errors = {
             **self.custom_python_tool_config_errors,
@@ -1237,7 +1236,6 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
         [config],
         user_config_dir=state.get_user_config_path().parent,
         managed_root=state.get_managed_python_tool_root(),
-        existing_capability_ids={definition.id for definition in state.get_runner().list_capabilities()},
     )
     status = result.statuses[0] if result.statuses else None
     return {

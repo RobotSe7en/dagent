@@ -104,28 +104,24 @@ def test_python_tool_loader_reports_import_errors(tmp_path: Path) -> None:
     assert "does not exist" in result.errors["missing"]
 
 
-def test_python_tool_loader_fails_source_closed_on_later_collision(tmp_path: Path) -> None:
+def test_python_tool_loader_fails_source_closed_on_duplicate_exports(tmp_path: Path) -> None:
     script = tmp_path / "local_tools.py"
     script.write_text(
         "from dagent import tool\n"
         "@tool(description='First')\n"
         "def first(text: str) -> str:\n"
-        "    return text\n"
-        "@tool(description='Second')\n"
-        "def second(text: str) -> str:\n"
         "    return text\n",
         encoding="utf-8",
     )
 
     result = load_python_tool_sources(
-        [UserPythonToolConfig(id="local", source="path", path=str(script), names=["first", "second"])],
+        [UserPythonToolConfig(id="local", source="path", path=str(script), names=["first", "first"])],
         user_config_dir=tmp_path,
-        existing_capability_ids={"tool.second"},
     )
 
     assert result.bindings == []
     assert result.statuses[0].capability_ids == []
-    assert "tool.second" in result.errors["local"]
+    assert "exported more than once" in result.errors["local"]
 
 
 def test_python_tool_loader_imports_module_bindings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

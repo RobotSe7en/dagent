@@ -229,11 +229,7 @@ class ToolAgent:
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=self.loop.tool_adapter.function_name_for_capability(
-                invocation.capability_id,
-                enabled_toolsets=self.loop.enabled_toolsets,
-                capability_ids=capability_scope.capability_ids,
-            ),
+            tool_name=str(pending_review.capability_call["tool_name"]),
             content=feed_content,
         )
         reviewed_trace = self.trace
@@ -582,6 +578,7 @@ class ToolAgentLoop:
                             capability_call={
                                 "invocation_id": invocation.invocation_id,
                                 "capability_id": invocation.capability_id,
+                                "tool_name": tool_call.name,
                                 "arguments": invocation.arguments,
                             },
                             payload=control_result.review_payload or {},

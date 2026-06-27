@@ -203,6 +203,22 @@ def test_compile_uses_registered_non_tool_capability_mapping() -> None:
     assert node.payload.invocation.kind == "memory"
 
 
+def test_compile_uses_capability_definition_name_mapping() -> None:
+    plan = parse_plan_spec_dsl(
+        'task: named tool\n'
+        'lookup = search(query="dagent")\n'
+    )
+
+    dag = compile_plan_spec(
+        plan,
+        task_id="task_1",
+        tools=[CapabilityDefinition(id="tool.lookup", kind="tool", name="search")],
+    )
+
+    node = dag.nodes[0]
+    assert node.payload.invocation.capability_id == "tool.lookup"
+
+
 def test_compile_infers_boundary_for_command_capability() -> None:
     plan = parse_plan_spec_dsl(
         'task: run command\n'
