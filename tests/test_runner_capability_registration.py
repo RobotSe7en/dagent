@@ -250,6 +250,21 @@ def test_add_agent_rejects_invalid_name(tmp_path) -> None:
     runner.close()
 
 
+def test_validate_agent_registration_rejects_capability_name_collision(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.register_capability(
+        CapabilityDefinition(id="tool.raw_helper", kind="tool", name="agent_helper"),
+        lambda invocation: CapabilityResult.completed(invocation, "raw"),
+    )
+
+    with pytest.raises(ValueError, match="Capability name 'agent_helper' is already registered"):
+        runner.validate_agent_registration(
+            dagent.ToolAgent(profile="conversation", name="helper", capabilities=[], skills=[])
+        )
+    assert runner.get_capability("agent.helper") is None
+    runner.close()
+
+
 def test_add_agent_uses_namespaced_function_name_and_allows_tool_same_short_name(tmp_path) -> None:
     runner = _runner(tmp_path)
 

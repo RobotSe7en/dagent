@@ -540,6 +540,23 @@ def test_api_session_reset_clears_in_memory_workbench_state() -> None:
     assert state.custom_mcp_servers == {}
 
 
+def test_api_custom_capability_install_does_not_skip_catalog_conflicts() -> None:
+    state.close_runner()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.custom_capabilities["tool.read_file"] = CapabilityDefinition(
+        id="tool.read_file",
+        kind="tool",
+        description="Conflicting custom capability.",
+    )
+
+    try:
+        with pytest.raises(ValueError, match="Capability 'tool.read_file' is already registered"):
+            state._install_custom_capabilities()
+    finally:
+        state.custom_capabilities.clear()
+        state.close_runner()
+
+
 def test_api_message_stream_can_return_tool_answer_without_dag() -> None:
     state.runner = _runner(MockProvider([
         ChatResponse(content="tool"),            # _route()

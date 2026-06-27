@@ -1011,10 +1011,12 @@ class Runner:
             raise ValueError("Registered subagents must use review=\"fast\".")
         capability_id = f"agent.{name}"
         existing = self._registered_agent_configs.get(name)
-        if existing is None and self._runtime.capability_catalog.get(capability_id) is not None:
-            raise ValueError(f"Agent capability '{capability_id}' is already registered.")
         if existing is not None and not replacing and existing != agent:
             raise ValueError(f"Agent capability '{capability_id}' is already registered with different config.")
+        self._runtime.capability_catalog.validate_registerable(
+            CapabilityDefinition(id=capability_id, kind="agent"),
+            ignore_ids=(capability_id,) if existing is not None else (),
+        )
         self._registered_agent_runtime_config(agent, register_bindings=False)
 
     def _register_agent_capability(self, agent: ToolAgent) -> CapabilityDefinition:

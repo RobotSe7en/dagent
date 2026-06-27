@@ -1102,6 +1102,44 @@ test('stream parser preserves capability review tool name', async () => {
   }
 });
 
+test('stream parser rejects capability review payloads without tool name', async () => {
+  const { streamTask } = await importTypeScriptModule('../src/api.ts', [
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const previousFetch = globalThis.fetch;
+  const frame = {
+    type: 'review.required',
+    data: {
+      review_id: 'review_tool_001',
+      kind: 'capability_review',
+      message: 'Review capability call.',
+      capability_call: {
+        invocation_id: 'call_001',
+        capability_id: 'tool.shell',
+        arguments: { command: 'rm -rf ./tmp' },
+      },
+    },
+  };
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async () => ({ ok: true, body });
+  try {
+    await assert.rejects(
+      streamTask('run shell', 'tool', 'none', {}),
+      /Capability review payload missing tool_name/,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
 test('dag review resume reuses the DAG assistant turn instead of opening a new chat frame', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const resumeDagSource = appSource.match(/const resumeDag = async[\s\S]*?\n  const confirmDag/)?.[0] ?? '';

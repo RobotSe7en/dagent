@@ -521,8 +521,7 @@ class ApiState:
         if self.runner is None:
             return
         for definition in self.custom_capabilities.values():
-            if self.runner.get_capability(definition.id) is None:
-                self.runner.register_capability(definition, _handler_for_definition(definition))
+            self.runner.register_capability(definition, _handler_for_definition(definition))
 
     def _install_python_tools(self) -> None:
         if self.runner is None:

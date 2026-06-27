@@ -709,7 +709,8 @@ async function readStream(response: Response, handlers: StreamHandlers) {
         handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
       }
       if (event.type === 'review.required') {
-        handlers.onReview?.(reviewPayload(data));
+        const review = reviewPayload(data);
+        handlers.onReview?.(review);
       }
       if (event.type === 'run.finished' && data.result) {
         const result = data.result as ApiRunResult;
@@ -734,10 +735,14 @@ function reviewPayload(data: Record<string, unknown>): ReviewEventPayload {
     payload.proposed_dag = data.proposed_dag as unknown as Dag;
   }
   if (isRecord(data.capability_call)) {
+    const toolName = data.capability_call.tool_name;
+    if (typeof toolName !== 'string' || !toolName.trim()) {
+      throw new Error('Capability review payload missing tool_name.');
+    }
     payload.capability_call = {
       invocation_id: String(data.capability_call.invocation_id ?? ''),
       capability_id: String(data.capability_call.capability_id ?? ''),
-      tool_name: String(data.capability_call.tool_name ?? ''),
+      tool_name: toolName,
       arguments: isRecord(data.capability_call.arguments) ? data.capability_call.arguments : {},
     };
   }
