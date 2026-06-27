@@ -421,6 +421,133 @@ def test_api_delete_python_tool_reports_dependent_preset_error_without_rebuildin
     assert "tool.echo_text" in state.agent_preset_errors["helper"]
 
 
+def test_api_delete_python_tool_removes_multiple_dependent_presets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [echo_text]\n",
+        encoding="utf-8",
+    )
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    for name in ("helper_one", "helper_two"):
+        (agent_root / f"{name}.json").write_text(
+            json.dumps({
+                "name": name,
+                "profile": "conversation",
+                "description": "",
+                "max_steps": 1,
+                "capabilities": ["tool.echo_text"],
+                "skills": [],
+            }),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    assert client.get("/python-tools").status_code == 200
+    assert state.runner.get_capability("agent.helper_one") is not None
+    assert state.runner.get_capability("agent.helper_two") is not None
+
+    response = client.delete("/python-tools/local")
+
+    assert response.status_code == 200
+    assert state.runner.get_capability("tool.echo_text") is None
+    assert state.runner.get_capability("agent.helper_one") is None
+    assert state.runner.get_capability("agent.helper_two") is None
+    assert "tool.echo_text" in state.agent_preset_errors["helper_one"]
+    assert "tool.echo_text" in state.agent_preset_errors["helper_two"]
+
+
+def test_api_python_tool_reload_replaces_changed_agent_preset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_script = tmp_path / "first_tools.py"
+    first_script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='First')\n"
+        "def first_tool() -> str:\n"
+        "    return 'first'\n",
+        encoding="utf-8",
+    )
+    second_script = tmp_path / "second_tools.py"
+    second_script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Second')\n"
+        "def second_tool() -> str:\n"
+        "    return 'second'\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: first\n"
+        "    source: path\n"
+        f"    path: {first_script}\n"
+        "    names: [first_tool]\n"
+        "  - id: second\n"
+        "    source: path\n"
+        f"    path: {second_script}\n"
+        "    names: [second_tool]\n",
+        encoding="utf-8",
+    )
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    preset_path = agent_root / "helper.json"
+    preset_path.write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": ["tool.first_tool"],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    assert client.get("/python-tools").status_code == 200
+    assert state.runner.get_capability("agent.helper") is not None
+    preset_path.write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": ["tool.second_tool"],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+
+    response = client.post("/python-tools/reload")
+
+    assert response.status_code == 200
+    assert "helper" not in state.agent_preset_errors
+    assert state.runner.get_capability("agent.helper") is not None
+
+
 def test_api_delete_python_tool_removes_agent_created_through_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

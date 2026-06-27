@@ -586,13 +586,8 @@ class ApiState:
         presets, errors = _agent_presets_with_errors(self.agent_preset_store())
         previous_registered = set(self.agent_preset_registered_names)
         registered_names: set[str] = set()
-        configured_names = {preset.name for preset in presets}.union(errors)
         self.agent_preset_errors = dict(errors)
-        for name in previous_registered - configured_names:
-            self._remove_agent_preset_capability(name)
-        for name in errors:
-            if name not in previous_registered:
-                continue
+        for name in previous_registered:
             self._remove_agent_preset_capability(name)
         for preset in presets:
             try:
@@ -600,8 +595,6 @@ class ApiState:
                 registered_names.add(preset.name)
             except Exception as exc:
                 self.agent_preset_errors[preset.name] = str(exc)
-                if preset.name in previous_registered:
-                    self._remove_agent_preset_capability(preset.name)
         self.agent_preset_registered_names = registered_names
 
     def _remove_agent_preset_capability(self, name: str) -> None:

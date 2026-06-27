@@ -877,6 +877,41 @@ def test_reload_tools_records_dangling_subagent_dependency_without_raising(tmp_p
     runner.close()
 
 
+def test_reload_tools_rejects_non_tool_replace_ids(tmp_path) -> None:
+    runner = _runner(tmp_path)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=[],
+            skills=[],
+        )
+    )
+    runner.register_capability(
+        CapabilityDefinition(id="mcp.search.lookup", kind="mcp"),
+        lambda invocation: CapabilityResult.completed(invocation, "found"),
+    )
+
+    with pytest.raises(ValueError, match="only replace tool capabilities"):
+        runner.reload_tools({}, replace_ids={"agent.helper"})
+    with pytest.raises(ValueError, match="only replace tool capabilities"):
+        runner.reload_tools({}, replace_ids={"mcp.search.lookup"})
+
+    assert runner.get_capability("agent.helper") is not None
+    assert runner.get_capability("mcp.search.lookup") is not None
+    runner.close()
+
+
+def test_reload_tools_rejects_builtin_replace_ids(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot replace built-in capability"):
+        runner.reload_tools({}, replace_ids={"tool.read_file"})
+
+    assert runner.get_capability("tool.read_file") is not None
+    runner.close()
+
+
 def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(monkeypatch, tmp_path) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):

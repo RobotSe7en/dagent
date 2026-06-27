@@ -107,7 +107,9 @@ Use `runner.add_tools([...])` for an atomic batch. Runtime managers that own a
 configured set of Python function tools can use
 `runner.reload_tools(groups, replace_ids=...)` to remove the previous owned ids,
 register current groups independently, and collect group or registered-agent
-errors without treating missing old ids as a user deletion.
+errors without treating missing old ids as a user deletion. `replace_ids` may
+only name non-built-in `tool.*` capabilities; MCP tools, agent capabilities, and
+built-in tools must be managed through their own lifecycle APIs.
 
 Agents declare what they can use:
 
