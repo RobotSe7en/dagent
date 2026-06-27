@@ -20,6 +20,9 @@ The current package version is `0.6.0`.
 - Local WebUI Python tool entries using `source: "module"` no longer reload
   modules that are already present in `sys.modules`. Use `path` or uploaded
   `managed` sources when you need reload-style development behavior.
+- `/python-tools/reload` now reloads only imported Python-tool capabilities. It
+  no longer restarts the whole runner or reconnects unrelated MCP servers;
+  presets that reference removed Python tools are reported as agent errors.
 
 ### Breaking Changes
 

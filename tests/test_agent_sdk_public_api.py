@@ -119,6 +119,7 @@ def test_tool_decorator_has_tool_only_signature() -> None:
     assert "manager" not in inspect.signature(dagent.Runner.add_mcp_server).parameters
     assert hasattr(dagent.Runner, "remove_mcp_server")
     assert hasattr(dagent.Runner, "replace_mcp_server")
+    assert hasattr(dagent.Runner, "reload_tools")
     assert "manager" not in inspect.signature(dagent.Runner.replace_mcp_server).parameters
 
 

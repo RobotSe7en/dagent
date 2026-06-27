@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,8 @@ from dagent.config import (
     load_user_config,
     save_user_config,
 )
+from dagent.providers import MockProvider
+from dagent.runner import Runner
 
 
 @pytest.fixture(autouse=True)
@@ -283,6 +286,101 @@ def test_api_reports_python_tool_errors_without_startup_failure(tmp_path: Path) 
     assert listed.status_code == 200
     assert listed.json()["tools"][0]["status"] == "error"
     assert "does not exist" in listed.json()["tools"][0]["error"]
+
+
+def test_api_python_tool_reload_keeps_runner_instance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [echo_text]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    assert client.get("/python-tools").status_code == 200
+    original_runner = state.runner
+    original_close_runner = state.close_runner
+
+    def fail_close_runner() -> None:
+        raise AssertionError("python tool reload must not close the runner")
+
+    monkeypatch.setattr(state, "close_runner", fail_close_runner)
+    response = client.post("/python-tools/reload")
+    monkeypatch.setattr(state, "close_runner", original_close_runner)
+
+    assert response.status_code == 200
+    assert state.runner is original_runner
+
+
+def test_api_delete_python_tool_reports_dependent_preset_error_without_rebuilding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: local\n"
+        "    source: path\n"
+        f"    path: {script}\n"
+        "    names: [echo_text]\n",
+        encoding="utf-8",
+    )
+    agent_root = tmp_path / "agents"
+    agent_root.mkdir()
+    (agent_root / "helper.json").write_text(
+        json.dumps({
+            "name": "helper",
+            "profile": "conversation",
+            "description": "",
+            "max_steps": 1,
+            "capabilities": ["tool.echo_text"],
+            "skills": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(state, "get_agent_preset_root", lambda: agent_root)
+    monkeypatch.setattr(state, "_create_runner", lambda: Runner(provider=MockProvider([])))
+    client = TestClient(app)
+
+    assert client.get("/python-tools").status_code == 200
+    original_runner = state.runner
+    assert original_runner is not None
+    assert original_runner.get_capability("agent.helper") is not None
+
+    response = client.delete("/python-tools/local")
+
+    assert response.status_code == 200
+    assert state.runner is original_runner
+    assert load_user_config(config_path).python_tools == []
+    assert state.runner.get_capability("tool.echo_text") is None
+    assert state.runner.get_capability("agent.helper") is not None
+    assert "helper" in state.agent_preset_errors
+    assert "tool.echo_text" in state.agent_preset_errors["helper"]
 
 
 def test_api_uploads_python_tool_file_and_persists_managed_config(tmp_path: Path) -> None:

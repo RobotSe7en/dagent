@@ -792,6 +792,91 @@ def test_reload_mcp_servers_records_dangling_subagent_dependency_without_raising
     runner.close()
 
 
+def test_reload_tools_replaces_managed_group_without_removing_unrelated_tools(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def old_python_tool() -> str:
+        return "old"
+
+    @dagent.tool
+    def new_python_tool() -> str:
+        return "new"
+
+    @dagent.tool
+    def unrelated_tool() -> str:
+        return "unrelated"
+
+    runner.add_tool(old_python_tool)
+    runner.add_tool(unrelated_tool)
+
+    registered, errors = runner.reload_tools(
+        {"source": [new_python_tool]},
+        replace_ids={"tool.old_python_tool"},
+    )
+
+    assert errors == {}
+    assert [definition.id for definition in registered["source"]] == ["tool.new_python_tool"]
+    assert runner.get_capability("tool.old_python_tool") is None
+    assert runner.get_capability("tool.new_python_tool") is not None
+    assert runner.get_capability("tool.unrelated_tool") is not None
+    runner.close()
+
+
+def test_reload_tools_isolates_group_registration_errors(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def good_python_tool() -> str:
+        return "good"
+
+    @dagent.tool(name="tool_read_file")
+    def conflicting_python_tool() -> str:
+        return "bad"
+
+    registered, errors = runner.reload_tools(
+        {
+            "good": [good_python_tool],
+            "bad": [conflicting_python_tool],
+        },
+        replace_ids=set(),
+    )
+
+    assert [definition.id for definition in registered["good"]] == ["tool.good_python_tool"]
+    assert "bad" in errors
+    assert "tool_read_file" in errors["bad"]
+    assert runner.get_capability("tool.good_python_tool") is not None
+    assert runner.get_capability("tool.conflicting_python_tool") is None
+    runner.close()
+
+
+def test_reload_tools_records_dangling_subagent_dependency_without_raising(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def old_python_tool() -> str:
+        return "old"
+
+    runner.add_tool(old_python_tool)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["tool.old_python_tool"],
+            skills=[],
+        )
+    )
+
+    registered, errors = runner.reload_tools({}, replace_ids={"tool.old_python_tool"})
+
+    assert registered == {}
+    assert "agent.helper" in errors
+    assert "tool.old_python_tool" in errors["agent.helper"]
+    assert runner.get_capability("tool.old_python_tool") is None
+    assert runner.get_capability("agent.helper") is not None
+    runner.close()
+
+
 def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(monkeypatch, tmp_path) -> None:
     class FakeMCPProvider:
         def __init__(self, servers, *, manager=None):

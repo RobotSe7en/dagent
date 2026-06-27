@@ -190,6 +190,37 @@ class Runner:
         """Register ``@dagent.tool`` bindings as one atomic batch."""
 
         self._ensure_open()
+        return self._add_tools(capabilities, refresh=True)
+
+    def reload_tools(
+        self,
+        groups: Mapping[str, Iterable[CapabilityBinding]],
+        *,
+        replace_ids: Iterable[str],
+    ) -> tuple[dict[str, list[CapabilityDefinition]], dict[str, str]]:
+        """Rebuild caller-managed Python tool groups without treating removals as user deletion."""
+
+        self._ensure_open()
+        catalog = self._runtime.capability_catalog
+        for capability_id in replace_ids:
+            catalog.delete(capability_id)
+        registered: dict[str, list[CapabilityDefinition]] = {}
+        errors: dict[str, str] = {}
+        for group_id, capabilities in groups.items():
+            try:
+                registered[group_id] = self._add_tools(capabilities, refresh=False)
+            except Exception as exc:
+                errors[group_id] = str(exc)
+        self._runtime.refresh_toolsets()
+        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
+        return registered, errors
+
+    def _add_tools(
+        self,
+        capabilities: Iterable[CapabilityBinding],
+        *,
+        refresh: bool,
+    ) -> list[CapabilityDefinition]:
         bindings = list(capabilities)
         catalog = self._runtime.capability_catalog
         _validate_capability_binding_batch(catalog, bindings)
@@ -205,11 +236,13 @@ class Runner:
         except Exception:
             for capability_id in reversed(registered_ids):
                 catalog.delete(capability_id)
+            if refresh:
+                self._runtime.refresh_toolsets()
+                self._refresh_registered_agent_runtime_configs()
+            raise
+        if refresh:
             self._runtime.refresh_toolsets()
             self._refresh_registered_agent_runtime_configs()
-            raise
-        self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
         return definitions
 
     def validate_tools_registerable(

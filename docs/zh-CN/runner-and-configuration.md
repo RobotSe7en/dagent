@@ -141,6 +141,10 @@ WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `
 会 invalidate import caches，但不会 reload 已在 `sys.modules` 中的 module；需要类似
 reload 的开发体验时，请使用 `path` 或上传后的 `managed` source。
 
+通过 WebUI reload Python tools 时，只会重建导入的 Python-tool capabilities。它不会重启
+整个 runner，也不会重连无关 MCP servers。如果被删除或禁用的 Python tool 仍被某个 agent
+preset 引用，该 preset 会显示为 agent 错误，直到它的 capabilities 被更新。
+
 Python 文件会作为本地代码导入，因此模块顶层代码会在加载时执行。WebUI 不会扫描目录，
 也不会自动注册文件中的所有对象；它只加载显式配置的条目和显式列出的 `names`。import
 失败、名称缺失、非 `@dagent.tool` 导出以及 capability id 冲突都会显示在工具管理页，
