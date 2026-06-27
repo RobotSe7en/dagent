@@ -201,6 +201,8 @@ test('capability helpers use display names and dotted ids', () => {
   };
 
   assert.equal(capabilityDisplayName(capability), 'Helper');
+  assert.equal(capabilityDisplayName({ id: 'tool.search', name: 'Search tool', display_name: '' }), 'Search tool');
+  assert.equal(capabilityDisplayName({ id: 'tool.search', name: '', display_name: '  ' }), 'tool.search');
   assert.equal(isValidCapabilityId('tool.search'), true);
   assert.equal(isValidCapabilityId('mcp.remote_docs.lookup'), true);
   assert.equal(isValidCapabilityId('mcp.remote.docs.lookup'), true);
@@ -245,6 +247,28 @@ test('chat scope request fields keep agent delegation separate from capabilities
     pruneSelectedAgentIds(['agent.keep', 'agent.drop'], [{ id: 'agent.keep' }, { id: 'agent.other' }]),
     ['agent.keep'],
   );
+});
+
+test('tools workspace renders capability display names as primary labels', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(appSource, /<span>\{capabilityDisplayName\(capability\)\}<\/span>/);
+  assert.doesNotMatch(appSource, /<span>\{capability\.id\}<\/span>/);
+  assert.match(appSource, /<strong>\{selectedTool \? capabilityDisplayName\(selectedTool\) : '工具'\}<\/strong>/);
+  assert.doesNotMatch(appSource, /<strong>\{selectedTool\?\.id \?\? '工具'\}<\/strong>/);
+  assert.doesNotMatch(appSource, /<option key=\{capability\.id\} value=\{capability\.id\}>\s*\{capability\.id\}\s*<\/option>/);
+});
+
+test('python tool save and toggle do not report success for errored sources', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const saveSource = appSource.match(/const savePythonTool = async[\s\S]*?\n  const togglePythonToolSource/)?.[0] ?? '';
+  const toggleSource = appSource.match(/const togglePythonToolSource = async[\s\S]*?\n  const removePythonToolSource/)?.[0] ?? '';
+
+  assert.ok(saveSource, 'savePythonTool function should exist');
+  assert.ok(toggleSource, 'togglePythonToolSource function should exist');
+  assert.match(saveSource, /saved\.status === 'error'/);
+  assert.match(toggleSource, /updated\.status === 'error'/);
+  assert.doesNotMatch(saveSource, /setPythonToolMessage\(`Saved \$\{saved\.id\}\.`\);/);
+  assert.doesNotMatch(toggleSource, /setMessage\(`\$\{enabled \? 'Enabled' : 'Disabled'\} \$\{source\.id\}\.`\);/);
 });
 
 test('canvas center node position uses the live canvas center without hard-coded fallback', () => {

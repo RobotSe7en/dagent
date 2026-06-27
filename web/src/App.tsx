@@ -3413,7 +3413,7 @@ function WorkspaceSidebar({
                   type="button"
                 >
                   <Wrench size={14} />
-                  <span>{capability.id}</span>
+                  <span>{capabilityDisplayName(capability)}</span>
                   <em data-enabled={capability.enabled} />
                 </button>
               )) : <div className="sidebar-empty-row">没有匹配的工具</div>
@@ -5335,7 +5335,7 @@ function DynamicOrchestrationWorkspace({
                         <option value="">选择能力...</option>
                         {selectableCapabilities.map((capability) => (
                           <option key={capability.id} value={capability.id}>
-                            {capability.id}
+                            {capabilityDisplayName(capability)}
                           </option>
                         ))}
                       </select>
@@ -5751,7 +5751,7 @@ function OrchestrationWorkspace({
                       <optgroup key={group.kind} label={group.label}>
                         {group.items.map((capability) => (
                           <option key={capability.id} value={capability.id}>
-                            {capability.id}
+                            {capabilityDisplayName(capability)}
                           </option>
                         ))}
                       </optgroup>
@@ -7096,9 +7096,13 @@ function CapabilityDirectory({
         : createPythonTool(payload);
       const saved = await result;
       await onRefresh();
+      if (saved.status === 'error') {
+        setPythonToolMessage(saved.error ?? `Failed to load ${saved.id}.`);
+        return;
+      }
       onSelectedCapabilityIdChange(saved.capabilities[0] ?? '');
       onCreationIntentChange(null);
-      setPythonToolMessage(`Saved ${saved.id}.`);
+      setPythonToolMessage(`${saved.id} saved.`);
     } catch (exc) {
       setPythonToolMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -7107,7 +7111,7 @@ function CapabilityDirectory({
   const togglePythonToolSource = async (source: PythonToolEntry, enabled: boolean) => {
     setMessage(enabled ? 'Enabling Python tool source...' : 'Disabling Python tool source...');
     try {
-      await updatePythonTool(source.id, {
+      const updated = await updatePythonTool(source.id, {
         id: source.id,
         source: source.source,
         path: source.path,
@@ -7116,7 +7120,11 @@ function CapabilityDirectory({
         enabled,
       });
       await onRefresh();
-      setMessage(`${enabled ? 'Enabled' : 'Disabled'} ${source.id}.`);
+      if (updated.status === 'error') {
+        setMessage(updated.error ?? `Failed to load ${updated.id}.`);
+        return;
+      }
+      setMessage(`${updated.id} ${enabled ? 'enabled' : 'disabled'}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
     }
@@ -7433,7 +7441,7 @@ function CapabilityDirectory({
                 <Wrench size={15} />
               </div>
               <div>
-                <strong>{selectedTool?.id ?? '工具'}</strong>
+                <strong>{selectedTool ? capabilityDisplayName(selectedTool) : '工具'}</strong>
                 <span>{selectedTool ? `${selectedTool.kind} · ${capabilityStatusLabel(selectedTool)}` : 'tool capability'}</span>
               </div>
               <div>

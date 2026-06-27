@@ -933,7 +933,7 @@ def test_resume_review_retries_when_validator_rejects_after_tool_approval() -> N
     assert first.run_id is not None
     assert first.pending_review is not None
     assert first.pending_review.kind == "capability_review"
-    assert first.pending_review.capability_call == {
+    assert first.pending_review.capability_call.model_dump(mode="json") == {
         "invocation_id": "call_1",
         "capability_id": "tool.write_file",
         "tool_name": "tool_write_file",

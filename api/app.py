@@ -935,11 +935,10 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     runner = state.get_runner()
     definitions = list(runner.list_capabilities(kind=kind))
     if kind in (None, "agent"):
-        existing_ids = {definition.id for definition in definitions}
         definitions.extend(
             definition
             for definition in _profile_agent_capabilities()
-            if definition.id not in existing_ids
+            if _capability_can_be_listed_as_profile_agent(definition)
         )
     return {
         "capabilities": [
@@ -1037,6 +1036,14 @@ def _profile_agent_capabilities() -> list[CapabilityDefinition]:
             config={"profile": profile.name, "source": source},
         ))
     return definitions
+
+
+def _capability_can_be_listed_as_profile_agent(definition: CapabilityDefinition) -> bool:
+    try:
+        state.get_runner().runtime.capability_catalog.validate_registerable(definition)
+    except ValueError:
+        return False
+    return True
 
 
 def _agent_preset_payload(preset: AgentPreset) -> dict[str, Any]:
@@ -1749,7 +1756,11 @@ def _ensure_generic_capability_mutation_allowed(definition: CapabilityDefinition
 
 def _load_user_config_for_webui(path: Path) -> tuple[UserDagentConfig, dict[str, str]]:
     try:
-        return load_user_config(path), {}
+        config = load_user_config(path)
+        config.python_tools, errors = _validated_python_tool_configs(
+            [tool.model_dump(mode="json") for tool in config.python_tools]
+        )
+        return config, errors
     except ValidationError:
         config_path = Path(path).expanduser()
         if not config_path.exists():
@@ -1778,10 +1789,13 @@ def _validated_python_tool_configs(value: Any) -> tuple[list[UserPythonToolConfi
     for index, item in enumerate(value):
         source_id = _python_tool_source_id_from_raw(item, index)
         try:
-            configs.append(UserPythonToolConfig.model_validate(item))
-        except ValidationError as exc:
+            config = UserPythonToolConfig.model_validate(item)
+            if config.id != source_id:
+                raise ValueError("Python tool source ids may contain only letters, numbers, and underscores.")
+            configs.append(config)
+        except (ValidationError, ValueError) as exc:
             configs.append(_placeholder_python_tool_config(item, source_id))
-            errors[source_id] = _validation_error_message(exc)
+            errors[source_id] = _validation_error_message(exc) if isinstance(exc, ValidationError) else str(exc)
     return configs, errors
 
 

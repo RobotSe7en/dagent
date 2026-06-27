@@ -95,6 +95,12 @@ def test_review_handle_decisions_accept_reviewer_feedback() -> None:
             review_id="review_1",
             kind="capability_review",
             message="Review capability call.",
+            capability_call={
+                "invocation_id": "call_1",
+                "capability_id": "tool.search",
+                "tool_name": "tool_search",
+                "arguments": {},
+            },
         )
     )
 

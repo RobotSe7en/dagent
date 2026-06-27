@@ -1469,6 +1469,26 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
 
 
+def test_api_profile_agent_capabilities_skip_catalog_name_collisions(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    managed_dir = tmp_path / "managed-profiles"
+    monkeypatch.setattr(state, "get_managed_profile_root", lambda: managed_dir)
+    managed_dir.mkdir()
+    (managed_dir / "analyst.md").write_text("# Analyst\n\nRead carefully.", encoding="utf-8")
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    state.runner.register_capability(
+        CapabilityDefinition(id="tool.agent_name_collision", kind="tool", name="agent_analyst"),
+        lambda invocation: CapabilityResult.completed(invocation, "collision"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/capabilities", params={"kind": "agent"})
+
+    assert response.status_code == 200
+    ids = {capability["id"] for capability in response.json()["capabilities"]}
+    assert "agent.analyst" not in ids
+
+
 def test_api_profile_agent_capability_ids_use_clean_names(monkeypatch) -> None:
     monkeypatch.setattr(
         app_module,

@@ -255,7 +255,7 @@ def test_tool_agent_boundary_violation_requires_review_even_for_low_risk_tool(tm
     assert result.state.pending_review is not None
     assert result.state.pending_review.kind == "capability_review"
     assert result.state.pending_review.message == "Review boundary override: tool.read_file"
-    assert result.state.pending_review.capability_call == {
+    assert result.state.pending_review.capability_call.model_dump(mode="json") == {
         "invocation_id": "call_1",
         "capability_id": "tool.read_file",
         "tool_name": "tool_read_file",
@@ -504,7 +504,7 @@ def test_tool_agent_review_resume_reuses_original_tool_call_name(tmp_path: Path)
 
     assert first.state.status == "awaiting_review"
     assert first.state.pending_review is not None
-    assert first.state.pending_review.capability_call == {
+    assert first.state.pending_review.capability_call.model_dump(mode="json") == {
         "invocation_id": "call_1",
         "capability_id": "tool.write_note",
         "tool_name": "write",
@@ -562,7 +562,7 @@ def test_tool_agent_boundary_review_approval_does_not_expand_later_calls(tmp_pat
     assert not second_file.exists()
     assert resumed.state.status == "awaiting_review"
     assert resumed.state.pending_review is not None
-    assert resumed.state.pending_review.capability_call == {
+    assert resumed.state.pending_review.capability_call.model_dump(mode="json") == {
         "invocation_id": "call_2",
         "capability_id": "tool.write_file",
         "tool_name": "tool_write_file",

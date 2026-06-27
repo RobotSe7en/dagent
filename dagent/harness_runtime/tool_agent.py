@@ -226,10 +226,12 @@ class ToolAgent:
             result=result,
             content=feed_content,
         )
+        capability_call = pending_review.capability_call
+        assert capability_call is not None
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
-            tool_name=str(pending_review.capability_call["tool_name"]),
+            tool_name=capability_call.tool_name,
             content=feed_content,
         )
         reviewed_trace = self.trace

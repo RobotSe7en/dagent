@@ -29,6 +29,7 @@ from dagent.schemas.capability import (
 from dagent.schemas.results import (
     LoopOutcome,
     LoopStatus,
+    PendingCapabilityCall,
     PendingReview,
     RunCapabilityScope,
     RunState,
@@ -67,6 +68,7 @@ __all__ = [
     "LoopOutcome",
     "LoopStatus",
     "MapNodePayload",
+    "PendingCapabilityCall",
     "PendingReview",
     "RunCapabilityScope",
     "RunState",

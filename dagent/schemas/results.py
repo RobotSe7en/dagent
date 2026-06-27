@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from dagent.schemas.dag import DAG
 from dagent.schemas.capability import CapabilityInvocation
@@ -26,13 +26,28 @@ class RunCapabilityScope(BaseModel):
     skills: tuple[str, ...] | None = None
 
 
+class PendingCapabilityCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    invocation_id: str
+    capability_id: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class PendingReview(BaseModel):
     review_id: str
     kind: ReviewKind
     message: str
     proposed_dag: DAG | None = None
-    capability_call: dict[str, Any] | None = None
+    capability_call: PendingCapabilityCall | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_review_payload(self) -> "PendingReview":
+        if self.kind == "capability_review" and self.capability_call is None:
+            raise ValueError("Capability reviews require capability_call.")
+        return self
 
 
 class RunState(BaseModel):

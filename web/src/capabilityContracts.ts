@@ -3,8 +3,8 @@ export type CapabilityIdPrefix = 'tool' | 'agent' | 'mcp' | 'skill' | 'memory';
 const capabilityIdSegmentPattern = /^[A-Za-z0-9_]+$/;
 const capabilityIdPrefixes = new Set<CapabilityIdPrefix>(['tool', 'agent', 'mcp', 'skill', 'memory']);
 
-export function capabilityDisplayName(capability: { display_name: string }): string {
-  return capability.display_name;
+export function capabilityDisplayName(capability: { display_name?: string | null; name?: string | null; id?: string | null }): string {
+  return capability.display_name?.trim() || capability.name?.trim() || capability.id?.trim() || '';
 }
 
 export function isValidCapabilityId(value: string): boolean {

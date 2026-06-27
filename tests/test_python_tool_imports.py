@@ -459,3 +459,30 @@ def test_api_reports_malformed_python_tool_config_without_startup_failure(tmp_pa
     assert capabilities.status_code == 200
     assert listed.json()["tools"][0]["status"] == "error"
     assert "source" in listed.json()["tools"][0]["error"]
+
+
+def test_api_reports_invalid_python_tool_source_id_as_manageable_placeholder(tmp_path: Path) -> None:
+    config_path = state.get_user_config_path()
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "python_tools:\n"
+        "  - id: bad-id\n"
+        "    source: path\n"
+        "    path: missing.py\n"
+        "    names: [missing]\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    listed = client.get("/python-tools")
+
+    assert listed.status_code == 200
+    payload = listed.json()["tools"][0]
+    assert payload["id"] == "python_tool_1"
+    assert payload["status"] == "error"
+    assert "Python tool source ids" in payload["error"]
+
+    deleted = client.delete("/python-tools/python_tool_1")
+
+    assert deleted.status_code == 200
+    assert client.get("/python-tools").json()["tools"] == []

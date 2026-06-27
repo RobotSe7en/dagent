@@ -94,7 +94,7 @@ class CapabilityCatalog:
             supports_context=entry.supports_context,
             sandbox_execution=entry.sandbox_execution,
         )
-        return updated
+        return updated.model_copy(deep=True)
 
     def delete(self, capability_id: str) -> None:
         entry = self._entries.pop(capability_id, None)
@@ -150,8 +150,14 @@ class CapabilityCatalog:
                         f"Cannot restore capability entry '{capability_id}' with definition '{entry.definition.id}'."
                     )
                 self.validate_registerable(entry.definition)
-                self._entries[capability_id] = entry
-                self._ids_by_name[entry.definition.name] = capability_id
+                stored = CapabilityEntry(
+                    definition=entry.definition.model_copy(deep=True),
+                    handler=entry.handler,
+                    supports_context=entry.supports_context,
+                    sandbox_execution=entry.sandbox_execution,
+                )
+                self._entries[capability_id] = stored
+                self._ids_by_name[stored.definition.name] = capability_id
                 restored_ids.append(capability_id)
         except Exception:
             for capability_id in restored_ids:
@@ -164,7 +170,15 @@ class CapabilityCatalog:
         return entry.definition.model_copy(deep=True) if entry is not None else None
 
     def get_entry(self, capability_id: str) -> CapabilityEntry | None:
-        return self._entries.get(capability_id)
+        entry = self._entries.get(capability_id)
+        if entry is None:
+            return None
+        return CapabilityEntry(
+            definition=entry.definition.model_copy(deep=True),
+            handler=entry.handler,
+            supports_context=entry.supports_context,
+            sandbox_execution=entry.sandbox_execution,
+        )
 
     def list(self, *, kind: CapabilityKind | None = None, enabled_only: bool = False) -> list[CapabilityDefinition]:
         definitions = [entry.definition for entry in self._entries.values()]

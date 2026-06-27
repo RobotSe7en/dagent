@@ -731,10 +731,9 @@ def test_replace_mcp_server_removes_previous_tools_before_registering_new_ones(m
         def register_into(self, catalog):
             for name, config in self.servers.items():
                 for tool_name in config.get("tools", []):
-                    safe_name = tool_name.replace("-", "_")
                     catalog.register(
                         CapabilityDefinition(
-                            id=f"mcp.{name}.{safe_name}",
+                            id=f"mcp.{name}.{tool_name}",
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),
@@ -770,10 +769,9 @@ def test_replace_mcp_server_removes_constructor_registered_tools(monkeypatch, tm
         def register_into(self, catalog):
             for name, config in self.servers.items():
                 for tool_name in config.get("tools", []):
-                    safe_name = tool_name.replace("-", "_")
                     catalog.register(
                         CapabilityDefinition(
-                            id=f"mcp.{name}.{safe_name}",
+                            id=f"mcp.{name}.{tool_name}",
                             kind="mcp",
                             config={"server": name, "tool": tool_name},
                         ),

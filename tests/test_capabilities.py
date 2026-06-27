@@ -154,6 +154,34 @@ def test_capability_catalog_validates_registerable_definition_without_mutation()
     assert catalog.get("tool.second") is None
 
 
+def test_capability_catalog_get_entry_does_not_expose_mutable_definition() -> None:
+    catalog = CapabilityCatalog()
+    first = CapabilityDefinition(id="tool.first", kind="tool", name="first")
+
+    catalog.register(first, lambda invocation: _result(invocation, "first"))
+    entry = catalog.get_entry("tool.first")
+    assert entry is not None
+
+    entry.definition.name = "shared"
+
+    assert catalog.get("tool.first") == first
+    updated = catalog.set_enabled("tool.first", False)
+    updated.name = "mutated"
+    stored = catalog.get("tool.first")
+    assert stored is not None
+    assert stored.name == "first"
+    assert stored.enabled is False
+    catalog.register(
+        CapabilityDefinition(id="tool.second", kind="tool", name="shared"),
+        lambda invocation: _result(invocation, "second"),
+    )
+    with pytest.raises(ValueError, match="Capability name 'first' is already registered"):
+        catalog.register(
+            CapabilityDefinition(id="tool.third", kind="tool", name="first"),
+            lambda invocation: _result(invocation, "third"),
+        )
+
+
 def test_capability_catalog_restore_entries_rebuilds_name_index() -> None:
     catalog = CapabilityCatalog()
     original = CapabilityDefinition(id="tool.original", kind="tool", name="shared")
@@ -164,6 +192,8 @@ def test_capability_catalog_restore_entries_rebuilds_name_index() -> None:
     catalog.delete("tool.original")
 
     catalog.restore_entries(entries)
+    assert entries["tool.original"] is not None
+    entries["tool.original"].definition.name = "mutated"
 
     with pytest.raises(ValueError, match="Capability name 'shared' is already registered"):
         catalog.register(replacement, lambda invocation: _result(invocation, "replacement"))

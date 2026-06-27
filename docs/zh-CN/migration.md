@@ -8,7 +8,25 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-当前没有未发布变更。
+### 改变
+
+- Capability definitions 现在把稳定 id 和调用名分开。`id` 仍是执行身份；
+  `name` 是 LLM/PlanSpec 函数名；`display_name` 只用于 UI 展示。
+
+### 破坏性改变
+
+- `@dagent.tool` 仍不接收 `id=`。Python function tools 一律从函数名派生
+  capability id，格式为 `tool.<function_name>`。`name=` 重新可用，但它只控制
+  LLM/PlanSpec 函数名，不改变 capability id。
+- `CapabilityDefinition.name` 和 `CapabilityDefinition.display_name` 是公开字段。
+  省略时，`name` 默认为 capability id 把点替换为下划线，`display_name` 默认为
+  `name`。
+- Raw `CapabilityDefinition.id` 必须是以 `tool`、`agent`、`mcp`、`skill` 或
+  `memory` 开头的 dotted capability id。每个 segment 只能包含字母、数字和下划线；
+  至少需要两个 segment。
+- LLM 可见的 PlanSpec 和 tool-call function names 现在使用
+  `CapabilityDefinition.name`。如果设置了自定义 name，请同步更新已保存的 dynamic
+  DAG PlanSpec 文本和 deterministic provider fixtures。
 
 ## 0.6.0
 
@@ -28,8 +46,9 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ### 改变
 
-- Capability definitions 现在把稳定 id 和调用名分开。`id` 仍是执行身份；
-  `name` 是 LLM/PlanSpec 函数名；`display_name` 只用于 UI 展示。
+- LLM 可见函数名现在统一由稳定 capability id 派生，把点替换为下划线。例如
+  `tool.search` 会变成 `tool_search(...)`，`agent.helper` 会变成
+  `agent_helper(...)`。
 - Runner capability 注册现在会在 tools、MCP servers、raw capabilities 和 skill
   visibility 变化时，让已注册子 agent 的运行时 scope 保持同步。
 - 本地 API agent preset payloads 现在使用公开 `ToolAgent` 字段名，并执行和 SDK
@@ -37,18 +56,19 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ### 破坏性改变
 
-- `@dagent.tool` 仍不接收 `id=`。Python function tools 一律从函数名派生
-  capability id，格式为 `tool.<function_name>`。`name=` 重新可用，但它只控制
-  LLM/PlanSpec 函数名，不改变 capability id。
-- `CapabilityDefinition.name` 和 `CapabilityDefinition.display_name` 是公开字段。
-  省略时，`name` 默认为 capability id 把点替换为下划线，`display_name` 默认为
-  `name`。
-- Raw `CapabilityDefinition.id` 必须是以 `tool`、`agent`、`mcp`、`skill` 或
-  `memory` 开头的 dotted capability id。每个 segment 只能包含字母、数字和下划线；
-  至少需要两个 segment。
-- LLM 可见的 PlanSpec 和 tool-call function names 现在使用
-  `CapabilityDefinition.name`。如果设置了自定义 name，请同步更新已保存的 dynamic
-  DAG PlanSpec 文本和 deterministic provider fixtures。
+- `@dagent.tool` 不再接收 `id=` 或 `name=`。Python function
+  tools 一律从函数名派生 capability id，格式为 `tool.<function_name>`。需要改变公开
+  id 时，请重命名函数，或用另一个函数名包一层实现。
+- `CapabilityDefinition.name` 已删除。Raw capability definitions 现在只用 `id`
+  作为稳定公开标识；LLM 可见函数名由该 id 派生。
+- Raw `CapabilityDefinition.id` 必须使用受支持的 dotted capability id forms：
+  `tool.<name>`、`agent.<name>`、`mcp.<server>.<tool>`、`skill.<name>` 或
+  `memory.<name>`。每个 segment 只能包含字母、数字和下划线；首尾空白会被拒绝。
+- LLM 可见的 PlanSpec 和 tool-call function names 现在由 capability id 派生，把点
+  替换为下划线。例如使用 `tool_search(...)`、`tool_shell(...)` 和
+  `agent_helper(...)`，不再使用 `search(...)`、`shell(...)` 或 `helper(...)`
+  这类短名。请同步更新已保存的 dynamic DAG PlanSpec 文本和 deterministic provider
+  fixtures。
 - MCP capability ids 现在会对不符合 id segment 规则的原始 MCP server 或 tool 名称生成
   稳定 canonical key。例如 `mock-server` 不再映射为 `mock_server`；请查看已注册
   capability definitions，并更新已保存的 capability allowlists 或 DAG specs。
