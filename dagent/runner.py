@@ -197,13 +197,10 @@ class Runner:
         definitions: list[CapabilityDefinition] = []
         try:
             for capability in bindings:
-                definition, handler, supports_context = _capability_parts(capability)
-                existing = catalog.get_entry(definition.id)
-                if _entry_matches_binding(existing, definition, handler, supports_context):
-                    definitions.append(existing.definition)
-                    continue
-                catalog.register(definition, handler, supports_context=supports_context)
-                registered_ids.append(definition.id)
+                registered = _register_capability_parts(catalog, capability)
+                definition = capability.definition
+                if registered:
+                    registered_ids.append(definition.id)
                 definitions.append(catalog.get(definition.id) or definition)
         except Exception:
             for capability_id in reversed(registered_ids):
@@ -1599,7 +1596,7 @@ def _register_capability_parts(
     *,
     expected_handler: CapabilityHandler | None = None,
     expected_supports_context: bool | None = None,
-) -> None:
+) -> bool:
     definition, handler, supports_context = _capability_parts(capability)
     existing = catalog.get_entry(definition.id)
     expected_handler = expected_handler or handler
@@ -1608,9 +1605,10 @@ def _register_capability_parts(
     )
     if existing is not None:
         if _entry_matches_binding(existing, definition, expected_handler, expected_supports_context):
-            return
+            return False
         raise ValueError(f"Capability '{definition.id}' is already registered with different config.")
     catalog.register(definition, handler, supports_context=supports_context)
+    return True
 
 
 def _validate_capability_binding_batch(
@@ -1631,6 +1629,8 @@ def _validate_capability_binding_batch(
             raise ValueError(
                 f"Capability name '{definition.name}' is already registered by '{existing_seen_id}'."
             )
+        seen_ids.add(definition.id)
+        seen_names[definition.name] = definition.id
         existing = catalog.get_entry(definition.id)
         if definition.id not in ignored and _entry_matches_binding(
             existing,
@@ -1642,8 +1642,6 @@ def _validate_capability_binding_batch(
         if existing is not None and definition.id not in ignored:
             raise ValueError(f"Capability '{definition.id}' is already registered with different config.")
         catalog.validate_registerable(definition, ignore_ids=ignored)
-        seen_ids.add(definition.id)
-        seen_names[definition.name] = definition.id
 
 
 def _entry_matches_binding(

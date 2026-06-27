@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -328,6 +329,8 @@ def test_api_upload_rolls_back_file_and_config_when_reload_fails(
     def fail_reload() -> None:
         raise RuntimeError("reload failed")
 
+    closed: list[bool] = []
+    state.runner = SimpleNamespace(close=lambda: closed.append(True))
     monkeypatch.setattr(app_module, "_reload_python_tools", fail_reload)
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -340,6 +343,8 @@ def test_api_upload_rolls_back_file_and_config_when_reload_fails(
     assert response.status_code == 500
     assert not (tmp_path / ".dagent" / "python-tools" / "uploaded.py").exists()
     assert load_user_config(config_path).python_tools == []
+    assert closed == [True]
+    assert state.runner is None
 
 
 def test_api_updates_uploaded_python_tool_without_changing_managed_path(tmp_path: Path) -> None:

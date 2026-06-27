@@ -344,6 +344,23 @@ def test_add_tools_keeps_existing_idempotent_bindings_valid(tmp_path) -> None:
     runner.close()
 
 
+def test_validate_tools_registerable_rejects_repeated_idempotent_binding(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def batch_repeated() -> str:
+        return "ok"
+
+    runner.add_tool(batch_repeated)
+
+    with pytest.raises(ValueError, match="Capability 'tool.batch_repeated' is already registered"):
+        runner.validate_tools_registerable([batch_repeated, batch_repeated])
+    with pytest.raises(ValueError, match="Capability 'tool.batch_repeated' is already registered"):
+        runner.add_tools([batch_repeated, batch_repeated])
+
+    runner.close()
+
+
 def test_validate_tools_registerable_rejects_batch_name_collisions_without_mutation(tmp_path) -> None:
     runner = _runner(tmp_path)
 

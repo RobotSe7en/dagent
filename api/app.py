@@ -69,7 +69,7 @@ from dagent.config import (
 )
 from dagent.capabilities.providers import agent_capability_parameters
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
-from dagent.schemas import Artifact, DAGEdge
+from dagent.schemas import Artifact, DAGEdge, validate_capability_id_segment
 
 from api.stream_gate import gate_chat_display
 
@@ -89,7 +89,6 @@ PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
-_LOCAL_PYTHON_TOOL_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -1294,6 +1293,7 @@ async def upload_python_tool(
             state.custom_python_tools = previous_tools
             state.persist_user_python_tools()
             target.unlink(missing_ok=True)
+            state.close_runner()
             raise
 
 
@@ -1824,24 +1824,20 @@ def _clean_python_tool_source_id(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Python tool source id is required.")
-    if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(text) is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Python tool source ids may contain only letters, numbers, and underscores.",
-        )
-    return text
+    try:
+        return validate_capability_id_segment(text, label="Python tool source ids")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _clean_python_tool_name(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Python tool names cannot be empty.")
-    if _LOCAL_PYTHON_TOOL_SOURCE_ID_RE.fullmatch(text) is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Python tool names may contain only letters, numbers, and underscores.",
-        )
-    return text
+    try:
+        return validate_capability_id_segment(text, label="Python tool names")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _parse_python_tool_names(value: str) -> list[str]:

@@ -118,27 +118,6 @@ class CapabilityCatalog:
                 f"Capability name '{definition.name}' is already registered by '{existing_id}'."
             )
 
-    def validate_registerable_batch(
-        self,
-        definitions: Iterable[CapabilityDefinition],
-        *,
-        ignore_ids: Iterable[str] = (),
-    ) -> None:
-        ignored = set(ignore_ids)
-        seen_ids: set[str] = set()
-        seen_names: dict[str, str] = {}
-        for definition in definitions:
-            if definition.id in seen_ids:
-                raise ValueError(f"Capability '{definition.id}' is already registered.")
-            existing_seen_id = seen_names.get(definition.name)
-            if existing_seen_id is not None:
-                raise ValueError(
-                    f"Capability name '{definition.name}' is already registered by '{existing_seen_id}'."
-                )
-            self.validate_registerable(definition, ignore_ids=ignored)
-            seen_ids.add(definition.id)
-            seen_names[definition.name] = definition.id
-
     def restore_entries(self, entries: Mapping[str, CapabilityEntry | None]) -> list[str]:
         restored_ids: list[str] = []
         try:
