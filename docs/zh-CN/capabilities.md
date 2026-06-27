@@ -91,6 +91,12 @@ runner = dagent.Runner(provider=provider, capabilities=[search])
 runner.add_tool(search)
 ```
 
+`runner.add_tools([...])` 用于原子批量注册。拥有一组配置化 Python function tools 的
+runtime manager 可以使用 `runner.reload_tools(groups, replace_ids=...)` 删除之前归它管理的
+ids、按 group 独立注册当前 tools，并收集 group 或已注册 agent 的错误，而不是把旧 id 缺失
+当成用户删除单个 capability。`replace_ids` 只能指向非内置的 `tool.*` capabilities；
+MCP tools、agent capabilities 和内置 tools 必须通过各自的生命周期 API 管理。
+
 Agents 声明自己能使用什么：
 
 ```python

@@ -26,6 +26,7 @@ from dagent.capabilities.sandbox_context import (
     sandbox_session_context,
 )
 from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, visible_skills
+from dagent.capabilities.toolsets import BUILTIN_CAPABILITY_IDS
 from dagent.capabilities.workspace import workspace_context
 from dagent.dag_builder import Dag
 from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
@@ -190,6 +191,46 @@ class Runner:
         """Register ``@dagent.tool`` bindings as one atomic batch."""
 
         self._ensure_open()
+        return self._add_tools(capabilities, refresh=True)
+
+    def reload_tools(
+        self,
+        groups: Mapping[str, Iterable[CapabilityBinding]],
+        *,
+        replace_ids: Iterable[str],
+    ) -> tuple[dict[str, list[CapabilityDefinition]], dict[str, str]]:
+        """Rebuild caller-managed Python tool groups without treating removals as user deletion."""
+
+        self._ensure_open()
+        catalog = self._runtime.capability_catalog
+        replace_id_set = set(replace_ids)
+        for capability_id in replace_id_set:
+            definition = catalog.get(capability_id)
+            if definition is None:
+                continue
+            if definition.kind != "tool":
+                raise ValueError("reload_tools can only replace tool capabilities.")
+            if capability_id in BUILTIN_CAPABILITY_IDS:
+                raise ValueError(f"reload_tools cannot replace built-in capability '{capability_id}'.")
+        for capability_id in replace_id_set:
+            catalog.delete(capability_id)
+        registered: dict[str, list[CapabilityDefinition]] = {}
+        errors: dict[str, str] = {}
+        for group_id, capabilities in groups.items():
+            try:
+                registered[group_id] = self._add_tools(capabilities, refresh=False)
+            except Exception as exc:
+                errors[group_id] = str(exc)
+        self._runtime.refresh_toolsets()
+        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
+        return registered, errors
+
+    def _add_tools(
+        self,
+        capabilities: Iterable[CapabilityBinding],
+        *,
+        refresh: bool,
+    ) -> list[CapabilityDefinition]:
         bindings = list(capabilities)
         catalog = self._runtime.capability_catalog
         _validate_capability_binding_batch(catalog, bindings)
@@ -205,11 +246,13 @@ class Runner:
         except Exception:
             for capability_id in reversed(registered_ids):
                 catalog.delete(capability_id)
+            if refresh:
+                self._runtime.refresh_toolsets()
+                self._refresh_registered_agent_runtime_configs()
+            raise
+        if refresh:
             self._runtime.refresh_toolsets()
             self._refresh_registered_agent_runtime_configs()
-            raise
-        self._runtime.refresh_toolsets()
-        self._refresh_registered_agent_runtime_configs()
         return definitions
 
     def validate_tools_registerable(
@@ -292,6 +335,8 @@ class Runner:
             name = capability_id.removeprefix("agent.")
             self._registered_agent_configs.pop(name, None)
             self._registered_agent_runtime_configs.pop(name, None)
+            self._runtime.refresh_toolsets()
+            return
         self._runtime.refresh_toolsets()
         self._refresh_registered_agent_runtime_configs()
 

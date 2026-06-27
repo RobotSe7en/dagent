@@ -152,6 +152,11 @@ name. `/python-tools/reload` invalidates import caches, but it does not reload
 modules already present in `sys.modules`; use `path` or uploaded `managed`
 sources for reload-style development.
 
+Reloading Python tools through the WebUI rebuilds only the imported Python-tool
+capabilities. It does not restart the whole runner or reconnect unrelated MCP
+servers. If a removed or disabled Python tool was referenced by an agent preset,
+that preset is reported as an agent error until its capabilities are updated.
+
 Python files are imported as local code, so top-level module code runs during
 loading. The WebUI never scans directories or registers every object
 automatically; it loads only explicit config entries and explicit `names`.

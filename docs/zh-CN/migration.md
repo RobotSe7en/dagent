@@ -17,6 +17,9 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 本地 WebUI Python tool 条目使用 `source: "module"` 时，不再 reload 已存在于
   `sys.modules` 的 module。需要类似 reload 的开发体验时，请使用 `path` 或上传后的
   `managed` source。
+- `/python-tools/reload` 现在只 reload 导入的 Python-tool capabilities。它不再重启整个
+  runner，也不会重连无关 MCP servers；引用了已删除 Python tools 的 presets 会报告为
+  agent errors。
 
 ### 破坏性改变
 
