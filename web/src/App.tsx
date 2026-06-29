@@ -162,6 +162,11 @@ import {
 } from './pythonToolDiscovery';
 import { canvasCenterNodePosition } from './canvasPositions';
 import {
+  nextExpandedSkillNames,
+  nextMcpResourceSelection,
+  resolveSelectedMcpToolId,
+} from './sidebarState';
+import {
   buildSchemaArgumentFields,
   coerceArgumentValue,
   ensureSchemaArguments,
@@ -964,8 +969,9 @@ export function App() {
     setDynamicLayoutPositionsState(positions);
   }, []);
   const selectToolMcpResource = useCallback((name: string, toolId: string | null = null) => {
-    setSelectedToolMcpName(name);
-    setSelectedToolMcpToolId(toolId ?? '');
+    const selection = nextMcpResourceSelection(name, toolId);
+    setSelectedToolMcpName(selection.name);
+    setSelectedToolMcpToolId(selection.toolId);
   }, []);
   const nextDynamicTimelineOrder = useCallback(() => {
     dynamicTimelineOrderRef.current += 1;
@@ -1460,9 +1466,7 @@ export function App() {
   useEffect(() => {
     const selectedServer = mcpServers.find((server) => server.name === selectedToolMcpName);
     setSelectedToolMcpToolId((current) =>
-      current && selectedServer?.tools.some((tool) => tool.id === current)
-        ? current
-        : '',
+      resolveSelectedMcpToolId(current, selectedServer?.tools.map((tool) => tool.id) ?? []),
     );
   }, [mcpServers, selectedToolMcpName]);
 
@@ -3187,19 +3191,7 @@ function WorkspaceSidebar({
     [profile.id, profile.name, profile.description, profile.source, profileSourceLabel(profile)],
     normalizedAgentQuery,
   ));
-  const visibleAgentPresets = agentPresets.filter((preset) => matchesSearchQuery(
-    [
-      preset.id,
-      preset.name,
-      preset.profile,
-      preset.description,
-      preset.review,
-      ...(preset.capabilities ?? []),
-      ...(preset.skills ?? []),
-      ...(preset.agents ?? []),
-    ],
-    normalizedAgentQuery,
-  ));
+  const visibleAgentPresets = agentPresets.filter((preset) => matchesAgentPresetQuery(preset, normalizedAgentQuery));
   const onCapabilityNavClick = (key: WorkspaceKey) => {
     if (activeWorkspace === key) {
       // 已在该工作区：切换其子菜单展开/收起。
@@ -3238,15 +3230,7 @@ function WorkspaceSidebar({
   const agentCreateTitle = agentsSub === 'profiles' ? '新建角色设定' : '新建智能体预设';
   const toggleSkillTree = (name: string) => {
     onSelectToolSkill(name);
-    setExpandedSkillNames((current) => {
-      const next = new Set(current);
-      if (next.has(name)) {
-        next.delete(name);
-      } else {
-        next.add(name);
-      }
-      return next;
-    });
+    setExpandedSkillNames((current) => nextExpandedSkillNames(current, name, selectedToolSkillName === name));
   };
   const toggleSkillFolder = (name: string, folder: string) => {
     const folderKey = `${name}:${folder}`;

@@ -66,6 +66,11 @@ const {
 const {
   canvasCenterNodePosition,
 } = await importTypeScript('../src/canvasPositions.ts');
+const {
+  nextExpandedSkillNames,
+  nextMcpResourceSelection,
+  resolveSelectedMcpToolId,
+} = await importTypeScript('../src/sidebarState.ts');
 const { pruneEdgesToNodeIds } = await importTypeScript('../src/dagEdges.ts');
 const {
   artifactPathExpr,
@@ -499,6 +504,30 @@ test('canvas center node position uses the live canvas center without hard-coded
   assert.deepEqual(canvasCenterNodePosition(flowInstance, canvasElement), { x: 414, y: 238 });
   assert.deepEqual(canvasCenterNodePosition(null, canvasElement), { x: 304, y: 168 });
   assert.deepEqual(canvasCenterNodePosition(flowInstance, null), { x: 0, y: 0 });
+});
+
+test('sidebar skill expansion opens previously expanded hidden skills when they are reselected', () => {
+  const hiddenExpanded = nextExpandedSkillNames(new Set(['research', 'writer']), 'research', false);
+  assert.deepEqual([...hiddenExpanded].sort(), ['research', 'writer']);
+
+  const selectedClosed = nextExpandedSkillNames(new Set(), 'research', true);
+  assert.deepEqual([...selectedClosed], ['research']);
+
+  const selectedOpen = nextExpandedSkillNames(new Set(['research']), 'research', true);
+  assert.deepEqual([...selectedOpen], []);
+});
+
+test('mcp sidebar selection distinguishes servers from child tools', () => {
+  assert.deepEqual(
+    nextMcpResourceSelection('docs', 'mcp.docs.lookup'),
+    { name: 'docs', toolId: 'mcp.docs.lookup' },
+  );
+  assert.deepEqual(
+    nextMcpResourceSelection('docs', null),
+    { name: 'docs', toolId: '' },
+  );
+  assert.equal(resolveSelectedMcpToolId('mcp.docs.lookup', ['mcp.docs.lookup', 'mcp.docs.search']), 'mcp.docs.lookup');
+  assert.equal(resolveSelectedMcpToolId('mcp.docs.lookup', ['mcp.docs.search']), '');
 });
 
 test('api helpers send agent preset and chat scope request bodies', async () => {
@@ -1135,7 +1164,7 @@ test('workspace sidebar shares search controls across lower-left resource lists'
   assert.match(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleModels = models\.filter\(\(model\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleProfiles = profiles\.filter\(\(profile\) => matchesSearchQuery/);
-  assert.match(sidebarSource, /const visibleAgentPresets = agentPresets\.filter\(\(preset\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleAgentPresets = agentPresets\.filter\(\(preset\) => matchesAgentPresetQuery\(preset, normalizedAgentQuery\)\);/);
 
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{historyQuery\}[\s\S]*onChange=\{setHistoryQuery\}/);
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{dagListQuery\}[\s\S]*onChange=\{setDagListQuery\}/);
