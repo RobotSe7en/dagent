@@ -46,6 +46,10 @@ class FakeMCPManager:
                         "properties": {"query": {"type": "string"}},
                         "required": ["query", "missing"],
                     },
+                    outputSchema={
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok", "missing"],
+                    },
                 )
             ]
         }
@@ -74,6 +78,11 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert manager.started is True
     assert definition is not None
     assert definition.parameters["required"] == ["query"]
+    assert definition.output_schema == {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
     result = run(executor.execute(
         CapabilityInvocation(
             capability_id=capability_id,

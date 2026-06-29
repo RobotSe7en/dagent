@@ -105,6 +105,12 @@ Static DAG arguments can contain value references. They serialize as structured
 | `node.output.score >= 0.8` | Runtime comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) |
 | `dagent.item` / `dagent.item.url` | Current map element, or latest loop output in loop conditions |
 
+In the local Web UI, the static orchestration variable picker expands top-level
+`output_schema.properties` for `tool.*` and `mcp.*` capabilities, so a structured
+tool result such as `{"title": "...", "url": "..."}` can be selected as
+`search.output.title` or `search.output.url`. Capabilities without an output
+schema still expose the whole `node.output` value.
+
 References do not create edges. Add dependencies explicitly:
 
 ```python

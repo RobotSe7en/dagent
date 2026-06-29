@@ -103,6 +103,12 @@ bindings，并在 capability call 前立即解析。
 | `node.output.score >= 0.8` | runtime comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) |
 | `dagent.item` / `dagent.item.url` | 当前 map element，或 loop condition 中的最新 loop output |
 
+在本地 Web UI 中，静态编排的变量选择器会展开 `tool.*` 和 `mcp.*`
+capability 的顶层 `output_schema.properties`。例如结构化工具结果
+`{"title": "...", "url": "..."}` 可以选择为 `search.output.title` 或
+`search.output.url`。没有 output schema 的 capability 仍只暴露整体
+`node.output`。
+
 References 不会创建 edges。需要显式添加 dependencies：
 
 ```python

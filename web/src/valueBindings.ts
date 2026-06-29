@@ -1,4 +1,13 @@
-import type { Artifact, Dag, DagEdge, DagNode, ValueBinding, ValueExpr, ValuePathItem } from './types';
+import type {
+  Artifact,
+  CapabilityDefinition,
+  Dag,
+  DagEdge,
+  DagNode,
+  ValueBinding,
+  ValueExpr,
+  ValuePathItem,
+} from './types';
 
 export type NodeOutputField = 'value' | 'content' | 'status' | 'steps';
 export type ArtifactField = 'path' | 'paths' | 'absolute_path' | 'absolute_paths';
@@ -144,13 +153,15 @@ export function buildVariableCatalog(
   targetNodeId: string,
   inputSchema: Record<string, unknown> = {},
   artifacts: Record<string, Artifact> = {},
+  capabilities: Pick<CapabilityDefinition, 'id' | 'kind' | 'output_schema'>[] = [],
 ): VariableCatalog {
   const edges = dag.edges ?? [];
+  const capabilityById = new Map(capabilities.map((capability) => [capability.id, capability]));
   return {
     graphInputs: graphInputCatalogItems(inputSchema),
     nodeOutputs: dag.nodes
       .filter((node) => node.id !== targetNodeId && !wouldCreateCycle(edges, node.id, targetNodeId))
-      .flatMap((node) => nodeOutputCatalogItems(node)),
+      .flatMap((node) => nodeOutputCatalogItems(node, capabilityById)),
     artifacts: Object.values(artifacts)
       .sort((left, right) => left.id.localeCompare(right.id))
       .flatMap((artifact) => artifactCatalogItems(artifact)),
@@ -211,8 +222,11 @@ function graphInputCatalogItems(inputSchema: Record<string, unknown>): VariableC
   }));
 }
 
-function nodeOutputCatalogItems(node: DagNode): VariableCatalogItem[] {
-  return [
+function nodeOutputCatalogItems(
+  node: DagNode,
+  capabilityById: Map<string, Pick<CapabilityDefinition, 'id' | 'kind' | 'output_schema'>>,
+): VariableCatalogItem[] {
+  const items: VariableCatalogItem[] = [
     {
       id: `node.${node.id}.value`,
       label: `${node.id}.output`,
@@ -234,6 +248,23 @@ function nodeOutputCatalogItems(node: DagNode): VariableCatalogItem[] {
       binding: makeNodeOutputBinding(node.id, 'steps'),
     },
   ];
+  items.push(...nodeOutputSchemaCatalogItems(node, capabilityById));
+  return items;
+}
+
+function nodeOutputSchemaCatalogItems(
+  node: DagNode,
+  capabilityById: Map<string, Pick<CapabilityDefinition, 'id' | 'kind' | 'output_schema'>>,
+): VariableCatalogItem[] {
+  const invocation = node.payload.type === 'capability' ? node.payload.invocation : null;
+  if (!invocation) return [];
+  const capability = capabilityById.get(invocation.capability_id);
+  if (!capability || !['tool', 'mcp'].includes(capability.kind)) return [];
+  return Object.keys(schemaProperties(capability.output_schema ?? {})).sort().map((key) => ({
+    id: `node.${node.id}.value.${key}`,
+    label: `${node.id}.output.${key}`,
+    binding: makeNodeOutputBinding(node.id, 'value', [key]),
+  }));
 }
 
 function artifactCatalogItems(artifact: Artifact): VariableCatalogItem[] {

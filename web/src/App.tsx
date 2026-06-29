@@ -5793,6 +5793,7 @@ function OrchestrationWorkspace({
                     nodeId={selectedNormalized.id}
                     inputSchema={spec.input_schema ?? {}}
                     artifacts={spec.artifacts ?? {}}
+                    capabilities={capabilities}
                     onEnsureDependency={ensureBindingDependency}
                     onChange={(argumentsValue, nextEdges) => patchSelectedInvocation({ arguments: argumentsValue }, nextEdges)}
                   />
@@ -6013,6 +6014,7 @@ function InspectorArgumentEditor({
   nodeId,
   inputSchema = {},
   artifacts = {},
+  capabilities = [],
   onEnsureDependency,
   onChange,
 }: {
@@ -6022,13 +6024,14 @@ function InspectorArgumentEditor({
   nodeId?: string;
   inputSchema?: Record<string, unknown>;
   artifacts?: Record<string, Artifact>;
+  capabilities?: Pick<CapabilityDefinition, 'id' | 'kind' | 'output_schema'>[];
   onEnsureDependency?: (value: Record<string, unknown>) => DagEdge[] | undefined;
   onChange: (value: Record<string, unknown>, edges?: DagEdge[]) => void;
 }) {
   const normalizedValue = ensureSchemaArguments(value, parameters);
   const fields = buildSchemaArgumentFields(value, parameters);
   const variableCatalog = dag && nodeId
-    ? buildVariableCatalog(dag, nodeId, inputSchema, artifacts)
+    ? buildVariableCatalog(dag, nodeId, inputSchema, artifacts, capabilities)
     : null;
   const [mode, setMode] = useState<'kv' | 'raw'>('kv');
   const [rawText, setRawText] = useState(() => JSON.stringify(normalizedValue, null, 2));

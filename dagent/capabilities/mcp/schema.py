@@ -22,6 +22,20 @@ def normalize_mcp_input_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def normalize_mcp_output_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a JSON schema suitable for describing structured MCP output."""
+
+    if not isinstance(schema, dict) or not schema:
+        return {}
+    normalized = _normalize_node(deepcopy(schema))
+    if not isinstance(normalized, dict):
+        return {}
+    if normalized.get("type") == "object":
+        normalized.setdefault("properties", {})
+        _prune_required(normalized)
+    return normalized
+
+
 def _normalize_node(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_node(item) for item in value]
