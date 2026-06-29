@@ -1060,6 +1060,10 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(sidebarSource, /onImportSkill/);
   assert.match(sidebarSource, /onCreateMcp/);
   assert.match(sidebarSource, /className="sidebar-tool-list-head"/);
+  assert.match(appSource, /function SidebarSearchField/);
+  assert.match(appSource, /function matchesSearchQuery/);
+  assert.match(appSource, /function normalizeSearchQuery/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{toolsQuery\}[\s\S]*onChange=\{onToolsQueryChange\}/);
   assert.match(sidebarSource, /const sidebarToolTree = buildToolManagementTree\(capabilities, pythonTools, normalizedToolsQuery\);/);
   assert.match(sidebarSource, /collapsedResourceTreeKeys/);
   assert.match(sidebarSource, /toggleResourceTreeKey/);
@@ -1079,13 +1083,17 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(sidebarSource, /treeKey: `mcp:\$\{server\.name\}`/);
   assert.match(sidebarSource, /treeClassName: 'sidebar-resource-file-tree'/);
   assert.match(sidebarSource, /renderMcpTree\(\)/);
-  assert.match(sidebarSource, /const renderAgentTree/);
-  assert.match(sidebarSource, /treeKey: 'agent:profiles'/);
-  assert.match(sidebarSource, /treeKey: 'agent:presets'/);
+  assert.match(sidebarSource, /const renderProfileTree/);
+  assert.match(sidebarSource, /treeKey: 'agent:profiles:builtin'/);
+  assert.match(sidebarSource, /treeKey: 'agent:profiles:custom'/);
+  assert.match(sidebarSource, /label: '内置'/);
+  assert.match(sidebarSource, /label: '自定义'/);
   assert.match(sidebarSource, /renderProfileRow/);
   assert.match(sidebarSource, /renderAgentPresetRow/);
-  assert.match(sidebarSource, /renderAgentTree\(\)/);
+  assert.match(sidebarSource, /renderProfileTree\(\)/);
+  assert.match(sidebarSource, /renderAgentPresetList\(\)/);
   assert.doesNotMatch(sidebarSource, /className="sidebar-tool-tree-group"/);
+  assert.doesNotMatch(sidebarSource, /treeKey: 'agent:presets'/);
   assert.doesNotMatch(sidebarSource, /server\.tools\.map/);
   assert.doesNotMatch(sidebarSource, /sidebarMcp\.length \? sidebarMcp\.map/);
   assert.doesNotMatch(sidebarSource, /<div className="sidebar-label inline-label">工具管理<\/div>/);
@@ -1106,6 +1114,38 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.doesNotMatch(css, /\.sidebar-tool-tree-group/);
 });
 
+test('workspace sidebar shares search controls across lower-left resource lists', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+
+  assert.match(appSource, /function SidebarSearchField/);
+  assert.match(appSource, /function matchesSearchQuery/);
+  assert.match(appSource, /function normalizeSearchQuery/);
+
+  assert.match(sidebarSource, /const \[historyQuery, setHistoryQuery\] = useState\(''\);/);
+  assert.match(sidebarSource, /const \[dagListQuery, setDagListQuery\] = useState\(''\);/);
+  assert.match(sidebarSource, /const \[artifactQuery, setArtifactQuery\] = useState\(''\);/);
+  assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
+  assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
+
+  assert.match(sidebarSource, /const visibleHistory = history\.filter\(\(item\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleModels = models\.filter\(\(model\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleProfiles = profiles\.filter\(\(profile\) => matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleAgentPresets = agentPresets\.filter\(\(preset\) => matchesSearchQuery/);
+
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{historyQuery\}[\s\S]*onChange=\{setHistoryQuery\}/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{dagListQuery\}[\s\S]*onChange=\{setDagListQuery\}/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{artifactQuery\}[\s\S]*onChange=\{setArtifactQuery\}/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{modelQuery\}[\s\S]*onChange=\{setModelQuery\}/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{agentQuery\}[\s\S]*onChange=\{setAgentQuery\}/);
+  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{toolsQuery\}[\s\S]*onChange=\{onToolsQueryChange\}/);
+  assert.doesNotMatch(sidebarSource, /<label className="sidebar-search-field">/);
+});
+
 test('skill management shows the selected skill file hierarchy in the left sidebar', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
@@ -1122,6 +1162,7 @@ test('skill management shows the selected skill file hierarchy in the left sideb
   assert.match(sidebarSource, /expandedSkillNames/);
   assert.match(sidebarSource, /expandedSkillFolders/);
   assert.match(sidebarSource, /const isSkillTreeOpen = expandedSkillNames\.has\(name\);/);
+  assert.match(sidebarSource, /onClick=\{\(\) => toggleSkillTree\(name\)\}/);
   assert.match(sidebarSource, /className="sidebar-skill-row-main"/);
   assert.match(sidebarSource, /className="sidebar-skill-toggle"/);
   assert.match(sidebarSource, /className="sidebar-skill-folder-toggle"/);
@@ -1203,6 +1244,36 @@ test('tools management ports the full design columns while keeping backend actio
   assert.match(css, /\.agent-editor-toolbar \.mcp-status-badge\s*\{[^}]*height:\s*34px;[^}]*min-height:\s*34px;[^}]*border-radius:\s*9px;[^}]*padding:\s*0 14px;[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*font-size:\s*13px;[^}]*line-height:\s*1;/s);
 });
 
+test('mcp management selects child tools and shows tool details separately from server config', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(directorySource, 'CapabilityDirectory should exist');
+
+  assert.match(appSource, /const \[selectedToolMcpToolId, setSelectedToolMcpToolId\] = useState\(''\);/);
+  assert.match(appSource, /const selectToolMcpResource = useCallback/);
+  assert.match(appSource, /selectedToolMcpToolId=\{selectedToolMcpToolId\}/);
+  assert.match(appSource, /onSelectToolMcp=\{selectToolMcpResource\}/);
+  assert.match(directorySource, /selectedMcpToolId/);
+  assert.match(sidebarSource, /selectedToolMcpToolId: string;/);
+  assert.match(sidebarSource, /onSelectToolMcp: \(name: string, toolId\?: string \| null\) => void;/);
+  assert.match(sidebarSource, /selectedToolMcpToolId === capability\.id/);
+  assert.match(sidebarSource, /onClick=\{\(\) => onSelectToolMcp\(server\.name, capability\.id\)\}/);
+  assert.match(sidebarSource, /active: selectedToolMcpName === server\.name && !selectedToolMcpToolId/);
+  assert.match(sidebarSource, /onSelect: \(\) => onSelectToolMcp\(server\.name, null\)/);
+  assert.doesNotMatch(sidebarSource, /onClick=\{\(\) => onSelectToolMcp\(server\.name\)\}/);
+
+  assert.match(directorySource, /const selectedMcpTool = selectedMcp\?\.tools\.find\(\(tool\) => tool\.id === selectedMcpToolId\) \?\? null;/);
+  assert.match(directorySource, /selectedMcpTool \? \(/);
+  assert.match(directorySource, /MCP 工具/);
+  assert.match(directorySource, /selectedMcpTool\.parameters/);
+  assert.match(directorySource, /selectedMcpTool\.output_schema/);
+  assert.match(directorySource, /selectedMcpTool\.config/);
+  assert.match(directorySource, /selectedMcpTool \? <Wrench size=\{15\} \/> : <Database size=\{15\} \/>/);
+});
+
 test('model management is a first-class workspace backed by runtime model APIs', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
@@ -1225,6 +1296,7 @@ test('model management is a first-class workspace backed by runtime model APIs',
   assert.match(sidebarSource, /模型列表/);
   assert.match(sidebarSource, /sidebar-model-list/);
   assert.match(sidebarSource, /onCreateModel/);
+  assert.match(sidebarSource, /visibleModels\.length \? visibleModels\.map/);
   assert.match(sidebarSource, /onSelectModel\(model\.id\)/);
   assert.match(modelSource, /className="design-models-workspace"/);
   assert.match(modelSource, /createModelProvider\(/);
@@ -1286,9 +1358,14 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(sidebarSource, /label: '角色设定'/);
   assert.match(sidebarSource, /label: '智能体预设'/);
   assert.match(sidebarSource, /onAgentsSubChange\(subitem\.key\)/);
-  assert.match(sidebarSource, /renderAgentTree\(\)/);
-  assert.match(sidebarSource, /profiles\.map\(\(profile\) => renderProfileRow\(profile\)\)/);
-  assert.match(sidebarSource, /agentPresets\.map\(\(preset\) => renderAgentPresetRow\(preset\)\)/);
+  assert.match(sidebarSource, /const builtinProfiles = visibleProfiles\.filter\(\(profile\) => profile\.source === 'builtin'\);/);
+  assert.match(sidebarSource, /const customProfiles = visibleProfiles\.filter\(\(profile\) => profile\.source !== 'builtin'\);/);
+  assert.match(sidebarSource, /renderProfileTree\(\)/);
+  assert.match(sidebarSource, /builtinProfiles\.map\(\(profile\) => renderProfileRow\(profile\)\)/);
+  assert.match(sidebarSource, /customProfiles\.map\(\(profile\) => renderProfileRow\(profile\)\)/);
+  assert.match(sidebarSource, /renderAgentPresetList\(\)/);
+  assert.match(sidebarSource, /visibleAgentPresets\.map\(\(preset\) => renderAgentPresetRow\(preset\)\)/);
+  assert.doesNotMatch(sidebarSource, /treeKey: 'agent:presets'/);
   assert.doesNotMatch(sidebarSource, /agentPresets\.length \? agentPresets\.map/);
   assert.match(agentSource, /className="design-agents-workspace"/);
   assert.doesNotMatch(agentSource, /className="agent-management-tabs"/);

@@ -289,6 +289,38 @@ const workspacePlaceholderLabels: Record<Exclude<WorkspaceKey, 'chat'>, string> 
   agents: '智能体管理工作区',
 };
 
+type SearchableValue = string | number | boolean | null | undefined;
+
+function normalizeSearchQuery(query: string): string {
+  return query.trim().toLowerCase();
+}
+
+function matchesSearchQuery(values: SearchableValue[], query: string): boolean {
+  if (!query) return true;
+  return values.some((value) => String(value ?? '').toLowerCase().includes(query));
+}
+
+function SidebarSearchField({
+  value,
+  onChange,
+  placeholder = '搜索…',
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="sidebar-search-field">
+      <Search size={13} />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+    </label>
+  );
+}
+
 function isCapabilityNode(node: DagNode): node is DagNode & { payload: CapabilityNodePayload } {
   return node.payload.type === 'capability';
 }
@@ -913,6 +945,7 @@ export function App() {
   const [selectedToolCapabilityId, setSelectedToolCapabilityId] = useState('');
   const [selectedToolSkillName, setSelectedToolSkillName] = useState('');
   const [selectedToolMcpName, setSelectedToolMcpName] = useState('');
+  const [selectedToolMcpToolId, setSelectedToolMcpToolId] = useState('');
   const [selectedSkillDetail, setSelectedSkillDetail] = useState<SkillDetail | null>(null);
   const [selectedSkillFileDetail, setSelectedSkillFileDetail] = useState<SkillFileDetail | null>(null);
   const [skillMessage, setSkillMessage] = useState('');
@@ -929,6 +962,10 @@ export function App() {
   const setDynamicLayoutPositions = useCallback((positions: Record<string, XYPosition>) => {
     dynamicLayoutPositionsRef.current = positions;
     setDynamicLayoutPositionsState(positions);
+  }, []);
+  const selectToolMcpResource = useCallback((name: string, toolId: string | null = null) => {
+    setSelectedToolMcpName(name);
+    setSelectedToolMcpToolId(toolId ?? '');
   }, []);
   const nextDynamicTimelineOrder = useCallback(() => {
     dynamicTimelineOrderRef.current += 1;
@@ -1419,6 +1456,15 @@ export function App() {
         : mcpServers[0]?.name ?? '',
     );
   }, [mcpServers]);
+
+  useEffect(() => {
+    const selectedServer = mcpServers.find((server) => server.name === selectedToolMcpName);
+    setSelectedToolMcpToolId((current) =>
+      current && selectedServer?.tools.some((tool) => tool.id === current)
+        ? current
+        : '',
+    );
+  }, [mcpServers, selectedToolMcpName]);
 
   useEffect(() => {
     setSelectedModelId((current) =>
@@ -2674,6 +2720,7 @@ export function App() {
         selectedProfileId={selectedProfileId}
         selectedToolCapabilityId={selectedToolCapabilityId}
         selectedToolMcpName={selectedToolMcpName}
+        selectedToolMcpToolId={selectedToolMcpToolId}
         selectedToolSkillName={selectedToolSkillName}
         selectedSkillDetail={selectedSkillDetail}
         selectedSkillFilePath={selectedSkillFileDetail?.file_path ?? ''}
@@ -2704,7 +2751,7 @@ export function App() {
         }}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
-        onSelectToolMcp={setSelectedToolMcpName}
+        onSelectToolMcp={selectToolMcpResource}
         onSelectToolSkill={selectToolSkill}
         onSelectWorkspace={setActiveWorkspace}
         onOrchestrationModeChange={setOrchestrationMode}
@@ -2825,6 +2872,7 @@ export function App() {
             query={toolsDirectoryQuery}
             selectedCapabilityId={selectedToolCapabilityId}
             selectedMcpName={selectedToolMcpName}
+            selectedMcpToolId={selectedToolMcpToolId}
             selectedSkillDetail={selectedSkillDetail}
             selectedSkillFileDetail={selectedSkillFileDetail}
             selectedSkillName={selectedToolSkillName}
@@ -2835,7 +2883,7 @@ export function App() {
             onInstallSkillDraft={() => void installSkillDraft()}
             onRemoveManagedSkill={() => void removeManagedSkill()}
             onSelectedCapabilityIdChange={setSelectedToolCapabilityId}
-            onSelectedMcpNameChange={setSelectedToolMcpName}
+            onSelectedMcpNameChange={selectToolMcpResource}
             onSelectedSkillNameChange={selectToolSkill}
             onSkillImportChange={setSkillImport}
             onUploadSkillFile={(file) => void loadSkillFile(file)}
@@ -2973,6 +3021,7 @@ function WorkspaceSidebar({
   selectedProfileId,
   selectedToolCapabilityId,
   selectedToolMcpName,
+  selectedToolMcpToolId,
   selectedToolSkillName,
   selectedSkillDetail,
   selectedSkillFilePath,
@@ -3032,6 +3081,7 @@ function WorkspaceSidebar({
   selectedProfileId: string;
   selectedToolCapabilityId: string;
   selectedToolMcpName: string;
+  selectedToolMcpToolId: string;
   selectedToolSkillName: string;
   selectedSkillDetail: SkillDetail | null;
   selectedSkillFilePath: string;
@@ -3056,7 +3106,7 @@ function WorkspaceSidebar({
   onSelectModel: (id: string) => void;
   onSelectSkillFile: (filePath: string | null) => void;
   onSelectToolCapability: (id: string) => void;
-  onSelectToolMcp: (name: string) => void;
+  onSelectToolMcp: (name: string, toolId?: string | null) => void;
   onSelectToolSkill: (name: string) => void;
   onSelectWorkspace: (workspace: WorkspaceKey) => void;
   onOrchestrationModeChange: (mode: OrchestrationMode) => void;
@@ -3080,7 +3130,7 @@ function WorkspaceSidebar({
     { key: 'profiles' as const, label: '角色设定', icon: <UserCog size={16} />, count: profiles.length },
     { key: 'presets' as const, label: '智能体预设', icon: <Bot size={16} />, count: agentPresetCount },
   ];
-  const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
+  const normalizedToolsQuery = normalizeSearchQuery(toolsQuery);
   const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
   const sidebarCapabilities = [
     ...sidebarToolTree.builtin.items.map((item) => item.capability),
@@ -3095,11 +3145,61 @@ function WorkspaceSidebar({
   const activeAgentSubnav = agentSubnav.find((item) => item.key === agentsSub) ?? agentSubnav[0];
   const skillFileGroups = Object.entries(selectedSkillDetail?.linked_files ?? {})
     .filter(([, files]) => files.length);
+  const [historyQuery, setHistoryQuery] = useState('');
+  const [dagListQuery, setDagListQuery] = useState('');
+  const [artifactQuery, setArtifactQuery] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const [agentQuery, setAgentQuery] = useState('');
   const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
   const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
   const [collapsedResourceTreeKeys, setCollapsedResourceTreeKeys] = useState<Set<string>>(() => new Set());
   // 手风琴式子菜单：同一时间最多展开一个，展开新的会收起其它。
   const [expandedMenu, setExpandedMenu] = useState<WorkspaceKey | null>(activeWorkspace);
+  const normalizedHistoryQuery = normalizeSearchQuery(historyQuery);
+  const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
+  const normalizedArtifactQuery = normalizeSearchQuery(artifactQuery);
+  const normalizedModelQuery = normalizeSearchQuery(modelQuery);
+  const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
+  const visibleHistory = history.filter((item) => matchesSearchQuery(
+    [item.id, item.title, item.time],
+    normalizedHistoryQuery,
+  ));
+  const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
+    [dag.id, dag.name, dag.description, dag.version, dag.nodes.length],
+    normalizedDagListQuery,
+  ));
+  const visibleArtifacts = artifacts.filter((artifact) => matchesSearchQuery(
+    [
+      artifact.id,
+      artifact.description,
+      artifactDisplayName(artifact),
+      artifactDisplayPath(artifact),
+      artifactKindLabel(artifact),
+      ...artifact.paths,
+    ],
+    normalizedArtifactQuery,
+  ));
+  const visibleModels = models.filter((model) => matchesSearchQuery(
+    [model.id, model.name, model.source, model.base_url, model.model],
+    normalizedModelQuery,
+  ));
+  const visibleProfiles = profiles.filter((profile) => matchesSearchQuery(
+    [profile.id, profile.name, profile.description, profile.source, profileSourceLabel(profile)],
+    normalizedAgentQuery,
+  ));
+  const visibleAgentPresets = agentPresets.filter((preset) => matchesSearchQuery(
+    [
+      preset.id,
+      preset.name,
+      preset.profile,
+      preset.description,
+      preset.review,
+      ...(preset.capabilities ?? []),
+      ...(preset.skills ?? []),
+      ...(preset.agents ?? []),
+    ],
+    normalizedAgentQuery,
+  ));
   const onCapabilityNavClick = (key: WorkspaceKey) => {
     if (activeWorkspace === key) {
       // 已在该工作区：切换其子菜单展开/收起。
@@ -3187,9 +3287,9 @@ function WorkspaceSidebar({
   );
   const renderMcpToolRow = (server: MCPServer, capability: CapabilityDefinition) => (
     <button
-      className="sidebar-skill-file-row sidebar-tool-leaf-row"
+      className={selectedToolMcpToolId === capability.id ? 'active sidebar-skill-file-row sidebar-tool-leaf-row' : 'sidebar-skill-file-row sidebar-tool-leaf-row'}
       key={capability.id}
-      onClick={() => onSelectToolMcp(server.name)}
+      onClick={() => onSelectToolMcp(server.name, capability.id)}
       type="button"
     >
       <Wrench size={14} />
@@ -3357,8 +3457,8 @@ function WorkspaceSidebar({
             title: server.name,
             count: tools.length,
             treeClassName: 'sidebar-resource-file-tree',
-            active: selectedToolMcpName === server.name,
-            onSelect: () => onSelectToolMcp(server.name),
+            active: selectedToolMcpName === server.name && !selectedToolMcpToolId,
+            onSelect: () => onSelectToolMcp(server.name, null),
             children: tools.length
               ? tools.map((capability) => renderMcpToolRow(server, capability))
               : <div className="sidebar-empty-row">暂无工具</div>,
@@ -3367,35 +3467,38 @@ function WorkspaceSidebar({
       </>
     ) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
   );
-  const profileResourceBranch = renderResourceTreeBranch({
-    treeKey: 'agent:profiles',
+  const builtinProfiles = visibleProfiles.filter((profile) => profile.source === 'builtin');
+  const customProfiles = visibleProfiles.filter((profile) => profile.source !== 'builtin');
+  const builtinProfileBranch = renderResourceTreeBranch({
+    treeKey: 'agent:profiles:builtin',
     icon: <UserCog size={13} />,
-    label: '角色设定',
-    count: profiles.length,
+    label: '内置',
+    count: builtinProfiles.length,
     treeClassName: 'sidebar-resource-file-tree',
-    active: agentsSub === 'profiles',
-    onSelect: () => onAgentsSubChange('profiles'),
-    children: profiles.length
-      ? profiles.map((profile) => renderProfileRow(profile))
-      : <div className="sidebar-empty-row">暂无角色设定</div>,
+    children: builtinProfiles.length
+      ? builtinProfiles.map((profile) => renderProfileRow(profile))
+      : <div className="sidebar-empty-row">{normalizedAgentQuery ? '没有匹配的内置角色设定' : '暂无内置角色设定'}</div>,
   });
-  const agentPresetResourceBranch = renderResourceTreeBranch({
-    treeKey: 'agent:presets',
-    icon: <Bot size={13} />,
-    label: '智能体预设',
-    count: agentPresets.length,
+  const customProfileBranch = renderResourceTreeBranch({
+    treeKey: 'agent:profiles:custom',
+    icon: <Folder size={13} />,
+    label: '自定义',
+    count: customProfiles.length,
     treeClassName: 'sidebar-resource-file-tree',
-    active: agentsSub === 'presets',
-    onSelect: () => onAgentsSubChange('presets'),
-    children: agentPresets.length
-      ? agentPresets.map((preset) => renderAgentPresetRow(preset))
-      : <div className="sidebar-empty-row">暂无智能体预设</div>,
+    children: customProfiles.length
+      ? customProfiles.map((profile) => renderProfileRow(profile))
+      : <div className="sidebar-empty-row">{normalizedAgentQuery ? '没有匹配的自定义角色设定' : '暂无自定义角色设定'}</div>,
   });
-  const renderAgentTree = () => (
+  const renderProfileTree = () => (
     <>
-      {profileResourceBranch}
-      {agentPresetResourceBranch}
+      {builtinProfileBranch}
+      {customProfileBranch}
     </>
+  );
+  const renderAgentPresetList = () => (
+    visibleAgentPresets.length
+      ? visibleAgentPresets.map((preset) => renderAgentPresetRow(preset))
+      : <div className="sidebar-empty-row">{normalizedAgentQuery ? '没有匹配的智能体预设' : '暂无智能体预设'}</div>
   );
 
   return (
@@ -3554,8 +3657,12 @@ function WorkspaceSidebar({
               <Plus size={14} />
             </button>
           </div>
+          <SidebarSearchField
+            value={historyQuery}
+            onChange={setHistoryQuery}
+          />
           <div className="sidebar-history-list">
-            {history.map((item, index) => (
+            {visibleHistory.length ? visibleHistory.map((item, index) => (
               <button className={index === 0 ? 'active' : ''} key={item.id} type="button">
                 <span>
                   <MessageSquare size={13} />
@@ -3563,7 +3670,9 @@ function WorkspaceSidebar({
                 </span>
                 <em>{item.time}</em>
               </button>
-            ))}
+            )) : (
+              <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的对话' : '暂无历史对话'}</div>
+            )}
           </div>
         </section>
       ) : null}
@@ -3576,8 +3685,12 @@ function WorkspaceSidebar({
               <Plus size={14} />
             </button>
           </div>
+          <SidebarSearchField
+            value={dagListQuery}
+            onChange={setDagListQuery}
+          />
           <div className="sidebar-context-list">
-            {savedDags.length ? savedDags.map((item) => (
+            {visibleSavedDags.length ? visibleSavedDags.map((item) => (
               <button
                 className={item.id === selectedDagId ? 'active' : ''}
                 key={item.id}
@@ -3593,7 +3706,7 @@ function WorkspaceSidebar({
                 <em>{item.description || `${item.nodes.length} 节点`}</em>
               </button>
             )) : (
-              <div className="sidebar-empty-row">暂无编排</div>
+              <div className="sidebar-empty-row">{normalizedDagListQuery ? '没有匹配的编排' : '暂无编排'}</div>
             )}
           </div>
         </section>
@@ -3618,8 +3731,12 @@ function WorkspaceSidebar({
               <Plus size={13} />
             </button>
           </div>
+          <SidebarSearchField
+            value={artifactQuery}
+            onChange={setArtifactQuery}
+          />
           <div className="sidebar-artifact-list">
-            {artifacts.length ? artifacts.map((artifact) => (
+            {visibleArtifacts.length ? visibleArtifacts.map((artifact) => (
               <div className="sidebar-artifact-row" key={artifact.id}>
                 <button
                   className="sidebar-artifact-main"
@@ -3635,7 +3752,7 @@ function WorkspaceSidebar({
                 </button>
               </div>
             )) : (
-              <div className="sidebar-empty-row">暂无 artifacts</div>
+              <div className="sidebar-empty-row">{normalizedArtifactQuery ? '没有匹配的 artifacts' : '暂无 artifacts'}</div>
             )}
           </div>
         </section>
@@ -3649,14 +3766,10 @@ function WorkspaceSidebar({
               {toolsSub === 'skills' || toolsSub === 'tools' ? <Upload size={14} /> : <Plus size={14} />}
             </button>
           </div>
-          <label className="sidebar-search-field">
-            <Search size={13} />
-            <input
-              value={toolsQuery}
-              onChange={(event) => onToolsQueryChange(event.target.value)}
-              placeholder="搜索…"
-            />
-          </label>
+          <SidebarSearchField
+            value={toolsQuery}
+            onChange={onToolsQueryChange}
+          />
           <div className="sidebar-tool-list">
             {toolsSub === 'tools' ? (
               renderToolTree()
@@ -3670,7 +3783,7 @@ function WorkspaceSidebar({
                     <div className="sidebar-skill-row-main">
                       <button
                         className={isSelectedSkill ? 'active sidebar-skill-select' : 'sidebar-skill-select'}
-                        onClick={() => onSelectToolSkill(name)}
+                        onClick={() => toggleSkillTree(name)}
                         type="button"
                       >
                         <FileText size={14} />
@@ -3760,8 +3873,12 @@ function WorkspaceSidebar({
               <Plus size={14} />
             </button>
           </div>
+          <SidebarSearchField
+            value={modelQuery}
+            onChange={setModelQuery}
+          />
           <div className="sidebar-context-list sidebar-model-list">
-            {models.length ? models.map((model) => (
+            {visibleModels.length ? visibleModels.map((model) => (
               <button
                 className={!creatingModel && selectedModelId === model.id ? 'active' : ''}
                 key={model.id}
@@ -3775,7 +3892,7 @@ function WorkspaceSidebar({
                 </span>
                 <em>{model.model}</em>
               </button>
-            )) : <div className="sidebar-empty-row">暂无模型</div>}
+            )) : <div className="sidebar-empty-row">{normalizedModelQuery ? '没有匹配的模型' : '暂无模型'}</div>}
           </div>
         </section>
       ) : null}
@@ -3788,8 +3905,12 @@ function WorkspaceSidebar({
               <Plus size={14} />
             </button>
           </div>
+          <SidebarSearchField
+            value={agentQuery}
+            onChange={setAgentQuery}
+          />
           <div className="sidebar-tool-list sidebar-agent-resource-list">
-            {renderAgentTree()}
+            {agentsSub === 'profiles' ? renderProfileTree() : renderAgentPresetList()}
           </div>
         </section>
       ) : null}
@@ -4894,7 +5015,7 @@ function ChatCapabilityScopeDialog({
   const selectedCapabilities = new Set(selectedCapabilityIds);
   const selectedSkills = new Set(selectedSkillNames);
   const selectedAgents = new Set(selectedAgentIds);
-  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedQuery = normalizeSearchQuery(query);
   const enabledCapabilities = capabilities.filter((capability) => capability.enabled && capability.kind !== 'agent');
   const visibleCapabilities = enabledCapabilities.filter((capability) => matchesCapabilityQuery(capability, normalizedQuery));
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
@@ -7094,6 +7215,7 @@ function CapabilityDirectory({
   query,
   selectedCapabilityId,
   selectedMcpName,
+  selectedMcpToolId,
   selectedSkillDetail,
   selectedSkillFileDetail,
   selectedSkillName,
@@ -7119,6 +7241,7 @@ function CapabilityDirectory({
   query: string;
   selectedCapabilityId: string;
   selectedMcpName: string;
+  selectedMcpToolId: string;
   selectedSkillDetail: SkillDetail | null;
   selectedSkillFileDetail: SkillFileDetail | null;
   selectedSkillName: string;
@@ -7154,7 +7277,7 @@ function CapabilityDirectory({
   const [mcpEnvText, setMcpEnvText] = useState('');
   const [mcpHeadersText, setMcpHeadersText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
-  const normalizedQuery = query.toLowerCase();
+  const normalizedQuery = normalizeSearchQuery(query);
   const toolTree = buildToolManagementTree(capabilities, pythonTools, normalizedQuery);
   const toolRows = [
     ...toolTree.builtin.items.map((item) => item.capability),
@@ -7169,6 +7292,7 @@ function CapabilityDirectory({
   const visibleSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedQuery));
   const selectedSkill = skills.find((skill) => skillLookupName(skill) === selectedSkillName) ?? visibleSkills[0] ?? skills[0];
   const selectedMcp = mcpServers.find((server) => server.name === selectedMcpName) ?? mcpServers[0];
+  const selectedMcpTool = selectedMcp?.tools.find((tool) => tool.id === selectedMcpToolId) ?? null;
 
   useEffect(() => {
     if (!selectedMcp) {
@@ -7843,25 +7967,56 @@ function CapabilityDirectory({
           <div className="capability-detail-pane">
             <div className="agent-editor-toolbar">
               <div className="agent-editor-icon">
-                <Database size={15} />
+                {selectedMcpTool ? <Wrench size={15} /> : <Database size={15} />}
               </div>
               <div>
-                <strong>{selectedMcp?.name ?? 'MCP 服务'}</strong>
-                <span>{selectedMcp ? `${selectedMcp.source} · ${selectedMcp.tools.length} tools` : 'MCP server'}</span>
+                <strong>{selectedMcpTool ? capabilityDisplayName(selectedMcpTool) : selectedMcp?.name ?? 'MCP 服务'}</strong>
+                <span>{selectedMcpTool && selectedMcp ? `${selectedMcp.name} · MCP 工具` : selectedMcp ? `${selectedMcp.source} · ${selectedMcp.tools.length} tools` : 'MCP server'}</span>
               </div>
               <div>
-                {selectedMcp ? (
+                {selectedMcpTool ? (
+                  <span className="status-badge mcp-status-badge" data-status={selectedMcpTool.enabled ? 'completed' : 'queued'}>
+                    {capabilityStatusLabel(selectedMcpTool)}
+                  </span>
+                ) : selectedMcp ? (
                   <span className="status-badge mcp-status-badge" data-status={selectedMcp.status === 'connected' ? 'completed' : selectedMcp.status === 'error' ? 'failed' : 'running'}>
                     {mcpStatusLabel(selectedMcp.status)}
                   </span>
                 ) : null}
-                <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || !isEditableMcpSource(selectedMcp.source)} type="button">
-                  <Trash2 size={13} />
-                  删除
-                </button>
+                {selectedMcpTool ? null : (
+                  <button className="secondary-button danger-button compact-button" onClick={removeMcpServer} disabled={!selectedMcp || !isEditableMcpSource(selectedMcp.source)} type="button">
+                    <Trash2 size={13} />
+                    删除
+                  </button>
+                )}
               </div>
             </div>
-            {selectedMcp ? (
+            {selectedMcpTool && selectedMcp ? (
+              <div className="tools-detail-scroll">
+                <div className="mcp-detail-surface">
+                  {selectedMcp.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
+                  <p className="tool-detail-summary">{selectedMcpTool.description || selectedMcpTool.id}</p>
+                  <div className="tool-info-table">
+                    <div><span>服务</span><strong>{selectedMcp.name}</strong></div>
+                    <div><span>能力 ID</span><strong>{selectedMcpTool.id}</strong></div>
+                    <div><span>状态</span><strong>{capabilityStatusLabel(selectedMcpTool)}</strong></div>
+                    <div><span>风险</span><strong><i className={`risk-chip risk-${selectedMcpTool.policy.risk}`}>{selectedMcpTool.policy.risk}</i></strong></div>
+                  </div>
+                  <section>
+                    <h3>参数 Schema</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedMcpTool.parameters, null, 2)}</pre>
+                  </section>
+                  <section>
+                    <h3>输出 Schema</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedMcpTool.output_schema, null, 2)}</pre>
+                  </section>
+                  <section>
+                    <h3>配置</h3>
+                    <pre className="tool-schema-block">{JSON.stringify(selectedMcpTool.config, null, 2)}</pre>
+                  </section>
+                </div>
+              </div>
+            ) : selectedMcp ? (
               <div className="tools-detail-scroll">
                 <div className="mcp-detail-surface">
                   {selectedMcp.error ? <div className="error-banner">{selectedMcp.error}</div> : null}
@@ -8884,22 +9039,32 @@ function chatCapabilityScopeLabel(
 }
 
 function matchesCapabilityQuery(capability: CapabilityDefinition, query: string): boolean {
-  if (!query) return true;
   const server = typeof capability.config?.server === 'string' ? capability.config.server : '';
-  const haystack = `${capability.id} ${capability.name} ${capability.display_name} ${capability.kind} ${capability.description} ${server}`.toLowerCase();
-  return haystack.includes(query);
+  const tool = typeof capability.config?.tool === 'string' ? capability.config.tool : '';
+  return matchesSearchQuery(
+    [capability.id, capability.name, capability.display_name, capability.kind, capability.description, server, tool],
+    query,
+  );
 }
 
 function matchesSkillQuery(skill: SkillSummary, query: string): boolean {
-  if (!query) return true;
-  const haystack = `${skill.name} ${skill.category ?? ''} ${skill.description} ${skill.path}`.toLowerCase();
-  return haystack.includes(query);
+  return matchesSearchQuery([skill.name, skill.category, skill.description, skill.path], query);
 }
 
 function matchesAgentPresetQuery(agent: AgentPreset, query: string): boolean {
-  if (!query) return true;
-  const haystack = `${agent.id} ${agent.name} ${agent.profile} ${agent.description}`.toLowerCase();
-  return haystack.includes(query);
+  return matchesSearchQuery(
+    [
+      agent.id,
+      agent.name,
+      agent.profile,
+      agent.description,
+      agent.review,
+      ...(agent.capabilities ?? []),
+      ...(agent.skills ?? []),
+      ...(agent.agents ?? []),
+    ],
+    query,
+  );
 }
 
 function capabilityScopeDetail(capability: CapabilityDefinition): string {
