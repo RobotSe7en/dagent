@@ -53,6 +53,7 @@ const {
 } = await importTypeScript('../src/schemaArguments.ts');
 const {
   capabilityDisplayName,
+  buildToolManagementTree,
   cleanWorkspaceKeyDraft,
   isValidCapabilityId,
   visibleToolManagementCapabilities,
@@ -216,7 +217,7 @@ test('capability helpers use display names and dotted ids', () => {
   assert.equal(cleanWorkspaceKeyDraft('helper-agent'), 'helper_agent');
 });
 
-test('tool management capability list excludes MCP capabilities', () => {
+test('tool management capability list only includes tool capabilities', () => {
   const capabilities = [
     {
       id: 'tool.search',
@@ -246,11 +247,95 @@ test('tool management capability list excludes MCP capabilities', () => {
 
   assert.deepEqual(
     visibleToolManagementCapabilities(capabilities, ''),
-    [capabilities[0], capabilities[2]],
+    [capabilities[0]],
   );
   assert.deepEqual(
     visibleToolManagementCapabilities(capabilities, 'search'),
     [capabilities[0]],
+  );
+});
+
+test('tool management tree groups built-in and custom tools by source', () => {
+  const capabilities = [
+    {
+      id: 'tool.read_file',
+      name: 'tool_read_file',
+      display_name: 'Read file',
+      kind: 'tool',
+      description: 'Read a file.',
+      config: { tool_name: 'read_file' },
+    },
+    {
+      id: 'tool.search',
+      name: 'tool_search',
+      display_name: 'Search',
+      kind: 'tool',
+      description: 'Search docs.',
+      config: {},
+    },
+    {
+      id: 'tool.render',
+      name: 'tool_render',
+      display_name: 'Render',
+      kind: 'tool',
+      description: 'Render report.',
+      config: {},
+    },
+    {
+      id: 'tool.template',
+      name: 'tool_template',
+      display_name: 'Template',
+      kind: 'tool',
+      description: 'Manual template.',
+      config: { template: 'hello' },
+    },
+    {
+      id: 'mcp.docs.lookup',
+      name: 'mcp_docs_lookup',
+      display_name: 'Lookup',
+      kind: 'mcp',
+      description: 'MCP tool.',
+      config: {},
+    },
+  ];
+  const pythonTools = [
+    {
+      id: 'docs_tools',
+      source: 'path',
+      path: '/tmp/docs_tools.py',
+      module: null,
+      names: ['search'],
+      enabled: true,
+      status: 'loaded',
+      capabilities: ['tool.search'],
+    },
+    {
+      id: 'render_tools',
+      source: 'managed',
+      path: '/Users/olivia/.dagent/python-tools/render_tools.py',
+      module: null,
+      names: ['render'],
+      enabled: false,
+      status: 'disabled',
+      capabilities: ['tool.render'],
+    },
+  ];
+
+  const tree = buildToolManagementTree(capabilities, pythonTools, '');
+
+  assert.deepEqual(tree.builtin.items.map((item) => item.capability.id), ['tool.read_file']);
+  assert.deepEqual(tree.pythonSources.map((source) => source.source.id), ['docs_tools', 'render_tools']);
+  assert.deepEqual(tree.pythonSources[0].items.map((item) => item.capability.id), ['tool.search']);
+  assert.deepEqual(tree.pythonSources[1].items.map((item) => item.capability.id), ['tool.render']);
+  assert.deepEqual(tree.manual.items.map((item) => item.capability.id), ['tool.template']);
+  assert.equal(
+    [...tree.builtin.items, ...tree.manual.items, ...tree.pythonSources.flatMap((source) => source.items)]
+      .some((item) => item.capability.id === 'mcp.docs.lookup'),
+    false,
+  );
+  assert.deepEqual(
+    buildToolManagementTree(capabilities, pythonTools, 'render').pythonSources.map((source) => source.source.id),
+    ['render_tools'],
   );
 });
 
@@ -923,6 +1008,24 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(sidebarSource, /onImportSkill/);
   assert.match(sidebarSource, /onCreateMcp/);
   assert.match(sidebarSource, /className="sidebar-tool-list-head"/);
+  assert.match(sidebarSource, /const sidebarToolTree = buildToolManagementTree\(capabilities, pythonTools, normalizedToolsQuery\);/);
+  assert.match(sidebarSource, /collapsedResourceTreeKeys/);
+  assert.match(sidebarSource, /toggleResourceTreeKey/);
+  assert.match(sidebarSource, /const renderResourceTreeBranch/);
+  assert.doesNotMatch(sidebarSource, /const renderToolBranch/);
+  assert.match(sidebarSource, /className="sidebar-skill-row-main"/);
+  assert.match(sidebarSource, /className="sidebar-skill-toggle"/);
+  assert.match(sidebarSource, /data-open=\{isResourceTreeOpen\(treeKey\)\}/);
+  assert.match(sidebarSource, /className=\{`sidebar-skill-file-tree \$\{treeClassName\}`\}/);
+  assert.match(sidebarSource, /label: '自定义工具'/);
+  assert.match(sidebarSource, /label: 'Python 脚本'/);
+  assert.match(sidebarSource, /const renderMcpTree/);
+  assert.match(sidebarSource, /server\.tools\.map/);
+  assert.match(sidebarSource, /treeKey: `mcp:\$\{server\.name\}`/);
+  assert.match(sidebarSource, /treeClassName: 'sidebar-resource-file-tree'/);
+  assert.match(sidebarSource, /renderMcpTree\(\)/);
+  assert.doesNotMatch(sidebarSource, /className="sidebar-tool-tree-group"/);
+  assert.doesNotMatch(sidebarSource, /sidebarMcp\.length \? sidebarMcp\.map/);
   assert.doesNotMatch(sidebarSource, /<div className="sidebar-label inline-label">工具管理<\/div>/);
 
   assert.match(directorySource, /creationIntent === 'tools'/);
@@ -935,6 +1038,10 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(css, /\.sidebar-subnav\.nested/);
   assert.doesNotMatch(css, /\.sidebar-subnav\.nested\s*\{[^}]*border-left:/s);
   assert.match(css, /\.sidebar-tool-list-head/);
+  assert.match(css, /\.sidebar-resource-tree-row/);
+  assert.match(css, /\.sidebar-tool-list \.sidebar-resource-tree-select/);
+  assert.match(css, /\.sidebar-resource-file-tree/);
+  assert.doesNotMatch(css, /\.sidebar-tool-tree-group/);
 });
 
 test('skill management shows the selected skill file hierarchy in the left sidebar', async () => {
@@ -1009,7 +1116,7 @@ test('tools management ports the full design columns while keeping backend actio
   const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
 
   assert.ok(directorySource, 'CapabilityDirectory should end before AgentManagementWorkspace');
-  assert.match(directorySource, /const toolRows = visibleToolManagementCapabilities\(capabilities, normalizedQuery\);/);
+  assert.match(directorySource, /const toolTree = buildToolManagementTree\(capabilities, pythonTools, normalizedQuery\);/);
   assert.match(directorySource, /const selectedTool = toolRows\.find/);
   assert.match(directorySource, /tool-info-table/);
   assert.match(directorySource, /tool-schema-block/);

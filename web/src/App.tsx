@@ -149,6 +149,7 @@ import type {
 } from './types';
 import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
 import {
+  buildToolManagementTree,
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
   visibleToolManagementCapabilities,
@@ -2662,6 +2663,7 @@ export function App() {
         models={models}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
+        pythonTools={pythonTools}
         profiles={profiles}
         orchestrationMode={orchestrationMode}
         savedDags={visibleSavedDags}
@@ -2961,6 +2963,7 @@ function WorkspaceSidebar({
   mcpCount,
   mcpServers,
   orchestrationMode,
+  pythonTools,
   profiles,
   savedDags,
   selectedDagId,
@@ -3019,6 +3022,7 @@ function WorkspaceSidebar({
   mcpCount: number;
   mcpServers: MCPServer[];
   orchestrationMode: OrchestrationMode;
+  pythonTools: PythonToolEntry[];
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
@@ -3076,11 +3080,24 @@ function WorkspaceSidebar({
     { key: 'presets' as const, label: '智能体预设', icon: <Bot size={16} />, count: agentPresetCount },
   ];
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
-  const sidebarCapabilities = visibleToolManagementCapabilities(capabilities, normalizedToolsQuery);
+  const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
+  const sidebarCapabilities = [
+    ...sidebarToolTree.builtin.items.map((item) => item.capability),
+    ...sidebarToolTree.pythonSources.flatMap((source) => source.items.map((item) => item.capability)),
+    ...sidebarToolTree.manual.items.map((item) => item.capability),
+  ];
+  const sidebarCustomToolCount = sidebarToolTree.pythonSources.reduce((total, source) => total + source.items.length, 0)
+    + sidebarToolTree.manual.items.length;
   const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
   const sidebarMcp = mcpServers.filter((server) =>
     !normalizedToolsQuery
-    || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery),
+    || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery)
+    || server.tools.some((tool) => [
+      tool.id,
+      tool.name,
+      tool.display_name,
+      tool.description,
+    ].join(' ').toLowerCase().includes(normalizedToolsQuery)),
   );
   const activeToolSubnav = toolSubnav.find((item) => item.key === toolsSub) ?? toolSubnav[0];
   const activeAgentSubnav = agentSubnav.find((item) => item.key === agentsSub) ?? agentSubnav[0];
@@ -3088,6 +3105,7 @@ function WorkspaceSidebar({
     .filter(([, files]) => files.length);
   const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
   const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
+  const [collapsedResourceTreeKeys, setCollapsedResourceTreeKeys] = useState<Set<string>>(() => new Set());
   // 手风琴式子菜单：同一时间最多展开一个，展开新的会收起其它。
   const [expandedMenu, setExpandedMenu] = useState<WorkspaceKey | null>(activeWorkspace);
   const onCapabilityNavClick = (key: WorkspaceKey) => {
@@ -3150,6 +3168,178 @@ function WorkspaceSidebar({
       return next;
     });
   };
+  const isResourceTreeOpen = (treeKey: string) => !collapsedResourceTreeKeys.has(treeKey);
+  const toggleResourceTreeKey = (treeKey: string) => {
+    setCollapsedResourceTreeKeys((current) => {
+      const next = new Set(current);
+      if (next.has(treeKey)) {
+        next.delete(treeKey);
+      } else {
+        next.add(treeKey);
+      }
+      return next;
+    });
+  };
+  const toolSourceDisplayName = (label: string): string => label.split(/[\\/]/).filter(Boolean).pop() ?? label;
+  const renderToolCapabilityRow = (capability: CapabilityDefinition) => (
+    <button
+      className={selectedToolCapabilityId === capability.id ? 'active sidebar-skill-file-row sidebar-tool-leaf-row' : 'sidebar-skill-file-row sidebar-tool-leaf-row'}
+      key={capability.id}
+      onClick={() => onSelectToolCapability(capability.id)}
+      type="button"
+    >
+      <Wrench size={14} />
+      <span>{capabilityDisplayName(capability)}</span>
+      <em data-enabled={capability.enabled} />
+    </button>
+  );
+  const renderMcpToolRow = (server: MCPServer, capability: CapabilityDefinition) => (
+    <button
+      className="sidebar-skill-file-row sidebar-tool-leaf-row"
+      key={capability.id}
+      onClick={() => onSelectToolMcp(server.name)}
+      type="button"
+    >
+      <Wrench size={14} />
+      <span>{capabilityDisplayName(capability)}</span>
+      <em data-enabled={server.status === 'connected' && capability.enabled} />
+    </button>
+  );
+  const renderResourceTreeBranch = ({
+    treeKey,
+    icon,
+    label,
+    count,
+    children,
+    title,
+    treeClassName,
+    active,
+    onSelect,
+  }: {
+    treeKey: string;
+    icon: React.ReactNode;
+    label: string;
+    count: number;
+    children: React.ReactNode;
+    title?: string;
+    treeClassName: string;
+    active?: boolean;
+    onSelect?: () => void;
+  }) => (
+    <div className="sidebar-skill-row sidebar-resource-tree-row" key={treeKey}>
+      <div className="sidebar-skill-row-main">
+        <button
+          className={active ? 'active sidebar-resource-tree-select' : 'sidebar-resource-tree-select'}
+          onClick={onSelect ?? (() => toggleResourceTreeKey(treeKey))}
+          title={title ?? label}
+          type="button"
+        >
+          {icon}
+          <span>{label}</span>
+          <code>{count}</code>
+        </button>
+        <button
+          className="sidebar-skill-toggle"
+          data-open={isResourceTreeOpen(treeKey)}
+          onClick={() => toggleResourceTreeKey(treeKey)}
+          title={isResourceTreeOpen(treeKey) ? '收起分类' : '展开分类'}
+          type="button"
+        >
+          <ChevronRight size={13} />
+        </button>
+      </div>
+      {isResourceTreeOpen(treeKey) ? (
+        <div className={`sidebar-skill-file-tree ${treeClassName}`}>
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+  const builtinToolBranch = sidebarToolTree.builtin.items.length
+    ? renderResourceTreeBranch({
+        treeKey: 'tool:builtin',
+        icon: <Folder size={13} />,
+        label: sidebarToolTree.builtin.label,
+        count: sidebarToolTree.builtin.items.length,
+        treeClassName: 'sidebar-resource-file-tree',
+        children: sidebarToolTree.builtin.items.map((item) => renderToolCapabilityRow(item.capability)),
+      })
+    : null;
+  const pythonToolSourceBranches = sidebarToolTree.pythonSources.map((sourceGroup) => (
+    renderResourceTreeBranch({
+      treeKey: `tool:python:${sourceGroup.id}`,
+      icon: <File size={13} />,
+      label: toolSourceDisplayName(sourceGroup.label),
+      title: sourceGroup.label,
+      count: sourceGroup.items.length,
+      treeClassName: 'sidebar-resource-file-tree',
+      children: sourceGroup.items.map((item) => renderToolCapabilityRow(item.capability)),
+    })
+  ));
+  const pythonToolBranch = sidebarToolTree.pythonSources.length
+    ? renderResourceTreeBranch({
+        treeKey: 'tool:python',
+        icon: <FileText size={13} />,
+        label: 'Python 脚本',
+        count: sidebarToolTree.pythonSources.reduce((total, source) => total + source.items.length, 0),
+        treeClassName: 'sidebar-resource-file-tree',
+        children: <>{pythonToolSourceBranches}</>,
+      })
+    : null;
+  const manualToolBranch = sidebarToolTree.manual.items.length
+    ? renderResourceTreeBranch({
+        treeKey: 'tool:manual',
+        icon: <FileText size={13} />,
+        label: sidebarToolTree.manual.label,
+        count: sidebarToolTree.manual.items.length,
+        treeClassName: 'sidebar-resource-file-tree',
+        children: sidebarToolTree.manual.items.map((item) => renderToolCapabilityRow(item.capability)),
+      })
+    : null;
+  const customToolBranch = sidebarCustomToolCount
+    ? renderResourceTreeBranch({
+        treeKey: 'tool:custom',
+        icon: <Folder size={13} />,
+        label: '自定义工具',
+        count: sidebarCustomToolCount,
+        treeClassName: 'sidebar-resource-file-tree',
+        children: (
+          <>
+            {pythonToolBranch}
+            {manualToolBranch}
+          </>
+        ),
+      })
+    : null;
+  const renderToolTree = () => (
+    sidebarCapabilities.length ? (
+      <>
+        {builtinToolBranch}
+        {customToolBranch}
+      </>
+    ) : <div className="sidebar-empty-row">没有匹配的工具</div>
+  );
+  const renderMcpTree = () => (
+    sidebarMcp.length ? (
+      <>
+        {sidebarMcp.map((server) => (
+          renderResourceTreeBranch({
+            treeKey: `mcp:${server.name}`,
+            icon: <Database size={13} />,
+            label: server.name,
+            title: server.name,
+            count: server.tools.length,
+            treeClassName: 'sidebar-resource-file-tree',
+            active: selectedToolMcpName === server.name,
+            onSelect: () => onSelectToolMcp(server.name),
+            children: server.tools.length
+              ? server.tools.map((capability) => renderMcpToolRow(server, capability))
+              : <div className="sidebar-empty-row">暂无工具</div>,
+          })
+        ))}
+      </>
+    ) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
+  );
 
   return (
     <aside className="workspace-sidebar" data-collapsed={collapsed}>
@@ -3412,18 +3602,7 @@ function WorkspaceSidebar({
           </label>
           <div className="sidebar-tool-list">
             {toolsSub === 'tools' ? (
-              sidebarCapabilities.length ? sidebarCapabilities.map((capability) => (
-                <button
-                  className={selectedToolCapabilityId === capability.id ? 'active' : ''}
-                  key={capability.id}
-                  onClick={() => onSelectToolCapability(capability.id)}
-                  type="button"
-                >
-                  <Wrench size={14} />
-                  <span>{capabilityDisplayName(capability)}</span>
-                  <em data-enabled={capability.enabled} />
-                </button>
-              )) : <div className="sidebar-empty-row">没有匹配的工具</div>
+              renderToolTree()
             ) : toolsSub === 'skills' ? (
               sidebarSkills.length ? sidebarSkills.map((skill) => {
                 const name = skillLookupName(skill);
@@ -3510,18 +3689,7 @@ function WorkspaceSidebar({
                 );
               }) : <div className="sidebar-empty-row">没有匹配的技能</div>
             ) : (
-              sidebarMcp.length ? sidebarMcp.map((server) => (
-                <button
-                  className={selectedToolMcpName === server.name ? 'active' : ''}
-                  key={server.name}
-                  onClick={() => onSelectToolMcp(server.name)}
-                  type="button"
-                >
-                  <Database size={14} />
-                  <span>{server.name}</span>
-                  <em data-enabled={server.status === 'connected'} />
-                </button>
-              )) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
+              renderMcpTree()
             )}
           </div>
         </section>
@@ -6964,7 +7132,12 @@ function CapabilityDirectory({
   const [mcpHeadersText, setMcpHeadersText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
   const normalizedQuery = query.toLowerCase();
-  const toolRows = visibleToolManagementCapabilities(capabilities, normalizedQuery);
+  const toolTree = buildToolManagementTree(capabilities, pythonTools, normalizedQuery);
+  const toolRows = [
+    ...toolTree.builtin.items.map((item) => item.capability),
+    ...toolTree.pythonSources.flatMap((source) => source.items.map((item) => item.capability)),
+    ...toolTree.manual.items.map((item) => item.capability),
+  ];
   const selectedTool = toolRows.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0];
   const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
   const selectedPythonToolSource = selectedTool

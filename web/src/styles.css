@@ -942,6 +942,51 @@ button:focus-visible {
   background: #35c886;
 }
 
+.sidebar-resource-tree-row {
+  min-width: 0;
+}
+
+.sidebar-tool-list .sidebar-skill-row-main > .sidebar-resource-tree-select {
+  min-width: 0;
+  min-height: 31px;
+  color: #7b838f;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 750;
+}
+
+.sidebar-tool-list .sidebar-resource-tree-select span {
+  color: inherit;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.sidebar-tool-list .sidebar-resource-tree-select code {
+  flex: 0 0 auto;
+  border: 1px solid #e6e8ed;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: #fff;
+  color: #9aa0a8;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.sidebar-resource-file-tree {
+  margin-bottom: 7px;
+}
+
+.sidebar-tool-list .sidebar-tool-leaf-row {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+
+.sidebar-resource-file-tree .sidebar-tool-leaf-row span {
+  font-size: 12px;
+}
+
 .sidebar-agent-list {
   gap: 3px;
 }
