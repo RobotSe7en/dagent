@@ -2085,6 +2085,7 @@ def test_api_dag_create_run_and_artifacts() -> None:
             "status": "created",
             "error": None,
             "preview_url": f"/runs/{run_payload['run_id']}/artifacts/preview?path=notes%2Foutput.txt",
+            "download_url": f"/runs/{run_payload['run_id']}/artifacts/download?path=notes%2Foutput.txt",
         }
     ]
 
@@ -2419,6 +2420,7 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
             "status": "created",
             "error": None,
             "preview_url": f"/runs/{run_id}/artifacts/preview?path=notes%2Foutput.md",
+            "download_url": f"/runs/{run_id}/artifacts/download?path=notes%2Foutput.md",
         }
     ]
 
@@ -2429,6 +2431,101 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
     assert preview_response.status_code == 200
     assert preview_response.json()["preview_kind"] == "markdown"
     assert preview_response.json()["content"] == "# Hello\n\nBody"
+
+
+def test_api_run_artifacts_preview_tool_workspace_python_file() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "scripts/tool.py", "content": "print('hello')\n"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write python",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["scripts/tool.py"]["media_type"] == "text/x-python"
+    assert files["scripts/tool.py"]["preview_kind"] == "code"
+    assert files["scripts/tool.py"]["previewable"] is True
+    assert files["scripts/tool.py"]["preview_url"] == f"/runs/{run_id}/artifacts/preview?path=scripts%2Ftool.py"
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "scripts/tool.py"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.json()["preview_kind"] == "code"
+    assert preview_response.json()["content"] == "print('hello')\n"
+
+
+def test_api_run_artifacts_manifest_marks_python_file_previewable_before_decoding() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "scripts/tool.py", "content": "print('hello')\n"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write python",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    (workspace / "scripts" / "tool.py").write_bytes(b"\xff\xfeprint('hello')\n")
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["scripts/tool.py"]["preview_kind"] == "code"
+    assert files["scripts/tool.py"]["previewable"] is True
+    assert files["scripts/tool.py"]["preview_url"] == f"/runs/{run_id}/artifacts/preview?path=scripts%2Ftool.py"
+
+    preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "scripts/tool.py"},
+    )
+    assert preview_response.status_code == 415
+    assert "UTF-8" in preview_response.json()["detail"]
 
 
 def test_api_run_artifacts_preview_rejects_paths_outside_workspace() -> None:
@@ -2500,32 +2597,115 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
     run_id = _result_run_id(result)
     workspace = Path(result["state"]["workspace_path"])
     (workspace / "exports").mkdir()
-    (workspace / "exports" / "report.pdf").write_bytes(b"%PDF-1.7\x00binary")
+    (workspace / "exports" / "archive.bin").write_bytes(b"\x00binary")
 
     artifacts_response = client.get(f"/runs/{run_id}/artifacts")
 
     assert artifacts_response.status_code == 200
     files = {item["path"]: item for item in artifacts_response.json()["files"]}
-    assert files["exports/report.pdf"] == {
-        "id": "run:exports/report.pdf",
+    assert files["exports/archive.bin"] == {
+        "id": "run:exports/archive.bin",
         "artifact_id": None,
         "source": "run_file",
-        "path": "exports/report.pdf",
-        "name": "report.pdf",
-        "media_type": "application/pdf",
+        "path": "exports/archive.bin",
+        "name": "archive.bin",
+        "media_type": "application/octet-stream",
         "preview_kind": None,
         "previewable": False,
-        "size": 15,
+        "size": 7,
         "status": "created",
         "error": None,
         "preview_url": None,
+        "download_url": f"/runs/{run_id}/artifacts/download?path=exports%2Farchive.bin",
     }
 
     preview_response = client.get(
         f"/runs/{run_id}/artifacts/preview",
-        params={"path": "exports/report.pdf"},
+        params={"path": "exports/archive.bin"},
     )
     assert preview_response.status_code == 415
+
+
+def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "notes/output.txt", "content": "hello"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "report.pdf").write_bytes(b"%PDF-1.7 pdf bytes")
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+    (workspace / "exports" / "data.xlsx").write_bytes(b"PK\x03\x04 xlsx bytes")
+    (workspace / "exports" / "deck.pptx").write_bytes(b"PK\x03\x04 pptx bytes")
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["exports/report.pdf"]["preview_kind"] == "pdf"
+    assert files["exports/report.pdf"]["previewable"] is True
+    assert files["exports/report.pdf"]["preview_url"] is None
+    assert files["exports/report.pdf"]["download_url"] == (
+        f"/runs/{run_id}/artifacts/download?path=exports%2Freport.pdf"
+    )
+    assert files["exports/brief.docx"]["preview_kind"] == "docx"
+    assert files["exports/brief.docx"]["previewable"] is True
+    assert files["exports/brief.docx"]["preview_url"] is None
+    assert files["exports/data.xlsx"]["preview_kind"] == "xlsx"
+    assert files["exports/data.xlsx"]["previewable"] is True
+    assert files["exports/data.xlsx"]["preview_url"] is None
+    assert files["exports/deck.pptx"]["preview_kind"] is None
+    assert files["exports/deck.pptx"]["previewable"] is False
+    assert files["exports/deck.pptx"]["download_url"] == (
+        f"/runs/{run_id}/artifacts/download?path=exports%2Fdeck.pptx"
+    )
+
+    download_response = client.get(
+        f"/runs/{run_id}/artifacts/download",
+        params={"path": "exports/report.pdf"},
+    )
+
+    assert download_response.status_code == 200
+    assert download_response.content == b"%PDF-1.7 pdf bytes"
+    assert download_response.headers["content-type"] == "application/pdf"
+
+    for path in ("exports/report.pdf", "exports/brief.docx", "exports/data.xlsx"):
+        preview_response = client.get(
+            f"/runs/{run_id}/artifacts/preview",
+            params={"path": path},
+        )
+        assert preview_response.status_code == 415
+
+    escaped_download_response = client.get(
+        f"/runs/{run_id}/artifacts/download",
+        params={"path": "../outside.pdf"},
+    )
+    assert escaped_download_response.status_code == 400
+    assert "escapes run workspace" in escaped_download_response.json()["detail"]
 
 
 def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:

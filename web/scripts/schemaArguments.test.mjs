@@ -116,6 +116,11 @@ const {
   shouldApplyPythonToolDiscoveryResult,
   pythonToolDiscoverySourceKey,
 } = await importTypeScript('../src/pythonToolDiscovery.ts');
+const {
+  artifactPreviewDownloadUrl,
+  artifactPreviewMode,
+  shouldFetchTextArtifactPreview,
+} = await importTypeScript('../src/artifactPreview.ts');
 
 test('chat workbench CSS removes legacy centered workspace layout', async () => {
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
@@ -1808,6 +1813,7 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
 
   assert.match(apiSource, /export async function listRunArtifacts\(runId: string\)/);
   assert.match(apiSource, /export async function previewRunArtifact\(runId: string, path: string\)/);
+  assert.match(apiSource, /export function runArtifactDownloadUrl\(runId: string, path: string\)/);
   assert.match(appSource, /const \[runArtifactFiles, setRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
   assert.match(appSource, /const runArtifactRequestRef = useRef\(0\);/);
   assert.match(appSource, /function artifactPreviewCacheKey\(item: WorkbenchArtifactItem\)/);
@@ -1819,8 +1825,91 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.doesNotMatch(appSource, /artifactPreviewText/);
   assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
   assert.match(appSource, /function ArtifactPreview\(/);
+  assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
+  assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
+  assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
+  assert.match(appSource, /signal:\s*controller\.signal/);
+  assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
   assert.match(appSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}>\{preview\.content\}<\/ReactMarkdown>/);
+});
+
+test('artifact drawer file list collapses independently from the preview', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(appSource, /const \[artifactFilesExpanded, setArtifactFilesExpanded\] = useState\(true\);/);
+  assert.match(appSource, /className="artifact-drawer-title"[\s\S]*aria-expanded=\{artifactFilesExpanded\}[\s\S]*onClick=\{\(\) => setArtifactFilesExpanded\(\(value\) => !value\)\}/);
+  assert.match(appSource, /<div className="artifact-drawer-actions">\s*<button className="icon-button" disabled=\{loading\} onClick=\{onRefresh\}/);
+  assert.doesNotMatch(appSource, /className="artifact-file-label"/);
+  assert.doesNotMatch(appSource, /<span>文件<\/span>/);
+  assert.match(appSource, /\{artifactFilesExpanded \? \(\s*<div className="artifact-file-list">[\s\S]*\) : null\}/);
+  assert.match(appSource, /\{artifactFilesExpanded \? \([\s\S]*\) : null\}[\s\S]*<ArtifactPreview/);
+  assert.match(appSource, /const artifactFileName = artifactListFileName\(artifact\);/);
+  assert.match(appSource, /title=\{artifact\.path \?\? artifactFileName\}/);
+  assert.match(appSource, /<strong className="artifact-file-name">\{artifactFileName\}<\/strong>/);
+  assert.doesNotMatch(appSource, /artifact-file-download/);
+  assert.doesNotMatch(appSource, /download=\{artifactFileName\}/);
+  assert.doesNotMatch(appSource, /<strong>\{artifact\.name\}<\/strong>\s*<em>\{artifact\.meta\}<\/em>/);
+  assert.match(appSource, /function artifactListFileName\(artifact: WorkbenchArtifactItem\): string/);
+  assert.match(css, /\.artifact-drawer-title\s*\{[^}]*flex:\s*1 1 auto;/s);
+  assert.match(css, /\.artifact-drawer-actions\s*\{[^}]*margin-left:\s*auto;[^}]*display:\s*flex;/s);
+  assert.match(css, /\.artifact-drawer-title\[aria-expanded="true"\]\s+\.artifact-drawer-title-chevron\s*\{[^}]*transform:\s*rotate\(90deg\);/s);
+  assert.match(css, /\.artifact-file-name\s*\{[^}]*max-width:\s*min\(180px, 100%\);/s);
+});
+
+test('artifactPreview module centralizes preview routing for future provider swaps', () => {
+  assert.equal(artifactPreviewMode('markdown'), 'text');
+  assert.equal(artifactPreviewMode('code'), 'text');
+  assert.equal(artifactPreviewMode('text'), 'text');
+  assert.equal(artifactPreviewMode('pdf'), 'browser');
+  assert.equal(artifactPreviewMode('docx'), 'browser');
+  assert.equal(artifactPreviewMode('xlsx'), 'browser');
+  assert.equal(artifactPreviewMode('pptx'), 'unsupported');
+  assert.equal(artifactPreviewMode(null), 'unsupported');
+
+  assert.equal(shouldFetchTextArtifactPreview({
+    previewKind: 'markdown',
+    previewable: true,
+    previewUrl: '/runs/run_1/artifacts/preview?path=notes%2Foutput.md',
+  }), true);
+  assert.equal(shouldFetchTextArtifactPreview({
+    previewKind: 'pdf',
+    previewable: true,
+    downloadUrl: '/runs/run_1/artifacts/download?path=exports%2Freport.pdf',
+  }), false);
+  assert.equal(artifactPreviewDownloadUrl({
+    previewKind: 'xlsx',
+    previewable: true,
+    downloadUrl: '/runs/run_1/artifacts/download?path=exports%2Fdata.xlsx',
+  }), '/runs/run_1/artifacts/download?path=exports%2Fdata.xlsx');
+  assert.equal(artifactPreviewDownloadUrl({
+    previewKind: 'docx',
+    previewable: true,
+  }), null);
+  assert.equal(artifactPreviewDownloadUrl({
+    previewKind: null,
+    previewable: false,
+    downloadUrl: '/runs/run_1/artifacts/download?path=exports%2Fdeck.pptx',
+  }), '/runs/run_1/artifacts/download?path=exports%2Fdeck.pptx');
+});
+
+test('docx artifact preview keeps generated pages compact and unframed', async () => {
+  const previewSource = await readFile(new URL('../src/artifactPreview.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(previewSource, /className:\s*'artifact-docx-document'/);
+  assert.match(previewSource, /signal\?:\s*AbortSignal;/);
+  assert.match(previewSource, /function throwIfAborted\(signal: AbortSignal \| undefined\)/);
+  assert.match(previewSource, /request\.signal\?\.addEventListener\('abort', \(\) => renderTask\.cancel\?\.\(\), \{ once: true \}\);/);
+  assert.doesNotMatch(previewSource, /setAttribute\('role', 'tablist'\)/);
+  assert.match(previewSource, /const widestColumnCount = rows\.reduce\(\(count, row\) => Math\.max\(count, row\.length\), 0\);/);
+  assert.match(previewSource, /previewNotice\(`仅预览前 \$\{maxColumns\} 列，共 \$\{widestColumnCount\} 列。`\)/);
+  assert.match(previewSource, /ignoreHeight:\s*true/);
+  assert.match(css, /\.artifact-docx-preview\s+\.artifact-docx-document-wrapper\s*\{[^}]*background:\s*transparent;[^}]*padding:\s*0;/s);
+  assert.match(css, /\.artifact-docx-preview\s+section\.artifact-docx-document\s*\{[^}]*margin:\s*0 auto 16px;/s);
+  assert.match(css, /\.artifact-docx-preview\s+\.artifact-docx-document-wrapper\s*>\s*section\.artifact-docx-document\s*\{[^}]*margin:\s*0 auto 16px !important;[^}]*box-shadow:\s*none !important;/s);
+  assert.doesNotMatch(css, /\.artifact-docx-preview\s+section\.artifact-docx-document\s*\{[^}]*box-shadow:/s);
 });
 
 test('buildWorkbenchArtifacts maps run file manifests into previewable drawer items', async () => {
@@ -1846,6 +1935,20 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
         error: null,
         preview_url: '/runs/run_tool_1/artifacts/preview?path=notes%2Foutput.md',
       },
+      {
+        id: 'run:scripts/tool.py',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'scripts/tool.py',
+        name: 'tool.py',
+        media_type: 'text/x-python',
+        preview_kind: 'code',
+        previewable: true,
+        size: 15,
+        status: 'created',
+        error: null,
+        preview_url: '/runs/run_tool_1/artifacts/preview?path=scripts%2Ftool.py',
+      },
     ],
   });
 
@@ -1864,12 +1967,23 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
       id: 'run:notes/output.md',
       name: 'output.md',
       extension: 'MD',
-      meta: 'text/markdown · notes/output.md · 13 B',
+      meta: 'text/markdown · 13 B',
       path: 'notes/output.md',
       previewKind: 'markdown',
       previewable: true,
       runId: 'run_tool_1',
       preview: 'Path: notes/output.md',
+    },
+    {
+      id: 'run:scripts/tool.py',
+      name: 'tool.py',
+      extension: 'PY',
+      meta: 'text/x-python · 15 B',
+      path: 'scripts/tool.py',
+      previewKind: 'code',
+      previewable: true,
+      runId: 'run_tool_1',
+      preview: 'Path: scripts/tool.py',
     },
   ]);
 });
@@ -1881,18 +1995,19 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
     runId: 'run_tool_1',
     runFiles: [
       {
-        id: 'run:exports/report.pdf',
+        id: 'run:exports/archive.bin',
         artifact_id: null,
         source: 'run_file',
-        path: 'exports/report.pdf',
-        name: 'report.pdf',
-        media_type: 'application/pdf',
+        path: 'exports/archive.bin',
+        name: 'archive.bin',
+        media_type: 'application/octet-stream',
         preview_kind: null,
         previewable: false,
         size: 15,
         status: 'created',
         error: null,
         preview_url: null,
+        download_url: '/runs/run_tool_1/artifacts/download?path=exports%2Farchive.bin',
       },
     ],
   });
@@ -1904,14 +2019,16 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
     previewKind: item.previewKind,
     previewable: item.previewable,
     previewUrl: item.previewUrl,
+    downloadUrl: item.downloadUrl,
   })), [
     {
-      id: 'run:exports/report.pdf',
-      extension: 'PDF',
-      meta: 'application/pdf · exports/report.pdf · 15 B',
+      id: 'run:exports/archive.bin',
+      extension: 'BIN',
+      meta: 'application/octet-stream · 15 B',
       previewKind: undefined,
       previewable: false,
       previewUrl: null,
+      downloadUrl: '/runs/run_tool_1/artifacts/download?path=exports%2Farchive.bin',
     },
   ]);
 });

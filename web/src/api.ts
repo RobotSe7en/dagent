@@ -27,6 +27,7 @@ import type {
   ModelProviderInput,
   PythonToolConfig,
   PythonToolEntry,
+  RunArtifactFile,
   RunArtifactPreview,
   RunArtifactsResponse,
 } from './types';
@@ -173,7 +174,7 @@ export async function listRunArtifacts(runId: string): Promise<RunArtifactsRespo
     run_id: data.run_id ?? runId,
     workspace_path: data.workspace_path ?? null,
     artifacts: data.artifacts ?? {},
-    files: data.files ?? [],
+    files: (data.files ?? []).map(normalizeRunArtifactFileUrls),
     files_truncated: Boolean(data.files_truncated),
     file_limit: data.file_limit,
     visit_limit: data.visit_limit,
@@ -185,6 +186,28 @@ export async function previewRunArtifact(runId: string, path: string): Promise<R
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/preview?${params.toString()}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   return await res.json();
+}
+
+export function runArtifactDownloadUrl(runId: string, path: string): string {
+  const params = new URLSearchParams({ path });
+  return `${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/download?${params.toString()}`;
+}
+
+function normalizeRunArtifactFileUrls(file: RunArtifactFile): RunArtifactFile {
+  return {
+    ...file,
+    preview_url: normalizeApiUrl(file.preview_url),
+    download_url: normalizeApiUrl(file.download_url),
+  };
+}
+
+function normalizeApiUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (/^[a-z][a-z\d+.-]*:/i.test(value)) return value;
+  if (value === API_BASE || value.startsWith(`${API_BASE}/`)) return value;
+  const base = API_BASE.replace(/\/$/, '');
+  const path = value.startsWith('/') ? value : `/${value}`;
+  return `${base}${path}`;
 }
 
 export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnings: ProfileWarning[] }> {

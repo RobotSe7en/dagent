@@ -31,6 +31,7 @@ import {
   Copy,
   Crosshair,
   Database,
+  Download,
   File,
   FileText,
   Folder,
@@ -205,6 +206,14 @@ import {
   type ChatMessage,
   type MessageTimelineItem,
 } from './chatTimeline';
+import {
+  artifactPreviewDownloadUrl,
+  artifactPreviewMode,
+  isBrowserArtifactPreviewKind,
+  renderBrowserArtifactPreview,
+  shouldFetchTextArtifactPreview,
+  type ArtifactPreviewRenderHandle,
+} from './artifactPreview';
 import {
   buildWorkbenchArtifacts,
   type WorkbenchArtifactItem,
@@ -1087,7 +1096,14 @@ export function App() {
   }, [chatArtifacts.length]);
 
   useEffect(() => {
-    if (!artifactPanelOpen || !selectedArtifact?.previewable || !selectedArtifact.runId || !selectedArtifact.path) return;
+    if (
+      !artifactPanelOpen
+      || !selectedArtifact?.runId
+      || !selectedArtifact.path
+      || !shouldFetchTextArtifactPreview(selectedArtifact)
+    ) {
+      return;
+    }
     const cacheKey = artifactPreviewCacheKey(selectedArtifact);
     if (!cacheKey || artifactPreviews[cacheKey]) return;
     let cancelled = false;
@@ -4234,6 +4250,7 @@ function ArtifactPanel({
   onToggle: () => void;
 }) {
   const [artifactWidth, setArtifactWidth] = usePanelWidth('dagent.artifact-width', 380, 280, 720);
+  const [artifactFilesExpanded, setArtifactFilesExpanded] = useState(true);
   if (!open) {
     return (
       <aside className="artifact-rail">
@@ -4257,41 +4274,52 @@ function ArtifactPanel({
     <aside className="artifact-drawer" style={{ width: artifactWidth }}>
       <PanelResizeHandle width={artifactWidth} onResize={setArtifactWidth} />
       <div className="artifact-drawer-head">
-        <Folder size={17} />
-        <strong>产物</strong>
-        <span>{artifacts.length}</span>
-        <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
-          <RefreshCw className={loading ? 'spin' : ''} size={15} />
+        <button
+          className="artifact-drawer-title"
+          aria-expanded={artifactFilesExpanded}
+          onClick={() => setArtifactFilesExpanded((value) => !value)}
+          title={artifactFilesExpanded ? '收起文件列表' : '展开文件列表'}
+          type="button"
+        >
+          <ChevronRight className="artifact-drawer-title-chevron" size={13} />
+          <Folder className="artifact-drawer-title-folder" size={17} />
+          <strong>产物</strong>
+          <span>{artifacts.length}</span>
         </button>
-        <button className="icon-button" onClick={onToggle} title="收起面板" type="button">
-          <ChevronRight size={16} />
-        </button>
+        <div className="artifact-drawer-actions">
+          <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
+            <RefreshCw className={loading ? 'spin' : ''} size={15} />
+          </button>
+          <button className="icon-button" onClick={onToggle} title="收起面板" type="button">
+            <ChevronRight size={16} />
+          </button>
+        </div>
       </div>
 
-      <div className="artifact-file-label">
-        <ChevronRight size={13} />
-        <span>文件</span>
-        <em>{artifacts.length}</em>
-      </div>
-      <div className="artifact-file-list">
-        {error ? <div className="artifact-empty">{error}</div> : null}
-        {artifacts.length ? artifacts.map((artifact) => (
-          <button
-            className={artifact.id === selectedArtifactId ? 'active' : ''}
-            key={artifact.id}
-            onClick={() => onSelect(artifact.id)}
-            type="button"
-          >
-            <span className="artifact-extension">{artifact.extension}</span>
-            <span>
-              <strong>{artifact.name}</strong>
-              <em>{artifact.meta}</em>
-            </span>
-          </button>
-        )) : (
-          <div className="artifact-empty">当前运行还没有产物。</div>
-        )}
-      </div>
+      {artifactFilesExpanded ? (
+        <div className="artifact-file-list">
+          {error ? <div className="artifact-empty">{error}</div> : null}
+          {artifacts.length ? artifacts.map((artifact) => {
+            const artifactFileName = artifactListFileName(artifact);
+            return (
+              <button
+                className={artifact.id === selectedArtifactId ? 'active' : ''}
+                key={artifact.id}
+                onClick={() => onSelect(artifact.id)}
+                title={artifact.path ?? artifactFileName}
+                type="button"
+              >
+                <span className="artifact-extension">{artifact.extension}</span>
+                <span className="artifact-file-text">
+                  <strong className="artifact-file-name">{artifactFileName}</strong>
+                </span>
+              </button>
+            );
+          }) : (
+            <div className="artifact-empty">当前运行还没有产物。</div>
+          )}
+        </div>
+      ) : null}
 
       <ArtifactPreview
         error={previewError}
@@ -4326,9 +4354,16 @@ function ArtifactPreview({
   }
 
   let body: React.ReactNode;
+  const mode = artifactPreviewMode(selectedArtifact.previewKind);
+  const canCopy = Boolean(preview?.content);
+  const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
   if (selectedArtifact.error) {
     body = <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
   } else if (selectedArtifact.previewable === false) {
+    body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
+  } else if (mode === 'browser') {
+    body = <ArtifactBrowserPreview selectedArtifact={selectedArtifact} />;
+  } else if (mode === 'unsupported') {
     body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
   } else if (loading) {
     body = (
@@ -4363,13 +4398,110 @@ function ArtifactPreview({
         <File size={14} />
         <strong>{selectedArtifact.name}</strong>
         <span>{selectedArtifact.meta}</span>
-        <button className="icon-button" disabled={!preview} onClick={onCopy} title="复制" type="button">
+        <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
           <Copy size={13} />
         </button>
+        <a
+          className="icon-button"
+          href={downloadUrl ?? undefined}
+          download={selectedArtifact.name}
+          aria-disabled={!downloadUrl}
+          title="下载"
+        >
+          <Download size={13} />
+        </a>
       </div>
       {body}
     </div>
   );
+}
+
+function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: WorkbenchArtifactItem }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const previewKind = selectedArtifact.previewKind;
+    if (!container) return;
+    if (!downloadUrl || !isBrowserArtifactPreviewKind(previewKind)) {
+      setLoading(false);
+      setError('此文件缺少可用的预览下载地址。');
+      return;
+    }
+
+    let cancelled = false;
+    let handle: ArtifactPreviewRenderHandle | null = null;
+    const controller = new AbortController();
+    container.replaceChildren();
+    setLoading(true);
+    setError(null);
+
+    void fetch(downloadUrl, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await artifactResponseError(response));
+        return response.blob();
+      })
+      .then(async (blob) => {
+        if (cancelled) return;
+        handle = await renderBrowserArtifactPreview(container, {
+          kind: previewKind,
+          source: blob,
+          fileName: selectedArtifact.name,
+          signal: controller.signal,
+        });
+        if (cancelled) {
+          handle.destroy();
+          return;
+        }
+        setLoading(false);
+      })
+      .catch((exc) => {
+        if (cancelled || isAbortError(exc)) return;
+        setError(exc instanceof Error ? exc.message : String(exc));
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      handle?.destroy();
+      container.replaceChildren();
+    };
+  }, [downloadUrl, selectedArtifact.name, selectedArtifact.previewKind]);
+
+  return (
+    <div className="artifact-browser-preview-shell">
+      {loading ? (
+        <div className="artifact-preview-empty">
+          <Loader className="spin" size={14} />
+          <span>正在加载预览...</span>
+        </div>
+      ) : null}
+      {error ? <div className="artifact-preview-empty">{error}</div> : null}
+      <div className="artifact-browser-preview-host" ref={containerRef} />
+    </div>
+  );
+}
+
+function artifactListFileName(artifact: WorkbenchArtifactItem): string {
+  const value = artifact.path || artifact.name;
+  return value.replace(/\\/g, '/').split('/').filter(Boolean).pop() || artifact.name;
+}
+
+async function artifactResponseError(response: Response): Promise<string> {
+  try {
+    const payload = await response.clone().json();
+    if (typeof payload.detail === 'string') return payload.detail;
+    if (payload.detail) return JSON.stringify(payload.detail);
+    return response.statusText;
+  } catch {
+    // Fall through to plain-text response bodies.
+  }
+  const text = await response.text().catch(() => '');
+  return text || `加载预览失败（HTTP ${response.status}）。`;
 }
 
 function PaneTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
