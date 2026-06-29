@@ -25,20 +25,177 @@ export function cleanWorkspaceKeyDraft(value: string, options: { requireLeadingL
   return cleaned;
 }
 
-export function visibleToolManagementCapabilities<T extends { kind?: string; id?: string | null; name?: string | null; display_name?: string | null; description?: string | null }>(
+type ToolManagementCapability = {
+  kind?: string;
+  id?: string | null;
+  name?: string | null;
+  display_name?: string | null;
+  description?: string | null;
+  config?: Record<string, unknown> | null;
+};
+
+type ToolManagementPythonSource = {
+  id: string;
+  source?: string | null;
+  path?: string | null;
+  module?: string | null;
+  names?: string[];
+  capabilities: string[];
+};
+
+type McpManagementServer<T extends ToolManagementCapability> = {
+  name: string;
+  source?: string | null;
+  config?: {
+    command?: string | null;
+    url?: string | null;
+  } | null;
+  tools: T[];
+};
+
+export type ToolManagementTreeItem<T> = {
+  capability: T;
+};
+
+export type ToolManagementGroup<T> = {
+  id: string;
+  label: string;
+  items: ToolManagementTreeItem<T>[];
+};
+
+export type ToolManagementPythonSourceGroup<T, S> = {
+  id: string;
+  label: string;
+  source: S;
+  items: ToolManagementTreeItem<T>[];
+};
+
+export type ToolManagementTree<T, S> = {
+  builtin: ToolManagementGroup<T>;
+  pythonSources: ToolManagementPythonSourceGroup<T, S>[];
+  manual: ToolManagementGroup<T>;
+};
+
+export type McpManagementServerGroup<S extends McpManagementServer<ToolManagementCapability>> = {
+  server: S;
+  tools: Array<S['tools'][number]>;
+};
+
+export function visibleToolManagementCapabilities<T extends ToolManagementCapability>(
   capabilities: T[],
   query: string,
 ): T[] {
   const normalizedQuery = query.toLowerCase();
   return capabilities.filter((capability) => {
-    if (capability.kind === 'agent' || capability.kind === 'mcp') return false;
-    if (!normalizedQuery) return true;
-    return [
-      capability.id ?? '',
-      capability.name ?? '',
-      capability.display_name ?? '',
-      capability.description ?? '',
-      capability.kind ?? '',
-    ].some((value) => value.toLowerCase().includes(normalizedQuery));
+    if (capability.kind !== 'tool') return false;
+    return matchesToolCapability(capability, normalizedQuery);
   });
+}
+
+export function buildToolManagementTree<T extends ToolManagementCapability, S extends ToolManagementPythonSource>(
+  capabilities: T[],
+  pythonSources: S[],
+  query: string,
+): ToolManagementTree<T, S> {
+  const normalizedQuery = query.toLowerCase();
+  const toolCapabilities = capabilities.filter((capability) => capability.kind === 'tool');
+  const capabilityById = new Map(
+    toolCapabilities
+      .filter((capability): capability is T & { id: string } => Boolean(capability.id))
+      .map((capability) => [capability.id, capability]),
+  );
+  const pythonCapabilityIds = new Set<string>();
+  const pythonSourceGroups = pythonSources.flatMap((source) => {
+    const sourceMatches = matchesPythonToolSource(source, normalizedQuery);
+    for (const capabilityId of source.capabilities) {
+      pythonCapabilityIds.add(capabilityId);
+    }
+    const items = source.capabilities.flatMap((capabilityId) => {
+      const capability = capabilityById.get(capabilityId);
+      if (!capability) return [];
+      if (normalizedQuery && !sourceMatches && !matchesToolCapability(capability, normalizedQuery)) return [];
+      return [{ capability }];
+    });
+    if (!items.length) return [];
+    const label = source.path?.trim() || source.module?.trim() || source.id;
+    return [{
+      id: source.id,
+      label,
+      source,
+      items,
+    }];
+  });
+  const builtinItems: ToolManagementTreeItem<T>[] = [];
+  const manualItems: ToolManagementTreeItem<T>[] = [];
+  for (const capability of toolCapabilities) {
+    if (!capability.id || pythonCapabilityIds.has(capability.id)) continue;
+    if (!matchesToolCapability(capability, normalizedQuery)) continue;
+    const item = { capability };
+    if (isManualToolCapability(capability)) {
+      manualItems.push(item);
+    } else {
+      builtinItems.push(item);
+    }
+  }
+  return {
+    builtin: {
+      id: 'builtin',
+      label: '内置工具',
+      items: builtinItems,
+    },
+    pythonSources: pythonSourceGroups,
+    manual: {
+      id: 'manual',
+      label: '手工工具',
+      items: manualItems,
+    },
+  };
+}
+
+export function buildMcpManagementTree<S extends McpManagementServer<ToolManagementCapability>>(
+  servers: S[],
+  query: string,
+): McpManagementServerGroup<S>[] {
+  const normalizedQuery = query.toLowerCase();
+  return servers.flatMap((server) => {
+    if (!normalizedQuery) {
+      return [{ server, tools: server.tools }];
+    }
+    const serverMatches = [
+      server.name,
+      server.source ?? '',
+      server.config?.command ?? '',
+      server.config?.url ?? '',
+    ].some((value) => value.toLowerCase().includes(normalizedQuery));
+    const tools = serverMatches
+      ? server.tools
+      : server.tools.filter((tool) => matchesToolCapability(tool, normalizedQuery));
+    return serverMatches || tools.length ? [{ server, tools }] : [];
+  });
+}
+
+function matchesToolCapability(capability: ToolManagementCapability, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  return [
+    capability.id ?? '',
+    capability.name ?? '',
+    capability.display_name ?? '',
+    capability.description ?? '',
+    capability.kind ?? '',
+  ].some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function matchesPythonToolSource(source: ToolManagementPythonSource, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  return [
+    source.id,
+    source.source ?? '',
+    source.path ?? '',
+    source.module ?? '',
+    ...(source.names ?? []),
+  ].some((value) => value.toLowerCase().includes(normalizedQuery));
+}
+
+function isManualToolCapability(capability: ToolManagementCapability): boolean {
+  return Boolean(capability.config && Object.prototype.hasOwnProperty.call(capability.config, 'template'));
 }
