@@ -187,6 +187,11 @@ export async function previewRunArtifact(runId: string, path: string): Promise<R
   return await res.json();
 }
 
+export function runArtifactDownloadUrl(runId: string, path: string): string {
+  const params = new URLSearchParams({ path });
+  return `${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/download?${params.toString()}`;
+}
+
 export async function listProfiles(): Promise<{ profiles: AgentProfile[]; warnings: ProfileWarning[] }> {
   const res = await fetch(`${API_BASE}/profiles`);
   if (!res.ok) throw new Error(await errorMessage(res));

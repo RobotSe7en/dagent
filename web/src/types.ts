@@ -184,7 +184,7 @@ export interface Artifact {
   metadata?: Record<string, unknown>;
 }
 
-export type RunArtifactPreviewKind = 'markdown' | 'code' | 'text';
+export type RunArtifactPreviewKind = 'markdown' | 'code' | 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx';
 export type RunArtifactFileSource = 'dag_artifact' | 'run_file';
 
 export interface RunArtifactFile {
@@ -200,6 +200,7 @@ export interface RunArtifactFile {
   status: string;
   error?: string | null;
   preview_url?: string | null;
+  download_url?: string | null;
 }
 
 export interface RunArtifactsResponse {

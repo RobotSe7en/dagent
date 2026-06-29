@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.agent_presets import (
@@ -81,7 +81,7 @@ ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
 RunArtifactSource = Literal["dag_artifact", "run_file"]
-RunArtifactPreviewKind = Literal["markdown", "code", "text"]
+RunArtifactPreviewKind = Literal["markdown", "code", "text", "pdf", "docx", "xlsx", "pptx"]
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
@@ -92,6 +92,11 @@ _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
+_BROWSER_PREVIEW_EXTENSIONS: dict[str, RunArtifactPreviewKind] = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".xlsx": "xlsx",
+}
 _CODE_EXTENSIONS = {
     ".c",
     ".cc",
@@ -120,12 +125,16 @@ _CODE_FILENAMES = {"Dockerfile", "Makefile"}
 _MEDIA_TYPE_OVERRIDES = {
     ".md": "text/markdown",
     ".markdown": "text/markdown",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".py": "text/x-python",
     ".sh": "text/x-shellscript",
     ".ts": "text/typescript",
     ".tsx": "text/typescript-jsx",
     ".jsx": "text/jsx",
 }
+_TEXT_PREVIEW_KINDS = {"markdown", "code", "text"}
 
 
 class MessageRequest(BaseModel):
@@ -320,6 +329,7 @@ class RunArtifactFile(BaseModel):
     status: str = "created"
     error: str | None = None
     preview_url: str | None = None
+    download_url: str | None = None
 
 
 class RunArtifactsResponse(BaseModel):
@@ -931,6 +941,8 @@ async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
     preview_kind = _preview_kind_for_path(path)
     if preview_kind is None:
         raise HTTPException(status_code=415, detail="Artifact file type is not previewable.")
+    if preview_kind not in _TEXT_PREVIEW_KINDS:
+        raise HTTPException(status_code=415, detail="Artifact file type uses binary browser preview.")
     content, truncated, size = _read_text_preview(file_path)
     return RunArtifactPreviewResponse(
         run_id=run_id,
@@ -942,6 +954,22 @@ async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
         size=size,
         truncated=truncated,
     ).model_dump(mode="json")
+
+
+@app.get("/runs/{run_id}/artifacts/download")
+async def download_run_artifact(run_id: str, path: str) -> FileResponse:
+    run_state = _run_state_from_state(run_id)
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    file_path = _resolve_run_artifact_path(run_state, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found.")
+    normalized_path = _normalize_run_artifact_path(path)
+    return FileResponse(
+        file_path,
+        filename=file_path.name,
+        media_type=_media_type_for_path(normalized_path),
+    )
 
 
 @app.get("/dag-runs/{run_id}/artifacts")
@@ -2501,7 +2529,10 @@ def _run_artifact_file(
         path_error = path_error or "Artifact path escapes run workspace."
     elif file_path.is_file():
         size = file_path.stat().st_size
-        previewable = preview_kind is not None and _looks_like_utf8_text(file_path)
+        previewable = preview_kind is not None and (
+            preview_kind in _BROWSER_PREVIEW_EXTENSIONS.values()
+            or preview_kind in _TEXT_PREVIEW_KINDS
+        )
     elif path_error is None and status == "created":
         path_error = "Artifact file not found."
     return RunArtifactFile(
@@ -2516,7 +2547,8 @@ def _run_artifact_file(
         size=size,
         status=status,
         error=path_error,
-        preview_url=_preview_url(run_id, path) if previewable else None,
+        preview_url=_preview_url(run_id, path) if previewable and preview_kind in _TEXT_PREVIEW_KINDS else None,
+        download_url=_download_url(run_id, path) if file_path is not None and file_path.is_file() else None,
     )
 
 
@@ -2616,6 +2648,10 @@ def _preview_url(run_id: str, path: str) -> str:
     return f"/runs/{quote(run_id, safe='')}/artifacts/preview?path={quote(path, safe='')}"
 
 
+def _download_url(run_id: str, path: str) -> str:
+    return f"/runs/{quote(run_id, safe='')}/artifacts/download?path={quote(path, safe='')}"
+
+
 def _preview_kind_for_path(path: str) -> RunArtifactPreviewKind | None:
     name = Path(path).name
     suffix = Path(path).suffix.lower()
@@ -2625,6 +2661,8 @@ def _preview_kind_for_path(path: str) -> RunArtifactPreviewKind | None:
         return "code"
     if suffix in _TEXT_EXTENSIONS:
         return "text"
+    if suffix in _BROWSER_PREVIEW_EXTENSIONS:
+        return _BROWSER_PREVIEW_EXTENSIONS[suffix]
     return None
 
 
@@ -2636,21 +2674,6 @@ def _media_type_for_path(path: str) -> str:
     if guessed_type is not None:
         return guessed_type
     return "text/plain" if _preview_kind_for_path(path) is not None else "application/octet-stream"
-
-
-def _looks_like_utf8_text(path: Path) -> bool:
-    try:
-        with path.open("rb") as file:
-            sample = file.read(2048)
-    except OSError:
-        return False
-    if b"\x00" in sample:
-        return False
-    try:
-        sample.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return True
 
 
 def _read_text_preview(path: Path) -> tuple[str, bool, int]:

@@ -1624,11 +1624,40 @@ details[open] .timeline-chevron {
 .artifact-drawer-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   padding: 15px 16px 14px;
 }
 
-.artifact-drawer-head svg:first-child {
+.artifact-drawer-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 7px;
+  background: transparent;
+  color: #aab0b9;
+  cursor: pointer;
+  text-align: left;
+}
+
+.artifact-drawer-title:hover {
+  background: #f4f5f7;
+}
+
+.artifact-drawer-title-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.16s ease;
+}
+
+.artifact-drawer-title[aria-expanded="true"] .artifact-drawer-title-chevron {
+  transform: rotate(90deg);
+}
+
+.artifact-drawer-title-folder {
+  flex: 0 0 auto;
   color: #5b5bd6;
 }
 
@@ -1648,32 +1677,12 @@ details[open] .timeline-chevron {
   font-weight: 700;
 }
 
-.artifact-drawer-head .icon-button:first-of-type {
+.artifact-drawer-actions {
   margin-left: auto;
-}
-
-.artifact-file-label {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 0 12px;
-  padding: 6px 8px;
-  border-radius: 7px;
-  color: #aab0b9;
-}
-
-.artifact-file-label span {
-  font-size: 10.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.artifact-file-label em {
-  color: #9aa0a8;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 700;
+  flex: 0 0 auto;
 }
 
 .artifact-file-list {
@@ -1683,7 +1692,7 @@ details[open] .timeline-chevron {
   max-height: 230px;
   overflow-y: auto;
   margin-right: -2px;
-  padding: 4px 12px 12px;
+  padding: 0 12px 12px;
 }
 
 .artifact-file-list button {
@@ -1724,27 +1733,20 @@ details[open] .timeline-chevron {
   color: #b1730a;
 }
 
-.artifact-file-list button > span:last-child {
+.artifact-file-text {
   min-width: 0;
-  display: grid;
-  gap: 1px;
+  display: block;
+  max-width: min(180px, 100%);
 }
 
-.artifact-file-list strong {
+.artifact-file-name {
+  display: block;
+  max-width: min(180px, 100%);
   overflow: hidden;
   color: #16181d;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12.5px;
   font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artifact-file-list em {
-  overflow: hidden;
-  color: #9aa0a8;
-  font-size: 11px;
-  font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1823,6 +1825,119 @@ details[open] .timeline-chevron {
   padding: 14px 16px;
   color: #3b414b;
   font-size: 13px;
+}
+
+.artifact-browser-preview-shell {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-browser-preview-host {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+.artifact-browser-preview {
+  min-width: 0;
+}
+
+.artifact-pdf-preview {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+}
+
+.artifact-pdf-page {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid #dde0e6;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.artifact-pdf-page canvas {
+  display: block;
+  max-width: 100%;
+  height: auto !important;
+}
+
+.artifact-docx-preview {
+  overflow-x: auto;
+}
+
+.artifact-docx-preview .artifact-docx-document-wrapper {
+  background: transparent;
+  padding: 0;
+}
+
+.artifact-docx-preview section.artifact-docx-document {
+  max-width: 100%;
+  margin: 0 auto 16px;
+}
+
+.artifact-docx-preview .artifact-docx-document-wrapper > section.artifact-docx-document {
+  margin: 0 auto 16px !important;
+  box-shadow: none !important;
+}
+
+.artifact-xlsx-preview {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.artifact-xlsx-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.artifact-xlsx-tabs button {
+  flex: 0 0 auto;
+  border: 1px solid #dde0e6;
+  border-radius: 6px;
+  padding: 5px 9px;
+  background: #fff;
+  color: #4b5563;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.artifact-xlsx-tabs button.active {
+  border-color: rgba(91, 91, 214, 0.35);
+  background: #eeeefb;
+  color: #3434a5;
+}
+
+.artifact-xlsx-table-host,
+.artifact-xlsx-table-wrap {
+  min-height: 0;
+  overflow: auto;
+}
+
+.artifact-xlsx-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  background: #fff;
+  color: #303640;
+  font-size: 12px;
+}
+
+.artifact-xlsx-table td {
+  max-width: 240px;
+  border: 1px solid #e1e4ea;
+  padding: 5px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .artifact-preview-note {

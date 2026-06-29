@@ -15,6 +15,7 @@ export interface WorkbenchArtifactItem {
   previewKind?: RunArtifactPreviewKind;
   previewable?: boolean;
   previewUrl?: string | null;
+  downloadUrl?: string | null;
   size?: number | null;
   status?: string;
   error?: string | null;
@@ -71,7 +72,6 @@ function runFileArtifactItem(file: RunArtifactFile, runId: string | undefined): 
   const name = file.name || basename(file.path) || file.id;
   const meta = [
     file.media_type,
-    file.path,
     typeof file.size === 'number' ? formatBytes(file.size) : '',
   ].filter(Boolean).join(' · ');
   return {
@@ -86,6 +86,7 @@ function runFileArtifactItem(file: RunArtifactFile, runId: string | undefined): 
     previewKind: file.preview_kind ?? undefined,
     previewable: file.previewable,
     previewUrl: file.preview_url ?? null,
+    downloadUrl: file.download_url ?? null,
     size: file.size ?? null,
     status: file.status,
     error: file.error ?? null,

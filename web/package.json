@@ -15,10 +15,13 @@
   "description": "",
   "dependencies": {
     "@xyflow/react": "^12.10.2",
+    "docx-preview": "^0.3.7",
     "lucide-react": "^1.13.0",
+    "pdfjs-dist": "^6.1.200",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
+    "read-excel-file": "^9.2.0",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
