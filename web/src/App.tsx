@@ -3151,7 +3151,6 @@ function WorkspaceSidebar({
     .filter(([, files]) => files.length);
   const [historyQuery, setHistoryQuery] = useState('');
   const [dagListQuery, setDagListQuery] = useState('');
-  const [artifactQuery, setArtifactQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [agentQuery, setAgentQuery] = useState('');
   const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
@@ -3161,7 +3160,6 @@ function WorkspaceSidebar({
   const [expandedMenu, setExpandedMenu] = useState<WorkspaceKey | null>(activeWorkspace);
   const normalizedHistoryQuery = normalizeSearchQuery(historyQuery);
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
-  const normalizedArtifactQuery = normalizeSearchQuery(artifactQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
   const visibleHistory = history.filter((item) => matchesSearchQuery(
@@ -3171,17 +3169,6 @@ function WorkspaceSidebar({
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
     [dag.id, dag.name, dag.description, dag.version, dag.nodes.length],
     normalizedDagListQuery,
-  ));
-  const visibleArtifacts = artifacts.filter((artifact) => matchesSearchQuery(
-    [
-      artifact.id,
-      artifact.description,
-      artifactDisplayName(artifact),
-      artifactDisplayPath(artifact),
-      artifactKindLabel(artifact),
-      ...artifact.paths,
-    ],
-    normalizedArtifactQuery,
   ));
   const visibleModels = models.filter((model) => matchesSearchQuery(
     [model.id, model.name, model.source, model.base_url, model.model],
@@ -3715,12 +3702,8 @@ function WorkspaceSidebar({
               <Plus size={13} />
             </button>
           </div>
-          <SidebarSearchField
-            value={artifactQuery}
-            onChange={setArtifactQuery}
-          />
           <div className="sidebar-artifact-list">
-            {visibleArtifacts.length ? visibleArtifacts.map((artifact) => (
+            {artifacts.length ? artifacts.map((artifact) => (
               <div className="sidebar-artifact-row" key={artifact.id}>
                 <button
                   className="sidebar-artifact-main"
@@ -3736,7 +3719,7 @@ function WorkspaceSidebar({
                 </button>
               </div>
             )) : (
-              <div className="sidebar-empty-row">{normalizedArtifactQuery ? '没有匹配的 artifacts' : '暂无 artifacts'}</div>
+              <div className="sidebar-empty-row">暂无 artifacts</div>
             )}
           </div>
         </section>

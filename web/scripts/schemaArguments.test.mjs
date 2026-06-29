@@ -1155,20 +1155,20 @@ test('workspace sidebar shares search controls across lower-left resource lists'
 
   assert.match(sidebarSource, /const \[historyQuery, setHistoryQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[dagListQuery, setDagListQuery\] = useState\(''\);/);
-  assert.match(sidebarSource, /const \[artifactQuery, setArtifactQuery\] = useState\(''\);/);
+  assert.doesNotMatch(sidebarSource, /const \[artifactQuery, setArtifactQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
 
   assert.match(sidebarSource, /const visibleHistory = history\.filter\(\(item\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
-  assert.match(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
+  assert.doesNotMatch(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleModels = models\.filter\(\(model\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleProfiles = profiles\.filter\(\(profile\) => matchesSearchQuery/);
   assert.match(sidebarSource, /const visibleAgentPresets = agentPresets\.filter\(\(preset\) => matchesAgentPresetQuery\(preset, normalizedAgentQuery\)\);/);
 
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{historyQuery\}[\s\S]*onChange=\{setHistoryQuery\}/);
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{dagListQuery\}[\s\S]*onChange=\{setDagListQuery\}/);
-  assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{artifactQuery\}[\s\S]*onChange=\{setArtifactQuery\}/);
+  assert.doesNotMatch(sidebarSource, /<SidebarSearchField[\s\S]*value=\{artifactQuery\}[\s\S]*onChange=\{setArtifactQuery\}/);
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{modelQuery\}[\s\S]*onChange=\{setModelQuery\}/);
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{agentQuery\}[\s\S]*onChange=\{setAgentQuery\}/);
   assert.match(sidebarSource, /<SidebarSearchField[\s\S]*value=\{toolsQuery\}[\s\S]*onChange=\{onToolsQueryChange\}/);
