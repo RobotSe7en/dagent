@@ -105,6 +105,10 @@ const {
   responseDeltaPayload,
   runStartedPayload,
 } = await importTypeScript('../src/streamProtocol.ts');
+const {
+  shouldApplyPythonToolDiscoveryResult,
+  pythonToolDiscoverySourceKey,
+} = await importTypeScript('../src/pythonToolDiscovery.ts');
 
 test('chat workbench CSS removes legacy centered workspace layout', async () => {
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
@@ -247,6 +251,43 @@ test('tool management capability list excludes MCP capabilities', () => {
   assert.deepEqual(
     visibleToolManagementCapabilities(capabilities, 'search'),
     [capabilities[0]],
+  );
+});
+
+test('python tool discovery ignores stale results and later manual edits', () => {
+  const request = {
+    requestId: 3,
+    sourceKey: pythonToolDiscoverySourceKey('path', '/tmp/tools.py'),
+    namesEditedAtStart: 7,
+  };
+
+  assert.equal(
+    shouldApplyPythonToolDiscoveryResult(
+      { requestId: 3, sourceKey: 'path:/tmp/tools.py', namesEditedAt: 7 },
+      request,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldApplyPythonToolDiscoveryResult(
+      { requestId: 4, sourceKey: 'path:/tmp/tools.py', namesEditedAt: 7 },
+      request,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldApplyPythonToolDiscoveryResult(
+      { requestId: 3, sourceKey: 'path:/tmp/new-tools.py', namesEditedAt: 7 },
+      request,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldApplyPythonToolDiscoveryResult(
+      { requestId: 3, sourceKey: 'path:/tmp/tools.py', namesEditedAt: 8 },
+      request,
+    ),
+    false,
   );
 });
 

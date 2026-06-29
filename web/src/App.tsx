@@ -153,6 +153,11 @@ import {
   cleanWorkspaceKeyDraft,
   visibleToolManagementCapabilities,
 } from './capabilityContracts';
+import {
+  pythonToolDiscoverySourceKey,
+  shouldApplyPythonToolDiscoveryResult,
+  type PythonToolDiscoveryState,
+} from './pythonToolDiscovery';
 import { canvasCenterNodePosition } from './canvasPositions';
 import {
   buildSchemaArgumentFields,
@@ -6942,6 +6947,11 @@ function CapabilityDirectory({
   const [pythonToolNamesEdited, setPythonToolNamesEdited] = useState(false);
   const [pythonToolFile, setPythonToolFile] = useState<File | null>(null);
   const [pythonToolMessage, setPythonToolMessage] = useState('');
+  const pythonToolDiscoveryRef = useRef<PythonToolDiscoveryState>({
+    requestId: 0,
+    sourceKey: '',
+    namesEditedAt: 0,
+  });
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
   const [result, setResult] = useState<CapabilityResult | null>(null);
   const [message, setMessage] = useState('');
@@ -6996,6 +7006,7 @@ function CapabilityDirectory({
     setPythonToolNamesEdited(false);
     setPythonToolFile(null);
     setPythonToolMessage('');
+    pythonToolDiscoveryRef.current = { requestId: 0, sourceKey: '', namesEditedAt: 0 };
   }, [creationIntent]);
 
   const runTest = async () => {
@@ -7044,11 +7055,27 @@ function CapabilityDirectory({
     if (!options.force && pythonToolNamesEdited && pythonToolNamesText.trim()) return;
     const path = pythonToolDraft.path?.trim() ?? '';
     if (!file && !path) return;
+    const sourceKey = file
+      ? pythonToolDiscoverySourceKey('managed', `${file.name}:${file.size}:${file.lastModified}`)
+      : pythonToolDiscoverySourceKey('path', path);
+    const request = {
+      requestId: pythonToolDiscoveryRef.current.requestId + 1,
+      sourceKey,
+      namesEditedAtStart: pythonToolDiscoveryRef.current.namesEditedAt,
+    };
+    pythonToolDiscoveryRef.current = {
+      ...pythonToolDiscoveryRef.current,
+      requestId: request.requestId,
+      sourceKey,
+    };
     setPythonToolMessage('Discovering Python tool functions...');
     try {
       const names = file
         ? await discoverPythonToolNames({ source: 'managed', file })
         : await discoverPythonToolNames({ source: 'path', path });
+      if (!shouldApplyPythonToolDiscoveryResult(pythonToolDiscoveryRef.current, request)) {
+        return;
+      }
       if (!names.length) {
         setPythonToolMessage('No @dagent.tool functions found.');
         return;
@@ -7365,7 +7392,14 @@ function CapabilityDirectory({
                       <input
                         value={pythonToolDraft.path ?? ''}
                         onBlur={() => void discoverPythonToolDraftNames()}
-                        onChange={(event) => setPythonToolDraft((current) => ({ ...current, path: event.target.value }))}
+                        onChange={(event) => {
+                          const nextPath = event.target.value;
+                          pythonToolDiscoveryRef.current = {
+                            ...pythonToolDiscoveryRef.current,
+                            sourceKey: pythonToolDiscoverySourceKey('path', nextPath.trim()),
+                          };
+                          setPythonToolDraft((current) => ({ ...current, path: nextPath }));
+                        }}
                         placeholder="/Users/olivia/tools/local_tools.py"
                       />
                     </label>
@@ -7397,6 +7431,10 @@ function CapabilityDirectory({
                       onChange={(event) => {
                         setPythonToolNamesText(event.target.value);
                         setPythonToolNamesEdited(true);
+                        pythonToolDiscoveryRef.current = {
+                          ...pythonToolDiscoveryRef.current,
+                          namesEditedAt: pythonToolDiscoveryRef.current.namesEditedAt + 1,
+                        };
                       }}
                       placeholder="search_docs, summarize_page"
                     />
