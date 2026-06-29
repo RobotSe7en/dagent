@@ -149,6 +149,7 @@ import type {
 } from './types';
 import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
 import {
+  buildMcpManagementTree,
   buildToolManagementTree,
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
@@ -3089,16 +3090,7 @@ function WorkspaceSidebar({
   const sidebarCustomToolCount = sidebarToolTree.pythonSources.reduce((total, source) => total + source.items.length, 0)
     + sidebarToolTree.manual.items.length;
   const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
-  const sidebarMcp = mcpServers.filter((server) =>
-    !normalizedToolsQuery
-    || `${server.name} ${server.config.command ?? ''} ${server.source}`.toLowerCase().includes(normalizedToolsQuery)
-    || server.tools.some((tool) => [
-      tool.id,
-      tool.name,
-      tool.display_name,
-      tool.description,
-    ].join(' ').toLowerCase().includes(normalizedToolsQuery)),
-  );
+  const sidebarMcpTree = buildMcpManagementTree(mcpServers, normalizedToolsQuery);
   const activeToolSubnav = toolSubnav.find((item) => item.key === toolsSub) ?? toolSubnav[0];
   const activeAgentSubnav = agentSubnav.find((item) => item.key === agentsSub) ?? agentSubnav[0];
   const skillFileGroups = Object.entries(selectedSkillDetail?.linked_files ?? {})
@@ -3205,6 +3197,38 @@ function WorkspaceSidebar({
       <em data-enabled={server.status === 'connected' && capability.enabled} />
     </button>
   );
+  const renderProfileRow = (profile: AgentProfile) => (
+    <button
+      className={selectedProfileId === profile.id ? 'active sidebar-skill-file-row sidebar-tool-leaf-row' : 'sidebar-skill-file-row sidebar-tool-leaf-row'}
+      key={profile.id}
+      onClick={() => {
+        onAgentsSubChange('profiles');
+        onSelectProfile(profile.id);
+      }}
+      title={profile.description || profileSourceLabel(profile)}
+      type="button"
+    >
+      <UserCog size={14} />
+      <span>{profile.name}</span>
+      <em data-enabled={profile.editable} />
+    </button>
+  );
+  const renderAgentPresetRow = (preset: AgentPreset) => (
+    <button
+      className={!creatingAgentPreset && selectedAgentPresetId === preset.id ? 'active sidebar-skill-file-row sidebar-tool-leaf-row' : 'sidebar-skill-file-row sidebar-tool-leaf-row'}
+      key={preset.id}
+      onClick={() => {
+        onAgentsSubChange('presets');
+        onSelectAgentPreset(preset.id);
+      }}
+      title={`${preset.profile} · ${preset.capabilities?.length ?? 0} 能力 · ${preset.skills?.length ?? 0} 技能`}
+      type="button"
+    >
+      <Bot size={14} />
+      <span>{preset.name}</span>
+      <em data-enabled="true" />
+    </button>
+  );
   const renderResourceTreeBranch = ({
     treeKey,
     icon,
@@ -3230,7 +3254,10 @@ function WorkspaceSidebar({
       <div className="sidebar-skill-row-main">
         <button
           className={active ? 'active sidebar-resource-tree-select' : 'sidebar-resource-tree-select'}
-          onClick={onSelect ?? (() => toggleResourceTreeKey(treeKey))}
+          onClick={() => {
+            onSelect?.();
+            toggleResourceTreeKey(treeKey);
+          }}
           title={title ?? label}
           type="button"
         >
@@ -3320,25 +3347,55 @@ function WorkspaceSidebar({
     ) : <div className="sidebar-empty-row">没有匹配的工具</div>
   );
   const renderMcpTree = () => (
-    sidebarMcp.length ? (
+    sidebarMcpTree.length ? (
       <>
-        {sidebarMcp.map((server) => (
+        {sidebarMcpTree.map(({ server, tools }) => (
           renderResourceTreeBranch({
             treeKey: `mcp:${server.name}`,
             icon: <Database size={13} />,
             label: server.name,
             title: server.name,
-            count: server.tools.length,
+            count: tools.length,
             treeClassName: 'sidebar-resource-file-tree',
             active: selectedToolMcpName === server.name,
             onSelect: () => onSelectToolMcp(server.name),
-            children: server.tools.length
-              ? server.tools.map((capability) => renderMcpToolRow(server, capability))
+            children: tools.length
+              ? tools.map((capability) => renderMcpToolRow(server, capability))
               : <div className="sidebar-empty-row">暂无工具</div>,
           })
         ))}
       </>
     ) : <div className="sidebar-empty-row">暂无 MCP 服务</div>
+  );
+  const profileResourceBranch = renderResourceTreeBranch({
+    treeKey: 'agent:profiles',
+    icon: <UserCog size={13} />,
+    label: '角色设定',
+    count: profiles.length,
+    treeClassName: 'sidebar-resource-file-tree',
+    active: agentsSub === 'profiles',
+    onSelect: () => onAgentsSubChange('profiles'),
+    children: profiles.length
+      ? profiles.map((profile) => renderProfileRow(profile))
+      : <div className="sidebar-empty-row">暂无角色设定</div>,
+  });
+  const agentPresetResourceBranch = renderResourceTreeBranch({
+    treeKey: 'agent:presets',
+    icon: <Bot size={13} />,
+    label: '智能体预设',
+    count: agentPresets.length,
+    treeClassName: 'sidebar-resource-file-tree',
+    active: agentsSub === 'presets',
+    onSelect: () => onAgentsSubChange('presets'),
+    children: agentPresets.length
+      ? agentPresets.map((preset) => renderAgentPresetRow(preset))
+      : <div className="sidebar-empty-row">暂无智能体预设</div>,
+  });
+  const renderAgentTree = () => (
+    <>
+      {profileResourceBranch}
+      {agentPresetResourceBranch}
+    </>
   );
 
   return (
@@ -3731,42 +3788,8 @@ function WorkspaceSidebar({
               <Plus size={14} />
             </button>
           </div>
-          <div className="sidebar-agent-list">
-            {agentsSub === 'profiles' ? (
-              profiles.length ? profiles.map((profile) => (
-                <button
-                  className={selectedProfileId === profile.id ? 'active' : ''}
-                  key={profile.id}
-                  onClick={() => onSelectProfile(profile.id)}
-                  type="button"
-                >
-                  <span className="sidebar-agent-icon">
-                    <UserCog size={14} />
-                  </span>
-                  <span>
-                    <strong>{profile.name}</strong>
-                    <em>{profile.description || profileSourceLabel(profile)}</em>
-                  </span>
-                </button>
-              )) : <div className="sidebar-empty-row">暂无角色设定</div>
-            ) : (
-              agentPresets.length ? agentPresets.map((preset) => (
-                <button
-                  className={!creatingAgentPreset && selectedAgentPresetId === preset.id ? 'active' : ''}
-                  key={preset.id}
-                  onClick={() => onSelectAgentPreset(preset.id)}
-                  type="button"
-                >
-                  <span className="sidebar-agent-icon">
-                    <Bot size={14} />
-                  </span>
-                  <span>
-                    <strong>{preset.name}</strong>
-                    <em>{preset.profile} · {preset.capabilities?.length ?? 0} 能力 · {preset.skills?.length ?? 0} 技能</em>
-                  </span>
-                </button>
-              )) : <div className="sidebar-empty-row">暂无智能体预设</div>
-            )}
+          <div className="sidebar-tool-list sidebar-agent-resource-list">
+            {renderAgentTree()}
           </div>
         </section>
       ) : null}

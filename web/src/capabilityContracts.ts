@@ -43,6 +43,16 @@ type ToolManagementPythonSource = {
   capabilities: string[];
 };
 
+type McpManagementServer<T extends ToolManagementCapability> = {
+  name: string;
+  source?: string | null;
+  config?: {
+    command?: string | null;
+    url?: string | null;
+  } | null;
+  tools: T[];
+};
+
 export type ToolManagementTreeItem<T> = {
   capability: T;
 };
@@ -64,6 +74,11 @@ export type ToolManagementTree<T, S> = {
   builtin: ToolManagementGroup<T>;
   pythonSources: ToolManagementPythonSourceGroup<T, S>[];
   manual: ToolManagementGroup<T>;
+};
+
+export type McpManagementServerGroup<S extends McpManagementServer<ToolManagementCapability>> = {
+  server: S;
+  tools: Array<S['tools'][number]>;
 };
 
 export function visibleToolManagementCapabilities<T extends ToolManagementCapability>(
@@ -135,6 +150,28 @@ export function buildToolManagementTree<T extends ToolManagementCapability, S ex
       items: manualItems,
     },
   };
+}
+
+export function buildMcpManagementTree<S extends McpManagementServer<ToolManagementCapability>>(
+  servers: S[],
+  query: string,
+): McpManagementServerGroup<S>[] {
+  const normalizedQuery = query.toLowerCase();
+  return servers.flatMap((server) => {
+    if (!normalizedQuery) {
+      return [{ server, tools: server.tools }];
+    }
+    const serverMatches = [
+      server.name,
+      server.source ?? '',
+      server.config?.command ?? '',
+      server.config?.url ?? '',
+    ].some((value) => value.toLowerCase().includes(normalizedQuery));
+    const tools = serverMatches
+      ? server.tools
+      : server.tools.filter((tool) => matchesToolCapability(tool, normalizedQuery));
+    return serverMatches || tools.length ? [{ server, tools }] : [];
+  });
 }
 
 function matchesToolCapability(capability: ToolManagementCapability, normalizedQuery: string): boolean {

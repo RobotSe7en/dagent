@@ -53,6 +53,7 @@ const {
 } = await importTypeScript('../src/schemaArguments.ts');
 const {
   capabilityDisplayName,
+  buildMcpManagementTree,
   buildToolManagementTree,
   cleanWorkspaceKeyDraft,
   isValidCapabilityId,
@@ -336,6 +337,57 @@ test('tool management tree groups built-in and custom tools by source', () => {
   assert.deepEqual(
     buildToolManagementTree(capabilities, pythonTools, 'render').pythonSources.map((source) => source.source.id),
     ['render_tools'],
+  );
+});
+
+test('mcp management tree filters child tools without showing siblings', () => {
+  const servers = [
+    {
+      name: 'docs',
+      source: 'user',
+      config: { command: 'uvx docs-server' },
+      status: 'connected',
+      tools: [
+        {
+          id: 'mcp.docs.lookup',
+          name: 'lookup',
+          display_name: 'Lookup',
+          kind: 'mcp',
+          description: 'Lookup docs.',
+        },
+        {
+          id: 'mcp.docs.search',
+          name: 'search',
+          display_name: 'Search',
+          kind: 'mcp',
+          description: 'Search docs.',
+        },
+      ],
+    },
+    {
+      name: 'files',
+      source: 'user',
+      config: { command: 'uvx files-server' },
+      status: 'connected',
+      tools: [
+        {
+          id: 'mcp.files.read',
+          name: 'read',
+          display_name: 'Read',
+          kind: 'mcp',
+          description: 'Read files.',
+        },
+      ],
+    },
+  ];
+
+  const toolMatchedTree = buildMcpManagementTree(servers, 'lookup');
+
+  assert.deepEqual(toolMatchedTree.map((group) => group.server.name), ['docs']);
+  assert.deepEqual(toolMatchedTree[0].tools.map((tool) => tool.id), ['mcp.docs.lookup']);
+  assert.deepEqual(
+    buildMcpManagementTree(servers, 'docs')[0].tools.map((tool) => tool.id),
+    ['mcp.docs.lookup', 'mcp.docs.search'],
   );
 });
 
@@ -1013,18 +1065,28 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.match(sidebarSource, /toggleResourceTreeKey/);
   assert.match(sidebarSource, /const renderResourceTreeBranch/);
   assert.doesNotMatch(sidebarSource, /const renderToolBranch/);
+  assert.match(sidebarSource, /onSelect\?\.\(\);[\s\S]*toggleResourceTreeKey\(treeKey\);/);
   assert.match(sidebarSource, /className="sidebar-skill-row-main"/);
   assert.match(sidebarSource, /className="sidebar-skill-toggle"/);
   assert.match(sidebarSource, /data-open=\{isResourceTreeOpen\(treeKey\)\}/);
   assert.match(sidebarSource, /className=\{`sidebar-skill-file-tree \$\{treeClassName\}`\}/);
   assert.match(sidebarSource, /label: '自定义工具'/);
   assert.match(sidebarSource, /label: 'Python 脚本'/);
+  assert.match(sidebarSource, /const sidebarMcpTree = buildMcpManagementTree\(mcpServers, normalizedToolsQuery\);/);
   assert.match(sidebarSource, /const renderMcpTree/);
-  assert.match(sidebarSource, /server\.tools\.map/);
+  assert.match(sidebarSource, /tools\.map/);
+  assert.match(sidebarSource, /count: tools\.length/);
   assert.match(sidebarSource, /treeKey: `mcp:\$\{server\.name\}`/);
   assert.match(sidebarSource, /treeClassName: 'sidebar-resource-file-tree'/);
   assert.match(sidebarSource, /renderMcpTree\(\)/);
+  assert.match(sidebarSource, /const renderAgentTree/);
+  assert.match(sidebarSource, /treeKey: 'agent:profiles'/);
+  assert.match(sidebarSource, /treeKey: 'agent:presets'/);
+  assert.match(sidebarSource, /renderProfileRow/);
+  assert.match(sidebarSource, /renderAgentPresetRow/);
+  assert.match(sidebarSource, /renderAgentTree\(\)/);
   assert.doesNotMatch(sidebarSource, /className="sidebar-tool-tree-group"/);
+  assert.doesNotMatch(sidebarSource, /server\.tools\.map/);
   assert.doesNotMatch(sidebarSource, /sidebarMcp\.length \? sidebarMcp\.map/);
   assert.doesNotMatch(sidebarSource, /<div className="sidebar-label inline-label">工具管理<\/div>/);
 
@@ -1224,7 +1286,10 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(sidebarSource, /label: '角色设定'/);
   assert.match(sidebarSource, /label: '智能体预设'/);
   assert.match(sidebarSource, /onAgentsSubChange\(subitem\.key\)/);
-  assert.match(sidebarSource, /agentPresets\.length \? agentPresets\.map/);
+  assert.match(sidebarSource, /renderAgentTree\(\)/);
+  assert.match(sidebarSource, /profiles\.map\(\(profile\) => renderProfileRow\(profile\)\)/);
+  assert.match(sidebarSource, /agentPresets\.map\(\(preset\) => renderAgentPresetRow\(preset\)\)/);
+  assert.doesNotMatch(sidebarSource, /agentPresets\.length \? agentPresets\.map/);
   assert.match(agentSource, /className="design-agents-workspace"/);
   assert.doesNotMatch(agentSource, /className="agent-management-tabs"/);
   assert.match(agentSource, /className="agent-prompt-editor"/);
