@@ -510,6 +510,113 @@ test('value binding helpers create labels and rewrite node output references', (
   assert.ok(catalog.artifacts.some((item) => item.label === 'artifact.report.path'));
 });
 
+test('variable catalog expands tool and mcp output schema properties', () => {
+  const catalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [
+        {
+          id: 'search',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.search', kind: 'tool', arguments: {} },
+          },
+        },
+        {
+          id: 'lookup',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'mcp.weather.lookup', kind: 'mcp', arguments: {} },
+          },
+        },
+        {
+          id: 'array_result',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.array_result', kind: 'tool', arguments: {} },
+          },
+        },
+        {
+          id: 'review',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'agent.review', kind: 'agent', arguments: {} },
+          },
+        },
+        {
+          id: 'render',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.render', kind: 'tool', arguments: {} },
+          },
+        },
+      ],
+      edges: [],
+    },
+    'render',
+    {},
+    {},
+    [
+      {
+        id: 'tool.search',
+        kind: 'tool',
+        output_schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            url: { type: 'string' },
+          },
+        },
+      },
+      {
+        id: 'mcp.weather.lookup',
+        kind: 'mcp',
+        output_schema: {
+          properties: {
+            temperature: { type: 'number' },
+          },
+        },
+      },
+      {
+        id: 'agent.review',
+        kind: 'agent',
+        output_schema: {
+          properties: {
+            verdict: { type: 'string' },
+          },
+        },
+      },
+      {
+        id: 'tool.array_result',
+        kind: 'tool',
+        output_schema: {
+          type: 'array',
+          properties: {
+            invalid: { type: 'string' },
+          },
+        },
+      },
+    ],
+  );
+
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.content'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.status'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.steps'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output.title'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output.url'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'lookup.output.temperature'));
+  assert.equal(catalog.nodeOutputs.some((item) => item.label === 'review.output.verdict'), false);
+  assert.equal(catalog.nodeOutputs.some((item) => item.label === 'array_result.output.invalid'), false);
+  assert.deepEqual(
+    catalog.nodeOutputs.find((item) => item.label === 'search.output.title')?.binding,
+    makeNodeOutputBinding('search', 'value', ['title']),
+  );
+});
+
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');

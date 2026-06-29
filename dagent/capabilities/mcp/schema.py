@@ -22,6 +22,30 @@ def normalize_mcp_input_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def normalize_mcp_output_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a JSON schema suitable for describing structured MCP output."""
+
+    if not isinstance(schema, dict) or not schema:
+        return {}
+    return _rewrite_legacy_defs(deepcopy(schema))
+
+
+def _rewrite_legacy_defs(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_rewrite_legacy_defs(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    node: dict[str, Any] = {}
+    for key, child in value.items():
+        if key == "definitions":
+            key = "$defs"
+        elif key == "$ref" and isinstance(child, str):
+            child = child.replace("#/definitions/", "#/$defs/")
+        node[key] = _rewrite_legacy_defs(child)
+    return node
+
+
 def _normalize_node(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_node(item) for item in value]

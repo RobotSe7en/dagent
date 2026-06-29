@@ -11,7 +11,7 @@ from dagent.schemas import CapabilityDefinition, CapabilityPolicy
 
 from .handlers import make_mcp_tool_handler
 from .manager import MCPServerManager
-from .schema import normalize_mcp_input_schema
+from .schema import normalize_mcp_input_schema, normalize_mcp_output_schema
 
 _CAPABILITY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 _UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
@@ -66,12 +66,16 @@ class MCPCapabilityProvider:
         input_schema = getattr(tool, "inputSchema", None)
         if input_schema is None:
             input_schema = getattr(tool, "input_schema", None)
+        output_schema = getattr(tool, "outputSchema", None)
+        if output_schema is None:
+            output_schema = getattr(tool, "output_schema", None)
         server_config = self.servers.get(server_name, {})
         definition = CapabilityDefinition(
             id=capability_id,
             kind="mcp",
             description=str(getattr(tool, "description", "") or ""),
             parameters=normalize_mcp_input_schema(input_schema),
+            output_schema=normalize_mcp_output_schema(output_schema),
             policy=CapabilityPolicy(
                 risk=str(server_config.get("risk", "medium")),
                 sandbox_required=True,
@@ -103,4 +107,9 @@ def _short_hash(value: str) -> str:
     return sha1(value.encode("utf-8")).hexdigest()[:8]
 
 
-__all__ = ["MCPCapabilityProvider", "MCPServerManager", "normalize_mcp_input_schema"]
+__all__ = [
+    "MCPCapabilityProvider",
+    "MCPServerManager",
+    "normalize_mcp_input_schema",
+    "normalize_mcp_output_schema",
+]

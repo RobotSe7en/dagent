@@ -46,6 +46,10 @@ class FakeMCPManager:
                         "properties": {"query": {"type": "string"}},
                         "required": ["query", "missing"],
                     },
+                    outputSchema={
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok", "missing"],
+                    },
                 )
             ]
         }
@@ -74,6 +78,10 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert manager.started is True
     assert definition is not None
     assert definition.parameters["required"] == ["query"]
+    assert definition.output_schema == {
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok", "missing"],
+    }
     result = run(executor.execute(
         CapabilityInvocation(
             capability_id=capability_id,
@@ -85,6 +93,41 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert payload == {"result": "found:x", "structuredContent": {"ok": True}}
     assert result.value == {"ok": True}
     assert manager.calls == [("mock-server", "lookup", {"query": "x"})]
+
+
+def test_mcp_provider_accepts_snake_case_output_schema() -> None:
+    class SnakeCaseOutputSchemaManager(FakeMCPManager):
+        def discovered_tools(self):
+            return {
+                "mock-server": [
+                    SimpleNamespace(
+                        name="lookup",
+                        description="Lookup a value.",
+                        inputSchema={"type": "object", "properties": {}},
+                        output_schema={
+                            "type": "object",
+                            "properties": {"title": {"type": "string"}},
+                            "required": ["title"],
+                        },
+                    )
+                ]
+            }
+
+    manager = SnakeCaseOutputSchemaManager()
+    catalog = CapabilityCatalog()
+
+    MCPCapabilityProvider(
+        servers={"mock-server": {"command": "fake"}},
+        manager=manager,
+    ).register_into(catalog)
+
+    definition = catalog.get(f"mcp.mock_server_{_short_hash('mock-server')}.lookup")
+    assert definition is not None
+    assert definition.output_schema == {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "required": ["title"],
+    }
 
 
 def test_mcp_provider_disambiguates_normalized_mcp_name_collisions() -> None:
