@@ -411,6 +411,30 @@ export async function validatePythonTool(payload: PythonToolConfig): Promise<Pyt
   return data.tool;
 }
 
+export async function discoverPythonToolNames(
+  payload: { source: 'path'; path: string } | { source: 'managed'; file: File },
+): Promise<string[]> {
+  const request =
+    payload.source === 'managed'
+      ? (() => {
+          const form = new FormData();
+          form.append('source', payload.source);
+          form.append('file', payload.file);
+          return { body: form };
+        })()
+      : {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        };
+  const res = await fetch(`${API_BASE}/python-tools/discover`, {
+    method: 'POST',
+    ...request,
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.names ?? [];
+}
+
 export async function uploadPythonTool(
   file: File,
   payload: Pick<PythonToolConfig, 'id' | 'names' | 'enabled'>,

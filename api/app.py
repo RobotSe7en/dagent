@@ -11,7 +11,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +22,7 @@ from api.agent_presets import (
     AgentPresetUpdateRequest,
     clean_agent_preset_name,
 )
-from api.python_tools import load_python_tool_sources
+from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -1285,6 +1285,19 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     }
 
 
+@app.post("/python-tools/discover")
+async def discover_python_tools(request: Request) -> dict[str, list[str]]:
+    source_text = await _python_tool_discovery_source(request)
+    try:
+        names = discover_python_tool_names(source_text)
+    except SyntaxError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Python tool source could not be parsed: {exc.msg}.",
+        ) from exc
+    return {"names": names}
+
+
 @app.post("/python-tools/upload")
 async def upload_python_tool(
     file: UploadFile = File(...),
@@ -1791,6 +1804,68 @@ def _reload_python_tools() -> None:
         state.get_runner()
         return
     state._install_python_tools(replace_existing=True, refresh_agent_presets=True)
+
+
+async def _python_tool_discovery_source(request: Request) -> str:
+    content_type = request.headers.get("content-type", "")
+    try:
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            file_value = form.get("file")
+            if file_value is not None:
+                return await _uploaded_python_tool_source(file_value)
+            source = str(form.get("source") or "path")
+            path = form.get("path")
+            return _path_python_tool_source(source=source, path=None if path is None else str(path))
+
+        payload = await request.json()
+    except HTTPException:
+        raise
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Python tool source must be UTF-8 text.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Python tool discovery request must be an object.")
+    return _path_python_tool_source(
+        source=str(payload.get("source") or "path"),
+        path=None if payload.get("path") is None else str(payload.get("path")),
+    )
+
+
+async def _uploaded_python_tool_source(file_value: Any) -> str:
+    filename = str(getattr(file_value, "filename", "") or "")
+    if Path(filename).suffix != ".py":
+        raise HTTPException(status_code=400, detail="Python tool uploads must use the .py extension.")
+    reader = getattr(file_value, "read", None)
+    if reader is None:
+        raise HTTPException(status_code=400, detail="Python tool file is required.")
+    content = await reader()
+    try:
+        return content.decode("utf-8") if isinstance(content, bytes) else str(content)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Python tool source must be UTF-8 text.") from exc
+
+
+def _path_python_tool_source(*, source: str, path: str | None) -> str:
+    if source not in {"path", "managed"}:
+        raise HTTPException(status_code=400, detail="Python tool discovery supports path and uploaded sources.")
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="Python tool path is required.")
+    try:
+        return read_python_tool_source(
+            UserPythonToolConfig(
+                id="discovery",
+                source=source,
+                path=path.strip(),
+                names=["discovery"],
+            ),
+            user_config_dir=state.get_user_config_path().parent,
+            managed_root=state.get_managed_python_tool_root(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _python_tool_payload(
