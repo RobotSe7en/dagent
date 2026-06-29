@@ -31,6 +31,7 @@ import {
   Copy,
   Crosshair,
   Database,
+  Download,
   File,
   FileText,
   Folder,
@@ -83,7 +84,6 @@ import {
   resetSession,
   resumeCapabilityReview,
   resumeDagReview,
-  runArtifactDownloadUrl,
   runDagStream,
   saveDag,
   setCapabilityEnabled,
@@ -4306,7 +4306,7 @@ function ArtifactPanel({
                 className={artifact.id === selectedArtifactId ? 'active' : ''}
                 key={artifact.id}
                 onClick={() => onSelect(artifact.id)}
-                title={artifactFileName}
+                title={artifact.path ?? artifactFileName}
                 type="button"
               >
                 <span className="artifact-extension">{artifact.extension}</span>
@@ -4356,6 +4356,7 @@ function ArtifactPreview({
   let body: React.ReactNode;
   const mode = artifactPreviewMode(selectedArtifact.previewKind);
   const canCopy = Boolean(preview?.content);
+  const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
   if (selectedArtifact.error) {
     body = <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
   } else if (selectedArtifact.previewable === false) {
@@ -4400,6 +4401,15 @@ function ArtifactPreview({
         <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
           <Copy size={13} />
         </button>
+        <a
+          className="icon-button"
+          href={downloadUrl ?? undefined}
+          download={selectedArtifact.name}
+          aria-disabled={!downloadUrl}
+          title="下载"
+        >
+          <Download size={13} />
+        </a>
       </div>
       {body}
     </div>
@@ -4410,10 +4420,7 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const directDownloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
-  const downloadUrl = selectedArtifact.runId && selectedArtifact.path
-    ? runArtifactDownloadUrl(selectedArtifact.runId, selectedArtifact.path)
-    : directDownloadUrl;
+  const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -4443,6 +4450,7 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
           kind: previewKind,
           source: blob,
           fileName: selectedArtifact.name,
+          signal: controller.signal,
         });
         if (cancelled) {
           handle.destroy();
@@ -4484,6 +4492,14 @@ function artifactListFileName(artifact: WorkbenchArtifactItem): string {
 }
 
 async function artifactResponseError(response: Response): Promise<string> {
+  try {
+    const payload = await response.clone().json();
+    if (typeof payload.detail === 'string') return payload.detail;
+    if (payload.detail) return JSON.stringify(payload.detail);
+    return response.statusText;
+  } catch {
+    // Fall through to plain-text response bodies.
+  }
   const text = await response.text().catch(() => '');
   return text || `加载预览失败（HTTP ${response.status}）。`;
 }

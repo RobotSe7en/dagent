@@ -2668,13 +2668,16 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     files = {item["path"]: item for item in artifacts_response.json()["files"]}
     assert files["exports/report.pdf"]["preview_kind"] == "pdf"
     assert files["exports/report.pdf"]["previewable"] is True
+    assert files["exports/report.pdf"]["preview_url"] is None
     assert files["exports/report.pdf"]["download_url"] == (
         f"/runs/{run_id}/artifacts/download?path=exports%2Freport.pdf"
     )
     assert files["exports/brief.docx"]["preview_kind"] == "docx"
     assert files["exports/brief.docx"]["previewable"] is True
+    assert files["exports/brief.docx"]["preview_url"] is None
     assert files["exports/data.xlsx"]["preview_kind"] == "xlsx"
     assert files["exports/data.xlsx"]["previewable"] is True
+    assert files["exports/data.xlsx"]["preview_url"] is None
     assert files["exports/deck.pptx"]["preview_kind"] is None
     assert files["exports/deck.pptx"]["previewable"] is False
     assert files["exports/deck.pptx"]["download_url"] == (
@@ -2689,6 +2692,20 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     assert download_response.status_code == 200
     assert download_response.content == b"%PDF-1.7 pdf bytes"
     assert download_response.headers["content-type"] == "application/pdf"
+
+    for path in ("exports/report.pdf", "exports/brief.docx", "exports/data.xlsx"):
+        preview_response = client.get(
+            f"/runs/{run_id}/artifacts/preview",
+            params={"path": path},
+        )
+        assert preview_response.status_code == 415
+
+    escaped_download_response = client.get(
+        f"/runs/{run_id}/artifacts/download",
+        params={"path": "../outside.pdf"},
+    )
+    assert escaped_download_response.status_code == 400
+    assert "escapes run workspace" in escaped_download_response.json()["detail"]
 
 
 def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:

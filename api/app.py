@@ -81,7 +81,9 @@ ApiKeyAction = Literal["preserve", "replace", "clear"]
 ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
 RunArtifactSource = Literal["dag_artifact", "run_file"]
-RunArtifactPreviewKind = Literal["markdown", "code", "text", "pdf", "docx", "xlsx", "pptx"]
+RunArtifactTextPreviewKind = Literal["markdown", "code", "text"]
+RunArtifactBrowserPreviewKind = Literal["pdf", "docx", "xlsx"]
+RunArtifactPreviewKind = RunArtifactTextPreviewKind | RunArtifactBrowserPreviewKind
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
@@ -92,7 +94,7 @@ _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
-_BROWSER_PREVIEW_EXTENSIONS: dict[str, RunArtifactPreviewKind] = {
+_BROWSER_PREVIEW_EXTENSIONS: dict[str, RunArtifactBrowserPreviewKind] = {
     ".pdf": "pdf",
     ".docx": "docx",
     ".xlsx": "xlsx",
@@ -134,7 +136,7 @@ _MEDIA_TYPE_OVERRIDES = {
     ".tsx": "text/typescript-jsx",
     ".jsx": "text/jsx",
 }
-_TEXT_PREVIEW_KINDS = {"markdown", "code", "text"}
+_TEXT_PREVIEW_KINDS: set[RunArtifactTextPreviewKind] = {"markdown", "code", "text"}
 
 
 class MessageRequest(BaseModel):
@@ -347,7 +349,7 @@ class RunArtifactPreviewResponse(BaseModel):
     path: str
     name: str
     media_type: str
-    preview_kind: RunArtifactPreviewKind
+    preview_kind: RunArtifactTextPreviewKind
     content: str
     size: int
     truncated: bool

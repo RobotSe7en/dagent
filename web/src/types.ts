@@ -184,7 +184,9 @@ export interface Artifact {
   metadata?: Record<string, unknown>;
 }
 
-export type RunArtifactPreviewKind = 'markdown' | 'code' | 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx';
+export type RunArtifactTextPreviewKind = 'markdown' | 'code' | 'text';
+export type RunArtifactBrowserPreviewKind = 'pdf' | 'docx' | 'xlsx';
+export type RunArtifactPreviewKind = RunArtifactTextPreviewKind | RunArtifactBrowserPreviewKind;
 export type RunArtifactFileSource = 'dag_artifact' | 'run_file';
 
 export interface RunArtifactFile {
@@ -218,7 +220,7 @@ export interface RunArtifactPreview {
   path: string;
   name: string;
   media_type: string;
-  preview_kind: RunArtifactPreviewKind;
+  preview_kind: RunArtifactTextPreviewKind;
   content: string;
   size: number;
   truncated: boolean;

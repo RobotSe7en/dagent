@@ -5511,6 +5511,13 @@ details[open] .timeline-chevron {
 .icon-button {
   width: 34px;
   padding: 0;
+  text-decoration: none;
+}
+
+.icon-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .primary-button {
