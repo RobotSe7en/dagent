@@ -4,9 +4,24 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.0`。
+当前包版本是 `0.6.1`。
 
 ## Unreleased
+
+当前没有未发布变更。
+
+## 0.6.1
+
+### 新增
+
+- 本地 WebUI 现在会通过用户配置文件持久化用户管理的模型 providers、当前活动模型、
+  用户 MCP servers，以及显式导入的 Python tool sources。
+- WebUI 可以从本地路径或上传的 `.py` 文件导入 Python tools，并管理启用状态、验证、
+  reload，以及删除上传后的 managed 文件。
+- Python tool 导入对话框现在会识别带 `@tool` 或 `@dagent.tool` 装饰器的顶层函数，
+  并自动填充函数名列表；用户仍然可以手动编辑该列表。
+- WebUI 会在 MCP 服务视图中展示 MCP servers，但不再把 MCP capabilities 列入通用工具
+  视图。
 
 ### 改变
 
@@ -35,6 +50,29 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - LLM 可见的 PlanSpec 和 tool-call function names 现在使用
   `CapabilityDefinition.name`。如果设置了自定义 name，请同步更新已保存的 dynamic
   DAG PlanSpec 文本和 deterministic provider fixtures。
+
+### 迁移步骤
+
+- 如果使用了自定义 capability `name`，请同步更新已保存的 dynamic DAG PlanSpec 文本和
+  deterministic provider fixtures，让它们调用这些名字。
+- 检查 raw capability definitions 和已保存的 allowlists，确认 dotted capability ids
+  以 `tool`、`agent`、`mcp`、`skill` 或 `memory` 开头。
+- 将 WebUI 管理的 profiles、agent presets 和用户 MCP server keys 中的 dash 或其他非
+  字母、数字、下划线字符改名。
+- 需要本地开发时类似 reload 的体验，请使用 `path` 或上传后的 `managed` Python tool
+  sources；`module` sources 会复用已经 import 的 modules。
+
+### 验证
+
+- `uv run --extra dev pytest tests/test_api.py tests/test_python_tool_imports.py -q`
+- `source ~/.nvm/nvm.sh && npm --prefix web test`
+- `source ~/.nvm/nvm.sh && npm --prefix web run build`
+
+### 已知限制
+
+- Python tool 自动识别支持字面量 `@tool` 和 `@dagent.tool` 装饰器。如果源码通过 alias
+  导入这些名称，请手动输入函数名。
+- 无效的旧 WebUI agent preset 文件会被报告为错误，不会自动迁移。
 
 ## 0.6.0
 

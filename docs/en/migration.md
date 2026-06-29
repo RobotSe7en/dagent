@@ -5,9 +5,27 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.0`.
+The current package version is `0.6.1`.
 
 ## Unreleased
+
+- No unreleased changes.
+
+## 0.6.1
+
+### Added
+
+- The local WebUI now persists user-managed model providers, the active model,
+  user MCP servers, and explicitly imported Python tool sources through the
+  user config file.
+- The WebUI can import Python tools from local paths or uploaded `.py` files,
+  manage their enabled state, validate them, reload them, and remove uploaded
+  managed files.
+- The Python tool import dialog now discovers top-level functions decorated
+  with `@tool` or `@dagent.tool` and auto-fills the function-name list while
+  keeping the list editable.
+- The WebUI exposes MCP servers in the MCP service view but no longer lists MCP
+  capabilities in the generic tools view.
 
 ### Changed
 
@@ -39,6 +57,31 @@ The current package version is `0.6.0`.
 - LLM-visible PlanSpec and tool-call function names now use
   `CapabilityDefinition.name`. Update saved dynamic DAG PlanSpec text and
   deterministic provider fixtures if you set custom names.
+
+### Migration Steps
+
+- If you use custom capability `name` values, update saved dynamic DAG PlanSpec
+  text and deterministic provider fixtures to call those names.
+- Inspect raw capability definitions and saved allowlists for dotted capability
+  ids that do not start with `tool`, `agent`, `mcp`, `skill`, or `memory`.
+- Rename WebUI-managed profiles, agent presets, and user MCP server keys that
+  contain dashes or other characters outside letters, numbers, and underscores.
+- Use `path` or uploaded `managed` Python tool sources for reload-style local
+  development; `module` sources reuse already imported modules.
+
+### Verification
+
+- `uv run --extra dev pytest tests/test_api.py tests/test_python_tool_imports.py -q`
+- `source ~/.nvm/nvm.sh && npm --prefix web test`
+- `source ~/.nvm/nvm.sh && npm --prefix web run build`
+
+### Known Limitations
+
+- Python tool auto-discovery recognizes literal `@tool` and `@dagent.tool`
+  decorators. If a source imports either name through an alias, enter the
+  function names manually.
+- Invalid legacy WebUI agent preset files are reported as errors and are not
+  migrated automatically.
 
 ## 0.6.0
 
