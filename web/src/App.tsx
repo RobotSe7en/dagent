@@ -102,6 +102,7 @@ import {
   createProfile,
   updateProfile,
   deleteProfile,
+  discoverPythonToolNames,
 } from './api';
 import type { ApiRunState, ChatStreamMessage } from './api';
 import type {
@@ -150,6 +151,7 @@ import { pruneSelectedAgentIds, type AgentScopeMode } from './agentScope';
 import {
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
+  visibleToolManagementCapabilities,
 } from './capabilityContracts';
 import { canvasCenterNodePosition } from './canvasPositions';
 import {
@@ -2648,7 +2650,7 @@ export function App() {
         artifacts={editorArtifacts}
         collapsed={navCollapsed}
         capabilities={capabilities}
-        capabilityCount={capabilities.filter((capability) => capability.kind !== 'agent').length}
+        capabilityCount={visibleToolManagementCapabilities(capabilities, '').length}
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
         history={chatHistory}
@@ -3069,7 +3071,7 @@ function WorkspaceSidebar({
     { key: 'presets' as const, label: '智能体预设', icon: <Bot size={16} />, count: agentPresetCount },
   ];
   const normalizedToolsQuery = toolsQuery.trim().toLowerCase();
-  const sidebarCapabilities = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedToolsQuery));
+  const sidebarCapabilities = visibleToolManagementCapabilities(capabilities, normalizedToolsQuery);
   const sidebarSkills = skills.filter((skill) => matchesSkillQuery(skill, normalizedToolsQuery));
   const sidebarMcp = mcpServers.filter((server) =>
     !normalizedToolsQuery
@@ -6937,6 +6939,7 @@ function CapabilityDirectory({
   const [pythonToolMode, setPythonToolMode] = useState<'path' | 'managed'>('path');
   const [pythonToolDraft, setPythonToolDraft] = useState<PythonToolConfig>(defaultPythonToolConfig);
   const [pythonToolNamesText, setPythonToolNamesText] = useState('');
+  const [pythonToolNamesEdited, setPythonToolNamesEdited] = useState(false);
   const [pythonToolFile, setPythonToolFile] = useState<File | null>(null);
   const [pythonToolMessage, setPythonToolMessage] = useState('');
   const [argumentsText, setArgumentsText] = useState('{"text":"hello"}');
@@ -6948,7 +6951,7 @@ function CapabilityDirectory({
   const [mcpHeadersText, setMcpHeadersText] = useState('');
   const [mcpMessage, setMcpMessage] = useState('');
   const normalizedQuery = query.toLowerCase();
-  const toolRows = capabilities.filter((capability) => capability.kind !== 'agent' && matchesCapabilityQuery(capability, normalizedQuery));
+  const toolRows = visibleToolManagementCapabilities(capabilities, normalizedQuery);
   const selectedTool = toolRows.find((capability) => capability.id === selectedCapabilityId) ?? toolRows[0];
   const selectedEditable = Boolean(selectedTool && isEditableToolCapability(selectedTool));
   const selectedPythonToolSource = selectedTool
@@ -6990,6 +6993,7 @@ function CapabilityDirectory({
     setPythonToolMode('path');
     setPythonToolDraft(defaultPythonToolConfig);
     setPythonToolNamesText('');
+    setPythonToolNamesEdited(false);
     setPythonToolFile(null);
     setPythonToolMessage('');
   }, [creationIntent]);
@@ -7033,6 +7037,27 @@ function CapabilityDirectory({
       setMessage(`Deleted ${selectedTool.id}.`);
     } catch (exc) {
       setMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const discoverPythonToolDraftNames = async (file?: File, options: { force?: boolean } = {}) => {
+    if (!options.force && pythonToolNamesEdited && pythonToolNamesText.trim()) return;
+    const path = pythonToolDraft.path?.trim() ?? '';
+    if (!file && !path) return;
+    setPythonToolMessage('Discovering Python tool functions...');
+    try {
+      const names = file
+        ? await discoverPythonToolNames({ source: 'managed', file })
+        : await discoverPythonToolNames({ source: 'path', path });
+      if (!names.length) {
+        setPythonToolMessage('No @dagent.tool functions found.');
+        return;
+      }
+      setPythonToolNamesText(names.join(', '));
+      setPythonToolNamesEdited(false);
+      setPythonToolMessage(`Found ${names.join(', ')}.`);
+    } catch (exc) {
+      setPythonToolMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
@@ -7335,7 +7360,15 @@ function CapabilityDirectory({
                 <div className="compact-form-grid">
                   <label>ID<input value={pythonToolDraft.id} onChange={(event) => setPythonToolDraft((current) => ({ ...current, id: event.target.value }))} /></label>
                   {pythonToolMode === 'path' ? (
-                    <label>脚本路径<input value={pythonToolDraft.path ?? ''} onChange={(event) => setPythonToolDraft((current) => ({ ...current, path: event.target.value }))} placeholder="/Users/olivia/tools/local_tools.py" /></label>
+                    <label>
+                      脚本路径
+                      <input
+                        value={pythonToolDraft.path ?? ''}
+                        onBlur={() => void discoverPythonToolDraftNames()}
+                        onChange={(event) => setPythonToolDraft((current) => ({ ...current, path: event.target.value }))}
+                        placeholder="/Users/olivia/tools/local_tools.py"
+                      />
+                    </label>
                   ) : (
                     <label className="skill-package-upload">
                       <Upload size={15} />
@@ -7347,13 +7380,27 @@ function CapabilityDirectory({
                         type="file"
                         accept=".py,text/x-python,text/plain"
                         onChange={(event) => {
-                          setPythonToolFile(event.target.files?.[0] ?? null);
+                          const selectedFile = event.target.files?.[0] ?? null;
+                          setPythonToolFile(selectedFile);
+                          if (selectedFile) {
+                            void discoverPythonToolDraftNames(selectedFile, { force: true });
+                          }
                           event.currentTarget.value = '';
                         }}
                       />
                     </label>
                   )}
-                  <label>函数名<textarea value={pythonToolNamesText} onChange={(event) => setPythonToolNamesText(event.target.value)} placeholder="search_docs, summarize_page" /></label>
+                  <label>
+                    函数名
+                    <textarea
+                      value={pythonToolNamesText}
+                      onChange={(event) => {
+                        setPythonToolNamesText(event.target.value);
+                        setPythonToolNamesEdited(true);
+                      }}
+                      placeholder="search_docs, summarize_page"
+                    />
+                  </label>
                   <label className="inline-checkbox">
                     <input
                       type="checkbox"

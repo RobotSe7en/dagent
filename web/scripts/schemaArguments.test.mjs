@@ -55,6 +55,7 @@ const {
   capabilityDisplayName,
   cleanWorkspaceKeyDraft,
   isValidCapabilityId,
+  visibleToolManagementCapabilities,
 } = await importTypeScript('../src/capabilityContracts.ts');
 const {
   chatScopeRequestFields,
@@ -209,6 +210,44 @@ test('capability helpers use display names and dotted ids', () => {
   assert.equal(isValidCapabilityId('agent.bad-name'), false);
   assert.equal(isValidCapabilityId(' search'), false);
   assert.equal(cleanWorkspaceKeyDraft('helper-agent'), 'helper_agent');
+});
+
+test('tool management capability list excludes MCP capabilities', () => {
+  const capabilities = [
+    {
+      id: 'tool.search',
+      name: 'Search',
+      kind: 'tool',
+      description: '',
+    },
+    {
+      id: 'mcp.docs.lookup',
+      name: 'Lookup',
+      kind: 'mcp',
+      description: '',
+    },
+    {
+      id: 'memory.read',
+      name: 'Read memory',
+      kind: 'memory',
+      description: '',
+    },
+    {
+      id: 'agent.helper',
+      name: 'Helper',
+      kind: 'agent',
+      description: '',
+    },
+  ];
+
+  assert.deepEqual(
+    visibleToolManagementCapabilities(capabilities, ''),
+    [capabilities[0], capabilities[2]],
+  );
+  assert.deepEqual(
+    visibleToolManagementCapabilities(capabilities, 'search'),
+    [capabilities[0]],
+  );
 });
 
 test('chat scope request fields keep agent delegation separate from capabilities', () => {
@@ -822,7 +861,7 @@ test('tools management ports the full design columns while keeping backend actio
   const directorySource = appSource.match(/function CapabilityDirectory[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
 
   assert.ok(directorySource, 'CapabilityDirectory should end before AgentManagementWorkspace');
-  assert.match(directorySource, /const toolRows = capabilities\.filter\(\(capability\) => capability\.kind !== 'agent'/);
+  assert.match(directorySource, /const toolRows = visibleToolManagementCapabilities\(capabilities, normalizedQuery\);/);
   assert.match(directorySource, /const selectedTool = toolRows\.find/);
   assert.match(directorySource, /tool-info-table/);
   assert.match(directorySource, /tool-schema-block/);

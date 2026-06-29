@@ -24,3 +24,21 @@ export function cleanWorkspaceKeyDraft(value: string, options: { requireLeadingL
   if (options.requireLeadingLetter && !/^[A-Za-z]/.test(cleaned)) return `agent_${cleaned}`;
   return cleaned;
 }
+
+export function visibleToolManagementCapabilities<T extends { kind?: string; id?: string | null; name?: string | null; display_name?: string | null; description?: string | null }>(
+  capabilities: T[],
+  query: string,
+): T[] {
+  const normalizedQuery = query.toLowerCase();
+  return capabilities.filter((capability) => {
+    if (capability.kind === 'agent' || capability.kind === 'mcp') return false;
+    if (!normalizedQuery) return true;
+    return [
+      capability.id ?? '',
+      capability.name ?? '',
+      capability.display_name ?? '',
+      capability.description ?? '',
+      capability.kind ?? '',
+    ].some((value) => value.toLowerCase().includes(normalizedQuery));
+  });
+}

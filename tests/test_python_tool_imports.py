@@ -13,7 +13,7 @@ import api.app as app_module
 import api.python_tools as python_tools_module
 import dagent.config as config_module
 from api.app import app, state
-from api.python_tools import load_python_tool_sources
+from api.python_tools import discover_python_tool_names, load_python_tool_sources
 from dagent.config import (
     UserDagentConfig,
     UserPythonToolConfig,
@@ -137,6 +137,22 @@ def test_python_tool_loader_imports_explicit_path_bindings(tmp_path: Path) -> No
 
     assert [binding.definition.id for binding in result.bindings] == ["tool.echo_text"]
     assert result.errors == {}
+
+
+def test_python_tool_name_discovery_returns_decorated_top_level_functions() -> None:
+    source = (
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n"
+        "@dagent.tool\n"
+        "async def summarize_page(url: str) -> str:\n"
+        "    return url\n"
+        "def helper() -> str:\n"
+        "    return 'helper'\n"
+    )
+
+    assert discover_python_tool_names(source) == ["echo_text", "summarize_page"]
 
 
 def test_python_tool_loader_reports_non_binding_export(tmp_path: Path) -> None:
@@ -747,6 +763,42 @@ def test_api_upload_rejects_empty_names_without_writing_file(tmp_path: Path) -> 
 
     assert response.status_code == 400
     assert not (tmp_path / ".dagent" / "python-tools" / "uploaded.py").exists()
+
+
+def test_api_python_tool_discovery_reads_path_source(tmp_path: Path) -> None:
+    script = tmp_path / "tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo text')\n"
+        "def echo_text(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+
+    response = TestClient(app).post(
+        "/python-tools/discover",
+        json={"source": "path", "path": str(script)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"names": ["echo_text"]}
+
+
+def test_api_python_tool_discovery_reads_uploaded_source() -> None:
+    response = TestClient(app).post(
+        "/python-tools/discover",
+        data={"source": "managed"},
+        files={
+            "file": (
+                "uploaded.py",
+                b"from dagent import tool\n@tool\ndef uploaded_tool() -> str:\n    return 'ok'\n",
+                "text/x-python",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"names": ["uploaded_tool"]}
 
 
 def test_api_rejects_generic_mutation_of_imported_python_tool(tmp_path: Path) -> None:

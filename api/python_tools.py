@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import importlib.util
@@ -31,6 +32,18 @@ class PythonToolLoadResult:
     bindings: list[CapabilityBinding]
     errors: dict[str, str]
     statuses: list[PythonToolSourceStatus] = field(default_factory=list)
+
+
+def discover_python_tool_names(source: str) -> list[str]:
+    """Return top-level functions decorated with @dagent.tool or @tool."""
+    module = ast.parse(source)
+    names: list[str] = []
+    for node in module.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if any(_is_tool_decorator(decorator) for decorator in node.decorator_list):
+            names.append(node.name)
+    return names
 
 
 def load_python_tool_sources(
@@ -75,6 +88,34 @@ def load_python_tool_sources(
             errors[config.id] = str(exc)
 
     return PythonToolLoadResult(bindings=bindings, errors=errors, statuses=statuses)
+
+
+def read_python_tool_source(
+    config: UserPythonToolConfig,
+    *,
+    user_config_dir: Path,
+    managed_root: Path | None = None,
+) -> str:
+    if config.source == "module":
+        raise ValueError("Python tool source discovery does not support module imports.")
+    resolved_managed_root = managed_root or user_config_dir / "python-tools"
+    path = _source_path(config, user_config_dir=user_config_dir, managed_root=resolved_managed_root)
+    if not path.exists():
+        raise FileNotFoundError(f"Python tool file '{path}' does not exist.")
+    if not path.is_file():
+        raise ValueError(f"Python tool path '{path}' is not a file.")
+    if path.suffix != ".py":
+        raise ValueError(f"Python tool file '{path}' must use the .py extension.")
+    return path.read_text(encoding="utf-8")
+
+
+def _is_tool_decorator(decorator: ast.expr) -> bool:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Name):
+        return target.id == "tool"
+    if isinstance(target, ast.Attribute):
+        return isinstance(target.value, ast.Name) and target.value.id == "dagent" and target.attr == "tool"
+    return False
 
 
 def _validate_source_id(value: str, seen: set[str]) -> None:
