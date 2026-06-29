@@ -260,7 +260,7 @@ function nodeOutputSchemaCatalogItems(
   if (!invocation) return [];
   const capability = capabilityById.get(invocation.capability_id);
   if (!capability || !['tool', 'mcp'].includes(capability.kind)) return [];
-  return Object.keys(schemaProperties(capability.output_schema ?? {})).sort().map((key) => ({
+  return Object.keys(outputSchemaProperties(capability.output_schema ?? {})).sort().map((key) => ({
     id: `node.${node.id}.value.${key}`,
     label: `${node.id}.output.${key}`,
     binding: makeNodeOutputBinding(node.id, 'value', [key]),
@@ -347,6 +347,11 @@ function schemaProperties(schema: Record<string, unknown>): Record<string, unkno
   const properties = schema.properties;
   if (!isRecord(properties)) return {};
   return properties;
+}
+
+function outputSchemaProperties(schema: Record<string, unknown>): Record<string, unknown> {
+  if (schema.type !== undefined && schema.type !== 'object') return {};
+  return schemaProperties(schema);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

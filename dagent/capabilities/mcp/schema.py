@@ -27,13 +27,23 @@ def normalize_mcp_output_schema(schema: dict[str, Any] | None) -> dict[str, Any]
 
     if not isinstance(schema, dict) or not schema:
         return {}
-    normalized = _normalize_node(deepcopy(schema))
-    if not isinstance(normalized, dict):
-        return {}
-    if normalized.get("type") == "object":
-        normalized.setdefault("properties", {})
-        _prune_required(normalized)
-    return normalized
+    return _rewrite_legacy_defs(deepcopy(schema))
+
+
+def _rewrite_legacy_defs(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_rewrite_legacy_defs(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    node: dict[str, Any] = {}
+    for key, child in value.items():
+        if key == "definitions":
+            key = "$defs"
+        elif key == "$ref" and isinstance(child, str):
+            child = child.replace("#/definitions/", "#/$defs/")
+        node[key] = _rewrite_legacy_defs(child)
+    return node
 
 
 def _normalize_node(value: Any) -> Any:

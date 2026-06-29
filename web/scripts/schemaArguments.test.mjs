@@ -533,6 +533,13 @@ test('variable catalog expands tool and mcp output schema properties', () => {
           },
         },
         {
+          id: 'array_result',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.array_result', kind: 'tool', arguments: {} },
+          },
+        },
+        {
           id: 'review',
           payload: {
             type: 'capability',
@@ -582,14 +589,28 @@ test('variable catalog expands tool and mcp output schema properties', () => {
           },
         },
       },
+      {
+        id: 'tool.array_result',
+        kind: 'tool',
+        output_schema: {
+          type: 'array',
+          properties: {
+            invalid: { type: 'string' },
+          },
+        },
+      },
     ],
   );
 
   assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.content'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.status'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.steps'));
   assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output.title'));
   assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output.url'));
   assert.ok(catalog.nodeOutputs.some((item) => item.label === 'lookup.output.temperature'));
   assert.equal(catalog.nodeOutputs.some((item) => item.label === 'review.output.verdict'), false);
+  assert.equal(catalog.nodeOutputs.some((item) => item.label === 'array_result.output.invalid'), false);
   assert.deepEqual(
     catalog.nodeOutputs.find((item) => item.label === 'search.output.title')?.binding,
     makeNodeOutputBinding('search', 'value', ['title']),
