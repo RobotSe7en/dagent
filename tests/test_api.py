@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 import pytest
@@ -2086,6 +2087,7 @@ def test_api_dag_create_run_and_artifacts() -> None:
             "error": None,
             "preview_url": f"/runs/{run_payload['run_id']}/artifacts/preview?path=notes%2Foutput.txt",
             "download_url": f"/runs/{run_payload['run_id']}/artifacts/download?path=notes%2Foutput.txt",
+            "onlyoffice_config_url": None,
         }
     ]
 
@@ -2421,6 +2423,7 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
             "error": None,
             "preview_url": f"/runs/{run_id}/artifacts/preview?path=notes%2Foutput.md",
             "download_url": f"/runs/{run_id}/artifacts/download?path=notes%2Foutput.md",
+            "onlyoffice_config_url": None,
         }
     ]
 
@@ -2617,6 +2620,7 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
         "error": None,
         "preview_url": None,
         "download_url": f"/runs/{run_id}/artifacts/download?path=exports%2Farchive.bin",
+        "onlyoffice_config_url": None,
     }
 
     preview_response = client.get(
@@ -2720,6 +2724,127 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     )
     assert escaped_download_response.status_code == 400
     assert "escapes run workspace" in escaped_download_response.json()["detail"]
+
+
+def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://192.168.31.219:8089/",
+                    "public_api_base": "http://api.test/",
+                    "lang": "zh-CN",
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "notes/output.txt", "content": "hello"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "report.pdf").write_bytes(b"%PDF-1.7 pdf bytes")
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["exports/report.pdf"]["onlyoffice_config_url"] is None
+    assert files["exports/brief.docx"]["onlyoffice_config_url"] == (
+        f"/runs/{run_id}/artifacts/onlyoffice/config?path=exports%2Fbrief.docx"
+    )
+
+    config_response = client.get(files["exports/brief.docx"]["onlyoffice_config_url"])
+
+    assert config_response.status_code == 200
+    payload = config_response.json()
+    assert payload["document_server_url"] == "http://192.168.31.219:8089"
+    assert payload["script_url"] == "http://192.168.31.219:8089/web-apps/apps/api/documents/api.js"
+    onlyoffice_config = payload["config"]
+    assert onlyoffice_config["documentType"] == "word"
+    assert onlyoffice_config["document"]["fileType"] == "docx"
+    assert onlyoffice_config["document"]["title"] == "brief.docx"
+    assert onlyoffice_config["document"]["permissions"]["edit"] is False
+    assert onlyoffice_config["document"]["permissions"]["review"] is False
+    assert onlyoffice_config["document"]["permissions"]["comment"] is False
+    assert onlyoffice_config["document"]["permissions"]["chat"] is False
+    assert onlyoffice_config["document"]["permissions"]["fillForms"] is False
+    assert onlyoffice_config["document"]["permissions"]["modifyContentControl"] is False
+    assert onlyoffice_config["document"]["permissions"]["modifyFilter"] is False
+    assert onlyoffice_config["document"]["permissions"]["protect"] is False
+    assert onlyoffice_config["editorConfig"]["mode"] == "view"
+    assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
+    assert onlyoffice_config["editorConfig"]["customization"]["macros"] is False
+    assert onlyoffice_config["editorConfig"]["customization"]["macrosMode"] == "disable"
+    assert onlyoffice_config["editorConfig"]["customization"]["plugins"] is False
+    assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
+    assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
+
+    file_response = client.get(urlsplit(onlyoffice_config["document"]["url"]).path)
+
+    assert file_response.status_code == 200
+    assert file_response.content == b"PK\x03\x04 docx bytes"
+    assert file_response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+    callback_response = client.post(urlsplit(onlyoffice_config["editorConfig"]["callbackUrl"]).path, json={"status": 1})
+
+    assert callback_response.status_code == 200
+    assert callback_response.json() == {"error": 0}
+
+    empty_path_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": ""},
+    )
+    unsupported_path_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/report.pdf"},
+    )
+
+    assert empty_path_response.status_code == 400
+    assert unsupported_path_response.status_code == 415
+
+
+def test_api_onlyoffice_file_routes_reject_malformed_tokens() -> None:
+    client = TestClient(app)
+
+    file_response = client.get("/onlyoffice/files/a.b")
+    callback_response = client.post("/onlyoffice/callback/a.b", json={"status": 1})
+
+    assert file_response.status_code == 403
+    assert callback_response.status_code == 403
 
 
 def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:

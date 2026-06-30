@@ -80,11 +80,19 @@ class UserPythonToolConfig(BaseModel):
     enabled: bool = True
 
 
+class UserOnlyOfficeConfig(BaseModel):
+    enabled: bool = False
+    document_server_url: str | None = None
+    public_api_base: str | None = None
+    lang: str = "zh"
+
+
 class UserDagentConfig(BaseModel):
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     model_providers: dict[str, UserModelProviderConfig] = Field(default_factory=dict)
     active_model: str | None = None
     python_tools: list[UserPythonToolConfig] = Field(default_factory=list)
+    onlyoffice: UserOnlyOfficeConfig = Field(default_factory=UserOnlyOfficeConfig)
 
 
 class ProfilesConfig(BaseModel):
@@ -185,6 +193,20 @@ def _user_config_storage_data(config: UserDagentConfig) -> dict[str, Any]:
             tool.model_dump(mode="json", exclude_none=True)
             for tool in config.python_tools
         ]
+    onlyoffice_data = _onlyoffice_storage_data(config.onlyoffice)
+    if onlyoffice_data:
+        data["onlyoffice"] = onlyoffice_data
+    return data
+
+
+def _onlyoffice_storage_data(config: UserOnlyOfficeConfig) -> dict[str, Any]:
+    data = config.model_dump(mode="json", exclude_none=True)
+    if not config.enabled:
+        data.pop("enabled", None)
+    if config.lang == "zh":
+        data.pop("lang", None)
+    if not any(value is not None and value != "" for value in data.values()):
+        return {}
     return data
 
 

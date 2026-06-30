@@ -66,8 +66,10 @@ runner workspace 时，运行 artifact 会写到 `.dagent/runs/<run_id>`。
 `result.dag_run` 访问。
 
 本地 WebUI 会把 run workspace 中的文件列为运行 artifacts。文本、Markdown 和代码
-artifacts 使用文本预览接口；PDF、DOCX、XLSX 和 PPTX artifacts 会通过 artifact
-download 接口拉取文件，并在浏览器中渲染。
+artifacts 使用文本预览接口；PDF artifacts 会通过 artifact download 接口拉取文件，
+并在浏览器中渲染。如果 `~/.dagent/config.yaml` 中启用了 `onlyoffice` 配置，DOCX、
+XLSX 和 PPTX artifacts 会通过 ONLYOFFICE Document Server 以 view mode 打开；否则
+这些 Office 文件会回退到内置的浏览器渲染器。
 
 ## Streaming
 

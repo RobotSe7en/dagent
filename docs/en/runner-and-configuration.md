@@ -106,7 +106,8 @@ does not change what `Runner.from_config(...)` loads in SDK code.
 
 User config uses the same YAML style for provider-shaped model entries and MCP
 servers, but it is scoped to WebUI-managed models, the active WebUI model, user
-MCP servers, and explicitly imported Python tools:
+MCP servers, explicitly imported Python tools, and local WebUI artifact preview
+settings:
 
 ```yaml
 model_providers:
@@ -131,6 +132,11 @@ python_tools:
     module: "my_project.tools"
     names: ["lookup"]
     enabled: true
+onlyoffice:
+  enabled: true
+  document_server_url: "http://192.168.31.219:8089"
+  public_api_base: "http://192.168.31.10:8000"
+  lang: "zh-CN"
 ```
 
 The WebUI model list includes the project `config.yaml` provider plus user
@@ -163,6 +169,13 @@ automatically; it loads only explicit config entries and explicit `names`.
 Import failures, missing names, non-`@dagent.tool` exports, and capability id
 collisions are reported in the tool management page without failing backend
 startup.
+
+`onlyoffice` is optional and is used only by the local WebUI artifact preview.
+`document_server_url` points to the ONLYOFFICE Document Server that the browser
+can load. `public_api_base` must point to this FastAPI backend at an address the
+Document Server can reach, because generated preview configs contain signed file
+and callback URLs under that base. When `onlyoffice.enabled` is false or the
+URLs are missing, the WebUI falls back to its built-in browser preview path.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

@@ -70,9 +70,11 @@ absolute path. With the default runner workspace, run artifacts live under
 `result.dag_run` for static DAG runs.
 
 The local WebUI lists files from the run workspace as run artifacts. Text,
-Markdown, and code artifacts use the text preview endpoint; PDF, DOCX, XLSX,
-and PPTX artifacts are fetched through the artifact download endpoint and
-rendered in the browser.
+Markdown, and code artifacts use the text preview endpoint. PDF artifacts are
+fetched through the artifact download endpoint and rendered in the browser. When
+`~/.dagent/config.yaml` includes an enabled `onlyoffice` section, DOCX, XLSX,
+and PPTX artifacts are opened through ONLYOFFICE Document Server in view mode;
+otherwise those Office files fall back to the built-in browser renderers.
 
 ## Streaming
 

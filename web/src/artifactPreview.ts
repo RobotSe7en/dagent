@@ -8,11 +8,13 @@ export interface ArtifactPreviewRouteItem {
   previewable?: boolean | null;
   previewUrl?: string | null;
   downloadUrl?: string | null;
+  onlyOfficeConfigUrl?: string | null;
 }
 
 export interface BrowserArtifactPreviewRequest {
   kind: BrowserArtifactPreviewKind;
-  source: Blob | ArrayBuffer;
+  source?: Blob | ArrayBuffer;
+  onlyOfficeConfigUrl?: string | null;
   fileName?: string;
   maxPdfPages?: number;
   maxSheetRows?: number;
@@ -24,8 +26,28 @@ export interface ArtifactPreviewRenderHandle {
   destroy: () => void;
 }
 
+interface OnlyOfficePreviewConfigResponse {
+  document_server_url: string;
+  script_url: string;
+  config: Record<string, unknown>;
+}
+
+interface OnlyOfficeEditor {
+  destroyEditor?: () => void;
+}
+
+declare global {
+  interface Window {
+    DocsAPI?: {
+      DocEditor: new (containerId: string, config: Record<string, unknown>) => OnlyOfficeEditor;
+    };
+  }
+}
+
 const TEXT_PREVIEW_KINDS = new Set<RunArtifactPreviewKind>(['markdown', 'code', 'text']);
 const BROWSER_PREVIEW_KINDS = new Set<RunArtifactPreviewKind>(['pdf', 'docx', 'xlsx', 'pptx']);
+const onlyOfficeScriptPromises = new Map<string, Promise<void>>();
+const onlyOfficeLoadedScriptUrls = new Set<string>();
 
 export function artifactPreviewMode(kind: RunArtifactPreviewKind | null | undefined): ArtifactPreviewMode {
   if (!kind) return 'unsupported';
@@ -52,10 +74,91 @@ export async function renderBrowserArtifactPreview(
   container: HTMLElement,
   request: BrowserArtifactPreviewRequest,
 ): Promise<ArtifactPreviewRenderHandle> {
+  if (request.onlyOfficeConfigUrl) return renderOnlyOfficePreview(container, request);
   if (request.kind === 'pdf') return renderPdfPreview(container, request);
   if (request.kind === 'docx') return renderDocxPreview(container, request);
   if (request.kind === 'xlsx') return renderXlsxPreview(container, request);
   return renderPptxPreview(container, request);
+}
+
+async function renderOnlyOfficePreview(
+  container: HTMLElement,
+  request: BrowserArtifactPreviewRequest,
+): Promise<ArtifactPreviewRenderHandle> {
+  if (!request.onlyOfficeConfigUrl) throw new Error('此文件缺少 OnlyOffice 预览配置。');
+  const response = await fetch(request.onlyOfficeConfigUrl, { signal: request.signal });
+  if (!response.ok) throw new Error(await previewResponseError(response));
+  const payload = await response.json() as OnlyOfficePreviewConfigResponse;
+  if (!payload.script_url || typeof payload.script_url !== 'string') {
+    throw new Error('OnlyOffice 预览配置缺少脚本地址。');
+  }
+  if (!payload.config || typeof payload.config !== 'object') {
+    throw new Error('OnlyOffice 预览配置无效。');
+  }
+  await loadOnlyOfficeScript(payload.script_url, request.signal);
+  throwIfAborted(request.signal);
+  if (!window.DocsAPI?.DocEditor) throw new Error('OnlyOffice Document Server 未加载 DocsAPI。');
+
+  container.replaceChildren();
+  const root = document.createElement('div');
+  root.className = 'artifact-browser-preview artifact-onlyoffice-preview';
+  const editorHost = document.createElement('div');
+  const editorId = `onlyoffice-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  editorHost.id = editorId;
+  root.append(editorHost);
+  container.append(root);
+  let editor: OnlyOfficeEditor;
+  try {
+    editor = new window.DocsAPI.DocEditor(editorId, payload.config);
+  } catch (exc) {
+    root.remove();
+    throw exc;
+  }
+  return {
+    destroy: () => {
+      editor.destroyEditor?.();
+      root.remove();
+    },
+  };
+}
+
+function loadOnlyOfficeScript(scriptUrl: string, signal: AbortSignal | undefined): Promise<void> {
+  if (window.DocsAPI?.DocEditor && onlyOfficeLoadedScriptUrls.has(scriptUrl)) return Promise.resolve();
+  const existing = onlyOfficeScriptPromises.get(scriptUrl);
+  if (existing) return existing;
+  const promise = new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Preview rendering was aborted.', 'AbortError'));
+      return;
+    }
+    const script = document.createElement('script');
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+      script.onload = null;
+      script.onerror = null;
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException('Preview rendering was aborted.', 'AbortError'));
+    };
+    script.src = scriptUrl;
+    script.async = true;
+    script.onload = () => {
+      cleanup();
+      onlyOfficeLoadedScriptUrls.add(scriptUrl);
+      resolve();
+    };
+    script.onerror = () => {
+      cleanup();
+      script.remove();
+      reject(new Error('OnlyOffice Document Server 脚本加载失败。'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    document.head.append(script);
+  });
+  onlyOfficeScriptPromises.set(scriptUrl, promise);
+  promise.catch(() => onlyOfficeScriptPromises.delete(scriptUrl));
+  return promise;
 }
 
 async function renderPdfPreview(
@@ -168,7 +271,7 @@ async function renderXlsxPreview(
   request: BrowserArtifactPreviewRequest,
 ): Promise<ArtifactPreviewRenderHandle> {
   const { default: readXlsxFile } = await import('read-excel-file/browser');
-  const sheets = await readXlsxFile(request.source);
+  const sheets = await readXlsxFile(previewSource(request.source));
   throwIfAborted(request.signal);
   container.replaceChildren();
   const root = document.createElement('div');
@@ -306,9 +409,27 @@ function previewNotice(message: string): HTMLElement {
   return notice;
 }
 
-async function sourceArrayBuffer(source: Blob | ArrayBuffer): Promise<ArrayBuffer> {
-  if (source instanceof Blob) return source.arrayBuffer();
+async function sourceArrayBuffer(source: Blob | ArrayBuffer | undefined): Promise<ArrayBuffer> {
+  const value = previewSource(source);
+  if (value instanceof Blob) return value.arrayBuffer();
+  return value;
+}
+
+function previewSource(source: Blob | ArrayBuffer | undefined): Blob | ArrayBuffer {
+  if (!source) throw new Error('此文件缺少可用的预览内容。');
   return source;
+}
+
+async function previewResponseError(response: Response): Promise<string> {
+  try {
+    const payload = await response.clone().json();
+    if (typeof payload.detail === 'string') return payload.detail;
+    if (payload.detail) return JSON.stringify(payload.detail);
+  } catch {
+    // Fall through to plain-text response bodies.
+  }
+  const text = await response.text().catch(() => '');
+  return text || `加载预览失败（HTTP ${response.status}）。`;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined) {

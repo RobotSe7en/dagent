@@ -198,6 +198,7 @@ function normalizeRunArtifactFileUrls(file: RunArtifactFile): RunArtifactFile {
     ...file,
     preview_url: normalizeApiUrl(file.preview_url),
     download_url: normalizeApiUrl(file.download_url),
+    onlyoffice_config_url: normalizeApiUrl(file.onlyoffice_config_url),
   };
 }
 

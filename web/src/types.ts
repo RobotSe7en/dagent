@@ -203,6 +203,7 @@ export interface RunArtifactFile {
   error?: string | null;
   preview_url?: string | null;
   download_url?: string | null;
+  onlyoffice_config_url?: string | null;
 }
 
 export interface RunArtifactsResponse {

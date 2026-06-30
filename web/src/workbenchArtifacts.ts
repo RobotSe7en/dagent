@@ -16,6 +16,7 @@ export interface WorkbenchArtifactItem {
   previewable?: boolean;
   previewUrl?: string | null;
   downloadUrl?: string | null;
+  onlyOfficeConfigUrl?: string | null;
   size?: number | null;
   status?: string;
   error?: string | null;
@@ -87,6 +88,7 @@ function runFileArtifactItem(file: RunArtifactFile, runId: string | undefined): 
     previewable: file.previewable,
     previewUrl: file.preview_url ?? null,
     downloadUrl: file.download_url ?? null,
+    onlyOfficeConfigUrl: file.onlyoffice_config_url ?? null,
     size: file.size ?? null,
     status: file.status,
     error: file.error ?? null,

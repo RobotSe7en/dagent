@@ -4421,12 +4421,13 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
+  const onlyOfficeConfigUrl = selectedArtifact.onlyOfficeConfigUrl ?? null;
 
   useEffect(() => {
     const container = containerRef.current;
     const previewKind = selectedArtifact.previewKind;
     if (!container) return;
-    if (!downloadUrl || !isBrowserArtifactPreviewKind(previewKind)) {
+    if ((!downloadUrl && !onlyOfficeConfigUrl) || !isBrowserArtifactPreviewKind(previewKind)) {
       setLoading(false);
       setError('此文件缺少可用的预览下载地址。');
       return;
@@ -4439,21 +4440,40 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
     setLoading(true);
     setError(null);
 
-    void fetch(downloadUrl, { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await artifactResponseError(response));
-        return response.blob();
-      })
-      .then(async (blob) => {
-        if (cancelled) return;
-        handle = await renderBrowserArtifactPreview(container, {
-          kind: previewKind,
-          source: blob,
-          fileName: selectedArtifact.name,
-          signal: controller.signal,
-        });
+    const renderBuiltInBrowserArtifactPreview = async () => {
+      const response = await fetch(downloadUrl!, { signal: controller.signal });
+      if (!response.ok) throw new Error(await artifactResponseError(response));
+      const blob = await response.blob();
+      handle = await renderBrowserArtifactPreview(container, {
+        kind: previewKind,
+        source: blob,
+        fileName: selectedArtifact.name,
+        signal: controller.signal,
+      });
+    };
+
+    const render = async () => {
+      if (onlyOfficeConfigUrl) {
+        try {
+          handle = await renderBrowserArtifactPreview(container, {
+            kind: previewKind,
+            onlyOfficeConfigUrl,
+            fileName: selectedArtifact.name,
+            signal: controller.signal,
+          });
+          return;
+        } catch (exc) {
+          if (isAbortError(exc) || !downloadUrl) throw exc;
+          container.replaceChildren();
+        }
+      }
+      await renderBuiltInBrowserArtifactPreview();
+    };
+
+    void render()
+      .then(() => {
         if (cancelled) {
-          handle.destroy();
+          handle?.destroy();
           return;
         }
         setLoading(false);
@@ -4470,7 +4490,7 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
       handle?.destroy();
       container.replaceChildren();
     };
-  }, [downloadUrl, selectedArtifact.name, selectedArtifact.previewKind]);
+  }, [downloadUrl, onlyOfficeConfigUrl, selectedArtifact.name, selectedArtifact.previewKind]);
 
   return (
     <div className="artifact-browser-preview-shell">

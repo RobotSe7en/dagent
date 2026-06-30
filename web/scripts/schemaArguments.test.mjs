@@ -1826,9 +1826,12 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
   assert.match(appSource, /function ArtifactPreview\(/);
   assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
+  assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
   assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
   assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
   assert.match(appSource, /signal:\s*controller\.signal/);
+  assert.match(appSource, /onlyOfficeConfigUrl,\s*fileName: selectedArtifact\.name,\s*signal: controller\.signal/s);
+  assert.match(appSource, /catch \(exc\) \{[\s\S]*if \(isAbortError\(exc\) \|\| !downloadUrl\) throw exc;[\s\S]*await renderBuiltInBrowserArtifactPreview\(\);/);
   assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
   assert.match(appSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}>\{preview\.content\}<\/ReactMarkdown>/);
@@ -1870,6 +1873,11 @@ test('artifactPreview module centralizes preview routing for future provider swa
   assert.equal(artifactPreviewMode('pptx'), 'browser');
   assert.equal(artifactPreviewMode(null), 'unsupported');
   assert.match(previewSource, /pptx-react-viewer/);
+  assert.match(previewSource, /function renderOnlyOfficePreview/);
+  assert.match(previewSource, /DocsAPI\.DocEditor/);
+  assert.match(previewSource, /loadOnlyOfficeScript/);
+  assert.match(previewSource, /const onlyOfficeLoadedScriptUrls = new Set<string>\(\);/);
+  assert.match(previewSource, /try \{[\s\S]*new window\.DocsAPI\.DocEditor\(editorId, payload\.config\)[\s\S]*\} catch \(exc\) \{[\s\S]*root\.remove\(\);/);
   assert.match(previewSource, /if \(request\.kind === 'xlsx'\) return renderXlsxPreview\(container, request\);/);
   assert.match(previewSource, /return renderPptxPreview\(container, request\);/);
 
@@ -1927,6 +1935,21 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
     runId: 'run_tool_1',
     runFiles: [
       {
+        id: 'run:exports/brief.docx',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'exports/brief.docx',
+        name: 'brief.docx',
+        media_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        preview_kind: 'docx',
+        previewable: true,
+        size: 48,
+        status: 'created',
+        error: null,
+        download_url: '/runs/run_tool_1/artifacts/download?path=exports%2Fbrief.docx',
+        onlyoffice_config_url: '/runs/run_tool_1/artifacts/onlyoffice/config?path=exports%2Fbrief.docx',
+      },
+      {
         id: 'run:notes/output.md',
         artifact_id: null,
         source: 'run_file',
@@ -1966,8 +1989,23 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
     previewKind: item.previewKind,
     previewable: item.previewable,
     runId: item.runId,
+    downloadUrl: item.downloadUrl,
+    onlyOfficeConfigUrl: item.onlyOfficeConfigUrl,
     preview: artifactPreviewText(item),
   })), [
+    {
+      id: 'run:exports/brief.docx',
+      name: 'brief.docx',
+      extension: 'DOCX',
+      meta: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document · 48 B',
+      path: 'exports/brief.docx',
+      previewKind: 'docx',
+      previewable: true,
+      runId: 'run_tool_1',
+      downloadUrl: '/runs/run_tool_1/artifacts/download?path=exports%2Fbrief.docx',
+      onlyOfficeConfigUrl: '/runs/run_tool_1/artifacts/onlyoffice/config?path=exports%2Fbrief.docx',
+      preview: 'Path: exports/brief.docx',
+    },
     {
       id: 'run:notes/output.md',
       name: 'output.md',
@@ -1977,6 +2015,8 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
       previewKind: 'markdown',
       previewable: true,
       runId: 'run_tool_1',
+      downloadUrl: null,
+      onlyOfficeConfigUrl: null,
       preview: 'Path: notes/output.md',
     },
     {
@@ -1988,6 +2028,8 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
       previewKind: 'code',
       previewable: true,
       runId: 'run_tool_1',
+      downloadUrl: null,
+      onlyOfficeConfigUrl: null,
       preview: 'Path: scripts/tool.py',
     },
   ]);
@@ -2025,6 +2067,7 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
     previewable: item.previewable,
     previewUrl: item.previewUrl,
     downloadUrl: item.downloadUrl,
+    onlyOfficeConfigUrl: item.onlyOfficeConfigUrl,
   })), [
     {
       id: 'run:exports/archive.bin',
@@ -2034,6 +2077,7 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
       previewable: false,
       previewUrl: null,
       downloadUrl: '/runs/run_tool_1/artifacts/download?path=exports%2Farchive.bin',
+      onlyOfficeConfigUrl: null,
     },
   ]);
 });
