@@ -4513,32 +4513,44 @@ function ArtifactPanel({
         <div className="artifact-tree-pane" data-expanded={artifactFilesExpanded}>
           {artifactFilesExpanded ? (
             <>
-            {error ? <div className="artifact-empty">{error}</div> : null}
-            {artifactTree.length ? (
-              <ArtifactTree
-                depth={0}
-                expandedFolders={expandedArtifactFolders}
-                nodes={artifactTree}
-                onSelect={onSelect}
-                onToggleFolder={toggleArtifactFolder}
-                selectedArtifactId={selectedArtifactId}
-              />
-            ) : (
-              <div className="artifact-empty">当前运行还没有产物。</div>
-            )}
+              <div className="artifact-tree-pane-head">
+                <span>目录树</span>
+                <button
+                  className="icon-button artifact-tree-pane-toggle"
+                  onClick={() => setArtifactFilesExpanded(false)}
+                  title="收起目录树"
+                  type="button"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+              </div>
+              <div className="artifact-tree-list">
+                {error ? <div className="artifact-empty">{error}</div> : null}
+                {artifactTree.length ? (
+                  <ArtifactTree
+                    depth={0}
+                    expandedFolders={expandedArtifactFolders}
+                    nodes={artifactTree}
+                    onSelect={onSelect}
+                    onToggleFolder={toggleArtifactFolder}
+                    selectedArtifactId={selectedArtifactId}
+                  />
+                ) : (
+                  <div className="artifact-empty">当前运行还没有产物。</div>
+                )}
+              </div>
             </>
-          ) : null}
-        </div>
-        <div className="artifact-tree-divider">
-          <button
-            className="icon-button artifact-drawer-tree-toggle"
-            aria-pressed={artifactFilesExpanded}
-            onClick={() => setArtifactFilesExpanded((value) => !value)}
-            title={artifactFilesExpanded ? '收起目录树' : '展开目录树'}
-            type="button"
-          >
-            <ChevronRight size={15} />
-          </button>
+          ) : (
+            <button
+              className="artifact-tree-rail-toggle"
+              onClick={() => setArtifactFilesExpanded(true)}
+              title="展开目录树"
+              type="button"
+            >
+              <Folder size={14} />
+              <ChevronRight size={12} />
+            </button>
+          )}
         </div>
 
         <ArtifactPreview
