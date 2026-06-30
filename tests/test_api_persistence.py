@@ -348,6 +348,23 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert [event["event_id"] for event in replay_response.json()["events"]] == list(range(2, len(events) + 1))
     assert replay_response.json()["events"][0]["payload"]["sequence"] == 2
 
+    state.close_runner()
+    trace_response = persistence_client.get(f"/runs/{run_id}/trace")
+    artifacts_response = persistence_client.get(f"/runs/{run_id}/artifacts")
+    preview_response = persistence_client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "notes/shared.txt"},
+    )
+
+    assert trace_response.status_code == 200
+    assert trace_response.json()["trace"]["run_id"] == run_id
+    assert trace_response.json()["trace"]["root"]["status"] == "completed"
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert "notes/shared.txt" in files
+    assert preview_response.status_code == 200
+    assert preview_response.json()["content"] == "hello"
+
 
 def test_api_project_message_stream_rejects_client_workspace_root(persistence_client) -> None:
     project = persistence_client.post(

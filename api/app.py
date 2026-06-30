@@ -3061,6 +3061,12 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
 
 
 def _run_state_from_state(run_id: str) -> RunState | None:
+    try:
+        run_state = state.get_store().get_run_state(run_id)
+    except Exception:
+        run_state = None
+    if run_state is not None:
+        return run_state
     if state.runner is None:
         return None
     return state.runner.run_state(run_id)
@@ -3521,10 +3527,9 @@ def _decode_utf8_preview(content: bytes, *, truncated: bool) -> str:
 
 @app.get("/runs/{run_id}/trace")
 async def get_run_trace(run_id: str) -> dict[str, Any]:
-    if state.runner is not None:
-        trace = state.runner.run_trace(run_id)
-        if trace is not None:
-            return {"run_id": run_id, "trace": trace.model_dump(mode="json")}
+    run_state = _run_state_from_state(run_id)
+    if run_state is not None and run_state.trace is not None:
+        return {"run_id": run_id, "trace": run_state.trace.model_dump(mode="json")}
 
     raise HTTPException(status_code=404, detail="Run not found.")
 
