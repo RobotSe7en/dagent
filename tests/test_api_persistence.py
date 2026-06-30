@@ -373,6 +373,115 @@ def test_api_project_message_stream_rejects_client_workspace_root(persistence_cl
     assert "workspace_root" in response.json()["detail"]
 
 
+def test_api_project_message_stream_locks_only_the_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    first = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+    second = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Second chat"},
+    ).json()["conversation"]
+    lock = state.get_store().acquire_conversation_lock(first["id"], owner="manual")
+    state.runner = Runner(provider=MockProvider([ChatResponse(content="done")]))
+    try:
+        busy = persistence_client.post(
+            "/messages/stream",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "target": "tool",
+                "project_id": project["id"],
+                "conversation_id": first["id"],
+            },
+        )
+        other_conversation = persistence_client.post(
+            "/messages/stream",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "target": "tool",
+                "project_id": project["id"],
+                "conversation_id": second["id"],
+            },
+        )
+    finally:
+        lock.release()
+
+    assert busy.status_code == 409
+    assert other_conversation.status_code == 200
+    assert _sse_events(other_conversation.text)[-1]["type"] == "run.finished"
+
+
+def test_api_project_review_resume_uses_db_state_after_runner_restart(
+    persistence_client,
+    tmp_path: Path,
+) -> None:
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="tool_read_file",
+                    arguments={"path": "../blocked/secret.txt"},
+                )
+            ],
+        )
+    ])
+    state.runner = Runner(provider=provider)
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
+    blocked_dir = workspace_path.parent / "blocked"
+    blocked_dir.mkdir(parents=True)
+    (blocked_dir / "secret.txt").write_text("private", encoding="utf-8")
+
+    stream_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "read outside"}],
+            "target": "tool",
+            "capability_ids": ["tool.read_file"],
+            "project_id": project["id"],
+            "conversation_id": conversation["id"],
+        },
+    )
+    stream_events = _sse_events(stream_response.text)
+    stream_result = stream_events[-1]["data"]["result"]
+    run_id = stream_result["state"]["run_id"]
+    review_id = stream_result["state"]["pending_review"]["review_id"]
+    assert stream_result["state"]["status"] == "awaiting_review"
+
+    state.close_runner()
+    state.runner = Runner(provider=MockProvider([ChatResponse(content="I will stop.")]))
+    resume_response = persistence_client.post(
+        f"/projects/{project['id']}/reviews/{review_id}/resume",
+        json={"approved": False, "feedback": "Do not read that file."},
+    )
+    resume_events = _sse_events(resume_response.text)
+    resume_result = resume_events[-1]["data"]["result"]
+    review = state.get_store().get_review(review_id)
+    run_state = state.get_store().get_run_state(run_id)
+
+    assert resume_response.status_code == 200
+    assert resume_result["state"]["run_id"] == run_id
+    assert resume_result["state"]["status"] == "completed"
+    assert resume_result["output_text"] == "I will stop."
+    assert review is not None
+    assert review.status == "resolved"
+    assert run_state is not None
+    assert run_state.status == "completed"
+
+
 def _sse_events(text: str) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for block in text.strip().split("\n\n"):

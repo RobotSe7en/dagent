@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -182,6 +182,15 @@ class ResumeReviewRequest(BaseModel):
     approved: bool = True
     review_level: ReviewLevel | None = None
     state: RunState | None = None
+    feedback: str | None = None
+
+
+class ProjectResumeReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dag: DAG | None = None
+    approved: bool = True
+    review_level: ReviewLevel | None = None
     feedback: str | None = None
 
 
@@ -2664,6 +2673,61 @@ async def message_stream(http_request: Request) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@app.post("/projects/{project_id}/reviews/{review_id}/resume")
+async def resume_project_review_stream(
+    project_id: str,
+    review_id: str,
+    request: ProjectResumeReviewRequest,
+) -> StreamingResponse:
+    store = state.get_store()
+    project = await run_in_threadpool(store.get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    review = await run_in_threadpool(store.get_review, review_id)
+    if review is None or review.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Review not found.")
+    if review.status != "pending":
+        raise HTTPException(status_code=409, detail="Review is already resolved.")
+    run = await run_in_threadpool(store.get_run, review.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    if run.conversation_id is None:
+        raise HTTPException(status_code=400, detail="Review run is not attached to a conversation.")
+    conversation = await run_in_threadpool(store.get_conversation, run.conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    run_state = await run_in_threadpool(store.get_run_state, run.id)
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run state not found.")
+    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
+    context = ProjectMessageContext(
+        project_id=project.id,
+        conversation_id=conversation.id,
+        workspace_uri=run.workspace_uri,
+        workspace_path=workspace_path,
+    )
+    stream_id = _new_api_id("stream")
+    try:
+        lock = await run_in_threadpool(
+            store.acquire_conversation_lock,
+            conversation.id,
+            owner=stream_id,
+        )
+    except ConversationBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    decision = ReviewDecision(
+        review_id=review_id,
+        approved=request.approved,
+        dag=request.dag,
+        review_level=request.review_level,
+        feedback=request.feedback,
+    )
+    return StreamingResponse(
+        _project_review_resume_stream_events(decision, run_state, context, stream_id, lock),
+        media_type="text/event-stream",
+    )
+
+
 async def _project_message_stream_events(
     request: MessageRequest,
     agent: ToolAgent | DagAgent | AutoAgent,
@@ -2672,14 +2736,9 @@ async def _project_message_stream_events(
     stream_id: str,
     lock: Any,
 ):
-    store = state.get_store()
-    sent_error = False
-    run_id: str | None = None
-    run_created = False
-    run_kind = request.target
     try:
         runner = state.get_runner()
-        async for event in gate_chat_display(
+        event_source = gate_chat_display(
             runner.stream(
                 agent,
                 messages=request.messages,
@@ -2687,13 +2746,74 @@ async def _project_message_stream_events(
                 input_uploads=input_uploads,
             ),
             validation_enabled=runner.enable_validation,
+        )
+        async for payload in _persist_project_run_events(
+            event_source,
+            runner=runner,
+            context=context,
+            stream_id=stream_id,
+            run_kind=request.target,
+            create_run=True,
         ):
+            yield _sse(payload)
+    finally:
+        await run_in_threadpool(lock.release)
+
+
+async def _project_review_resume_stream_events(
+    decision: ReviewDecision,
+    run_state: RunState,
+    context: ProjectMessageContext,
+    stream_id: str,
+    lock: Any,
+):
+    try:
+        runner = state.get_runner()
+        event_source = gate_chat_display(
+            runner.resume_stream(decision, state=run_state),
+            validation_enabled=runner.enable_validation,
+        )
+        async for payload in _persist_project_run_events(
+            event_source,
+            runner=runner,
+            context=context,
+            stream_id=stream_id,
+            run_kind=run_state.kind,
+            create_run=False,
+            existing_run_id=run_state.run_id,
+            resolve_review_id=decision.review_id,
+            decision_json=_review_decision_json(decision),
+        ):
+            yield _sse(payload)
+    finally:
+        await run_in_threadpool(lock.release)
+
+
+async def _persist_project_run_events(
+    event_source: AsyncIterator[RunStreamEvent],
+    *,
+    runner: Runner,
+    context: ProjectMessageContext,
+    stream_id: str,
+    run_kind: str,
+    create_run: bool,
+    existing_run_id: str | None = None,
+    resolve_review_id: str | None = None,
+    decision_json: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    store = state.get_store()
+    sent_error = False
+    run_id = existing_run_id
+    run_created = existing_run_id is not None
+    stream_created = False
+    try:
+        async for event in event_source:
             payload = _chat_stream_event_payload(event, runner)
             if event.run_id is not None and run_id is None:
                 run_id = event.run_id
             if event.type == "run.started":
                 run_kind = str(getattr(event.data, "kind", run_kind) or run_kind)
-                if run_id is not None and not run_created:
+                if run_id is not None and create_run and not run_created:
                     await run_in_threadpool(
                         store.create_run,
                         run_id=run_id,
@@ -2704,6 +2824,8 @@ async def _project_message_stream_events(
                         status="running",
                         workspace_uri=context.workspace_uri,
                     )
+                    run_created = True
+                if run_id is not None and run_created and not stream_created:
                     await run_in_threadpool(
                         store.create_run_stream,
                         stream_id=stream_id,
@@ -2715,7 +2837,7 @@ async def _project_message_stream_events(
                         status="running",
                     )
                     await run_in_threadpool(store.update_run_status, run_id, "running", started_at=int(time.time()))
-                    run_created = True
+                    stream_created = True
             if event.type == "run.failed":
                 sent_error = True
             if run_id is not None and run_created:
@@ -2749,6 +2871,12 @@ async def _project_message_stream_events(
                         result.status,
                         completed_at=int(time.time()) if result.status != "awaiting_review" else None,
                     )
+                    if resolve_review_id is not None:
+                        await run_in_threadpool(
+                            store.resolve_review,
+                            resolve_review_id,
+                            decision_json or "{}",
+                        )
                     if result.pending_review is not None:
                         await run_in_threadpool(
                             store.upsert_review,
@@ -2757,9 +2885,7 @@ async def _project_message_stream_events(
                             project_id=context.project_id,
                             kind=result.pending_review.kind,
                         )
-            yield _sse(payload)
-    except HTTPException:
-        raise
+            yield payload
     except Exception as exc:
         if run_id is not None and run_created:
             error_payload = {
@@ -2782,16 +2908,14 @@ async def _project_message_stream_events(
                 json.dumps(error_payload["data"], ensure_ascii=False),
             )
             if not sent_error:
-                yield _sse(error_payload)
+                yield error_payload
         elif not sent_error:
-            yield _sse({
+            yield {
                 "type": "run.failed",
                 "data": {"message": str(exc), "error_type": type(exc).__name__},
                 "sequence": 0,
                 "run_id": None,
-            })
-    finally:
-        await run_in_threadpool(lock.release)
+            }
 
 
 async def _message_request_from_http(http_request: Request) -> tuple[MessageRequest, list[ArtifactUpload]]:
@@ -3534,6 +3658,19 @@ def _run_event_payload(event: RunEvent) -> dict[str, Any]:
         event_payload["sequence"] = event.event_id
     payload["payload"] = event_payload
     return payload
+
+
+def _review_decision_json(decision: ReviewDecision) -> str:
+    return json.dumps(
+        {
+            "review_id": decision.review_id,
+            "approved": decision.approved,
+            "dag": None if decision.dag is None else decision.dag.model_dump(mode="json"),
+            "review_level": decision.review_level,
+            "feedback": decision.feedback,
+        },
+        ensure_ascii=False,
+    )
 
 
 def _chat_stream_event_payload(event: RunStreamEvent, runner: Runner) -> dict[str, Any]:
