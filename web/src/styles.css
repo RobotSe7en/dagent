@@ -1803,7 +1803,7 @@ details[open] .timeline-chevron {
 }
 
 .artifact-drawer-body[data-tree-expanded="true"] {
-  grid-template-columns: minmax(136px, 0.3fr) minmax(0, 1fr);
+  grid-template-columns: minmax(136px, 0.3fr) 0 minmax(0, 1fr);
 }
 
 .artifact-drawer-body[data-tree-expanded="false"] {
@@ -1823,31 +1823,32 @@ details[open] .timeline-chevron {
   padding: 0;
 }
 
-.artifact-tree-pane-head {
-  min-height: 30px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 3px 8px;
-}
-
-.artifact-tree-pane-head span {
-  min-width: 0;
-  flex: 1;
-  color: #9aa0a8;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-}
-
-.artifact-tree-pane-toggle {
-  flex: 0 0 auto;
-}
-
 .artifact-tree-list {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.artifact-tree-divider-toggle {
+  width: 18px;
+  height: 42px;
+  align-self: center;
+  justify-self: center;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px solid #d9dce5;
+  border-radius: 999px;
+  background: #fff;
+  color: #737985;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 2px 8px rgba(22, 24, 29, 0.08);
+}
+
+.artifact-tree-divider-toggle:hover {
+  border-color: #c8ccd6;
+  color: #4c535f;
 }
 
 .artifact-tree-rail-toggle {
@@ -1934,6 +1935,9 @@ details[open] .timeline-chevron {
 .artifact-tree-file {
   min-height: 30px;
   padding: 5px 7px 5px calc(24px + var(--artifact-tree-indent));
+  color: #4c535f;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .artifact-tree-folder:hover,
@@ -1961,10 +1965,10 @@ details[open] .timeline-chevron {
   display: block;
   min-width: 0;
   overflow: hidden;
-  color: #16181d;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12.5px;
-  font-weight: 650;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

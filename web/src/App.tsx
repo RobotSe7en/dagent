@@ -4513,17 +4513,6 @@ function ArtifactPanel({
         <div className="artifact-tree-pane" data-expanded={artifactFilesExpanded}>
           {artifactFilesExpanded ? (
             <>
-              <div className="artifact-tree-pane-head">
-                <span>目录树</span>
-                <button
-                  className="icon-button artifact-tree-pane-toggle"
-                  onClick={() => setArtifactFilesExpanded(false)}
-                  title="收起目录树"
-                  type="button"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-              </div>
               <div className="artifact-tree-list">
                 {error ? <div className="artifact-empty">{error}</div> : null}
                 {artifactTree.length ? (
@@ -4552,6 +4541,17 @@ function ArtifactPanel({
             </button>
           )}
         </div>
+
+        {artifactFilesExpanded ? (
+          <button
+            className="artifact-tree-divider-toggle"
+            onClick={() => setArtifactFilesExpanded(false)}
+            title="收起目录树"
+            type="button"
+          >
+            <ChevronLeft size={14} />
+          </button>
+        ) : null}
 
         <ArtifactPreview
           error={previewError}
