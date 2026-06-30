@@ -17,9 +17,10 @@ export interface ApiProject {
 
 export interface ApiConversation {
   id: string;
-  project_id: string;
+  project_id: string | null;
   org_id: string;
   title: string;
+  workspace_uri: string;
   status: string;
   last_run_id?: string | null;
   created_at: number;
@@ -244,6 +245,38 @@ export interface RunArtifactsResponse {
 
 export interface RunArtifactPreview {
   run_id: string;
+  path: string;
+  name: string;
+  media_type: string;
+  preview_kind: RunArtifactTextPreviewKind;
+  content: string;
+  size: number;
+  truncated: boolean;
+  truncated_at: number;
+}
+
+export interface ProjectFileItem {
+  path: string;
+  name: string;
+  kind: 'file' | 'directory';
+  media_type?: string | null;
+  preview_kind?: RunArtifactPreviewKind | null;
+  previewable: boolean;
+  size?: number | null;
+  modified_at?: number | null;
+  preview_url?: string | null;
+  download_url?: string | null;
+  onlyoffice_config_url?: string | null;
+}
+
+export interface ProjectFilesResponse {
+  project_id: string;
+  path: string;
+  files: ProjectFileItem[];
+}
+
+export interface ProjectFilePreview {
+  project_id: string;
   path: string;
   name: string;
   media_type: string;

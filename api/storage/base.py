@@ -56,16 +56,29 @@ class Store(Protocol):
 
     def get_project(self, project_id: str, *, org_id: str | None = None) -> Project | None: ...
 
+    def update_project(
+        self,
+        project_id: str,
+        *,
+        slug: str,
+        name: str,
+        description: str | None,
+        org_id: str = "default",
+    ) -> Project: ...
+
+    def delete_project(self, project_id: str, *, org_id: str | None = None) -> bool: ...
+
     def create_conversation(
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         title: str,
+        workspace_uri: str,
         org_id: str = "default",
     ) -> Conversation: ...
 
-    def list_conversations(self, project_id: str, *, org_id: str | None = None) -> list[Conversation]: ...
+    def list_conversations(self, project_id: str | None = None, *, org_id: str | None = None) -> list[Conversation]: ...
 
     def get_conversation(self, conversation_id: str, *, org_id: str | None = None) -> Conversation | None: ...
 
@@ -75,7 +88,7 @@ class Store(Protocol):
         self,
         *,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         conversation_id: str | None,
         user_id: str,
         kind: str | None,
@@ -95,6 +108,10 @@ class Store(Protocol):
         org_id: str | None = None,
     ) -> list[Run]: ...
 
+    def delete_run(self, run_id: str, *, org_id: str | None = None) -> bool: ...
+
+    def delete_conversation(self, conversation_id: str, *, org_id: str | None = None) -> bool: ...
+
     def update_run_status(
         self,
         run_id: str,
@@ -109,7 +126,7 @@ class Store(Protocol):
         *,
         stream_id: str,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         conversation_id: str | None,
         user_id: str,
         kind: str,
@@ -139,7 +156,7 @@ class Store(Protocol):
         *,
         review_id: str,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         kind: str,
         org_id: str = "default",
     ) -> Review: ...

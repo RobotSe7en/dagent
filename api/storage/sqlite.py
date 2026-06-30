@@ -66,7 +66,247 @@ class SQLiteStore:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self._lock:
             self._conn.executescript(schema)
+            self._ensure_v2_schema()
+            self._conn.executescript(schema)
             self._conn.commit()
+
+    def _ensure_v2_schema(self) -> None:
+        table_checks = (
+            ("conversations", ("workspace_uri",), ("project_id",)),
+            ("runs", (), ("project_id",)),
+            ("run_streams", (), ("project_id",)),
+            ("reviews", (), ("project_id",)),
+        )
+        if not any(
+            self._table_needs_rebuild(table, required_columns=columns, nullable_columns=nullable_columns)
+            for table, columns, nullable_columns in table_checks
+        ):
+            return
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            if self._table_needs_rebuild(
+                "conversations",
+                required_columns=("workspace_uri",),
+                nullable_columns=("project_id",),
+            ):
+                self._rebuild_conversations_table()
+            if self._table_needs_rebuild("runs", required_columns=(), nullable_columns=("project_id",)):
+                self._rebuild_runs_table()
+            if self._table_needs_rebuild("run_streams", required_columns=(), nullable_columns=("project_id",)):
+                self._rebuild_run_streams_table()
+            if self._table_needs_rebuild("reviews", required_columns=(), nullable_columns=("project_id",)):
+                self._rebuild_reviews_table()
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON")
+
+    def _table_needs_rebuild(
+        self,
+        table: str,
+        *,
+        required_columns: tuple[str, ...],
+        nullable_columns: tuple[str, ...],
+    ) -> bool:
+        columns = {row["name"]: row for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if any(column not in columns for column in required_columns):
+            return True
+        return any(columns[column]["notnull"] for column in nullable_columns if column in columns)
+
+    def _rebuild_conversations_table(self) -> None:
+        rows = [dict(row) for row in self._conn.execute("SELECT * FROM conversations").fetchall()]
+        self._conn.execute("DROP TABLE conversations")
+        self._conn.execute(
+            """
+            CREATE TABLE conversations (
+                id TEXT PRIMARY KEY,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                org_id TEXT NOT NULL DEFAULT 'default',
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                workspace_uri TEXT NOT NULL,
+                last_run_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                archived_at INTEGER
+            )
+            """
+        )
+        for row in rows:
+            workspace_uri = row.get("workspace_uri") or self._legacy_conversation_workspace_uri(
+                row["id"],
+                row.get("project_id"),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO conversations(
+                    id, project_id, org_id, title, status, workspace_uri,
+                    last_run_id, created_at, updated_at, archived_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row.get("project_id"),
+                    row.get("org_id", "default"),
+                    row["title"],
+                    row.get("status", "active"),
+                    workspace_uri,
+                    row.get("last_run_id"),
+                    row["created_at"],
+                    row["updated_at"],
+                    row.get("archived_at"),
+                ),
+            )
+
+    def _legacy_conversation_workspace_uri(self, conversation_id: str, project_id: str | None) -> str:
+        if project_id is not None:
+            row = self._conn.execute("SELECT workspace_uri FROM projects WHERE id = ?", (project_id,)).fetchone()
+            if row is not None:
+                return row["workspace_uri"]
+        root = self.path.parent if str(self.path) != ":memory:" else Path.cwd()
+        return f"file://{root / 'projects' / '_conversations' / conversation_id / 'workspace'}"
+
+    def _rebuild_runs_table(self) -> None:
+        rows = [dict(row) for row in self._conn.execute("SELECT * FROM runs").fetchall()]
+        self._conn.execute("DROP TABLE runs")
+        self._conn.execute(
+            """
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+                org_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT NOT NULL DEFAULT 'default',
+                kind TEXT,
+                status TEXT NOT NULL,
+                execution TEXT NOT NULL DEFAULT 'local',
+                workspace_uri TEXT NOT NULL,
+                state_json TEXT,
+                output_text TEXT NOT NULL DEFAULT '',
+                error_json TEXT,
+                lease_owner TEXT,
+                lease_expires_at INTEGER,
+                created_at INTEGER NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        for row in rows:
+            self._conn.execute(
+                """
+                INSERT INTO runs(
+                    id, project_id, conversation_id, org_id, user_id, kind, status,
+                    execution, workspace_uri, state_json, output_text, error_json,
+                    lease_owner, lease_expires_at, created_at, started_at, completed_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row.get("project_id"),
+                    row.get("conversation_id"),
+                    row.get("org_id", "default"),
+                    row.get("user_id", "default"),
+                    row.get("kind"),
+                    row["status"],
+                    row.get("execution", "local"),
+                    row["workspace_uri"],
+                    row.get("state_json"),
+                    row.get("output_text", ""),
+                    row.get("error_json"),
+                    row.get("lease_owner"),
+                    row.get("lease_expires_at"),
+                    row["created_at"],
+                    row.get("started_at"),
+                    row.get("completed_at"),
+                    row["updated_at"],
+                ),
+            )
+
+    def _rebuild_run_streams_table(self) -> None:
+        rows = [dict(row) for row in self._conn.execute("SELECT * FROM run_streams").fetchall()]
+        self._conn.execute("DROP TABLE run_streams")
+        self._conn.execute(
+            """
+            CREATE TABLE run_streams (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+                org_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT NOT NULL DEFAULT 'default',
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                error_json TEXT
+            )
+            """
+        )
+        for row in rows:
+            self._conn.execute(
+                """
+                INSERT INTO run_streams(
+                    id, run_id, project_id, conversation_id, org_id, user_id,
+                    kind, status, started_at, completed_at, error_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["run_id"],
+                    row.get("project_id"),
+                    row.get("conversation_id"),
+                    row.get("org_id", "default"),
+                    row.get("user_id", "default"),
+                    row["kind"],
+                    row["status"],
+                    row["started_at"],
+                    row.get("completed_at"),
+                    row.get("error_json"),
+                ),
+            )
+
+    def _rebuild_reviews_table(self) -> None:
+        rows = [dict(row) for row in self._conn.execute("SELECT * FROM reviews").fetchall()]
+        self._conn.execute("DROP TABLE reviews")
+        self._conn.execute(
+            """
+            CREATE TABLE reviews (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+                org_id TEXT NOT NULL DEFAULT 'default',
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                decision_json TEXT,
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            )
+            """
+        )
+        for row in rows:
+            self._conn.execute(
+                """
+                INSERT INTO reviews(
+                    id, run_id, project_id, org_id, kind, status,
+                    decision_json, created_at, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["run_id"],
+                    row.get("project_id"),
+                    row.get("org_id", "default"),
+                    row["kind"],
+                    row["status"],
+                    row.get("decision_json"),
+                    row["created_at"],
+                    row.get("resolved_at"),
+                ),
+            )
 
     def create_project(
         self,
@@ -116,12 +356,52 @@ class SQLiteStore:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _project_from_row(row)
 
+    def update_project(
+        self,
+        project_id: str,
+        *,
+        slug: str,
+        name: str,
+        description: str | None,
+        org_id: str = "default",
+    ) -> Project:
+        now = _now()
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE projects
+                    SET slug = ?, name = ?, description = ?, updated_at = ?
+                    WHERE id = ? AND org_id = ?
+                    """,
+                    (slug, name, description, now, project_id, org_id),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise StorageConflictError(str(exc)) from exc
+            if cursor.rowcount == 0:
+                raise KeyError(f"Project '{project_id}' not found.")
+            row = self._required_row("SELECT * FROM projects WHERE id = ?", (project_id,))
+        return _project_from_row(row)
+
+    def delete_project(self, project_id: str, *, org_id: str | None = None) -> bool:
+        query = "DELETE FROM projects WHERE id = ?"
+        params: tuple[object, ...] = (project_id,)
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params = (project_id, org_id)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            self._conn.commit()
+        return cursor.rowcount > 0
+
     def create_conversation(
         self,
         *,
         conversation_id: str,
-        project_id: str,
+        project_id: str | None,
         title: str,
+        workspace_uri: str,
         org_id: str = "default",
     ) -> Conversation:
         now = _now()
@@ -130,11 +410,11 @@ class SQLiteStore:
                 self._conn.execute(
                     """
                     INSERT INTO conversations(
-                        id, project_id, org_id, title, status, created_at, updated_at
+                        id, project_id, org_id, title, status, workspace_uri, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
                     """,
-                    (conversation_id, project_id, org_id, title, now, now),
+                    (conversation_id, project_id, org_id, title, workspace_uri, now, now),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -142,15 +422,19 @@ class SQLiteStore:
             row = self._required_row("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
         return _conversation_from_row(row)
 
-    def list_conversations(self, project_id: str, *, org_id: str | None = None) -> list[Conversation]:
-        query = "SELECT * FROM conversations WHERE project_id = ? AND archived_at IS NULL"
-        params: tuple[object, ...] = (project_id,)
+    def list_conversations(self, project_id: str | None = None, *, org_id: str | None = None) -> list[Conversation]:
+        conditions = ["archived_at IS NULL"]
+        params: list[object] = []
+        if project_id is not None:
+            conditions.append("project_id = ?")
+            params.append(project_id)
         if org_id is not None:
-            query += " AND org_id = ?"
-            params = (project_id, org_id)
+            conditions.append("org_id = ?")
+            params.append(org_id)
+        query = "SELECT * FROM conversations WHERE " + " AND ".join(conditions)
         query += " ORDER BY updated_at DESC"
         with self._lock:
-            rows = self._conn.execute(query, params).fetchall()
+            rows = self._conn.execute(query, tuple(params)).fetchall()
         return [_conversation_from_row(row) for row in rows]
 
     def get_conversation(self, conversation_id: str, *, org_id: str | None = None) -> Conversation | None:
@@ -182,7 +466,7 @@ class SQLiteStore:
         self,
         *,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         conversation_id: str | None,
         user_id: str,
         kind: str | None,
@@ -260,6 +544,29 @@ class SQLiteStore:
             rows = self._conn.execute(query, tuple(params)).fetchall()
         return [_run_from_row(row) for row in rows]
 
+    def delete_run(self, run_id: str, *, org_id: str | None = None) -> bool:
+        query = "DELETE FROM runs WHERE id = ?"
+        params: tuple[object, ...] = (run_id,)
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params = (run_id, org_id)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_conversation(self, conversation_id: str, *, org_id: str | None = None) -> bool:
+        query = "DELETE FROM conversations WHERE id = ?"
+        params: tuple[object, ...] = (conversation_id,)
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params = (conversation_id, org_id)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            self._conversation_locks.pop(conversation_id, None)
+            self._conn.commit()
+        return cursor.rowcount > 0
+
     def update_run_status(
         self,
         run_id: str,
@@ -288,7 +595,7 @@ class SQLiteStore:
         *,
         stream_id: str,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         conversation_id: str | None,
         user_id: str,
         kind: str,
@@ -400,7 +707,7 @@ class SQLiteStore:
         *,
         review_id: str,
         run_id: str,
-        project_id: str,
+        project_id: str | None,
         kind: str,
         org_id: str = "default",
     ) -> Review:
@@ -481,6 +788,7 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         org_id=row["org_id"],
         title=row["title"],
         status=row["status"],
+        workspace_uri=row["workspace_uri"],
         last_run_id=row["last_run_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],

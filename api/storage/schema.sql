@@ -20,10 +20,11 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL DEFAULT 'default',
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
+    workspace_uri TEXT NOT NULL,
     last_run_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -35,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_project_updated
 
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
     org_id TEXT NOT NULL DEFAULT 'default',
     user_id TEXT NOT NULL DEFAULT 'default',
@@ -67,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_queued
 CREATE TABLE IF NOT EXISTS run_streams (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
     org_id TEXT NOT NULL DEFAULT 'default',
     user_id TEXT NOT NULL DEFAULT 'default',
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS run_events (
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL DEFAULT 'default',
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -109,4 +110,4 @@ CREATE INDEX IF NOT EXISTS idx_reviews_pending
     ON reviews(project_id, status, created_at DESC);
 
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-VALUES (1, strftime('%s', 'now'));
+VALUES (2, strftime('%s', 'now'));

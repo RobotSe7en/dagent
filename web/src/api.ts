@@ -28,6 +28,9 @@ import type {
   ModelProvider,
   ModelProviderInput,
   OnlyOfficeSettings,
+  ProjectFileItem,
+  ProjectFilePreview,
+  ProjectFilesResponse,
   PythonToolConfig,
   PythonToolEntry,
   RunArtifactFile,
@@ -85,11 +88,120 @@ export async function createProject(input: { name: string; slug?: string; descri
   return data.project;
 }
 
-export async function listProjectConversations(projectId: string): Promise<ApiConversation[]> {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`);
+export async function updateProject(
+  projectId: string,
+  input: { name?: string; slug?: string; description?: string | null },
+): Promise<ApiProject> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.project;
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function listProjectFiles(projectId: string, path = ''): Promise<ProjectFilesResponse> {
+  const params = path ? `?${new URLSearchParams({ path }).toString()}` : '';
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files${params}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return {
+    project_id: data.project_id ?? projectId,
+    path: data.path ?? path,
+    files: (data.files ?? []).map(normalizeProjectFileUrls),
+  };
+}
+
+export async function uploadProjectFiles(projectId: string, path: string, files: File[]): Promise<ProjectFileItem[]> {
+  const body = new FormData();
+  body.append('path', path);
+  for (const file of files) {
+    body.append('files', file, uploadFormFilename(file));
+  }
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files/upload`, {
+    method: 'POST',
+    body,
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return (data.files ?? []).map(normalizeProjectFileUrls);
+}
+
+export async function createProjectFolder(projectId: string, path: string): Promise<ProjectFileItem> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files/folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return normalizeProjectFileUrls(data.file);
+}
+
+export async function renameProjectFile(projectId: string, path: string, newPath: string): Promise<ProjectFileItem> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, new_path: newPath }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return normalizeProjectFileUrls(data.file);
+}
+
+export async function deleteProjectFile(projectId: string, path: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function previewProjectFile(projectId: string, path: string): Promise<ProjectFilePreview> {
+  const params = new URLSearchParams({ path });
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files/preview?${params.toString()}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return await res.json();
+}
+
+export function projectFileDownloadUrl(projectId: string, path: string): string {
+  const params = new URLSearchParams({ path });
+  return `${API_BASE}/projects/${encodeURIComponent(projectId)}/files/download?${params.toString()}`;
+}
+
+export async function listConversations(): Promise<ApiConversation[]> {
+  const res = await fetch(`${API_BASE}/conversations`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.conversations ?? [];
+}
+
+export async function createConversation(input: { title: string }): Promise<ApiConversation> {
+  const res = await fetch(`${API_BASE}/conversations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversation;
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
 }
 
 export async function createProjectConversation(projectId: string, input: { title: string }): Promise<ApiConversation> {
@@ -233,6 +345,15 @@ export function runArtifactDownloadUrl(runId: string, path: string): string {
 }
 
 function normalizeRunArtifactFileUrls(file: RunArtifactFile): RunArtifactFile {
+  return {
+    ...file,
+    preview_url: normalizeApiUrl(file.preview_url),
+    download_url: normalizeApiUrl(file.download_url),
+    onlyoffice_config_url: normalizeApiUrl(file.onlyoffice_config_url),
+  };
+}
+
+function normalizeProjectFileUrls(file: ProjectFileItem): ProjectFileItem {
   return {
     ...file,
     preview_url: normalizeApiUrl(file.preview_url),
@@ -641,10 +762,11 @@ interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
   project?: {
-    projectId: string;
+    projectId?: string | null;
     conversationId: string;
   };
-  projectId?: string;
+  projectId?: string | null;
+  conversationId?: string;
 }
 
 export interface ChatStreamMessage {
@@ -671,7 +793,9 @@ export async function streamMessagesTask(
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   if (options.project) {
-    body.project_id = options.project.projectId;
+    if (options.project.projectId) {
+      body.project_id = options.project.projectId;
+    }
     body.conversation_id = options.project.conversationId;
   }
   const response = await fetch(`${API_BASE}/messages/stream`, {
@@ -707,7 +831,9 @@ export async function streamTask(
   if (state) body.state = state;
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   if (options.project) {
-    body.project_id = options.project.projectId;
+    if (options.project.projectId) {
+      body.project_id = options.project.projectId;
+    }
     body.conversation_id = options.project.conversationId;
   }
   const response = await fetch(`${API_BASE}/messages/stream`, {
@@ -749,10 +875,13 @@ export async function resumeDagReview(
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
   const projectId = options.projectId;
-  const url = projectId
-    ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+  const persistedResume = options.conversationId;
+  const url = persistedResume
+    ? projectId
+      ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+      : `${API_BASE}/reviews/${encodeURIComponent(reviewId)}/resume`
     : `${API_BASE}/messages/resume`;
-  const body = projectId
+  const body = persistedResume
     ? {
         dag: approved ? dag : null,
         approved,
@@ -1038,10 +1167,13 @@ export async function resumeCapabilityReview(
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
   const projectId = options.projectId;
-  const url = projectId
-    ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+  const persistedResume = options.conversationId;
+  const url = persistedResume
+    ? projectId
+      ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+      : `${API_BASE}/reviews/${encodeURIComponent(reviewId)}/resume`
     : `${API_BASE}/messages/resume`;
-  const body = projectId
+  const body = persistedResume
     ? {
         approved,
         ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),

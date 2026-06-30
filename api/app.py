@@ -11,6 +11,7 @@ import json
 import mimetypes
 import re
 import secrets
+import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ from api.agent_presets import (
     clean_agent_preset_name,
 )
 from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
-from api.storage import ConversationBusyError, Run, RunEvent, SQLiteStore, StorageConflictError, Store
+from api.storage import Conversation, ConversationBusyError, Project, Run, RunEvent, SQLiteStore, StorageConflictError, Store
 from api.workspaces import LocalWorkspaceStore
 from dagent import (
     ArtifactUpload,
@@ -202,10 +203,37 @@ class ProjectCreateRequest(BaseModel):
     description: str | None = None
 
 
+class ProjectUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+
+
 class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1)
+
+
+class ProjectFolderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+
+
+class ProjectFileMoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+    new_path: str = Field(min_length=1)
+
+
+class ProjectFileDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
 
 
 class CapabilityTestRequest(BaseModel):
@@ -412,6 +440,38 @@ class RunArtifactPreviewResponse(BaseModel):
     truncated_at: int = RUN_ARTIFACT_PREVIEW_BYTES
 
 
+class ProjectFileItem(BaseModel):
+    path: str
+    name: str
+    kind: Literal["file", "directory"]
+    media_type: str | None = None
+    preview_kind: RunArtifactPreviewKind | None = None
+    previewable: bool = False
+    size: int | None = None
+    modified_at: int | None = None
+    preview_url: str | None = None
+    download_url: str | None = None
+    onlyoffice_config_url: str | None = None
+
+
+class ProjectFilesResponse(BaseModel):
+    project_id: str
+    path: str
+    files: list[ProjectFileItem] = Field(default_factory=list)
+
+
+class ProjectFilePreviewResponse(BaseModel):
+    project_id: str
+    path: str
+    name: str
+    media_type: str
+    preview_kind: RunArtifactTextPreviewKind
+    content: str
+    size: int
+    truncated: bool
+    truncated_at: int = RUN_ARTIFACT_PREVIEW_BYTES
+
+
 class RunArtifactOnlyOfficeConfigResponse(BaseModel):
     document_server_url: str
     script_url: str
@@ -419,8 +479,8 @@ class RunArtifactOnlyOfficeConfigResponse(BaseModel):
 
 
 @dataclass(frozen=True)
-class ProjectMessageContext:
-    project_id: str
+class PersistedMessageContext:
+    project_id: str | None
     conversation_id: str
     workspace_uri: str
     workspace_path: Path
@@ -753,6 +813,232 @@ async def get_project(project_id: str) -> dict[str, Any]:
     return {"project": project.model_dump(mode="json")}
 
 
+@app.patch("/projects/{project_id}")
+async def update_project(project_id: str, request: ProjectUpdateRequest) -> dict[str, Any]:
+    store = state.get_store()
+    project = await run_in_threadpool(store.get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    name = project.name
+    if request.name is not None:
+        name = _clean_required_text(request.name, field="Project name")
+    slug = project.slug
+    if request.slug is not None:
+        slug = _clean_project_slug(request.slug)
+    description = project.description
+    if "description" in request.model_fields_set:
+        description = None if request.description is None else request.description.strip()
+    try:
+        updated = await run_in_threadpool(
+            store.update_project,
+            project_id,
+            slug=slug,
+            name=name,
+            description=description,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found.") from exc
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=400, detail=f"Project slug '{slug}' already exists.") from exc
+    return {"project": updated.model_dump(mode="json")}
+
+
+@app.delete("/projects/{project_id}")
+async def delete_project(project_id: str) -> dict[str, str]:
+    store = state.get_store()
+    project = await run_in_threadpool(store.get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+    await run_in_threadpool(_delete_project_workspace, project, workspace_path)
+    deleted = await run_in_threadpool(store.delete_project, project.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {"status": "deleted"}
+
+
+@app.get("/projects/{project_id}/files")
+async def list_project_files(project_id: str, path: str = "") -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    directory = _resolve_project_file_path(workspace, path, allow_empty=True)
+    if not directory.exists():
+        raise HTTPException(status_code=404, detail="Project directory not found.")
+    if not directory.is_dir():
+        raise HTTPException(status_code=400, detail="Project file path is not a directory.")
+    normalized_path = _normalize_project_file_path(path, allow_empty=True)
+    files = await run_in_threadpool(
+        _project_file_items,
+        project.id,
+        workspace,
+        directory,
+        _configured_onlyoffice_config(),
+    )
+    return ProjectFilesResponse(project_id=project.id, path=normalized_path, files=files).model_dump(mode="json")
+
+
+@app.post("/projects/{project_id}/files/upload")
+async def upload_project_files(
+    project_id: str,
+    path: str = Form(""),
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    directory = _resolve_project_file_path(workspace, path, allow_empty=True)
+    if directory.exists() and not directory.is_dir():
+        raise HTTPException(status_code=400, detail="Upload path is not a directory.")
+    await run_in_threadpool(directory.mkdir, parents=True, exist_ok=True)
+    uploaded: list[ProjectFileItem] = []
+    for file in files:
+        filename = str(file.filename or "upload").replace("\\", "/")
+        try:
+            validate_upload_filename(filename)
+        except ArtifactPathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        target = _resolve_project_file_path(
+            workspace,
+            "/".join(part for part in (path, filename) if part),
+            allow_empty=False,
+        )
+        content = await file.read()
+        await run_in_threadpool(target.parent.mkdir, parents=True, exist_ok=True)
+        await run_in_threadpool(target.write_bytes, content)
+        uploaded.append(_project_file_item(
+            project.id,
+            workspace,
+            target,
+            onlyoffice_config=_configured_onlyoffice_config(),
+        ))
+    return {"files": [item.model_dump(mode="json") for item in uploaded]}
+
+
+@app.post("/projects/{project_id}/files/folder")
+async def create_project_folder(project_id: str, request: ProjectFolderRequest) -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    folder = _resolve_project_file_path(workspace, request.path)
+    if folder.exists() and not folder.is_dir():
+        raise HTTPException(status_code=400, detail="Project path exists and is not a directory.")
+    await run_in_threadpool(folder.mkdir, parents=True, exist_ok=True)
+    return {"file": _project_file_item(
+        project.id,
+        workspace,
+        folder,
+        onlyoffice_config=_configured_onlyoffice_config(),
+    ).model_dump(mode="json")}
+
+
+@app.patch("/projects/{project_id}/files")
+async def move_project_file(project_id: str, request: ProjectFileMoveRequest) -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    source = _resolve_project_file_path(workspace, request.path)
+    target = _resolve_project_file_path(workspace, request.new_path)
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="Project file not found.")
+    if target.exists():
+        raise HTTPException(status_code=409, detail="Project destination already exists.")
+    await run_in_threadpool(target.parent.mkdir, parents=True, exist_ok=True)
+    await run_in_threadpool(source.rename, target)
+    return {"file": _project_file_item(
+        project.id,
+        workspace,
+        target,
+        onlyoffice_config=_configured_onlyoffice_config(),
+    ).model_dump(mode="json")}
+
+
+@app.delete("/projects/{project_id}/files")
+async def delete_project_file(project_id: str, request: ProjectFileDeleteRequest) -> dict[str, str]:
+    _project, workspace = await _project_workspace(project_id)
+    target = _resolve_project_file_path(workspace, request.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Project file not found.")
+    if target.is_dir() and not target.is_symlink():
+        await run_in_threadpool(shutil.rmtree, target)
+    else:
+        await run_in_threadpool(target.unlink)
+    return {"status": "deleted"}
+
+
+@app.get("/projects/{project_id}/files/preview")
+async def preview_project_file(project_id: str, path: str) -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    file_path = _resolve_project_file_path(workspace, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Project file not found.")
+    normalized_path = _normalize_project_file_path(path)
+    preview_kind = _preview_kind_for_path(normalized_path)
+    if preview_kind is None:
+        raise HTTPException(status_code=415, detail="Project file type is not previewable.")
+    if preview_kind not in _TEXT_PREVIEW_KINDS:
+        raise HTTPException(status_code=415, detail="Project file type uses binary browser preview.")
+    content, truncated, size = _read_text_preview(file_path)
+    return ProjectFilePreviewResponse(
+        project_id=project.id,
+        path=normalized_path,
+        name=file_path.name,
+        media_type=_media_type_for_path(normalized_path),
+        preview_kind=preview_kind,
+        content=content,
+        size=size,
+        truncated=truncated,
+    ).model_dump(mode="json")
+
+
+@app.get("/projects/{project_id}/files/onlyoffice/config")
+async def get_project_file_onlyoffice_config(project_id: str, path: str) -> dict[str, Any]:
+    project, workspace = await _project_workspace(project_id)
+    return _project_file_onlyoffice_config_response(project, workspace, path).model_dump(mode="json")
+
+
+@app.get("/projects/{project_id}/files/download")
+async def download_project_file(project_id: str, path: str) -> FileResponse:
+    _project, workspace = await _project_workspace(project_id)
+    file_path = _resolve_project_file_path(workspace, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Project file not found.")
+    normalized_path = _normalize_project_file_path(path)
+    return FileResponse(
+        file_path,
+        filename=file_path.name,
+        media_type=_media_type_for_path(normalized_path),
+    )
+
+
+@app.post("/conversations")
+async def create_conversation(request: ConversationCreateRequest) -> dict[str, Any]:
+    conversation_id = _new_api_id("conv")
+    title = _clean_required_text(request.title, field="Conversation title")
+    workspaces = state.get_workspaces()
+    workspace_uri = workspaces.conversation_workspace_uri(conversation_id)
+    await run_in_threadpool(workspaces.local_path_for, workspace_uri)
+    try:
+        conversation = await run_in_threadpool(
+            state.get_store().create_conversation,
+            conversation_id=conversation_id,
+            project_id=None,
+            title=title,
+            workspace_uri=workspace_uri,
+        )
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=400, detail="Conversation already exists.") from exc
+    return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.get("/conversations")
+async def list_conversations() -> dict[str, Any]:
+    conversations = await run_in_threadpool(state.get_store().list_conversations)
+    return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str) -> dict[str, str]:
+    store = state.get_store()
+    conversation = await run_in_threadpool(store.get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    await _delete_conversation(conversation)
+    return {"status": "deleted"}
+
+
 @app.post("/projects/{project_id}/conversations")
 async def create_project_conversation(
     project_id: str,
@@ -763,12 +1049,16 @@ async def create_project_conversation(
         raise HTTPException(status_code=404, detail="Project not found.")
     conversation_id = _new_api_id("conv")
     title = _clean_required_text(request.title, field="Conversation title")
+    workspaces = state.get_workspaces()
+    workspace_uri = workspaces.conversation_workspace_uri(conversation_id, project_id=project.id)
+    await run_in_threadpool(workspaces.local_path_for, workspace_uri)
     try:
         conversation = await run_in_threadpool(
             state.get_store().create_conversation,
             conversation_id=conversation_id,
             project_id=project.id,
             title=title,
+            workspace_uri=workspace_uri,
         )
     except StorageConflictError as exc:
         raise HTTPException(status_code=400, detail="Conversation already exists.") from exc
@@ -793,6 +1083,55 @@ async def get_project_conversation(project_id: str, conversation_id: str) -> dic
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.delete("/projects/{project_id}/conversations/{conversation_id}")
+async def delete_project_conversation(project_id: str, conversation_id: str) -> dict[str, str]:
+    store = state.get_store()
+    project = await run_in_threadpool(store.get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(store.get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    await _delete_conversation(conversation)
+    return {"status": "deleted"}
+
+
+async def _delete_conversation(conversation: Conversation) -> None:
+    store = state.get_store()
+    try:
+        lock = await run_in_threadpool(
+            store.acquire_conversation_lock,
+            conversation.id,
+            owner=_new_api_id("delete"),
+        )
+    except ConversationBusyError as exc:
+        raise HTTPException(status_code=409, detail="Conversation is already active.") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found.") from exc
+    try:
+        runs = await run_in_threadpool(
+            store.list_runs,
+            conversation_id=conversation.id,
+        )
+        run_states: list[RunState] = []
+        for run in runs:
+            run_state = await run_in_threadpool(store.get_run_state, run.id)
+            if run_state is not None:
+                run_states.append(run_state)
+        conversation_workspace = await run_in_threadpool(
+            state.get_workspaces().local_path_for,
+            conversation.workspace_uri,
+        )
+        await run_in_threadpool(_delete_conversation_files, run_states, conversation_workspace)
+        for run in runs:
+            await run_in_threadpool(store.delete_run, run.id)
+        deleted = await run_in_threadpool(store.delete_conversation, conversation.id)
+    finally:
+        await run_in_threadpool(lock.release)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
 
 
 @app.get("/projects/{project_id}/conversations/{conversation_id}/runs")
@@ -1190,12 +1529,18 @@ async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str
 @app.get("/onlyoffice/files/{token}")
 async def get_onlyoffice_file(token: str) -> FileResponse:
     payload = _onlyoffice_token_payload(token)
-    run_state = _run_state_from_state(payload["run_id"])
-    if run_state is None:
-        raise HTTPException(status_code=404, detail="Run not found.")
-    file_path = _resolve_run_artifact_path(run_state, payload["path"])
+    if payload["scope"] == "project":
+        _project, workspace = await _project_workspace(payload["project_id"])
+        file_path = _resolve_project_file_path(workspace, payload["path"])
+        not_found_detail = "Project file not found."
+    else:
+        run_state = _run_state_from_state(payload["run_id"])
+        if run_state is None:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        file_path = _resolve_run_artifact_path(run_state, payload["path"])
+        not_found_detail = "Artifact file not found."
     if not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file not found.")
+        raise HTTPException(status_code=404, detail=not_found_detail)
     return FileResponse(
         file_path,
         filename=file_path.name,
@@ -2627,20 +2972,20 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 @app.post("/messages/stream")
 async def message_stream(http_request: Request) -> StreamingResponse:
     request, input_uploads = await _message_request_from_http(http_request)
-    project_context = await _project_context_from_message(request)
+    persisted_context = await _persisted_context_from_message(request)
     agent = _agent_from_message(request)
-    if project_context is not None:
+    if persisted_context is not None:
         stream_id = _new_api_id("stream")
         try:
             lock = await run_in_threadpool(
                 state.get_store().acquire_conversation_lock,
-                project_context.conversation_id,
+                persisted_context.conversation_id,
                 owner=stream_id,
             )
         except ConversationBusyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return StreamingResponse(
-            _project_message_stream_events(request, agent, input_uploads, project_context, stream_id, lock),
+            _persisted_message_stream_events(request, agent, input_uploads, persisted_context, stream_id, lock),
             media_type="text/event-stream",
         )
     workspace_root = _workspace_root_from_message(request)
@@ -2680,12 +3025,33 @@ async def resume_project_review_stream(
     review_id: str,
     request: ProjectResumeReviewRequest,
 ) -> StreamingResponse:
+    return await _resume_persisted_review_stream(review_id, request, project_id=project_id)
+
+
+@app.post("/reviews/{review_id}/resume")
+async def resume_review_stream(
+    review_id: str,
+    request: ProjectResumeReviewRequest,
+) -> StreamingResponse:
+    return await _resume_persisted_review_stream(review_id, request, project_id=None)
+
+
+async def _resume_persisted_review_stream(
+    review_id: str,
+    request: ProjectResumeReviewRequest,
+    *,
+    project_id: str | None,
+) -> StreamingResponse:
     store = state.get_store()
-    project = await run_in_threadpool(store.get_project, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    project = None
+    if project_id is not None:
+        project = await run_in_threadpool(store.get_project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
     review = await run_in_threadpool(store.get_review, review_id)
-    if review is None or review.project_id != project.id:
+    if review is None:
+        raise HTTPException(status_code=404, detail="Review not found.")
+    if project is not None and review.project_id != project.id:
         raise HTTPException(status_code=404, detail="Review not found.")
     if review.status != "pending":
         raise HTTPException(status_code=409, detail="Review is already resolved.")
@@ -2695,14 +3061,16 @@ async def resume_project_review_stream(
     if run.conversation_id is None:
         raise HTTPException(status_code=400, detail="Review run is not attached to a conversation.")
     conversation = await run_in_threadpool(store.get_conversation, run.conversation_id)
-    if conversation is None or conversation.project_id != project.id:
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if project is not None and conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     run_state = await run_in_threadpool(store.get_run_state, run.id)
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run state not found.")
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
-    context = ProjectMessageContext(
-        project_id=project.id,
+    context = PersistedMessageContext(
+        project_id=conversation.project_id,
         conversation_id=conversation.id,
         workspace_uri=run.workspace_uri,
         workspace_path=workspace_path,
@@ -2724,16 +3092,16 @@ async def resume_project_review_stream(
         feedback=request.feedback,
     )
     return StreamingResponse(
-        _project_review_resume_stream_events(decision, run_state, context, stream_id, lock),
+        _persisted_review_resume_stream_events(decision, run_state, context, stream_id, lock),
         media_type="text/event-stream",
     )
 
 
-async def _project_message_stream_events(
+async def _persisted_message_stream_events(
     request: MessageRequest,
     agent: ToolAgent | DagAgent | AutoAgent,
     input_uploads: list[ArtifactUpload],
-    context: ProjectMessageContext,
+    context: PersistedMessageContext,
     stream_id: str,
     lock: Any,
 ):
@@ -2749,7 +3117,7 @@ async def _project_message_stream_events(
             ),
             validation_enabled=runner.enable_validation,
         )
-        async for payload in _persist_project_run_events(
+        async for payload in _persisted_run_events(
             event_source,
             runner=runner,
             context=context,
@@ -2763,10 +3131,10 @@ async def _project_message_stream_events(
         await run_in_threadpool(lock.release)
 
 
-async def _project_review_resume_stream_events(
+async def _persisted_review_resume_stream_events(
     decision: ReviewDecision,
     run_state: RunState,
-    context: ProjectMessageContext,
+    context: PersistedMessageContext,
     stream_id: str,
     lock: Any,
 ):
@@ -2776,7 +3144,7 @@ async def _project_review_resume_stream_events(
             runner.resume_stream(decision, state=run_state),
             validation_enabled=runner.enable_validation,
         )
-        async for payload in _persist_project_run_events(
+        async for payload in _persisted_run_events(
             event_source,
             runner=runner,
             context=context,
@@ -2792,11 +3160,11 @@ async def _project_review_resume_stream_events(
         await run_in_threadpool(lock.release)
 
 
-async def _persist_project_run_events(
+async def _persisted_run_events(
     event_source: AsyncIterator[RunStreamEvent],
     *,
     runner: Runner,
-    context: ProjectMessageContext,
+    context: PersistedMessageContext,
     stream_id: str,
     run_kind: str,
     create_run: bool,
@@ -2970,26 +3338,30 @@ def _workspace_root_from_message(request: MessageRequest) -> str:
     return _clean_workspace_root(request.workspace_root)
 
 
-async def _project_context_from_message(request: MessageRequest) -> ProjectMessageContext | None:
+async def _persisted_context_from_message(request: MessageRequest) -> PersistedMessageContext | None:
     if request.project_id is None and request.conversation_id is None:
         return None
-    if request.project_id is None or request.conversation_id is None:
+    if request.conversation_id is None:
         raise HTTPException(
             status_code=400,
-            detail="project_id and conversation_id must be provided together.",
+            detail="conversation_id must be provided for persisted message streams.",
         )
     if request.state is not None:
-        raise HTTPException(status_code=400, detail="Project message streams do not accept client state.")
+        raise HTTPException(status_code=400, detail="Persisted message streams do not accept client state.")
     if request.workspace_root is not None:
-        raise HTTPException(status_code=400, detail="Project message streams do not accept workspace_root.")
+        raise HTTPException(status_code=400, detail="Persisted message streams do not accept workspace_root.")
     store = state.get_store()
-    project = await run_in_threadpool(store.get_project, request.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    project = None
+    if request.project_id is not None:
+        project = await run_in_threadpool(store.get_project, request.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
     conversation = await run_in_threadpool(store.get_conversation, request.conversation_id)
-    if conversation is None or conversation.project_id != project.id:
+    if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+    if project is not None and conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, conversation.workspace_uri)
     previous_run_state = None
     if conversation.last_run_id is not None:
         previous_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
@@ -2998,10 +3370,10 @@ async def _project_context_from_message(request: MessageRequest) -> ProjectMessa
                 status_code=409,
                 detail="Conversation is awaiting review; resume the pending review before sending a new message.",
             )
-    return ProjectMessageContext(
-        project_id=project.id,
+    return PersistedMessageContext(
+        project_id=conversation.project_id,
         conversation_id=conversation.id,
-        workspace_uri=project.workspace_uri,
+        workspace_uri=conversation.workspace_uri,
         workspace_path=workspace_path,
         run_state=previous_run_state,
     )
@@ -3254,6 +3626,169 @@ def _run_workspace(run_state: RunState) -> Path | None:
     return Path(run_state.workspace_path).resolve()
 
 
+def _delete_conversation_files(run_states: list[RunState], conversation_workspace: Path) -> None:
+    conversation_workspace = conversation_workspace.resolve()
+    for run_state in run_states:
+        if not run_state.workspace_path:
+            continue
+        candidate = Path(run_state.workspace_path).resolve()
+        if candidate == conversation_workspace:
+            continue
+        if not _should_delete_run_workspace(candidate, conversation_workspace):
+            continue
+        shutil.rmtree(candidate)
+    if conversation_workspace.exists() and conversation_workspace.is_dir() and not conversation_workspace.is_symlink():
+        shutil.rmtree(conversation_workspace)
+
+
+def _should_delete_run_workspace(candidate: Path, project_workspace: Path) -> bool:
+    if candidate == project_workspace:
+        return False
+    if _path_contains(candidate, project_workspace):
+        return False
+    if not candidate.exists() or candidate.is_symlink() or not candidate.is_dir():
+        return False
+    name = candidate.name
+    if candidate.parent.name == "runs":
+        return True
+    return name.startswith(("run_", ".run_", "tool_run_", "dag_run_", "task_"))
+
+
+def _path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+async def _project_workspace(project_id: str) -> tuple[Project, Path]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    workspace = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+    return project, workspace.resolve()
+
+
+def _delete_project_workspace(project: Project, workspace_path: Path) -> None:
+    workspace_path = workspace_path.resolve()
+    project_root = workspace_path.parent if workspace_path.name == "workspace" else workspace_path
+    if project_root.name != project.id:
+        project_root = workspace_path
+    if project_root.exists() and project_root.is_dir() and not project_root.is_symlink():
+        shutil.rmtree(project_root)
+
+
+def _project_file_items(
+    project_id: str,
+    workspace: Path,
+    directory: Path,
+    onlyoffice_config: UserOnlyOfficeConfig | None,
+) -> list[ProjectFileItem]:
+    items: list[ProjectFileItem] = []
+    for candidate in sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+        try:
+            items.append(_project_file_item(
+                project_id,
+                workspace,
+                candidate,
+                onlyoffice_config=onlyoffice_config,
+            ))
+        except HTTPException:
+            continue
+    return items
+
+
+def _project_file_item(
+    project_id: str,
+    workspace: Path,
+    path: Path,
+    *,
+    onlyoffice_config: UserOnlyOfficeConfig | None,
+) -> ProjectFileItem:
+    workspace = workspace.resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(workspace)
+        relative_path = path.relative_to(workspace).as_posix()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Project file path escapes workspace.") from exc
+    stat = path.stat()
+    if path.is_dir():
+        return ProjectFileItem(
+            path=relative_path,
+            name=path.name,
+            kind="directory",
+            modified_at=int(stat.st_mtime),
+        )
+    preview_kind = _preview_kind_for_path(relative_path)
+    previewable = preview_kind is not None
+    return ProjectFileItem(
+        path=relative_path,
+        name=path.name,
+        kind="file",
+        media_type=_media_type_for_path(relative_path),
+        preview_kind=preview_kind if previewable else None,
+        previewable=previewable,
+        size=stat.st_size,
+        modified_at=int(stat.st_mtime),
+        preview_url=(
+            _project_file_preview_url(project_id, relative_path)
+            if preview_kind in _TEXT_PREVIEW_KINDS
+            else None
+        ),
+        download_url=_project_file_download_url(project_id, relative_path),
+        onlyoffice_config_url=(
+            _project_file_onlyoffice_config_url(project_id, relative_path)
+            if _onlyoffice_document_type(preview_kind) is not None
+            and _onlyoffice_is_configured(onlyoffice_config)
+            else None
+        ),
+    )
+
+
+def _resolve_project_file_path(workspace: Path, path: str, *, allow_empty: bool = False) -> Path:
+    normalized_path = _normalize_project_file_path(path, allow_empty=allow_empty)
+    workspace = workspace.resolve()
+    candidate = workspace if not normalized_path else workspace / normalized_path
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Project file path escapes workspace.") from exc
+    return candidate
+
+
+def _normalize_project_file_path(path: str, *, allow_empty: bool = False) -> str:
+    raw_path = path.strip().replace("\\", "/")
+    if not raw_path:
+        if allow_empty:
+            return ""
+        raise HTTPException(status_code=400, detail="Project file path is required.")
+    windows_path = PureWindowsPath(raw_path)
+    if raw_path.startswith("/") or Path(raw_path).is_absolute() or windows_path.is_absolute() or windows_path.drive:
+        raise HTTPException(status_code=400, detail="Project file path must be relative.")
+    parts = [part for part in raw_path.split("/") if part and part != "."]
+    if any(part == ".." for part in parts):
+        raise HTTPException(status_code=400, detail="Project file path cannot contain '..'.")
+    normalized_path = "/".join(parts)
+    if not normalized_path and not allow_empty:
+        raise HTTPException(status_code=400, detail="Project file path is required.")
+    return normalized_path
+
+
+def _project_file_preview_url(project_id: str, path: str) -> str:
+    return f"/projects/{quote(project_id, safe='')}/files/preview?path={quote(path, safe='/')}"
+
+
+def _project_file_download_url(project_id: str, path: str) -> str:
+    return f"/projects/{quote(project_id, safe='')}/files/download?path={quote(path, safe='/')}"
+
+
+def _project_file_onlyoffice_config_url(project_id: str, path: str) -> str:
+    return f"/projects/{quote(project_id, safe='')}/files/onlyoffice/config?path={quote(path, safe='')}"
+
+
 def _resolve_run_artifact_path(run_state: RunState, path: str) -> Path:
     workspace = _run_workspace(run_state)
     if workspace is None:
@@ -3322,9 +3857,6 @@ def _onlyoffice_config_url(run_id: str, path: str) -> str:
 
 
 def _onlyoffice_config_response(run_state: RunState, path: str) -> RunArtifactOnlyOfficeConfigResponse:
-    onlyoffice_config = _configured_onlyoffice_config()
-    if not _onlyoffice_is_configured(onlyoffice_config):
-        raise HTTPException(status_code=404, detail="OnlyOffice preview is not configured.")
     try:
         normalized_path = _normalize_run_artifact_path(path)
     except ValueError as exc:
@@ -3332,21 +3864,60 @@ def _onlyoffice_config_response(run_state: RunState, path: str) -> RunArtifactOn
     file_path = _resolve_run_artifact_path(run_state, normalized_path)
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Artifact file not found.")
+    return _onlyoffice_config_response_for_file(
+        scope="run",
+        owner_id=run_state.run_id,
+        normalized_path=normalized_path,
+        file_path=file_path,
+    )
+
+
+def _project_file_onlyoffice_config_response(
+    project: Project,
+    workspace: Path,
+    path: str,
+) -> RunArtifactOnlyOfficeConfigResponse:
+    file_path = _resolve_project_file_path(workspace, path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Project file not found.")
+    normalized_path = _normalize_project_file_path(path)
+    return _onlyoffice_config_response_for_file(
+        scope="project",
+        owner_id=project.id,
+        normalized_path=normalized_path,
+        file_path=file_path,
+    )
+
+
+def _onlyoffice_config_response_for_file(
+    *,
+    scope: Literal["run", "project"],
+    owner_id: str,
+    normalized_path: str,
+    file_path: Path,
+) -> RunArtifactOnlyOfficeConfigResponse:
+    onlyoffice_config = _configured_onlyoffice_config()
+    if not _onlyoffice_is_configured(onlyoffice_config):
+        raise HTTPException(status_code=404, detail="OnlyOffice preview is not configured.")
     preview_kind = _preview_kind_for_path(normalized_path)
     document_type = _onlyoffice_document_type(preview_kind)
     if document_type is None:
-        raise HTTPException(status_code=415, detail="Artifact file type is not supported by OnlyOffice preview.")
+        raise HTTPException(status_code=415, detail="File type is not supported by OnlyOffice preview.")
 
     document_server_url = _clean_onlyoffice_url(onlyoffice_config.document_server_url)
     public_api_base = _clean_onlyoffice_url(onlyoffice_config.public_api_base)
-    file_token = _onlyoffice_file_token(run_id=run_state.run_id, path=normalized_path)
+    file_token = (
+        _onlyoffice_file_token(run_id=owner_id, path=normalized_path)
+        if scope == "run"
+        else _onlyoffice_file_token(project_id=owner_id, path=normalized_path)
+    )
     file_type = Path(normalized_path).suffix.lower().lstrip(".")
     editor_config: dict[str, Any] = {
         "documentType": document_type,
         "type": "desktop",
         "document": {
             "fileType": file_type,
-            "key": _onlyoffice_document_key(run_state.run_id, normalized_path, file_path),
+            "key": _onlyoffice_document_key(f"{scope}:{owner_id}", normalized_path, file_path),
             "title": file_path.name,
             "url": f"{public_api_base}/onlyoffice/files/{file_token}",
             "permissions": {
@@ -3432,12 +4003,22 @@ def _base64url_bytes(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
-def _onlyoffice_file_token(*, run_id: str, path: str) -> str:
+def _onlyoffice_file_token(
+    *,
+    path: str,
+    run_id: str | None = None,
+    project_id: str | None = None,
+) -> str:
+    if (run_id is None) == (project_id is None):
+        raise ValueError("OnlyOffice file token requires exactly one owner.")
     payload = {
         "exp": int(time.time()) + ONLYOFFICE_TOKEN_SECONDS,
         "path": path,
-        "run_id": run_id,
     }
+    if run_id is not None:
+        payload.update({"run_id": run_id, "scope": "run"})
+    else:
+        payload.update({"project_id": project_id, "scope": "project"})
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(state.onlyoffice_token_secret, raw, hashlib.sha256).digest()
     return f"{_base64_url_encode(raw)}.{_base64_url_encode(signature)}"
@@ -3465,19 +4046,31 @@ def _onlyoffice_token_payload(token: str) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
     if expires_at < int(time.time()):
         raise HTTPException(status_code=403, detail="OnlyOffice file token expired.")
-    run_id = str(payload.get("run_id") or "")
+    scope = str(payload.get("scope") or ("run" if payload.get("run_id") else ""))
     path = str(payload.get("path") or "")
-    if not run_id or not path:
+    if scope not in {"run", "project"} or not path:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
-    try:
-        normalized_path = _normalize_run_artifact_path(path)
-    except ValueError as exc:
-        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
-    if not _is_safe_relative_artifact_path(normalized_path):
+    if scope == "project":
+        owner_key = "project_id"
+        owner_id = str(payload.get("project_id") or "")
+        try:
+            normalized_path = _normalize_project_file_path(path)
+        except HTTPException as exc:
+            raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    else:
+        owner_key = "run_id"
+        owner_id = str(payload.get("run_id") or "")
+        try:
+            normalized_path = _normalize_run_artifact_path(path)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+        if not _is_safe_relative_artifact_path(normalized_path):
+            raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    if not owner_id:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
     if _onlyoffice_document_type(_preview_kind_for_path(normalized_path)) is None:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
-    return {"run_id": run_id, "path": normalized_path}
+    return {"scope": scope, owner_key: owner_id, "path": normalized_path}
 
 
 def _base64_url_encode(value: bytes) -> str:

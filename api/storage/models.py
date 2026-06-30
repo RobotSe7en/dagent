@@ -26,10 +26,11 @@ class Project(BaseModel):
 
 class Conversation(BaseModel):
     id: str
-    project_id: str
+    project_id: str | None = None
     org_id: str = "default"
     title: str
     status: str = "active"
+    workspace_uri: str
     last_run_id: str | None = None
     created_at: int
     updated_at: int
@@ -38,7 +39,7 @@ class Conversation(BaseModel):
 
 class Run(BaseModel):
     id: str
-    project_id: str
+    project_id: str | None = None
     conversation_id: str | None = None
     org_id: str = "default"
     user_id: str = "default"
@@ -60,7 +61,7 @@ class Run(BaseModel):
 class RunStream(BaseModel):
     id: str
     run_id: str
-    project_id: str
+    project_id: str | None = None
     conversation_id: str | None = None
     org_id: str = "default"
     user_id: str = "default"
@@ -84,7 +85,7 @@ class RunEvent(BaseModel):
 class Review(BaseModel):
     id: str
     run_id: str
-    project_id: str
+    project_id: str | None = None
     org_id: str = "default"
     kind: str
     status: ReviewStatus

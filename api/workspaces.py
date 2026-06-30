@@ -11,6 +11,11 @@ class LocalWorkspaceStore:
     def project_workspace_uri(self, project_id: str) -> str:
         return f"file://{self.root / project_id / 'workspace'}"
 
+    def conversation_workspace_uri(self, conversation_id: str, *, project_id: str | None = None) -> str:
+        if project_id is None:
+            return f"file://{self.root / '_conversations' / conversation_id / 'workspace'}"
+        return f"file://{self.root / project_id / 'conversations' / conversation_id / 'workspace'}"
+
     def local_path_for(self, uri: str) -> Path:
         path = self._file_uri_path(uri)
         path.mkdir(parents=True, exist_ok=True)

@@ -122,6 +122,28 @@ const {
   shouldFetchTextArtifactPreview,
 } = await importTypeScript('../src/artifactPreview.ts');
 
+test('ui id generation falls back when crypto.randomUUID is unavailable', async () => {
+  const { createUiId } = await importTypeScript('../src/uiIds.ts');
+  const originalCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {},
+  });
+  try {
+    const first = createUiId('trace');
+    const second = createUiId('trace');
+
+    assert.match(first, /^trace_/);
+    assert.match(second, /^trace_/);
+    assert.notEqual(first, second);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      configurable: true,
+      value: originalCrypto,
+    });
+  }
+});
+
 test('chat workbench CSS removes legacy centered workspace layout', async () => {
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const workspaceRuleCount = (css.match(/^\.workspace\s*\{/gm) ?? []).length;
@@ -1761,6 +1783,137 @@ test('capability review resume keeps streaming in the existing assistant frame',
   assert.doesNotMatch(resumeCapabilitySource, /setMessages\(\(items\) => \[[\s\S]*role: 'assistant'/);
 });
 
+test('chat sidebar separates conversations and projects with persisted standalone conversations', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(typesSource, /project_id: string \| null;/);
+  assert.match(typesSource, /workspace_uri: string;/);
+  assert.match(apiSource, /export async function listConversations\(\): Promise<ApiConversation\[\]>/);
+  assert.match(apiSource, /export async function createConversation\(input: \{ title: string \}\): Promise<ApiConversation>/);
+  assert.match(apiSource, /export async function deleteConversation\(conversationId: string\): Promise<void>/);
+  assert.match(apiSource, /`\$\{API_BASE\}\/conversations`/);
+  assert.match(apiSource, /`\$\{API_BASE\}\/conversations\/\$\{encodeURIComponent\(conversationId\)\}`/);
+  assert.match(apiSource, /method:\s*'DELETE'/);
+  assert.match(appSource, /type ChatWorkspaceSub = 'conversations' \| 'projects';/);
+  assert.match(appSource, /const \[chatSub, setChatSub\] = useState<ChatWorkspaceSub>\('conversations'\);/);
+  assert.match(appSource, /const \[conversations, setConversations\] = useState<ApiConversation\[\]>\(\[\]\);/);
+  assert.match(appSource, /listConversations\(\)/);
+  assert.match(appSource, /createConversation\(\{[\s\S]*title: `会话 \$\{standaloneConversationCount \+ 1\}`/);
+  assert.match(appSource, /deleteConversation,/);
+  assert.match(appSource, /const deleteConversationFromSidebar = async \(conversationId: string\)/);
+  assert.match(appSource, /const confirmConversationDelete = async \(\)/);
+  assert.match(appSource, /await deleteConversation\(conversationDeleteTarget\.id\)/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{setChatSub\}/);
+  assert.match(sidebarSource, /chatSub: ChatWorkspaceSub;/);
+  assert.match(sidebarSource, /onChatSubChange: \(sub: ChatWorkspaceSub\) => void;/);
+  assert.match(sidebarSource, /const chatSubnav = \[/);
+  assert.match(sidebarSource, /label: '会话'/);
+  assert.match(sidebarSource, /label: '项目'/);
+  assert.match(sidebarSource, /activeWorkspace === 'chat' && chatSub === 'conversations'/);
+  assert.match(sidebarSource, /activeWorkspace === 'chat' && chatSub === 'projects'/);
+  assert.match(sidebarSource, /visibleConversations/);
+  assert.match(appSource, /onDeleteConversation=\{deleteConversationFromSidebar\}/);
+  assert.match(sidebarSource, /onDeleteConversation: \(id: string\) => void;/);
+  assert.match(sidebarSource, /className="sidebar-conversation-row"/);
+  assert.match(sidebarSource, /className="sidebar-conversation-delete"/);
+  assert.match(sidebarSource, /onDeleteConversation\(conversation\.id\)/);
+  assert.match(css, /\.sidebar-conversation-row\s*\{/);
+  assert.match(css, /\.sidebar-conversation-delete\s*\{/);
+});
+
+test('persisted chat streams and reviews use conversation context without requiring a project', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
+  const resumeDagSource = appSource.match(/const resumeDag = async[\s\S]*?\n  const confirmDag/)?.[0] ?? '';
+  const resumeCapabilitySource = appSource.match(/const confirmCapabilityReview = async[\s\S]*?\n  const newChat/)?.[0] ?? '';
+
+  assert.match(apiSource, /project\?: \{[\s\S]*projectId\?: string \| null;[\s\S]*conversationId: string;/);
+  assert.match(apiSource, /if \(options\.project\.projectId\) \{[\s\S]*body\.project_id = options\.project\.projectId;/);
+  assert.match(apiSource, /body\.conversation_id = options\.project\.conversationId;/);
+  assert.match(apiSource, /const persistedResume = options\.conversationId;/);
+  assert.match(apiSource, /projectId\s*\? `\$\{API_BASE\}\/projects\/\$\{encodeURIComponent\(projectId\)\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`[\s\S]*: `\$\{API_BASE\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`/);
+  assert.match(apiSource, /persistedResume[\s\S]*approved/);
+  assert.match(apiSource, /persistedResume[\s\S]*state/);
+  assert.match(runStreamSource, /const streamOptions = activeConversationContext[\s\S]*project: activeConversationContext/);
+  assert.match(runStreamSource, /activeConversationContext \? null : runState/);
+  assert.match(resumeDagSource, /conversationId: activeConversationContext\.conversationId/);
+  assert.match(resumeCapabilitySource, /conversationId: activeConversationContext\.conversationId/);
+});
+
+test('project management uses custom dialogs and standalone conversation list', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.doesNotMatch(appSource, /window\.prompt/);
+  assert.doesNotMatch(appSource, /window\.confirm/);
+  assert.match(apiSource, /export async function updateProject/);
+  assert.match(apiSource, /export async function deleteProject/);
+  assert.match(appSource, /const \[projectCreateOpen, setProjectCreateOpen\] = useState\(false\);/);
+  assert.match(appSource, /const \[conversationDeleteTargetId, setConversationDeleteTargetId\] = useState\(''\);/);
+  assert.match(appSource, /function ProjectCreateDialog/);
+  assert.match(appSource, /function ConversationDeleteDialog/);
+  assert.match(appSource, /function ProjectEditDialog/);
+  assert.match(appSource, /function ProjectDeleteDialog/);
+  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => !conversation\.project_id && matchesSearchQuery/);
+});
+
+test('project sidebar is an expandable project and conversation tree', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(sidebarSource, /const \[expandedProjectIds, setExpandedProjectIds\] = useState<Set<string>>/);
+  assert.match(sidebarSource, /const toggleProjectExpansion = \(projectId: string\)/);
+  assert.match(sidebarSource, /className="sidebar-project-tree-row"/);
+  assert.match(sidebarSource, /className="sidebar-project-conversation-row"/);
+  assert.match(sidebarSource, /projectConversationsByProjectId/);
+  assert.match(sidebarSource, /onSelectProject\(project\.id\);[\s\S]*toggleProjectExpansion\(project\.id\);/);
+  assert.match(sidebarSource, /onSelectConversation\(conversation\.id\)/);
+  assert.match(css, /\.sidebar-project-tree-row\s*\{/);
+  assert.match(css, /\.sidebar-project-conversation-row\s*\{/);
+});
+
+test('project detail workspace manages files with tree and preview', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(typesSource, /export interface ProjectFileItem/);
+  assert.match(typesSource, /export interface ProjectFileItem[\s\S]*onlyoffice_config_url\?: string \| null;/);
+  assert.match(typesSource, /export interface ProjectFilePreview/);
+  assert.match(apiSource, /export async function listProjectFiles/);
+  assert.match(apiSource, /export async function uploadProjectFiles/);
+  assert.match(apiSource, /export async function createProjectFolder/);
+  assert.match(apiSource, /export async function renameProjectFile/);
+  assert.match(apiSource, /export async function deleteProjectFile/);
+  assert.match(apiSource, /export async function previewProjectFile/);
+  assert.match(apiSource, /export function projectFileDownloadUrl/);
+  assert.match(apiSource, /function normalizeProjectFileUrls[\s\S]*onlyoffice_config_url: normalizeApiUrl\(file\.onlyoffice_config_url\)/);
+  assert.match(appSource, /function ProjectDetailWorkspace/);
+  assert.match(appSource, /function ProjectFileManager/);
+  assert.match(appSource, /function ProjectFilePreviewPane/);
+  assert.match(appSource, /function projectFilePreviewArtifactItem/);
+  assert.match(appSource, /<ProjectDetailWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
+  assert.match(appSource, /selectedConversation \|\| chatSub !== 'projects' \? \([\s\S]*<ChatWorkspace[\s\S]*artifactPanelOpen=\{artifactDrawerOpen\}/);
+  const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';
+  assert.match(projectPreviewSource, /projectFilePreviewArtifactItem\(selectedFile\)/);
+  assert.match(projectPreviewSource, /<ArtifactPreview/);
+  assert.doesNotMatch(projectPreviewSource, /<iframe|<img/);
+  assert.match(css, /\.project-detail-workspace\s*\{/);
+  assert.match(css, /\.project-file-tree\s*\{/);
+  assert.match(css, /\.project-file-preview\s*\{/);
+});
+
 test('chat stop button aborts the active stream request', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
@@ -1779,18 +1932,18 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
   assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(runStreamSource, /const streamOptions = activeProjectContext[\s\S]*\{ signal, uploads: uploadsForRequest/);
+  assert.match(runStreamSource, /const streamOptions = activeConversationContext[\s\S]*\{ signal, uploads: uploadsForRequest/);
   assert.match(runStreamSource, /streamTask\([\s\S]*streamOptions\);/);
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
   assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
   assert.match(resumeDagSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(resumeDagSource, /resumeDagReview\([\s\S]*signal,[\s\S]*projectId: activeProjectContext\.projectId/);
+  assert.match(resumeDagSource, /resumeDagReview\([\s\S]*signal,[\s\S]*conversationId: activeConversationContext\.conversationId/);
   assert.match(resumeDagSource, /const previousDagReview = dagReview;/);
   assert.match(resumeDagSource, /const previousDagReviewFeedback = dagReviewFeedback;/);
   assert.match(resumeDagSource, /restoreDagReviewAfterAbort\(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages\);/);
   assert.match(resumeCapabilitySource, /const signal = beginStreamRequest\(\);/);
-  assert.match(resumeCapabilitySource, /resumeCapabilityReview\([\s\S]*signal,[\s\S]*projectId: activeProjectContext\.projectId/);
+  assert.match(resumeCapabilitySource, /resumeCapabilityReview\([\s\S]*signal,[\s\S]*conversationId: activeConversationContext\.conversationId/);
   assert.match(resumeCapabilitySource, /const previousCapabilityReview = capabilityReview;/);
   assert.match(resumeCapabilitySource, /const previousCapabilityReviewFeedback = capabilityReviewFeedback;/);
   assert.match(resumeCapabilitySource, /restoreCapabilityReviewAfterAbort\(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages\);/);
