@@ -1807,7 +1807,7 @@ details[open] .timeline-chevron {
 }
 
 .artifact-drawer-body[data-tree-expanded="false"] {
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
 }
 
 .artifact-tree-pane {

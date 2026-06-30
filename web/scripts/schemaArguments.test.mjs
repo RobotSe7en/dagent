@@ -1993,7 +1993,8 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.match(css, /\.artifact-drawer-actions\s*\{[^}]*margin-left:\s*auto;[^}]*display:\s*flex;/s);
   assert.match(css, /\.artifact-drawer-body\s*\{[^}]*display:\s*grid;/s);
   assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(136px,\s*0\.3fr\)\s+0\s+minmax\(0,\s*1fr\);/s);
-  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\);/s);
+  assert.doesNotMatch(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\);/s);
   assert.match(css, /\.artifact-tree-pane\s*\{[^}]*overflow:\s*hidden;/s);
   assert.doesNotMatch(css, /\.artifact-tree-pane-head\b/);
   assert.doesNotMatch(css, /\.artifact-tree-pane-title\b/);
