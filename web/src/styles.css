@@ -1775,36 +1775,31 @@ details[open] .timeline-chevron {
 }
 
 .artifact-preview-head {
+  min-height: 34px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border-bottom: 1px solid #eef0f3;
   background: #fff;
-  padding: 11px 16px;
+  padding: 6px 10px;
 }
 
-.artifact-preview-head strong {
+.artifact-preview-title {
   min-width: 0;
   overflow: hidden;
+  margin-right: auto;
   color: #16181d;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12.5px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.2;
 }
 
-.artifact-preview-head span {
-  min-width: 0;
-  overflow: hidden;
-  margin-left: auto;
-  color: #9aa0a8;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artifact-preview > pre {
+.artifact-preview > pre,
+.artifact-preview-fullscreen-body > pre {
   min-height: 0;
   flex: 1;
   margin: 0;
@@ -1841,8 +1836,49 @@ details[open] .timeline-chevron {
   padding: 14px 16px;
 }
 
+.artifact-preview-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  background: rgba(246, 247, 249, 0.98);
+}
+
+.artifact-preview-fullscreen-panel {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #fbfbfd;
+}
+
+.artifact-preview-fullscreen-body {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifact-preview-fullscreen-body .artifact-browser-preview-host {
+  padding: 12px;
+}
+
 .artifact-browser-preview {
   min-width: 0;
+}
+
+.artifact-onlyoffice-preview {
+  height: 100%;
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid #dde0e6;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.artifact-onlyoffice-preview > div {
+  height: 100%;
 }
 
 .artifact-pdf-preview {
@@ -3905,6 +3941,14 @@ details[open] .timeline-chevron {
 .model-config-form textarea:disabled {
   background: #f7f8fa;
   color: #7d8490;
+}
+
+.onlyoffice-config-form .model-checkbox-row {
+  grid-column: span 2;
+}
+
+.onlyoffice-config-form label:last-child {
+  max-width: 220px;
 }
 
 .model-secret-clear {

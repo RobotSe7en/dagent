@@ -145,3 +145,40 @@ def test_user_config_round_trips_runtime_models_without_materializing_env_secret
     assert raw["model_providers"]["saved-key"]["api_key"] == "literal-secret"
     assert raw["mcp_servers"]["search"] == {"command": "fake", "args": ["--stdio"]}
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_user_config_round_trips_onlyoffice_preview_config(tmp_path: Path) -> None:
+    from dagent.config import (
+        UserDagentConfig,
+        UserOnlyOfficeConfig,
+        load_user_config,
+        save_user_config,
+    )
+
+    config_path = tmp_path / ".dagent" / "config.yaml"
+    config = UserDagentConfig(
+        onlyoffice=UserOnlyOfficeConfig(
+            enabled=True,
+            document_server_url="http://192.168.31.219:8089",
+            public_api_base="http://192.168.31.10:8000",
+            jwt_secret="onlyoffice-jwt",
+            lang="zh-CN",
+        )
+    )
+
+    save_user_config(config, config_path)
+    loaded = load_user_config(config_path)
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert loaded.onlyoffice.enabled is True
+    assert loaded.onlyoffice.document_server_url == "http://192.168.31.219:8089"
+    assert loaded.onlyoffice.public_api_base == "http://192.168.31.10:8000"
+    assert loaded.onlyoffice.jwt_secret == "onlyoffice-jwt"
+    assert loaded.onlyoffice.lang == "zh-CN"
+    assert raw["onlyoffice"] == {
+        "enabled": True,
+        "document_server_url": "http://192.168.31.219:8089",
+        "public_api_base": "http://192.168.31.10:8000",
+        "jwt_secret": "onlyoffice-jwt",
+        "lang": "zh-CN",
+    }

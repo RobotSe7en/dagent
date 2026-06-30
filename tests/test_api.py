@@ -1,8 +1,12 @@
+import base64
+import hashlib
+import hmac
 import io
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 import pytest
@@ -26,6 +30,33 @@ from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityRes
 @pytest.fixture(autouse=True)
 def isolate_user_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(state, "get_user_config_path", lambda: tmp_path / ".dagent" / "config.yaml")
+
+
+def _decode_onlyoffice_jwt(token: str, secret: str) -> dict[str, object]:
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{header_b64}.{payload_b64}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    assert hmac.compare_digest(_base64url_decode(signature_b64), expected_signature)
+    assert json.loads(_base64url_decode(header_b64)) == {"alg": "HS256", "typ": "JWT"}
+    return json.loads(_base64url_decode(payload_b64))
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
+
+
+def _signed_onlyoffice_file_token(payload: dict[str, object]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(state.onlyoffice_token_secret, raw, hashlib.sha256).digest()
+    return f"{_base64url_encode(raw)}.{_base64url_encode(signature)}"
+
+
+def _base64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
@@ -2086,6 +2117,7 @@ def test_api_dag_create_run_and_artifacts() -> None:
             "error": None,
             "preview_url": f"/runs/{run_payload['run_id']}/artifacts/preview?path=notes%2Foutput.txt",
             "download_url": f"/runs/{run_payload['run_id']}/artifacts/download?path=notes%2Foutput.txt",
+            "onlyoffice_config_url": None,
         }
     ]
 
@@ -2421,6 +2453,7 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
             "error": None,
             "preview_url": f"/runs/{run_id}/artifacts/preview?path=notes%2Foutput.md",
             "download_url": f"/runs/{run_id}/artifacts/download?path=notes%2Foutput.md",
+            "onlyoffice_config_url": None,
         }
     ]
 
@@ -2617,6 +2650,7 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
         "error": None,
         "preview_url": None,
         "download_url": f"/runs/{run_id}/artifacts/download?path=exports%2Farchive.bin",
+        "onlyoffice_config_url": None,
     }
 
     preview_response = client.get(
@@ -2720,6 +2754,297 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     )
     assert escaped_download_response.status_code == 400
     assert "escapes run workspace" in escaped_download_response.json()["detail"]
+
+
+def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://192.168.31.219:8089/",
+                    "public_api_base": "http://api.test/",
+                    "jwt_secret": "onlyoffice-jwt",
+                    "lang": "zh-CN",
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "notes/output.txt", "content": "hello"},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    workspace = Path(result["state"]["workspace_path"])
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "report.pdf").write_bytes(b"%PDF-1.7 pdf bytes")
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+
+    assert artifacts_response.status_code == 200
+    files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    assert files["exports/report.pdf"]["onlyoffice_config_url"] is None
+    assert files["exports/brief.docx"]["onlyoffice_config_url"] == (
+        f"/runs/{run_id}/artifacts/onlyoffice/config?path=exports%2Fbrief.docx"
+    )
+
+    config_response = client.get(files["exports/brief.docx"]["onlyoffice_config_url"])
+
+    assert config_response.status_code == 200
+    payload = config_response.json()
+    assert payload["document_server_url"] == "http://192.168.31.219:8089"
+    assert payload["script_url"] == "http://192.168.31.219:8089/web-apps/apps/api/documents/api.js"
+    onlyoffice_config = payload["config"]
+    assert onlyoffice_config["documentType"] == "word"
+    assert onlyoffice_config["document"]["fileType"] == "docx"
+    assert onlyoffice_config["document"]["title"] == "brief.docx"
+    assert onlyoffice_config["document"]["permissions"]["edit"] is False
+    assert onlyoffice_config["document"]["permissions"]["review"] is False
+    assert onlyoffice_config["document"]["permissions"]["comment"] is False
+    assert onlyoffice_config["document"]["permissions"]["chat"] is False
+    assert onlyoffice_config["document"]["permissions"]["fillForms"] is False
+    assert onlyoffice_config["document"]["permissions"]["modifyContentControl"] is False
+    assert onlyoffice_config["document"]["permissions"]["modifyFilter"] is False
+    assert onlyoffice_config["document"]["permissions"]["protect"] is False
+    assert onlyoffice_config["editorConfig"]["mode"] == "view"
+    assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
+    assert onlyoffice_config["editorConfig"]["customization"]["macros"] is False
+    assert onlyoffice_config["editorConfig"]["customization"]["macrosMode"] == "disable"
+    assert onlyoffice_config["editorConfig"]["customization"]["plugins"] is False
+    assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
+    assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
+    jwt_payload = _decode_onlyoffice_jwt(onlyoffice_config["token"], "onlyoffice-jwt")
+    assert jwt_payload == {
+        key: value
+        for key, value in onlyoffice_config.items()
+        if key != "token"
+    }
+
+    file_response = client.get(urlsplit(onlyoffice_config["document"]["url"]).path)
+
+    assert file_response.status_code == 200
+    assert file_response.content == b"PK\x03\x04 docx bytes"
+    assert file_response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+    callback_response = client.post(urlsplit(onlyoffice_config["editorConfig"]["callbackUrl"]).path, json={"status": 1})
+
+    assert callback_response.status_code == 200
+    assert callback_response.json() == {"error": 0}
+
+    empty_path_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": ""},
+    )
+    unsupported_path_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/report.pdf"},
+    )
+
+    assert empty_path_response.status_code == 400
+    assert unsupported_path_response.status_code == 415
+
+
+def test_api_run_artifacts_onlyoffice_preview_requires_enabled_urls() -> None:
+    user_config_path = state.get_user_config_path()
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client)
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    incomplete_configs = [
+        {
+            "onlyoffice": {
+                "enabled": False,
+                "document_server_url": "http://192.168.31.219:8089/",
+                "public_api_base": "http://api.test/",
+            }
+        },
+        {
+            "onlyoffice": {
+                "enabled": True,
+                "document_server_url": "http://192.168.31.219:8089/",
+            }
+        },
+        {
+            "onlyoffice": {
+                "enabled": True,
+                "public_api_base": "http://api.test/",
+            }
+        },
+    ]
+    for config in incomplete_configs:
+        user_config_path.parent.mkdir(parents=True, exist_ok=True)
+        user_config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+        artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+        config_response = client.get(
+            f"/runs/{run_id}/artifacts/onlyoffice/config",
+            params={"path": "exports/brief.docx"},
+        )
+
+        assert artifacts_response.status_code == 200
+        files = {item["path"]: item for item in artifacts_response.json()["files"]}
+        assert files["exports/brief.docx"]["onlyoffice_config_url"] is None
+        assert config_response.status_code == 404
+
+
+def test_api_run_artifacts_onlyoffice_preview_config_omits_token_without_jwt_secret() -> None:
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://192.168.31.219:8089/",
+                    "public_api_base": "http://api.test/",
+                    "lang": "zh-CN",
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client)
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    config_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/brief.docx"},
+    )
+
+    assert config_response.status_code == 200
+    assert "token" not in config_response.json()["config"]
+
+
+def test_api_onlyoffice_file_routes_reject_malformed_tokens() -> None:
+    client = TestClient(app)
+
+    file_response = client.get("/onlyoffice/files/a.b")
+    callback_response = client.post("/onlyoffice/callback/a.b", json={"status": 1})
+
+    assert file_response.status_code == 403
+    assert callback_response.status_code == 403
+
+
+def test_api_onlyoffice_file_routes_reject_signed_invalid_payloads() -> None:
+    client = TestClient(app, raise_server_exceptions=False)
+    non_numeric_exp_token = _signed_onlyoffice_file_token({
+        "exp": "not-a-number",
+        "path": "exports/brief.docx",
+        "run_id": "run_1",
+    })
+    expired_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) - 1,
+        "path": "exports/brief.docx",
+        "run_id": "run_1",
+    })
+    escaping_path_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) + 60,
+        "path": "../outside.docx",
+        "run_id": "run_1",
+    })
+
+    assert client.get(f"/onlyoffice/files/{non_numeric_exp_token}").status_code == 403
+    assert client.post(f"/onlyoffice/callback/{non_numeric_exp_token}", json={"status": 1}).status_code == 403
+    assert client.get(f"/onlyoffice/files/{expired_token}").status_code == 403
+    assert client.get(f"/onlyoffice/files/{escaping_path_token}").status_code == 403
+
+
+def test_api_onlyoffice_file_routes_reject_signed_unsupported_paths() -> None:
+    client = TestClient(app)
+    run_id, _workspace = _start_write_file_run(client, path="notes/output.txt", content="hello")
+    unsupported_path_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) + 60,
+        "path": "notes/output.txt",
+        "run_id": run_id,
+    })
+
+    file_response = client.get(f"/onlyoffice/files/{unsupported_path_token}")
+    callback_response = client.post(f"/onlyoffice/callback/{unsupported_path_token}", json={"status": 1})
+
+    assert file_response.status_code == 403
+    assert callback_response.status_code == 403
+
+
+def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
+    client = TestClient(app)
+
+    default_response = client.get("/system/onlyoffice")
+
+    assert default_response.status_code == 200
+    assert default_response.json() == {
+        "enabled": False,
+        "document_server_url": None,
+        "public_api_base": None,
+        "jwt_secret": None,
+        "lang": "zh",
+    }
+
+    saved_response = client.put(
+        "/system/onlyoffice",
+        json={
+            "enabled": True,
+            "document_server_url": " http://192.168.31.219:8089/ ",
+            "public_api_base": " http://192.168.31.10:8001/ ",
+            "jwt_secret": " onlyoffice-jwt ",
+            "lang": " zh-CN ",
+        },
+    )
+
+    assert saved_response.status_code == 200
+    assert saved_response.json() == {
+        "enabled": True,
+        "document_server_url": "http://192.168.31.219:8089/",
+        "public_api_base": "http://192.168.31.10:8001/",
+        "jwt_secret": "onlyoffice-jwt",
+        "lang": "zh-CN",
+    }
+    raw = yaml.safe_load(state.get_user_config_path().read_text(encoding="utf-8"))
+    assert raw["onlyoffice"] == {
+        "enabled": True,
+        "document_server_url": "http://192.168.31.219:8089/",
+        "public_api_base": "http://192.168.31.10:8001/",
+        "jwt_secret": "onlyoffice-jwt",
+        "lang": "zh-CN",
+    }
+
+    reloaded_response = client.get("/system/onlyoffice")
+
+    assert reloaded_response.status_code == 200
+    assert reloaded_response.json() == saved_response.json()
 
 
 def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:
@@ -3817,6 +4142,42 @@ def _message_request(message: str, **fields) -> dict:
         "messages": [{"role": "user", "content": message}],
         **fields,
     }
+
+
+def _start_write_file_run(
+    client: TestClient,
+    *,
+    path: str = "notes/output.txt",
+    content: str = "hello",
+) -> tuple[str, Path]:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": path, "content": content},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    assert run_id is not None
+    return run_id, Path(result["state"]["workspace_path"])
 
 
 def _sse_events(text: str) -> list[dict]:

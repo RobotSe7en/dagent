@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import codecs
+import hashlib
+import hmac
 import json
 import mimetypes
 import re
+import secrets
 import threading
+import time
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
@@ -58,6 +64,7 @@ from dagent.config import (
     DEFAULT_WORKSPACE,
     UserDagentConfig,
     UserModelProviderConfig,
+    UserOnlyOfficeConfig,
     UserPythonToolConfig,
     default_user_config_path,
     load_config,
@@ -87,6 +94,7 @@ RunArtifactPreviewKind = RunArtifactTextPreviewKind | RunArtifactBrowserPreviewK
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
+ONLYOFFICE_TOKEN_SECONDS = 10 * 60
 PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -99,6 +107,11 @@ _BROWSER_PREVIEW_EXTENSIONS: dict[str, RunArtifactBrowserPreviewKind] = {
     ".docx": "docx",
     ".xlsx": "xlsx",
     ".pptx": "pptx",
+}
+_ONLYOFFICE_DOCUMENT_TYPES: dict[RunArtifactBrowserPreviewKind, Literal["word", "cell", "slide"]] = {
+    "docx": "word",
+    "xlsx": "cell",
+    "pptx": "slide",
 }
 _CODE_EXTENSIONS = {
     ".c",
@@ -302,6 +315,16 @@ class ModelDeleteResponse(BaseModel):
     active_model_id: str
 
 
+class OnlyOfficeSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    document_server_url: str | None = None
+    public_api_base: str | None = None
+    jwt_secret: str | None = None
+    lang: str = "zh"
+
+
 class PythonToolRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -333,6 +356,7 @@ class RunArtifactFile(BaseModel):
     error: str | None = None
     preview_url: str | None = None
     download_url: str | None = None
+    onlyoffice_config_url: str | None = None
 
 
 class RunArtifactsResponse(BaseModel):
@@ -357,6 +381,12 @@ class RunArtifactPreviewResponse(BaseModel):
     truncated_at: int = RUN_ARTIFACT_PREVIEW_BYTES
 
 
+class RunArtifactOnlyOfficeConfigResponse(BaseModel):
+    document_server_url: str
+    script_url: str
+    config: dict[str, Any]
+
+
 class ApiState:
     def __init__(self) -> None:
         self.runner: Runner | None = None
@@ -379,6 +409,7 @@ class ApiState:
         self.custom_python_tool_capabilities: dict[str, list[str]] = {}
         self.custom_python_tool_capability_ids: set[str] = set()
         self.python_tool_lock = threading.Lock()
+        self.onlyoffice_token_secret = secrets.token_bytes(32)
         self.validation_override: bool | None = None
 
     def get_runner(self) -> Runner:
@@ -975,6 +1006,36 @@ async def download_run_artifact(run_id: str, path: str) -> FileResponse:
     )
 
 
+@app.get("/runs/{run_id}/artifacts/onlyoffice/config")
+async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str, Any]:
+    run_state = _run_state_from_state(run_id)
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return _onlyoffice_config_response(run_state, path).model_dump(mode="json")
+
+
+@app.get("/onlyoffice/files/{token}")
+async def get_onlyoffice_file(token: str) -> FileResponse:
+    payload = _onlyoffice_token_payload(token)
+    run_state = _run_state_from_state(payload["run_id"])
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    file_path = _resolve_run_artifact_path(run_state, payload["path"])
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found.")
+    return FileResponse(
+        file_path,
+        filename=file_path.name,
+        media_type=_media_type_for_path(payload["path"]),
+    )
+
+
+@app.post("/onlyoffice/callback/{token}")
+async def onlyoffice_callback(token: str) -> dict[str, int]:
+    _onlyoffice_token_payload(token)
+    return {"error": 0}
+
+
 @app.get("/dag-runs/{run_id}/artifacts")
 async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
     run_state = _run_state_from_state(run_id)
@@ -1503,6 +1564,25 @@ async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     state.persist_user_models()
     state.close_runner()
     return ModelMutationResponse(model=_user_model_payload(model, active=True), active_model_id=clean_model_id)
+
+
+@app.get("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+async def get_onlyoffice_settings() -> OnlyOfficeSettingsPayload:
+    return _onlyoffice_settings_payload(state._current_user_config().onlyoffice)
+
+
+@app.put("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> OnlyOfficeSettingsPayload:
+    config = state._current_user_config()
+    config.onlyoffice = UserOnlyOfficeConfig(
+        enabled=request.enabled,
+        document_server_url=_clean_optional_text(request.document_server_url),
+        public_api_base=_clean_optional_text(request.public_api_base),
+        jwt_secret=_clean_optional_text(request.jwt_secret),
+        lang=_clean_optional_text(request.lang) or "zh",
+    )
+    save_user_config(config, state.get_user_config_path())
+    return _onlyoffice_settings_payload(config.onlyoffice)
 
 
 @app.get("/mcp/servers")
@@ -2089,6 +2169,23 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
     )
 
 
+def _onlyoffice_settings_payload(config: UserOnlyOfficeConfig) -> OnlyOfficeSettingsPayload:
+    return OnlyOfficeSettingsPayload(
+        enabled=config.enabled,
+        document_server_url=config.document_server_url,
+        public_api_base=config.public_api_base,
+        jwt_secret=config.jwt_secret,
+        lang=config.lang,
+    )
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
 def _model_provider_payloads() -> list[ModelProviderPayload]:
     state.sync_user_config()
     active_id = _active_model_id()
@@ -2464,7 +2561,10 @@ def _run_artifacts_response(run_state: RunState) -> RunArtifactsResponse:
         artifact_id: artifact_state.model_dump(mode="json")
         for artifact_id, artifact_state in (run_state.trace.artifacts if run_state.trace else {}).items()
     }
-    files, files_truncated = _run_artifact_files(run_state)
+    files, files_truncated = _run_artifact_files(
+        run_state,
+        onlyoffice_config=_configured_onlyoffice_config(),
+    )
     return RunArtifactsResponse(
         run_id=run_state.run_id,
         workspace_path=run_state.workspace_path,
@@ -2474,7 +2574,11 @@ def _run_artifacts_response(run_state: RunState) -> RunArtifactsResponse:
     )
 
 
-def _run_artifact_files(run_state: RunState) -> tuple[list[RunArtifactFile], bool]:
+def _run_artifact_files(
+    run_state: RunState,
+    *,
+    onlyoffice_config: UserOnlyOfficeConfig | None,
+) -> tuple[list[RunArtifactFile], bool]:
     workspace = _run_workspace(run_state)
     if workspace is None:
         return [], False
@@ -2494,6 +2598,7 @@ def _run_artifact_files(run_state: RunState) -> tuple[list[RunArtifactFile], boo
                     source="dag_artifact",
                     status=artifact_state.status,
                     error=artifact_state.error,
+                    onlyoffice_config=onlyoffice_config,
                 )
             )
 
@@ -2508,6 +2613,7 @@ def _run_artifact_files(run_state: RunState) -> tuple[list[RunArtifactFile], boo
                 source="run_file",
                 status="created",
                 error=None,
+                onlyoffice_config=onlyoffice_config,
             )
         )
     return sorted(files, key=lambda item: (item.source, item.path, item.id)), files_truncated
@@ -2522,6 +2628,7 @@ def _run_artifact_file(
     source: RunArtifactSource,
     status: str,
     error: str | None,
+    onlyoffice_config: UserOnlyOfficeConfig | None,
 ) -> RunArtifactFile:
     file_path = _resolve_workspace_path(workspace, path)
     preview_kind = _preview_kind_for_path(path)
@@ -2552,6 +2659,11 @@ def _run_artifact_file(
         error=path_error,
         preview_url=_preview_url(run_id, path) if previewable and preview_kind in _TEXT_PREVIEW_KINDS else None,
         download_url=_download_url(run_id, path) if file_path is not None and file_path.is_file() else None,
+        onlyoffice_config_url=(
+            _onlyoffice_config_url(run_id, path)
+            if previewable and _onlyoffice_document_type(preview_kind) is not None and _onlyoffice_is_configured(onlyoffice_config)
+            else None
+        ),
     )
 
 
@@ -2615,11 +2727,7 @@ def _resolve_workspace_path(workspace: Path, path: str) -> Path | None:
         normalized_path = _normalize_run_artifact_path(path)
     except ValueError:
         return None
-    path_obj = Path(normalized_path)
-    windows_path = PureWindowsPath(normalized_path)
-    if path_obj.is_absolute() or windows_path.is_absolute():
-        return None
-    if ".." in path_obj.parts or ".." in windows_path.parts:
+    if not _is_safe_relative_artifact_path(normalized_path):
         return None
     resolved = (workspace / normalized_path).resolve()
     try:
@@ -2634,6 +2742,14 @@ def _normalize_run_artifact_path(path: str) -> str:
     if not normalized_path:
         raise ValueError("Artifact path is required.")
     return normalized_path
+
+
+def _is_safe_relative_artifact_path(path: str) -> bool:
+    path_obj = Path(path)
+    windows_path = PureWindowsPath(path)
+    if path_obj.is_absolute() or windows_path.is_absolute():
+        return False
+    return ".." not in path_obj.parts and ".." not in windows_path.parts
 
 
 def _run_artifact_file_id(
@@ -2653,6 +2769,177 @@ def _preview_url(run_id: str, path: str) -> str:
 
 def _download_url(run_id: str, path: str) -> str:
     return f"/runs/{quote(run_id, safe='')}/artifacts/download?path={quote(path, safe='')}"
+
+
+def _onlyoffice_config_url(run_id: str, path: str) -> str:
+    return f"/runs/{quote(run_id, safe='')}/artifacts/onlyoffice/config?path={quote(path, safe='')}"
+
+
+def _onlyoffice_config_response(run_state: RunState, path: str) -> RunArtifactOnlyOfficeConfigResponse:
+    onlyoffice_config = _configured_onlyoffice_config()
+    if not _onlyoffice_is_configured(onlyoffice_config):
+        raise HTTPException(status_code=404, detail="OnlyOffice preview is not configured.")
+    try:
+        normalized_path = _normalize_run_artifact_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    file_path = _resolve_run_artifact_path(run_state, normalized_path)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found.")
+    preview_kind = _preview_kind_for_path(normalized_path)
+    document_type = _onlyoffice_document_type(preview_kind)
+    if document_type is None:
+        raise HTTPException(status_code=415, detail="Artifact file type is not supported by OnlyOffice preview.")
+
+    document_server_url = _clean_onlyoffice_url(onlyoffice_config.document_server_url)
+    public_api_base = _clean_onlyoffice_url(onlyoffice_config.public_api_base)
+    file_token = _onlyoffice_file_token(run_id=run_state.run_id, path=normalized_path)
+    file_type = Path(normalized_path).suffix.lower().lstrip(".")
+    editor_config: dict[str, Any] = {
+        "documentType": document_type,
+        "type": "desktop",
+        "document": {
+            "fileType": file_type,
+            "key": _onlyoffice_document_key(run_state.run_id, normalized_path, file_path),
+            "title": file_path.name,
+            "url": f"{public_api_base}/onlyoffice/files/{file_token}",
+            "permissions": {
+                "chat": False,
+                "comment": False,
+                "download": True,
+                "edit": False,
+                "fillForms": False,
+                "modifyContentControl": False,
+                "modifyFilter": False,
+                "print": True,
+                "protect": False,
+                "review": False,
+            },
+        },
+        "editorConfig": {
+            "callbackUrl": f"{public_api_base}/onlyoffice/callback/{file_token}",
+            "customization": {
+                "macros": False,
+                "macrosMode": "disable",
+                "plugins": False,
+            },
+            "lang": onlyoffice_config.lang,
+            "mode": "view",
+        },
+    }
+    jwt_secret = _clean_optional_text(onlyoffice_config.jwt_secret)
+    if jwt_secret:
+        editor_config["token"] = _onlyoffice_jwt_token(editor_config, jwt_secret)
+    return RunArtifactOnlyOfficeConfigResponse(
+        document_server_url=document_server_url,
+        script_url=f"{document_server_url}/web-apps/apps/api/documents/api.js",
+        config=editor_config,
+    )
+
+
+def _configured_onlyoffice_config() -> UserOnlyOfficeConfig | None:
+    return state._current_user_config().onlyoffice
+
+
+def _onlyoffice_is_configured(config: UserOnlyOfficeConfig | None) -> bool:
+    return bool(
+        config
+        and config.enabled
+        and _clean_onlyoffice_url(config.document_server_url)
+        and _clean_onlyoffice_url(config.public_api_base)
+    )
+
+
+def _clean_onlyoffice_url(value: str | None) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _onlyoffice_document_type(
+    preview_kind: RunArtifactPreviewKind | None,
+) -> Literal["word", "cell", "slide"] | None:
+    if preview_kind not in _ONLYOFFICE_DOCUMENT_TYPES:
+        return None
+    return _ONLYOFFICE_DOCUMENT_TYPES[preview_kind]
+
+
+def _onlyoffice_document_key(run_id: str, path: str, file_path: Path) -> str:
+    file_stat = file_path.stat()
+    raw_key = f"{run_id}\0{path}\0{file_stat.st_size}\0{file_stat.st_mtime_ns}"
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:48]
+
+
+def _onlyoffice_jwt_token(payload: dict[str, Any], secret: str) -> str:
+    header_segment = _base64url_json({"alg": "HS256", "typ": "JWT"})
+    payload_segment = _base64url_json(payload)
+    signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
+    signature = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    return f"{header_segment}.{payload_segment}.{_base64url_bytes(signature)}"
+
+
+def _base64url_json(value: dict[str, Any]) -> str:
+    return _base64url_bytes(
+        json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+
+
+def _base64url_bytes(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _onlyoffice_file_token(*, run_id: str, path: str) -> str:
+    payload = {
+        "exp": int(time.time()) + ONLYOFFICE_TOKEN_SECONDS,
+        "path": path,
+        "run_id": run_id,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(state.onlyoffice_token_secret, raw, hashlib.sha256).digest()
+    return f"{_base64_url_encode(raw)}.{_base64_url_encode(signature)}"
+
+
+def _onlyoffice_token_payload(token: str) -> dict[str, str]:
+    try:
+        raw_value, signature_value = token.split(".", 1)
+        raw = _base64_url_decode(raw_value)
+        signature = _base64_url_decode(signature_value)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    expected = hmac.new(state.onlyoffice_token_secret, raw, hashlib.sha256).digest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    try:
+        expires_at = int(payload.get("exp") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    if expires_at < int(time.time()):
+        raise HTTPException(status_code=403, detail="OnlyOffice file token expired.")
+    run_id = str(payload.get("run_id") or "")
+    path = str(payload.get("path") or "")
+    if not run_id or not path:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    try:
+        normalized_path = _normalize_run_artifact_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    if not _is_safe_relative_artifact_path(normalized_path):
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    if _onlyoffice_document_type(_preview_kind_for_path(normalized_path)) is None:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    return {"run_id": run_id, "path": normalized_path}
+
+
+def _base64_url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _base64_url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
 
 
 def _preview_kind_for_path(path: str) -> RunArtifactPreviewKind | None:

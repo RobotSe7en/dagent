@@ -139,6 +139,7 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /\{ key: 'orchestration', label: '智能体编排'/);
   assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
   assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
+  assert.match(appSource, /\{ key: 'system', label: '系统管理'/);
   assert.match(appSource, /streamTask\(prompt, target, reviewLevel/);
   assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runFiles: runArtifactFiles/);
   assert.match(appSource, /function DesignEmptyConversation/);
@@ -1308,29 +1309,45 @@ test('mcp management selects child tools and shows tool details separately from 
   assert.match(directorySource, /selectedMcpTool \? <Wrench size=\{15\} \/> : <Database size=\{15\} \/>/);
 });
 
-test('model management is a first-class workspace backed by runtime model APIs', async () => {
+test('system management nests models and OnlyOffice settings', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
+  const workspaceItemsSource = appSource.match(/const workspaceItems[\s\S]*?\];/)?.[0] ?? '';
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
-  const modelSource = appSource.match(/function ModelManagementWorkspace[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+  const systemSource = appSource.match(/function SystemManagementWorkspace[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+  const modelSource = appSource.match(/function ModelManagementWorkspace[\s\S]*?\nfunction modelInputFromProvider/)?.[0] ?? '';
+  const onlyOfficeSource = appSource.match(/function OnlyOfficeSettingsWorkspace[\s\S]*?\nfunction ModelManagementWorkspace/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(systemSource, 'SystemManagementWorkspace should exist');
   assert.ok(modelSource, 'ModelManagementWorkspace should exist');
-  assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'models';/);
-  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'models', label: '模型管理'/);
-  assert.match(appReturnSource, /activeWorkspace === 'models' \? \([\s\S]*<ModelManagementWorkspace/);
+  assert.ok(onlyOfficeSource, 'OnlyOfficeSettingsWorkspace should exist');
+  assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'system';/);
+  assert.match(workspaceItemsSource, /\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'system', label: '系统管理'/);
+  assert.doesNotMatch(workspaceItemsSource, /\{ key: 'models', label: '模型管理'/);
+  assert.match(appReturnSource, /activeWorkspace === 'system' \? \([\s\S]*<SystemManagementWorkspace/);
+  assert.match(systemSource, /activeSub === 'models' \? \(/);
+  assert.match(systemSource, /<ModelManagementWorkspace/);
+  assert.match(systemSource, /<OnlyOfficeSettingsWorkspace/);
+  assert.match(appSource, /const \[systemManagementSub, setSystemManagementSub\] = useState<SystemManagementSub>\('models'\);/);
   assert.match(appSource, /const \[models, setModels\] = useState<ModelProvider\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[onlyOfficeSettings, setOnlyOfficeSettings\] = useState<OnlyOfficeSettings>\(defaultOnlyOfficeSettings\);/);
   assert.match(appSource, /const \[activeModelId, setActiveModelId\] = useState\('config'\);/);
   assert.match(appSource, /listModels\(\)/);
+  assert.match(appSource, /getOnlyOfficeSettings\(\)/);
   assert.match(appSource, /const \[creatingModel, setCreatingModel\] = useState\(false\);/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*models=\{models\}[\s\S]*onCreateModel/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*systemSub=\{systemManagementSub\}[\s\S]*models=\{models\}[\s\S]*onSystemSubChange=\{setSystemManagementSub\}/);
+  assert.match(sidebarSource, /const systemSubnav = \[/);
+  assert.match(sidebarSource, /label: '模型管理'/);
+  assert.match(sidebarSource, /label: 'OnlyOffice配置'/);
+  assert.match(sidebarSource, /onSystemSubChange\(subitem\.key\)/);
   assert.match(sidebarSource, /模型列表/);
   assert.match(sidebarSource, /sidebar-model-list/);
   assert.match(sidebarSource, /onCreateModel/);
-  assert.match(sidebarSource, /visibleModels\.length \? visibleModels\.map/);
+  assert.match(sidebarSource, /activeWorkspace === 'system' && systemSub === 'models'/);
   assert.match(sidebarSource, /onSelectModel\(model\.id\)/);
   assert.match(modelSource, /className="design-models-workspace"/);
   assert.match(modelSource, /createModelProvider\(/);
@@ -1358,16 +1375,27 @@ test('model management is a first-class workspace backed by runtime model APIs',
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
+  assert.match(onlyOfficeSource, /OnlyOffice配置/);
+  assert.match(onlyOfficeSource, /Document Server URL/);
+  assert.match(onlyOfficeSource, /Public API Base/);
+  assert.match(onlyOfficeSource, /JWT Secret/);
+  assert.match(onlyOfficeSource, /updateOnlyOfficeSettings\(/);
+  assert.match(typesSource, /export interface OnlyOfficeSettings/);
+  assert.match(typesSource, /jwt_secret\?: string \| null;/);
 
   assert.match(apiSource, /export async function listModels/);
   assert.match(apiSource, /export async function createModelProvider/);
   assert.match(apiSource, /export async function updateModelProvider/);
   assert.match(apiSource, /export async function deleteModelProvider/);
   assert.match(apiSource, /export async function activateModelProvider/);
+  assert.match(apiSource, /export async function getOnlyOfficeSettings/);
+  assert.match(apiSource, /export async function updateOnlyOfficeSettings/);
+  assert.match(apiSource, /jwt_secret: data\.jwt_secret \?\? null/);
 
   assert.match(css, /\.design-models-workspace\s*\{[^}]*display:\s*flex;/s);
   assert.match(css, /\.sidebar-model-list/);
   assert.match(css, /\.model-config-form/);
+  assert.match(css, /\.onlyoffice-config-form/);
   assert.match(css, /\.model-secret-state/);
   assert.match(css, /\.model-advanced-toggle/);
 });
@@ -1810,6 +1838,7 @@ test('buildWorkbenchArtifacts exposes declarative DAG artifacts and real run fil
 test('run artifact preview uses backend manifest files and a dedicated preview component', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export async function listRunArtifacts\(runId: string\)/);
   assert.match(apiSource, /export async function previewRunArtifact\(runId: string, path: string\)/);
@@ -1826,12 +1855,24 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
   assert.match(appSource, /function ArtifactPreview\(/);
   assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
+  assert.match(appSource, /const \[previewFullscreen, setPreviewFullscreen\] = useState\(false\);/);
+  assert.match(appSource, /className="artifact-preview-title"/);
+  assert.match(appSource, /title="全屏预览"/);
+  assert.match(appSource, /className="artifact-preview-fullscreen"/);
+  assert.match(appSource, /function ArtifactPreviewBody\(/);
+  assert.doesNotMatch(appSource, /<span>\{selectedArtifact\.meta\}<\/span>/);
+  assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
   assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
   assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
   assert.match(appSource, /signal:\s*controller\.signal/);
+  assert.match(appSource, /onlyOfficeConfigUrl,\s*fileName: selectedArtifact\.name,\s*signal: controller\.signal/s);
+  assert.match(appSource, /catch \(exc\) \{[\s\S]*if \(isAbortError\(exc\) \|\| !downloadUrl\) throw exc;[\s\S]*await renderBuiltInBrowserArtifactPreview\(\);/);
   assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
   assert.match(appSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}>\{preview\.content\}<\/ReactMarkdown>/);
+  assert.match(css, /\.artifact-preview-head\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*6px 10px;/s);
+  assert.match(css, /\.artifact-preview-title\s*\{[^}]*margin-right:\s*auto;/s);
+  assert.match(css, /\.artifact-preview-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
 });
 
 test('artifact drawer file list collapses independently from the preview', async () => {
@@ -1870,6 +1911,11 @@ test('artifactPreview module centralizes preview routing for future provider swa
   assert.equal(artifactPreviewMode('pptx'), 'browser');
   assert.equal(artifactPreviewMode(null), 'unsupported');
   assert.match(previewSource, /pptx-react-viewer/);
+  assert.match(previewSource, /function renderOnlyOfficePreview/);
+  assert.match(previewSource, /DocsAPI\.DocEditor/);
+  assert.match(previewSource, /loadOnlyOfficeScript/);
+  assert.match(previewSource, /const onlyOfficeLoadedScriptUrls = new Set<string>\(\);/);
+  assert.match(previewSource, /try \{[\s\S]*new window\.DocsAPI\.DocEditor\(editorId, payload\.config\)[\s\S]*\} catch \(exc\) \{[\s\S]*root\.remove\(\);/);
   assert.match(previewSource, /if \(request\.kind === 'xlsx'\) return renderXlsxPreview\(container, request\);/);
   assert.match(previewSource, /return renderPptxPreview\(container, request\);/);
 
@@ -1927,6 +1973,21 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
     runId: 'run_tool_1',
     runFiles: [
       {
+        id: 'run:exports/brief.docx',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'exports/brief.docx',
+        name: 'brief.docx',
+        media_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        preview_kind: 'docx',
+        previewable: true,
+        size: 48,
+        status: 'created',
+        error: null,
+        download_url: '/runs/run_tool_1/artifacts/download?path=exports%2Fbrief.docx',
+        onlyoffice_config_url: '/runs/run_tool_1/artifacts/onlyoffice/config?path=exports%2Fbrief.docx',
+      },
+      {
         id: 'run:notes/output.md',
         artifact_id: null,
         source: 'run_file',
@@ -1966,8 +2027,23 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
     previewKind: item.previewKind,
     previewable: item.previewable,
     runId: item.runId,
+    downloadUrl: item.downloadUrl,
+    onlyOfficeConfigUrl: item.onlyOfficeConfigUrl,
     preview: artifactPreviewText(item),
   })), [
+    {
+      id: 'run:exports/brief.docx',
+      name: 'brief.docx',
+      extension: 'DOCX',
+      meta: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document · 48 B',
+      path: 'exports/brief.docx',
+      previewKind: 'docx',
+      previewable: true,
+      runId: 'run_tool_1',
+      downloadUrl: '/runs/run_tool_1/artifacts/download?path=exports%2Fbrief.docx',
+      onlyOfficeConfigUrl: '/runs/run_tool_1/artifacts/onlyoffice/config?path=exports%2Fbrief.docx',
+      preview: 'Path: exports/brief.docx',
+    },
     {
       id: 'run:notes/output.md',
       name: 'output.md',
@@ -1977,6 +2053,8 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
       previewKind: 'markdown',
       previewable: true,
       runId: 'run_tool_1',
+      downloadUrl: null,
+      onlyOfficeConfigUrl: null,
       preview: 'Path: notes/output.md',
     },
     {
@@ -1988,6 +2066,8 @@ test('buildWorkbenchArtifacts maps run file manifests into previewable drawer it
       previewKind: 'code',
       previewable: true,
       runId: 'run_tool_1',
+      downloadUrl: null,
+      onlyOfficeConfigUrl: null,
       preview: 'Path: scripts/tool.py',
     },
   ]);
@@ -2025,6 +2105,7 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
     previewable: item.previewable,
     previewUrl: item.previewUrl,
     downloadUrl: item.downloadUrl,
+    onlyOfficeConfigUrl: item.onlyOfficeConfigUrl,
   })), [
     {
       id: 'run:exports/archive.bin',
@@ -2034,6 +2115,7 @@ test('buildWorkbenchArtifacts keeps unsupported run files visible but not previe
       previewable: false,
       previewUrl: null,
       downloadUrl: '/runs/run_tool_1/artifacts/download?path=exports%2Farchive.bin',
+      onlyOfficeConfigUrl: null,
     },
   ]);
 });

@@ -100,7 +100,8 @@ mcp_servers:
 UI 状态和用户默认值；它不会改变 SDK 代码中 `Runner.from_config(...)` 的加载行为。
 
 用户配置复用 provider-shaped 模型条目和 MCP servers 的 YAML 风格，但范围限定为
-WebUI 管理的模型、当前 WebUI 模型、用户 MCP servers 和显式导入的 Python tools：
+WebUI 管理的模型、当前 WebUI 模型、用户 MCP servers、显式导入的 Python tools，以及
+本地 WebUI artifact 预览设置：
 
 ```yaml
 model_providers:
@@ -125,6 +126,12 @@ python_tools:
     module: "my_project.tools"
     names: ["lookup"]
     enabled: true
+onlyoffice:
+  enabled: true
+  document_server_url: "http://192.168.31.219:8089"
+  public_api_base: "http://192.168.31.10:8000"
+  jwt_secret: "onlyoffice-jwt-secret"
+  lang: "zh-CN"
 ```
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
@@ -149,6 +156,15 @@ Python 文件会作为本地代码导入，因此模块顶层代码会在加载�
 也不会自动注册文件中的所有对象；它只加载显式配置的条目和显式列出的 `names`。import
 失败、名称缺失、非 `@dagent.tool` 导出以及 capability id 冲突都会显示在工具管理页，
 不会导致 backend 启动失败。
+
+`onlyoffice` 是可选配置，只由本地 WebUI artifact 预览使用。`document_server_url`
+指向浏览器能够加载的 ONLYOFFICE Document Server。`public_api_base` 必须指向这个
+FastAPI backend，并且要使用 Document Server 能访问到的地址，因为生成的预览配置会在
+这个 base 下放入签名的文件 URL 和 callback URL。如果 Document Server 启用了 JWT，
+`jwt_secret` 必须和它的 JWT secret 一致；backend 会用 HS256 签名生成的编辑器配置，
+并作为 ONLYOFFICE `token` 传给前端。当 `onlyoffice.enabled` 为 false 或 URL 缺失时，
+WebUI 会回退到内置的浏览器预览路径。同一组设置也可以在 WebUI 的
+“系统管理 -> OnlyOffice配置”中维护。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；
