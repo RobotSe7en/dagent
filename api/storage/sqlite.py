@@ -234,6 +234,32 @@ class SQLiteStore:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _run_from_row(row)
 
+    def list_runs(
+        self,
+        *,
+        project_id: str | None = None,
+        conversation_id: str | None = None,
+        org_id: str | None = None,
+    ) -> list[Run]:
+        conditions: list[str] = []
+        params: list[object] = []
+        if project_id is not None:
+            conditions.append("project_id = ?")
+            params.append(project_id)
+        if conversation_id is not None:
+            conditions.append("conversation_id = ?")
+            params.append(conversation_id)
+        if org_id is not None:
+            conditions.append("org_id = ?")
+            params.append(org_id)
+        query = "SELECT * FROM runs"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY updated_at DESC"
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_run_from_row(row) for row in rows]
+
     def update_run_status(
         self,
         run_id: str,

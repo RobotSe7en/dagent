@@ -13,6 +13,7 @@ import re
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import quote
@@ -30,7 +31,7 @@ from api.agent_presets import (
     clean_agent_preset_name,
 )
 from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
-from api.storage import SQLiteStore, StorageConflictError, Store
+from api.storage import ConversationBusyError, Run, RunEvent, SQLiteStore, StorageConflictError, Store
 from api.workspaces import LocalWorkspaceStore
 from dagent import (
     ArtifactUpload,
@@ -171,6 +172,8 @@ class MessageRequest(BaseModel):
     agent_scope: AgentScope = "none"
     agent_ids: list[str] | None = None
     workspace_root: str | None = None
+    project_id: str | None = None
+    conversation_id: str | None = None
 
 
 class ResumeReviewRequest(BaseModel):
@@ -404,6 +407,14 @@ class RunArtifactOnlyOfficeConfigResponse(BaseModel):
     document_server_url: str
     script_url: str
     config: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProjectMessageContext:
+    project_id: str
+    conversation_id: str
+    workspace_uri: str
+    workspace_path: Path
 
 
 class ApiState:
@@ -772,6 +783,43 @@ async def get_project_conversation(project_id: str, conversation_id: str) -> dic
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.get("/projects/{project_id}/conversations/{conversation_id}/runs")
+async def list_project_conversation_runs(project_id: str, conversation_id: str) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        project_id=project.id,
+        conversation_id=conversation.id,
+    )
+    return {"runs": [_run_summary_payload(run) for run in runs]}
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict[str, Any]:
+    run = await run_in_threadpool(state.get_store().get_run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return {"run": _run_summary_payload(run)}
+
+
+@app.get("/runs/{run_id}/events")
+async def get_run_events(run_id: str, after_event_id: int = 0) -> dict[str, Any]:
+    run = await run_in_threadpool(state.get_store().get_run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    events = await run_in_threadpool(
+        state.get_store().list_run_events,
+        run_id,
+        after_event_id=after_event_id,
+    )
+    return {"events": [_run_event_payload(event) for event in events]}
 
 
 @app.get("/settings/validation")
@@ -2569,7 +2617,22 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 @app.post("/messages/stream")
 async def message_stream(http_request: Request) -> StreamingResponse:
     request, input_uploads = await _message_request_from_http(http_request)
+    project_context = await _project_context_from_message(request)
     agent = _agent_from_message(request)
+    if project_context is not None:
+        stream_id = _new_api_id("stream")
+        try:
+            lock = await run_in_threadpool(
+                state.get_store().acquire_conversation_lock,
+                project_context.conversation_id,
+                owner=stream_id,
+            )
+        except ConversationBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return StreamingResponse(
+            _project_message_stream_events(request, agent, input_uploads, project_context, stream_id, lock),
+            media_type="text/event-stream",
+        )
     workspace_root = _workspace_root_from_message(request)
 
     async def events():
@@ -2599,6 +2662,136 @@ async def message_stream(http_request: Request) -> StreamingResponse:
                 })
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+async def _project_message_stream_events(
+    request: MessageRequest,
+    agent: ToolAgent | DagAgent | AutoAgent,
+    input_uploads: list[ArtifactUpload],
+    context: ProjectMessageContext,
+    stream_id: str,
+    lock: Any,
+):
+    store = state.get_store()
+    sent_error = False
+    run_id: str | None = None
+    run_created = False
+    run_kind = request.target
+    try:
+        runner = state.get_runner()
+        async for event in gate_chat_display(
+            runner.stream(
+                agent,
+                messages=request.messages,
+                workspace_path=context.workspace_path,
+                input_uploads=input_uploads,
+            ),
+            validation_enabled=runner.enable_validation,
+        ):
+            payload = _chat_stream_event_payload(event, runner)
+            if event.run_id is not None and run_id is None:
+                run_id = event.run_id
+            if event.type == "run.started":
+                run_kind = str(getattr(event.data, "kind", run_kind) or run_kind)
+                if run_id is not None and not run_created:
+                    await run_in_threadpool(
+                        store.create_run,
+                        run_id=run_id,
+                        project_id=context.project_id,
+                        conversation_id=context.conversation_id,
+                        user_id="default",
+                        kind=run_kind,
+                        status="running",
+                        workspace_uri=context.workspace_uri,
+                    )
+                    await run_in_threadpool(
+                        store.create_run_stream,
+                        stream_id=stream_id,
+                        run_id=run_id,
+                        project_id=context.project_id,
+                        conversation_id=context.conversation_id,
+                        user_id="default",
+                        kind=run_kind,
+                        status="running",
+                    )
+                    await run_in_threadpool(store.update_run_status, run_id, "running", started_at=int(time.time()))
+                    run_created = True
+            if event.type == "run.failed":
+                sent_error = True
+            if run_id is not None and run_created:
+                persisted = await run_in_threadpool(
+                    store.append_run_event,
+                    run_id=run_id,
+                    stream_id=stream_id,
+                    event_type=event.type,
+                    payload_json=json.dumps(payload, ensure_ascii=False),
+                )
+                payload["stream_sequence"] = payload.get("sequence", event.sequence)
+                payload["sequence"] = persisted.event_id
+            if event.type == "run.failed" and run_id is not None and run_created:
+                await run_in_threadpool(
+                    store.save_run_error,
+                    run_id,
+                    json.dumps(payload.get("data") or {}, ensure_ascii=False),
+                )
+            if event.type == "run.finished":
+                result = getattr(event.data, "result", None)
+                if result is not None and run_id is not None:
+                    await run_in_threadpool(
+                        store.save_run_state,
+                        run_id,
+                        result.state.model_dump_json(),
+                        result.output_text,
+                    )
+                    await run_in_threadpool(
+                        store.update_run_status,
+                        run_id,
+                        result.status,
+                        completed_at=int(time.time()) if result.status != "awaiting_review" else None,
+                    )
+                    if result.pending_review is not None:
+                        await run_in_threadpool(
+                            store.upsert_review,
+                            review_id=result.pending_review.review_id,
+                            run_id=run_id,
+                            project_id=context.project_id,
+                            kind=result.pending_review.kind,
+                        )
+            yield _sse(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if run_id is not None and run_created:
+            error_payload = {
+                "type": "run.failed",
+                "data": {"message": str(exc), "error_type": type(exc).__name__},
+                "sequence": 0,
+                "run_id": run_id,
+            }
+            persisted = await run_in_threadpool(
+                store.append_run_event,
+                run_id=run_id,
+                stream_id=stream_id,
+                event_type="run.failed",
+                payload_json=json.dumps(error_payload, ensure_ascii=False),
+            )
+            error_payload["sequence"] = persisted.event_id
+            await run_in_threadpool(
+                store.save_run_error,
+                run_id,
+                json.dumps(error_payload["data"], ensure_ascii=False),
+            )
+            if not sent_error:
+                yield _sse(error_payload)
+        elif not sent_error:
+            yield _sse({
+                "type": "run.failed",
+                "data": {"message": str(exc), "error_type": type(exc).__name__},
+                "sequence": 0,
+                "run_id": None,
+            })
+    finally:
+        await run_in_threadpool(lock.release)
 
 
 async def _message_request_from_http(http_request: Request) -> tuple[MessageRequest, list[ArtifactUpload]]:
@@ -2648,6 +2841,34 @@ def _workspace_root_from_message(request: MessageRequest) -> str:
     if request.workspace_root is None or not request.workspace_root.strip():
         return DEFAULT_RUNS_DIR
     return _clean_workspace_root(request.workspace_root)
+
+
+async def _project_context_from_message(request: MessageRequest) -> ProjectMessageContext | None:
+    if request.project_id is None and request.conversation_id is None:
+        return None
+    if request.project_id is None or request.conversation_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="project_id and conversation_id must be provided together.",
+        )
+    if request.state is not None:
+        raise HTTPException(status_code=400, detail="Project message streams do not accept client state.")
+    if request.workspace_root is not None:
+        raise HTTPException(status_code=400, detail="Project message streams do not accept workspace_root.")
+    store = state.get_store()
+    project = await run_in_threadpool(store.get_project, request.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(store.get_conversation, request.conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+    return ProjectMessageContext(
+        project_id=project.id,
+        conversation_id=conversation.id,
+        workspace_uri=project.workspace_uri,
+        workspace_path=workspace_path,
+    )
 
 
 def _clean_workspace_root(value: str) -> str:
@@ -3293,6 +3514,26 @@ def _clean_name(value: Any, *, field: str) -> str:
 
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _run_summary_payload(run: Run) -> dict[str, Any]:
+    payload = run.model_dump(mode="json")
+    state_json = payload.pop("state_json")
+    payload["has_state"] = state_json is not None
+    return payload
+
+
+def _run_event_payload(event: RunEvent) -> dict[str, Any]:
+    payload = event.model_dump(mode="json")
+    raw_payload = payload.pop("payload_json")
+    try:
+        event_payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        event_payload = {"raw": raw_payload}
+    if isinstance(event_payload, dict):
+        event_payload["sequence"] = event.event_id
+    payload["payload"] = event_payload
+    return payload
 
 
 def _chat_stream_event_payload(event: RunStreamEvent, runner: Runner) -> dict[str, Any]:

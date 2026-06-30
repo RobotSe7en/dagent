@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,8 @@ from api.storage import (
     SQLiteStore,
 )
 from api.workspaces import LocalWorkspaceStore
-from dagent import RunState
+from dagent import RunState, Runner
+from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import RunTrace, RunTraceNode
 
 
@@ -26,6 +28,7 @@ def persistence_client(monkeypatch, tmp_path: Path):
     try:
         yield TestClient(app)
     finally:
+        state.close_runner()
         store.close()
         monkeypatch.setattr(state, "store", None, raising=False)
         monkeypatch.setattr(state, "workspaces", None, raising=False)
@@ -269,3 +272,113 @@ def test_api_rejects_conversation_for_missing_project(persistence_client) -> Non
     )
 
     assert response.status_code == 404
+
+
+def test_api_project_message_stream_persists_run_events_and_state(
+    persistence_client,
+) -> None:
+    state.runner = Runner(
+        provider=MockProvider([
+            ChatResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": "notes/shared.txt", "content": "hello"},
+                    )
+                ]
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "write the note"}],
+            "target": "tool",
+            "capability_ids": ["tool.write_file"],
+            "project_id": project["id"],
+            "conversation_id": conversation["id"],
+        },
+    )
+    events = _sse_events(response.text)
+    result = events[-1]["data"]["result"]
+    run_id = result["state"]["run_id"]
+    store = state.get_store()
+
+    assert response.status_code == 200
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert (workspace_path / "notes" / "shared.txt").read_text(encoding="utf-8") == "hello"
+    assert not (workspace_path / run_id).exists()
+    persisted_run = store.get_run(run_id)
+    persisted_state = store.get_run_state(run_id)
+    persisted_events = store.list_run_events(run_id)
+    listed_runs = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/runs"
+    )
+    run_response = persistence_client.get(f"/runs/{run_id}")
+    replay_response = persistence_client.get(f"/runs/{run_id}/events", params={"after_event_id": 1})
+
+    assert persisted_run is not None
+    assert persisted_run.project_id == project["id"]
+    assert persisted_run.conversation_id == conversation["id"]
+    assert persisted_run.status == "completed"
+    assert persisted_run.output_text == "done"
+    assert persisted_state is not None
+    assert persisted_state.workspace_path == str(workspace_path)
+    assert len(persisted_events) == len(events)
+    assert [event.event_id for event in persisted_events] == list(range(1, len(events) + 1))
+    assert listed_runs.status_code == 200
+    assert [item["id"] for item in listed_runs.json()["runs"]] == [run_id]
+    assert run_response.status_code == 200
+    assert run_response.json()["run"]["id"] == run_id
+    assert "state_json" not in run_response.json()["run"]
+    assert run_response.json()["run"]["has_state"] is True
+    assert replay_response.status_code == 200
+    assert [event["event_id"] for event in replay_response.json()["events"]] == list(range(2, len(events) + 1))
+    assert replay_response.json()["events"][0]["payload"]["sequence"] == 2
+
+
+def test_api_project_message_stream_rejects_client_workspace_root(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "project_id": project["id"],
+            "conversation_id": conversation["id"],
+            "workspace_root": "custom",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "workspace_root" in response.json()["detail"]
+
+
+def _sse_events(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for block in text.strip().split("\n\n"):
+        if not block:
+            continue
+        line = block.strip()
+        assert line.startswith("data: ")
+        events.append(json.loads(line.removeprefix("data: ")))
+    return events

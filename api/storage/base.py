@@ -87,6 +87,14 @@ class Store(Protocol):
 
     def get_run(self, run_id: str, *, org_id: str | None = None) -> Run | None: ...
 
+    def list_runs(
+        self,
+        *,
+        project_id: str | None = None,
+        conversation_id: str | None = None,
+        org_id: str | None = None,
+    ) -> list[Run]: ...
+
     def update_run_status(
         self,
         run_id: str,
