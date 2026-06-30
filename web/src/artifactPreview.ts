@@ -1,7 +1,7 @@
 import type { RunArtifactPreviewKind } from './types';
 
 export type ArtifactPreviewMode = 'text' | 'browser' | 'unsupported';
-export type BrowserArtifactPreviewKind = 'pdf' | 'docx' | 'xlsx';
+export type BrowserArtifactPreviewKind = 'pdf' | 'docx' | 'xlsx' | 'pptx';
 
 export interface ArtifactPreviewRouteItem {
   previewKind?: RunArtifactPreviewKind | null;
@@ -25,7 +25,7 @@ export interface ArtifactPreviewRenderHandle {
 }
 
 const TEXT_PREVIEW_KINDS = new Set<RunArtifactPreviewKind>(['markdown', 'code', 'text']);
-const BROWSER_PREVIEW_KINDS = new Set<RunArtifactPreviewKind>(['pdf', 'docx', 'xlsx']);
+const BROWSER_PREVIEW_KINDS = new Set<RunArtifactPreviewKind>(['pdf', 'docx', 'xlsx', 'pptx']);
 
 export function artifactPreviewMode(kind: RunArtifactPreviewKind | null | undefined): ArtifactPreviewMode {
   if (!kind) return 'unsupported';
@@ -37,7 +37,7 @@ export function artifactPreviewMode(kind: RunArtifactPreviewKind | null | undefi
 export function isBrowserArtifactPreviewKind(
   kind: RunArtifactPreviewKind | null | undefined,
 ): kind is BrowserArtifactPreviewKind {
-  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx';
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx';
 }
 
 export function shouldFetchTextArtifactPreview(item: ArtifactPreviewRouteItem | null | undefined): boolean {
@@ -54,7 +54,8 @@ export async function renderBrowserArtifactPreview(
 ): Promise<ArtifactPreviewRenderHandle> {
   if (request.kind === 'pdf') return renderPdfPreview(container, request);
   if (request.kind === 'docx') return renderDocxPreview(container, request);
-  return renderXlsxPreview(container, request);
+  if (request.kind === 'xlsx') return renderXlsxPreview(container, request);
+  return renderPptxPreview(container, request);
 }
 
 async function renderPdfPreview(
@@ -256,6 +257,46 @@ function formatSheetCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) return value.toLocaleString();
   return String(value);
+}
+
+async function renderPptxPreview(
+  container: HTMLElement,
+  request: BrowserArtifactPreviewRequest,
+): Promise<ArtifactPreviewRenderHandle> {
+  const [{ createElement }, { createRoot }, { PowerPointViewer }] = await Promise.all([
+    import('react'),
+    import('react-dom/client'),
+    import('pptx-react-viewer'),
+    import('pptx-react-viewer/styles.css'),
+  ]);
+  const data = new Uint8Array(await sourceArrayBuffer(request.source));
+  throwIfAborted(request.signal);
+  container.replaceChildren();
+  const root = document.createElement('div');
+  root.className = 'artifact-browser-preview artifact-pptx-preview';
+  container.append(root);
+  const reactRoot = createRoot(root);
+
+  try {
+    throwIfAborted(request.signal);
+    reactRoot.render(createElement(PowerPointViewer, {
+      canEdit: false,
+      content: data,
+      filePath: request.fileName,
+    }));
+    throwIfAborted(request.signal);
+  } catch (exc) {
+    reactRoot.unmount();
+    root.remove();
+    throw exc;
+  }
+
+  return {
+    destroy: () => {
+      reactRoot.unmount();
+      root.remove();
+    },
+  };
 }
 
 function previewNotice(message: string): HTMLElement {

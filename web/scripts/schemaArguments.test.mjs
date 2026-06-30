@@ -1858,15 +1858,20 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.match(css, /\.artifact-file-name\s*\{[^}]*max-width:\s*min\(180px, 100%\);/s);
 });
 
-test('artifactPreview module centralizes preview routing for future provider swaps', () => {
+test('artifactPreview module centralizes preview routing for future provider swaps', async () => {
+  const previewSource = await readFile(new URL('../src/artifactPreview.ts', import.meta.url), 'utf8');
+
   assert.equal(artifactPreviewMode('markdown'), 'text');
   assert.equal(artifactPreviewMode('code'), 'text');
   assert.equal(artifactPreviewMode('text'), 'text');
   assert.equal(artifactPreviewMode('pdf'), 'browser');
   assert.equal(artifactPreviewMode('docx'), 'browser');
   assert.equal(artifactPreviewMode('xlsx'), 'browser');
-  assert.equal(artifactPreviewMode('pptx'), 'unsupported');
+  assert.equal(artifactPreviewMode('pptx'), 'browser');
   assert.equal(artifactPreviewMode(null), 'unsupported');
+  assert.match(previewSource, /pptx-react-viewer/);
+  assert.match(previewSource, /if \(request\.kind === 'xlsx'\) return renderXlsxPreview\(container, request\);/);
+  assert.match(previewSource, /return renderPptxPreview\(container, request\);/);
 
   assert.equal(shouldFetchTextArtifactPreview({
     previewKind: 'markdown',
@@ -1888,8 +1893,8 @@ test('artifactPreview module centralizes preview routing for future provider swa
     previewable: true,
   }), null);
   assert.equal(artifactPreviewDownloadUrl({
-    previewKind: null,
-    previewable: false,
+    previewKind: 'pptx',
+    previewable: true,
     downloadUrl: '/runs/run_1/artifacts/download?path=exports%2Fdeck.pptx',
   }), '/runs/run_1/artifacts/download?path=exports%2Fdeck.pptx');
 });

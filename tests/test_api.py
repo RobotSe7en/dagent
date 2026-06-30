@@ -2661,6 +2661,7 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
     (workspace / "exports" / "data.xlsx").write_bytes(b"PK\x03\x04 xlsx bytes")
     (workspace / "exports" / "deck.pptx").write_bytes(b"PK\x03\x04 pptx bytes")
+    (workspace / "exports" / "legacy.ppt").write_bytes(b"\xd0\xcf\x11\xe0 ppt bytes")
 
     artifacts_response = client.get(f"/runs/{run_id}/artifacts")
 
@@ -2678,10 +2679,17 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     assert files["exports/data.xlsx"]["preview_kind"] == "xlsx"
     assert files["exports/data.xlsx"]["previewable"] is True
     assert files["exports/data.xlsx"]["preview_url"] is None
-    assert files["exports/deck.pptx"]["preview_kind"] is None
-    assert files["exports/deck.pptx"]["previewable"] is False
+    assert files["exports/deck.pptx"]["preview_kind"] == "pptx"
+    assert files["exports/deck.pptx"]["previewable"] is True
+    assert files["exports/deck.pptx"]["preview_url"] is None
     assert files["exports/deck.pptx"]["download_url"] == (
         f"/runs/{run_id}/artifacts/download?path=exports%2Fdeck.pptx"
+    )
+    assert files["exports/legacy.ppt"]["preview_kind"] is None
+    assert files["exports/legacy.ppt"]["previewable"] is False
+    assert files["exports/legacy.ppt"]["preview_url"] is None
+    assert files["exports/legacy.ppt"]["download_url"] == (
+        f"/runs/{run_id}/artifacts/download?path=exports%2Flegacy.ppt"
     )
 
     download_response = client.get(
@@ -2693,12 +2701,18 @@ def test_api_run_artifacts_manifest_marks_office_files_for_browser_preview() -> 
     assert download_response.content == b"%PDF-1.7 pdf bytes"
     assert download_response.headers["content-type"] == "application/pdf"
 
-    for path in ("exports/report.pdf", "exports/brief.docx", "exports/data.xlsx"):
+    for path in ("exports/report.pdf", "exports/brief.docx", "exports/data.xlsx", "exports/deck.pptx"):
         preview_response = client.get(
             f"/runs/{run_id}/artifacts/preview",
             params={"path": path},
         )
         assert preview_response.status_code == 415
+
+    legacy_preview_response = client.get(
+        f"/runs/{run_id}/artifacts/preview",
+        params={"path": "exports/legacy.ppt"},
+    )
+    assert legacy_preview_response.status_code == 415
 
     escaped_download_response = client.get(
         f"/runs/{run_id}/artifacts/download",
