@@ -38,6 +38,7 @@ import {
   GitBranch,
   LayoutDashboard,
   Loader,
+  Maximize2,
   MessageSquare,
   Plus,
   Play,
@@ -4426,6 +4427,21 @@ function ArtifactPreview({
   selectedArtifact: WorkbenchArtifactItem | null;
   onCopy: () => void;
 }) {
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
+  useEffect(() => {
+    setPreviewFullscreen(false);
+  }, [selectedArtifact?.id]);
+
+  useEffect(() => {
+    if (!previewFullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewFullscreen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewFullscreen]);
+
   if (!selectedArtifact) {
     return (
       <div className="artifact-preview">
@@ -4434,51 +4450,24 @@ function ArtifactPreview({
     );
   }
 
-  let body: React.ReactNode;
-  const mode = artifactPreviewMode(selectedArtifact.previewKind);
   const canCopy = Boolean(preview?.content);
   const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
-  if (selectedArtifact.error) {
-    body = <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
-  } else if (selectedArtifact.previewable === false) {
-    body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
-  } else if (mode === 'browser') {
-    body = <ArtifactBrowserPreview selectedArtifact={selectedArtifact} />;
-  } else if (mode === 'unsupported') {
-    body = <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
-  } else if (loading) {
-    body = (
-      <div className="artifact-preview-empty">
-        <Loader className="spin" size={14} />
-        <span>正在加载预览...</span>
-      </div>
-    );
-  } else if (error) {
-    body = <div className="artifact-preview-empty">{error}</div>;
-  } else if (preview && selectedArtifact.previewKind === 'markdown') {
-    body = (
-      <div className="artifact-markdown markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.content}</ReactMarkdown>
-        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
-      </div>
-    );
-  } else if (preview) {
-    body = (
-      <>
-        <pre>{preview.content}</pre>
-        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
-      </>
-    );
-  } else {
-    body = <div className="artifact-preview-empty">选择文件后加载预览。</div>;
-  }
+  const canFullscreen = selectedArtifact.previewable !== false && !selectedArtifact.error;
+  const fileName = artifactListFileName(selectedArtifact);
+  const body = (
+    <ArtifactPreviewBody
+      error={error}
+      loading={loading}
+      preview={preview}
+      selectedArtifact={selectedArtifact}
+    />
+  );
 
   return (
     <div className="artifact-preview">
       <div className="artifact-preview-head">
         <File size={14} />
-        <strong>{selectedArtifact.name}</strong>
-        <span>{selectedArtifact.meta}</span>
+        <strong className="artifact-preview-title">{fileName}</strong>
         <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
           <Copy size={13} />
         </button>
@@ -4491,10 +4480,101 @@ function ArtifactPreview({
         >
           <Download size={13} />
         </a>
+        <button
+          className="icon-button"
+          disabled={!canFullscreen}
+          onClick={() => setPreviewFullscreen(true)}
+          title="全屏预览"
+          type="button"
+        >
+          <Maximize2 size={13} />
+        </button>
       </div>
-      {body}
+      {previewFullscreen ? null : body}
+      {previewFullscreen ? (
+        <div className="artifact-preview-fullscreen" role="dialog" aria-modal="true" aria-label={`${fileName} 预览`}>
+          <div className="artifact-preview-fullscreen-panel">
+            <div className="artifact-preview-head">
+              <File size={14} />
+              <strong className="artifact-preview-title">{fileName}</strong>
+              <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
+                <Copy size={13} />
+              </button>
+              <a
+                className="icon-button"
+                href={downloadUrl ?? undefined}
+                download={selectedArtifact.name}
+                aria-disabled={!downloadUrl}
+                title="下载"
+              >
+                <Download size={13} />
+              </a>
+              <button className="icon-button" onClick={() => setPreviewFullscreen(false)} title="关闭全屏" type="button">
+                <X size={14} />
+              </button>
+            </div>
+            <div className="artifact-preview-fullscreen-body">
+              {body}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function ArtifactPreviewBody({
+  error,
+  loading,
+  preview,
+  selectedArtifact,
+}: {
+  error: string | null;
+  loading: boolean;
+  preview: RunArtifactPreview | null;
+  selectedArtifact: WorkbenchArtifactItem;
+}) {
+  const mode = artifactPreviewMode(selectedArtifact.previewKind);
+  if (selectedArtifact.error) {
+    return <div className="artifact-preview-empty">{selectedArtifact.error}</div>;
+  }
+  if (selectedArtifact.previewable === false) {
+    return <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
+  }
+  if (mode === 'browser') {
+    return <ArtifactBrowserPreview selectedArtifact={selectedArtifact} />;
+  }
+  if (mode === 'unsupported') {
+    return <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
+  }
+  if (loading) {
+    return (
+      <div className="artifact-preview-empty">
+        <Loader className="spin" size={14} />
+        <span>正在加载预览...</span>
+      </div>
+    );
+  }
+  if (error) {
+    return <div className="artifact-preview-empty">{error}</div>;
+  }
+  if (preview && selectedArtifact.previewKind === 'markdown') {
+    return (
+      <div className="artifact-markdown markdown-body">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.content}</ReactMarkdown>
+        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
+      </div>
+    );
+  }
+  if (preview) {
+    return (
+      <>
+        <pre>{preview.content}</pre>
+        {preview.truncated ? <div className="artifact-preview-note">内容已截断到 {preview.truncated_at} 字节。</div> : null}
+      </>
+    );
+  }
+  return <div className="artifact-preview-empty">选择文件后加载预览。</div>;
 }
 
 function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: WorkbenchArtifactItem }) {

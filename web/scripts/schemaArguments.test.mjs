@@ -1838,6 +1838,7 @@ test('buildWorkbenchArtifacts exposes declarative DAG artifacts and real run fil
 test('run artifact preview uses backend manifest files and a dedicated preview component', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export async function listRunArtifacts\(runId: string\)/);
   assert.match(apiSource, /export async function previewRunArtifact\(runId: string, path: string\)/);
@@ -1854,6 +1855,12 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
   assert.match(appSource, /function ArtifactPreview\(/);
   assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
+  assert.match(appSource, /const \[previewFullscreen, setPreviewFullscreen\] = useState\(false\);/);
+  assert.match(appSource, /className="artifact-preview-title"/);
+  assert.match(appSource, /title="全屏预览"/);
+  assert.match(appSource, /className="artifact-preview-fullscreen"/);
+  assert.match(appSource, /function ArtifactPreviewBody\(/);
+  assert.doesNotMatch(appSource, /<span>\{selectedArtifact\.meta\}<\/span>/);
   assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
   assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
   assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
@@ -1863,6 +1870,9 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
   assert.match(appSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}>\{preview\.content\}<\/ReactMarkdown>/);
+  assert.match(css, /\.artifact-preview-head\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*6px 10px;/s);
+  assert.match(css, /\.artifact-preview-title\s*\{[^}]*margin-right:\s*auto;/s);
+  assert.match(css, /\.artifact-preview-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
 });
 
 test('artifact drawer file list collapses independently from the preview', async () => {
