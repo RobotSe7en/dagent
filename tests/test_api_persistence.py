@@ -432,6 +432,48 @@ def test_api_project_message_stream_locks_only_the_conversation(persistence_clie
     assert _sse_events(other_conversation.text)[-1]["type"] == "run.finished"
 
 
+def test_api_project_message_stream_continues_conversation_from_db_state(persistence_client) -> None:
+    state.runner = Runner(provider=MockProvider([
+        ChatResponse(content="first done"),
+        ChatResponse(content="second done"),
+    ]))
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+
+    first_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "first"}],
+            "target": "tool",
+            "project_id": project["id"],
+            "conversation_id": conversation["id"],
+        },
+    )
+    second_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "second"}],
+            "target": "tool",
+            "project_id": project["id"],
+            "conversation_id": conversation["id"],
+        },
+    )
+    first_result = _sse_events(first_response.text)[-1]["data"]["result"]
+    second_result = _sse_events(second_response.text)[-1]["data"]["result"]
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_result["state"]["run_id"] == first_result["state"]["run_id"]
+    assert second_result["output_text"] == "second done"
+    assert state.get_store().get_run(first_result["state"]["run_id"]).output_text == "second done"
+
+
 def test_api_project_review_resume_uses_db_state_after_runner_restart(
     persistence_client,
     tmp_path: Path,

@@ -424,6 +424,7 @@ class ProjectMessageContext:
     conversation_id: str
     workspace_uri: str
     workspace_path: Path
+    run_state: RunState | None = None
 
 
 class ApiState:
@@ -2742,6 +2743,7 @@ async def _project_message_stream_events(
             runner.stream(
                 agent,
                 messages=request.messages,
+                state=context.run_state,
                 workspace_path=context.workspace_path,
                 input_uploads=input_uploads,
             ),
@@ -2752,8 +2754,9 @@ async def _project_message_stream_events(
             runner=runner,
             context=context,
             stream_id=stream_id,
-            run_kind=request.target,
-            create_run=True,
+            run_kind=context.run_state.kind if context.run_state is not None else request.target,
+            create_run=context.run_state is None,
+            existing_run_id=None if context.run_state is None else context.run_state.run_id,
         ):
             yield _sse(payload)
     finally:
@@ -2987,11 +2990,20 @@ async def _project_context_from_message(request: MessageRequest) -> ProjectMessa
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+    previous_run_state = None
+    if conversation.last_run_id is not None:
+        previous_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
+        if previous_run_state is not None and previous_run_state.status == "awaiting_review":
+            raise HTTPException(
+                status_code=409,
+                detail="Conversation is awaiting review; resume the pending review before sending a new message.",
+            )
     return ProjectMessageContext(
         project_id=project.id,
         conversation_id=conversation.id,
         workspace_uri=project.workspace_uri,
         workspace_path=workspace_path,
+        run_state=previous_run_state,
     )
 
 
