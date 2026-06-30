@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dagent import RunState
 
-from api.storage.base import ConversationBusyError
+from api.storage.base import ConversationBusyError, StorageConflictError
 from api.storage.models import Conversation, Project, Review, Run, RunEvent, RunExecution, RunStatus, RunStream
 
 
@@ -81,17 +81,20 @@ class SQLiteStore:
     ) -> Project:
         now = _now()
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO projects(
-                    id, org_id, owner_user_id, slug, name, description,
-                    workspace_uri, settings_json, created_at, updated_at
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO projects(
+                        id, org_id, owner_user_id, slug, name, description,
+                        workspace_uri, settings_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+                    """,
+                    (project_id, org_id, owner_user_id, slug, name, description, workspace_uri, now, now),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
-                """,
-                (project_id, org_id, owner_user_id, slug, name, description, workspace_uri, now, now),
-            )
-            self._conn.commit()
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise StorageConflictError(str(exc)) from exc
             row = self._required_row("SELECT * FROM projects WHERE id = ?", (project_id,))
         return _project_from_row(row)
 
@@ -123,16 +126,19 @@ class SQLiteStore:
     ) -> Conversation:
         now = _now()
         with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO conversations(
-                    id, project_id, org_id, title, status, created_at, updated_at
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO conversations(
+                        id, project_id, org_id, title, status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (conversation_id, project_id, org_id, title, now, now),
                 )
-                VALUES (?, ?, ?, ?, 'active', ?, ?)
-                """,
-                (conversation_id, project_id, org_id, title, now, now),
-            )
-            self._conn.commit()
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise StorageConflictError(str(exc)) from exc
             row = self._required_row("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
         return _conversation_from_row(row)
 

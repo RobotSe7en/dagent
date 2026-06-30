@@ -12,6 +12,10 @@ class ConversationBusyError(RuntimeError):
     """Raised when a conversation is already being driven by another stream."""
 
 
+class StorageConflictError(RuntimeError):
+    """Raised when a stored resource violates a uniqueness constraint."""
+
+
 class ConversationLock(Protocol):
     @property
     def conversation_id(self) -> str: ...

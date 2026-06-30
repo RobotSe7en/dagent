@@ -1,4 +1,4 @@
-from api.storage.base import ConversationBusyError, ConversationLock, Store
+from api.storage.base import ConversationBusyError, ConversationLock, StorageConflictError, Store
 from api.storage.models import Conversation, Project, Review, Run, RunEvent, RunStream
 from api.storage.sqlite import SQLiteStore
 
@@ -12,5 +12,6 @@ __all__ = [
     "RunEvent",
     "RunStream",
     "SQLiteStore",
+    "StorageConflictError",
     "Store",
 ]

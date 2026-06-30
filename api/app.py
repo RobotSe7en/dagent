@@ -18,6 +18,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -29,6 +30,8 @@ from api.agent_presets import (
     clean_agent_preset_name,
 )
 from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
+from api.storage import SQLiteStore, StorageConflictError, Store
+from api.workspaces import LocalWorkspaceStore
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -100,6 +103,7 @@ PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
 _LOCAL_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+_PROJECT_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 _TEXT_EXTENSIONS = {".csv", ".log", ".txt", ".tsv"}
@@ -176,6 +180,20 @@ class ResumeReviewRequest(BaseModel):
     review_level: ReviewLevel | None = None
     state: RunState | None = None
     feedback: str | None = None
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    slug: str | None = None
+    description: str | None = None
+
+
+class ConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
 
 
 class CapabilityTestRequest(BaseModel):
@@ -412,6 +430,8 @@ class ApiState:
         self.python_tool_lock = threading.Lock()
         self.onlyoffice_token_secret = secrets.token_bytes(32)
         self.validation_override: bool | None = None
+        self.store: Store | None = None
+        self.workspaces: LocalWorkspaceStore | None = None
 
     def get_runner(self) -> Runner:
         if self.runner is None:
@@ -424,6 +444,16 @@ class ApiState:
             if self.validation_override is not None:
                 self.runner.enable_validation = self.validation_override
         return self.runner
+
+    def get_store(self) -> Store:
+        if self.store is None:
+            self.store = SQLiteStore(self.get_user_config_path().parent / "api.sqlite3")
+        return self.store
+
+    def get_workspaces(self) -> LocalWorkspaceStore:
+        if self.workspaces is None:
+            self.workspaces = LocalWorkspaceStore(self.get_user_config_path().parent / "projects")
+        return self.workspaces
 
     def _create_runner(self) -> Runner:
         active_model = self.active_model()
@@ -663,6 +693,85 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/projects")
+async def create_project(request: ProjectCreateRequest) -> dict[str, Any]:
+    project_id = _new_api_id("proj")
+    slug = _clean_project_slug(request.slug or request.name)
+    name = _clean_required_text(request.name, field="Project name")
+    description = None if request.description is None else request.description.strip()
+    workspaces = state.get_workspaces()
+    workspace_uri = workspaces.project_workspace_uri(project_id)
+    await run_in_threadpool(workspaces.local_path_for, workspace_uri)
+    try:
+        project = await run_in_threadpool(
+            state.get_store().create_project,
+            project_id=project_id,
+            slug=slug,
+            name=name,
+            description=description,
+            workspace_uri=workspace_uri,
+        )
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=400, detail=f"Project slug '{slug}' already exists.") from exc
+    return {"project": project.model_dump(mode="json")}
+
+
+@app.get("/projects")
+async def list_projects() -> dict[str, Any]:
+    projects = await run_in_threadpool(state.get_store().list_projects)
+    return {"projects": [project.model_dump(mode="json") for project in projects]}
+
+
+@app.get("/projects/{project_id}")
+async def get_project(project_id: str) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {"project": project.model_dump(mode="json")}
+
+
+@app.post("/projects/{project_id}/conversations")
+async def create_project_conversation(
+    project_id: str,
+    request: ConversationCreateRequest,
+) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation_id = _new_api_id("conv")
+    title = _clean_required_text(request.title, field="Conversation title")
+    try:
+        conversation = await run_in_threadpool(
+            state.get_store().create_conversation,
+            conversation_id=conversation_id,
+            project_id=project.id,
+            title=title,
+        )
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=400, detail="Conversation already exists.") from exc
+    return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.get("/projects/{project_id}/conversations")
+async def list_project_conversations(project_id: str) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversations = await run_in_threadpool(state.get_store().list_conversations, project_id)
+    return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
+
+
+@app.get("/projects/{project_id}/conversations/{conversation_id}")
+async def get_project_conversation(project_id: str, conversation_id: str) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"conversation": conversation.model_dump(mode="json")}
 
 
 @app.get("/settings/validation")
@@ -2549,6 +2658,29 @@ def _clean_workspace_root(value: str) -> str:
     if not path.is_absolute() and (".." in path.parts or ".." in PureWindowsPath(root).parts):
         raise HTTPException(status_code=400, detail="workspace_root cannot contain '..' in a relative path.")
     return root
+
+
+def _new_api_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_hex(8)}"
+
+
+def _clean_required_text(value: str, *, field: str) -> str:
+    text = value.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{field} cannot be empty.")
+    return text
+
+
+def _clean_project_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip().lower()).strip("-_")
+    if not slug:
+        raise HTTPException(status_code=400, detail="Project slug cannot be empty.")
+    if _PROJECT_SLUG_RE.fullmatch(slug) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Project slug may contain only letters, numbers, hyphens, and underscores.",
+        )
+    return slug
 
 
 @app.post("/messages/resume")
