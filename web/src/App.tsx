@@ -296,6 +296,7 @@ const defaultOnlyOfficeSettings: OnlyOfficeSettings = {
   enabled: false,
   document_server_url: null,
   public_api_base: null,
+  jwt_secret: null,
   lang: 'zh',
 };
 
@@ -8523,6 +8524,15 @@ function OnlyOfficeSettingsWorkspace({
               />
             </label>
             <label>
+              JWT Secret
+              <input
+                value={draft.jwt_secret ?? ''}
+                onChange={(event) => patchDraft({ jwt_secret: event.target.value })}
+                placeholder="OnlyOffice JWT secret"
+                type="password"
+              />
+            </label>
+            <label>
               Language
               <input
                 value={draft.lang}
@@ -8547,6 +8557,7 @@ function normalizeOnlyOfficeDraft(settings: OnlyOfficeSettings): OnlyOfficeSetti
     enabled: Boolean(settings.enabled),
     document_server_url: cleanOnlyOfficeText(settings.document_server_url),
     public_api_base: cleanOnlyOfficeText(settings.public_api_base),
+    jwt_secret: cleanOnlyOfficeText(settings.jwt_secret),
     lang: cleanOnlyOfficeText(settings.lang) ?? 'zh',
   };
 }

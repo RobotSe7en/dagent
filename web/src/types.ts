@@ -394,6 +394,7 @@ export interface OnlyOfficeSettings {
   enabled: boolean;
   document_server_url?: string | null;
   public_api_base?: string | null;
+  jwt_secret?: string | null;
   lang: string;
 }
 

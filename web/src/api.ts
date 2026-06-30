@@ -550,6 +550,7 @@ function normalizeOnlyOfficeSettings(data: Partial<OnlyOfficeSettings>): OnlyOff
     enabled: Boolean(data.enabled),
     document_server_url: data.document_server_url ?? null,
     public_api_base: data.public_api_base ?? null,
+    jwt_secret: data.jwt_secret ?? null,
     lang: data.lang || 'zh',
   };
 }

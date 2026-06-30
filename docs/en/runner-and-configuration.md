@@ -136,6 +136,7 @@ onlyoffice:
   enabled: true
   document_server_url: "http://192.168.31.219:8089"
   public_api_base: "http://192.168.31.10:8000"
+  jwt_secret: "onlyoffice-jwt-secret"
   lang: "zh-CN"
 ```
 
@@ -174,8 +175,11 @@ startup.
 `document_server_url` points to the ONLYOFFICE Document Server that the browser
 can load. `public_api_base` must point to this FastAPI backend at an address the
 Document Server can reach, because generated preview configs contain signed file
-and callback URLs under that base. When `onlyoffice.enabled` is false or the
-URLs are missing, the WebUI falls back to its built-in browser preview path.
+and callback URLs under that base. If the Document Server has JWT enabled,
+`jwt_secret` must match its JWT secret; the backend signs the generated editor
+config with HS256 and sends it as the ONLYOFFICE `token`. When
+`onlyoffice.enabled` is false or the URLs are missing, the WebUI falls back to
+its built-in browser preview path.
 The same settings can be edited in the WebUI under
 System Management -> OnlyOffice Configuration.
 

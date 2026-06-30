@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import io
 import json
 import sys
@@ -27,6 +30,23 @@ from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityRes
 @pytest.fixture(autouse=True)
 def isolate_user_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(state, "get_user_config_path", lambda: tmp_path / ".dagent" / "config.yaml")
+
+
+def _decode_onlyoffice_jwt(token: str, secret: str) -> dict[str, object]:
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    expected_signature = hmac.new(
+        secret.encode("utf-8"),
+        f"{header_b64}.{payload_b64}".encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    assert hmac.compare_digest(_base64url_decode(signature_b64), expected_signature)
+    assert json.loads(_base64url_decode(header_b64)) == {"alg": "HS256", "typ": "JWT"}
+    return json.loads(_base64url_decode(payload_b64))
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
 
 
 def test_api_state_owns_runner_without_runtime_shim() -> None:
@@ -2736,6 +2756,7 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
                     "enabled": True,
                     "document_server_url": "http://192.168.31.219:8089/",
                     "public_api_base": "http://api.test/",
+                    "jwt_secret": "onlyoffice-jwt",
                     "lang": "zh-CN",
                 }
             },
@@ -2810,6 +2831,12 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
     assert onlyoffice_config["editorConfig"]["customization"]["plugins"] is False
     assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
     assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
+    jwt_payload = _decode_onlyoffice_jwt(onlyoffice_config["token"], "onlyoffice-jwt")
+    assert jwt_payload == {
+        key: value
+        for key, value in onlyoffice_config.items()
+        if key != "token"
+    }
 
     file_response = client.get(urlsplit(onlyoffice_config["document"]["url"]).path)
 
@@ -2857,6 +2884,7 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "enabled": False,
         "document_server_url": None,
         "public_api_base": None,
+        "jwt_secret": None,
         "lang": "zh",
     }
 
@@ -2866,6 +2894,7 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
             "enabled": True,
             "document_server_url": " http://192.168.31.219:8089/ ",
             "public_api_base": " http://192.168.31.10:8001/ ",
+            "jwt_secret": " onlyoffice-jwt ",
             "lang": " zh-CN ",
         },
     )
@@ -2875,6 +2904,7 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "enabled": True,
         "document_server_url": "http://192.168.31.219:8089/",
         "public_api_base": "http://192.168.31.10:8001/",
+        "jwt_secret": "onlyoffice-jwt",
         "lang": "zh-CN",
     }
     raw = yaml.safe_load(state.get_user_config_path().read_text(encoding="utf-8"))
@@ -2882,6 +2912,7 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "enabled": True,
         "document_server_url": "http://192.168.31.219:8089/",
         "public_api_base": "http://192.168.31.10:8001/",
+        "jwt_secret": "onlyoffice-jwt",
         "lang": "zh-CN",
     }
 

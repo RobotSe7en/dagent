@@ -84,6 +84,7 @@ class UserOnlyOfficeConfig(BaseModel):
     enabled: bool = False
     document_server_url: str | None = None
     public_api_base: str | None = None
+    jwt_secret: str | None = None
     lang: str = "zh"
 
 

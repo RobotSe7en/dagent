@@ -161,6 +161,7 @@ def test_user_config_round_trips_onlyoffice_preview_config(tmp_path: Path) -> No
             enabled=True,
             document_server_url="http://192.168.31.219:8089",
             public_api_base="http://192.168.31.10:8000",
+            jwt_secret="onlyoffice-jwt",
             lang="zh-CN",
         )
     )
@@ -172,10 +173,12 @@ def test_user_config_round_trips_onlyoffice_preview_config(tmp_path: Path) -> No
     assert loaded.onlyoffice.enabled is True
     assert loaded.onlyoffice.document_server_url == "http://192.168.31.219:8089"
     assert loaded.onlyoffice.public_api_base == "http://192.168.31.10:8000"
+    assert loaded.onlyoffice.jwt_secret == "onlyoffice-jwt"
     assert loaded.onlyoffice.lang == "zh-CN"
     assert raw["onlyoffice"] == {
         "enabled": True,
         "document_server_url": "http://192.168.31.219:8089",
         "public_api_base": "http://192.168.31.10:8000",
+        "jwt_secret": "onlyoffice-jwt",
         "lang": "zh-CN",
     }

@@ -321,6 +321,7 @@ class OnlyOfficeSettingsPayload(BaseModel):
     enabled: bool = False
     document_server_url: str | None = None
     public_api_base: str | None = None
+    jwt_secret: str | None = None
     lang: str = "zh"
 
 
@@ -1577,6 +1578,7 @@ async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> Only
         enabled=request.enabled,
         document_server_url=_clean_optional_text(request.document_server_url),
         public_api_base=_clean_optional_text(request.public_api_base),
+        jwt_secret=_clean_optional_text(request.jwt_secret),
         lang=_clean_optional_text(request.lang) or "zh",
     )
     save_user_config(config, state.get_user_config_path())
@@ -2172,6 +2174,7 @@ def _onlyoffice_settings_payload(config: UserOnlyOfficeConfig) -> OnlyOfficeSett
         enabled=config.enabled,
         document_server_url=config.document_server_url,
         public_api_base=config.public_api_base,
+        jwt_secret=config.jwt_secret,
         lang=config.lang,
     )
 
@@ -2786,43 +2789,47 @@ def _onlyoffice_config_response(run_state: RunState, path: str) -> RunArtifactOn
 
     document_server_url = _clean_onlyoffice_url(onlyoffice_config.document_server_url)
     public_api_base = _clean_onlyoffice_url(onlyoffice_config.public_api_base)
-    token = _onlyoffice_file_token(run_id=run_state.run_id, path=normalized_path)
+    file_token = _onlyoffice_file_token(run_id=run_state.run_id, path=normalized_path)
     file_type = Path(normalized_path).suffix.lower().lstrip(".")
+    editor_config: dict[str, Any] = {
+        "documentType": document_type,
+        "type": "desktop",
+        "document": {
+            "fileType": file_type,
+            "key": _onlyoffice_document_key(run_state.run_id, normalized_path, file_path),
+            "title": file_path.name,
+            "url": f"{public_api_base}/onlyoffice/files/{file_token}",
+            "permissions": {
+                "chat": False,
+                "comment": False,
+                "download": True,
+                "edit": False,
+                "fillForms": False,
+                "modifyContentControl": False,
+                "modifyFilter": False,
+                "print": True,
+                "protect": False,
+                "review": False,
+            },
+        },
+        "editorConfig": {
+            "callbackUrl": f"{public_api_base}/onlyoffice/callback/{file_token}",
+            "customization": {
+                "macros": False,
+                "macrosMode": "disable",
+                "plugins": False,
+            },
+            "lang": onlyoffice_config.lang,
+            "mode": "view",
+        },
+    }
+    jwt_secret = _clean_optional_text(onlyoffice_config.jwt_secret)
+    if jwt_secret:
+        editor_config["token"] = _onlyoffice_jwt_token(editor_config, jwt_secret)
     return RunArtifactOnlyOfficeConfigResponse(
         document_server_url=document_server_url,
         script_url=f"{document_server_url}/web-apps/apps/api/documents/api.js",
-        config={
-            "documentType": document_type,
-            "type": "desktop",
-            "document": {
-                "fileType": file_type,
-                "key": _onlyoffice_document_key(run_state.run_id, normalized_path, file_path),
-                "title": file_path.name,
-                "url": f"{public_api_base}/onlyoffice/files/{token}",
-                "permissions": {
-                    "chat": False,
-                    "comment": False,
-                    "download": True,
-                    "edit": False,
-                    "fillForms": False,
-                    "modifyContentControl": False,
-                    "modifyFilter": False,
-                    "print": True,
-                    "protect": False,
-                    "review": False,
-                },
-            },
-            "editorConfig": {
-                "callbackUrl": f"{public_api_base}/onlyoffice/callback/{token}",
-                "customization": {
-                    "macros": False,
-                    "macrosMode": "disable",
-                    "plugins": False,
-                },
-                "lang": onlyoffice_config.lang,
-                "mode": "view",
-            },
-        },
+        config=editor_config,
     )
 
 
@@ -2855,6 +2862,24 @@ def _onlyoffice_document_key(run_id: str, path: str, file_path: Path) -> str:
     file_stat = file_path.stat()
     raw_key = f"{run_id}\0{path}\0{file_stat.st_size}\0{file_stat.st_mtime_ns}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:48]
+
+
+def _onlyoffice_jwt_token(payload: dict[str, Any], secret: str) -> str:
+    header_segment = _base64url_json({"alg": "HS256", "typ": "JWT"})
+    payload_segment = _base64url_json(payload)
+    signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
+    signature = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    return f"{header_segment}.{payload_segment}.{_base64url_bytes(signature)}"
+
+
+def _base64url_json(value: dict[str, Any]) -> str:
+    return _base64url_bytes(
+        json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+
+
+def _base64url_bytes(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def _onlyoffice_file_token(*, run_id: str, path: str) -> str:

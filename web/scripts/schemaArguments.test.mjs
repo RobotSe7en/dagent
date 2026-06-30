@@ -1378,8 +1378,10 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(onlyOfficeSource, /OnlyOffice配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
+  assert.match(onlyOfficeSource, /JWT Secret/);
   assert.match(onlyOfficeSource, /updateOnlyOfficeSettings\(/);
   assert.match(typesSource, /export interface OnlyOfficeSettings/);
+  assert.match(typesSource, /jwt_secret\?: string \| null;/);
 
   assert.match(apiSource, /export async function listModels/);
   assert.match(apiSource, /export async function createModelProvider/);
@@ -1388,6 +1390,7 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(apiSource, /export async function activateModelProvider/);
   assert.match(apiSource, /export async function getOnlyOfficeSettings/);
   assert.match(apiSource, /export async function updateOnlyOfficeSettings/);
+  assert.match(apiSource, /jwt_secret: data\.jwt_secret \?\? null/);
 
   assert.match(css, /\.design-models-workspace\s*\{[^}]*display:\s*flex;/s);
   assert.match(css, /\.sidebar-model-list/);
