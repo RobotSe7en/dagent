@@ -134,6 +134,17 @@ class Store(Protocol):
         org_id: str = "default",
     ) -> RunStream: ...
 
+    def list_run_streams(self, run_id: str) -> list[RunStream]: ...
+
+    def finish_run_stream(
+        self,
+        stream_id: str,
+        status: RunStatus,
+        *,
+        error_json: str | None = None,
+        completed_at: int | None = None,
+    ) -> None: ...
+
     def append_run_event(
         self,
         *,

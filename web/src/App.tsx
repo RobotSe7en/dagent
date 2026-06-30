@@ -90,7 +90,9 @@ import {
   listPythonTools,
   listProfiles,
   listRunArtifacts,
+  listRunEvents,
   listSkills,
+  mapRunTrace,
   previewRunArtifact,
   previewProjectFile,
   projectFileDownloadUrl,
@@ -123,7 +125,7 @@ import {
   deleteProfile,
   discoverPythonToolNames,
 } from './api';
-import type { ApiRunState, ChatStreamMessage } from './api';
+import type { ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentPreset,
   AgentPresetInput,
@@ -907,6 +909,41 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
 }
 
+function finishedRunResultFromEvents(events: ApiRunEvent[]): ApiRunResult | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type !== 'run.finished' && event.payload.type !== 'run.finished') continue;
+    const data = recordValue(event.payload.data);
+    const result = data ? recordValue(data.result) : null;
+    if (!result) continue;
+    return {
+      output_text: typeof result.output_text === 'string' ? result.output_text : '',
+      state: recordValue(result.state) ? result.state as ApiRunState : null,
+    };
+  }
+  return null;
+}
+
+function messagesFromPersistedRunResult(result: ApiRunResult, traceSnapshot: TraceLogEvent[]): ChatMessage[] {
+  const state = result.state ?? null;
+  const dagSnapshot = state?.dag ?? undefined;
+  const reviewMessage = state?.pending_review?.message?.trim() ?? '';
+  const output = result.output_text.trim();
+  const content = output || reviewMessage;
+  const timeline: MessageTimelineItem[] = [];
+  if (dagSnapshot) timeline.push({ type: 'dag', dag: dagSnapshot });
+  if (content) timeline.push({ type: 'text', content });
+  if (!content && !dagSnapshot) return [];
+  return [{
+    role: 'assistant',
+    kind: 'text',
+    content,
+    timeline,
+    dagSnapshot,
+    traceSnapshot,
+  }];
+}
+
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
   if (!item.runId || !item.path) return '';
   return `${item.runId}:${item.path}:${item.size ?? 'unknown'}`;
@@ -977,6 +1014,9 @@ export function App() {
   const contentStreamedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const runArtifactRequestRef = useRef(0);
+  const conversationHydrationRequestRef = useRef(0);
+  const projectFilesRequestRef = useRef(0);
+  const projectFilePreviewRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -1215,22 +1255,28 @@ export function App() {
   }, []);
 
   const refreshProjectFiles = useCallback(async () => {
+    const requestId = projectFilesRequestRef.current + 1;
+    projectFilesRequestRef.current = requestId;
     if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects' || selectedConversation) {
       setProjectFiles([]);
       setProjectFilesLoading(false);
       return;
     }
+    const projectId = selectedProject.id;
+    const path = projectFilePath;
     setProjectFilesLoading(true);
     setProjectFilesError(null);
     try {
-      const payload = await listProjectFiles(selectedProject.id, projectFilePath);
+      const payload = await listProjectFiles(projectId, path);
+      if (projectFilesRequestRef.current !== requestId) return;
       setProjectFiles(payload.files);
       setProjectFilePath(payload.path);
     } catch (exc) {
+      if (projectFilesRequestRef.current !== requestId) return;
       setProjectFiles([]);
       setProjectFilesError(exc instanceof Error ? exc.message : String(exc));
     } finally {
-      setProjectFilesLoading(false);
+      if (projectFilesRequestRef.current === requestId) setProjectFilesLoading(false);
     }
   }, [activeWorkspace, chatSub, projectFilePath, selectedConversation, selectedProject]);
 
@@ -1239,9 +1285,12 @@ export function App() {
   }, [refreshProjectFiles]);
 
   useEffect(() => {
+    projectFilesRequestRef.current += 1;
+    projectFilePreviewRequestRef.current += 1;
     setProjectFilePath('');
     setSelectedProjectFilePath('');
     setProjectFilePreview(null);
+    setProjectFilePreviewLoading(false);
     setProjectFilePreviewError(null);
   }, [selectedProjectId]);
 
@@ -1971,7 +2020,7 @@ export function App() {
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
     Boolean(pendingReview) || nextDag.status === 'review_required';
 
-  const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
+  const handlePendingReview = useCallback((pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
     if (pendingReview.kind === 'capability_review') {
       setCapabilityReviewFeedback('');
@@ -1980,7 +2029,61 @@ export function App() {
     }
     setDagReviewFeedback('');
     setDagReview(pendingReview);
-  };
+  }, []);
+
+  const applyPersistedRunResult = useCallback((result: ApiRunResult) => {
+    const nextState = result.state ?? null;
+    const nextDag = nextState?.dag ?? null;
+    const nextReview = nextState?.pending_review ?? null;
+    const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
+    setRunState(nextState);
+    setTrace(nextTrace);
+    setMessages(messagesFromPersistedRunResult(result, nextTrace));
+    setError(null);
+    setDagReview(null);
+    setDagReviewFeedback('');
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    if (nextDag) {
+      syncDag(nextDag);
+      setReviewOpen(shouldOpenDagReview(nextDag, nextReview));
+    } else {
+      syncDag(emptyDag);
+      setReviewOpen(false);
+    }
+    handlePendingReview(nextReview);
+    contentStreamedRef.current = Boolean(result.output_text.trim());
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+  }, [handlePendingReview, syncDag]);
+
+  const hydrateConversationSnapshot = useCallback(async (conversation: ApiConversation) => {
+    if (!conversation.last_run_id) return;
+    const requestId = conversationHydrationRequestRef.current + 1;
+    conversationHydrationRequestRef.current = requestId;
+    try {
+      const events = await listRunEvents(conversation.last_run_id);
+      if (conversationHydrationRequestRef.current !== requestId) return;
+      const result = finishedRunResultFromEvents(events);
+      if (!result) return;
+      applyPersistedRunResult(result);
+    } catch (exc) {
+      if (conversationHydrationRequestRef.current !== requestId) return;
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [applyPersistedRunResult]);
+
+  useEffect(() => {
+    if (!selectedConversation?.last_run_id || streaming || messages.length || runState) return;
+    void hydrateConversationSnapshot(selectedConversation);
+  }, [
+    hydrateConversationSnapshot,
+    messages.length,
+    runState,
+    selectedConversation,
+    selectedConversation?.last_run_id,
+    streaming,
+  ]);
 
   const appendTrace = (event: Omit<TraceLogEvent, 'id' | 'timestamp'>): TraceLogEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2972,6 +3075,7 @@ export function App() {
   };
 
   const clearChatSurface = () => {
+    conversationHydrationRequestRef.current += 1;
     setMessages([]);
     setDraft('');
     setPendingChatUploads([]);
@@ -2989,6 +3093,31 @@ export function App() {
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
     stopTokenTimer();
+  };
+
+  const selectChatSub = (sub: ChatWorkspaceSub) => {
+    if (streaming) return;
+    if (
+      sub === chatSub
+      && (
+        (sub === 'projects' && !selectedConversationId)
+        || (sub === 'conversations' && (!selectedConversation || !selectedConversation.project_id))
+      )
+    ) {
+      return;
+    }
+    setChatSub(sub);
+    if (sub === 'projects') {
+      if (!selectedProjectId && projects[0]) setSelectedProjectId(projects[0].id);
+      setSelectedConversationId('');
+      clearChatSurface();
+      return;
+    }
+    const nextStandalone = selectedConversation && !selectedConversation.project_id
+      ? selectedConversation
+      : conversations.find((conversation) => !conversation.project_id) ?? null;
+    setSelectedConversationId(nextStandalone?.id ?? '');
+    clearChatSurface();
   };
 
   const selectProject = (projectId: string) => {
@@ -3111,29 +3240,40 @@ export function App() {
   };
 
   const openProjectFile = async (file: ProjectFileItem) => {
+    const requestId = projectFilePreviewRequestRef.current + 1;
+    projectFilePreviewRequestRef.current = requestId;
     setSelectedProjectFilePath(file.path);
     setProjectFilePreview(null);
     setProjectFilePreviewError(null);
     if (file.kind === 'directory') {
       setProjectFilePath(file.path);
+      setProjectFilePreviewLoading(false);
       return;
     }
-    if (!selectedProject || !file.preview_url) return;
+    if (!selectedProject || !file.preview_url) {
+      setProjectFilePreviewLoading(false);
+      return;
+    }
+    const projectId = selectedProject.id;
     setProjectFilePreviewLoading(true);
     try {
-      const preview = await previewProjectFile(selectedProject.id, file.path);
+      const preview = await previewProjectFile(projectId, file.path);
+      if (projectFilePreviewRequestRef.current !== requestId) return;
       setProjectFilePreview(preview);
     } catch (exc) {
+      if (projectFilePreviewRequestRef.current !== requestId) return;
       setProjectFilePreviewError(exc instanceof Error ? exc.message : String(exc));
     } finally {
-      setProjectFilePreviewLoading(false);
+      if (projectFilePreviewRequestRef.current === requestId) setProjectFilePreviewLoading(false);
     }
   };
 
   const navigateProjectFilesUp = () => {
+    projectFilePreviewRequestRef.current += 1;
     setProjectFilePath((current) => parentProjectPath(current));
     setSelectedProjectFilePath('');
     setProjectFilePreview(null);
+    setProjectFilePreviewLoading(false);
     setProjectFilePreviewError(null);
   };
 
@@ -3169,14 +3309,18 @@ export function App() {
         if (!nextPath) return;
         await renameProjectFile(selectedProject.id, projectFileDialog.file.path, nextPath);
         if (selectedProjectFilePath === projectFileDialog.file.path) {
+          projectFilePreviewRequestRef.current += 1;
           setSelectedProjectFilePath(nextPath);
           setProjectFilePreview(null);
+          setProjectFilePreviewLoading(false);
         }
       } else if (projectFileDialog.kind === 'delete' && projectFileDialog.file) {
         await deleteProjectFile(selectedProject.id, projectFileDialog.file.path);
         if (selectedProjectFilePath === projectFileDialog.file.path) {
+          projectFilePreviewRequestRef.current += 1;
           setSelectedProjectFilePath('');
           setProjectFilePreview(null);
+          setProjectFilePreviewLoading(false);
           setProjectFilePreviewError(null);
         }
       }
@@ -3233,7 +3377,7 @@ export function App() {
         toolsQuery={toolsDirectoryQuery}
         onCreateArtifact={createEditorArtifact}
         onCreateAgentPreset={requestAgentPresetCreation}
-        onChatSubChange={setChatSub}
+        onChatSubChange={selectChatSub}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
         onCreateModel={requestModelCreation}
         onCreateProject={() => void createProjectFromSidebar()}

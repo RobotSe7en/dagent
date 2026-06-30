@@ -448,6 +448,39 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     assert not (tmp_path / ".dagent" / "shared" / "sandbox.txt").exists()
 
 
+def test_sandbox_rejects_exact_workspace_path_outside_runner_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    class FakeSandboxSession:
+        def __init__(self, _config, *, workspace_root: Path, skill_dirs=()) -> None:
+            self.workspace_root = Path(workspace_root).resolve()
+
+        def start(self) -> None:
+            self.workspace_root.mkdir(parents=True, exist_ok=True)
+
+        def close(self) -> None:
+            pass
+
+        def run_tool(self, tool_name: str, arguments: dict) -> ToolOutput:
+            return ToolOutput(content="unused")
+
+    monkeypatch.setattr(runner_module, "SandboxSession", FakeSandboxSession)
+    runner = dagent.Runner(provider=MockProvider([ChatResponse(content="done")]))
+
+    with pytest.raises(runner_module.SandboxExecutionError, match="workspace_path"):
+        run(
+            runner.run(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("write outside"),
+                execution="sandbox",
+                workspace_path=tmp_path / "outside-workspace",
+            )
+        )
+
+
 def test_create_run_workspace_rejects_non_leaf_run_id(tmp_path: Path) -> None:
     for bad_run_id in ("", ".", "..", "../escape", "nested/run", "/tmp/run", r"nested\run"):
         with pytest.raises(ValueError, match="run_id"):

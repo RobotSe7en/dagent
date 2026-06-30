@@ -849,11 +849,27 @@ async def delete_project(project_id: str) -> dict[str, str]:
     project = await run_in_threadpool(store.get_project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
-    await run_in_threadpool(_delete_project_workspace, project, workspace_path)
-    deleted = await run_in_threadpool(store.delete_project, project.id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Project not found.")
+    conversations = await run_in_threadpool(store.list_conversations, project.id)
+    locks = []
+    owner = _new_api_id("delete")
+    try:
+        for conversation in conversations:
+            try:
+                locks.append(await run_in_threadpool(
+                    store.acquire_conversation_lock,
+                    conversation.id,
+                    owner=owner,
+                ))
+            except ConversationBusyError as exc:
+                raise HTTPException(status_code=409, detail="Project has active conversations.") from exc
+        workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+        await run_in_threadpool(_delete_project_workspace, project, workspace_path)
+        deleted = await run_in_threadpool(store.delete_project, project.id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Project not found.")
+    finally:
+        for lock in locks:
+            await run_in_threadpool(lock.release)
     return {"status": "deleted"}
 
 
@@ -935,8 +951,13 @@ async def move_project_file(project_id: str, request: ProjectFileMoveRequest) ->
         raise HTTPException(status_code=404, detail="Project file not found.")
     if target.exists():
         raise HTTPException(status_code=409, detail="Project destination already exists.")
-    await run_in_threadpool(target.parent.mkdir, parents=True, exist_ok=True)
-    await run_in_threadpool(source.rename, target)
+    if source.is_dir() and _path_contains(source.resolve(), target.resolve()):
+        raise HTTPException(status_code=400, detail="Project directory cannot be moved into its own descendant.")
+    try:
+        await run_in_threadpool(target.parent.mkdir, parents=True, exist_ok=True)
+        await run_in_threadpool(source.rename, target)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"Project file move failed: {exc}") from exc
     return {"file": _project_file_item(
         project.id,
         workspace,
@@ -1035,6 +1056,8 @@ async def delete_conversation(conversation_id: str) -> dict[str, str]:
     conversation = await run_in_threadpool(store.get_conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(status_code=400, detail="Project conversations must be deleted through the project route.")
     await _delete_conversation(conversation)
     return {"status": "deleted"}
 
@@ -1050,7 +1073,7 @@ async def create_project_conversation(
     conversation_id = _new_api_id("conv")
     title = _clean_required_text(request.title, field="Conversation title")
     workspaces = state.get_workspaces()
-    workspace_uri = workspaces.conversation_workspace_uri(conversation_id, project_id=project.id)
+    workspace_uri = project.workspace_uri
     await run_in_threadpool(workspaces.local_path_for, workspace_uri)
     try:
         conversation = await run_in_threadpool(
@@ -1124,7 +1147,21 @@ async def _delete_conversation(conversation: Conversation) -> None:
             state.get_workspaces().local_path_for,
             conversation.workspace_uri,
         )
-        await run_in_threadpool(_delete_conversation_files, run_states, conversation_workspace)
+        delete_conversation_workspace = True
+        if conversation.project_id is not None:
+            project = await run_in_threadpool(store.get_project, conversation.project_id)
+            if project is not None:
+                project_workspace = await run_in_threadpool(
+                    state.get_workspaces().local_path_for,
+                    project.workspace_uri,
+                )
+                delete_conversation_workspace = conversation_workspace.resolve() != project_workspace.resolve()
+        await run_in_threadpool(
+            _delete_conversation_files,
+            run_states,
+            conversation_workspace,
+            delete_conversation_workspace=delete_conversation_workspace,
+        )
         for run in runs:
             await run_in_threadpool(store.delete_run, run.id)
         deleted = await run_in_threadpool(store.delete_conversation, conversation.id)
@@ -3051,6 +3088,8 @@ async def _resume_persisted_review_stream(
     review = await run_in_threadpool(store.get_review, review_id)
     if review is None:
         raise HTTPException(status_code=404, detail="Review not found.")
+    if project is None and review.project_id is not None:
+        raise HTTPException(status_code=400, detail="Project reviews must be resumed through the project route.")
     if project is not None and review.project_id != project.id:
         raise HTTPException(status_code=404, detail="Review not found.")
     if review.status != "pending":
@@ -3222,14 +3261,24 @@ async def _persisted_run_events(
                 payload["stream_sequence"] = payload.get("sequence", event.sequence)
                 payload["sequence"] = persisted.event_id
             if event.type == "run.failed" and run_id is not None and run_created:
+                error_json = json.dumps(payload.get("data") or {}, ensure_ascii=False)
                 await run_in_threadpool(
                     store.save_run_error,
                     run_id,
-                    json.dumps(payload.get("data") or {}, ensure_ascii=False),
+                    error_json,
                 )
+                if stream_created:
+                    await run_in_threadpool(
+                        store.finish_run_stream,
+                        stream_id,
+                        "failed",
+                        error_json=error_json,
+                        completed_at=int(time.time()),
+                    )
             if event.type == "run.finished":
                 result = getattr(event.data, "result", None)
                 if result is not None and run_id is not None:
+                    completed_at = int(time.time())
                     await run_in_threadpool(
                         store.save_run_state,
                         run_id,
@@ -3240,8 +3289,15 @@ async def _persisted_run_events(
                         store.update_run_status,
                         run_id,
                         result.status,
-                        completed_at=int(time.time()) if result.status != "awaiting_review" else None,
+                        completed_at=completed_at if result.status != "awaiting_review" else None,
                     )
+                    if stream_created:
+                        await run_in_threadpool(
+                            store.finish_run_stream,
+                            stream_id,
+                            result.status,
+                            completed_at=completed_at,
+                        )
                     if resolve_review_id is not None:
                         await run_in_threadpool(
                             store.resolve_review,
@@ -3278,6 +3334,14 @@ async def _persisted_run_events(
                 run_id,
                 json.dumps(error_payload["data"], ensure_ascii=False),
             )
+            if stream_created:
+                await run_in_threadpool(
+                    store.finish_run_stream,
+                    stream_id,
+                    "failed",
+                    error_json=json.dumps(error_payload["data"], ensure_ascii=False),
+                    completed_at=int(time.time()),
+                )
             if not sent_error:
                 yield error_payload
         elif not sent_error:
@@ -3359,9 +3423,19 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
     conversation = await run_in_threadpool(store.get_conversation, request.conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    if project is None and conversation.project_id is not None:
+        raise HTTPException(status_code=400, detail="project_id must be provided for project conversations.")
     if project is not None and conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, conversation.workspace_uri)
+    if conversation.project_id is not None:
+        if project is None:
+            project = await run_in_threadpool(store.get_project, conversation.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        workspace_uri = project.workspace_uri
+    else:
+        workspace_uri = conversation.workspace_uri
+    workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, workspace_uri)
     previous_run_state = None
     if conversation.last_run_id is not None:
         previous_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
@@ -3373,7 +3447,7 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
-        workspace_uri=conversation.workspace_uri,
+        workspace_uri=workspace_uri,
         workspace_path=workspace_path,
         run_state=previous_run_state,
     )
@@ -3626,7 +3700,12 @@ def _run_workspace(run_state: RunState) -> Path | None:
     return Path(run_state.workspace_path).resolve()
 
 
-def _delete_conversation_files(run_states: list[RunState], conversation_workspace: Path) -> None:
+def _delete_conversation_files(
+    run_states: list[RunState],
+    conversation_workspace: Path,
+    *,
+    delete_conversation_workspace: bool,
+) -> None:
     conversation_workspace = conversation_workspace.resolve()
     for run_state in run_states:
         if not run_state.workspace_path:
@@ -3637,7 +3716,12 @@ def _delete_conversation_files(run_states: list[RunState], conversation_workspac
         if not _should_delete_run_workspace(candidate, conversation_workspace):
             continue
         shutil.rmtree(candidate)
-    if conversation_workspace.exists() and conversation_workspace.is_dir() and not conversation_workspace.is_symlink():
+    if (
+        delete_conversation_workspace
+        and conversation_workspace.exists()
+        and conversation_workspace.is_dir()
+        and not conversation_workspace.is_symlink()
+    ):
         shutil.rmtree(conversation_workspace)
 
 

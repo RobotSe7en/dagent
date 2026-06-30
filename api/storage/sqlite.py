@@ -48,7 +48,6 @@ class SQLiteStore:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        self._conversation_locks: dict[str, str] = {}
         self._configure()
         self._migrate()
 
@@ -66,247 +65,7 @@ class SQLiteStore:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self._lock:
             self._conn.executescript(schema)
-            self._ensure_v2_schema()
-            self._conn.executescript(schema)
             self._conn.commit()
-
-    def _ensure_v2_schema(self) -> None:
-        table_checks = (
-            ("conversations", ("workspace_uri",), ("project_id",)),
-            ("runs", (), ("project_id",)),
-            ("run_streams", (), ("project_id",)),
-            ("reviews", (), ("project_id",)),
-        )
-        if not any(
-            self._table_needs_rebuild(table, required_columns=columns, nullable_columns=nullable_columns)
-            for table, columns, nullable_columns in table_checks
-        ):
-            return
-        self._conn.execute("PRAGMA foreign_keys=OFF")
-        try:
-            if self._table_needs_rebuild(
-                "conversations",
-                required_columns=("workspace_uri",),
-                nullable_columns=("project_id",),
-            ):
-                self._rebuild_conversations_table()
-            if self._table_needs_rebuild("runs", required_columns=(), nullable_columns=("project_id",)):
-                self._rebuild_runs_table()
-            if self._table_needs_rebuild("run_streams", required_columns=(), nullable_columns=("project_id",)):
-                self._rebuild_run_streams_table()
-            if self._table_needs_rebuild("reviews", required_columns=(), nullable_columns=("project_id",)):
-                self._rebuild_reviews_table()
-        finally:
-            self._conn.execute("PRAGMA foreign_keys=ON")
-
-    def _table_needs_rebuild(
-        self,
-        table: str,
-        *,
-        required_columns: tuple[str, ...],
-        nullable_columns: tuple[str, ...],
-    ) -> bool:
-        columns = {row["name"]: row for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if any(column not in columns for column in required_columns):
-            return True
-        return any(columns[column]["notnull"] for column in nullable_columns if column in columns)
-
-    def _rebuild_conversations_table(self) -> None:
-        rows = [dict(row) for row in self._conn.execute("SELECT * FROM conversations").fetchall()]
-        self._conn.execute("DROP TABLE conversations")
-        self._conn.execute(
-            """
-            CREATE TABLE conversations (
-                id TEXT PRIMARY KEY,
-                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
-                org_id TEXT NOT NULL DEFAULT 'default',
-                title TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                workspace_uri TEXT NOT NULL,
-                last_run_id TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                archived_at INTEGER
-            )
-            """
-        )
-        for row in rows:
-            workspace_uri = row.get("workspace_uri") or self._legacy_conversation_workspace_uri(
-                row["id"],
-                row.get("project_id"),
-            )
-            self._conn.execute(
-                """
-                INSERT INTO conversations(
-                    id, project_id, org_id, title, status, workspace_uri,
-                    last_run_id, created_at, updated_at, archived_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["id"],
-                    row.get("project_id"),
-                    row.get("org_id", "default"),
-                    row["title"],
-                    row.get("status", "active"),
-                    workspace_uri,
-                    row.get("last_run_id"),
-                    row["created_at"],
-                    row["updated_at"],
-                    row.get("archived_at"),
-                ),
-            )
-
-    def _legacy_conversation_workspace_uri(self, conversation_id: str, project_id: str | None) -> str:
-        if project_id is not None:
-            row = self._conn.execute("SELECT workspace_uri FROM projects WHERE id = ?", (project_id,)).fetchone()
-            if row is not None:
-                return row["workspace_uri"]
-        root = self.path.parent if str(self.path) != ":memory:" else Path.cwd()
-        return f"file://{root / 'projects' / '_conversations' / conversation_id / 'workspace'}"
-
-    def _rebuild_runs_table(self) -> None:
-        rows = [dict(row) for row in self._conn.execute("SELECT * FROM runs").fetchall()]
-        self._conn.execute("DROP TABLE runs")
-        self._conn.execute(
-            """
-            CREATE TABLE runs (
-                id TEXT PRIMARY KEY,
-                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
-                conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
-                org_id TEXT NOT NULL DEFAULT 'default',
-                user_id TEXT NOT NULL DEFAULT 'default',
-                kind TEXT,
-                status TEXT NOT NULL,
-                execution TEXT NOT NULL DEFAULT 'local',
-                workspace_uri TEXT NOT NULL,
-                state_json TEXT,
-                output_text TEXT NOT NULL DEFAULT '',
-                error_json TEXT,
-                lease_owner TEXT,
-                lease_expires_at INTEGER,
-                created_at INTEGER NOT NULL,
-                started_at INTEGER,
-                completed_at INTEGER,
-                updated_at INTEGER NOT NULL
-            )
-            """
-        )
-        for row in rows:
-            self._conn.execute(
-                """
-                INSERT INTO runs(
-                    id, project_id, conversation_id, org_id, user_id, kind, status,
-                    execution, workspace_uri, state_json, output_text, error_json,
-                    lease_owner, lease_expires_at, created_at, started_at, completed_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["id"],
-                    row.get("project_id"),
-                    row.get("conversation_id"),
-                    row.get("org_id", "default"),
-                    row.get("user_id", "default"),
-                    row.get("kind"),
-                    row["status"],
-                    row.get("execution", "local"),
-                    row["workspace_uri"],
-                    row.get("state_json"),
-                    row.get("output_text", ""),
-                    row.get("error_json"),
-                    row.get("lease_owner"),
-                    row.get("lease_expires_at"),
-                    row["created_at"],
-                    row.get("started_at"),
-                    row.get("completed_at"),
-                    row["updated_at"],
-                ),
-            )
-
-    def _rebuild_run_streams_table(self) -> None:
-        rows = [dict(row) for row in self._conn.execute("SELECT * FROM run_streams").fetchall()]
-        self._conn.execute("DROP TABLE run_streams")
-        self._conn.execute(
-            """
-            CREATE TABLE run_streams (
-                id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
-                conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
-                org_id TEXT NOT NULL DEFAULT 'default',
-                user_id TEXT NOT NULL DEFAULT 'default',
-                kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                started_at INTEGER NOT NULL,
-                completed_at INTEGER,
-                error_json TEXT
-            )
-            """
-        )
-        for row in rows:
-            self._conn.execute(
-                """
-                INSERT INTO run_streams(
-                    id, run_id, project_id, conversation_id, org_id, user_id,
-                    kind, status, started_at, completed_at, error_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["id"],
-                    row["run_id"],
-                    row.get("project_id"),
-                    row.get("conversation_id"),
-                    row.get("org_id", "default"),
-                    row.get("user_id", "default"),
-                    row["kind"],
-                    row["status"],
-                    row["started_at"],
-                    row.get("completed_at"),
-                    row.get("error_json"),
-                ),
-            )
-
-    def _rebuild_reviews_table(self) -> None:
-        rows = [dict(row) for row in self._conn.execute("SELECT * FROM reviews").fetchall()]
-        self._conn.execute("DROP TABLE reviews")
-        self._conn.execute(
-            """
-            CREATE TABLE reviews (
-                id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
-                org_id TEXT NOT NULL DEFAULT 'default',
-                kind TEXT NOT NULL,
-                status TEXT NOT NULL,
-                decision_json TEXT,
-                created_at INTEGER NOT NULL,
-                resolved_at INTEGER
-            )
-            """
-        )
-        for row in rows:
-            self._conn.execute(
-                """
-                INSERT INTO reviews(
-                    id, run_id, project_id, org_id, kind, status,
-                    decision_json, created_at, resolved_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row["id"],
-                    row["run_id"],
-                    row.get("project_id"),
-                    row.get("org_id", "default"),
-                    row["kind"],
-                    row["status"],
-                    row.get("decision_json"),
-                    row["created_at"],
-                    row.get("resolved_at"),
-                ),
-            )
 
     def create_project(
         self,
@@ -448,19 +207,38 @@ class SQLiteStore:
         return None if row is None else _conversation_from_row(row)
 
     def acquire_conversation_lock(self, conversation_id: str, *, owner: str) -> _SQLiteConversationLock:
+        now = _now()
         with self._lock:
             if self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
                 raise KeyError(f"Conversation '{conversation_id}' not found.")
-            active_owner = self._conversation_locks.get(conversation_id)
-            if active_owner is not None and active_owner != owner:
-                raise ConversationBusyError(f"Conversation '{conversation_id}' is already active.")
-            self._conversation_locks[conversation_id] = owner
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO conversation_locks(conversation_id, owner, acquired_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (conversation_id, owner, now),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                self._conn.rollback()
+                active = self._conn.execute(
+                    "SELECT owner FROM conversation_locks WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                if active is None:
+                    raise
+                if active["owner"] != owner:
+                    raise ConversationBusyError(f"Conversation '{conversation_id}' is already active.") from exc
         return _SQLiteConversationLock(self, conversation_id, owner)
 
     def _release_conversation_lock(self, conversation_id: str, owner: str) -> None:
         with self._lock:
-            if self._conversation_locks.get(conversation_id) == owner:
-                del self._conversation_locks[conversation_id]
+            self._conn.execute(
+                "DELETE FROM conversation_locks WHERE conversation_id = ? AND owner = ?",
+                (conversation_id, owner),
+            )
+            self._conn.commit()
 
     def create_run(
         self,
@@ -563,7 +341,6 @@ class SQLiteStore:
             params = (conversation_id, org_id)
         with self._lock:
             cursor = self._conn.execute(query, params)
-            self._conversation_locks.pop(conversation_id, None)
             self._conn.commit()
         return cursor.rowcount > 0
 
@@ -618,6 +395,34 @@ class SQLiteStore:
             row = self._required_row("SELECT * FROM run_streams WHERE id = ?", (stream_id,))
         return _run_stream_from_row(row)
 
+    def list_run_streams(self, run_id: str) -> list[RunStream]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM run_streams WHERE run_id = ? ORDER BY started_at ASC, id ASC",
+                (run_id,),
+            ).fetchall()
+        return [_run_stream_from_row(row) for row in rows]
+
+    def finish_run_stream(
+        self,
+        stream_id: str,
+        status: RunStatus,
+        *,
+        error_json: str | None = None,
+        completed_at: int | None = None,
+    ) -> None:
+        completed = completed_at if completed_at is not None else _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE run_streams
+                SET status = ?, completed_at = ?, error_json = ?
+                WHERE id = ?
+                """,
+                (status, completed, error_json, stream_id),
+            )
+            self._conn.commit()
+
     def append_run_event(
         self,
         *,
@@ -628,33 +433,38 @@ class SQLiteStore:
     ) -> RunEvent:
         created_at = _now()
         with self._lock:
-            event_id = int(
-                self._conn.execute(
-                    "SELECT COALESCE(MAX(event_id), 0) + 1 FROM run_events WHERE run_id = ?",
-                    (run_id,),
-                ).fetchone()[0]
-            )
-            stream_seq = int(
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                event_id = int(
+                    self._conn.execute(
+                        "SELECT COALESCE(MAX(event_id), 0) + 1 FROM run_events WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchone()[0]
+                )
+                stream_seq = int(
+                    self._conn.execute(
+                        """
+                        SELECT COALESCE(MAX(stream_seq), -1) + 1
+                        FROM run_events
+                        WHERE run_id = ? AND stream_id = ?
+                        """,
+                        (run_id, stream_id),
+                    ).fetchone()[0]
+                )
                 self._conn.execute(
                     """
-                    SELECT COALESCE(MAX(stream_seq), -1) + 1
-                    FROM run_events
-                    WHERE run_id = ? AND stream_id = ?
+                    INSERT INTO run_events(
+                        run_id, event_id, stream_id, stream_seq,
+                        event_type, payload_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (run_id, stream_id),
-                ).fetchone()[0]
-            )
-            self._conn.execute(
-                """
-                INSERT INTO run_events(
-                    run_id, event_id, stream_id, stream_seq,
-                    event_type, payload_json, created_at
+                    (run_id, event_id, stream_id, stream_seq, event_type, payload_json, created_at),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (run_id, event_id, stream_id, stream_seq, event_type, payload_json, created_at),
-            )
-            self._conn.commit()
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
             row = self._required_row(
                 "SELECT * FROM run_events WHERE run_id = ? AND event_id = ?",
                 (run_id, event_id),

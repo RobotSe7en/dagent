@@ -700,6 +700,11 @@ class Runner:
             _ensure_run_state_can_continue(state)
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
+        if resolved_execution == "sandbox" and resolved_workspace_path is not None:
+            _ensure_sandbox_workspace_path_is_mounted(
+                resolved_workspace_path,
+                self._runtime.capability_catalog.workspace_root,
+            )
         if resolved_execution == "sandbox" and isinstance(target, (Dag, DAGSpec, DagAgent)):
             # Preflight before entering the sandbox scope so we don't start a
             # container only to reject the run. AutoAgent resolves its mode at
@@ -1400,6 +1405,16 @@ def _validated_workspace_path_for_state(
             f"workspace_path '{resolved}' does not match run state workspace_path '{state_path}'."
         )
     return resolved
+
+
+def _ensure_sandbox_workspace_path_is_mounted(workspace_path: Path, workspace_root: Path) -> None:
+    root = Path(workspace_root).expanduser().resolve()
+    try:
+        workspace_path.relative_to(root)
+    except ValueError as exc:
+        raise SandboxExecutionError(
+            f"workspace_path '{workspace_path}' is outside sandbox workspace root '{root}'."
+        ) from exc
 
 
 def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> ReviewDecision:

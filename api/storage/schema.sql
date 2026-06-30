@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE INDEX IF NOT EXISTS idx_conversations_project_updated
     ON conversations(project_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS conversation_locks (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    owner TEXT NOT NULL,
+    acquired_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -110,4 +116,4 @@ CREATE INDEX IF NOT EXISTS idx_reviews_pending
     ON reviews(project_id, status, created_at DESC);
 
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-VALUES (2, strftime('%s', 'now'));
+VALUES (1, strftime('%s', 'now'));

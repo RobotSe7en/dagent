@@ -14,7 +14,7 @@ class LocalWorkspaceStore:
     def conversation_workspace_uri(self, conversation_id: str, *, project_id: str | None = None) -> str:
         if project_id is None:
             return f"file://{self.root / '_conversations' / conversation_id / 'workspace'}"
-        return f"file://{self.root / project_id / 'conversations' / conversation_id / 'workspace'}"
+        return self.project_workspace_uri(project_id)
 
     def local_path_for(self, uri: str) -> Path:
         path = self._file_uri_path(uri)
@@ -28,7 +28,8 @@ class LocalWorkspaceStore:
         self.local_path_for(uri)
 
     def open_file(self, uri: str, rel: str, mode: str = "rb"):
-        return (self.local_path_for(uri) / rel).open(mode)
+        workspace = self.local_path_for(uri)
+        return self._resolve_relative_file(workspace, rel).open(mode)
 
     def _file_uri_path(self, uri: str) -> Path:
         parsed = urlparse(uri)
@@ -36,4 +37,23 @@ class LocalWorkspaceStore:
             raise ValueError(f"Unsupported workspace URI: {uri}")
         if parsed.netloc:
             raise ValueError(f"File workspace URI must not include a host: {uri}")
-        return Path(unquote(parsed.path)).expanduser().resolve()
+        path = Path(unquote(parsed.path)).expanduser().resolve()
+        try:
+            path.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError(f"File workspace URI must be under workspace root: {uri}") from exc
+        return path
+
+    def _resolve_relative_file(self, workspace: Path, rel: str) -> Path:
+        relative = str(rel).strip().replace("\\", "/")
+        if not relative:
+            raise ValueError("Workspace file path is required.")
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError("Workspace file path must be a safe relative path.")
+        resolved = (workspace / relative_path).resolve()
+        try:
+            resolved.relative_to(workspace)
+        except ValueError as exc:
+            raise ValueError("Workspace file path must be a safe relative path.") from exc
+        return resolved

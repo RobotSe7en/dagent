@@ -642,7 +642,7 @@ test('mcp sidebar selection distinguishes servers from child tools', () => {
 });
 
 test('api helpers send agent preset and chat scope request bodies', async () => {
-  const { createAgent, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
+  const { createAgent, listRunEvents, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
     '../src/dagArtifacts.ts',
@@ -660,6 +660,7 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
         },
       }),
       json: async () => ({
+        ...(String(url).includes('/runs/run_abc/events') ? { events: [{ event_id: 8, event_type: 'run.finished' }] } : {}),
         agent: { id: 'agent.helper', name: 'helper', profile: 'conversation', max_steps: 4 },
         agents: [],
         errors: {},
@@ -695,6 +696,8 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
       agentScope: 'selected',
       agentIds: ['agent.helper'],
     });
+    const events = await listRunEvents('run_abc', 7);
+    assert.deepEqual(events, [{ event_id: 8, event_type: 'run.finished' }]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -722,6 +725,8 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
     agent_scope: 'selected',
     agent_ids: ['agent.helper'],
   });
+  assert.equal(calls[3].url, '/api/runs/run_abc/events?after_event_id=7');
+  assert.equal(calls[3].init.method, undefined);
 });
 
 test('value binding helpers create labels and rewrite node output references', () => {
@@ -1808,7 +1813,8 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /const deleteConversationFromSidebar = async \(conversationId: string\)/);
   assert.match(appSource, /const confirmConversationDelete = async \(\)/);
   assert.match(appSource, /await deleteConversation\(conversationDeleteTarget\.id\)/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{setChatSub\}/);
+  assert.match(appSource, /const selectChatSub = \(sub: ChatWorkspaceSub\) => \{[\s\S]*setChatSub\(sub\);[\s\S]*sub === 'projects'[\s\S]*setSelectedConversationId\(''\)/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
   assert.match(sidebarSource, /chatSub: ChatWorkspaceSub;/);
   assert.match(sidebarSource, /onChatSubChange: \(sub: ChatWorkspaceSub\) => void;/);
   assert.match(sidebarSource, /const chatSubnav = \[/);
@@ -1844,6 +1850,21 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(runStreamSource, /activeConversationContext \? null : runState/);
   assert.match(resumeDagSource, /conversationId: activeConversationContext\.conversationId/);
   assert.match(resumeCapabilitySource, /conversationId: activeConversationContext\.conversationId/);
+});
+
+test('persisted conversation selection hydrates the last run snapshot', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /export interface ApiRunEvent/);
+  assert.match(apiSource, /export async function listRunEvents\(runId: string, afterEventId = 0\): Promise<ApiRunEvent\[\]>/);
+  assert.match(apiSource, /`\$\{API_BASE\}\/runs\/\$\{encodeURIComponent\(runId\)\}\/events\$\{params\}`/);
+  assert.match(appSource, /function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
+  assert.match(appSource, /function messagesFromPersistedRunResult\(result: ApiRunResult, traceSnapshot: TraceLogEvent\[\]\): ChatMessage\[\]/);
+  assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
+  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace\)\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result\);/);
+  assert.match(appSource, /if \(!selectedConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedConversation\);/);
 });
 
 test('project management uses custom dialogs and standalone conversation list', async () => {
@@ -1903,6 +1924,10 @@ test('project detail workspace manages files with tree and preview', async () =>
   assert.match(appSource, /function ProjectFileManager/);
   assert.match(appSource, /function ProjectFilePreviewPane/);
   assert.match(appSource, /function projectFilePreviewArtifactItem/);
+  assert.match(appSource, /const projectFilesRequestRef = useRef\(0\);/);
+  assert.match(appSource, /const projectFilePreviewRequestRef = useRef\(0\);/);
+  assert.match(appSource, /const requestId = projectFilesRequestRef\.current \+ 1;[\s\S]*projectFilesRequestRef\.current = requestId;[\s\S]*if \(projectFilesRequestRef\.current !== requestId\) return;/);
+  assert.match(appSource, /const requestId = projectFilePreviewRequestRef\.current \+ 1;[\s\S]*projectFilePreviewRequestRef\.current = requestId;[\s\S]*if \(projectFilePreviewRequestRef\.current !== requestId\) return;/);
   assert.match(appSource, /<ProjectDetailWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
   assert.match(appSource, /selectedConversation \|\| chatSub !== 'projects' \? \([\s\S]*<ChatWorkspace[\s\S]*artifactPanelOpen=\{artifactDrawerOpen\}/);
   const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';

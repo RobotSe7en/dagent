@@ -727,7 +727,7 @@ export interface ApiRunState {
   workspace_path?: string | null;
 }
 
-interface ApiRunResult {
+export interface ApiRunResult {
   output_text: string;
   state?: ApiRunState | null;
 }
@@ -742,6 +742,16 @@ interface StreamEnvelope {
   data?: Record<string, unknown>;
   sequence?: number;
   run_id?: string | null;
+}
+
+export interface ApiRunEvent {
+  run_id: string;
+  event_id: number;
+  stream_id: string;
+  stream_seq: number;
+  event_type: string;
+  payload: StreamEnvelope;
+  created_at: number;
 }
 
 interface StreamHandlers {
@@ -846,6 +856,14 @@ export async function streamTask(
   }
 
   await readStream(response, handlers);
+}
+
+export async function listRunEvents(runId: string, afterEventId = 0): Promise<ApiRunEvent[]> {
+  const params = afterEventId > 0 ? `?${new URLSearchParams({ after_event_id: String(afterEventId) }).toString()}` : '';
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/events${params}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.events ?? [];
 }
 
 function messageStreamRequest(body: Record<string, unknown>, options: StreamRequestOptions): RequestInit {

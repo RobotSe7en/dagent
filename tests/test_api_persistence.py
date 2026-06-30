@@ -56,16 +56,32 @@ def test_local_workspace_store_uses_conversation_workspace(tmp_path: Path) -> No
     project_path = store.local_path_for(project_uri)
 
     assert standalone_uri == f"file://{tmp_path / '.dagent' / 'projects' / '_conversations' / 'conv_standalone' / 'workspace'}"
-    assert project_uri == f"file://{tmp_path / '.dagent' / 'projects' / 'proj_123' / 'conversations' / 'conv_project' / 'workspace'}"
+    assert project_uri == f"file://{tmp_path / '.dagent' / 'projects' / 'proj_123' / 'workspace'}"
     assert standalone_path.is_dir()
     assert project_path.is_dir()
     assert standalone_path.name == "workspace"
     assert project_path.name == "workspace"
+    assert project_path.parent.name == "proj_123"
+
+
+def test_local_workspace_store_rejects_paths_outside_root(tmp_path: Path) -> None:
+    store = LocalWorkspaceStore(tmp_path / ".dagent" / "projects")
+
+    with pytest.raises(ValueError, match="workspace root"):
+        store.local_path_for(f"file://{tmp_path / 'outside' / 'workspace'}")
+
+
+def test_local_workspace_store_open_file_rejects_relative_escape(tmp_path: Path) -> None:
+    store = LocalWorkspaceStore(tmp_path / ".dagent" / "projects")
+    uri = store.project_workspace_uri("proj_123")
+
+    with pytest.raises(ValueError, match="relative"):
+        store.open_file(uri, "../secret.txt")
 
 
 def test_sqlite_store_persists_projects_conversations_and_run_state(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
-    workspace_uri = f"file://{tmp_path / 'projects' / 'proj_123' / 'conversations' / 'conv_123' / 'workspace'}"
+    workspace_uri = f"file://{tmp_path / 'projects' / 'proj_123' / 'workspace'}"
     store = SQLiteStore(db_path)
     project = store.create_project(
         project_id="proj_123",
@@ -161,6 +177,30 @@ def test_sqlite_store_persists_standalone_conversation(tmp_path: Path) -> None:
     assert recovered_run is not None
     assert recovered_run.project_id is None
     assert recovered_run.workspace_uri == workspace_uri
+
+
+def test_sqlite_conversation_lock_spans_store_instances(tmp_path: Path) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    first = SQLiteStore(db_path)
+    second = SQLiteStore(db_path)
+    first.create_conversation(
+        conversation_id="conv_123",
+        project_id=None,
+        title="Inbox",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+    )
+
+    lock = first.acquire_conversation_lock("conv_123", owner="first")
+    try:
+        with pytest.raises(ConversationBusyError):
+            second.acquire_conversation_lock("conv_123", owner="second")
+    finally:
+        lock.release()
+
+    second_lock = second.acquire_conversation_lock("conv_123", owner="second")
+    second_lock.release()
+    first.close()
+    second.close()
 
 
 def test_run_events_have_durable_service_sequence(tmp_path: Path) -> None:
@@ -503,9 +543,24 @@ def test_api_project_file_management_rejects_workspace_escape(persistence_client
     assert (outside / "secret.txt").read_text(encoding="utf-8") == "secret"
 
 
+def test_api_project_file_move_rejects_directory_descendant_target(persistence_client) -> None:
+    project = persistence_client.post("/projects", json={"name": "Demo", "slug": "demo"}).json()["project"]
+    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
+    (workspace_path / "docs").mkdir()
+
+    response = persistence_client.patch(
+        f"/projects/{project['id']}/files",
+        json={"path": "docs", "new_path": "docs/archive/moved"},
+    )
+
+    assert response.status_code == 400
+    assert "descendant" in response.json()["detail"]
+    assert (workspace_path / "docs").is_dir()
+
+
 def test_api_creates_and_lists_project_conversations(persistence_client) -> None:
-    project_response = persistence_client.post("/projects", json={"name": "Demo", "slug": "demo"})
-    project_id = project_response.json()["project"]["id"]
+    project = persistence_client.post("/projects", json={"name": "Demo", "slug": "demo"}).json()["project"]
+    project_id = project["id"]
 
     response = persistence_client.post(
         f"/projects/{project_id}/conversations",
@@ -518,7 +573,7 @@ def test_api_creates_and_lists_project_conversations(persistence_client) -> None
     assert conversation["id"].startswith("conv_")
     assert conversation["project_id"] == project_id
     assert conversation["title"] == "First chat"
-    assert Path(unquote(urlparse(conversation["workspace_uri"]).path)).parent.name == conversation["id"]
+    assert conversation["workspace_uri"] == project["workspace_uri"]
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
 
@@ -549,7 +604,7 @@ def test_api_rejects_conversation_for_missing_project(persistence_client) -> Non
     assert response.status_code == 404
 
 
-def test_api_project_message_stream_uses_conversation_workspace(
+def test_api_project_message_stream_uses_project_workspace(
     persistence_client,
 ) -> None:
     state.runner = Runner(
@@ -590,9 +645,9 @@ def test_api_project_message_stream_uses_conversation_workspace(
     result = _sse_events(response.text)[-1]["data"]["result"]
 
     assert response.status_code == 200
-    assert result["state"]["workspace_path"] == str(conversation_workspace)
-    assert (conversation_workspace / "notes" / "project-chat.txt").read_text(encoding="utf-8") == "project"
-    assert not (project_workspace / "notes" / "project-chat.txt").exists()
+    assert conversation_workspace == project_workspace
+    assert result["state"]["workspace_path"] == str(project_workspace)
+    assert (project_workspace / "notes" / "project-chat.txt").read_text(encoding="utf-8") == "project"
 
 
 def test_api_standalone_message_stream_uses_conversation_workspace(
@@ -836,12 +891,13 @@ def test_api_project_message_stream_persists_run_events_and_state(
 
     assert response.status_code == 200
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert workspace_path == project_workspace_path
     assert (workspace_path / "notes" / "shared.txt").read_text(encoding="utf-8") == "hello"
-    assert not (project_workspace_path / "notes" / "shared.txt").exists()
     assert not (workspace_path / run_id).exists()
     persisted_run = store.get_run(run_id)
     persisted_state = store.get_run_state(run_id)
     persisted_events = store.list_run_events(run_id)
+    persisted_streams = store.list_run_streams(run_id)
     listed_runs = persistence_client.get(
         f"/projects/{project['id']}/conversations/{conversation['id']}/runs"
     )
@@ -857,6 +913,9 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert persisted_state.workspace_path == str(workspace_path)
     assert len(persisted_events) == len(events)
     assert [event.event_id for event in persisted_events] == list(range(1, len(events) + 1))
+    assert len(persisted_streams) == 1
+    assert persisted_streams[0].status == "completed"
+    assert persisted_streams[0].completed_at is not None
     assert listed_runs.status_code == 200
     assert [item["id"] for item in listed_runs.json()["runs"]] == [run_id]
     assert run_response.status_code == 200
@@ -907,6 +966,101 @@ def test_api_project_message_stream_rejects_client_workspace_root(persistence_cl
 
     assert response.status_code == 400
     assert "workspace_root" in response.json()["detail"]
+
+
+def test_api_project_message_stream_requires_project_id_for_project_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "target": "tool",
+            "conversation_id": conversation["id"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "project_id" in response.json()["detail"]
+
+
+def test_api_unscoped_delete_rejects_project_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.delete(f"/conversations/{conversation['id']}")
+
+    assert response.status_code == 400
+    assert "project" in response.json()["detail"]
+    assert persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}"
+    ).status_code == 200
+
+
+def test_api_unscoped_review_resume_rejects_project_review(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "First chat"},
+    ).json()["conversation"]
+    store = state.get_store()
+    store.create_run(
+        run_id="tool_run_project_review",
+        project_id=project["id"],
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="awaiting_review",
+        workspace_uri=project["workspace_uri"],
+    )
+    store.upsert_review(
+        review_id="review_project",
+        run_id="tool_run_project_review",
+        project_id=project["id"],
+        kind="capability_review",
+    )
+
+    response = persistence_client.post("/reviews/review_project/resume", json={"approved": False})
+
+    assert response.status_code == 400
+    assert "project" in response.json()["detail"]
+
+
+def test_api_project_delete_rejects_active_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Busy chat"},
+    ).json()["conversation"]
+    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
+    lock = state.get_store().acquire_conversation_lock(conversation["id"], owner="manual")
+    try:
+        response = persistence_client.delete(f"/projects/{project['id']}")
+    finally:
+        lock.release()
+
+    assert response.status_code == 409
+    assert persistence_client.get(f"/projects/{project['id']}").status_code == 200
+    assert workspace_path.is_dir()
 
 
 def test_api_project_message_stream_locks_only_the_conversation(persistence_client) -> None:
