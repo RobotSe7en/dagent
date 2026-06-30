@@ -2,6 +2,8 @@ import type {
   AgentPreset,
   AgentPresetInput,
   AgentProfile,
+  ApiConversation,
+  ApiProject,
   CapabilityDefinition,
   CapabilityKind,
   CapabilityResult,
@@ -63,6 +65,42 @@ export async function setValidationEnabled(enabled: boolean): Promise<boolean> {
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return Boolean(data.enabled);
+}
+
+export async function listProjects(): Promise<ApiProject[]> {
+  const res = await fetch(`${API_BASE}/projects`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.projects ?? [];
+}
+
+export async function createProject(input: { name: string; slug?: string; description?: string | null }): Promise<ApiProject> {
+  const res = await fetch(`${API_BASE}/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.project;
+}
+
+export async function listProjectConversations(projectId: string): Promise<ApiConversation[]> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversations ?? [];
+}
+
+export async function createProjectConversation(projectId: string, input: { title: string }): Promise<ApiConversation> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversation;
 }
 
 export async function listCapabilities(kind?: CapabilityKind): Promise<CapabilityDefinition[]> {
@@ -602,6 +640,11 @@ interface StreamHandlers {
 interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
+  project?: {
+    projectId: string;
+    conversationId: string;
+  };
+  projectId?: string;
 }
 
 export interface ChatStreamMessage {
@@ -627,6 +670,10 @@ export async function streamMessagesTask(
     Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
+  if (options.project) {
+    body.project_id = options.project.projectId;
+    body.conversation_id = options.project.conversationId;
+  }
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     ...messageStreamRequest(body, options),
@@ -659,6 +706,10 @@ export async function streamTask(
   }
   if (state) body.state = state;
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
+  if (options.project) {
+    body.project_id = options.project.projectId;
+    body.conversation_id = options.project.conversationId;
+  }
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     ...messageStreamRequest(body, options),
@@ -697,17 +748,29 @@ export async function resumeDagReview(
   options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
-  const response = await fetch(`${API_BASE}/messages/resume`, {
+  const projectId = options.projectId;
+  const url = projectId
+    ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+    : `${API_BASE}/messages/resume`;
+  const body = projectId
+    ? {
+        dag: approved ? dag : null,
+        approved,
+        review_level: reviewLevel,
+        ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+      }
+    : {
+        review_id: reviewId,
+        dag: approved ? dag : null,
+        approved,
+        review_level: reviewLevel,
+        state,
+        ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+      };
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      review_id: reviewId,
-      dag: approved ? dag : null,
-      approved,
-      review_level: reviewLevel,
-      state,
-      ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
-    }),
+    body: JSON.stringify(body),
     signal: options.signal,
   });
   if (!response.ok || !response.body) {
@@ -974,15 +1037,25 @@ export async function resumeCapabilityReview(
   options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
-  const response = await fetch(`${API_BASE}/messages/resume`, {
+  const projectId = options.projectId;
+  const url = projectId
+    ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
+    : `${API_BASE}/messages/resume`;
+  const body = projectId
+    ? {
+        approved,
+        ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+      }
+    : {
+        review_id: reviewId,
+        approved,
+        state,
+        ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+      };
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      review_id: reviewId,
-      approved,
-      state,
-      ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
-    }),
+    body: JSON.stringify(body),
     signal: options.signal,
   });
   if (!response.ok || !response.body) {

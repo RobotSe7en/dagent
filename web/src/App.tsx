@@ -60,6 +60,8 @@ import {
   createAgent,
   createMcpServer,
   createModelProvider,
+  createProject,
+  createProjectConversation,
   createPythonTool,
   deleteAgent,
   deleteCapability,
@@ -77,6 +79,8 @@ import {
   listDags,
   listMcpServers,
   listModels,
+  listProjectConversations,
+  listProjects,
   listPythonTools,
   listProfiles,
   listRunArtifacts,
@@ -114,6 +118,8 @@ import type {
   AgentPreset,
   AgentPresetInput,
   AgentProfile,
+  ApiConversation,
+  ApiProject,
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
@@ -894,6 +900,11 @@ export function App() {
   const [chatAgentScope, setChatAgentScope] = useState<AgentScopeMode>('none');
   const [selectedChatAgentIds, setSelectedChatAgentIds] = useState<string[]>([]);
   const [capabilityScopeOpen, setCapabilityScopeOpen] = useState(false);
+  const [projects, setProjects] = useState<ApiProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [projectConversations, setProjectConversations] = useState<ApiConversation[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState('');
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -1054,6 +1065,17 @@ export function App() {
       : null
   );
   const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId],
+  );
+  const selectedConversation = useMemo(
+    () => projectConversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
+    [projectConversations, selectedConversationId],
+  );
+  const activeProjectContext = selectedProject && selectedConversation
+    ? { projectId: selectedProject.id, conversationId: selectedConversation.id }
+    : undefined;
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -1090,6 +1112,57 @@ export function App() {
   useEffect(() => {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listProjects()
+      .then((items) => {
+        if (cancelled) return;
+        setProjects(items);
+        setSelectedProjectId((current) => (
+          current && items.some((project) => project.id === current)
+            ? current
+            : items[0]?.id ?? ''
+        ));
+        setProjectError(null);
+      })
+      .catch((exc) => {
+        if (!cancelled) setProjectError(exc instanceof Error ? exc.message : String(exc));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setProjectConversations([]);
+      setSelectedConversationId('');
+      return;
+    }
+    let cancelled = false;
+    void listProjectConversations(selectedProjectId)
+      .then((items) => {
+        if (cancelled) return;
+        setProjectConversations(items);
+        setSelectedConversationId((current) => (
+          current && items.some((conversation) => conversation.id === current)
+            ? current
+            : items[0]?.id ?? ''
+        ));
+        setProjectError(null);
+      })
+      .catch((exc) => {
+        if (!cancelled) {
+          setProjectConversations([]);
+          setSelectedConversationId('');
+          setProjectError(exc instanceof Error ? exc.message : String(exc));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
 
   useEffect(() => {
     setRunArtifactFiles([]);
@@ -2473,6 +2546,10 @@ export function App() {
 
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
+    if (selectedProject && !selectedConversation) {
+      setProjectError('请先新建会话。');
+      return;
+    }
     const prompt = draft.trim();
     const uploadsForRequest = pendingChatUploads;
     setDraft('');
@@ -2502,6 +2579,9 @@ export function App() {
     });
     const signal = beginStreamRequest();
     try {
+      const streamOptions = activeProjectContext
+        ? { signal, uploads: uploadsForRequest, project: activeProjectContext }
+        : { signal, uploads: uploadsForRequest };
       await streamTask(prompt, target, reviewLevel, {
         onStarted: () => {
           if (uploadsForRequest.length) {
@@ -2534,6 +2614,13 @@ export function App() {
           const resultDag = result.state?.dag ?? null;
           const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
+          if (activeProjectContext && result.state?.run_id) {
+            setProjectConversations((items) => items.map((conversation) => (
+              conversation.id === activeProjectContext.conversationId
+                ? { ...conversation, last_run_id: result.state?.run_id ?? conversation.last_run_id }
+                : conversation
+            )));
+          }
           flushQueuedTokensNow();
           closeAssistantReasoning();
           if (resultDag) {
@@ -2555,7 +2642,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState, undefined, { signal, uploads: uploadsForRequest });
+      }, capabilityScope, activeProjectContext ? null : runState, undefined, streamOptions);
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -2649,7 +2736,10 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback, { signal });
+      }, activeProjectContext ? null : runState, feedback, {
+        signal,
+        ...(activeProjectContext ? { projectId: activeProjectContext.projectId } : {}),
+      });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
         restoreDagReviewAfterAbort(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages);
@@ -2724,7 +2814,10 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback, { signal });
+      }, activeProjectContext ? null : runState, feedback, {
+        signal,
+        ...(activeProjectContext ? { projectId: activeProjectContext.projectId } : {}),
+      });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
         restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
@@ -2742,19 +2835,33 @@ export function App() {
 
   const newChat = async () => {
     if (streaming) return;
-    try {
-      await resetSession();
-      const enabled = await getValidationStatus();
-      setValidationEnabled(enabled);
-      setValidationError(null);
-      setDagReview(null);
-      setDagReviewFeedback('');
-      setCapabilityReview(null);
-      setCapabilityReviewFeedback('');
-      setRunState(null);
-    } catch (exc) {
-      setValidationError(exc instanceof Error ? exc.message : String(exc));
+    if (selectedProjectId) {
+      try {
+        const conversation = await createProjectConversation(selectedProjectId, {
+          title: `会话 ${projectConversations.length + 1}`,
+        });
+        setProjectConversations((items) => [conversation, ...items]);
+        setSelectedConversationId(conversation.id);
+        setProjectError(null);
+      } catch (exc) {
+        setProjectError(exc instanceof Error ? exc.message : String(exc));
+        return;
+      }
+    } else {
+      try {
+        await resetSession();
+        const enabled = await getValidationStatus();
+        setValidationEnabled(enabled);
+        setValidationError(null);
+      } catch (exc) {
+        setValidationError(exc instanceof Error ? exc.message : String(exc));
+      }
     }
+    setDagReview(null);
+    setDagReviewFeedback('');
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    setRunState(null);
     setMessages([]);
     setDraft('');
     setPendingChatUploads([]);
@@ -2765,6 +2872,58 @@ export function App() {
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
     stopTokenTimer();
+  };
+
+  const clearChatSurface = () => {
+    setMessages([]);
+    setDraft('');
+    setPendingChatUploads([]);
+    syncDag(emptyDag);
+    setTrace([]);
+    setError(null);
+    setReviewOpen(false);
+    setDagReview(null);
+    setDagReviewFeedback('');
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    setRunState(null);
+    setRunArtifactFiles([]);
+    setSelectedArtifactId('');
+    tokenQueueRef.current = [];
+    contentStreamedRef.current = false;
+    stopTokenTimer();
+  };
+
+  const selectProject = (projectId: string) => {
+    if (streaming || projectId === selectedProjectId) return;
+    setSelectedProjectId(projectId);
+    setSelectedConversationId('');
+    clearChatSurface();
+  };
+
+  const selectConversation = (conversationId: string) => {
+    if (streaming || conversationId === selectedConversationId) return;
+    setSelectedConversationId(conversationId);
+    clearChatSurface();
+  };
+
+  const createProjectFromSidebar = async () => {
+    if (streaming) return;
+    const name = window.prompt('项目名称');
+    const cleanName = name?.trim();
+    if (!cleanName) return;
+    try {
+      const project = await createProject({ name: cleanName });
+      const conversation = await createProjectConversation(project.id, { title: '会话 1' });
+      setProjects((items) => [project, ...items]);
+      setSelectedProjectId(project.id);
+      setProjectConversations([conversation]);
+      setSelectedConversationId(conversation.id);
+      setProjectError(null);
+      clearChatSurface();
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    }
   };
 
   return (
@@ -2786,13 +2945,18 @@ export function App() {
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
+        projectError={projectError}
+        projects={projects}
+        projectConversations={projectConversations}
         pythonTools={pythonTools}
         profiles={profiles}
         orchestrationMode={orchestrationMode}
         savedDags={visibleSavedDags}
         selectedDagId={editorUserDag.id}
         selectedAgentPresetId={selectedAgentPresetId}
+        selectedConversationId={selectedConversationId}
         selectedModelId={selectedModelId}
+        selectedProjectId={selectedProjectId}
         selectedProfileId={selectedProfileId}
         selectedToolCapabilityId={selectedToolCapabilityId}
         selectedToolMcpName={selectedToolMcpName}
@@ -2808,6 +2972,7 @@ export function App() {
         onCreateAgentPreset={requestAgentPresetCreation}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
         onCreateModel={requestModelCreation}
+        onCreateProject={() => void createProjectFromSidebar()}
         onCreateProfile={requestProfileCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
@@ -2825,6 +2990,8 @@ export function App() {
           setCreatingModel(false);
           setSelectedModelId(id);
         }}
+        onSelectConversation={selectConversation}
+        onSelectProject={selectProject}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
         onSelectToolMcp={selectToolMcpResource}
@@ -2858,6 +3025,8 @@ export function App() {
             messageListRef={messageListRef}
             messages={messages}
             pendingUploads={pendingChatUploads}
+            projectName={selectedProject?.name ?? null}
+            conversationTitle={selectedConversation?.title ?? null}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -3095,13 +3264,18 @@ function WorkspaceSidebar({
   onlyOfficeEnabled,
   mcpCount,
   mcpServers,
+  projectError,
+  projects,
+  projectConversations,
   orchestrationMode,
   pythonTools,
   profiles,
   savedDags,
   selectedDagId,
   selectedAgentPresetId,
+  selectedConversationId,
   selectedModelId,
+  selectedProjectId,
   selectedProfileId,
   selectedToolCapabilityId,
   selectedToolMcpName,
@@ -3117,6 +3291,7 @@ function WorkspaceSidebar({
   onCreateAgentPreset,
   onCreateMcp,
   onCreateModel,
+  onCreateProject,
   onCreateProfile,
   onCreateTool,
   onDeleteArtifact,
@@ -3126,7 +3301,9 @@ function WorkspaceSidebar({
   onNewChat,
   onNewDag,
   onSelectAgentPreset,
+  onSelectConversation,
   onSelectProfile,
+  onSelectProject,
   onSelectModel,
   onSelectSkillFile,
   onSelectToolCapability,
@@ -3158,13 +3335,18 @@ function WorkspaceSidebar({
   onlyOfficeEnabled: boolean;
   mcpCount: number;
   mcpServers: MCPServer[];
+  projectError: string | null;
+  projects: ApiProject[];
+  projectConversations: ApiConversation[];
   orchestrationMode: OrchestrationMode;
   pythonTools: PythonToolEntry[];
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
   selectedAgentPresetId: string;
+  selectedConversationId: string;
   selectedModelId: string;
+  selectedProjectId: string;
   selectedProfileId: string;
   selectedToolCapabilityId: string;
   selectedToolMcpName: string;
@@ -3180,6 +3362,7 @@ function WorkspaceSidebar({
   onCreateAgentPreset: () => void;
   onCreateMcp: () => void;
   onCreateModel: () => void;
+  onCreateProject: () => void;
   onCreateProfile: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
@@ -3189,7 +3372,9 @@ function WorkspaceSidebar({
   onNewChat: () => void;
   onNewDag: () => void;
   onSelectAgentPreset: (id: string) => void;
+  onSelectConversation: (id: string) => void;
   onSelectProfile: (id: string) => void;
+  onSelectProject: (id: string) => void;
   onSelectModel: (id: string) => void;
   onSelectSkillFile: (filePath: string | null) => void;
   onSelectToolCapability: (id: string) => void;
@@ -3252,6 +3437,14 @@ function WorkspaceSidebar({
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
   const visibleHistory = history.filter((item) => matchesSearchQuery(
     [item.id, item.title, item.time],
+    normalizedHistoryQuery,
+  ));
+  const visibleProjects = projects.filter((project) => matchesSearchQuery(
+    [project.id, project.name, project.slug, project.description],
+    normalizedHistoryQuery,
+  ));
+  const visibleConversations = projectConversations.filter((conversation) => matchesSearchQuery(
+    [conversation.id, conversation.title, conversation.status],
     normalizedHistoryQuery,
   ));
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
@@ -3749,8 +3942,8 @@ function WorkspaceSidebar({
       {activeWorkspace === 'chat' ? (
         <section className="sidebar-history">
           <div className="sidebar-history-head">
-            <span>历史对话</span>
-            <button onClick={onNewChat} title="新建对话" type="button">
+            <span>项目</span>
+            <button onClick={onCreateProject} title="新建项目" type="button">
               <Plus size={14} />
             </button>
           </div>
@@ -3758,17 +3951,50 @@ function WorkspaceSidebar({
             value={historyQuery}
             onChange={setHistoryQuery}
           />
+          {projectError ? <div className="sidebar-error-row">{projectError}</div> : null}
           <div className="sidebar-history-list">
-            {visibleHistory.length ? visibleHistory.map((item, index) => (
-              <button className={index === 0 ? 'active' : ''} key={item.id} type="button">
+            {visibleProjects.length ? visibleProjects.map((project) => (
+              <button
+                className={project.id === selectedProjectId ? 'active' : ''}
+                key={project.id}
+                onClick={() => onSelectProject(project.id)}
+                title={project.workspace_uri}
+                type="button"
+              >
                 <span>
-                  <MessageSquare size={13} />
-                  <strong>{item.title}</strong>
+                  <Folder size={13} />
+                  <strong>{project.name}</strong>
                 </span>
-                <em>{item.time}</em>
+                <em>{project.slug}</em>
               </button>
             )) : (
-              <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的对话' : '暂无历史对话'}</div>
+              <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的项目' : '暂无项目'}</div>
+            )}
+          </div>
+          <div className="sidebar-history-head sidebar-conversation-head">
+            <span>会话</span>
+            <button onClick={onNewChat} title="新建会话" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <div className="sidebar-history-list">
+            {visibleConversations.length ? visibleConversations.map((conversation) => (
+              <button
+                className={conversation.id === selectedConversationId ? 'active' : ''}
+                key={conversation.id}
+                onClick={() => onSelectConversation(conversation.id)}
+                type="button"
+              >
+                <span>
+                  <MessageSquare size={13} />
+                  <strong>{conversation.title}</strong>
+                </span>
+                <em>{conversation.last_run_id ? 'active' : 'new'}</em>
+              </button>
+            )) : (
+              <div className="sidebar-empty-row">
+                {selectedProjectId ? (normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话') : '先选择项目'}
+              </div>
             )}
           </div>
         </section>
@@ -4001,7 +4227,7 @@ function WorkspaceSidebar({
       <div className="sidebar-foot">
         <div className="workspace-root-chip">
           <span />
-          <code>.dagent/runs</code>
+          <code>{selectedProjectId ? '.dagent/projects' : '.dagent/runs'}</code>
         </div>
         <div className="sidebar-user">
           <div>RX</div>
@@ -4055,6 +4281,8 @@ function ChatWorkspace({
   messageListRef,
   messages,
   pendingUploads,
+  projectName,
+  conversationTitle,
   reviewLevel,
   selectedArtifact,
   selectedArtifactId,
@@ -4092,6 +4320,8 @@ function ChatWorkspace({
   messageListRef: React.RefObject<HTMLDivElement | null>;
   messages: ChatMessage[];
   pendingUploads: File[];
+  projectName: string | null;
+  conversationTitle: string | null;
   reviewLevel: ReviewLevel;
   selectedArtifact: WorkbenchArtifactItem | null;
   selectedArtifactId: string;
@@ -4115,6 +4345,9 @@ function ChatWorkspace({
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const title = currentChatTitle(messages);
+  const sessionLabel = projectName && conversationTitle
+    ? `${projectName} / ${conversationTitle}`
+    : 'local session';
   const [pendingUploadsExpanded, setPendingUploadsExpanded] = useState(false);
   const pendingUploadGroups = useMemo(() => buildPendingUploadGroups(pendingUploads), [pendingUploads]);
   const visiblePendingUploads = useMemo(
@@ -4134,7 +4367,7 @@ function ChatWorkspace({
             <div className="conversation-meta">
               <strong>{title}</strong>
               <span />
-              <code>session · {messages.length} turns</code>
+              <code>{sessionLabel} · {messages.length} turns</code>
             </div>
             {error ? <div className="error-banner">{error}</div> : null}
             {messages.length === 0 ? (

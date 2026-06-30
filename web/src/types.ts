@@ -1,6 +1,32 @@
 export type RiskLevel = 'low' | 'medium' | 'high';
 export type ReviewLevel = 'fast' | 'careful';
 
+export interface ApiProject {
+  id: string;
+  org_id: string;
+  owner_user_id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  workspace_uri: string;
+  settings: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  archived_at?: number | null;
+}
+
+export interface ApiConversation {
+  id: string;
+  project_id: string;
+  org_id: string;
+  title: string;
+  status: string;
+  last_run_id?: string | null;
+  created_at: number;
+  updated_at: number;
+  archived_at?: number | null;
+}
+
 export type ValuePathItem = string | number;
 
 export type ValueExpr =

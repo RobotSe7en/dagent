@@ -892,7 +892,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.ok(directorySource, 'CapabilityDirectory function should exist');
 
   assert.match(appSource, /const defaultWorkspaceRoot = 'runs';/);
-  assert.match(appSource, /<code>\.dagent\/runs<\/code>/);
+  assert.match(appSource, /selectedProjectId \? '\.dagent\/projects' : '\.dagent\/runs'/);
   assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
   assert.match(appSource, /<OrchestrationWorkspace[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
@@ -1779,17 +1779,18 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
   assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal, uploads: uploadsForRequest \}\);/);
+  assert.match(runStreamSource, /const streamOptions = activeProjectContext[\s\S]*\{ signal, uploads: uploadsForRequest/);
+  assert.match(runStreamSource, /streamTask\([\s\S]*streamOptions\);/);
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
   assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
   assert.match(resumeDagSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(resumeDagSource, /resumeDagReview\([\s\S]*\{ signal \}\);/);
+  assert.match(resumeDagSource, /resumeDagReview\([\s\S]*signal,[\s\S]*projectId: activeProjectContext\.projectId/);
   assert.match(resumeDagSource, /const previousDagReview = dagReview;/);
   assert.match(resumeDagSource, /const previousDagReviewFeedback = dagReviewFeedback;/);
   assert.match(resumeDagSource, /restoreDagReviewAfterAbort\(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages\);/);
   assert.match(resumeCapabilitySource, /const signal = beginStreamRequest\(\);/);
-  assert.match(resumeCapabilitySource, /resumeCapabilityReview\([\s\S]*\{ signal \}\);/);
+  assert.match(resumeCapabilitySource, /resumeCapabilityReview\([\s\S]*signal,[\s\S]*projectId: activeProjectContext\.projectId/);
   assert.match(resumeCapabilitySource, /const previousCapabilityReview = capabilityReview;/);
   assert.match(resumeCapabilitySource, /const previousCapabilityReviewFeedback = capabilityReviewFeedback;/);
   assert.match(resumeCapabilitySource, /restoreCapabilityReviewAfterAbort\(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages\);/);
