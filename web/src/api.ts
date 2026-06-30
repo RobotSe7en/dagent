@@ -25,6 +25,7 @@ import type {
   MCPServerConfig,
   ModelProvider,
   ModelProviderInput,
+  OnlyOfficeSettings,
   PythonToolConfig,
   PythonToolEntry,
   RunArtifactFile,
@@ -524,6 +525,33 @@ export async function activateModelProvider(modelId: string): Promise<{ model: M
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   return await res.json();
+}
+
+export async function getOnlyOfficeSettings(): Promise<OnlyOfficeSettings> {
+  const res = await fetch(`${API_BASE}/system/onlyoffice`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return normalizeOnlyOfficeSettings(data);
+}
+
+export async function updateOnlyOfficeSettings(payload: OnlyOfficeSettings): Promise<OnlyOfficeSettings> {
+  const res = await fetch(`${API_BASE}/system/onlyoffice`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return normalizeOnlyOfficeSettings(data);
+}
+
+function normalizeOnlyOfficeSettings(data: Partial<OnlyOfficeSettings>): OnlyOfficeSettings {
+  return {
+    enabled: Boolean(data.enabled),
+    document_server_url: data.document_server_url ?? null,
+    public_api_base: data.public_api_base ?? null,
+    lang: data.lang || 'zh',
+  };
 }
 
 export interface ApiRunState {

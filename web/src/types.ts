@@ -390,7 +390,14 @@ export interface AgentPreset {
 
 export type AgentPresetInput = Omit<AgentPreset, 'id'>;
 
-export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents' | 'models';
+export interface OnlyOfficeSettings {
+  enabled: boolean;
+  document_server_url?: string | null;
+  public_api_base?: string | null;
+  lang: string;
+}
+
+export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents' | 'system';
 
 export interface SkillSummary {
   name: string;

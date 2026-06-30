@@ -45,6 +45,7 @@ import {
   Save,
   Search,
   Send,
+  Settings,
   SlidersHorizontal,
   Trash2,
   Upload,
@@ -68,6 +69,7 @@ import {
   getSkill,
   getSkillFile,
   getValidationStatus,
+  getOnlyOfficeSettings,
   installSkill,
   listAgents,
   listCapabilities,
@@ -95,6 +97,7 @@ import {
   uploadPythonTool,
   updateMcpServer,
   updateModelProvider,
+  updateOnlyOfficeSettings,
   updatePythonTool,
   updateAgent,
   validatePythonTool,
@@ -138,6 +141,7 @@ import type {
   ModelApiKeyAction,
   ModelProvider,
   ModelProviderInput,
+  OnlyOfficeSettings,
   PythonToolConfig,
   PythonToolEntry,
   SkillDetail,
@@ -288,18 +292,25 @@ const defaultModelDraft: ModelProviderInput = {
   extra_body: {},
 };
 
+const defaultOnlyOfficeSettings: OnlyOfficeSettings = {
+  enabled: false,
+  document_server_url: null,
+  public_api_base: null,
+  lang: 'zh',
+};
+
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
   { key: 'chat', label: '智能工作台', icon: <LayoutDashboard size={16} /> },
   { key: 'orchestration', label: '智能体编排', icon: <GitBranch size={16} /> },
   { key: 'tools', label: '能力管理', icon: <Wrench size={16} /> },
   { key: 'agents', label: '智能体管理', icon: <Bot size={16} /> },
-  { key: 'models', label: '模型管理', icon: <SlidersHorizontal size={16} /> },
+  { key: 'system', label: '系统管理', icon: <Settings size={16} /> },
 ];
 
 const workspacePlaceholderLabels: Record<Exclude<WorkspaceKey, 'chat'>, string> = {
   orchestration: 'AI 编排工作区',
   tools: '能力管理工作区',
-  models: '模型管理工作区',
+  system: '系统管理工作区',
   agents: '智能体管理工作区',
 };
 
@@ -657,6 +668,7 @@ type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type AgentManagementSub = 'profiles' | 'presets';
+type SystemManagementSub = 'models' | 'onlyoffice';
 type TokenChannel = 'reasoning' | 'content';
 type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
 type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
@@ -938,6 +950,7 @@ export function App() {
   const [dynamicMessageOrder, setDynamicMessageOrder] = useState(0);
   const [dynamicRunning, setDynamicRunning] = useState(false);
   const [agentManagementSub, setAgentManagementSub] = useState<AgentManagementSub>('profiles');
+  const [systemManagementSub, setSystemManagementSub] = useState<SystemManagementSub>('models');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
   const [profileWarnings, setProfileWarnings] = useState<ProfileWarning[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
@@ -950,6 +963,7 @@ export function App() {
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [pythonTools, setPythonTools] = useState<PythonToolEntry[]>([]);
   const [models, setModels] = useState<ModelProvider[]>([]);
+  const [onlyOfficeSettings, setOnlyOfficeSettings] = useState<OnlyOfficeSettings>(defaultOnlyOfficeSettings);
   const [activeModelId, setActiveModelId] = useState('config');
   const [selectedModelId, setSelectedModelId] = useState('config');
   const [creatingModel, setCreatingModel] = useState(false);
@@ -1151,7 +1165,8 @@ export function App() {
   }, []);
 
   const requestModelCreation = useCallback(() => {
-    setActiveWorkspace('models');
+    setActiveWorkspace('system');
+    setSystemManagementSub('models');
     setCreatingModel(true);
   }, []);
 
@@ -1198,7 +1213,17 @@ export function App() {
   const refreshConsoleData = useCallback(async () => {
     setConsoleError(null);
     try {
-      const [nextCapabilities, nextSpecs, nextProfiles, nextAgents, nextSkills, nextMcpServers, nextPythonTools, nextModels] = await Promise.all([
+      const [
+        nextCapabilities,
+        nextSpecs,
+        nextProfiles,
+        nextAgents,
+        nextSkills,
+        nextMcpServers,
+        nextPythonTools,
+        nextModels,
+        nextOnlyOfficeSettings,
+      ] = await Promise.all([
         listCapabilities(),
         listDags(),
         listProfiles(),
@@ -1207,6 +1232,7 @@ export function App() {
         listMcpServers(),
         listPythonTools(),
         listModels(),
+        getOnlyOfficeSettings(),
       ]);
       setCapabilities(nextCapabilities);
       setSavedDags(nextSpecs);
@@ -1218,6 +1244,7 @@ export function App() {
       setMcpServers(nextMcpServers);
       setPythonTools(nextPythonTools);
       setModels(nextModels.models);
+      setOnlyOfficeSettings(nextOnlyOfficeSettings);
       setActiveModelId(nextModels.active_model_id);
       setSelectedProfileId((current) => (
         current && nextProfiles.profiles.some((profile) => profile.id === current)
@@ -2727,7 +2754,9 @@ export function App() {
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
         history={chatHistory}
+        systemSub={systemManagementSub}
         models={models}
+        onlyOfficeEnabled={onlyOfficeSettings.enabled}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
         pythonTools={pythonTools}
@@ -2776,6 +2805,7 @@ export function App() {
         onSelectWorkspace={setActiveWorkspace}
         onOrchestrationModeChange={setOrchestrationMode}
         onAgentsSubChange={selectAgentManagementSub}
+        onSystemSubChange={setSystemManagementSub}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
         onToolsQueryChange={setToolsDirectoryQuery}
@@ -2909,11 +2939,13 @@ export function App() {
             onUploadSkillFile={(file) => void loadSkillFile(file)}
             onRefresh={refreshConsoleData}
           />
-        ) : activeWorkspace === 'models' ? (
-          <ModelManagementWorkspace
+        ) : activeWorkspace === 'system' ? (
+          <SystemManagementWorkspace
+            activeSub={systemManagementSub}
             activeModelId={activeModelId}
             creating={creatingModel}
             models={models}
+            onlyOfficeSettings={onlyOfficeSettings}
             selectedId={selectedModelId}
             onCreatingChange={setCreatingModel}
             onRefresh={refreshConsoleData}
@@ -3028,7 +3060,9 @@ function WorkspaceSidebar({
   creatingAgentPreset,
   creatingModel,
   history,
+  systemSub,
   models,
+  onlyOfficeEnabled,
   mcpCount,
   mcpServers,
   orchestrationMode,
@@ -3071,6 +3105,7 @@ function WorkspaceSidebar({
   onSelectWorkspace,
   onOrchestrationModeChange,
   onAgentsSubChange,
+  onSystemSubChange,
   onToolsSubChange,
   onToggleCollapsed,
   onToolsQueryChange,
@@ -3088,7 +3123,9 @@ function WorkspaceSidebar({
   creatingAgentPreset: boolean;
   creatingModel: boolean;
   history: Array<{ id: string; title: string; time: string }>;
+  systemSub: SystemManagementSub;
   models: ModelProvider[];
+  onlyOfficeEnabled: boolean;
   mcpCount: number;
   mcpServers: MCPServer[];
   orchestrationMode: OrchestrationMode;
@@ -3131,6 +3168,7 @@ function WorkspaceSidebar({
   onSelectWorkspace: (workspace: WorkspaceKey) => void;
   onOrchestrationModeChange: (mode: OrchestrationMode) => void;
   onAgentsSubChange: (sub: AgentManagementSub) => void;
+  onSystemSubChange: (sub: SystemManagementSub) => void;
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
   onToolsQueryChange: (query: string) => void;
@@ -3149,6 +3187,10 @@ function WorkspaceSidebar({
   const agentSubnav = [
     { key: 'profiles' as const, label: '角色设定', icon: <UserCog size={16} />, count: profiles.length },
     { key: 'presets' as const, label: '智能体预设', icon: <Bot size={16} />, count: agentPresetCount },
+  ];
+  const systemSubnav = [
+    { key: 'models' as const, label: '模型管理', icon: <SlidersHorizontal size={16} />, count: models.length },
+    { key: 'onlyoffice' as const, label: 'OnlyOffice配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
   ];
   const normalizedToolsQuery = normalizeSearchQuery(toolsQuery);
   const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
@@ -3621,6 +3663,44 @@ function WorkspaceSidebar({
               </div>
             );
           }
+          if (item.key === 'system') {
+            return (
+              <div className="sidebar-capability-nav" key={item.key}>
+                <button
+                  className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
+                  onClick={() => onCapabilityNavClick(item.key)}
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <span className="sidebar-capability-chevron" data-open={expandedMenu === item.key}>
+                    <ChevronRight size={14} />
+                  </span>
+                </button>
+                {expandedMenu === item.key ? (
+                  <div className="sidebar-subnav nested">
+                    {systemSubnav.map((subitem) => (
+                      <button
+                        className={systemSub === subitem.key ? 'active' : ''}
+                        key={subitem.key}
+                        onClick={() => {
+                          onSelectWorkspace('system');
+                          onSystemSubChange(subitem.key);
+                        }}
+                        title={subitem.label}
+                        type="button"
+                      >
+                        {subitem.icon}
+                        <span>{subitem.label}</span>
+                        <em>{subitem.count}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
           return (
             <button
               key={item.key}
@@ -3848,7 +3928,7 @@ function WorkspaceSidebar({
         </section>
       ) : null}
 
-      {activeWorkspace === 'models' ? (
+      {activeWorkspace === 'system' && systemSub === 'models' ? (
         <section className="sidebar-context-section">
           <div className="sidebar-history-head">
             <span>模型列表</span>
@@ -8295,6 +8375,186 @@ function pythonToolSourcePath(source: PythonToolEntry): string {
 
 function isEditableMcpSource(source: MCPServer['source']): boolean {
   return source === 'user';
+}
+
+function SystemManagementWorkspace({
+  activeSub,
+  activeModelId,
+  creating,
+  models,
+  onlyOfficeSettings,
+  selectedId,
+  onCreatingChange,
+  onRefresh,
+  onSelect,
+}: {
+  activeSub: SystemManagementSub;
+  activeModelId: string;
+  creating: boolean;
+  models: ModelProvider[];
+  onlyOfficeSettings: OnlyOfficeSettings;
+  selectedId: string;
+  onCreatingChange: (creating: boolean) => void;
+  onRefresh: () => Promise<void>;
+  onSelect: (id: string) => void;
+}) {
+  return activeSub === 'models' ? (
+    <ModelManagementWorkspace
+      activeModelId={activeModelId}
+      creating={creating}
+      models={models}
+      selectedId={selectedId}
+      onCreatingChange={onCreatingChange}
+      onRefresh={onRefresh}
+      onSelect={onSelect}
+    />
+  ) : (
+    <OnlyOfficeSettingsWorkspace
+      settings={onlyOfficeSettings}
+      onRefresh={onRefresh}
+    />
+  );
+}
+
+function OnlyOfficeSettingsWorkspace({
+  settings,
+  onRefresh,
+}: {
+  settings: OnlyOfficeSettings;
+  onRefresh: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<OnlyOfficeSettings>(() => normalizeOnlyOfficeDraft(settings));
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+  const configured = Boolean(
+    draft.enabled
+    && (draft.document_server_url ?? '').trim()
+    && (draft.public_api_base ?? '').trim(),
+  );
+
+  useEffect(() => {
+    setDraft(normalizeOnlyOfficeDraft(settings));
+    setMessage('');
+  }, [settings]);
+
+  const patchDraft = (patch: Partial<OnlyOfficeSettings>) => {
+    setDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    setMessage('Saving OnlyOffice settings...');
+    try {
+      const saved = await updateOnlyOfficeSettings(normalizeOnlyOfficeDraft(draft));
+      setDraft(normalizeOnlyOfficeDraft(saved));
+      await onRefresh();
+      setMessage('Saved OnlyOffice settings.');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const refreshSettings = async () => {
+    setSaving(true);
+    setMessage('Refreshing OnlyOffice settings...');
+    try {
+      await onRefresh();
+      setMessage('Refreshed OnlyOffice settings.');
+    } catch (exc) {
+      setMessage(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="design-models-workspace">
+      <section className="model-config-panel">
+        <div className="model-editor-toolbar">
+          <div className="agent-editor-icon">
+            <Settings size={15} />
+          </div>
+          <div>
+            <strong>OnlyOffice配置</strong>
+            <span>{draft.enabled ? 'enabled' : 'disabled'}</span>
+          </div>
+          <div>
+            <button className="secondary-button compact-button" onClick={refreshSettings} disabled={saving} type="button">
+              <RefreshCw size={13} />
+              刷新
+            </button>
+            <button className="primary-button compact-button" onClick={saveSettings} disabled={saving} type="button">
+              <Save size={13} />
+              保存
+            </button>
+          </div>
+        </div>
+
+        <div className="model-config-body">
+          <div className="model-secret-state" data-configured={configured}>
+            {configured ? <Check size={14} /> : <AlertTriangle size={14} />}
+            <span>{configured ? 'OnlyOffice 预览已配置' : draft.enabled ? '启用前需要填写服务地址' : 'OnlyOffice 预览未启用'}</span>
+          </div>
+          <div className="model-config-form onlyoffice-config-form">
+            <label className="model-checkbox-row">
+              <input
+                checked={draft.enabled}
+                onChange={(event) => patchDraft({ enabled: event.target.checked })}
+                type="checkbox"
+              />
+              <span>启用 OnlyOffice 预览</span>
+            </label>
+            <label>
+              Document Server URL
+              <input
+                value={draft.document_server_url ?? ''}
+                onChange={(event) => patchDraft({ document_server_url: event.target.value })}
+                placeholder="http://192.168.31.219:8089"
+              />
+            </label>
+            <label>
+              Public API Base
+              <input
+                value={draft.public_api_base ?? ''}
+                onChange={(event) => patchDraft({ public_api_base: event.target.value })}
+                placeholder="http://192.168.31.10:8001"
+              />
+            </label>
+            <label>
+              Language
+              <input
+                value={draft.lang}
+                onChange={(event) => patchDraft({ lang: event.target.value })}
+                placeholder="zh-CN"
+              />
+            </label>
+          </div>
+          <div className="agent-path-note">
+            <AlertTriangle size={14} />
+            <span>Public API Base 需要使用 Document Server 能访问到的后端地址。</span>
+          </div>
+          {message ? <p className="form-message">{message}</p> : null}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function normalizeOnlyOfficeDraft(settings: OnlyOfficeSettings): OnlyOfficeSettings {
+  return {
+    enabled: Boolean(settings.enabled),
+    document_server_url: cleanOnlyOfficeText(settings.document_server_url),
+    public_api_base: cleanOnlyOfficeText(settings.public_api_base),
+    lang: cleanOnlyOfficeText(settings.lang) ?? 'zh',
+  };
+}
+
+function cleanOnlyOfficeText(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const text = value.trim();
+  return text || null;
 }
 
 function ModelManagementWorkspace({

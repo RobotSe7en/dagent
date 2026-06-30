@@ -2847,6 +2847,50 @@ def test_api_onlyoffice_file_routes_reject_malformed_tokens() -> None:
     assert callback_response.status_code == 403
 
 
+def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
+    client = TestClient(app)
+
+    default_response = client.get("/system/onlyoffice")
+
+    assert default_response.status_code == 200
+    assert default_response.json() == {
+        "enabled": False,
+        "document_server_url": None,
+        "public_api_base": None,
+        "lang": "zh",
+    }
+
+    saved_response = client.put(
+        "/system/onlyoffice",
+        json={
+            "enabled": True,
+            "document_server_url": " http://192.168.31.219:8089/ ",
+            "public_api_base": " http://192.168.31.10:8001/ ",
+            "lang": " zh-CN ",
+        },
+    )
+
+    assert saved_response.status_code == 200
+    assert saved_response.json() == {
+        "enabled": True,
+        "document_server_url": "http://192.168.31.219:8089/",
+        "public_api_base": "http://192.168.31.10:8001/",
+        "lang": "zh-CN",
+    }
+    raw = yaml.safe_load(state.get_user_config_path().read_text(encoding="utf-8"))
+    assert raw["onlyoffice"] == {
+        "enabled": True,
+        "document_server_url": "http://192.168.31.219:8089/",
+        "public_api_base": "http://192.168.31.10:8001/",
+        "lang": "zh-CN",
+    }
+
+    reloaded_response = client.get("/system/onlyoffice")
+
+    assert reloaded_response.status_code == 200
+    assert reloaded_response.json() == saved_response.json()
+
+
 def test_api_run_artifacts_preview_truncates_on_utf8_boundary() -> None:
     state.runner = _runner(
         MockProvider([

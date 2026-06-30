@@ -176,6 +176,8 @@ can load. `public_api_base` must point to this FastAPI backend at an address the
 Document Server can reach, because generated preview configs contain signed file
 and callback URLs under that base. When `onlyoffice.enabled` is false or the
 URLs are missing, the WebUI falls back to its built-in browser preview path.
+The same settings can be edited in the WebUI under
+System Management -> OnlyOffice Configuration.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

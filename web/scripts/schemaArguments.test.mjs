@@ -139,6 +139,7 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /\{ key: 'orchestration', label: '智能体编排'/);
   assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
   assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
+  assert.match(appSource, /\{ key: 'system', label: '系统管理'/);
   assert.match(appSource, /streamTask\(prompt, target, reviewLevel/);
   assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runFiles: runArtifactFiles/);
   assert.match(appSource, /function DesignEmptyConversation/);
@@ -1308,29 +1309,45 @@ test('mcp management selects child tools and shows tool details separately from 
   assert.match(directorySource, /selectedMcpTool \? <Wrench size=\{15\} \/> : <Database size=\{15\} \/>/);
 });
 
-test('model management is a first-class workspace backed by runtime model APIs', async () => {
+test('system management nests models and OnlyOffice settings', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const typesSource = await readFile(new URL('../src/types.ts', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const appReturnSource = appSource.match(/<main className="workspace">[\s\S]*?<\/main>/)?.[0] ?? '';
+  const workspaceItemsSource = appSource.match(/const workspaceItems[\s\S]*?\];/)?.[0] ?? '';
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
-  const modelSource = appSource.match(/function ModelManagementWorkspace[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+  const systemSource = appSource.match(/function SystemManagementWorkspace[\s\S]*?\nfunction AgentManagementWorkspace/)?.[0] ?? '';
+  const modelSource = appSource.match(/function ModelManagementWorkspace[\s\S]*?\nfunction modelInputFromProvider/)?.[0] ?? '';
+  const onlyOfficeSource = appSource.match(/function OnlyOfficeSettingsWorkspace[\s\S]*?\nfunction ModelManagementWorkspace/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(systemSource, 'SystemManagementWorkspace should exist');
   assert.ok(modelSource, 'ModelManagementWorkspace should exist');
-  assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'models';/);
-  assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'models', label: '模型管理'/);
-  assert.match(appReturnSource, /activeWorkspace === 'models' \? \([\s\S]*<ModelManagementWorkspace/);
+  assert.ok(onlyOfficeSource, 'OnlyOfficeSettingsWorkspace should exist');
+  assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'system';/);
+  assert.match(workspaceItemsSource, /\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'system', label: '系统管理'/);
+  assert.doesNotMatch(workspaceItemsSource, /\{ key: 'models', label: '模型管理'/);
+  assert.match(appReturnSource, /activeWorkspace === 'system' \? \([\s\S]*<SystemManagementWorkspace/);
+  assert.match(systemSource, /activeSub === 'models' \? \(/);
+  assert.match(systemSource, /<ModelManagementWorkspace/);
+  assert.match(systemSource, /<OnlyOfficeSettingsWorkspace/);
+  assert.match(appSource, /const \[systemManagementSub, setSystemManagementSub\] = useState<SystemManagementSub>\('models'\);/);
   assert.match(appSource, /const \[models, setModels\] = useState<ModelProvider\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[onlyOfficeSettings, setOnlyOfficeSettings\] = useState<OnlyOfficeSettings>\(defaultOnlyOfficeSettings\);/);
   assert.match(appSource, /const \[activeModelId, setActiveModelId\] = useState\('config'\);/);
   assert.match(appSource, /listModels\(\)/);
+  assert.match(appSource, /getOnlyOfficeSettings\(\)/);
   assert.match(appSource, /const \[creatingModel, setCreatingModel\] = useState\(false\);/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*models=\{models\}[\s\S]*onCreateModel/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*systemSub=\{systemManagementSub\}[\s\S]*models=\{models\}[\s\S]*onSystemSubChange=\{setSystemManagementSub\}/);
+  assert.match(sidebarSource, /const systemSubnav = \[/);
+  assert.match(sidebarSource, /label: '模型管理'/);
+  assert.match(sidebarSource, /label: 'OnlyOffice配置'/);
+  assert.match(sidebarSource, /onSystemSubChange\(subitem\.key\)/);
   assert.match(sidebarSource, /模型列表/);
   assert.match(sidebarSource, /sidebar-model-list/);
   assert.match(sidebarSource, /onCreateModel/);
-  assert.match(sidebarSource, /visibleModels\.length \? visibleModels\.map/);
+  assert.match(sidebarSource, /activeWorkspace === 'system' && systemSub === 'models'/);
   assert.match(sidebarSource, /onSelectModel\(model\.id\)/);
   assert.match(modelSource, /className="design-models-workspace"/);
   assert.match(modelSource, /createModelProvider\(/);
@@ -1358,16 +1375,24 @@ test('model management is a first-class workspace backed by runtime model APIs',
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
+  assert.match(onlyOfficeSource, /OnlyOffice配置/);
+  assert.match(onlyOfficeSource, /Document Server URL/);
+  assert.match(onlyOfficeSource, /Public API Base/);
+  assert.match(onlyOfficeSource, /updateOnlyOfficeSettings\(/);
+  assert.match(typesSource, /export interface OnlyOfficeSettings/);
 
   assert.match(apiSource, /export async function listModels/);
   assert.match(apiSource, /export async function createModelProvider/);
   assert.match(apiSource, /export async function updateModelProvider/);
   assert.match(apiSource, /export async function deleteModelProvider/);
   assert.match(apiSource, /export async function activateModelProvider/);
+  assert.match(apiSource, /export async function getOnlyOfficeSettings/);
+  assert.match(apiSource, /export async function updateOnlyOfficeSettings/);
 
   assert.match(css, /\.design-models-workspace\s*\{[^}]*display:\s*flex;/s);
   assert.match(css, /\.sidebar-model-list/);
   assert.match(css, /\.model-config-form/);
+  assert.match(css, /\.onlyoffice-config-form/);
   assert.match(css, /\.model-secret-state/);
   assert.match(css, /\.model-advanced-toggle/);
 });

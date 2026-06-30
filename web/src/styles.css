@@ -3920,6 +3920,14 @@ details[open] .timeline-chevron {
   color: #7d8490;
 }
 
+.onlyoffice-config-form .model-checkbox-row {
+  grid-column: span 2;
+}
+
+.onlyoffice-config-form label:last-child {
+  max-width: 220px;
+}
+
 .model-secret-clear {
   width: fit-content;
   align-self: end;

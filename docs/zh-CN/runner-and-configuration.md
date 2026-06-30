@@ -160,7 +160,8 @@ Python 文件会作为本地代码导入，因此模块顶层代码会在加载�
 指向浏览器能够加载的 ONLYOFFICE Document Server。`public_api_base` 必须指向这个
 FastAPI backend，并且要使用 Document Server 能访问到的地址，因为生成的预览配置会在
 这个 base 下放入签名的文件 URL 和 callback URL。当 `onlyoffice.enabled` 为 false 或
-URL 缺失时，WebUI 会回退到内置的浏览器预览路径。
+URL 缺失时，WebUI 会回退到内置的浏览器预览路径。同一组设置也可以在 WebUI 的
+“系统管理 -> OnlyOffice配置”中维护。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；

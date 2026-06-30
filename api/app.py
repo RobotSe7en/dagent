@@ -315,6 +315,15 @@ class ModelDeleteResponse(BaseModel):
     active_model_id: str
 
 
+class OnlyOfficeSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    document_server_url: str | None = None
+    public_api_base: str | None = None
+    lang: str = "zh"
+
+
 class PythonToolRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1556,6 +1565,24 @@ async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     return ModelMutationResponse(model=_user_model_payload(model, active=True), active_model_id=clean_model_id)
 
 
+@app.get("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+async def get_onlyoffice_settings() -> OnlyOfficeSettingsPayload:
+    return _onlyoffice_settings_payload(state._current_user_config().onlyoffice)
+
+
+@app.put("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> OnlyOfficeSettingsPayload:
+    config = state._current_user_config()
+    config.onlyoffice = UserOnlyOfficeConfig(
+        enabled=request.enabled,
+        document_server_url=_clean_optional_text(request.document_server_url),
+        public_api_base=_clean_optional_text(request.public_api_base),
+        lang=_clean_optional_text(request.lang) or "zh",
+    )
+    save_user_config(config, state.get_user_config_path())
+    return _onlyoffice_settings_payload(config.onlyoffice)
+
+
 @app.get("/mcp/servers")
 async def list_mcp_servers() -> dict[str, Any]:
     return {"servers": _mcp_server_payloads(state.get_runner())}
@@ -2138,6 +2165,22 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
     )
+
+
+def _onlyoffice_settings_payload(config: UserOnlyOfficeConfig) -> OnlyOfficeSettingsPayload:
+    return OnlyOfficeSettingsPayload(
+        enabled=config.enabled,
+        document_server_url=config.document_server_url,
+        public_api_base=config.public_api_base,
+        lang=config.lang,
+    )
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
 
 
 def _model_provider_payloads() -> list[ModelProviderPayload]:
