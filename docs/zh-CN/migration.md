@@ -4,11 +4,51 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.1`。
+当前包版本是 `0.6.2`。
 
 ## Unreleased
 
 当前没有未发布变更。
+
+## 0.6.2
+
+### 新增
+
+- WebUI 现在支持更多 artifact 类型的浏览器预览，包括 Office 文档和 PPTX artifacts。
+- 本地 API 和 WebUI 暴露 OnlyOffice 配置；配置 OnlyOffice server 后，可以使用更丰富的
+  文档预览能力。
+- 聊天 workbench uploads 现在可以附加到消息，并 materialize 到 run workspace，方便
+  agent 检查用户提供的文件。
+- WebUI 扩展了静态 DAG output binding 和 schema argument 编辑能力。
+- WebUI 中 tools 和 MCP resources 现在使用更丰富的树形导航。
+
+### 改变
+
+- 优化了 artifact preview chrome、artifact tree 交互，以及折叠 artifact rail 的表现，
+  便于更高密度地使用 workspace。
+- Workbench upload 处理会更严格地校验文件名和 workspace 边界。
+- OnlyOffice preview URLs 现在使用带签名的短期 file tokens。
+
+### 破坏性改变
+
+- 无。
+
+### 迁移步骤
+
+- 此 patch release 不需要迁移动作。
+- 如需使用 Office 文档预览，请在 WebUI 系统设置中配置 OnlyOffice document server。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `source ~/.nvm/nvm.sh && npm --prefix web test`
+- `source ~/.nvm/nvm.sh && npm --prefix web run build`
+
+### 已知限制
+
+- Office previews 需要外部 OnlyOffice document server。
+- Workbench uploads 会 materialize 到本地 run workspace；如果运行在 ephemeral container
+  storage 中，需要持久卷才能跨容器保留。
 
 ## 0.6.1
 

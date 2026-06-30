@@ -5,11 +5,55 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.1`.
+The current package version is `0.6.2`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.6.2
+
+### Added
+
+- The WebUI now supports browser previews for additional artifact types,
+  including Office documents and PPTX artifacts.
+- The local API and WebUI expose OnlyOffice configuration for richer document
+  preview workflows when an OnlyOffice server is configured.
+- Chat workbench uploads can now be attached to a message and materialized into
+  the run workspace so agents can inspect user-provided files.
+- Static DAG output binding and schema-argument editing support have been
+  expanded in the WebUI.
+- Tools and MCP resources now use richer tree-style navigation in the WebUI.
+
+### Changed
+
+- Artifact preview chrome, artifact-tree interactions, and collapsed artifact
+  rail behavior have been refined for denser workspace use.
+- Workbench upload handling is stricter about filenames and workspace
+  boundaries.
+- OnlyOffice preview URLs now use signed short-lived file tokens.
+
+### Breaking Changes
+
+- None.
+
+### Migration Steps
+
+- No migration action is required for this patch release.
+- To use Office document previews, configure an OnlyOffice document server in
+  the WebUI system settings.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `source ~/.nvm/nvm.sh && npm --prefix web test`
+- `source ~/.nvm/nvm.sh && npm --prefix web run build`
+
+### Known Limitations
+
+- Office previews require an external OnlyOffice document server.
+- Workbench uploads are materialized into the local run workspace; they are not
+  persisted across ephemeral container storage without a persistent volume.
 
 ## 0.6.1
 
