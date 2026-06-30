@@ -1956,29 +1956,42 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
 test('artifact drawer file list collapses independently from the preview', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const artifactPanelSource = appSource.match(/function ArtifactPanel[\s\S]*?\nfunction ArtifactTree/)?.[0] ?? '';
+  const artifactTreeSource = appSource.match(/function ArtifactTree[\s\S]*?\nfunction ArtifactPreview/)?.[0] ?? '';
+  const artifactActionsSource = artifactPanelSource.match(/<div className="artifact-drawer-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
 
-  assert.match(appSource, /const \[artifactFilesExpanded, setArtifactFilesExpanded\] = useState\(true\);/);
-  assert.match(appSource, /className="artifact-drawer-title"[\s\S]*aria-expanded=\{artifactFilesExpanded\}[\s\S]*onClick=\{\(\) => setArtifactFilesExpanded\(\(value\) => !value\)\}/);
-  assert.match(appSource, /<div className="artifact-drawer-actions">\s*<button className="icon-button" disabled=\{loading\} onClick=\{onRefresh\}/);
+  assert.ok(artifactPanelSource, 'ArtifactPanel function should exist');
+  assert.ok(artifactTreeSource, 'ArtifactTree function should exist');
+  assert.match(artifactPanelSource, /const \[artifactFilesExpanded, setArtifactFilesExpanded\] = useState\(true\);/);
+  assert.match(artifactPanelSource, /<div className="artifact-drawer-title">[\s\S]*<strong>产物<\/strong>[\s\S]*<span>\{artifacts\.length\}<\/span>[\s\S]*<\/div>/);
+  assert.doesNotMatch(artifactPanelSource, /<button\s+className="artifact-drawer-title"/);
+  assert.doesNotMatch(artifactActionsSource, /artifact-drawer-tree-toggle/);
+  assert.match(artifactActionsSource, /<button className="icon-button" disabled=\{loading\} onClick=\{onRefresh\}/);
   assert.doesNotMatch(appSource, /className="artifact-file-label"/);
   assert.doesNotMatch(appSource, /<span>文件<\/span>/);
-  assert.match(appSource, /const artifactTree = useMemo\(\(\) => buildWorkbenchArtifactTree\(artifacts\), \[artifacts\]\);/);
-  assert.match(appSource, /className="artifact-drawer-body"/);
-  assert.match(appSource, /\{artifactFilesExpanded \? \(\s*<div className="artifact-tree-pane">[\s\S]*<ArtifactTree/);
-  assert.match(appSource, /\{artifactFilesExpanded \? \([\s\S]*\) : null\}[\s\S]*<ArtifactPreview/);
-  assert.match(appSource, /function ArtifactTree\(/);
-  assert.match(appSource, /className="artifact-tree-folder"/);
-  assert.match(appSource, /className=\{node\.item\.id === selectedArtifactId \? 'active artifact-tree-file' : 'artifact-tree-file'\}/);
+  assert.match(artifactPanelSource, /const artifactTree = useMemo\(\(\) => buildWorkbenchArtifactTree\(artifacts\), \[artifacts\]\);/);
+  assert.match(artifactPanelSource, /className="artifact-drawer-body"\s*data-tree-expanded=\{artifactFilesExpanded\}/);
+  assert.match(artifactPanelSource, /<div className="artifact-tree-pane" data-expanded=\{artifactFilesExpanded\}>[\s\S]*\{artifactFilesExpanded \? \([\s\S]*<ArtifactTree/);
+  assert.match(artifactPanelSource, /<div className="artifact-tree-divider">[\s\S]*className="icon-button artifact-drawer-tree-toggle"[\s\S]*aria-pressed=\{artifactFilesExpanded\}[\s\S]*title=\{artifactFilesExpanded \? '收起目录树' : '展开目录树'\}/);
+  assert.match(artifactPanelSource, /<\/div>\s*<ArtifactPreview/);
+  assert.match(artifactTreeSource, /className="artifact-tree-folder"/);
+  assert.match(artifactTreeSource, /className=\{node\.item\.id === selectedArtifactId \? 'active artifact-tree-file' : 'artifact-tree-file'\}/);
+  assert.doesNotMatch(artifactTreeSource, /<span className="artifact-extension">\{node\.item\.extension\}<\/span>/);
+  assert.doesNotMatch(artifactTreeSource, /<em>\{node\.item\.meta\}<\/em>/);
   assert.doesNotMatch(appSource, /artifact-file-download/);
   assert.doesNotMatch(appSource, /download=\{artifactFileName\}/);
   assert.doesNotMatch(appSource, /<strong>\{artifact\.name\}<\/strong>\s*<em>\{artifact\.meta\}<\/em>/);
   assert.match(appSource, /function artifactListFileName\(artifact: WorkbenchArtifactItem\): string/);
   assert.match(css, /\.artifact-drawer-title\s*\{[^}]*flex:\s*1 1 auto;/s);
   assert.match(css, /\.artifact-drawer-actions\s*\{[^}]*margin-left:\s*auto;[^}]*display:\s*flex;/s);
-  assert.match(css, /\.artifact-drawer-title\[aria-expanded="true"\]\s+\.artifact-drawer-title-chevron\s*\{[^}]*transform:\s*rotate\(90deg\);/s);
-  assert.match(css, /\.artifact-drawer-body\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(160px,\s*0\.38fr\)\s+minmax\(0,\s*1fr\);/s);
-  assert.match(css, /\.artifact-tree-pane\s*\{[^}]*overflow-y:\s*auto;/s);
-  assert.match(css, /\.artifact-tree-file-name\s*\{[^}]*text-overflow:\s*ellipsis;/s);
+  assert.match(css, /\.artifact-tree-divider\s+\.artifact-drawer-tree-toggle\[aria-pressed="true"\]\s+svg\s*\{[^}]*transform:\s*rotate\(180deg\);/s);
+  assert.match(css, /\.artifact-drawer-body\s*\{[^}]*display:\s*grid;/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(160px,\s*0\.38fr\)\s+24px\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*0\s+24px\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-tree-pane\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;/s);
+  assert.match(css, /\.artifact-tree-file\s*\{[^}]*min-height:\s*30px;/s);
+  assert.match(css, /\.artifact-tree-file\s*\{[^}]*width:\s*max-content;[^}]*min-width:\s*100%;/s);
+  assert.match(css, /\.artifact-tree-file-name\s*\{[^}]*overflow:\s*visible;[^}]*text-overflow:\s*clip;/s);
 });
 
 test('workbench artifacts preserve uploaded folder paths as a directory tree', async () => {

@@ -4494,18 +4494,11 @@ function ArtifactPanel({
     <aside className="artifact-drawer" style={{ width: artifactWidth }}>
       <PanelResizeHandle width={artifactWidth} onResize={setArtifactWidth} />
       <div className="artifact-drawer-head">
-        <button
-          className="artifact-drawer-title"
-          aria-expanded={artifactFilesExpanded}
-          onClick={() => setArtifactFilesExpanded((value) => !value)}
-          title={artifactFilesExpanded ? '收起文件列表' : '展开文件列表'}
-          type="button"
-        >
-          <ChevronRight className="artifact-drawer-title-chevron" size={13} />
+        <div className="artifact-drawer-title">
           <Folder className="artifact-drawer-title-folder" size={17} />
           <strong>产物</strong>
           <span>{artifacts.length}</span>
-        </button>
+        </div>
         <div className="artifact-drawer-actions">
           <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
             <RefreshCw className={loading ? 'spin' : ''} size={15} />
@@ -4516,9 +4509,10 @@ function ArtifactPanel({
         </div>
       </div>
 
-      <div className="artifact-drawer-body">
-        {artifactFilesExpanded ? (
-          <div className="artifact-tree-pane">
+      <div className="artifact-drawer-body" data-tree-expanded={artifactFilesExpanded}>
+        <div className="artifact-tree-pane" data-expanded={artifactFilesExpanded}>
+          {artifactFilesExpanded ? (
+            <>
             {error ? <div className="artifact-empty">{error}</div> : null}
             {artifactTree.length ? (
               <ArtifactTree
@@ -4532,8 +4526,20 @@ function ArtifactPanel({
             ) : (
               <div className="artifact-empty">当前运行还没有产物。</div>
             )}
-          </div>
-        ) : null}
+            </>
+          ) : null}
+        </div>
+        <div className="artifact-tree-divider">
+          <button
+            className="icon-button artifact-drawer-tree-toggle"
+            aria-pressed={artifactFilesExpanded}
+            onClick={() => setArtifactFilesExpanded((value) => !value)}
+            title={artifactFilesExpanded ? '收起目录树' : '展开目录树'}
+            type="button"
+          >
+            <ChevronRight size={15} />
+          </button>
+        </div>
 
         <ArtifactPreview
           error={previewError}
@@ -4606,11 +4612,7 @@ function ArtifactTree({
             title={node.path}
             type="button"
           >
-            <span className="artifact-extension">{node.item.extension}</span>
-            <span className="artifact-tree-file-text">
-              <strong className="artifact-tree-file-name">{node.name}</strong>
-              <em>{node.item.meta}</em>
-            </span>
+            <span className="artifact-tree-file-name">{node.name}</span>
           </button>
         );
       })}

@@ -1761,26 +1761,9 @@ details[open] .timeline-chevron {
   display: flex;
   align-items: center;
   gap: 7px;
-  border: 0;
-  border-radius: 7px;
   padding: 6px 7px;
-  background: transparent;
   color: #aab0b9;
-  cursor: pointer;
   text-align: left;
-}
-
-.artifact-drawer-title:hover {
-  background: #f4f5f7;
-}
-
-.artifact-drawer-title-chevron {
-  flex: 0 0 auto;
-  transition: transform 0.16s ease;
-}
-
-.artifact-drawer-title[aria-expanded="true"] .artifact-drawer-title-chevron {
-  transform: rotate(90deg);
 }
 
 .artifact-drawer-title-folder {
@@ -1816,21 +1799,54 @@ details[open] .timeline-chevron {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(160px, 0.38fr) minmax(0, 1fr);
   border-top: 1px solid #eef0f3;
 }
 
-.artifact-drawer-body > .artifact-preview:first-child {
-  grid-column: 1 / -1;
+.artifact-drawer-body[data-tree-expanded="true"] {
+  grid-template-columns: minmax(160px, 0.38fr) 24px minmax(0, 1fr);
+}
+
+.artifact-drawer-body[data-tree-expanded="false"] {
+  grid-template-columns: 0 24px minmax(0, 1fr);
 }
 
 .artifact-tree-pane {
   min-width: 0;
   min-height: 0;
+  overflow-x: auto;
   overflow-y: auto;
-  border-right: 1px solid #eef0f3;
   background: #fff;
   padding: 8px;
+}
+
+.artifact-tree-pane[data-expanded="false"] {
+  overflow: hidden;
+  padding: 0;
+}
+
+.artifact-tree-divider {
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  border-right: 1px solid #eef0f3;
+  border-left: 1px solid #eef0f3;
+  background: #fff;
+  padding-top: 10px;
+}
+
+.artifact-tree-divider .artifact-drawer-tree-toggle {
+  width: 20px;
+  height: 28px;
+  border-radius: 6px;
+}
+
+.artifact-tree-divider .artifact-drawer-tree-toggle svg {
+  transition: transform 0.16s ease;
+}
+
+.artifact-tree-divider .artifact-drawer-tree-toggle[aria-pressed="true"] svg {
+  transform: rotate(180deg);
 }
 
 .artifact-tree-level {
@@ -1845,8 +1861,8 @@ details[open] .timeline-chevron {
 .artifact-tree-folder,
 .artifact-tree-file {
   --artifact-tree-indent: calc(var(--artifact-tree-depth, 0) * 16px);
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1896,8 +1912,8 @@ details[open] .timeline-chevron {
 }
 
 .artifact-tree-file {
-  gap: 8px;
-  padding: 6px 7px 6px calc(7px + var(--artifact-tree-indent));
+  min-height: 30px;
+  padding: 5px 7px 5px calc(24px + var(--artifact-tree-indent));
 }
 
 .artifact-tree-folder:hover,
@@ -1921,36 +1937,14 @@ details[open] .timeline-chevron {
   font-weight: 800;
 }
 
-.artifact-tree-file.active .artifact-extension {
-  background: #fbf2dd;
-  color: #b1730a;
-}
-
-.artifact-tree-file-text {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
 .artifact-tree-file-name {
   display: block;
-  min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   color: #16181d;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12.5px;
   font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artifact-tree-file-text em {
-  min-width: 0;
-  overflow: hidden;
-  color: #9aa0a8;
-  font-size: 10.5px;
-  font-style: normal;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
