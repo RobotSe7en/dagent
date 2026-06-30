@@ -15,6 +15,7 @@ from dagent.harness_runtime.artifacts import (
     init_artifact_states,
     update_node_output_artifacts,
     validate_artifact_paths,
+    validate_upload_filename,
 )
 from dagent.harness_runtime.dag_builder import (
     DAGValidationError,
@@ -219,6 +220,21 @@ def test_validate_artifact_paths_rejects_absolute_or_escaping_paths(bad_path: st
 def test_validate_artifact_paths_rejects_windows_absolute_or_drive_paths(bad_path: str) -> None:
     with pytest.raises(ArtifactPathError):
         validate_artifact_paths([bad_path])
+
+
+@pytest.mark.parametrize(
+    "bad_filename",
+    [
+        "/tmp/source.txt",
+        "\\tmp\\source.txt",
+        "docs/../source.txt",
+        "C:tmp/source.txt",
+        "C:\\tmp\\source.txt",
+    ],
+)
+def test_validate_upload_filename_rejects_unsafe_raw_paths(bad_filename: str) -> None:
+    with pytest.raises(ArtifactPathError):
+        validate_upload_filename(bad_filename)
 
 
 def test_resolve_artifact_paths_rejects_symlink_escape(tmp_path: Path) -> None:

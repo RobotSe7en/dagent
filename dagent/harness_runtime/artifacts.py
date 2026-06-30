@@ -24,6 +24,9 @@ class ArtifactUpload:
     content: bytes
 
 
+WORKBENCH_UPLOAD_ROOT = "uploads"
+
+
 def create_run_workspace(root: str | Path = DEFAULT_RUNS_DIR, *, run_id: str | None = None) -> Path:
     workspace_name = run_id if run_id is not None else f"run_{uuid4().hex}"
     _validate_run_id(workspace_name)
@@ -146,6 +149,38 @@ def materialize_artifact_uploads(
     return materialized
 
 
+def materialize_workbench_uploads(
+    uploads: Sequence[ArtifactUpload],
+    *,
+    workspace_path: str | Path,
+    upload_root: str = WORKBENCH_UPLOAD_ROOT,
+) -> list[str]:
+    """Write smart workbench input uploads into a run workspace."""
+
+    if not uploads:
+        return []
+    _validate_artifact_path(upload_root)
+    workspace = Path(workspace_path).resolve()
+    target_root = (workspace / upload_root).resolve()
+    _ensure_within_workspace(target_root, workspace)
+
+    materialized: list[str] = []
+    for upload in uploads:
+        relative_path = _safe_upload_filename(upload.filename)
+        destination = (target_root / relative_path).resolve()
+        _ensure_within_workspace(destination, workspace)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(upload.content)
+        materialized.append(str(Path(upload_root) / relative_path))
+    return materialized
+
+
+def validate_upload_filename(filename: str) -> None:
+    """Validate a browser-provided upload filename without writing it."""
+
+    _safe_upload_filename(filename)
+
+
 def _resolve_artifact_ids(
     artifact_ids: list[str],
     *,
@@ -182,11 +217,20 @@ def _upload_filename_has_parent(filename: str) -> bool:
 
 
 def _safe_upload_filename(filename: str) -> Path:
-    normalized = normpath(filename.replace("\\", "/")).strip("/")
+    slash_normalized = filename.replace("\\", "/")
+    if not filename.strip():
+        raise ArtifactPathError("Uploaded file name cannot be empty.")
+    windows_raw_candidate = PureWindowsPath(filename)
+    if slash_normalized.startswith("/") or windows_raw_candidate.is_absolute() or windows_raw_candidate.drive:
+        raise ArtifactPathError(f"Uploaded file name '{filename}' must be relative.")
+    if ".." in slash_normalized.split("/"):
+        raise ArtifactPathError(f"Uploaded file name '{filename}' cannot contain '..'.")
+
+    normalized = normpath(slash_normalized)
     if not normalized or normalized == ".":
         raise ArtifactPathError("Uploaded file name cannot be empty.")
-    windows_candidate = PureWindowsPath(normalized)
     candidate = Path(normalized)
+    windows_candidate = PureWindowsPath(normalized)
     if candidate.is_absolute() or windows_candidate.is_absolute() or windows_candidate.drive:
         raise ArtifactPathError(f"Uploaded file name '{filename}' must be relative.")
     if ".." in candidate.parts:

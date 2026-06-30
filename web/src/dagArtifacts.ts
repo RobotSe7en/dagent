@@ -2,6 +2,7 @@ import type { Artifact, UserDag, ValueBinding } from './types';
 
 export interface UploadSourceFile {
   name: string;
+  size?: number;
   relativePath?: string;
   webkitRelativePath?: string;
 }
@@ -26,6 +27,21 @@ export interface CreateUploadedFileArtifactsOptions {
 
 export interface UploadFormFilenameOptions {
   preserveRelativePath?: boolean;
+}
+
+export interface PendingUploadGroup {
+  key: string;
+  label: string;
+  kind: 'file' | 'folder';
+  fileCount: number;
+  size: number;
+  indexes: number[];
+  paths: string[];
+}
+
+export interface VisiblePendingUploadGroups {
+  groups: PendingUploadGroup[];
+  hiddenCount: number;
 }
 
 export function normalizeArtifact(artifact: ArtifactDraft): Artifact {
@@ -111,7 +127,7 @@ export function createUploadedFileArtifacts(
 ): { artifacts: Record<string, Artifact>; uploads: UploadedFileArtifact[] } {
   const next = { ...options.artifacts };
   const usedIds = new Set(Object.keys(next));
-  const uploadRoot = normalizeUploadPath(options.uploadRoot) || 'inputs/uploads';
+  const uploadRoot = normalizeUploadPath(options.uploadRoot) || 'uploads';
   const uploads = files.map((source) => {
     const relativePath = sourceUploadPath(source);
     const artifactPath = joinArtifactPath(uploadRoot, relativePath);
@@ -145,16 +161,68 @@ export function uploadFormFilename(
   return sourceUploadPath(file);
 }
 
+export function buildPendingUploadGroups(files: UploadSourceFile[]): PendingUploadGroup[] {
+  const groups = new Map<string, PendingUploadGroup>();
+  files.forEach((file, index) => {
+    const path = uploadFormFilename(file);
+    const parts = path.split('/').filter(Boolean);
+    const isFolderUpload = parts.length > 1;
+    const label = isFolderUpload ? parts[0] : path;
+    const key = isFolderUpload ? `folder:${label}` : `file:${path}:${index}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.fileCount += 1;
+      existing.size += file.size ?? 0;
+      existing.indexes.push(index);
+      existing.paths.push(path);
+      return;
+    }
+    groups.set(key, {
+      key,
+      label,
+      kind: isFolderUpload ? 'folder' : 'file',
+      fileCount: 1,
+      size: file.size ?? 0,
+      indexes: [index],
+      paths: [path],
+    });
+  });
+  return [...groups.values()];
+}
+
+export function visiblePendingUploadGroups(
+  groups: PendingUploadGroup[],
+  expanded: boolean,
+  collapsedLimit = 4,
+): VisiblePendingUploadGroups {
+  if (expanded || groups.length <= collapsedLimit) {
+    return { groups, hiddenCount: 0 };
+  }
+  return {
+    groups: groups.slice(0, collapsedLimit),
+    hiddenCount: groups.length - collapsedLimit,
+  };
+}
+
 function sourceUploadPath(file: UploadSourceFile): string {
   return normalizeUploadPath(file.relativePath || file.webkitRelativePath || file.name || 'upload') || 'upload';
 }
 
 function normalizeUploadPath(path: string): string {
-  return path
+  const trimmed = path.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[A-Za-z]:/.test(trimmed)) {
+    throw new Error(`Upload path '${path}' must be relative.`);
+  }
+  const parts = trimmed
     .replace(/\\/g, '/')
     .split('/')
-    .map((part) => part.trim())
-    .filter((part) => part && part !== '.' && part !== '..')
+    .map((part) => part.trim());
+  if (parts.includes('..')) {
+    throw new Error(`Upload path '${path}' cannot contain '..'.`);
+  }
+  return parts
+    .filter((part) => part && part !== '.')
     .map(sanitizePathSegment)
     .filter(Boolean)
     .join('/');

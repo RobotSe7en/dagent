@@ -79,6 +79,35 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.policy_decision == {"allowed_paths": ["."]}
 
 
+def test_capability_executor_runs_tools_in_context_workspace(tmp_path) -> None:
+    catalog_root = tmp_path / "catalog"
+    run_workspace = tmp_path / "runs" / "run_1"
+    run_workspace.mkdir(parents=True)
+    catalog = CapabilityCatalog(workspace_root=catalog_root)
+    executor = CapabilityExecutor(catalog)
+    ToolCapabilityProvider(create_file_tool_registry()).register_into(catalog)
+    invocation = CapabilityInvocation(
+        capability_id="tool.write_file",
+        kind="tool",
+        arguments={"path": "notes/output.txt", "content": "hello"},
+        boundary=Boundary(allowed_paths=["."]),
+    )
+
+    result = run(
+        executor.execute(
+            invocation,
+            context=CapabilityExecutionContext(
+                task_id="run_1",
+                workspace_path=run_workspace,
+            ),
+        )
+    )
+
+    assert result.error is None
+    assert (run_workspace / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
+    assert not (catalog_root / "notes" / "output.txt").exists()
+
+
 def test_tool_provider_encodes_plain_tuple_results_like_sdk_tools() -> None:
     tools = ToolRegistry()
     tools.register(

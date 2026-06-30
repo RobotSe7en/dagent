@@ -161,7 +161,11 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /const artifactDrawerOpen = artifactPanelOpen;/);
   assert.match(appSource, /artifactPanelOpen=\{artifactDrawerOpen\}/);
   assert.match(appSource, /onToggleArtifacts=\{\(\) => setArtifactPanelOpen\(\(value\) => !value\)\}/);
-  assert.match(appSource, /className="icon-button attachment-button"[\s\S]*title="上传附件（暂未接入）"[\s\S]*<Upload size=\{17\} \/>/);
+  assert.match(appSource, /function UploadPicker/);
+  assert.match(appSource, /<UploadPicker[\s\S]*variant="composer"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
+  assert.match(appSource, /<UploadPicker[\s\S]*variant="sidebar"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
+  assert.match(appSource, /pendingChatUploads/);
+  assert.match(appSource, /onUploadFiles=\{queueChatUploads\}/);
   assert.doesNotMatch(appSource, /const canOpen = artifacts\.length > 0|disabled=\{!canOpen\}|暂无产物/);
   assert.doesNotMatch(appSource, /composer-hint|⌘ \+ Enter 发送|当前模式/);
   assert.doesNotMatch(appSource, /designPreviewDag|designPreviewArtifacts|DesignPreviewConversation|designHistoryRows/);
@@ -194,14 +198,93 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /button:focus-visible\s*\{[^}]*outline:\s*2px solid rgba\(91, 91, 214, 0\.42\);/s);
 });
 
-test('composer uses upload placeholder instead of creating chats from the input toolbar', async () => {
+test('composer uses the reserved upload button for pending attachments', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
 
   assert.ok(chatWorkspaceSource, 'ChatWorkspace function should exist');
   assert.doesNotMatch(chatWorkspaceSource, /onNewChat/);
   assert.doesNotMatch(chatWorkspaceSource, /title="新建会话"/);
-  assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
+  assert.doesNotMatch(chatWorkspaceSource, /暂未接入/);
+  assert.match(chatWorkspaceSource, /<UploadPicker/);
+  assert.match(chatWorkspaceSource, /onUploadFiles/);
+  assert.match(chatWorkspaceSource, /pendingUploads/);
+  assert.match(chatWorkspaceSource, /onRemoveUpload/);
+});
+
+test('composer summarizes large pending upload batches instead of listing every file', async () => {
+  const {
+    buildPendingUploadGroups,
+    visiblePendingUploadGroups,
+  } = await importTypeScript('../src/dagArtifacts.ts');
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
+
+  assert.equal(typeof buildPendingUploadGroups, 'function');
+  assert.equal(typeof visiblePendingUploadGroups, 'function');
+
+  const groups = buildPendingUploadGroups([
+    { name: 'guide.md', webkitRelativePath: 'docs/guide.md', size: 100 },
+    { name: 'api.md', webkitRelativePath: 'docs/reference/api.md', size: 300 },
+    { name: 'readme.md', size: 50 },
+    { name: 'notes.txt', size: 25 },
+    { name: 'draft.txt', size: 20 },
+    { name: 'extra.txt', size: 10 },
+  ]);
+
+  assert.deepEqual(groups.map((group) => ({
+    key: group.key,
+    label: group.label,
+    fileCount: group.fileCount,
+    size: group.size,
+    indexes: group.indexes,
+  })), [
+    { key: 'folder:docs', label: 'docs', fileCount: 2, size: 400, indexes: [0, 1] },
+    { key: 'file:readme.md:2', label: 'readme.md', fileCount: 1, size: 50, indexes: [2] },
+    { key: 'file:notes.txt:3', label: 'notes.txt', fileCount: 1, size: 25, indexes: [3] },
+    { key: 'file:draft.txt:4', label: 'draft.txt', fileCount: 1, size: 20, indexes: [4] },
+    { key: 'file:extra.txt:5', label: 'extra.txt', fileCount: 1, size: 10, indexes: [5] },
+  ]);
+  assert.deepEqual(visiblePendingUploadGroups(groups, false, 3), {
+    groups: groups.slice(0, 3),
+    hiddenCount: 2,
+  });
+
+  assert.match(chatWorkspaceSource, /buildPendingUploadGroups\(pendingUploads\)/);
+  assert.match(chatWorkspaceSource, /visiblePendingUploadGroups\(pendingUploadGroups, pendingUploadsExpanded/);
+  assert.doesNotMatch(chatWorkspaceSource, /pendingUploads\.map\(\(file, index\)/);
+  assert.match(css, /\.pending-upload-list\s*\{[^}]*max-height:\s*180px;[^}]*overflow-y:\s*auto;/s);
+});
+
+test('upload picker keeps one visible button while supporting files and folders', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const pickerSource = appSource.match(/function UploadPicker[\s\S]*?\nfunction PanelResizeHandle/)?.[0] ?? '';
+
+  assert.ok(pickerSource, 'UploadPicker function should exist');
+  assert.match(pickerSource, /const detailsRef = useRef<HTMLDetailsElement \| null>\(null\);/);
+  assert.match(pickerSource, /useEffect\(\(\) => \{[\s\S]*if \(disabled\) \{[\s\S]*detailsRef\.current\?\.removeAttribute\('open'\);[\s\S]*\}[\s\S]*\}, \[disabled\]\);/);
+  assert.match(pickerSource, /<details[\s\S]*ref=\{detailsRef\}/);
+  assert.match(pickerSource, /const onSummaryClick = \(event: React\.MouseEvent<HTMLElement>\) => \{[\s\S]*if \(disabled\) \{[\s\S]*event\.preventDefault\(\);/);
+  assert.match(pickerSource, /<summary[\s\S]*<Upload size=\{iconSize\} \/>/);
+  assert.match(pickerSource, /aria-disabled=\{disabled\}/);
+  assert.match(pickerSource, /onClick=\{onSummaryClick\}/);
+  assert.match(pickerSource, /上传文件/);
+  assert.match(pickerSource, /上传文件夹/);
+  assert.match(pickerSource, /type="file"[\s\S]*multiple/);
+  assert.match(pickerSource, /webkitdirectory/);
+  assert.match(css, /\.composer-card\s*\{[^}]*overflow:\s*visible;/s);
+  assert.match(css, /\.composer-upload-picker \.upload-picker-menu\s*\{[^}]*top:\s*auto;[^}]*bottom:\s*calc\(100% \+ 6px\);/s);
+});
+
+test('streamTask sends smart workbench uploads as multipart payload files', async () => {
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /uploads\?: File\[\]/);
+  assert.match(apiSource, /new FormData\(\)/);
+  assert.match(apiSource, /form\.append\('payload', JSON\.stringify\(body\)\)/);
+  assert.match(apiSource, /form\.append\('files', file, uploadFormFilename\(file\)\)/);
 });
 
 test('capability helpers use display names and dotted ids', () => {
@@ -843,7 +926,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(sidebarSource, /编排列表/);
   assert.match(sidebarSource, /Artifacts/);
   assert.match(sidebarSource, /className="sidebar-artifact-section"/);
-  assert.match(sidebarSource, /onUploadFiles\(event\.target\.files\)/);
+  assert.match(sidebarSource, /<UploadPicker variant="sidebar" onUploadFiles=\{onUploadFiles\} \/>/);
   assert.match(sidebarSource, /onCreateArtifact/);
   assert.match(sidebarSource, /onEditArtifact\(artifact\.id\)/);
   assert.match(sidebarSource, /onDeleteArtifact\(artifact\.id\)/);
@@ -1696,7 +1779,7 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
   assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal \}\);/);
+  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal, uploads: uploadsForRequest \}\);/);
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
   assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
@@ -1857,8 +1940,9 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
   assert.match(appSource, /const \[previewFullscreen, setPreviewFullscreen\] = useState\(false\);/);
   assert.match(appSource, /className="artifact-preview-title"/);
-  assert.match(appSource, /title="全屏预览"/);
-  assert.match(appSource, /className="artifact-preview-fullscreen"/);
+  assert.match(appSource, /title=\{previewFullscreen \? '关闭全屏' : '全屏预览'\}/);
+  assert.match(appSource, /data-fullscreen=\{previewFullscreen\}/);
+  assert.doesNotMatch(appSource, /\{previewFullscreen \? null : body\}/);
   assert.match(appSource, /function ArtifactPreviewBody\(/);
   assert.doesNotMatch(appSource, /<span>\{selectedArtifact\.meta\}<\/span>/);
   assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
@@ -1873,30 +1957,163 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(css, /\.artifact-preview-head\s*\{[^}]*min-height:\s*34px;[^}]*padding:\s*6px 10px;/s);
   assert.match(css, /\.artifact-preview-title\s*\{[^}]*margin-right:\s*auto;/s);
   assert.match(css, /\.artifact-preview-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
+  assert.match(css, /\.artifact-browser-preview-host:has\(\.artifact-onlyoffice-preview\)\s*\{[^}]*padding:\s*0;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.artifact-onlyoffice-preview\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
 });
 
 test('artifact drawer file list collapses independently from the preview', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const artifactPanelSource = appSource.match(/function ArtifactPanel[\s\S]*?\nfunction ArtifactTree/)?.[0] ?? '';
+  const artifactTreeSource = appSource.match(/function ArtifactTree[\s\S]*?\nfunction ArtifactPreview/)?.[0] ?? '';
+  const artifactActionsSource = artifactPanelSource.match(/<div className="artifact-drawer-actions">[\s\S]*?<\/div>/)?.[0] ?? '';
 
-  assert.match(appSource, /const \[artifactFilesExpanded, setArtifactFilesExpanded\] = useState\(true\);/);
-  assert.match(appSource, /className="artifact-drawer-title"[\s\S]*aria-expanded=\{artifactFilesExpanded\}[\s\S]*onClick=\{\(\) => setArtifactFilesExpanded\(\(value\) => !value\)\}/);
-  assert.match(appSource, /<div className="artifact-drawer-actions">\s*<button className="icon-button" disabled=\{loading\} onClick=\{onRefresh\}/);
+  assert.ok(artifactPanelSource, 'ArtifactPanel function should exist');
+  assert.ok(artifactTreeSource, 'ArtifactTree function should exist');
+  assert.match(artifactPanelSource, /const \[artifactFilesExpanded, setArtifactFilesExpanded\] = useState\(true\);/);
+  assert.match(artifactPanelSource, /<div className="artifact-drawer-title">[\s\S]*<strong>产物<\/strong>[\s\S]*<span>\{artifacts\.length\}<\/span>[\s\S]*<\/div>/);
+  assert.doesNotMatch(artifactPanelSource, /<button\s+className="artifact-drawer-title"/);
+  assert.doesNotMatch(artifactActionsSource, /artifact-drawer-tree-toggle/);
+  assert.match(artifactActionsSource, /<button className="icon-button" disabled=\{loading\} onClick=\{onRefresh\}/);
   assert.doesNotMatch(appSource, /className="artifact-file-label"/);
-  assert.doesNotMatch(appSource, /<span>文件<\/span>/);
-  assert.match(appSource, /\{artifactFilesExpanded \? \(\s*<div className="artifact-file-list">[\s\S]*\) : null\}/);
-  assert.match(appSource, /\{artifactFilesExpanded \? \([\s\S]*\) : null\}[\s\S]*<ArtifactPreview/);
-  assert.match(appSource, /const artifactFileName = artifactListFileName\(artifact\);/);
-  assert.match(appSource, /title=\{artifact\.path \?\? artifactFileName\}/);
-  assert.match(appSource, /<strong className="artifact-file-name">\{artifactFileName\}<\/strong>/);
+  assert.match(artifactPanelSource, /const artifactTree = useMemo\(\(\) => buildWorkbenchArtifactTree\(artifacts\), \[artifacts\]\);/);
+  assert.match(artifactPanelSource, /className="artifact-drawer-body"\s*data-tree-expanded=\{artifactFilesExpanded\}/);
+  assert.match(artifactPanelSource, /<div className="artifact-tree-pane" data-expanded=\{artifactFilesExpanded\}>[\s\S]*\{artifactFilesExpanded \? \(\s*<>\s*<div className="artifact-tree-list">[\s\S]*<ArtifactTree/);
+  assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-head/);
+  assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-title/);
+  assert.doesNotMatch(artifactPanelSource, /<span>文件<\/span>/);
+  assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-toggle/);
+  assert.match(artifactPanelSource, /\{artifactFilesExpanded \? \(\s*<button\s+className="artifact-tree-divider-toggle"[\s\S]*title="收起目录树"[\s\S]*<ChevronLeft size=\{14\} \/>[\s\S]*\)\s*:\s*null\}/);
+  assert.match(artifactPanelSource, /className="artifact-tree-rail-toggle"[\s\S]*title="展开目录树"/);
+  assert.doesNotMatch(artifactPanelSource, /artifact-drawer-tree-toggle/);
+  assert.match(artifactPanelSource, /<\/div>\s*\n\s*\{artifactFilesExpanded \? \(/);
+  assert.match(artifactTreeSource, /className="artifact-tree-folder"/);
+  assert.match(artifactTreeSource, /className=\{node\.item\.id === selectedArtifactId \? 'active artifact-tree-file' : 'artifact-tree-file'\}/);
+  assert.doesNotMatch(artifactTreeSource, /<span className="artifact-extension">\{node\.item\.extension\}<\/span>/);
+  assert.doesNotMatch(artifactTreeSource, /<em>\{node\.item\.meta\}<\/em>/);
   assert.doesNotMatch(appSource, /artifact-file-download/);
   assert.doesNotMatch(appSource, /download=\{artifactFileName\}/);
   assert.doesNotMatch(appSource, /<strong>\{artifact\.name\}<\/strong>\s*<em>\{artifact\.meta\}<\/em>/);
   assert.match(appSource, /function artifactListFileName\(artifact: WorkbenchArtifactItem\): string/);
   assert.match(css, /\.artifact-drawer-title\s*\{[^}]*flex:\s*1 1 auto;/s);
   assert.match(css, /\.artifact-drawer-actions\s*\{[^}]*margin-left:\s*auto;[^}]*display:\s*flex;/s);
-  assert.match(css, /\.artifact-drawer-title\[aria-expanded="true"\]\s+\.artifact-drawer-title-chevron\s*\{[^}]*transform:\s*rotate\(90deg\);/s);
-  assert.match(css, /\.artifact-file-name\s*\{[^}]*max-width:\s*min\(180px, 100%\);/s);
+  assert.match(css, /\.artifact-drawer-body\s*\{[^}]*display:\s*grid;/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(136px,\s*0\.3fr\)\s+0\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\);/s);
+  assert.doesNotMatch(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-tree-pane\s*\{[^}]*overflow:\s*hidden;/s);
+  assert.doesNotMatch(css, /\.artifact-tree-pane-head\b/);
+  assert.doesNotMatch(css, /\.artifact-tree-pane-title\b/);
+  assert.doesNotMatch(css, /\.artifact-tree-pane-toggle\b/);
+  assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*width:\s*18px;[^}]*height:\s*42px;[^}]*align-self:\s*center;[^}]*justify-self:\s*center;/s);
+  assert.match(css, /\.artifact-tree-list\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+  assert.match(css, /\.artifact-tree-rail-toggle\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s);
+  assert.match(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*12px\);/);
+  assert.doesNotMatch(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*16px\);/);
+  assert.match(css, /\.artifact-tree-file\s*\{[^}]*min-height:\s*30px;/s);
+  assert.match(css, /\.artifact-tree-file\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
+  assert.match(css, /\.artifact-tree-file\s*\{[^}]*color:\s*#4c535f;[^}]*font-size:\s*12px;[^}]*font-weight:\s*500;/s);
+  assert.match(css, /\.artifact-tree-file-name\s*\{[^}]*overflow:\s*hidden;[^}]*color:\s*inherit;[^}]*font-family:\s*inherit;[^}]*font-size:\s*inherit;[^}]*font-weight:\s*inherit;[^}]*text-overflow:\s*ellipsis;/s);
+  assert.doesNotMatch(css, /\.artifact-tree-file-name\s*\{[^}]*SFMono/s);
+});
+
+test('workbench artifacts preserve uploaded folder paths as a directory tree', async () => {
+  const {
+    artifactFolderIdsForPath,
+    buildWorkbenchArtifactTree,
+    buildWorkbenchArtifacts,
+  } = await importTypeScript('../src/workbenchArtifacts.ts');
+
+  assert.equal(typeof artifactFolderIdsForPath, 'function');
+  assert.equal(typeof buildWorkbenchArtifactTree, 'function');
+
+  const items = buildWorkbenchArtifacts({
+    runId: 'run_upload_1',
+    runFiles: [
+      {
+        id: 'run:uploads/project/src/index.ts',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'uploads/project/src/index.ts',
+        name: 'index.ts',
+        media_type: 'text/x-typescript',
+        preview_kind: 'code',
+        previewable: true,
+        size: 18,
+        status: 'created',
+        error: null,
+      },
+      {
+        id: 'run:uploads/project/README.md',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'uploads/project/README.md',
+        name: 'README.md',
+        media_type: 'text/markdown',
+        preview_kind: 'markdown',
+        previewable: true,
+        size: 12,
+        status: 'created',
+        error: null,
+      },
+      {
+        id: 'run:outputs/report.pdf',
+        artifact_id: null,
+        source: 'run_file',
+        path: 'outputs/report.pdf',
+        name: 'report.pdf',
+        media_type: 'application/pdf',
+        preview_kind: 'pdf',
+        previewable: true,
+        size: 90,
+        status: 'created',
+        error: null,
+      },
+    ],
+  });
+  const tree = buildWorkbenchArtifactTree(items);
+
+  assert.deepEqual(artifactFolderIdsForPath('uploads/project/src/index.ts'), [
+    'folder:uploads',
+    'folder:uploads/project',
+    'folder:uploads/project/src',
+  ]);
+  assert.deepEqual(tree.map((node) => ({
+    kind: node.kind,
+    name: node.name,
+    fileCount: node.kind === 'folder' ? node.fileCount : 1,
+    children: node.kind === 'folder' ? node.children.map((child) => ({
+      kind: child.kind,
+      name: child.name,
+      fileCount: child.kind === 'folder' ? child.fileCount : 1,
+    })) : [],
+  })), [
+    {
+      kind: 'folder',
+      name: 'outputs',
+      fileCount: 1,
+      children: [{ kind: 'file', name: 'report.pdf', fileCount: 1 }],
+    },
+    {
+      kind: 'folder',
+      name: 'uploads',
+      fileCount: 2,
+      children: [{ kind: 'folder', name: 'project', fileCount: 2 }],
+    },
+  ]);
+});
+
+test('artifact fullscreen preview reuses one preview instance instead of remounting browser previews', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const previewSource = appSource.match(/function ArtifactPreview\([\s\S]*?\nfunction ArtifactPreviewBody/)?.[0] ?? '';
+
+  assert.ok(previewSource, 'ArtifactPreview function should exist');
+  assert.match(previewSource, /data-fullscreen=\{previewFullscreen\}/);
+  assert.match(previewSource, /className="artifact-preview-fullscreen-shell"/);
+  assert.match(previewSource, /<ArtifactPreviewBody[\s\S]*selectedArtifact=\{selectedArtifact\}/);
+  assert.doesNotMatch(previewSource, /\{previewFullscreen \? null : body\}/);
+  assert.doesNotMatch(previewSource, /artifact-preview-fullscreen-body/);
+  assert.equal((previewSource.match(/<ArtifactPreviewBody/g) ?? []).length, 1);
 });
 
 test('artifactPreview module centralizes preview routing for future provider swaps', async () => {
@@ -2388,6 +2605,39 @@ test('uploadFormFilename can upload a generated artifact with only the file base
 
   assert.equal(uploadFormFilename(file, { preserveRelativePath: false }), 'data.csv');
   assert.equal(uploadFormFilename(file, { preserveRelativePath: true }), 'dataset/data.csv');
+  assert.equal(uploadFormFilename(file), 'dataset/data.csv');
+});
+
+test('createUploadedFileArtifacts preserves browser folder relative paths', () => {
+  const result = createUploadedFileArtifacts(
+    [{ name: 'summary.md', webkitRelativePath: 'research/day1/summary.md' }],
+    { artifacts: {}, uploadRoot: 'uploads' },
+  );
+
+  assert.equal(result.uploads[0].artifact.paths[0], 'uploads/research/day1/summary.md');
+  assert.equal(result.uploads[0].artifact.metadata.relative_path, 'research/day1/summary.md');
+});
+
+test('upload helpers reject unsafe relative paths instead of rewriting them', () => {
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: '../secret.txt' }),
+    /cannot contain '\.\.'/,
+  );
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: '/tmp/secret.txt' }),
+    /must be relative/,
+  );
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: 'C:\\tmp\\secret.txt' }),
+    /must be relative/,
+  );
+  assert.throws(
+    () => createUploadedFileArtifacts(
+      [{ name: 'secret.txt', webkitRelativePath: 'docs/../secret.txt' }],
+      { artifacts: {}, uploadRoot: 'uploads' },
+    ),
+    /cannot contain '\.\.'/,
+  );
 });
 
 test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues', () => {
@@ -2397,7 +2647,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     artifacts: {
       upload_source: {
         id: 'upload_source',
-        paths: ['inputs/uploads/source/source.md'],
+        paths: ['uploads/source/source.md'],
         description: 'source.md',
         metadata: {
           source: 'upload',
@@ -2436,7 +2686,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     {
       id: 'upload_source',
       label: 'source.md',
-      path: 'inputs/uploads/source/source.md',
+      path: 'uploads/source/source.md',
       kind: 'file',
     },
   ]);
