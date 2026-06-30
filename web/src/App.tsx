@@ -185,12 +185,14 @@ import {
 import { pruneEdgesToNodeIds } from './dagEdges';
 import {
   artifactPathExpr,
+  buildPendingUploadGroups,
   createUploadedFileArtifacts,
   isUploadedFileArtifact,
   removeArtifactBinding,
   uploadFormFilename,
   updateArtifactBinding,
   upsertArtifact,
+  visiblePendingUploadGroups,
   type UploadSourceFile,
 } from './dagArtifacts';
 import {
@@ -221,7 +223,10 @@ import {
   type ArtifactPreviewRenderHandle,
 } from './artifactPreview';
 import {
+  artifactFolderIdsForPath,
+  buildWorkbenchArtifactTree,
   buildWorkbenchArtifacts,
+  type WorkbenchArtifactTreeNode,
   type WorkbenchArtifactItem,
 } from './workbenchArtifacts';
 import {
@@ -2290,8 +2295,9 @@ export function App() {
     setPendingChatUploads((current) => [...current, ...files]);
   };
 
-  const removePendingChatUpload = (index: number) => {
-    setPendingChatUploads((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  const removePendingChatUploads = (indexes: number[]) => {
+    const removeIndexes = new Set(indexes);
+    setPendingChatUploads((current) => current.filter((_, itemIndex) => !removeIndexes.has(itemIndex)));
   };
 
   const uploadEditorFiles = async (fileList: FileList | null) => {
@@ -2870,7 +2876,7 @@ export function App() {
             }}
             onOpenScope={() => setCapabilityScopeOpen(true)}
             onReviewLevelChange={setReviewLevel}
-            onRemoveUpload={removePendingChatUpload}
+            onRemoveUpload={removePendingChatUploads}
             onRun={() => void runStream()}
             onStop={stopStream}
             onTargetChange={setTarget}
@@ -4100,7 +4106,7 @@ function ChatWorkspace({
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
   onOpenScope: () => void;
   onReviewLevelChange: (value: ReviewLevel) => void;
-  onRemoveUpload: (index: number) => void;
+  onRemoveUpload: (indexes: number[]) => void;
   onRun: () => void;
   onStop: () => void;
   onTargetChange: (value: ChatTarget) => void;
@@ -4109,6 +4115,16 @@ function ChatWorkspace({
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const title = currentChatTitle(messages);
+  const [pendingUploadsExpanded, setPendingUploadsExpanded] = useState(false);
+  const pendingUploadGroups = useMemo(() => buildPendingUploadGroups(pendingUploads), [pendingUploads]);
+  const visiblePendingUploads = useMemo(
+    () => visiblePendingUploadGroups(pendingUploadGroups, pendingUploadsExpanded, 4),
+    [pendingUploadGroups, pendingUploadsExpanded],
+  );
+
+  useEffect(() => {
+    if (!pendingUploads.length) setPendingUploadsExpanded(false);
+  }, [pendingUploads.length]);
 
   return (
     <section className={`chat-workspace ${artifactPanelOpen ? 'with-artifacts' : 'without-artifacts'}`}>
@@ -4144,19 +4160,21 @@ function ChatWorkspace({
               }}
               placeholder="描述一个任务,或请求规划、审查、执行结果…"
             />
-            {pendingUploads.length ? (
+            {pendingUploadGroups.length ? (
               <div className="pending-upload-list">
-                {pendingUploads.map((file, index) => {
-                  const uploadPath = uploadFormFilename(file);
+                {visiblePendingUploads.groups.map((group) => {
+                  const detail = group.kind === 'folder'
+                    ? `${group.fileCount} 个文件`
+                    : formatFileSize(group.size);
                   return (
-                    <div className="pending-upload-row" key={`${uploadPath}-${index}`}>
-                      <File size={14} />
-                      <span title={uploadPath}>{uploadPath}</span>
-                      <em>{formatFileSize(file.size)}</em>
+                    <div className="pending-upload-row" key={group.key}>
+                      {group.kind === 'folder' ? <Folder size={14} /> : <File size={14} />}
+                      <span title={group.paths.join('\n')}>{group.label}</span>
+                      <em>{group.kind === 'folder' ? `${detail} · ${formatFileSize(group.size)}` : detail}</em>
                       <button
                         className="icon-button"
                         disabled={loading}
-                        onClick={() => onRemoveUpload(index)}
+                        onClick={() => onRemoveUpload(group.indexes)}
                         title="移除"
                         type="button"
                       >
@@ -4165,6 +4183,25 @@ function ChatWorkspace({
                     </div>
                   );
                 })}
+                {visiblePendingUploads.hiddenCount ? (
+                  <button
+                    className="pending-upload-more"
+                    disabled={loading}
+                    onClick={() => setPendingUploadsExpanded(true)}
+                    type="button"
+                  >
+                    另有 {visiblePendingUploads.hiddenCount} 项
+                  </button>
+                ) : pendingUploadsExpanded && pendingUploadGroups.length > 4 ? (
+                  <button
+                    className="pending-upload-more"
+                    disabled={loading}
+                    onClick={() => setPendingUploadsExpanded(false)}
+                    type="button"
+                  >
+                    收起
+                  </button>
+                ) : null}
               </div>
             ) : null}
             <div className="composer-toolbar">
@@ -4409,8 +4446,31 @@ function ArtifactPanel({
   onSelect: (id: string) => void;
   onToggle: () => void;
 }) {
-  const [artifactWidth, setArtifactWidth] = usePanelWidth('dagent.artifact-width', 380, 280, 720);
+  const [artifactWidth, setArtifactWidth] = usePanelWidth('dagent.artifact-width', 540, 360, 980);
   const [artifactFilesExpanded, setArtifactFilesExpanded] = useState(true);
+  const [expandedArtifactFolders, setExpandedArtifactFolders] = useState<Set<string>>(() => new Set());
+  const artifactTree = useMemo(() => buildWorkbenchArtifactTree(artifacts), [artifacts]);
+
+  useEffect(() => {
+    setExpandedArtifactFolders((current) => {
+      const next = new Set(current);
+      artifactTree.forEach((node) => {
+        if (node.kind === 'folder') next.add(node.id);
+      });
+      artifactFolderIdsForPath(selectedArtifact?.path).forEach((id) => next.add(id));
+      return sameStringSet(current, next) ? current : next;
+    });
+  }, [artifactTree, selectedArtifact?.path]);
+
+  const toggleArtifactFolder = (id: string) => {
+    setExpandedArtifactFolders((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   if (!open) {
     return (
       <aside className="artifact-rail">
@@ -4456,39 +4516,105 @@ function ArtifactPanel({
         </div>
       </div>
 
-      {artifactFilesExpanded ? (
-        <div className="artifact-file-list">
-          {error ? <div className="artifact-empty">{error}</div> : null}
-          {artifacts.length ? artifacts.map((artifact) => {
-            const artifactFileName = artifactListFileName(artifact);
-            return (
+      <div className="artifact-drawer-body">
+        {artifactFilesExpanded ? (
+          <div className="artifact-tree-pane">
+            {error ? <div className="artifact-empty">{error}</div> : null}
+            {artifactTree.length ? (
+              <ArtifactTree
+                depth={0}
+                expandedFolders={expandedArtifactFolders}
+                nodes={artifactTree}
+                onSelect={onSelect}
+                onToggleFolder={toggleArtifactFolder}
+                selectedArtifactId={selectedArtifactId}
+              />
+            ) : (
+              <div className="artifact-empty">当前运行还没有产物。</div>
+            )}
+          </div>
+        ) : null}
+
+        <ArtifactPreview
+          error={previewError}
+          loading={previewLoading}
+          preview={preview}
+          selectedArtifact={selectedArtifact}
+          onCopy={onCopy}
+        />
+      </div>
+    </aside>
+  );
+}
+
+function ArtifactTree({
+  depth,
+  expandedFolders,
+  nodes,
+  onSelect,
+  onToggleFolder,
+  selectedArtifactId,
+}: {
+  depth: number;
+  expandedFolders: Set<string>;
+  nodes: WorkbenchArtifactTreeNode[];
+  onSelect: (id: string) => void;
+  onToggleFolder: (id: string) => void;
+  selectedArtifactId: string;
+}) {
+  return (
+    <div className="artifact-tree-level">
+      {nodes.map((node) => {
+        const treeDepthStyle = { '--artifact-tree-depth': depth } as React.CSSProperties;
+        if (node.kind === 'folder') {
+          const open = expandedFolders.has(node.id);
+          return (
+            <div className="artifact-tree-folder-group" key={node.id}>
               <button
-                className={artifact.id === selectedArtifactId ? 'active' : ''}
-                key={artifact.id}
-                onClick={() => onSelect(artifact.id)}
-                title={artifact.path ?? artifactFileName}
+                aria-expanded={open}
+                className="artifact-tree-folder"
+                data-open={open}
+                onClick={() => onToggleFolder(node.id)}
+                style={treeDepthStyle}
+                title={node.path}
                 type="button"
               >
-                <span className="artifact-extension">{artifact.extension}</span>
-                <span className="artifact-file-text">
-                  <strong className="artifact-file-name">{artifactFileName}</strong>
-                </span>
+                <ChevronRight size={12} />
+                <Folder size={13} />
+                <span>{node.name}</span>
+                <em>{node.fileCount}</em>
               </button>
-            );
-          }) : (
-            <div className="artifact-empty">当前运行还没有产物。</div>
-          )}
-        </div>
-      ) : null}
-
-      <ArtifactPreview
-        error={previewError}
-        loading={previewLoading}
-        preview={preview}
-        selectedArtifact={selectedArtifact}
-        onCopy={onCopy}
-      />
-    </aside>
+              {open ? (
+                <ArtifactTree
+                  depth={depth + 1}
+                  expandedFolders={expandedFolders}
+                  nodes={node.children}
+                  onSelect={onSelect}
+                  onToggleFolder={onToggleFolder}
+                  selectedArtifactId={selectedArtifactId}
+                />
+              ) : null}
+            </div>
+          );
+        }
+        return (
+          <button
+            className={node.item.id === selectedArtifactId ? 'active artifact-tree-file' : 'artifact-tree-file'}
+            key={node.id}
+            onClick={() => onSelect(node.item.id)}
+            style={treeDepthStyle}
+            title={node.path}
+            type="button"
+          >
+            <span className="artifact-extension">{node.item.extension}</span>
+            <span className="artifact-tree-file-text">
+              <strong className="artifact-tree-file-name">{node.name}</strong>
+              <em>{node.item.meta}</em>
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -4532,71 +4658,48 @@ function ArtifactPreview({
   const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
   const canFullscreen = selectedArtifact.previewable !== false && !selectedArtifact.error;
   const fileName = artifactListFileName(selectedArtifact);
-  const body = (
-    <ArtifactPreviewBody
-      error={error}
-      loading={loading}
-      preview={preview}
-      selectedArtifact={selectedArtifact}
-    />
-  );
 
   return (
-    <div className="artifact-preview">
-      <div className="artifact-preview-head">
-        <File size={14} />
-        <strong className="artifact-preview-title">{fileName}</strong>
-        <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
-          <Copy size={13} />
-        </button>
-        <a
-          className="icon-button"
-          href={downloadUrl ?? undefined}
-          download={selectedArtifact.name}
-          aria-disabled={!downloadUrl}
-          title="下载"
-        >
-          <Download size={13} />
-        </a>
-        <button
-          className="icon-button"
-          disabled={!canFullscreen}
-          onClick={() => setPreviewFullscreen(true)}
-          title="全屏预览"
-          type="button"
-        >
-          <Maximize2 size={13} />
-        </button>
-      </div>
-      {previewFullscreen ? null : body}
-      {previewFullscreen ? (
-        <div className="artifact-preview-fullscreen" role="dialog" aria-modal="true" aria-label={`${fileName} 预览`}>
-          <div className="artifact-preview-fullscreen-panel">
-            <div className="artifact-preview-head">
-              <File size={14} />
-              <strong className="artifact-preview-title">{fileName}</strong>
-              <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
-                <Copy size={13} />
-              </button>
-              <a
-                className="icon-button"
-                href={downloadUrl ?? undefined}
-                download={selectedArtifact.name}
-                aria-disabled={!downloadUrl}
-                title="下载"
-              >
-                <Download size={13} />
-              </a>
-              <button className="icon-button" onClick={() => setPreviewFullscreen(false)} title="关闭全屏" type="button">
-                <X size={14} />
-              </button>
-            </div>
-            <div className="artifact-preview-fullscreen-body">
-              {body}
-            </div>
-          </div>
+    <div
+      className="artifact-preview"
+      data-fullscreen={previewFullscreen}
+      role={previewFullscreen ? 'dialog' : undefined}
+      aria-modal={previewFullscreen ? true : undefined}
+      aria-label={previewFullscreen ? `${fileName} 预览` : undefined}
+    >
+      <div className="artifact-preview-fullscreen-shell">
+        <div className="artifact-preview-head">
+          <File size={14} />
+          <strong className="artifact-preview-title">{fileName}</strong>
+          <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
+            <Copy size={13} />
+          </button>
+          <a
+            className="icon-button"
+            href={downloadUrl ?? undefined}
+            download={selectedArtifact.name}
+            aria-disabled={!downloadUrl}
+            title="下载"
+          >
+            <Download size={13} />
+          </a>
+          <button
+            className="icon-button"
+            disabled={!canFullscreen}
+            onClick={() => setPreviewFullscreen((value) => !value)}
+            title={previewFullscreen ? '关闭全屏' : '全屏预览'}
+            type="button"
+          >
+            {previewFullscreen ? <X size={14} /> : <Maximize2 size={13} />}
+          </button>
         </div>
-      ) : null}
+        <ArtifactPreviewBody
+          error={error}
+          loading={loading}
+          preview={preview}
+          selectedArtifact={selectedArtifact}
+        />
+      </div>
     </div>
   );
 }
@@ -4743,6 +4846,14 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
       <div className="artifact-browser-preview-host" ref={containerRef} />
     </div>
   );
+}
+
+function sameStringSet(left: Set<string>, right: Set<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
 }
 
 function artifactListFileName(artifact: WorkbenchArtifactItem): string {

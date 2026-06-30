@@ -29,6 +29,25 @@ export interface WorkbenchArtifactInput {
   runId?: string | null;
 }
 
+export interface WorkbenchArtifactTreeFolder {
+  kind: 'folder';
+  id: string;
+  name: string;
+  path: string;
+  fileCount: number;
+  children: WorkbenchArtifactTreeNode[];
+}
+
+export interface WorkbenchArtifactTreeFile {
+  kind: 'file';
+  id: string;
+  name: string;
+  path: string;
+  item: WorkbenchArtifactItem;
+}
+
+export type WorkbenchArtifactTreeNode = WorkbenchArtifactTreeFolder | WorkbenchArtifactTreeFile;
+
 export function buildWorkbenchArtifacts({
   dag,
   dagArtifacts,
@@ -53,6 +72,56 @@ export function buildWorkbenchArtifacts({
 
 export function artifactPreviewText(item: WorkbenchArtifactItem): string {
   return [item.description, item.path ? `Path: ${item.path}` : ''].filter(Boolean).join('\n\n');
+}
+
+export function buildWorkbenchArtifactTree(items: WorkbenchArtifactItem[]): WorkbenchArtifactTreeNode[] {
+  const roots: WorkbenchArtifactTreeNode[] = [];
+  const folders = new Map<string, WorkbenchArtifactTreeFolder>();
+
+  items.forEach((item) => {
+    const pathParts = artifactPathParts(item.path || item.name);
+    const fileName = pathParts.pop() || item.name;
+    let children = roots;
+    const folderParts: string[] = [];
+
+    pathParts.forEach((part) => {
+      folderParts.push(part);
+      const folderPath = folderParts.join('/');
+      const id = artifactFolderId(folderPath);
+      let folder = folders.get(id);
+      if (!folder) {
+        folder = {
+          kind: 'folder',
+          id,
+          name: part,
+          path: folderPath,
+          fileCount: 0,
+          children: [],
+        };
+        folders.set(id, folder);
+        children.push(folder);
+      }
+      folder.fileCount += 1;
+      children = folder.children;
+    });
+
+    children.push({
+      kind: 'file',
+      id: item.id,
+      name: fileName,
+      path: item.path || item.name,
+      item,
+    });
+  });
+
+  sortArtifactTree(roots);
+  return roots;
+}
+
+export function artifactFolderIdsForPath(path: string | undefined): string[] {
+  const parts = artifactPathParts(path);
+  parts.pop();
+  return parts.map((_, index) => artifactFolderId(parts.slice(0, index + 1).join('/')));
 }
 
 function dagArtifactItem(artifact: Artifact): WorkbenchArtifactItem {
@@ -119,4 +188,26 @@ function formatBytes(size: number): string {
 
 function compareArtifactItems(left: WorkbenchArtifactItem, right: WorkbenchArtifactItem): number {
   return left.name.localeCompare(right.name);
+}
+
+function artifactPathParts(path: string | undefined): string[] {
+  return (path || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function artifactFolderId(path: string): string {
+  return `folder:${path}`;
+}
+
+function sortArtifactTree(nodes: WorkbenchArtifactTreeNode[]): void {
+  nodes.sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind === 'folder' ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
+  nodes.forEach((node) => {
+    if (node.kind === 'folder') sortArtifactTree(node.children);
+  });
 }

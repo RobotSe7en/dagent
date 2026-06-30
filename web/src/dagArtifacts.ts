@@ -2,6 +2,7 @@ import type { Artifact, UserDag, ValueBinding } from './types';
 
 export interface UploadSourceFile {
   name: string;
+  size?: number;
   relativePath?: string;
   webkitRelativePath?: string;
 }
@@ -26,6 +27,21 @@ export interface CreateUploadedFileArtifactsOptions {
 
 export interface UploadFormFilenameOptions {
   preserveRelativePath?: boolean;
+}
+
+export interface PendingUploadGroup {
+  key: string;
+  label: string;
+  kind: 'file' | 'folder';
+  fileCount: number;
+  size: number;
+  indexes: number[];
+  paths: string[];
+}
+
+export interface VisiblePendingUploadGroups {
+  groups: PendingUploadGroup[];
+  hiddenCount: number;
 }
 
 export function normalizeArtifact(artifact: ArtifactDraft): Artifact {
@@ -143,6 +159,49 @@ export function uploadFormFilename(
     return sanitizePathSegment(file.name || 'upload');
   }
   return sourceUploadPath(file);
+}
+
+export function buildPendingUploadGroups(files: UploadSourceFile[]): PendingUploadGroup[] {
+  const groups = new Map<string, PendingUploadGroup>();
+  files.forEach((file, index) => {
+    const path = uploadFormFilename(file);
+    const parts = path.split('/').filter(Boolean);
+    const isFolderUpload = parts.length > 1;
+    const label = isFolderUpload ? parts[0] : path;
+    const key = isFolderUpload ? `folder:${label}` : `file:${path}:${index}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.fileCount += 1;
+      existing.size += file.size ?? 0;
+      existing.indexes.push(index);
+      existing.paths.push(path);
+      return;
+    }
+    groups.set(key, {
+      key,
+      label,
+      kind: isFolderUpload ? 'folder' : 'file',
+      fileCount: 1,
+      size: file.size ?? 0,
+      indexes: [index],
+      paths: [path],
+    });
+  });
+  return [...groups.values()];
+}
+
+export function visiblePendingUploadGroups(
+  groups: PendingUploadGroup[],
+  expanded: boolean,
+  collapsedLimit = 4,
+): VisiblePendingUploadGroups {
+  if (expanded || groups.length <= collapsedLimit) {
+    return { groups, hiddenCount: 0 };
+  }
+  return {
+    groups: groups.slice(0, collapsedLimit),
+    hiddenCount: groups.length - collapsedLimit,
+  };
 }
 
 function sourceUploadPath(file: UploadSourceFile): string {
