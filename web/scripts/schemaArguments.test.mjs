@@ -2001,6 +2001,8 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*width:\s*18px;[^}]*height:\s*42px;[^}]*align-self:\s*center;[^}]*justify-self:\s*center;/s);
   assert.match(css, /\.artifact-tree-list\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
   assert.match(css, /\.artifact-tree-rail-toggle\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s);
+  assert.match(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*12px\);/);
+  assert.doesNotMatch(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*16px\);/);
   assert.match(css, /\.artifact-tree-file\s*\{[^}]*min-height:\s*30px;/s);
   assert.match(css, /\.artifact-tree-file\s*\{[^}]*width:\s*100%;[^}]*min-width:\s*0;/s);
   assert.match(css, /\.artifact-tree-file\s*\{[^}]*color:\s*#4c535f;[^}]*font-size:\s*12px;[^}]*font-weight:\s*500;/s);

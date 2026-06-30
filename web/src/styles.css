@@ -1881,7 +1881,7 @@ details[open] .timeline-chevron {
 
 .artifact-tree-folder,
 .artifact-tree-file {
-  --artifact-tree-indent: calc(var(--artifact-tree-depth, 0) * 16px);
+  --artifact-tree-indent: calc(var(--artifact-tree-depth, 0) * 12px);
   width: 100%;
   min-width: 0;
   display: flex;
