@@ -185,7 +185,7 @@ export interface Artifact {
 }
 
 export type RunArtifactTextPreviewKind = 'markdown' | 'code' | 'text';
-export type RunArtifactBrowserPreviewKind = 'pdf' | 'docx' | 'xlsx';
+export type RunArtifactBrowserPreviewKind = 'pdf' | 'docx' | 'xlsx' | 'pptx';
 export type RunArtifactPreviewKind = RunArtifactTextPreviewKind | RunArtifactBrowserPreviewKind;
 export type RunArtifactFileSource = 'dag_artifact' | 'run_file';
 

@@ -65,6 +65,10 @@ runner workspace 时，运行 artifact 会写到 `.dagent/runs/<run_id>`。
 `DAGRun` 仍然是 API projections 使用的 schema，并且可以通过静态 DAG runs 的
 `result.dag_run` 访问。
 
+本地 WebUI 会把 run workspace 中的文件列为运行 artifacts。文本、Markdown 和代码
+artifacts 使用文本预览接口；PDF、DOCX、XLSX 和 PPTX artifacts 会通过 artifact
+download 接口拉取文件，并在浏览器中渲染。
+
 ## Streaming
 
 `Runner.stream(...)` 运行 target，并 yield 类型化的 `RunStreamEvent` objects。事件

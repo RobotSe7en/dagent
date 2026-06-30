@@ -82,7 +82,7 @@ ModelProviderSource = Literal["config", "user"]
 REDACTED_SECRET_VALUE = "[redacted]"
 RunArtifactSource = Literal["dag_artifact", "run_file"]
 RunArtifactTextPreviewKind = Literal["markdown", "code", "text"]
-RunArtifactBrowserPreviewKind = Literal["pdf", "docx", "xlsx"]
+RunArtifactBrowserPreviewKind = Literal["pdf", "docx", "xlsx", "pptx"]
 RunArtifactPreviewKind = RunArtifactTextPreviewKind | RunArtifactBrowserPreviewKind
 RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
@@ -98,6 +98,7 @@ _BROWSER_PREVIEW_EXTENSIONS: dict[str, RunArtifactBrowserPreviewKind] = {
     ".pdf": "pdf",
     ".docx": "docx",
     ".xlsx": "xlsx",
+    ".pptx": "pptx",
 }
 _CODE_EXTENSIONS = {
     ".c",

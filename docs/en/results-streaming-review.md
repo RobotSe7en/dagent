@@ -69,6 +69,11 @@ absolute path. With the default runner workspace, run artifacts live under
 `DAGRun` remains a schema for API projections and is available through
 `result.dag_run` for static DAG runs.
 
+The local WebUI lists files from the run workspace as run artifacts. Text,
+Markdown, and code artifacts use the text preview endpoint; PDF, DOCX, XLSX,
+and PPTX artifacts are fetched through the artifact download endpoint and
+rendered in the browser.
+
 ## Streaming
 
 `Runner.stream(...)` runs a target and yields typed `RunStreamEvent` objects with
