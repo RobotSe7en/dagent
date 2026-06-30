@@ -2306,7 +2306,7 @@ export function App() {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const uploadDraft = createUploadedFileArtifacts(files as UploadSourceFile[], {
       artifacts: spec.artifacts ?? {},
-      uploadRoot: 'inputs/uploads',
+      uploadRoot: 'uploads',
     });
     const saved = await saveEditorDraftSpec(
       { ...spec, artifacts: uploadDraft.artifacts },
@@ -4362,10 +4362,21 @@ function UploadPicker({
     event.currentTarget.value = '';
     event.currentTarget.closest('details')?.removeAttribute('open');
   };
+  const onSummaryClick = (event: React.MouseEvent<HTMLElement>) => {
+    if (disabled) {
+      event.preventDefault();
+    }
+  };
 
   return (
     <details className={`upload-picker ${variant === 'composer' ? 'composer-upload-picker' : 'sidebar-upload-picker'}`}>
-      <summary className={summaryClass} title="上传附件" aria-label="上传附件">
+      <summary
+        className={summaryClass}
+        title="上传附件"
+        aria-disabled={disabled}
+        aria-label="上传附件"
+        onClick={onSummaryClick}
+      >
         <Upload size={iconSize} />
       </summary>
       <div className="upload-picker-menu">

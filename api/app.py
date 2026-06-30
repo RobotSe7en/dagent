@@ -752,10 +752,15 @@ async def upload_dag_artifact(
 
     uploads: list[ArtifactUpload] = []
     for file in files:
+        filename = file.filename or "upload"
+        try:
+            validate_upload_filename(filename)
+        except ArtifactPathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         content = await file.read()
         uploads.append(
             ArtifactUpload(
-                filename=file.filename or "upload",
+                filename=filename,
                 content=content,
             )
         )

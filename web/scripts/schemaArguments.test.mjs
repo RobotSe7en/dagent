@@ -263,7 +263,10 @@ test('upload picker keeps one visible button while supporting files and folders'
   const pickerSource = appSource.match(/function UploadPicker[\s\S]*?\nfunction PanelResizeHandle/)?.[0] ?? '';
 
   assert.ok(pickerSource, 'UploadPicker function should exist');
+  assert.match(pickerSource, /const onSummaryClick = \(event: React\.MouseEvent<HTMLElement>\) => \{[\s\S]*if \(disabled\) \{[\s\S]*event\.preventDefault\(\);/);
   assert.match(pickerSource, /<summary[\s\S]*<Upload size=\{iconSize\} \/>/);
+  assert.match(pickerSource, /aria-disabled=\{disabled\}/);
+  assert.match(pickerSource, /onClick=\{onSummaryClick\}/);
   assert.match(pickerSource, /上传文件/);
   assert.match(pickerSource, /上传文件夹/);
   assert.match(pickerSource, /type="file"[\s\S]*multiple/);
@@ -2025,10 +2028,10 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
     runId: 'run_upload_1',
     runFiles: [
       {
-        id: 'run:inputs/uploads/project/src/index.ts',
+        id: 'run:uploads/project/src/index.ts',
         artifact_id: null,
         source: 'run_file',
-        path: 'inputs/uploads/project/src/index.ts',
+        path: 'uploads/project/src/index.ts',
         name: 'index.ts',
         media_type: 'text/x-typescript',
         preview_kind: 'code',
@@ -2038,10 +2041,10 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
         error: null,
       },
       {
-        id: 'run:inputs/uploads/project/README.md',
+        id: 'run:uploads/project/README.md',
         artifact_id: null,
         source: 'run_file',
-        path: 'inputs/uploads/project/README.md',
+        path: 'uploads/project/README.md',
         name: 'README.md',
         media_type: 'text/markdown',
         preview_kind: 'markdown',
@@ -2067,11 +2070,10 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
   });
   const tree = buildWorkbenchArtifactTree(items);
 
-  assert.deepEqual(artifactFolderIdsForPath('inputs/uploads/project/src/index.ts'), [
-    'folder:inputs',
-    'folder:inputs/uploads',
-    'folder:inputs/uploads/project',
-    'folder:inputs/uploads/project/src',
+  assert.deepEqual(artifactFolderIdsForPath('uploads/project/src/index.ts'), [
+    'folder:uploads',
+    'folder:uploads/project',
+    'folder:uploads/project/src',
   ]);
   assert.deepEqual(tree.map((node) => ({
     kind: node.kind,
@@ -2085,15 +2087,15 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
   })), [
     {
       kind: 'folder',
-      name: 'inputs',
-      fileCount: 2,
-      children: [{ kind: 'folder', name: 'uploads', fileCount: 2 }],
-    },
-    {
-      kind: 'folder',
       name: 'outputs',
       fileCount: 1,
       children: [{ kind: 'file', name: 'report.pdf', fileCount: 1 }],
+    },
+    {
+      kind: 'folder',
+      name: 'uploads',
+      fileCount: 2,
+      children: [{ kind: 'folder', name: 'project', fileCount: 2 }],
     },
   ]);
 });
@@ -2606,11 +2608,33 @@ test('uploadFormFilename can upload a generated artifact with only the file base
 test('createUploadedFileArtifacts preserves browser folder relative paths', () => {
   const result = createUploadedFileArtifacts(
     [{ name: 'summary.md', webkitRelativePath: 'research/day1/summary.md' }],
-    { artifacts: {}, uploadRoot: 'inputs/uploads' },
+    { artifacts: {}, uploadRoot: 'uploads' },
   );
 
-  assert.equal(result.uploads[0].artifact.paths[0], 'inputs/uploads/research/day1/summary.md');
+  assert.equal(result.uploads[0].artifact.paths[0], 'uploads/research/day1/summary.md');
   assert.equal(result.uploads[0].artifact.metadata.relative_path, 'research/day1/summary.md');
+});
+
+test('upload helpers reject unsafe relative paths instead of rewriting them', () => {
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: '../secret.txt' }),
+    /cannot contain '\.\.'/,
+  );
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: '/tmp/secret.txt' }),
+    /must be relative/,
+  );
+  assert.throws(
+    () => uploadFormFilename({ name: 'secret.txt', webkitRelativePath: 'C:\\tmp\\secret.txt' }),
+    /must be relative/,
+  );
+  assert.throws(
+    () => createUploadedFileArtifacts(
+      [{ name: 'secret.txt', webkitRelativePath: 'docs/../secret.txt' }],
+      { artifacts: {}, uploadRoot: 'uploads' },
+    ),
+    /cannot contain '\.\.'/,
+  );
 });
 
 test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues', () => {
@@ -2620,7 +2644,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     artifacts: {
       upload_source: {
         id: 'upload_source',
-        paths: ['inputs/uploads/source/source.md'],
+        paths: ['uploads/source/source.md'],
         description: 'source.md',
         metadata: {
           source: 'upload',
@@ -2659,7 +2683,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
     {
       id: 'upload_source',
       label: 'source.md',
-      path: 'inputs/uploads/source/source.md',
+      path: 'uploads/source/source.md',
       kind: 'file',
     },
   ]);

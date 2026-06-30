@@ -127,7 +127,7 @@ export function createUploadedFileArtifacts(
 ): { artifacts: Record<string, Artifact>; uploads: UploadedFileArtifact[] } {
   const next = { ...options.artifacts };
   const usedIds = new Set(Object.keys(next));
-  const uploadRoot = normalizeUploadPath(options.uploadRoot) || 'inputs/uploads';
+  const uploadRoot = normalizeUploadPath(options.uploadRoot) || 'uploads';
   const uploads = files.map((source) => {
     const relativePath = sourceUploadPath(source);
     const artifactPath = joinArtifactPath(uploadRoot, relativePath);
@@ -209,11 +209,20 @@ function sourceUploadPath(file: UploadSourceFile): string {
 }
 
 function normalizeUploadPath(path: string): string {
-  return path
+  const trimmed = path.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('/') || trimmed.startsWith('\\') || /^[A-Za-z]:/.test(trimmed)) {
+    throw new Error(`Upload path '${path}' must be relative.`);
+  }
+  const parts = trimmed
     .replace(/\\/g, '/')
     .split('/')
-    .map((part) => part.trim())
-    .filter((part) => part && part !== '.' && part !== '..')
+    .map((part) => part.trim());
+  if (parts.includes('..')) {
+    throw new Error(`Upload path '${path}' cannot contain '..'.`);
+  }
+  return parts
+    .filter((part) => part && part !== '.')
     .map(sanitizePathSegment)
     .filter(Boolean)
     .join('/');

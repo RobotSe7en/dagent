@@ -623,21 +623,20 @@ def test_api_message_stream_rejects_relative_workspace_root_escape() -> None:
 
 
 def test_api_message_stream_upload_materializes_input_file(tmp_path: Path) -> None:
-    state.runner = _runner(
-        MockProvider([
-            ChatResponse(
-                content="",
-                tool_calls=[
-                    ToolCall(
-                        id="call_1",
-                        name="tool_read_file",
-                        arguments={"path": "inputs/uploads/source.txt"},
-                    )
-                ],
-            ),
-            ChatResponse(content="read uploaded file"),
-        ])
-    )
+    provider = MockProvider([
+        ChatResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="tool_read_file",
+                    arguments={"path": "uploads/source.txt"},
+                )
+            ],
+        ),
+        ChatResponse(content="read uploaded file"),
+    ])
+    state.runner = _runner(provider)
     client = TestClient(app)
     payload = _message_request(
         "read upload",
@@ -655,7 +654,11 @@ def test_api_message_stream_upload_materializes_input_file(tmp_path: Path) -> No
     assert response.status_code == 200
     result = _stream_result(_sse_events(response.text)[-1])
     workspace = Path(result["state"]["workspace_path"])
-    assert (workspace / "inputs" / "uploads" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
+    assert (workspace / "uploads" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
+    first_user_message = provider.requests[0]["messages"][-1]["content"]
+    assert "Uploaded files" in first_user_message
+    assert "uploads/source.txt" in first_user_message
+    assert "inputs/uploads" not in first_user_message
     assert result["output_text"] == "read uploaded file"
 
 
@@ -668,7 +671,7 @@ def test_api_message_stream_folder_upload_preserves_relative_paths(tmp_path: Pat
                     ToolCall(
                         id="call_1",
                         name="tool_read_file",
-                        arguments={"path": "inputs/uploads/docs/nested/source.txt"},
+                        arguments={"path": "uploads/docs/nested/source.txt"},
                     )
                 ],
             ),
@@ -692,10 +695,34 @@ def test_api_message_stream_folder_upload_preserves_relative_paths(tmp_path: Pat
     assert response.status_code == 200
     result = _stream_result(_sse_events(response.text)[-1])
     workspace = Path(result["state"]["workspace_path"])
-    assert (workspace / "inputs" / "uploads" / "docs" / "nested" / "source.txt").read_text(
+    assert (workspace / "uploads" / "docs" / "nested" / "source.txt").read_text(
         encoding="utf-8"
     ) == "nested upload"
     assert result["output_text"] == "read nested upload"
+
+
+def test_api_message_stream_upload_manifest_is_visible_to_dag_agent(tmp_path: Path) -> None:
+    provider = MockProvider([
+        ChatResponse(content='task: read upload\nanswer = tool_echo(text="ok")\n'),
+    ])
+    state.runner = _runner(provider)
+    client = TestClient(app)
+    payload = _message_request(
+        "plan from upload",
+        target="dag",
+        workspace_root=str(tmp_path / "runs"),
+    )
+
+    response = client.post(
+        "/messages/stream",
+        data={"payload": json.dumps(payload)},
+        files=[("files", ("brief.txt", b"brief", "text/plain"))],
+    )
+
+    assert response.status_code == 200
+    first_user_message = provider.requests[0]["messages"][-1]["content"]
+    assert "Uploaded files" in first_user_message
+    assert "uploads/brief.txt" in first_user_message
 
 
 def test_api_message_stream_upload_rejects_unsafe_relative_path(tmp_path: Path) -> None:
@@ -3417,6 +3444,44 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
     assert (workspace_path / "inputs" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
     assert run_payload["trace"]["root"]["children"][0]["output"] == "hello from upload"
     assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
+
+
+def test_api_dag_artifact_upload_rejects_unsafe_relative_path() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": "unsafe_uploaded_source",
+            "name": "Unsafe uploaded source",
+            "artifacts": {
+                "source": {
+                    "id": "source",
+                    "paths": ["inputs/source.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "read",
+                    "target": "tool.read_file",
+                    "inputs": {
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}},
+                    },
+                    "artifact_inputs": ["source"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    upload_response = client.post(
+        "/dags/unsafe_uploaded_source/artifacts/source/upload",
+        files=[("files", ("../source.txt", b"unsafe", "text/plain"))],
+    )
+
+    assert upload_response.status_code == 400
+    assert "Uploaded file name" in upload_response.json()["detail"]
 
 
 def test_api_dag_artifact_upload_materializes_input_file_on_each_run(tmp_path: Path) -> None:

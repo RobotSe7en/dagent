@@ -24,7 +24,7 @@ class ArtifactUpload:
     content: bytes
 
 
-WORKBENCH_UPLOAD_ROOT = "inputs/uploads"
+WORKBENCH_UPLOAD_ROOT = "uploads"
 
 
 def create_run_workspace(root: str | Path = DEFAULT_RUNS_DIR, *, run_id: str | None = None) -> Path:

@@ -61,39 +61,41 @@ class CapabilityExecutor:
         context: CapabilityExecutionContext | None = None,
         callbacks: CapabilityExecutionCallbacks | None = None,
     ) -> CapabilityResult:
-        entry = self.catalog.get_entry(invocation.capability_id)
-        if entry is None:
-            raise CapabilityExecutionError(f"Capability '{invocation.capability_id}' is not registered.")
-        definition = entry.definition
-        if not definition.enabled:
-            raise CapabilityExecutionError(f"Capability '{invocation.capability_id}' is disabled.")
-        if definition.kind != invocation.kind:
-            raise CapabilityExecutionError(
-                f"Capability '{invocation.capability_id}' has kind '{definition.kind}', "
-                f"not '{invocation.kind}'."
-            )
-        if current_run_execution() == "sandbox" and entry.sandbox_execution != "builtin_tool":
-            # Fail closed: only ToolCapabilityProvider-owned tools execute
-            # inside the sandbox. Other handlers, including public @tool
-            # bindings, run on the host and must not be allowed to fall back.
-            raise CapabilityExecutionError(
-                f"Capability '{invocation.capability_id}' (kind='{invocation.kind}') cannot "
-                "run under execution='sandbox', which currently supports only built-in tool "
-                "capabilities. Use execution='local'."
-            )
-        if entry.supports_context:
-            args = (invocation,)
-            kwargs = {
-                "context": context,
-                "callbacks": callbacks or CapabilityExecutionCallbacks(),
-            }
-        else:
-            args = (invocation,)
-            kwargs = {}
-        if inspect.iscoroutinefunction(entry.handler):
-            result = entry.handler(*args, **kwargs)
-        else:
-            result = await asyncio.to_thread(entry.handler, *args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+        workspace_path = None if context is None else context.workspace_path
+        with self.workspace_context(workspace_path):
+            entry = self.catalog.get_entry(invocation.capability_id)
+            if entry is None:
+                raise CapabilityExecutionError(f"Capability '{invocation.capability_id}' is not registered.")
+            definition = entry.definition
+            if not definition.enabled:
+                raise CapabilityExecutionError(f"Capability '{invocation.capability_id}' is disabled.")
+            if definition.kind != invocation.kind:
+                raise CapabilityExecutionError(
+                    f"Capability '{invocation.capability_id}' has kind '{definition.kind}', "
+                    f"not '{invocation.kind}'."
+                )
+            if current_run_execution() == "sandbox" and entry.sandbox_execution != "builtin_tool":
+                # Fail closed: only ToolCapabilityProvider-owned tools execute
+                # inside the sandbox. Other handlers, including public @tool
+                # bindings, run on the host and must not be allowed to fall back.
+                raise CapabilityExecutionError(
+                    f"Capability '{invocation.capability_id}' (kind='{invocation.kind}') cannot "
+                    "run under execution='sandbox', which currently supports only built-in tool "
+                    "capabilities. Use execution='local'."
+                )
+            if entry.supports_context:
+                args = (invocation,)
+                kwargs = {
+                    "context": context,
+                    "callbacks": callbacks or CapabilityExecutionCallbacks(),
+                }
+            else:
+                args = (invocation,)
+                kwargs = {}
+            if inspect.iscoroutinefunction(entry.handler):
+                result = entry.handler(*args, **kwargs)
+            else:
+                result = await asyncio.to_thread(entry.handler, *args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
