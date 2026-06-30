@@ -161,7 +161,11 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /const artifactDrawerOpen = artifactPanelOpen;/);
   assert.match(appSource, /artifactPanelOpen=\{artifactDrawerOpen\}/);
   assert.match(appSource, /onToggleArtifacts=\{\(\) => setArtifactPanelOpen\(\(value\) => !value\)\}/);
-  assert.match(appSource, /className="icon-button attachment-button"[\s\S]*title="上传附件（暂未接入）"[\s\S]*<Upload size=\{17\} \/>/);
+  assert.match(appSource, /function UploadPicker/);
+  assert.match(appSource, /<UploadPicker[\s\S]*variant="composer"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
+  assert.match(appSource, /<UploadPicker[\s\S]*variant="sidebar"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
+  assert.match(appSource, /pendingChatUploads/);
+  assert.match(appSource, /onUploadFiles=\{queueChatUploads\}/);
   assert.doesNotMatch(appSource, /const canOpen = artifacts\.length > 0|disabled=\{!canOpen\}|暂无产物/);
   assert.doesNotMatch(appSource, /composer-hint|⌘ \+ Enter 发送|当前模式/);
   assert.doesNotMatch(appSource, /designPreviewDag|designPreviewArtifacts|DesignPreviewConversation|designHistoryRows/);
@@ -194,14 +198,42 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /button:focus-visible\s*\{[^}]*outline:\s*2px solid rgba\(91, 91, 214, 0\.42\);/s);
 });
 
-test('composer uses upload placeholder instead of creating chats from the input toolbar', async () => {
+test('composer uses the reserved upload button for pending attachments', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
 
   assert.ok(chatWorkspaceSource, 'ChatWorkspace function should exist');
   assert.doesNotMatch(chatWorkspaceSource, /onNewChat/);
   assert.doesNotMatch(chatWorkspaceSource, /title="新建会话"/);
-  assert.match(chatWorkspaceSource, /title="上传附件（暂未接入）"/);
+  assert.doesNotMatch(chatWorkspaceSource, /暂未接入/);
+  assert.match(chatWorkspaceSource, /<UploadPicker/);
+  assert.match(chatWorkspaceSource, /onUploadFiles/);
+  assert.match(chatWorkspaceSource, /pendingUploads/);
+  assert.match(chatWorkspaceSource, /onRemoveUpload/);
+});
+
+test('upload picker keeps one visible button while supporting files and folders', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const pickerSource = appSource.match(/function UploadPicker[\s\S]*?\nfunction PanelResizeHandle/)?.[0] ?? '';
+
+  assert.ok(pickerSource, 'UploadPicker function should exist');
+  assert.match(pickerSource, /<summary[\s\S]*<Upload size=\{iconSize\} \/>/);
+  assert.match(pickerSource, /上传文件/);
+  assert.match(pickerSource, /上传文件夹/);
+  assert.match(pickerSource, /type="file"[\s\S]*multiple/);
+  assert.match(pickerSource, /webkitdirectory/);
+  assert.match(css, /\.composer-card\s*\{[^}]*overflow:\s*visible;/s);
+  assert.match(css, /\.composer-upload-picker \.upload-picker-menu\s*\{[^}]*top:\s*auto;[^}]*bottom:\s*calc\(100% \+ 6px\);/s);
+});
+
+test('streamTask sends smart workbench uploads as multipart payload files', async () => {
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /uploads\?: File\[\]/);
+  assert.match(apiSource, /new FormData\(\)/);
+  assert.match(apiSource, /form\.append\('payload', JSON\.stringify\(body\)\)/);
+  assert.match(apiSource, /form\.append\('files', file, uploadFormFilename\(file\)\)/);
 });
 
 test('capability helpers use display names and dotted ids', () => {
@@ -843,7 +875,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(sidebarSource, /编排列表/);
   assert.match(sidebarSource, /Artifacts/);
   assert.match(sidebarSource, /className="sidebar-artifact-section"/);
-  assert.match(sidebarSource, /onUploadFiles\(event\.target\.files\)/);
+  assert.match(sidebarSource, /<UploadPicker variant="sidebar" onUploadFiles=\{onUploadFiles\} \/>/);
   assert.match(sidebarSource, /onCreateArtifact/);
   assert.match(sidebarSource, /onEditArtifact\(artifact\.id\)/);
   assert.match(sidebarSource, /onDeleteArtifact\(artifact\.id\)/);
@@ -1696,7 +1728,7 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
   assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal \}\);/);
+  assert.match(runStreamSource, /streamTask\([\s\S]*\{ signal, uploads: uploadsForRequest \}\);/);
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
   assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
@@ -2388,6 +2420,17 @@ test('uploadFormFilename can upload a generated artifact with only the file base
 
   assert.equal(uploadFormFilename(file, { preserveRelativePath: false }), 'data.csv');
   assert.equal(uploadFormFilename(file, { preserveRelativePath: true }), 'dataset/data.csv');
+  assert.equal(uploadFormFilename(file), 'dataset/data.csv');
+});
+
+test('createUploadedFileArtifacts preserves browser folder relative paths', () => {
+  const result = createUploadedFileArtifacts(
+    [{ name: 'summary.md', webkitRelativePath: 'research/day1/summary.md' }],
+    { artifacts: {}, uploadRoot: 'inputs/uploads' },
+  );
+
+  assert.equal(result.uploads[0].artifact.paths[0], 'inputs/uploads/research/day1/summary.md');
+  assert.equal(result.uploads[0].artifact.metadata.relative_path, 'research/day1/summary.md');
 });
 
 test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues', () => {

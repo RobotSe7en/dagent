@@ -1478,7 +1478,7 @@ details[open] .timeline-chevron {
   border-radius: 15px;
   background: #fff;
   box-shadow: 0 2px 14px rgba(20, 23, 30, 0.05);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .composer-shell {
@@ -1510,6 +1510,116 @@ details[open] .timeline-chevron {
   gap: 8px;
   flex-wrap: wrap;
   padding: 8px 12px 11px;
+}
+
+.attachment-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.pending-upload-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+
+.pending-upload-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pending-upload-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-upload-row em {
+  color: var(--text-muted);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.pending-upload-row .icon-button {
+  width: 24px;
+  height: 24px;
+}
+
+.upload-picker {
+  position: relative;
+}
+
+.upload-picker summary {
+  list-style: none;
+}
+
+.upload-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-upload-picker {
+  margin-left: auto;
+}
+
+.upload-picker-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  min-width: 132px;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(31, 35, 48, 0.16);
+}
+
+.sidebar-upload-picker .upload-picker-menu {
+  right: 0;
+  left: auto;
+}
+
+.composer-upload-picker .upload-picker-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.upload-picker-menu label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.upload-picker-menu label:hover {
+  background: #f3f4f8;
+  color: var(--text-primary);
+}
+
+.upload-picker-menu input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .composer-toolbar .mode-switch {

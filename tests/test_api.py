@@ -622,6 +622,101 @@ def test_api_message_stream_rejects_relative_workspace_root_escape() -> None:
     assert "workspace_root" in response.json()["detail"]
 
 
+def test_api_message_stream_upload_materializes_input_file(tmp_path: Path) -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_read_file",
+                        arguments={"path": "inputs/uploads/source.txt"},
+                    )
+                ],
+            ),
+            ChatResponse(content="read uploaded file"),
+        ])
+    )
+    client = TestClient(app)
+    payload = _message_request(
+        "read upload",
+        target="tool",
+        capability_ids=["tool.read_file"],
+        workspace_root=str(tmp_path / "runs"),
+    )
+
+    response = client.post(
+        "/messages/stream",
+        data={"payload": json.dumps(payload)},
+        files=[("files", ("source.txt", b"hello from upload", "text/plain"))],
+    )
+
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    workspace = Path(result["state"]["workspace_path"])
+    assert (workspace / "inputs" / "uploads" / "source.txt").read_text(encoding="utf-8") == "hello from upload"
+    assert result["output_text"] == "read uploaded file"
+
+
+def test_api_message_stream_folder_upload_preserves_relative_paths(tmp_path: Path) -> None:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_read_file",
+                        arguments={"path": "inputs/uploads/docs/nested/source.txt"},
+                    )
+                ],
+            ),
+            ChatResponse(content="read nested upload"),
+        ])
+    )
+    client = TestClient(app)
+    payload = _message_request(
+        "read nested upload",
+        target="tool",
+        capability_ids=["tool.read_file"],
+        workspace_root=str(tmp_path / "runs"),
+    )
+
+    response = client.post(
+        "/messages/stream",
+        data={"payload": json.dumps(payload)},
+        files=[("files", ("docs/nested/source.txt", b"nested upload", "text/plain"))],
+    )
+
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    workspace = Path(result["state"]["workspace_path"])
+    assert (workspace / "inputs" / "uploads" / "docs" / "nested" / "source.txt").read_text(
+        encoding="utf-8"
+    ) == "nested upload"
+    assert result["output_text"] == "read nested upload"
+
+
+def test_api_message_stream_upload_rejects_unsafe_relative_path(tmp_path: Path) -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    payload = _message_request(
+        "read upload",
+        target="tool",
+        workspace_root=str(tmp_path / "runs"),
+    )
+
+    response = client.post(
+        "/messages/stream",
+        data={"payload": json.dumps(payload)},
+        files=[("files", ("../secret.txt", b"secret", "text/plain"))],
+    )
+
+    assert response.status_code == 400
+    assert "Uploaded file name" in response.json()["detail"]
+
+
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_root = tmp_path / "managed-skills"

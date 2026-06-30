@@ -188,6 +188,7 @@ import {
   createUploadedFileArtifacts,
   isUploadedFileArtifact,
   removeArtifactBinding,
+  uploadFormFilename,
   updateArtifactBinding,
   upsertArtifact,
   type UploadSourceFile,
@@ -898,6 +899,7 @@ export function App() {
   const [runArtifactFiles, setRunArtifactFiles] = useState<RunArtifactFile[]>([]);
   const [runArtifactLoading, setRunArtifactLoading] = useState(false);
   const [runArtifactError, setRunArtifactError] = useState<string | null>(null);
+  const [pendingChatUploads, setPendingChatUploads] = useState<File[]>([]);
   const [artifactPreviews, setArtifactPreviews] = useState<Record<string, RunArtifactPreview>>({});
   const [artifactPreviewLoadingId, setArtifactPreviewLoadingId] = useState('');
   const [artifactPreviewError, setArtifactPreviewError] = useState<{ id: string; message: string } | null>(null);
@@ -2282,6 +2284,16 @@ export function App() {
     setEditorMessage(`已删除 artifact ${artifactId}。`);
   };
 
+  const queueChatUploads = (fileList: FileList | null) => {
+    const files = filesFromList(fileList);
+    if (!files.length) return;
+    setPendingChatUploads((current) => [...current, ...files]);
+  };
+
+  const removePendingChatUpload = (index: number) => {
+    setPendingChatUploads((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
   const uploadEditorFiles = async (fileList: FileList | null) => {
     const files = filesFromList(fileList);
     if (!files.length) return;
@@ -2456,6 +2468,7 @@ export function App() {
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
+    const uploadsForRequest = pendingChatUploads;
     setDraft('');
     setError(null);
     setTrace([]);
@@ -2484,6 +2497,11 @@ export function App() {
     const signal = beginStreamRequest();
     try {
       await streamTask(prompt, target, reviewLevel, {
+        onStarted: () => {
+          if (uploadsForRequest.length) {
+            setPendingChatUploads((current) => current.slice(uploadsForRequest.length));
+          }
+        },
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           closeAssistantReasoning();
@@ -2531,7 +2549,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState, undefined, { signal });
+      }, capabilityScope, runState, undefined, { signal, uploads: uploadsForRequest });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -2733,6 +2751,7 @@ export function App() {
     }
     setMessages([]);
     setDraft('');
+    setPendingChatUploads([]);
     syncDag(emptyDag);
     setTrace([]);
     setError(null);
@@ -2832,6 +2851,7 @@ export function App() {
             loading={streaming}
             messageListRef={messageListRef}
             messages={messages}
+            pendingUploads={pendingChatUploads}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -2850,11 +2870,13 @@ export function App() {
             }}
             onOpenScope={() => setCapabilityScopeOpen(true)}
             onReviewLevelChange={setReviewLevel}
+            onRemoveUpload={removePendingChatUpload}
             onRun={() => void runStream()}
             onStop={stopStream}
             onTargetChange={setTarget}
             onToggleArtifacts={() => setArtifactPanelOpen((value) => !value)}
             onToggleValidation={() => void toggleValidation()}
+            onUploadFiles={queueChatUploads}
           />
         ) : activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
           <DynamicOrchestrationWorkspace
@@ -3785,17 +3807,7 @@ function WorkspaceSidebar({
         <section className="sidebar-artifact-section">
           <div className="sidebar-artifact-head">
             <span>Artifacts</span>
-            <label className="sidebar-artifact-icon" title="上传文件">
-              <Upload size={13} />
-              <input
-                type="file"
-                multiple
-                onChange={(event) => {
-                  onUploadFiles(event.target.files);
-                  event.currentTarget.value = '';
-                }}
-              />
-            </label>
+            <UploadPicker variant="sidebar" onUploadFiles={onUploadFiles} />
             <button className="sidebar-artifact-icon" onClick={onCreateArtifact} title="添加路径" type="button">
               <Plus size={13} />
             </button>
@@ -4036,6 +4048,7 @@ function ChatWorkspace({
   loading,
   messageListRef,
   messages,
+  pendingUploads,
   reviewLevel,
   selectedArtifact,
   selectedArtifactId,
@@ -4050,11 +4063,13 @@ function ChatWorkspace({
   onOpenDag,
   onOpenScope,
   onReviewLevelChange,
+  onRemoveUpload,
   onRun,
   onStop,
   onTargetChange,
   onToggleArtifacts,
   onToggleValidation,
+  onUploadFiles,
 }: {
   artifactListError: string | null;
   artifactListLoading: boolean;
@@ -4070,6 +4085,7 @@ function ChatWorkspace({
   loading: boolean;
   messageListRef: React.RefObject<HTMLDivElement | null>;
   messages: ChatMessage[];
+  pendingUploads: File[];
   reviewLevel: ReviewLevel;
   selectedArtifact: WorkbenchArtifactItem | null;
   selectedArtifactId: string;
@@ -4084,11 +4100,13 @@ function ChatWorkspace({
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
   onOpenScope: () => void;
   onReviewLevelChange: (value: ReviewLevel) => void;
+  onRemoveUpload: (index: number) => void;
   onRun: () => void;
   onStop: () => void;
   onTargetChange: (value: ChatTarget) => void;
   onToggleArtifacts: () => void;
   onToggleValidation: () => void;
+  onUploadFiles: (files: FileList | null) => void;
 }) {
   const title = currentChatTitle(messages);
 
@@ -4126,15 +4144,31 @@ function ChatWorkspace({
               }}
               placeholder="描述一个任务,或请求规划、审查、执行结果…"
             />
+            {pendingUploads.length ? (
+              <div className="pending-upload-list">
+                {pendingUploads.map((file, index) => {
+                  const uploadPath = uploadFormFilename(file);
+                  return (
+                    <div className="pending-upload-row" key={`${uploadPath}-${index}`}>
+                      <File size={14} />
+                      <span title={uploadPath}>{uploadPath}</span>
+                      <em>{formatFileSize(file.size)}</em>
+                      <button
+                        className="icon-button"
+                        disabled={loading}
+                        onClick={() => onRemoveUpload(index)}
+                        title="移除"
+                        type="button"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="composer-toolbar">
-              <button
-                className="icon-button attachment-button"
-                title="上传附件（暂未接入）"
-                aria-label="上传附件（暂未接入）"
-                type="button"
-              >
-                <Upload size={17} />
-              </button>
+              <UploadPicker disabled={loading} variant="composer" onUploadFiles={onUploadFiles} />
               <div className="mode-switch" aria-label="Agent target">
                 {(['auto', 'dag', 'tool'] as ChatTarget[]).map((item) => (
                   <button
@@ -4267,6 +4301,50 @@ function usePanelWidth(storageKey: string, fallback: number, min: number, max: n
     window.localStorage.setItem(storageKey, String(Math.round(clamped)));
   }, [storageKey, min, max]);
   return [width, resize] as const;
+}
+
+function UploadPicker({
+  disabled = false,
+  onUploadFiles,
+  variant,
+}: {
+  disabled?: boolean;
+  onUploadFiles: (files: FileList | null) => void;
+  variant: 'composer' | 'sidebar';
+}) {
+  const directoryInputProps = {
+    directory: '',
+    webkitdirectory: '',
+  } as React.InputHTMLAttributes<HTMLInputElement> & { directory: string; webkitdirectory: string };
+  const iconSize = variant === 'composer' ? 17 : 13;
+  const summaryClass = variant === 'composer'
+    ? 'icon-button attachment-button'
+    : 'sidebar-artifact-icon';
+  const onChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    onUploadFiles(event.target.files);
+    event.currentTarget.value = '';
+    event.currentTarget.closest('details')?.removeAttribute('open');
+  };
+
+  return (
+    <details className={`upload-picker ${variant === 'composer' ? 'composer-upload-picker' : 'sidebar-upload-picker'}`}>
+      <summary className={summaryClass} title="上传附件" aria-label="上传附件">
+        <Upload size={iconSize} />
+      </summary>
+      <div className="upload-picker-menu">
+        <label>
+          <File size={13} />
+          <span>上传文件</span>
+          <input disabled={disabled} type="file" multiple onChange={onChange} />
+        </label>
+        <label>
+          <Folder size={13} />
+          <span>上传文件夹</span>
+          <input disabled={disabled} type="file" multiple {...directoryInputProps} onChange={onChange} />
+        </label>
+      </div>
+    </details>
+  );
 }
 
 // 右侧面板的拖拽手柄：放在面板左缘，向左拖变宽、向右拖变窄。
@@ -5019,6 +5097,12 @@ function uniqueDraftArtifactId(artifacts: Record<string, Artifact>, prefix: stri
 
 function filesFromList(fileList: FileList | null): File[] {
   return Array.from(fileList ?? []);
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function artifactDisplayPath(artifact: Artifact) {

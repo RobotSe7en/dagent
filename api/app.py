@@ -20,7 +20,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from api.agent_presets import (
     AgentPreset,
@@ -75,6 +75,7 @@ from dagent.config import (
     save_user_config,
 )
 from dagent.capabilities.providers import agent_capability_parameters
+from dagent.harness_runtime.artifacts import ArtifactPathError, validate_upload_filename
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
 from dagent.schemas import Artifact, DAGEdge, validate_capability_id_segment
 
@@ -2452,7 +2453,8 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
 
 
 @app.post("/messages/stream")
-async def message_stream(request: MessageRequest) -> StreamingResponse:
+async def message_stream(http_request: Request) -> StreamingResponse:
+    request, input_uploads = await _message_request_from_http(http_request)
     agent = _agent_from_message(request)
     workspace_root = _workspace_root_from_message(request)
 
@@ -2466,6 +2468,7 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                     messages=request.messages,
                     state=request.state,
                     workspace_root=workspace_root,
+                    input_uploads=input_uploads,
                 ),
                 validation_enabled=runner.enable_validation,
             ):
@@ -2482,6 +2485,49 @@ async def message_stream(request: MessageRequest) -> StreamingResponse:
                 })
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+async def _message_request_from_http(http_request: Request) -> tuple[MessageRequest, list[ArtifactUpload]]:
+    content_type = http_request.headers.get("content-type", "").lower()
+    if content_type.startswith("multipart/form-data"):
+        form = await http_request.form()
+        payload = form.get("payload")
+        if not isinstance(payload, str):
+            raise HTTPException(status_code=422, detail="Multipart message requests require a JSON payload field.")
+        try:
+            raw_request = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Multipart message payload must be valid JSON.") from exc
+        return _validate_message_request(raw_request), await _artifact_uploads_from_form_files(form.getlist("files"))
+
+    try:
+        raw_request = await http_request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Message request body must be valid JSON.") from exc
+    return _validate_message_request(raw_request), []
+
+
+def _validate_message_request(raw_request: Any) -> MessageRequest:
+    try:
+        return MessageRequest.model_validate(raw_request)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+async def _artifact_uploads_from_form_files(files: list[Any]) -> list[ArtifactUpload]:
+    uploads: list[ArtifactUpload] = []
+    for file in files:
+        read = getattr(file, "read", None)
+        if not callable(read):
+            raise HTTPException(status_code=400, detail="Upload entries must be file parts.")
+        filename = str(getattr(file, "filename", "") or "upload")
+        try:
+            validate_upload_filename(filename)
+        except ArtifactPathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        content = await read()
+        uploads.append(ArtifactUpload(filename=filename, content=content))
+    return uploads
 
 
 def _workspace_root_from_message(request: MessageRequest) -> str:

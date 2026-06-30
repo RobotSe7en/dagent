@@ -601,6 +601,7 @@ interface StreamHandlers {
 
 interface StreamRequestOptions {
   signal?: AbortSignal;
+  uploads?: File[];
 }
 
 export interface ChatStreamMessage {
@@ -628,8 +629,7 @@ export async function streamMessagesTask(
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    ...messageStreamRequest(body, options),
     signal: options.signal,
   });
   if (!response.ok || !response.body) {
@@ -661,8 +661,7 @@ export async function streamTask(
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    ...messageStreamRequest(body, options),
     signal: options.signal,
   });
   if (!response.ok || !response.body) {
@@ -670,6 +669,21 @@ export async function streamTask(
   }
 
   await readStream(response, handlers);
+}
+
+function messageStreamRequest(body: Record<string, unknown>, options: StreamRequestOptions): RequestInit {
+  if (options.uploads?.length) {
+    const form = new FormData();
+    form.append('payload', JSON.stringify(body));
+    for (const file of options.uploads) {
+      form.append('files', file, uploadFormFilename(file));
+    }
+    return { body: form };
+  }
+  return {
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  };
 }
 
 export async function resumeDagReview(

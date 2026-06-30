@@ -30,7 +30,11 @@ from dagent.harness_runtime.capability_scope import (
 )
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.dag_executor import DAGExecutor
-from dagent.harness_runtime.artifacts import ArtifactUpload, create_run_workspace
+from dagent.harness_runtime.artifacts import (
+    ArtifactUpload,
+    create_run_workspace,
+    materialize_workbench_uploads,
+)
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
 from dagent.harness_runtime.runtime_events import _dag_event_emitter
@@ -241,6 +245,7 @@ class HarnessRuntime:
         review_level: ReviewLevel = "fast",
         dynamic_adjust: bool = True,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        input_uploads: list[ArtifactUpload] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -253,6 +258,7 @@ class HarnessRuntime:
             resolved_mode = await self._route(user_request)
         run_id = run_state.run_id if run_state is not None else _new_run_id_for_mode(resolved_mode)
         workspace_path = self._workspace_path_for_run(run_state, workspace_root, run_id)
+        materialize_workbench_uploads(input_uploads or [], workspace_path=workspace_path)
         _emit_run_started(on_event, run_id=run_id, kind=_state_kind_for_mode(resolved_mode))
 
         async def run_once(feedback: str | None) -> LoopOutcome:

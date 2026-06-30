@@ -24,6 +24,9 @@ class ArtifactUpload:
     content: bytes
 
 
+WORKBENCH_UPLOAD_ROOT = "inputs/uploads"
+
+
 def create_run_workspace(root: str | Path = DEFAULT_RUNS_DIR, *, run_id: str | None = None) -> Path:
     workspace_name = run_id if run_id is not None else f"run_{uuid4().hex}"
     _validate_run_id(workspace_name)
@@ -144,6 +147,38 @@ def materialize_artifact_uploads(
             target_root.write_bytes(artifact_uploads[0].content)
         materialized.add(artifact_id)
     return materialized
+
+
+def materialize_workbench_uploads(
+    uploads: Sequence[ArtifactUpload],
+    *,
+    workspace_path: str | Path,
+    upload_root: str = WORKBENCH_UPLOAD_ROOT,
+) -> list[str]:
+    """Write smart workbench input uploads into a run workspace."""
+
+    if not uploads:
+        return []
+    _validate_artifact_path(upload_root)
+    workspace = Path(workspace_path).resolve()
+    target_root = (workspace / upload_root).resolve()
+    _ensure_within_workspace(target_root, workspace)
+
+    materialized: list[str] = []
+    for upload in uploads:
+        relative_path = _safe_upload_filename(upload.filename)
+        destination = (target_root / relative_path).resolve()
+        _ensure_within_workspace(destination, workspace)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(upload.content)
+        materialized.append(str(Path(upload_root) / relative_path))
+    return materialized
+
+
+def validate_upload_filename(filename: str) -> None:
+    """Validate a browser-provided upload filename without writing it."""
+
+    _safe_upload_filename(filename)
 
 
 def _resolve_artifact_ids(
