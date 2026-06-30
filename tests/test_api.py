@@ -49,6 +49,16 @@ def _base64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
 
 
+def _signed_onlyoffice_file_token(payload: dict[str, object]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(state.onlyoffice_token_secret, raw, hashlib.sha256).digest()
+    return f"{_base64url_encode(raw)}.{_base64url_encode(signature)}"
+
+
+def _base64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
 def test_api_state_owns_runner_without_runtime_shim() -> None:
     assert not hasattr(state, "harness_runtime")
     assert not hasattr(state, "dag_runs")
@@ -2864,11 +2874,126 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
     assert unsupported_path_response.status_code == 415
 
 
+def test_api_run_artifacts_onlyoffice_preview_requires_enabled_urls() -> None:
+    user_config_path = state.get_user_config_path()
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client)
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    incomplete_configs = [
+        {
+            "onlyoffice": {
+                "enabled": False,
+                "document_server_url": "http://192.168.31.219:8089/",
+                "public_api_base": "http://api.test/",
+            }
+        },
+        {
+            "onlyoffice": {
+                "enabled": True,
+                "document_server_url": "http://192.168.31.219:8089/",
+            }
+        },
+        {
+            "onlyoffice": {
+                "enabled": True,
+                "public_api_base": "http://api.test/",
+            }
+        },
+    ]
+    for config in incomplete_configs:
+        user_config_path.parent.mkdir(parents=True, exist_ok=True)
+        user_config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+        artifacts_response = client.get(f"/runs/{run_id}/artifacts")
+        config_response = client.get(
+            f"/runs/{run_id}/artifacts/onlyoffice/config",
+            params={"path": "exports/brief.docx"},
+        )
+
+        assert artifacts_response.status_code == 200
+        files = {item["path"]: item for item in artifacts_response.json()["files"]}
+        assert files["exports/brief.docx"]["onlyoffice_config_url"] is None
+        assert config_response.status_code == 404
+
+
+def test_api_run_artifacts_onlyoffice_preview_config_omits_token_without_jwt_secret() -> None:
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://192.168.31.219:8089/",
+                    "public_api_base": "http://api.test/",
+                    "lang": "zh-CN",
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client)
+    (workspace / "exports").mkdir()
+    (workspace / "exports" / "brief.docx").write_bytes(b"PK\x03\x04 docx bytes")
+
+    config_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/brief.docx"},
+    )
+
+    assert config_response.status_code == 200
+    assert "token" not in config_response.json()["config"]
+
+
 def test_api_onlyoffice_file_routes_reject_malformed_tokens() -> None:
     client = TestClient(app)
 
     file_response = client.get("/onlyoffice/files/a.b")
     callback_response = client.post("/onlyoffice/callback/a.b", json={"status": 1})
+
+    assert file_response.status_code == 403
+    assert callback_response.status_code == 403
+
+
+def test_api_onlyoffice_file_routes_reject_signed_invalid_payloads() -> None:
+    client = TestClient(app, raise_server_exceptions=False)
+    non_numeric_exp_token = _signed_onlyoffice_file_token({
+        "exp": "not-a-number",
+        "path": "exports/brief.docx",
+        "run_id": "run_1",
+    })
+    expired_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) - 1,
+        "path": "exports/brief.docx",
+        "run_id": "run_1",
+    })
+    escaping_path_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) + 60,
+        "path": "../outside.docx",
+        "run_id": "run_1",
+    })
+
+    assert client.get(f"/onlyoffice/files/{non_numeric_exp_token}").status_code == 403
+    assert client.post(f"/onlyoffice/callback/{non_numeric_exp_token}", json={"status": 1}).status_code == 403
+    assert client.get(f"/onlyoffice/files/{expired_token}").status_code == 403
+    assert client.get(f"/onlyoffice/files/{escaping_path_token}").status_code == 403
+
+
+def test_api_onlyoffice_file_routes_reject_signed_unsupported_paths() -> None:
+    client = TestClient(app)
+    run_id, _workspace = _start_write_file_run(client, path="notes/output.txt", content="hello")
+    unsupported_path_token = _signed_onlyoffice_file_token({
+        "exp": int(app_module.time.time()) + 60,
+        "path": "notes/output.txt",
+        "run_id": run_id,
+    })
+
+    file_response = client.get(f"/onlyoffice/files/{unsupported_path_token}")
+    callback_response = client.post(f"/onlyoffice/callback/{unsupported_path_token}", json={"status": 1})
 
     assert file_response.status_code == 403
     assert callback_response.status_code == 403
@@ -4017,6 +4142,42 @@ def _message_request(message: str, **fields) -> dict:
         "messages": [{"role": "user", "content": message}],
         **fields,
     }
+
+
+def _start_write_file_run(
+    client: TestClient,
+    *,
+    path: str = "notes/output.txt",
+    content: str = "hello",
+) -> tuple[str, Path]:
+    state.runner = _runner(
+        MockProvider([
+            ChatResponse(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="tool_write_file",
+                        arguments={"path": path, "content": content},
+                    )
+                ],
+            ),
+            ChatResponse(content="done"),
+        ])
+    )
+    response = client.post(
+        "/messages/stream",
+        json=_message_request(
+            "write text",
+            target="tool",
+            capability_ids=["tool.write_file"],
+        ),
+    )
+    assert response.status_code == 200
+    result = _stream_result(_sse_events(response.text)[-1])
+    run_id = _result_run_id(result)
+    assert run_id is not None
+    return run_id, Path(result["state"]["workspace_path"])
 
 
 def _sse_events(text: str) -> list[dict]:

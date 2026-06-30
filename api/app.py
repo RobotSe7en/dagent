@@ -2727,11 +2727,7 @@ def _resolve_workspace_path(workspace: Path, path: str) -> Path | None:
         normalized_path = _normalize_run_artifact_path(path)
     except ValueError:
         return None
-    path_obj = Path(normalized_path)
-    windows_path = PureWindowsPath(normalized_path)
-    if path_obj.is_absolute() or windows_path.is_absolute():
-        return None
-    if ".." in path_obj.parts or ".." in windows_path.parts:
+    if not _is_safe_relative_artifact_path(normalized_path):
         return None
     resolved = (workspace / normalized_path).resolve()
     try:
@@ -2746,6 +2742,14 @@ def _normalize_run_artifact_path(path: str) -> str:
     if not normalized_path:
         raise ValueError("Artifact path is required.")
     return normalized_path
+
+
+def _is_safe_relative_artifact_path(path: str) -> bool:
+    path_obj = Path(path)
+    windows_path = PureWindowsPath(path)
+    if path_obj.is_absolute() or windows_path.is_absolute():
+        return False
+    return ".." not in path_obj.parts and ".." not in windows_path.parts
 
 
 def _run_artifact_file_id(
@@ -2909,7 +2913,11 @@ def _onlyoffice_token_payload(token: str) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
-    if int(payload.get("exp") or 0) < int(time.time()):
+    try:
+        expires_at = int(payload.get("exp") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    if expires_at < int(time.time()):
         raise HTTPException(status_code=403, detail="OnlyOffice file token expired.")
     run_id = str(payload.get("run_id") or "")
     path = str(payload.get("path") or "")
@@ -2919,6 +2927,10 @@ def _onlyoffice_token_payload(token: str) -> dict[str, str]:
         normalized_path = _normalize_run_artifact_path(path)
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.") from exc
+    if not _is_safe_relative_artifact_path(normalized_path):
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
+    if _onlyoffice_document_type(_preview_kind_for_path(normalized_path)) is None:
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
     return {"run_id": run_id, "path": normalized_path}
 
 
