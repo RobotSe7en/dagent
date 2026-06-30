@@ -690,6 +690,7 @@ class Runner:
         dynamic_adjust: bool | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -697,6 +698,7 @@ class Runner:
     ) -> RunResult:
         if state is not None:
             _ensure_run_state_can_continue(state)
+        resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
         if resolved_execution == "sandbox" and isinstance(target, (Dag, DAGSpec, DagAgent)):
             # Preflight before entering the sandbox scope so we don't start a
@@ -723,6 +725,7 @@ class Runner:
                 review=review,
                 dynamic_adjust=dynamic_adjust,
                 workspace_root=workspace_root,
+                workspace_path=resolved_workspace_path,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
@@ -739,6 +742,7 @@ class Runner:
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -756,6 +760,7 @@ class Runner:
                 review_level=review or target.review,
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
+                workspace_path=workspace_path,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -773,6 +778,7 @@ class Runner:
                 mode="tool",
                 review_level=review or target.review,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
+                workspace_path=workspace_path,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -791,6 +797,7 @@ class Runner:
                 review_level=review or target.review,
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
+                workspace_path=workspace_path,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -810,6 +817,7 @@ class Runner:
                 spec,
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
+                workspace_path=workspace_path,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -826,6 +834,7 @@ class Runner:
                 self._resolve_spec_capability_metadata(target),
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
+                workspace_path=workspace_path,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -844,6 +853,7 @@ class Runner:
         dynamic_adjust: bool | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
@@ -859,6 +869,7 @@ class Runner:
                 dynamic_adjust=dynamic_adjust,
                 execution=execution,
                 workspace_root=workspace_root,
+                workspace_path=workspace_path,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,
@@ -1372,6 +1383,23 @@ def _ensure_run_state_can_continue(state: RunState) -> None:
             "Run state is awaiting review; use Runner.resume(..., state=...) "
             "to continue the pending review."
         )
+
+
+def _validated_workspace_path_for_state(
+    state: RunState | None,
+    workspace_path: str | Path | None,
+) -> Path | None:
+    if workspace_path is None:
+        return None
+    resolved = Path(workspace_path).expanduser().resolve()
+    if state is None or not state.workspace_path:
+        return resolved
+    state_path = Path(state.workspace_path).expanduser().resolve()
+    if state_path != resolved:
+        raise ValueError(
+            f"workspace_path '{resolved}' does not match run state workspace_path '{state_path}'."
+        )
+    return resolved
 
 
 def _decision_for_resume_state(decision: ReviewDecision, state: RunState) -> ReviewDecision:

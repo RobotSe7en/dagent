@@ -33,6 +33,12 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 该目录本身作为 runtime workspace，因此默认 run workspace 会位于
 `<workspace>/runs/<run_id>`。
 
+如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
+`workspace_path=...`。dagent 会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
+这是运行时 workspace 选择能力，不是持久化能力；调用方仍然负责在 SDK 之外保存 run
+state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
+state 的同时传入了不一致的 `workspace_path`，调用会报错。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：

@@ -245,6 +245,7 @@ class HarnessRuntime:
         review_level: ReviewLevel = "fast",
         dynamic_adjust: bool = True,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
@@ -257,8 +258,16 @@ class HarnessRuntime:
         if mode == "auto":
             resolved_mode = await self._route(user_request)
         run_id = run_state.run_id if run_state is not None else _new_run_id_for_mode(resolved_mode)
-        workspace_path = self._workspace_path_for_run(run_state, workspace_root, run_id)
-        materialized_uploads = materialize_workbench_uploads(input_uploads or [], workspace_path=workspace_path)
+        resolved_workspace_path = self._workspace_path_for_run(
+            run_state,
+            workspace_root,
+            run_id,
+            workspace_path=workspace_path,
+        )
+        materialized_uploads = materialize_workbench_uploads(
+            input_uploads or [],
+            workspace_path=resolved_workspace_path,
+        )
         loop_messages = _messages_with_workbench_upload_manifest(loop_messages, materialized_uploads)
         _emit_run_started(on_event, run_id=run_id, kind=_state_kind_for_mode(resolved_mode))
 
@@ -270,7 +279,7 @@ class HarnessRuntime:
                     mode=resolved_mode,
                     review_level=review_level,
                     dynamic_adjust=dynamic_adjust,
-                    workspace_path=workspace_path,
+                    workspace_path=resolved_workspace_path,
                     capability_scope=capability_scope,
                     messages=loop_messages,
                     on_token=on_token,
@@ -282,7 +291,7 @@ class HarnessRuntime:
                 mode=resolved_mode,
                 review_level=review_level,
                 dynamic_adjust=dynamic_adjust,
-                workspace_path=workspace_path,
+                workspace_path=resolved_workspace_path,
                 capability_scope=capability_scope,
                 on_token=on_token,
                 on_event=on_event,
@@ -586,6 +595,7 @@ class HarnessRuntime:
                 run_id=run_id,
                 graph_input=graph_input,
                 workspace_root=workspace_root,
+                workspace_path=workspace_path,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -639,6 +649,7 @@ class HarnessRuntime:
         *,
         graph_input: Any = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
@@ -654,6 +665,7 @@ class HarnessRuntime:
             on_token=on_token,
             on_event=on_event,
             workspace_root=resolved_workspace_root,
+            workspace_path=workspace_path,
             artifact_uploads=artifact_uploads,
             graph_input=graph_input,
         )
@@ -675,11 +687,17 @@ class HarnessRuntime:
         run_state: RunState | None,
         workspace_root: str | Path,
         run_id: str,
+        *,
+        workspace_path: str | Path | None = None,
     ) -> Path:
         if run_state is not None and run_state.workspace_path:
-            workspace_path = Path(run_state.workspace_path).resolve()
-            workspace_path.mkdir(parents=True, exist_ok=True)
-            return workspace_path
+            path = Path(run_state.workspace_path).expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        if workspace_path is not None:
+            path = Path(workspace_path).expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            return path
         return create_run_workspace(self._resolve_run_workspace_root(workspace_root), run_id=run_id)
 
     def _dag_executor_for_run(self, workspace_path: str | Path | None) -> DAGExecutor:
