@@ -263,6 +263,9 @@ test('upload picker keeps one visible button while supporting files and folders'
   const pickerSource = appSource.match(/function UploadPicker[\s\S]*?\nfunction PanelResizeHandle/)?.[0] ?? '';
 
   assert.ok(pickerSource, 'UploadPicker function should exist');
+  assert.match(pickerSource, /const detailsRef = useRef<HTMLDetailsElement \| null>\(null\);/);
+  assert.match(pickerSource, /useEffect\(\(\) => \{[\s\S]*if \(disabled\) \{[\s\S]*detailsRef\.current\?\.removeAttribute\('open'\);[\s\S]*\}[\s\S]*\}, \[disabled\]\);/);
+  assert.match(pickerSource, /<details[\s\S]*ref=\{detailsRef\}/);
   assert.match(pickerSource, /const onSummaryClick = \(event: React\.MouseEvent<HTMLElement>\) => \{[\s\S]*if \(disabled\) \{[\s\S]*event\.preventDefault\(\);/);
   assert.match(pickerSource, /<summary[\s\S]*<Upload size=\{iconSize\} \/>/);
   assert.match(pickerSource, /aria-disabled=\{disabled\}/);

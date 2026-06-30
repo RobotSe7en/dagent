@@ -4349,6 +4349,7 @@ function UploadPicker({
   onUploadFiles: (files: FileList | null) => void;
   variant: 'composer' | 'sidebar';
 }) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
   const directoryInputProps = {
     directory: '',
     webkitdirectory: '',
@@ -4362,6 +4363,11 @@ function UploadPicker({
     event.currentTarget.value = '';
     event.currentTarget.closest('details')?.removeAttribute('open');
   };
+  useEffect(() => {
+    if (disabled) {
+      detailsRef.current?.removeAttribute('open');
+    }
+  }, [disabled]);
   const onSummaryClick = (event: React.MouseEvent<HTMLElement>) => {
     if (disabled) {
       event.preventDefault();
@@ -4369,7 +4375,10 @@ function UploadPicker({
   };
 
   return (
-    <details className={`upload-picker ${variant === 'composer' ? 'composer-upload-picker' : 'sidebar-upload-picker'}`}>
+    <details
+      ref={detailsRef}
+      className={`upload-picker ${variant === 'composer' ? 'composer-upload-picker' : 'sidebar-upload-picker'}`}
+    >
       <summary
         className={summaryClass}
         title="上传附件"

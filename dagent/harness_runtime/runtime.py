@@ -724,13 +724,27 @@ def _messages_with_workbench_upload_manifest(
     copied = [dict(message) for message in messages]
     if not upload_paths:
         return copied
+    manifest = _workbench_upload_manifest(upload_paths)
     for index in range(len(copied) - 1, -1, -1):
         if copied[index].get("role") != "user":
             continue
-        content = str(copied[index].get("content") or "").rstrip()
-        copied[index]["content"] = f"{content}\n\n{_workbench_upload_manifest(upload_paths)}"
+        copied[index]["content"] = _content_with_workbench_upload_manifest(
+            copied[index].get("content"),
+            manifest,
+        )
         return copied
     return copied
+
+
+def _content_with_workbench_upload_manifest(content: Any, manifest: str) -> str | list[Any]:
+    if isinstance(content, str):
+        stripped = content.rstrip()
+        return f"{stripped}\n\n{manifest}" if stripped else manifest
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": manifest}]
+    if content is None:
+        return manifest
+    raise TypeError("Workbench uploads require string, list, or empty user message content.")
 
 
 def _workbench_upload_manifest(upload_paths: list[str]) -> str:

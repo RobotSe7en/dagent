@@ -217,11 +217,20 @@ def _upload_filename_has_parent(filename: str) -> bool:
 
 
 def _safe_upload_filename(filename: str) -> Path:
-    normalized = normpath(filename.replace("\\", "/")).strip("/")
+    slash_normalized = filename.replace("\\", "/")
+    if not filename.strip():
+        raise ArtifactPathError("Uploaded file name cannot be empty.")
+    windows_raw_candidate = PureWindowsPath(filename)
+    if slash_normalized.startswith("/") or windows_raw_candidate.is_absolute() or windows_raw_candidate.drive:
+        raise ArtifactPathError(f"Uploaded file name '{filename}' must be relative.")
+    if ".." in slash_normalized.split("/"):
+        raise ArtifactPathError(f"Uploaded file name '{filename}' cannot contain '..'.")
+
+    normalized = normpath(slash_normalized)
     if not normalized or normalized == ".":
         raise ArtifactPathError("Uploaded file name cannot be empty.")
-    windows_candidate = PureWindowsPath(normalized)
     candidate = Path(normalized)
+    windows_candidate = PureWindowsPath(normalized)
     if candidate.is_absolute() or windows_candidate.is_absolute() or windows_candidate.drive:
         raise ArtifactPathError(f"Uploaded file name '{filename}' must be relative.")
     if ".." in candidate.parts:

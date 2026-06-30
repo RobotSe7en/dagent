@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -725,7 +726,16 @@ def test_api_message_stream_upload_manifest_is_visible_to_dag_agent(tmp_path: Pa
     assert "uploads/brief.txt" in first_user_message
 
 
-def test_api_message_stream_upload_rejects_unsafe_relative_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../secret.txt",
+        "/tmp/secret.txt",
+        "docs/../secret.txt",
+        "C:tmp/secret.txt",
+    ],
+)
+def test_api_message_stream_upload_rejects_unsafe_relative_path(tmp_path: Path, filename: str) -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
     payload = _message_request(
@@ -737,11 +747,25 @@ def test_api_message_stream_upload_rejects_unsafe_relative_path(tmp_path: Path) 
     response = client.post(
         "/messages/stream",
         data={"payload": json.dumps(payload)},
-        files=[("files", ("../secret.txt", b"secret", "text/plain"))],
+        files=[("files", (filename, b"secret", "text/plain"))],
     )
 
     assert response.status_code == 400
     assert "Uploaded file name" in response.json()["detail"]
+
+
+def test_api_message_form_upload_rejects_windows_absolute_filename() -> None:
+    class UploadPart:
+        filename = "C:\\tmp\\secret.txt"
+
+        async def read(self) -> bytes:
+            raise AssertionError("unsafe uploads should be rejected before reading")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(app_module._artifact_uploads_from_form_files([UploadPart()]))
+
+    assert exc_info.value.status_code == 400
+    assert "Uploaded file name" in exc_info.value.detail
 
 
 def test_api_message_stream_scopes_capabilities_and_skills(monkeypatch, tmp_path) -> None:
@@ -3446,14 +3470,24 @@ def test_api_dag_artifact_upload_materializes_input_file(tmp_path: Path) -> None
     assert run_payload["trace"]["artifacts"]["source"]["status"] == "created"
 
 
-def test_api_dag_artifact_upload_rejects_unsafe_relative_path() -> None:
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../source.txt",
+        "/tmp/source.txt",
+        "docs/../source.txt",
+        "C:tmp/source.txt",
+    ],
+)
+def test_api_dag_artifact_upload_rejects_unsafe_relative_path(filename: str) -> None:
     state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
     client = TestClient(app)
+    dag_id = f"unsafe_uploaded_source_{hashlib.sha1(filename.encode()).hexdigest()[:8]}"
 
     create_response = client.post(
         "/dags",
         json={
-            "id": "unsafe_uploaded_source",
+            "id": dag_id,
             "name": "Unsafe uploaded source",
             "artifacts": {
                 "source": {
@@ -3476,12 +3510,55 @@ def test_api_dag_artifact_upload_rejects_unsafe_relative_path() -> None:
     assert create_response.status_code == 200
 
     upload_response = client.post(
-        "/dags/unsafe_uploaded_source/artifacts/source/upload",
-        files=[("files", ("../source.txt", b"unsafe", "text/plain"))],
+        f"/dags/{dag_id}/artifacts/source/upload",
+        files=[("files", (filename, b"unsafe", "text/plain"))],
     )
 
     assert upload_response.status_code == 400
     assert "Uploaded file name" in upload_response.json()["detail"]
+
+
+def test_api_dag_artifact_upload_handler_rejects_windows_absolute_filename() -> None:
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    dag_id = "unsafe_uploaded_source_windows_absolute"
+
+    create_response = client.post(
+        "/dags",
+        json={
+            "id": dag_id,
+            "name": "Unsafe uploaded source",
+            "artifacts": {
+                "source": {
+                    "id": "source",
+                    "paths": ["inputs/source.txt"],
+                }
+            },
+            "nodes": [
+                {
+                    "id": "read",
+                    "target": "tool.read_file",
+                    "inputs": {
+                        "path": {"$expr": {"type": "artifact", "artifact_id": "source", "field": "absolute_path"}},
+                    },
+                    "artifact_inputs": ["source"],
+                }
+            ],
+        },
+    )
+    assert create_response.status_code == 200
+
+    class UploadPart:
+        filename = "C:\\tmp\\source.txt"
+
+        async def read(self) -> bytes:
+            raise AssertionError("unsafe uploads should be rejected before reading")
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(app_module.upload_dag_artifact(dag_id, "source", [UploadPart()]))
+
+    assert exc_info.value.status_code == 400
+    assert "Uploaded file name" in exc_info.value.detail
 
 
 def test_api_dag_artifact_upload_materializes_input_file_on_each_run(tmp_path: Path) -> None:
