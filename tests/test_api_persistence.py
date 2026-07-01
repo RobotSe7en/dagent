@@ -2,7 +2,7 @@ import json
 import sqlite3
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import unquote, urlparse, urlsplit
 
 import pytest
@@ -89,6 +89,18 @@ def test_local_workspace_store_uses_conversation_workspace(tmp_path: Path) -> No
     assert standalone_path.name == "workspace"
     assert project_path.name == "workspace"
     assert project_path.parent.name == "proj_123"
+
+
+def test_local_workspace_store_builds_hostless_windows_file_uri() -> None:
+    store = LocalWorkspaceStore.__new__(LocalWorkspaceStore)
+    store.root = PureWindowsPath(r"C:\Users\Administrator\.dagent\projects")
+
+    uri = store.conversation_workspace_uri("conv_123")
+    parsed = urlparse(uri)
+
+    assert uri == "file:///C:/Users/Administrator/.dagent/projects/_conversations/conv_123/workspace"
+    assert parsed.scheme == "file"
+    assert parsed.netloc == ""
 
 
 def test_local_workspace_store_rejects_paths_outside_root(tmp_path: Path) -> None:

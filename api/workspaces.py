@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 
 class LocalWorkspaceStore:
@@ -9,11 +10,11 @@ class LocalWorkspaceStore:
         self.root = Path(root).expanduser().resolve()
 
     def project_workspace_uri(self, project_id: str) -> str:
-        return f"file://{self.root / project_id / 'workspace'}"
+        return (self.root / project_id / "workspace").as_uri()
 
     def conversation_workspace_uri(self, conversation_id: str, *, project_id: str | None = None) -> str:
         if project_id is None:
-            return f"file://{self.root / '_conversations' / conversation_id / 'workspace'}"
+            return (self.root / "_conversations" / conversation_id / "workspace").as_uri()
         return self.project_workspace_uri(project_id)
 
     def local_path_for(self, uri: str) -> Path:
@@ -37,7 +38,7 @@ class LocalWorkspaceStore:
             raise ValueError(f"Unsupported workspace URI: {uri}")
         if parsed.netloc:
             raise ValueError(f"File workspace URI must not include a host: {uri}")
-        path = Path(unquote(parsed.path)).expanduser().resolve()
+        path = Path(url2pathname(parsed.path)).expanduser().resolve()
         try:
             path.relative_to(self.root)
         except ValueError as exc:
