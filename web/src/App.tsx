@@ -1412,9 +1412,13 @@ export function App() {
       if (cancelled) return;
       setConversations(conversationItems);
       setSelectedConversationId((current) => (
-        current && conversationItems.some((conversation) => conversation.id === current && conversation.kind === 'chat')
+        current && conversationItems.some((conversation) => (
+          conversation.id === current
+          && conversation.kind === 'chat'
+          && !conversation.project_id
+        ))
           ? current
-          : conversationItems.find((conversation) => conversation.kind === 'chat' && !conversation.project_id)?.id ?? ''
+          : ''
       ));
       setProjectError(null);
     })()
@@ -1960,7 +1964,7 @@ export function App() {
       return;
     }
     setSelectedArtifactId((current) =>
-      chatArtifacts.some((item) => item.id === current) ? current : chatArtifacts[0].id,
+      chatArtifacts.some((item) => item.id === current) ? current : '',
     );
   }, [chatArtifacts]);
 
@@ -3680,10 +3684,7 @@ export function App() {
       clearChatSurface();
       return;
     }
-    const nextStandalone = selectedChatConversation && !selectedChatConversation.project_id
-      ? selectedChatConversation
-      : conversations.find((conversation) => conversation.kind === 'chat' && !conversation.project_id) ?? null;
-    setSelectedConversationId(nextStandalone?.id ?? '');
+    setSelectedConversationId('');
     clearChatSurface();
   };
 
@@ -3702,6 +3703,14 @@ export function App() {
     if (conversation?.project_id) setSelectedProjectId(conversation.project_id);
     setSelectedConversationId(conversationId);
     clearChatSurface();
+  };
+
+  const selectWorkspace = (workspace: WorkspaceKey) => {
+    setActiveWorkspace(workspace);
+    if (!streaming && workspace === 'chat' && chatSub === 'conversations') {
+      setSelectedConversationId('');
+      clearChatSurface();
+    }
   };
 
   const deleteConversationFromSidebar = async (conversationId: string) => {
@@ -3976,7 +3985,7 @@ export function App() {
         onSelectToolCapability={setSelectedToolCapabilityId}
         onSelectToolMcp={selectToolMcpResource}
         onSelectToolSkill={selectToolSkill}
-        onSelectWorkspace={setActiveWorkspace}
+        onSelectWorkspace={selectWorkspace}
         onOrchestrationModeChange={setOrchestrationMode}
         onAgentsSubChange={selectAgentManagementSub}
         onSystemSubChange={setSystemManagementSub}
