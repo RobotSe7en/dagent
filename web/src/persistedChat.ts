@@ -2,9 +2,11 @@ import type { ApiRunEvent, ApiRunResult, ApiRunState, StreamEnvelope } from './a
 import { dispatchStreamEnvelope, mapRunTrace } from './api';
 import type {
   CapabilityStreamEvent,
+  ReviewEventPayload,
   TraceLogEvent,
 } from './types';
 import {
+  appendCapabilityReviewDecisionTimeline,
   appendReasoningTimeline,
   appendTextTimeline,
   appendValidatingTimeline,
@@ -62,7 +64,7 @@ export function messagesFromPersistedRunResult(
 
   const assistantIndex = lastAssistantMessageIndex(messages);
   const lastAssistantContent = assistantIndex === -1 ? '' : messages[assistantIndex].content.trim();
-  const eventTimeline = timelineFromPersistedRunEvents(events, fallbackContent || lastAssistantContent);
+  const eventTimeline = timelineFromPersistedRunEvents(events, fallbackContent || lastAssistantContent, output);
   const replayedText = textContentFromTimeline(eventTimeline);
 
   if (
@@ -125,8 +127,10 @@ function appendPersistedChatMessage(
 function timelineFromPersistedRunEvents(
   events: ApiRunEvent[],
   fallbackContent: string,
+  finalAnswer: string = fallbackContent,
 ): MessageTimelineItem[] {
   let timeline: MessageTimelineItem[] = [];
+  const capabilityReviews: ReviewEventPayload[] = [];
   const orderedEvents = [...events].sort((left, right) => left.event_id - right.event_id);
 
   for (const event of orderedEvents) {
@@ -152,13 +156,16 @@ function timelineFromPersistedRunEvents(
       onRetry: (item) => {
         timeline = appendValidationTimeline(timeline, item);
       },
+      onReview: (review) => {
+        if (review.kind === 'capability_review') capabilityReviews.push(review);
+      },
     });
   }
 
-  if (fallbackContent && !timeline.some((item) => item.type === 'text' || item.type === 'reasoning')) {
-    timeline = appendTextTimeline(closeReasoningTimeline(timeline), fallbackContent);
+  if (finalAnswer) {
+    timeline = settleRejectedCapabilityReviews(timeline, capabilityReviews);
   }
-  return timeline;
+  return ensureFinalTextTimeline(timeline, fallbackContent);
 }
 
 function appendCapabilityTimeline(
@@ -188,6 +195,46 @@ function findMatchingCapabilityCall(timeline: MessageTimelineItem[], invocationI
     }
   }
   return -1;
+}
+
+function settleRejectedCapabilityReviews(
+  timeline: MessageTimelineItem[],
+  reviews: ReviewEventPayload[],
+): MessageTimelineItem[] {
+  let next = timeline;
+  for (const review of reviews) {
+    const invocationId = review.capability_call?.invocation_id;
+    if (!invocationId || capabilityCallHasResult(next, invocationId)) continue;
+    next = appendCapabilityReviewDecisionTimeline(next, review, false);
+  }
+  return next;
+}
+
+function capabilityCallHasResult(timeline: MessageTimelineItem[], invocationId: string): boolean {
+  return timeline.some(
+    (item) => item.type === 'capability'
+      && item.event.invocation_id === invocationId
+      && Boolean(item.result),
+  );
+}
+
+function ensureFinalTextTimeline(
+  timeline: MessageTimelineItem[],
+  fallbackContent: string,
+): MessageTimelineItem[] {
+  const finalText = fallbackContent.trim();
+  if (!finalText) return timeline;
+  const lastText = lastTextTimelineItem(timeline);
+  if (lastText?.content.trim() === finalText) return timeline;
+  return appendTextTimeline(closeReasoningTimeline(timeline), fallbackContent);
+}
+
+function lastTextTimelineItem(timeline: MessageTimelineItem[]): Extract<MessageTimelineItem, { type: 'text' }> | null {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item.type === 'text') return item;
+  }
+  return null;
 }
 
 function lastAssistantMessageIndex(messages: ChatMessage[]): number {

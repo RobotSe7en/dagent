@@ -106,7 +106,11 @@ const {
   appendValidationTimeline,
   appendReasoningTimeline,
   appendTextTimeline,
+  collapsedProcessTimelineParts,
   closeReasoningTimeline,
+  isProcessTimelineItem,
+  processTimelineSummary,
+  shouldCollapseProcessTimeline,
   upsertDagMessageTimeline,
 } = await importTypeScript('../src/chatTimeline.ts');
 const {
@@ -2174,6 +2178,124 @@ test('persisted conversation hydration rebuilds one assistant turn with capabili
   assert.equal(assistant.traceSnapshot[0].type, 'capability');
 });
 
+test('persisted conversation hydration appends run finished answer after replayed trace', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const state = {
+    run_id: 'run_1',
+    kind: 'dynamic_dag',
+    status: 'completed',
+    internal_messages: [
+      { role: 'user', content: 'run dag' },
+      { role: 'assistant', content: 'Final answer from run.finished.' },
+    ],
+  };
+  const events = [
+    runEvent(1, 'response.content.delta', { delta: '我先说明阶段性情况。' }),
+    runEvent(2, 'response.reasoning.delta', { delta: 'planning dag' }),
+    runEvent(3, 'capability.call.started', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.echo',
+      arguments: { text: 'ok' },
+    }),
+    runEvent(4, 'capability.call.completed', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.echo',
+      content: 'echo:ok',
+    }),
+    runEvent(5, 'run.finished', {
+      result: {
+        output_text: 'Final answer from run.finished.',
+        state,
+      },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+  const assistant = messages.find((message) => message.role === 'assistant');
+
+  assert.ok(assistant, 'assistant message should be restored');
+  assert.deepEqual(
+    assistant.timeline.map((item) => item.type),
+    ['text', 'reasoning', 'capability', 'text'],
+  );
+  assert.equal(assistant.timeline[0].content, '我先说明阶段性情况。');
+  assert.equal(assistant.timeline[3].content, 'Final answer from run.finished.');
+  assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
+});
+
+test('persisted conversation hydration settles rejected capability review cards', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const state = {
+    run_id: 'run_1',
+    kind: 'tool',
+    status: 'completed',
+    internal_messages: [
+      { role: 'user', content: 'read blocked file' },
+      { role: 'assistant', content: 'I will read README instead.' },
+    ],
+  };
+  const events = [
+    runEvent(1, 'capability.call.started', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.read_file',
+      arguments: { path: '../blocked/secret.txt' },
+    }),
+    runEvent(2, 'capability.call.completed', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.read_file',
+      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
+    }),
+    runEvent(3, 'review.required', {
+      review_id: 'review_1',
+      kind: 'capability_review',
+      message: 'Review capability call.',
+      capability_call: {
+        invocation_id: 'call_1',
+        capability_id: 'tool.read_file',
+        tool_name: 'tool_read_file',
+        arguments: { path: '../blocked/secret.txt' },
+      },
+    }),
+    runEvent(4, 'run.finished', {
+      result: {
+        output_text: 'I will read README instead.',
+        state,
+      },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+  const assistant = messages.find((message) => message.role === 'assistant');
+  const capability = assistant.timeline.find((item) => item.type === 'capability');
+
+  assert.ok(capability, 'capability card should be restored');
+  assert.equal(capability.result.type, 'capability.call.failed');
+  assert.match(capability.result.content, /人工审核已拒绝/);
+  assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
+});
+
 test('persisted conversation replay reuses api stream event parsing', async () => {
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
@@ -3352,6 +3474,144 @@ test('closeReasoningTimeline closes reasoning before answer text', () => {
     { type: 'reasoning', content: 'I should check the docs.', closed: true },
     { type: 'text', content: 'The answer is ready.' },
   ]);
+});
+
+test('completed assistant answers collapse reasoning and capability process trace', () => {
+  assert.equal(typeof shouldCollapseProcessTimeline, 'function');
+  assert.equal(typeof processTimelineSummary, 'function');
+  assert.equal(typeof isProcessTimelineItem, 'function');
+
+  const timeline = [
+    { type: 'reasoning', content: 'I should inspect the file.', closed: true },
+    {
+      type: 'capability',
+      event: {
+        type: 'capability.call.started',
+        invocation_id: 'invoke_1',
+        capability_id: 'tool.read_file',
+        arguments: { path: 'README.md' },
+      },
+      result: {
+        type: 'capability.call.completed',
+        invocation_id: 'invoke_1',
+        capability_id: 'tool.read_file',
+        content: 'contents',
+      },
+    },
+    { type: 'validation', event: { type: 'validation.passed', passed: true, summary: 'ok', issues: [] } },
+    { type: 'text', content: 'Final answer.' },
+  ];
+  const message = { role: 'assistant', content: 'Final answer.', timeline };
+
+  assert.equal(shouldCollapseProcessTimeline(message, false), true);
+  assert.equal(isProcessTimelineItem(timeline[0]), true);
+  assert.equal(isProcessTimelineItem(timeline[3]), false);
+  assert.deepEqual(processTimelineSummary(timeline), {
+    reasoningCount: 1,
+    capabilityCount: 1,
+    validationCount: 1,
+    failedCount: 0,
+    runningCount: 0,
+  });
+});
+
+test('running, answerless, and review assistant turns keep process trace expanded', () => {
+  const runningCapability = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_1',
+      capability_id: 'tool.read_file',
+      arguments: { path: 'README.md' },
+    },
+  };
+  const answerlessMessage = {
+    role: 'assistant',
+    content: '',
+    timeline: [
+      { type: 'reasoning', content: 'I should inspect the file.', closed: false },
+      runningCapability,
+    ],
+  };
+  const reviewMessage = {
+    role: 'assistant',
+    content: '请审核 DAG。',
+    dagSnapshot: { dag_id: 'dag_1', status: 'awaiting_review' },
+    timeline: [
+      { type: 'dag', dag: { dag_id: 'dag_1', status: 'awaiting_review' } },
+      { type: 'reasoning', content: 'Need review.', closed: true },
+      { type: 'text', content: '请审核 DAG。' },
+    ],
+  };
+
+  assert.equal(shouldCollapseProcessTimeline(answerlessMessage, true), false);
+  assert.equal(shouldCollapseProcessTimeline(answerlessMessage, false), false);
+  assert.equal(processTimelineSummary(answerlessMessage.timeline).runningCount, 2);
+  assert.equal(shouldCollapseProcessTimeline(reviewMessage, false), false);
+  assert.equal(shouldCollapseProcessTimeline({
+    role: 'assistant',
+    content: 'Final answer.',
+    timeline: [runningCapability, { type: 'text', content: 'Final answer.' }],
+  }, false), true);
+});
+
+test('completed assistant answers collapse everything before the final text without reordering', () => {
+  assert.equal(typeof collapsedProcessTimelineParts, 'function');
+  const firstCall = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_1',
+      capability_id: 'tool.read_file',
+      arguments: { path: 'README.md' },
+    },
+    result: {
+      type: 'capability.call.completed',
+      invocation_id: 'invoke_1',
+      capability_id: 'tool.read_file',
+      content: 'contents',
+    },
+  };
+  const secondCall = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_2',
+      capability_id: 'tool.search',
+      arguments: { query: 'dagent trace' },
+    },
+    result: {
+      type: 'capability.call.completed',
+      invocation_id: 'invoke_2',
+      capability_id: 'tool.search',
+      content: 'result',
+    },
+  };
+  const timeline = [
+    { type: 'reasoning', content: 'I should inspect the file.', closed: true },
+    firstCall,
+    { type: 'text', content: '我先说明一下阶段性结论。' },
+    { type: 'reasoning', content: 'Now refine the final answer.', closed: true },
+    secondCall,
+    { type: 'text', content: '这是最终回答。' },
+  ];
+
+  const parts = collapsedProcessTimelineParts(timeline);
+
+  assert.deepEqual(parts.processItems, timeline.slice(0, 5));
+  assert.deepEqual(parts.finalAnswerItem, timeline[5]);
+  assert.deepEqual(parts.trailingItems, []);
+});
+
+test('message timeline renders completed process trace behind a collapsible summary', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(appSource, /shouldCollapseProcessTimeline/);
+  assert.match(appSource, /collapsedProcessTimelineParts/);
+  assert.match(appSource, /function ProcessSummaryCard/);
+  assert.match(appSource, /const collapsedProcess = collapseProcess \? collapsedProcessTimelineParts\(timeline\) : null;/);
+  assert.match(appSource, /renderCollapsedMessageTimeline/);
+  assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {

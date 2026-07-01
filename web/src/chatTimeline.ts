@@ -24,6 +24,90 @@ export type MessageTimelineItem =
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
+export type ProcessTimelineItem = Extract<
+  MessageTimelineItem,
+  { type: 'reasoning' | 'capability' | 'validation' | 'validating' }
+>;
+
+export interface ProcessTimelineSummary {
+  reasoningCount: number;
+  capabilityCount: number;
+  validationCount: number;
+  failedCount: number;
+  runningCount: number;
+}
+
+export interface CollapsedProcessTimelineParts {
+  processItems: MessageTimelineItem[];
+  finalAnswerItem: Extract<MessageTimelineItem, { type: 'text' }>;
+  trailingItems: MessageTimelineItem[];
+}
+
+export function isProcessTimelineItem(item: MessageTimelineItem): item is ProcessTimelineItem {
+  return item.type === 'reasoning'
+    || item.type === 'capability'
+    || item.type === 'validation'
+    || item.type === 'validating';
+}
+
+export function processTimelineSummary(timeline: MessageTimelineItem[] | undefined): ProcessTimelineSummary {
+  const summary: ProcessTimelineSummary = {
+    reasoningCount: 0,
+    capabilityCount: 0,
+    validationCount: 0,
+    failedCount: 0,
+    runningCount: 0,
+  };
+
+  for (const item of timeline ?? []) {
+    if (item.type === 'reasoning') {
+      summary.reasoningCount += 1;
+      if (!item.closed) summary.runningCount += 1;
+    } else if (item.type === 'capability') {
+      summary.capabilityCount += 1;
+      if (capabilityTimelineItemFailed(item)) summary.failedCount += 1;
+      if (item.event.type === 'capability.call.started' && !item.result) summary.runningCount += 1;
+    } else if (item.type === 'validation') {
+      summary.validationCount += 1;
+      if (item.event.type === 'validation.retry' || item.event.passed === false) summary.failedCount += 1;
+    } else if (item.type === 'validating') {
+      summary.validationCount += 1;
+      summary.runningCount += 1;
+    }
+  }
+
+  return summary;
+}
+
+export function collapsedProcessTimelineParts(timeline: MessageTimelineItem[] | undefined): CollapsedProcessTimelineParts | null {
+  if (!timeline?.length) return null;
+  let finalAnswerIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const item = timeline[index];
+    if (item.type === 'text' && item.content.trim()) {
+      finalAnswerIndex = index;
+      break;
+    }
+  }
+  if (finalAnswerIndex <= 0) return null;
+  const finalAnswerItem = timeline[finalAnswerIndex];
+  if (finalAnswerItem.type !== 'text') return null;
+  return {
+    processItems: timeline.slice(0, finalAnswerIndex),
+    finalAnswerItem,
+    trailingItems: timeline.slice(finalAnswerIndex + 1),
+  };
+}
+
+export function shouldCollapseProcessTimeline(message: ChatMessage, loading: boolean): boolean {
+  if (loading || message.role !== 'assistant') return false;
+  const timeline = message.timeline ?? [];
+  if (message.dagSnapshot?.status === 'awaiting_review' || message.dagSnapshot?.status === 'review_required') return false;
+  const collapsedParts = collapsedProcessTimelineParts(timeline);
+  if (!collapsedParts || !messageHasFinalText(message)) return false;
+  return true;
+}
+
 export function appendTextTimeline(
   timeline: MessageTimelineItem[] | undefined,
   content: string,
@@ -193,6 +277,17 @@ export function upsertDagMessageTimeline(
   }
 
   return [...messages, { role: 'assistant', kind: 'text', content: '', timeline: [{ type: 'dag', dag }] }];
+}
+
+function capabilityTimelineItemFailed(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
+  return item.event.type === 'capability.call.failed' || item.result?.type === 'capability.call.failed';
+}
+
+function messageHasFinalText(message: ChatMessage): boolean {
+  return Boolean(
+    message.content.trim()
+    || message.timeline?.some((item) => item.type === 'text' && item.content.trim()),
+  );
 }
 
 function hasUnclosedThink(content: string): boolean {
