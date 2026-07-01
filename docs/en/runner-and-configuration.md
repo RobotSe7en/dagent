@@ -189,7 +189,7 @@ config with HS256 and sends it as the ONLYOFFICE `token`. When
 `onlyoffice.enabled` is false or the URLs are missing, the WebUI falls back to
 its built-in browser preview path.
 The same settings can be edited in the WebUI under
-System Management -> OnlyOffice Configuration.
+System Management -> Document Preview Configuration.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

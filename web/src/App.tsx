@@ -3997,7 +3997,7 @@ function WorkspaceSidebar({
   ];
   const systemSubnav = [
     { key: 'models' as const, label: '模型管理', icon: <SlidersHorizontal size={16} />, count: models.length },
-    { key: 'onlyoffice' as const, label: 'OnlyOffice配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
+    { key: 'onlyoffice' as const, label: '文档预览配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
   ];
   const normalizedToolsQuery = normalizeSearchQuery(toolsQuery);
   const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
@@ -10393,7 +10393,7 @@ function OnlyOfficeSettingsWorkspace({
             <Settings size={15} />
           </div>
           <div>
-            <strong>OnlyOffice配置</strong>
+            <strong>文档预览配置</strong>
             <span>{draft.enabled ? 'enabled' : 'disabled'}</span>
           </div>
           <div>

@@ -170,7 +170,7 @@ FastAPI backend，并且要使用 Document Server 能访问到的地址，因为
 `jwt_secret` 必须和它的 JWT secret 一致；backend 会用 HS256 签名生成的编辑器配置，
 并作为 ONLYOFFICE `token` 传给前端。当 `onlyoffice.enabled` 为 false 或 URL 缺失时，
 WebUI 会回退到内置的浏览器预览路径。同一组设置也可以在 WebUI 的
-“系统管理 -> OnlyOffice配置”中维护。
+“系统管理 -> 文档预览配置”中维护。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；

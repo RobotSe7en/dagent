@@ -1453,7 +1453,7 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*systemSub=\{systemManagementSub\}[\s\S]*models=\{models\}[\s\S]*onSystemSubChange=\{setSystemManagementSub\}/);
   assert.match(sidebarSource, /const systemSubnav = \[/);
   assert.match(sidebarSource, /label: '模型管理'/);
-  assert.match(sidebarSource, /label: 'OnlyOffice配置'/);
+  assert.match(sidebarSource, /label: '文档预览配置'/);
   assert.match(sidebarSource, /onSystemSubChange\(subitem\.key\)/);
   assert.match(sidebarSource, /模型列表/);
   assert.match(sidebarSource, /sidebar-model-list/);
@@ -1486,7 +1486,7 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
-  assert.match(onlyOfficeSource, /OnlyOffice配置/);
+  assert.match(onlyOfficeSource, /文档预览配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
   assert.match(onlyOfficeSource, /JWT Secret/);
