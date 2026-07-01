@@ -4,16 +4,61 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.3`。
+当前包版本是 `0.6.4`。
 
 ## Unreleased
 
-- 本地 API/WebUI store 现在按 kind 隔离普通 chat、动态 DAG、静态 DAG conversation；
-  普通 chat stream 会拒绝编排 conversation。
+- 暂无未发布变更。
+
+## 0.6.4
+
+### 新增
+
+- 本地 API/WebUI 现在会持久化动态和静态 DAG 编排 session，包括 draft DAG 状态、
+  selected-node UI 状态、保存的静态 DAG 关联、运行事件历史和运行状态快照。
 - 保存的静态 DAG 现在会保留 saved record 元数据、revision、project 归属、编辑器 layout，
   以及可跨 API 进程重启保留的 artifact uploads。
+- 静态编排 run timeline 可以在运行完成后从持久化 run events 恢复。
+
+### 改变
+
+- 本地 API/WebUI store 现在按 kind 隔离普通 chat、动态 DAG、静态 DAG conversation；
+  普通 chat stream 会拒绝编排 conversation。
+- 静态编排 UI 在名称编辑、刷新和运行完成后，会保持保存 DAG 的显示名称和可见 revision
+  状态稳定。
+- WebUI 进入 chat workspace 时默认打开空会话，不再自动选中已有会话。有 artifact 时，
+  artifact 面板仍可默认展开，但不会自动选中文件预览。
+- 已删除非公开遗留本地 API route `/dags/{dag_id}/run/stream`。持久化静态 DAG run 使用
+  `/saved-dags/{dag_id}/run/stream`。
+
+### 修复
+
+- 静态编排运行完成后，运行事件和最终 timeline 不再消失。
+- 静态编排 hydration 不再在保存或刷新 conversation 后，用保存的 DAG 状态覆盖当前编辑器和
+  已完成运行结果。
+- 并发触发静态 run 时，如果另一个请求刚创建了同一个 conversation session，不再静默丢失
+  orchestration session 创建。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- SDK 用户不需要迁移动作。
 - 检测到不兼容的未发布本地 SQLite API 旧库时会直接重建数据库，不做迁移。这不影响公开
   Python SDK。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### 已知限制
+
+- 当前本地存储后端是 SQLite 加本地文件系统 workspace。云端或多 worker 部署仍需要后续计划中的
+  Postgres、对象存储和 worker execution 后端。
 
 ## 0.6.3
 

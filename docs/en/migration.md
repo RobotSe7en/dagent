@@ -5,18 +5,68 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.3`.
+The current package version is `0.6.4`.
 
 ## Unreleased
+
+- No unreleased changes.
+
+## 0.6.4
+
+### Added
+
+- The local API/WebUI now persists dynamic and static DAG orchestration sessions,
+  including draft DAG state, selected-node UI state, saved static DAG links, run
+  event history, and run state snapshots.
+- Saved static DAGs now preserve saved-record metadata, revisions, project
+  ownership, editor layout, and persisted artifact uploads across API process
+  restarts.
+- Static orchestration run timelines can be restored from durable run events
+  after a run completes.
+
+### Changed
 
 - The local API/WebUI store now isolates chat, dynamic DAG, and static DAG
   conversations by kind; ordinary chat streams reject orchestration
   conversations.
-- Saved static DAGs now preserve saved-record metadata, revision, project
-  ownership, editor layout, and persisted artifact uploads across API process
-  restarts.
+- The static orchestration UI keeps saved DAG display names and visible revision
+  state stable across name edits, refreshes, and run completion.
+- The WebUI now enters an empty chat when opening the chat workspace instead of
+  automatically selecting an existing conversation. Artifact panels can still
+  expand when artifacts exist without auto-selecting a preview file.
+- The non-public legacy `/dags/{dag_id}/run/stream` local API route was removed.
+  Persisted static DAG runs use `/saved-dags/{dag_id}/run/stream`.
+
+### Fixed
+
+- Static orchestration run events and final timelines no longer disappear after
+  run completion.
+- Static orchestration hydration no longer replays saved DAG state over the
+  current editor and completed run results after a save or conversation refresh.
+- Concurrent static run attempts no longer silently lose orchestration session
+  creation when the same conversation session is created by another request.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- No SDK migration action is required.
 - Incompatible pre-release local SQLite API databases are recreated instead of
   migrated. This does not affect the public Python SDK.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### Known Limitations
+
+- The local storage backend is SQLite plus local filesystem workspaces. Cloud
+  or multi-worker deployments still need the planned Postgres, object-storage,
+  and worker execution backends.
 
 ## 0.6.3
 
