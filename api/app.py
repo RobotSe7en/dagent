@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, AsyncIterator, Literal
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -91,7 +92,12 @@ from dagent.config import (
     save_user_config,
 )
 from dagent.capabilities.providers import agent_capability_parameters
-from dagent.harness_runtime.artifacts import ArtifactPathError, validate_upload_filename
+from dagent.harness_runtime.artifacts import (
+    ArtifactPathError,
+    materialize_artifact_uploads,
+    resolve_artifact_paths,
+    validate_upload_filename,
+)
 from dagent.profiles import AgentProfile, list_builtin_profiles, load_builtin_profile
 from dagent.schemas import Artifact, DAGEdge, validate_capability_id_segment
 
@@ -338,7 +344,7 @@ class OrchestrationSessionUpdateRequest(BaseModel):
 
     saved_dag_id: str | None = None
     draft_dag: dict[str, Any] | None = None
-    ui_state: dict[str, Any] | None = None
+    ui_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class DAGValidationIssue(BaseModel):
@@ -1407,6 +1413,7 @@ async def delete_saved_dag(dag_id: str) -> dict[str, str]:
     deleted = await run_in_threadpool(state.get_store().archive_saved_dag, dag_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(dag_id), ignore_errors=True)
     return {"status": "deleted"}
 
 
@@ -1415,7 +1422,11 @@ async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> Stre
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
-    context = await _persisted_context_from_conversation(request.project_id, request.conversation_id)
+    context = await _persisted_context_from_conversation(
+        request.project_id,
+        request.conversation_id,
+        expected_kind="static_dag",
+    )
     if saved.project_id != context.project_id:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
     dag = _user_dag_from_saved(saved)
@@ -1447,7 +1458,7 @@ async def create_orchestration_session(request: OrchestrationSessionCreateReques
     conversation = await run_in_threadpool(state.get_store().get_conversation, request.conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    if conversation.kind not in ("chat", request.kind):
+    if conversation.kind != request.kind:
         raise HTTPException(status_code=400, detail="Conversation kind does not match orchestration session kind.")
     if request.saved_dag_id is not None:
         saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
@@ -1496,7 +1507,10 @@ async def update_orchestration_session(
     existing = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Orchestration session not found.")
-    if request.saved_dag_id is not None:
+    update_saved_dag_id = "saved_dag_id" in request.model_fields_set
+    update_draft_dag = "draft_dag" in request.model_fields_set
+    update_ui_state = "ui_state" in request.model_fields_set
+    if update_saved_dag_id and request.saved_dag_id is not None:
         saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
         if saved is None or saved.project_id != existing.project_id:
             raise HTTPException(status_code=404, detail="Saved DAG not found.")
@@ -1507,6 +1521,9 @@ async def update_orchestration_session(
             saved_dag_id=request.saved_dag_id,
             draft_dag_json=None if request.draft_dag is None else _json_object(request.draft_dag),
             ui_state_json=None if request.ui_state is None else _json_object(request.ui_state),
+            update_saved_dag_id=update_saved_dag_id,
+            update_draft_dag=update_draft_dag,
+            update_ui_state=update_ui_state,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Orchestration session not found.") from exc
@@ -1542,7 +1559,14 @@ async def upload_saved_dag_artifact(
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
         raise HTTPException(status_code=404, detail="Saved DAG not found.")
-    return await _upload_dag_artifact_files(dag_id, _user_dag_from_saved(saved), artifact_id, files)
+    dag = _user_dag_from_saved(saved)
+    uploads = await _validated_artifact_uploads(dag, artifact_id, files)
+    root = _saved_dag_artifact_root(saved.id)
+    await run_in_threadpool(_replace_saved_dag_artifact_uploads, root, dag, artifact_id, uploads)
+    return {
+        "artifact_id": artifact_id,
+        "files": [upload.filename for upload in uploads],
+    }
 
 
 async def _upload_dag_artifact_files(
@@ -1551,6 +1575,19 @@ async def _upload_dag_artifact_files(
     artifact_id: str,
     files: list[UploadFile],
 ) -> dict[str, Any]:
+    uploads = await _validated_artifact_uploads(dag, artifact_id, files)
+    state.dag_artifact_uploads.setdefault(dag_id, {})[artifact_id] = uploads
+    return {
+        "artifact_id": artifact_id,
+        "files": [upload.filename for upload in uploads],
+    }
+
+
+async def _validated_artifact_uploads(
+    dag: UserDAG,
+    artifact_id: str,
+    files: list[UploadFile],
+) -> list[ArtifactUpload]:
     if artifact_id not in dag.artifacts:
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if not files:
@@ -1570,11 +1607,7 @@ async def _upload_dag_artifact_files(
                 content=content,
             )
         )
-    state.dag_artifact_uploads.setdefault(dag_id, {})[artifact_id] = uploads
-    return {
-        "artifact_id": artifact_id,
-        "files": [upload.filename for upload in uploads],
-    }
+    return uploads
 
 
 @app.post("/dags/{dag_id}/run")
@@ -1749,6 +1782,69 @@ def _artifact_uploads_for_dag(dag_id: str) -> dict[str, list[ArtifactUpload]]:
         artifact_id: list(uploads)
         for artifact_id, uploads in state.dag_artifact_uploads.get(dag_id, {}).items()
     }
+
+
+def _saved_dag_artifact_root(dag_id: str) -> Path:
+    return state.get_user_config_path().parent / "saved-dag-artifacts" / dag_id
+
+
+def _replace_saved_dag_artifact_uploads(
+    root: Path,
+    dag: UserDAG,
+    artifact_id: str,
+    uploads: list[ArtifactUpload],
+) -> None:
+    artifact = dag.artifacts[artifact_id]
+    staging_root = root.parent / f".{root.name}.upload-{uuid4().hex}"
+    try:
+        target_paths = resolve_artifact_paths(artifact, root)
+        staging_root.mkdir(parents=True, exist_ok=False)
+        materialize_artifact_uploads(
+            {artifact_id: uploads},
+            artifacts=dag.artifacts,
+            workspace_path=staging_root,
+        )
+        staged_paths = resolve_artifact_paths(artifact, staging_root)
+        for target in target_paths:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        for staged_path in staged_paths:
+            if not staged_path.exists():
+                continue
+            target = root / staged_path.relative_to(staging_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staged_path), str(target))
+    except ArtifactPathError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def _saved_dag_artifact_uploads(saved: SavedDag, dag: UserDAG) -> dict[str, list[ArtifactUpload]]:
+    root = _saved_dag_artifact_root(saved.id)
+    uploads: dict[str, list[ArtifactUpload]] = {}
+    for artifact_id, artifact in dag.artifacts.items():
+        try:
+            target_paths = resolve_artifact_paths(artifact, root)
+        except ArtifactPathError:
+            continue
+        artifact_uploads: list[ArtifactUpload] = []
+        for target in target_paths:
+            if target.is_file():
+                artifact_uploads.append(ArtifactUpload(filename=target.name, content=target.read_bytes()))
+            elif target.is_dir():
+                for file_path in sorted(path for path in target.rglob("*") if path.is_file()):
+                    artifact_uploads.append(
+                        ArtifactUpload(
+                            filename=str(file_path.relative_to(target)),
+                            content=file_path.read_bytes(),
+                        )
+                    )
+        if artifact_uploads:
+            uploads[artifact_id] = artifact_uploads
+    return uploads
 
 
 def _validate_user_dag_or_raise(dag: UserDAG) -> None:
@@ -3422,11 +3518,16 @@ async def _resume_persisted_review_stream(
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run state not found.")
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
+    orchestration_session = await run_in_threadpool(
+        store.get_orchestration_session_by_conversation,
+        conversation.id,
+    )
     context = PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
         workspace_uri=run.workspace_uri,
         workspace_path=workspace_path,
+        orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
     )
     stream_id = _new_api_id("stream")
     try:
@@ -3527,7 +3628,7 @@ async def _persisted_static_dag_stream_events(
             _compile_user_dag(dag),
             graph_input=graph_input,
             workspace_path=context.workspace_path,
-            artifact_uploads=_artifact_uploads_for_dag(saved.id),
+            artifact_uploads=_saved_dag_artifact_uploads(saved, dag),
         )
         async for payload in _persisted_run_events(
             event_source,
@@ -3603,6 +3704,7 @@ async def _persisted_run_events(
                         store.update_orchestration_session,
                         context.orchestration_session_id,
                         draft_dag_json=json.dumps(data["dag"], ensure_ascii=False),
+                        update_draft_dag=True,
                     )
             if run_id is not None and run_created:
                 persisted = await run_in_threadpool(
@@ -3633,6 +3735,13 @@ async def _persisted_run_events(
                 result = getattr(event.data, "result", None)
                 if result is not None and run_id is not None:
                     completed_at = int(time.time())
+                    if context.orchestration_session_id is not None:
+                        await run_in_threadpool(
+                            store.update_orchestration_session,
+                            context.orchestration_session_id,
+                            draft_dag_json=json.dumps(result.state.dag.model_dump(mode="json"), ensure_ascii=False),
+                            update_draft_dag=True,
+                        )
                     await run_in_threadpool(
                         store.save_run_state,
                         run_id,
@@ -3768,12 +3877,19 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
         raise HTTPException(status_code=400, detail="Persisted message streams do not accept client state.")
     if request.workspace_root is not None:
         raise HTTPException(status_code=400, detail="Persisted message streams do not accept workspace_root.")
-    return await _persisted_context_from_conversation(request.project_id, request.conversation_id)
+    expected_kind = "dynamic_dag" if request.target == "dag" else "chat"
+    return await _persisted_context_from_conversation(
+        request.project_id,
+        request.conversation_id,
+        expected_kind=expected_kind,
+    )
 
 
 async def _persisted_context_from_conversation(
     project_id: str | None,
     conversation_id: str,
+    *,
+    expected_kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None,
 ) -> PersistedMessageContext:
     store = state.get_store()
     project = None
@@ -3784,6 +3900,14 @@ async def _persisted_context_from_conversation(
     conversation = await run_in_threadpool(store.get_conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    if expected_kind is not None and conversation.kind != expected_kind:
+        if expected_kind == "chat":
+            detail = "Chat streams require a chat conversation."
+        elif expected_kind == "dynamic_dag":
+            detail = "Dynamic DAG streams require a dynamic DAG conversation."
+        else:
+            detail = "Static DAG runs require a static DAG conversation."
+        raise HTTPException(status_code=400, detail=detail)
     if project is None and conversation.project_id is not None:
         raise HTTPException(status_code=400, detail="project_id must be provided for project conversations.")
     if project is not None and conversation.project_id != project.id:

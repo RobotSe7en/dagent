@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -7,15 +8,40 @@ from urllib.parse import unquote, urlparse, urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
+import api.app as api_app
 from api.app import app, state
 from api.storage import (
     ConversationBusyError,
     SQLiteStore,
 )
 from api.workspaces import LocalWorkspaceStore
-from dagent import RunState, Runner
+from dagent import DAG, PendingReview, RunState, Runner
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import RunTrace, RunTraceNode
+
+
+def _echo_dag(*, status: str = "review_required") -> DAG:
+    return DAG.model_validate({
+        "dag_id": "dag_echo",
+        "task_id": "run_echo",
+        "version": 1,
+        "status": status,
+        "nodes": [
+            {
+                "id": "answer",
+                "payload": {
+                    "type": "capability",
+                    "invocation": {
+                        "capability_id": "tool.write_file",
+                        "kind": "tool",
+                        "arguments": {"path": "review.txt", "content": "ok"},
+                        "boundary": {},
+                    },
+                },
+            }
+        ],
+        "edges": [],
+    })
 
 
 @pytest.fixture
@@ -200,6 +226,64 @@ def test_sqlite_store_persists_conversation_owner(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_sqlite_store_recreates_incompatible_api_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+        CREATE TABLE projects(
+            id TEXT PRIMARY KEY,
+            org_id TEXT NOT NULL DEFAULT 'default',
+            owner_user_id TEXT NOT NULL DEFAULT 'default',
+            slug TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            workspace_uri TEXT NOT NULL,
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER
+        );
+        CREATE TABLE runs(
+            id TEXT PRIMARY KEY,
+            project_id TEXT,
+            conversation_id TEXT,
+            org_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL DEFAULT 'default',
+            kind TEXT,
+            status TEXT NOT NULL,
+            execution TEXT NOT NULL DEFAULT 'local',
+            workspace_uri TEXT NOT NULL,
+            state_json TEXT,
+            output_text TEXT NOT NULL DEFAULT '',
+            error_json TEXT,
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            updated_at INTEGER NOT NULL
+        );
+        INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+        INSERT INTO projects(
+            id, slug, name, workspace_uri, created_at, updated_at
+        ) VALUES ('proj_old', 'old', 'Old', 'file:///tmp/old', 1, 1);
+        """
+    )
+    conn.close()
+
+    store = SQLiteStore(db_path)
+    columns = {
+        row["name"]
+        for row in store._conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+
+    assert "saved_dag_id" in columns
+    assert store.get_project("proj_old") is None
+    store.close()
+
+
 def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     store = SQLiteStore(db_path)
@@ -279,6 +363,38 @@ def test_sqlite_store_persists_saved_dags_and_sessions(tmp_path: Path) -> None:
     assert recovered_session == session
     assert by_conversation == session
     reopened.close()
+
+
+def test_sqlite_store_archive_saved_dag_clears_session_references(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    conversation = store.create_conversation(
+        conversation_id="conv_static",
+        project_id=None,
+        title="Static DAG session",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+        kind="static_dag",
+    )
+    saved = store.create_saved_dag(
+        dag_id="dag_saved",
+        project_id=None,
+        name="Saved DAG",
+        description="",
+        spec_json='{"id":"dag_saved","name":"Saved DAG","nodes":[],"edges":[]}',
+    )
+    session = store.create_orchestration_session(
+        session_id="orch_static",
+        conversation_id=conversation.id,
+        project_id=None,
+        kind="static_dag",
+        saved_dag_id=saved.id,
+    )
+
+    archived = store.archive_saved_dag(saved.id)
+    recovered = store.get_orchestration_session(session.id)
+
+    assert archived is True
+    assert recovered is not None
+    assert recovered.saved_dag_id is None
 
 
 def test_sqlite_store_tracks_saved_dag_on_runs(tmp_path: Path) -> None:
@@ -1199,6 +1315,25 @@ def test_api_project_message_stream_requires_project_id_for_project_conversation
     assert "project_id" in response.json()["detail"]
 
 
+def test_api_message_stream_rejects_orchestration_conversation(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic DAG", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "target": "auto",
+            "conversation_id": conversation["id"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Chat streams require a chat conversation."
+
+
 def test_api_unscoped_delete_rejects_project_conversation(persistence_client) -> None:
     project = persistence_client.post(
         "/projects",
@@ -1560,7 +1695,7 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     ).json()["project"]
     conversation = persistence_client.post(
         f"/projects/{project['id']}/conversations",
-        json={"title": "Static DAG session"},
+        json={"title": "Static DAG session", "kind": "static_dag"},
     ).json()["conversation"]
     spec = {
         "id": "write_static_note",
@@ -1616,7 +1751,8 @@ def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     assert [item["id"] for item in listed_runs.json()["runs"]] == [run_id]
 
 
-def test_api_saved_dag_artifact_upload_uses_saved_dag_id(persistence_client) -> None:
+def test_api_saved_dag_artifact_upload_persists_across_process_state_reset(persistence_client) -> None:
+    state.runner = Runner(provider=MockProvider([]))
     spec = {
         "id": "with_upload",
         "name": "With Upload",
@@ -1629,14 +1765,37 @@ def test_api_saved_dag_artifact_upload_uses_saved_dag_id(persistence_client) -> 
         },
         "nodes": [
             {
-                "id": "write",
-                "target": "tool.write_file",
-                "inputs": {"path": "outputs/result.txt", "content": "ok"},
-                "boundary": {"allowed_paths": ["."]},
+                "id": "read",
+                "target": "tool.read_file",
+                "inputs": {
+                    "path": {
+                        "$expr": {
+                            "type": "artifact",
+                            "artifact_id": "source",
+                            "field": "absolute_path",
+                        }
+                    }
+                },
+                "artifact_inputs": ["source"],
+                "boundary": {
+                    "allowed_paths": [
+                        {
+                            "$expr": {
+                                "type": "artifact",
+                                "artifact_id": "source",
+                                "field": "absolute_path",
+                            }
+                        }
+                    ]
+                },
             }
         ],
         "edges": [],
     }
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Static DAG session", "kind": "static_dag"},
+    ).json()["conversation"]
     saved = persistence_client.post(
         "/saved-dags",
         json={"name": "With Upload", "spec": spec},
@@ -1649,7 +1808,68 @@ def test_api_saved_dag_artifact_upload_uses_saved_dag_id(persistence_client) -> 
 
     assert response.status_code == 200
     assert response.json() == {"artifact_id": "source", "files": ["source.txt"]}
-    assert state.dag_artifact_uploads[saved["id"]]["source"][0].content == b"hello"
+
+    state.dag_artifact_uploads.clear()
+    run_response = persistence_client.post(
+        f"/saved-dags/{saved['id']}/run/stream",
+        json={"conversation_id": conversation["id"]},
+    )
+    events = _sse_events(run_response.text)
+    result = events[-1]["data"]["result"]
+    workspace_path = Path(result["state"]["workspace_path"])
+
+    assert run_response.status_code == 200
+    assert (workspace_path / "uploads" / "source.txt").read_text(encoding="utf-8") == "hello"
+    assert result["state"]["status"] == "completed"
+
+
+def test_api_saved_dag_artifact_upload_keeps_previous_file_when_replacement_fails(
+    persistence_client,
+    monkeypatch,
+) -> None:
+    spec = {
+        "id": "with_upload",
+        "name": "With Upload",
+        "artifacts": {
+            "source": {
+                "id": "source",
+                "paths": ["uploads/source.txt"],
+                "description": "source",
+            }
+        },
+        "nodes": [
+            {
+                "id": "read",
+                "target": "tool.read_file",
+                "inputs": {"path": "uploads/source.txt"},
+                "artifact_inputs": ["source"],
+                "boundary": {"allowed_paths": ["."]},
+            }
+        ],
+        "edges": [],
+    }
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={"name": "With Upload", "spec": spec},
+    ).json()["saved_dag"]
+    first = persistence_client.post(
+        f"/saved-dags/{saved['id']}/artifacts/source/upload",
+        files={"files": ("source.txt", b"original", "text/plain")},
+    )
+
+    def fail_materialize(*args, **kwargs):
+        raise api_app.ArtifactPathError("materialize failed")
+
+    monkeypatch.setattr(api_app, "materialize_artifact_uploads", fail_materialize)
+    replacement = persistence_client.post(
+        f"/saved-dags/{saved['id']}/artifacts/source/upload",
+        files={"files": ("source.txt", b"replacement", "text/plain")},
+    )
+    root = api_app._saved_dag_artifact_root(saved["id"])
+
+    assert first.status_code == 200
+    assert replacement.status_code == 400
+    assert (root / "uploads" / "source.txt").read_text(encoding="utf-8") == "original"
 
 
 def test_api_orchestration_session_crud_uses_conversation_kind(persistence_client) -> None:
@@ -1704,6 +1924,94 @@ def test_api_orchestration_session_crud_uses_conversation_kind(persistence_clien
     assert updated.json()["session"]["ui_state"] == {"selectedNodeId": "review"}
 
 
+def test_api_orchestration_session_requires_matching_conversation_kind(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Regular chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Conversation kind does not match orchestration session kind."
+
+
+def test_api_orchestration_session_patch_clears_nullable_fields(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Static DAG", "kind": "static_dag"},
+    ).json()["conversation"]
+    spec = {
+        "id": "clearable_dag",
+        "name": "Clearable DAG",
+        "nodes": [
+            {
+                "id": "write",
+                "target": "tool.write_file",
+                "inputs": {"path": "out.txt", "content": "ok"},
+                "boundary": {"allowed_paths": ["."]},
+            }
+        ],
+        "edges": [],
+    }
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={"name": "Clearable DAG", "spec": spec},
+    ).json()["saved_dag"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "static_dag",
+            "saved_dag_id": saved["id"],
+            "draft_dag": {"status": "draft"},
+        },
+    ).json()["session"]
+
+    response = persistence_client.patch(
+        f"/orchestration-sessions/{session['id']}",
+        json={
+            "saved_dag_id": None,
+            "draft_dag": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session"]["saved_dag_id"] is None
+    assert response.json()["session"]["draft_dag"] is None
+
+
+def test_api_orchestration_session_patch_rejects_null_ui_state(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Static DAG", "kind": "static_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "static_dag",
+            "ui_state": {"selectedNodeId": "answer"},
+        },
+    ).json()["session"]
+
+    response = persistence_client.patch(
+        f"/orchestration-sessions/{session['id']}",
+        json={"ui_state": None},
+    )
+
+    assert response.status_code == 422
+    stored = state.get_store().get_orchestration_session(session["id"])
+    assert stored is not None
+    assert json.loads(stored.ui_state_json) == {"selectedNodeId": "answer"}
+
+
 def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
     persistence_client,
 ) -> None:
@@ -1746,6 +2054,71 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
     assert any(event["type"] == "dag.updated" for event in _sse_events(response.text))
     assert updated["draft_dag"]["status"] == "completed"
     assert isinstance(updated["draft_dag"]["version"], int)
+    assert updated["draft_dag"]["nodes"]
+
+
+def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
+    persistence_client,
+) -> None:
+    state.runner = Runner(provider=MockProvider([]))
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+        },
+    ).json()["session"]
+    proposed_dag = _echo_dag(status="review_required")
+    run_state = RunState(
+        run_id="run_pending_dag_review",
+        kind="dynamic_dag",
+        status="awaiting_review",
+        dag=DAG(dag_id="dag_echo", task_id="run_pending_dag_review"),
+        pending_review=PendingReview(
+            review_id="review_pending_dag",
+            kind="initial_dag",
+            message="Review proposed DAG before execution.",
+            proposed_dag=proposed_dag,
+        ),
+        user_request="echo ok through a DAG",
+        review_level="careful",
+        runtime_mode="dag",
+        dynamic_adjust=False,
+    )
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="awaiting_review",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="Review proposed DAG before execution.")
+    store.upsert_review(
+        review_id="review_pending_dag",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="initial_dag",
+    )
+
+    resume_response = persistence_client.post(
+        "/reviews/review_pending_dag/resume",
+        json={
+            "approved": True,
+            "review_level": "careful",
+            "dag": proposed_dag.model_dump(mode="json"),
+        },
+    )
+    updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
+
+    assert resume_response.status_code == 200
+    assert updated["draft_dag"]["status"] == "completed"
     assert updated["draft_dag"]["nodes"]
 
 

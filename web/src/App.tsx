@@ -85,7 +85,7 @@ import {
   listAgents,
   listCapabilities,
   listConversations,
-  listDags,
+  listSavedDags,
   listMcpServers,
   listModels,
   listProjectConversations,
@@ -106,13 +106,13 @@ import {
   resumeCapabilityReview,
   resumeDagReview,
   runSavedDagStream,
-  saveDag,
+  saveSavedDag,
   setCapabilityEnabled,
   setValidationEnabled as apiSetValidation,
   streamMessagesTask,
   streamTask,
   testCapability,
-  uploadDagArtifact,
+  uploadSavedDagArtifact,
   uploadPythonTool,
   updateMcpServer,
   updateModelProvider,
@@ -171,6 +171,7 @@ import type {
   OrchestrationSession,
   PythonToolConfig,
   PythonToolEntry,
+  SavedDag,
   SkillDetail,
   SkillFileDetail,
   SkillSummary,
@@ -620,6 +621,22 @@ function runtimeDagFromUserDag(spec: UserDag): Dag {
   };
 }
 
+function runtimeDagFromUnknown(value: unknown): Dag | null {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Record<string, unknown>;
+  if (!Array.isArray(item.nodes) || !Array.isArray(item.edges)) return null;
+  const dagId = typeof item.dag_id === 'string' ? item.dag_id : typeof item.task_id === 'string' ? item.task_id : 'dag';
+  const status = typeof item.status === 'string' ? item.status as Dag['status'] : 'draft';
+  return {
+    dag_id: dagId,
+    task_id: typeof item.task_id === 'string' ? item.task_id : dagId,
+    version: typeof item.version === 'number' ? item.version : 1,
+    status,
+    nodes: item.nodes.map((node) => normalizeNode(node as DagNode)),
+    edges: item.edges as DagEdge[],
+  };
+}
+
 function userDagFromRuntimeDag(spec: UserDag, dag: Dag): UserDag {
   const agentConfigByNodeId = new Map(
     (spec.nodes ?? []).map((node) => [node.id, normalizeUserDagAgentConfig(node.agent)]),
@@ -728,6 +745,20 @@ type DynamicChatMessage = ChatStreamMessage & { timelineOrder: number };
 type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
 type StaticDagEditorDraft = {
   spec: UserDag;
+  savedDagId: string | null;
+  projectId: string | null;
+  revision: number | null;
+  layout: Record<string, unknown>;
+  layoutPositions: Record<string, XYPosition>;
+};
+type SavedDagView = {
+  savedDagId: string;
+  projectId: string | null;
+  name: string;
+  description: string;
+  revision: number;
+  spec: UserDag;
+  layout: Record<string, unknown>;
   layoutPositions: Record<string, XYPosition>;
 };
 
@@ -821,6 +852,35 @@ function pruneNodePositions(positions: Record<string, XYPosition>, dag: Dag): Re
   return Object.fromEntries(
     Object.entries(positions).filter(([id]) => nodeIds.has(id)),
   );
+}
+
+function layoutPositionsFromSavedLayout(layout: Record<string, unknown>): Record<string, XYPosition> {
+  const items = Array.isArray(layout.nodes) ? layout.nodes : [];
+  const positions: Record<string, XYPosition> = {};
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const node = item as Record<string, unknown>;
+    if (typeof node.id !== 'string') continue;
+    const x = typeof node.x === 'number' ? node.x : undefined;
+    const y = typeof node.y === 'number' ? node.y : undefined;
+    if (x === undefined || y === undefined) continue;
+    positions[node.id] = { x: Math.round(x), y: Math.round(y) };
+  }
+  return positions;
+}
+
+function savedLayoutWithNodePositions(
+  layout: Record<string, unknown>,
+  positions: Record<string, XYPosition>,
+): Record<string, unknown> {
+  return {
+    ...layout,
+    nodes: Object.entries(positions).map(([id, position]) => ({
+      id,
+      x: Math.round(position.x),
+      y: Math.round(position.y),
+    })),
+  };
 }
 
 function DesignDagNode({ data, selected }: any) {
@@ -1085,11 +1145,17 @@ export function App() {
   const streamAbortRef = useRef<AbortController | null>(null);
   const runArtifactRequestRef = useRef(0);
   const conversationHydrationRequestRef = useRef(0);
+  const orchestrationHydrationRequestRef = useRef(0);
+  const orchestrationHydratedKeyRef = useRef('');
   const projectFilesRequestRef = useRef(0);
   const projectFilePreviewRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
-  const [savedDags, setSavedDags] = useState<UserDag[]>([]);
+  const [savedDags, setSavedDags] = useState<SavedDag[]>([]);
+  const [editorSavedDagId, setEditorSavedDagId] = useState<string | null>(null);
+  const [editorSavedDagProjectId, setEditorSavedDagProjectId] = useState<string | null>(null);
+  const [editorSavedDagRevision, setEditorSavedDagRevision] = useState<number | null>(null);
+  const [editorSavedDagLayout, setEditorSavedDagLayout] = useState<Record<string, unknown>>({});
   const [editorUserDag, setEditorUserDag] = useState<UserDag>(() => createEmptyUserDag());
   const [editorDag, setEditorDag] = useState<Dag>(() => runtimeDagFromUserDag(editorUserDag));
   const [editorLayoutPositions, setEditorLayoutPositionsState] = useState<Record<string, XYPosition>>({});
@@ -1224,6 +1290,7 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
+  const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
   const conversationDeleteTarget = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
     [conversations, conversationDeleteTargetId],
@@ -1233,11 +1300,11 @@ export function App() {
     [projectFiles, selectedProjectFilePath],
   );
   const selectedConversationProject = useMemo(
-    () => projects.find((project) => project.id === selectedConversation?.project_id) ?? null,
-    [projects, selectedConversation?.project_id],
+    () => projects.find((project) => project.id === selectedChatConversation?.project_id) ?? null,
+    [projects, selectedChatConversation?.project_id],
   );
-  const activeConversationContext = selectedConversation
-    ? { projectId: selectedConversation.project_id, conversationId: selectedConversation.id }
+  const activeConversationContext = selectedChatConversation
+    ? { projectId: selectedChatConversation.project_id, conversationId: selectedChatConversation.id }
     : undefined;
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
@@ -1287,6 +1354,12 @@ export function App() {
     ];
   }, []);
 
+  const refreshConversations = useCallback(async (projectItems: ApiProject[] = projects) => {
+    const conversationItems = await loadPersistedConversations(projectItems);
+    setConversations(conversationItems);
+    return conversationItems;
+  }, [loadPersistedConversations, projects]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -1302,9 +1375,9 @@ export function App() {
       if (cancelled) return;
       setConversations(conversationItems);
       setSelectedConversationId((current) => (
-        current && conversationItems.some((conversation) => conversation.id === current)
+        current && conversationItems.some((conversation) => conversation.id === current && conversation.kind === 'chat')
           ? current
-          : conversationItems.find((conversation) => !conversation.project_id)?.id ?? ''
+          : conversationItems.find((conversation) => conversation.kind === 'chat' && !conversation.project_id)?.id ?? ''
       ));
       setProjectError(null);
     })()
@@ -1314,8 +1387,8 @@ export function App() {
         setConversations([]);
         setSelectedProjectId('');
         setSelectedConversationId('');
-        setProjectError(exc instanceof Error ? exc.message : String(exc));
-      });
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    });
     return () => {
       cancelled = true;
     };
@@ -1324,7 +1397,7 @@ export function App() {
   const refreshProjectFiles = useCallback(async () => {
     const requestId = projectFilesRequestRef.current + 1;
     projectFilesRequestRef.current = requestId;
-    if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects' || selectedConversation) {
+    if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects' || selectedChatConversation) {
       setProjectFiles([]);
       setProjectFilesLoading(false);
       return;
@@ -1345,7 +1418,7 @@ export function App() {
     } finally {
       if (projectFilesRequestRef.current === requestId) setProjectFilesLoading(false);
     }
-  }, [activeWorkspace, chatSub, projectFilePath, selectedConversation, selectedProject]);
+  }, [activeWorkspace, chatSub, projectFilePath, selectedChatConversation, selectedProject]);
 
   useEffect(() => {
     void refreshProjectFiles();
@@ -1483,10 +1556,46 @@ export function App() {
     () => Object.values(editorUserDag.artifacts ?? {}).sort(compareArtifactsByPath),
     [editorUserDag.artifacts],
   );
-  const visibleSavedDags = useMemo(() => savedDags.map((spec) => {
-    if (spec.id === editorUserDag.id) return userDagFromRuntimeDag(editorUserDag, editorDag);
-    return editorDagDrafts[spec.id]?.spec ?? spec;
-  }), [editorDag, editorDagDrafts, editorUserDag, savedDags]);
+  const visibleSavedDags = useMemo(() => savedDags.map((saved) => {
+    const runtimeDag = runtimeDagFromUserDag(saved.spec);
+    const persistedLayoutPositions = pruneNodePositions(
+      layoutPositionsFromSavedLayout(saved.layout),
+      runtimeDag,
+    );
+    if (saved.id === editorSavedDagId) {
+      const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+      const layoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, editorDag);
+      return {
+        savedDagId: saved.id,
+        projectId: saved.project_id ?? null,
+        name: saved.name,
+        description: saved.description,
+        revision: editorSavedDagRevision ?? saved.revision,
+        spec,
+        layout: savedLayoutWithNodePositions(editorSavedDagLayout, layoutPositions),
+        layoutPositions,
+      };
+    }
+    const draft = editorDagDrafts[saved.id];
+    return {
+      savedDagId: saved.id,
+      projectId: saved.project_id ?? null,
+      name: saved.name,
+      description: saved.description,
+      revision: draft?.revision ?? saved.revision,
+      spec: draft?.spec ?? saved.spec,
+      layout: draft?.layout ?? saved.layout,
+      layoutPositions: draft?.layoutPositions ?? persistedLayoutPositions,
+    };
+  }), [
+    editorDag,
+    editorDagDrafts,
+    editorSavedDagId,
+    editorSavedDagLayout,
+    editorSavedDagRevision,
+    editorUserDag,
+    savedDags,
+  ]);
   const editingArtifact = editingArtifactId ? editorUserDag.artifacts?.[editingArtifactId] ?? null : null;
 
   const refreshConsoleData = useCallback(async () => {
@@ -1504,7 +1613,7 @@ export function App() {
         nextOnlyOfficeSettings,
       ] = await Promise.all([
         listCapabilities(),
-        listDags(),
+        listSavedDags(),
         listProfiles(),
         listAgents(),
         listSkills(),
@@ -1860,7 +1969,16 @@ export function App() {
     );
   }, [setEditorLayoutPositions]);
 
-  const setEditorUserDagAndRuntimeDag = useCallback((spec: UserDag, layoutPositions: Record<string, XYPosition> = {}) => {
+  const setEditorUserDagAndRuntimeDag = useCallback((
+    spec: UserDag,
+    layoutPositions: Record<string, XYPosition> = {},
+    saved: {
+      savedDagId?: string | null;
+      projectId?: string | null;
+      revision?: number | null;
+      layout?: Record<string, unknown>;
+    } = {},
+  ) => {
     const normalizedSpec = {
       ...spec,
       version: spec.version ?? 1,
@@ -1871,6 +1989,10 @@ export function App() {
       edges: spec.edges ?? [],
       metadata: spec.metadata ?? {},
     };
+    setEditorSavedDagId(saved.savedDagId ?? null);
+    setEditorSavedDagProjectId(saved.projectId ?? null);
+    setEditorSavedDagRevision(saved.revision ?? null);
+    setEditorSavedDagLayout(saved.layout ?? {});
     setEditorUserDag(normalizedSpec);
     syncEditorDag(runtimeDagFromUserDag(normalizedSpec), layoutPositions);
     setEditorTrace([]);
@@ -1899,11 +2021,27 @@ export function App() {
     if (!editorUserDag.id) return;
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const layoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, editorDag);
+    const draftKey = editorSavedDagId ?? spec.id;
     updateEditorDagDrafts((current) => ({
       ...current,
-      [spec.id]: { spec, layoutPositions },
+      [draftKey]: {
+        spec,
+        savedDagId: editorSavedDagId,
+        projectId: editorSavedDagProjectId,
+        revision: editorSavedDagRevision,
+        layout: savedLayoutWithNodePositions(editorSavedDagLayout, layoutPositions),
+        layoutPositions,
+      },
     }));
-  }, [editorDag, editorUserDag, updateEditorDagDrafts]);
+  }, [
+    editorDag,
+    editorSavedDagId,
+    editorSavedDagLayout,
+    editorSavedDagProjectId,
+    editorSavedDagRevision,
+    editorUserDag,
+    updateEditorDagDrafts,
+  ]);
 
   const updateLastAssistantText = (updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((items) => {
@@ -2141,14 +2279,14 @@ export function App() {
   }, [applyPersistedRunResult]);
 
   useEffect(() => {
-    if (!selectedConversation?.last_run_id || streaming || messages.length || runState) return;
-    void hydrateConversationSnapshot(selectedConversation);
+    if (!selectedChatConversation?.last_run_id || streaming || messages.length || runState) return;
+    void hydrateConversationSnapshot(selectedChatConversation);
   }, [
     hydrateConversationSnapshot,
     messages.length,
     runState,
-    selectedConversation,
-    selectedConversation?.last_run_id,
+    selectedChatConversation,
+    selectedChatConversation?.last_run_id,
     streaming,
   ]);
 
@@ -2267,6 +2405,121 @@ export function App() {
     );
     return preservedEdges.length ? { ...nextDag, edges: preservedEdges } : nextDag;
   }
+
+  const hydrateOrchestrationConversation = useCallback(async (conversation: ApiConversation) => {
+    const requestId = orchestrationHydrationRequestRef.current + 1;
+    orchestrationHydrationRequestRef.current = requestId;
+    try {
+      const session = await getOrchestrationSessionByConversation(conversation.id);
+      if (orchestrationHydrationRequestRef.current !== requestId || !session) return;
+      const selectedNodeId = typeof session.ui_state?.selectedNodeId === 'string'
+        ? session.ui_state.selectedNodeId
+        : '';
+      if (session.kind === 'dynamic_dag') {
+        const draftDag = runtimeDagFromUnknown(session.draft_dag);
+        if (draftDag) syncDynamicDag(draftDag);
+        if (selectedNodeId) setDynamicSelectedId(selectedNodeId);
+        if (conversation.last_run_id) {
+          const events = await listRunEvents(conversation.last_run_id);
+          if (orchestrationHydrationRequestRef.current !== requestId) return;
+          const result = finishedRunResultFromEvents(events);
+          const nextState = result?.state ?? null;
+          setDynamicRunState(nextState);
+          if (nextState?.dag) syncDynamicDag(preserveDynamicDagEdges(nextState.dag));
+          if (nextState?.trace) {
+            setDynamicTrace(mapRunTrace(nextState.trace).map((event) => ({
+              ...event,
+              timelineOrder: nextDynamicTimelineOrder(),
+            })));
+          }
+          if (result?.output_text) setOrderedDynamicFinalAnswer(result.output_text);
+        }
+        return;
+      }
+
+      const saved = session.saved_dag_id
+        ? savedDags.find((item) => item.id === session.saved_dag_id) ?? null
+        : null;
+      const draftDag = runtimeDagFromUnknown(session.draft_dag);
+      const baseSpec = saved?.spec ?? createEmptyUserDag();
+      const baseLayout = saved?.layout ?? {};
+      const baseLayoutPositions = saved
+        ? pruneNodePositions(layoutPositionsFromSavedLayout(saved.layout), runtimeDagFromUserDag(saved.spec))
+        : {};
+      const nextSpec = draftDag ? userDagFromRuntimeDag(baseSpec, draftDag) : baseSpec;
+      setEditorUserDagAndRuntimeDag(nextSpec, baseLayoutPositions, saved ? {
+        savedDagId: saved.id,
+        projectId: saved.project_id ?? null,
+        revision: saved.revision,
+        layout: baseLayout,
+      } : {});
+      if (draftDag) syncEditorDag(draftDag, baseLayoutPositions);
+      if (selectedNodeId) setEditorSelectedId(selectedNodeId);
+      if (conversation.last_run_id) {
+        const events = await listRunEvents(conversation.last_run_id);
+        if (orchestrationHydrationRequestRef.current !== requestId) return;
+        const result = finishedRunResultFromEvents(events);
+        const nextState = result?.state ?? null;
+        if (nextState?.trace) setEditorTrace(mapRunTrace(nextState.trace));
+        if (nextState?.dag && nextState.trace && nextState.run_id) {
+          setEditorRun({
+            run_id: nextState.run_id,
+            spec_id: nextState.spec_id ?? null,
+            workspace_path: nextState.workspace_path ?? '',
+            dag: nextState.dag,
+            trace: nextState.trace,
+            status: dagRunStatus(nextState.status),
+          });
+          syncEditorDag(nextState.dag, baseLayoutPositions);
+        }
+      }
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc);
+      if (conversation.kind === 'dynamic_dag') setDynamicStatusMessage(message);
+      else setEditorMessage(message);
+    }
+  }, [
+    nextDynamicTimelineOrder,
+    savedDags,
+    setEditorUserDagAndRuntimeDag,
+    setOrderedDynamicFinalAnswer,
+    syncEditorDag,
+  ]);
+
+  useEffect(() => {
+    if (activeWorkspace !== 'orchestration' || dynamicRunning || editorRunning) return;
+    const kind: ApiConversation['kind'] = orchestrationMode === 'dynamic' ? 'dynamic_dag' : 'static_dag';
+    const current = selectedConversation?.kind === kind ? selectedConversation : null;
+    const preferred = current
+      ?? conversations.find((conversation) => (
+        conversation.kind === kind
+        && (selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id)
+      ))
+      ?? conversations.find((conversation) => conversation.kind === kind)
+      ?? null;
+    if (!preferred) return;
+    const savedRevisionKey = savedDags.map((item) => `${item.id}:${item.revision}`).join('|');
+    const hydrateKey = `${kind}:${preferred.id}:${preferred.updated_at}:${preferred.last_run_id ?? ''}:${savedRevisionKey}`;
+    if (orchestrationHydratedKeyRef.current === hydrateKey) return;
+    if (preferred.id !== selectedConversationId) {
+      setSelectedConversationId(preferred.id);
+      if (preferred.project_id) setSelectedProjectId(preferred.project_id);
+      return;
+    }
+    orchestrationHydratedKeyRef.current = hydrateKey;
+    void hydrateOrchestrationConversation(preferred);
+  }, [
+    activeWorkspace,
+    conversations,
+    dynamicRunning,
+    editorRunning,
+    hydrateOrchestrationConversation,
+    orchestrationMode,
+    savedDags,
+    selectedConversation,
+    selectedConversationId,
+    selectedProjectId,
+  ]);
 
   const updateDynamicDag = (updater: (current: Dag) => Dag) => {
     setDynamicDag((current) => {
@@ -2455,10 +2708,19 @@ export function App() {
     setEditorRunInputText('');
   };
 
-  const loadEditorUserDag = (spec: UserDag) => {
+  const loadEditorUserDag = (saved: SavedDagView) => {
     rememberCurrentEditorDraft();
-    const draft = editorDagDraftsRef.current[spec.id];
-    setEditorUserDagAndRuntimeDag(draft?.spec ?? spec, draft?.layoutPositions ?? {});
+    const draft = editorDagDraftsRef.current[saved.savedDagId];
+    setEditorUserDagAndRuntimeDag(
+      draft?.spec ?? saved.spec,
+      draft?.layoutPositions ?? saved.layoutPositions,
+      {
+        savedDagId: saved.savedDagId,
+        projectId: saved.projectId,
+        revision: draft?.revision ?? saved.revision,
+        layout: draft?.layout ?? saved.layout,
+      },
+    );
   };
 
   const addEditorNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
@@ -2534,8 +2796,8 @@ export function App() {
   const saveEditorDraftSpec = async (
     spec: UserDag,
     savingMessage = '正在保存 DAG...',
-    savedMessage?: (saved: UserDag) => string,
-  ): Promise<UserDag | null> => {
+    savedMessage?: (saved: SavedDag) => string,
+  ): Promise<SavedDag | null> => {
     const validation = validateUserDagDraft(spec);
     if (validation) {
       setEditorMessage(validation);
@@ -2549,18 +2811,42 @@ export function App() {
         return null;
       }
       setEditorMessage(savingMessage);
-      const saved = await saveDag(spec, { projectId: selectedProjectId || null });
-      const savedDag = runtimeDagFromUserDag(saved);
-      const savedLayoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, savedDag);
+      const localDag = runtimeDagFromUserDag(spec);
+      const localLayoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, localDag);
+      const saved = await saveSavedDag({
+        savedDagId: editorSavedDagId,
+        projectId: editorSavedDagId ? undefined : selectedProjectId || null,
+        expectedRevision: editorSavedDagRevision,
+        spec,
+        layout: savedLayoutWithNodePositions(editorSavedDagLayout, localLayoutPositions),
+      });
+      const savedDag = runtimeDagFromUserDag(saved.spec);
+      const savedLayoutPositions = pruneNodePositions(
+        layoutPositionsFromSavedLayout(saved.layout),
+        savedDag,
+      );
       updateEditorDagDrafts((current) => {
         const next = { ...current };
-        if (spec.id && spec.id !== saved.id) delete next[spec.id];
-        next[saved.id] = { spec: saved, layoutPositions: savedLayoutPositions };
+        const previousKey = editorSavedDagId ?? spec.id;
+        if (previousKey && previousKey !== saved.id) delete next[previousKey];
+        next[saved.id] = {
+          spec: saved.spec,
+          savedDagId: saved.id,
+          projectId: saved.project_id ?? null,
+          revision: saved.revision,
+          layout: saved.layout,
+          layoutPositions: savedLayoutPositions,
+        };
         return next;
       });
-      setEditorUserDagAndRuntimeDag(saved, savedLayoutPositions);
+      setEditorUserDagAndRuntimeDag(saved.spec, savedLayoutPositions, {
+        savedDagId: saved.id,
+        projectId: saved.project_id ?? null,
+        revision: saved.revision,
+        layout: saved.layout,
+      });
       await refreshConsoleData();
-      setEditorMessage(savedMessage ? savedMessage(saved) : `已保存 ${saved.name || 'DAG'}。`);
+      setEditorMessage(savedMessage ? savedMessage(saved) : `已保存 ${saved.name || saved.spec.name || 'DAG'}。`);
       return saved;
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
@@ -2568,7 +2854,7 @@ export function App() {
     }
   };
 
-  const persistEditorUserDag = async (): Promise<UserDag | null> => {
+  const persistEditorUserDag = async (): Promise<SavedDag | null> => {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     return await saveEditorDraftSpec(spec);
   };
@@ -2598,7 +2884,12 @@ export function App() {
       return false;
     }
     const nextSpec = updateArtifactBinding(spec, previousId, artifact);
-    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current);
+    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current, {
+      savedDagId: editorSavedDagId,
+      projectId: editorSavedDagProjectId,
+      revision: editorSavedDagRevision,
+      layout: editorSavedDagLayout,
+    });
     setEditingArtifactId('');
     setEditorMessage(previousId === artifact.id ? `已更新 artifact ${artifact.id}。` : `已重命名 artifact ${previousId} -> ${artifact.id}。`);
     return true;
@@ -2608,7 +2899,12 @@ export function App() {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
     const nextSpec = removeArtifactBinding(spec, artifactId);
     if (editingArtifactId === artifactId) setEditingArtifactId('');
-    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current);
+    setEditorUserDagAndRuntimeDag(nextSpec, editorLayoutPositionsRef.current, {
+      savedDagId: editorSavedDagId,
+      projectId: editorSavedDagProjectId,
+      revision: editorSavedDagRevision,
+      layout: editorSavedDagLayout,
+    });
     setEditorMessage(`已删除 artifact ${artifactId}。`);
   };
 
@@ -2627,16 +2923,23 @@ export function App() {
     kind: OrchestrationSessionKind,
     title: string,
     options: {
+      targetProjectId?: string | null;
       savedDagId?: string | null;
       draftDag?: Record<string, unknown> | null;
       uiState?: Record<string, unknown>;
     } = {},
   ): Promise<OrchestrationContext | null> => {
     try {
-      let conversation = selectedConversation?.kind === kind ? selectedConversation : null;
+      const targetProjectId = Object.prototype.hasOwnProperty.call(options, 'targetProjectId')
+        ? options.targetProjectId ?? null
+        : selectedProjectId || null;
+      let conversation = (
+        selectedConversation?.kind === kind
+        && selectedConversation?.project_id === targetProjectId
+      ) ? selectedConversation : null;
       if (!conversation) {
-        const createdConversation = selectedProjectId
-          ? await createProjectConversation(selectedProjectId, { title, kind })
+        const createdConversation = targetProjectId
+          ? await createProjectConversation(targetProjectId, { title, kind })
           : await createConversation({ title, kind });
         conversation = createdConversation;
         setConversations((items) => [
@@ -2702,7 +3005,7 @@ export function App() {
     if (!saved) return;
     try {
       await Promise.all(uploadDraft.uploads.map((upload, index) =>
-        uploadDagArtifact(saved.id, upload.artifact.id, [files[index]], { preserveRelativePath: false }),
+        uploadSavedDagArtifact(saved.id, upload.artifact.id, [files[index]], { preserveRelativePath: false }),
       ));
       await refreshConsoleData();
       setEditorMessage(`已上传 ${files.length} 个文件。`);
@@ -2725,10 +3028,11 @@ export function App() {
     if (validation) return;
     const context = await ensureOrchestrationContext(
       'static_dag',
-      saved.name || spec.name || '静态编排',
+      saved.name || saved.spec.name || spec.name || '静态编排',
       {
+        targetProjectId: saved.project_id ?? null,
         savedDagId: saved.id,
-        draftDag: runtimeDagFromUserDag(saved) as unknown as Record<string, unknown>,
+        draftDag: runtimeDagFromUserDag(saved.spec) as unknown as Record<string, unknown>,
         uiState: { selectedNodeId: editorSelectedId },
       },
     );
@@ -2737,7 +3041,7 @@ export function App() {
     setEditorTrace([]);
     setEditorRun(null);
     setEditorRunTimeline([]);
-    setEditorMessage(`Running ${spec.name || 'DAG'}...`);
+    setEditorMessage(`Running ${saved.name || saved.spec.name || spec.name || 'DAG'}...`);
     try {
       await runSavedDagStream(saved.id, {
         onTrace: (event) => {
@@ -2766,6 +3070,7 @@ export function App() {
           } as const;
           setEditorRun(dagRun);
           syncEditorDag(dagRun.dag);
+          void refreshConversations();
           setEditorMessage(`Run ${dagRun.status}.`);
           setEditorRunTimeline((items) => appendRunTranscriptToken(
             items,
@@ -2791,7 +3096,7 @@ export function App() {
     return 'careful';
   }
 
-  const dynamicHandlers = () => ({
+  const dynamicHandlers = (conversationContext?: OrchestrationContext['request']) => ({
     onDag: (nextDag: Dag) => {
       syncDynamicDag(preserveDynamicDagEdges(nextDag));
       setDynamicStatusMessage(`DAG ${nextDag.status} · ${nextDag.nodes.length} 节点`);
@@ -2806,6 +3111,7 @@ export function App() {
       const state = payload.result.state ?? null;
       setDynamicRunState(state);
       if (state?.dag) syncDynamicDag(preserveDynamicDagEdges(state.dag));
+      if (conversationContext && state?.run_id) void refreshConversations();
       if (state?.pending_review) {
         clearDynamicFinalAnswer();
         const content = 'DAG 已生成，可编辑节点后点击「运行」。';
@@ -2842,14 +3148,17 @@ export function App() {
       const context = await ensureOrchestrationContext(
         'dynamic_dag',
         conversationTitleFromPrompt(prompt),
-        { draftDag: dynamicDag as unknown as Record<string, unknown> },
+        {
+          targetProjectId: selectedProjectId || null,
+          draftDag: dynamicDag as unknown as Record<string, unknown>,
+        },
       );
       if (!context) return;
       await streamMessagesTask(
         dynamicRequestMessages,
         'dag',
         dynamicReviewLevel(),
-        dynamicHandlers(),
+        dynamicHandlers(context.request),
         undefined,
         dynamicAdjust,
         { conversation: context.request },
@@ -2876,7 +3185,10 @@ export function App() {
       const context = await ensureOrchestrationContext(
         'dynamic_dag',
         dag.dag_id || '动态编排',
-        { draftDag: dag as unknown as Record<string, unknown> },
+        {
+          targetProjectId: selectedProjectId || null,
+          draftDag: dag as unknown as Record<string, unknown>,
+        },
       );
       if (!context) return;
       await resumeDagReview(
@@ -2884,7 +3196,7 @@ export function App() {
         dag,
         dynamicReviewLevel(),
         true,
-        dynamicHandlers(),
+        dynamicHandlers(context.request),
         dynamicRunState,
         undefined,
         { conversation: context.request },
@@ -2897,7 +3209,7 @@ export function App() {
   };
 
   const ensureChatConversation = async (prompt: string): Promise<ApiConversation | null> => {
-    if (selectedConversation) return selectedConversation;
+    if (selectedChatConversation) return selectedChatConversation;
     try {
       const conversation = chatSub === 'projects'
         ? selectedProjectId
@@ -3215,7 +3527,9 @@ export function App() {
 
   const createProjectConversationFromProject = async (projectId: string) => {
     if (streaming) return null;
-    const projectConversationCount = conversations.filter((conversation) => conversation.project_id === projectId).length;
+    const projectConversationCount = conversations.filter((conversation) => (
+      conversation.kind === 'chat' && conversation.project_id === projectId
+    )).length;
     try {
       const conversation = await createProjectConversation(projectId, {
         title: `会话 ${projectConversationCount + 1}`,
@@ -3242,7 +3556,9 @@ export function App() {
       }
       await createProjectConversationFromProject(selectedProjectId);
     } else {
-      const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
+      const standaloneConversationCount = conversations.filter((conversation) => (
+        conversation.kind === 'chat' && !conversation.project_id
+      )).length;
       try {
         const conversation = await createConversation({
           title: `会话 ${standaloneConversationCount + 1}`,
@@ -3299,7 +3615,7 @@ export function App() {
       sub === chatSub
       && (
         (sub === 'projects' && !selectedConversationId)
-        || (sub === 'conversations' && (!selectedConversation || !selectedConversation.project_id))
+        || (sub === 'conversations' && (!selectedChatConversation || !selectedChatConversation.project_id))
       )
     ) {
       return;
@@ -3311,9 +3627,9 @@ export function App() {
       clearChatSurface();
       return;
     }
-    const nextStandalone = selectedConversation && !selectedConversation.project_id
-      ? selectedConversation
-      : conversations.find((conversation) => !conversation.project_id) ?? null;
+    const nextStandalone = selectedChatConversation && !selectedChatConversation.project_id
+      ? selectedChatConversation
+      : conversations.find((conversation) => conversation.kind === 'chat' && !conversation.project_id) ?? null;
     setSelectedConversationId(nextStandalone?.id ?? '');
     clearChatSurface();
   };
@@ -3354,8 +3670,8 @@ export function App() {
       setConversations(remaining);
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'
-          ? remaining.find((item) => item.project_id === conversation.project_id) ?? null
-          : remaining.find((item) => !item.project_id) ?? null;
+          ? remaining.find((item) => item.kind === 'chat' && item.project_id === conversation.project_id) ?? null
+          : remaining.find((item) => item.kind === 'chat' && !item.project_id) ?? null;
         setSelectedConversationId(nextConversation?.id ?? '');
         if (nextConversation?.project_id) setSelectedProjectId(nextConversation.project_id);
         clearChatSurface();
@@ -3560,7 +3876,7 @@ export function App() {
         profiles={profiles}
         orchestrationMode={orchestrationMode}
         savedDags={visibleSavedDags}
-        selectedDagId={editorUserDag.id}
+        selectedDagId={editorSavedDagId ?? ''}
         selectedAgentPresetId={selectedAgentPresetId}
         selectedConversationId={selectedConversationId}
         selectedModelId={selectedModelId}
@@ -3620,7 +3936,7 @@ export function App() {
       <main className="workspace">
         {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
         {activeWorkspace === 'chat' ? (
-          selectedConversation || chatSub !== 'projects' ? (
+          selectedChatConversation || chatSub !== 'projects' ? (
             <ChatWorkspace
             artifactListError={runArtifactError}
             artifactListLoading={runArtifactLoading}
@@ -3638,7 +3954,7 @@ export function App() {
             messages={messages}
             pendingUploads={pendingChatUploads}
             projectName={selectedConversationProject?.name ?? null}
-            conversationTitle={selectedConversation?.title ?? null}
+            conversationTitle={selectedChatConversation?.title ?? null}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -4028,7 +4344,7 @@ function WorkspaceSidebar({
   orchestrationMode: OrchestrationMode;
   pythonTools: PythonToolEntry[];
   profiles: AgentProfile[];
-  savedDags: UserDag[];
+  savedDags: SavedDagView[];
   selectedDagId: string;
   selectedAgentPresetId: string;
   selectedConversationId: string;
@@ -4056,7 +4372,7 @@ function WorkspaceSidebar({
   onDeleteArtifact: (artifactId: string) => void;
   onEditArtifact: (artifactId: string) => void;
   onImportSkill: () => void;
-  onLoadDag: (spec: UserDag) => void;
+  onLoadDag: (saved: SavedDagView) => void;
   onNewChat: () => void;
   onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
@@ -4080,7 +4396,9 @@ function WorkspaceSidebar({
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
-  const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
+  const standaloneConversationCount = conversations.filter((conversation) => (
+    conversation.kind === 'chat' && !conversation.project_id
+  )).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
     { key: 'static' as const, label: '静态编排', icon: <GitBranch size={16} />, count: savedDags.length },
@@ -4131,7 +4449,7 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleConversations = conversations.filter((conversation) => !conversation.project_id && matchesSearchQuery(
+  const visibleConversations = conversations.filter((conversation) => conversation.kind === 'chat' && !conversation.project_id && matchesSearchQuery(
     [
       conversation.id,
       conversation.title,
@@ -4141,6 +4459,7 @@ function WorkspaceSidebar({
   ));
   const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
   conversations.forEach((conversation) => {
+    if (conversation.kind !== 'chat') return;
     if (!conversation.project_id) return;
     const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
     items.push(conversation);
@@ -4164,12 +4483,23 @@ function WorkspaceSidebar({
       projectConversationMatchesSearch(conversation, normalizedHistoryQuery)
     );
   });
-  const selectedSidebarConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
+  const selectedSidebarConversation = conversations.find((conversation) => (
+    conversation.id === selectedConversationId && conversation.kind === 'chat'
+  )) ?? null;
   const workspaceRootLabel = selectedSidebarConversation
     ? (selectedSidebarConversation.project_id ? '.dagent/projects' : '.dagent/projects/_conversations')
     : chatSub === 'projects' && selectedProjectId ? '.dagent/projects' : '.dagent/runs';
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
-    [dag.id, dag.name, dag.description, dag.version, dag.nodes.length],
+    [
+      dag.savedDagId,
+      dag.name,
+      dag.description,
+      dag.spec.id,
+      dag.spec.name,
+      dag.spec.description,
+      dag.revision,
+      dag.spec.nodes.length,
+    ],
     normalizedDagListQuery,
   ));
   const visibleModels = models.filter((model) => matchesSearchQuery(
@@ -4878,18 +5208,18 @@ function WorkspaceSidebar({
           <div className="sidebar-context-list">
             {visibleSavedDags.length ? visibleSavedDags.map((item) => (
               <button
-                className={item.id === selectedDagId ? 'active' : ''}
-                key={item.id}
+                className={item.savedDagId === selectedDagId ? 'active' : ''}
+                key={item.savedDagId}
                 onClick={() => onLoadDag(item)}
-                title={item.name || item.id}
+                title={item.name || item.spec.name || item.spec.id}
                 type="button"
               >
                 <span>
                   <GitBranch size={13} />
-                  <strong>{item.name || item.id}</strong>
-                  <code>v{item.version ?? 1}</code>
+                  <strong>{item.name || item.spec.name || item.spec.id}</strong>
+                  <code>v{item.revision}</code>
                 </span>
-                <em>{item.description || `${item.nodes.length} 节点`}</em>
+                <em>{item.description || item.spec.description || `${item.spec.nodes.length} 节点`}</em>
               </button>
             )) : (
               <div className="sidebar-empty-row">{normalizedDagListQuery ? '没有匹配的编排' : '暂无编排'}</div>

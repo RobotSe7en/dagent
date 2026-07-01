@@ -9,7 +9,14 @@ The current package version is `0.6.3`.
 
 ## Unreleased
 
-- No unreleased changes.
+- The local API/WebUI store now isolates chat, dynamic DAG, and static DAG
+  conversations by kind; ordinary chat streams reject orchestration
+  conversations.
+- Saved static DAGs now preserve saved-record metadata, revision, project
+  ownership, editor layout, and persisted artifact uploads across API process
+  restarts.
+- Incompatible pre-release local SQLite API databases are recreated instead of
+  migrated. This does not affect the public Python SDK.
 
 ## 0.6.3
 

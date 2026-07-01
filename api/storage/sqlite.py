@@ -73,7 +73,8 @@ class _SQLiteConversationLock:
 class SQLiteStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        if str(path) != ":memory:":
+        self._memory = str(path) == ":memory:"
+        if not self._memory:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -94,18 +95,52 @@ class SQLiteStore:
     def _migrate(self) -> None:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self._lock:
+            if self._needs_schema_rebuild():
+                self._rebuild_database()
             self._conn.executescript(schema)
-            self._ensure_column("conversations", "owner_user_id", "TEXT NOT NULL DEFAULT 'default'")
-            self._ensure_column("conversations", "kind", "TEXT NOT NULL DEFAULT 'chat'")
-            self._ensure_column("runs", "saved_dag_id", "TEXT")
-            self._ensure_column("conversation_locks", "expires_at", "INTEGER NOT NULL DEFAULT 0")
             self._conn.execute("DELETE FROM conversation_locks WHERE expires_at <= ?", (_now(),))
             self._conn.commit()
 
-    def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in columns:
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    def _needs_schema_rebuild(self) -> bool:
+        tables = {
+            row["name"]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if not tables:
+            return False
+        required_tables = {
+            "projects",
+            "conversations",
+            "conversation_locks",
+            "runs",
+            "run_streams",
+            "run_events",
+            "reviews",
+            "saved_dags",
+            "orchestration_sessions",
+        }
+        if not required_tables.issubset(tables):
+            return True
+        return (
+            "kind" not in self._table_columns("conversations")
+            or "saved_dag_id" not in self._table_columns("runs")
+        )
+
+    def _table_columns(self, table: str) -> set[str]:
+        return {
+            row["name"]
+            for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+
+    def _rebuild_database(self) -> None:
+        self._conn.close()
+        if not self._memory:
+            self.path.unlink(missing_ok=True)
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._configure()
 
     def create_project(
         self,
@@ -814,6 +849,16 @@ class SQLiteStore:
             params = (now, now, dag_id, org_id)
         with self._lock:
             cursor = self._conn.execute(query, params)
+            if cursor.rowcount > 0:
+                self._conn.execute(
+                    """
+                    UPDATE orchestration_sessions
+                    SET saved_dag_id = NULL,
+                        updated_at = ?
+                    WHERE saved_dag_id = ?
+                    """,
+                    (now, dag_id),
+                )
             self._conn.commit()
         return cursor.rowcount > 0
 
@@ -877,17 +922,20 @@ class SQLiteStore:
         saved_dag_id: str | None = None,
         draft_dag_json: str | None = None,
         ui_state_json: str | None = None,
+        update_saved_dag_id: bool = False,
+        update_draft_dag: bool = False,
+        update_ui_state: bool = False,
     ) -> OrchestrationSession:
         now = _now()
         assignments = ["updated_at = ?"]
         params: list[object] = [now]
-        if saved_dag_id is not None:
+        if update_saved_dag_id:
             assignments.append("saved_dag_id = ?")
             params.append(saved_dag_id)
-        if draft_dag_json is not None:
+        if update_draft_dag:
             assignments.append("draft_dag_json = ?")
             params.append(draft_dag_json)
-        if ui_state_json is not None:
+        if update_ui_state:
             assignments.append("ui_state_json = ?")
             params.append(ui_state_json)
         params.append(session_id)

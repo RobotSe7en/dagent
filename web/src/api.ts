@@ -283,37 +283,50 @@ export async function testCapability(
   return data.result;
 }
 
-export async function listDags(): Promise<UserDag[]> {
-  const res = await fetch(`${API_BASE}/saved-dags`);
+export async function listSavedDags(options: { projectId?: string | null } = {}): Promise<SavedDag[]> {
+  const params = new URLSearchParams();
+  if (options.projectId) params.set('project_id', options.projectId);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/saved-dags${suffix}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return (data.saved_dags ?? []).map(savedDagToUserDag);
+  return data.saved_dags ?? [];
 }
 
-export async function saveDag(
-  spec: UserDag,
-  options: { projectId?: string | null } = {},
-): Promise<UserDag> {
-  const existing = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(spec.id)}`);
-  if (!existing.ok && existing.status !== 404) throw new Error(await errorMessage(existing));
-  const endpoint = existing.ok
-    ? `${API_BASE}/saved-dags/${encodeURIComponent(spec.id)}`
+export async function saveSavedDag(input: {
+  savedDagId?: string | null;
+  projectId?: string | null;
+  name?: string;
+  description?: string;
+  spec: UserDag;
+  layout?: Record<string, unknown>;
+  expectedRevision?: number | null;
+}): Promise<SavedDag> {
+  const updating = Boolean(input.savedDagId);
+  const endpoint = updating
+    ? `${API_BASE}/saved-dags/${encodeURIComponent(input.savedDagId as string)}`
     : `${API_BASE}/saved-dags`;
   const body: Record<string, unknown> = {
-    name: spec.name,
-    description: spec.description ?? '',
-    spec,
-    layout: {},
+    spec: input.spec,
+    layout: input.layout ?? {},
   };
-  if (!existing.ok) body.project_id = options.projectId ?? null;
+  if (updating) {
+    if (input.name !== undefined) body.name = input.name;
+    if (input.description !== undefined) body.description = input.description;
+    if (input.expectedRevision !== undefined) body.expected_revision = input.expectedRevision;
+  } else {
+    body.name = input.name ?? input.spec.name;
+    body.description = input.description ?? input.spec.description ?? '';
+    body.project_id = input.projectId ?? null;
+  }
   const res = await fetch(endpoint, {
-    method: existing.ok ? 'PATCH' : 'POST',
+    method: updating ? 'PATCH' : 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return savedDagToUserDag(data.saved_dag);
+  return data.saved_dag;
 }
 
 export async function getOrchestrationSessionByConversation(
@@ -362,16 +375,6 @@ export async function updateOrchestrationSession(
   return data.session;
 }
 
-function savedDagToUserDag(saved: SavedDag): UserDag {
-  return {
-    ...saved.spec,
-    id: saved.id,
-    name: saved.name || saved.spec.name,
-    description: saved.description || saved.spec.description,
-    version: saved.revision,
-  };
-}
-
 export async function validateDag(spec: UserDag): Promise<DagValidationResult> {
   const res = await fetch(`${API_BASE}/dags/validate`, {
     method: 'POST',
@@ -386,8 +389,8 @@ export async function validateDag(spec: UserDag): Promise<DagValidationResult> {
   };
 }
 
-export async function uploadDagArtifact(
-  specId: string,
+export async function uploadSavedDagArtifact(
+  savedDagId: string,
   artifactId: string,
   files: File[],
   options: UploadFormFilenameOptions = {},
@@ -397,7 +400,7 @@ export async function uploadDagArtifact(
     body.append('files', file, uploadFormFilename(file, options));
   }
   const res = await fetch(
-    `${API_BASE}/saved-dags/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
+    `${API_BASE}/saved-dags/${encodeURIComponent(savedDagId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
     {
       method: 'POST',
       body,

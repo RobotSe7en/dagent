@@ -8,7 +8,12 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-当前没有未发布变更。
+- 本地 API/WebUI store 现在按 kind 隔离普通 chat、动态 DAG、静态 DAG conversation；
+  普通 chat stream 会拒绝编排 conversation。
+- 保存的静态 DAG 现在会保留 saved record 元数据、revision、project 归属、编辑器 layout，
+  以及可跨 API 进程重启保留的 artifact uploads。
+- 检测到不兼容的未发布本地 SQLite API 旧库时会直接重建数据库，不做迁移。这不影响公开
+  Python SDK。
 
 ## 0.6.3
 

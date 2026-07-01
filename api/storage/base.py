@@ -254,4 +254,7 @@ class Store(Protocol):
         saved_dag_id: str | None = None,
         draft_dag_json: str | None = None,
         ui_state_json: str | None = None,
+        update_saved_dag_id: bool = False,
+        update_draft_dag: bool = False,
+        update_ui_state: bool = False,
     ) -> OrchestrationSession: ...
