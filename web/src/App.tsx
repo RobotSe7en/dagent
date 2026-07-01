@@ -3107,6 +3107,26 @@ export function App() {
     }
   };
 
+  const createProjectConversationFromProject = async (projectId: string) => {
+    if (streaming) return null;
+    const projectConversationCount = conversations.filter((conversation) => conversation.project_id === projectId).length;
+    try {
+      const conversation = await createProjectConversation(projectId, {
+        title: `会话 ${projectConversationCount + 1}`,
+      });
+      setConversations((items) => [conversation, ...items]);
+      setSelectedProjectId(projectId);
+      setSelectedConversationId(conversation.id);
+      setChatSub('projects');
+      setProjectError(null);
+      clearChatSurface();
+      return conversation;
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+      return null;
+    }
+  };
+
   const newChat = async () => {
     if (streaming) return;
     if (chatSub === 'projects') {
@@ -3114,19 +3134,7 @@ export function App() {
         setProjectError('请先新建或选择项目。');
         return;
       }
-      const projectConversationCount = conversations.filter((conversation) => conversation.project_id === selectedProjectId).length;
-      try {
-        const conversation = await createProjectConversation(selectedProjectId, {
-          title: `会话 ${projectConversationCount + 1}`,
-        });
-        setConversations((items) => [conversation, ...items]);
-        setSelectedConversationId(conversation.id);
-        setChatSub('projects');
-        setProjectError(null);
-      } catch (exc) {
-        setProjectError(exc instanceof Error ? exc.message : String(exc));
-        return;
-      }
+      await createProjectConversationFromProject(selectedProjectId);
     } else {
       const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
       try {
@@ -3140,22 +3148,22 @@ export function App() {
         setProjectError(exc instanceof Error ? exc.message : String(exc));
         return;
       }
+      setDagReview(null);
+      setDagReviewFeedback('');
+      setCapabilityReview(null);
+      setCapabilityReviewFeedback('');
+      setRunState(null);
+      setMessages([]);
+      setDraft('');
+      setPendingChatUploads([]);
+      syncDag(emptyDag);
+      setTrace([]);
+      setError(null);
+      setReviewOpen(false);
+      tokenQueueRef.current = [];
+      contentStreamedRef.current = false;
+      stopTokenTimer();
     }
-    setDagReview(null);
-    setDagReviewFeedback('');
-    setCapabilityReview(null);
-    setCapabilityReviewFeedback('');
-    setRunState(null);
-    setMessages([]);
-    setDraft('');
-    setPendingChatUploads([]);
-    syncDag(emptyDag);
-    setTrace([]);
-    setError(null);
-    setReviewOpen(false);
-    tokenQueueRef.current = [];
-    contentStreamedRef.current = false;
-    stopTokenTimer();
   };
 
   const clearChatSurface = () => {
@@ -3476,6 +3484,7 @@ export function App() {
         onImportSkill={() => requestCapabilityCreation('skills')}
         onLoadDag={loadEditorUserDag}
         onNewChat={() => void newChat()}
+        onNewProjectConversation={(projectId) => void createProjectConversationFromProject(projectId)}
         onNewDag={newEditorUserDag}
         onDeleteConversation={deleteConversationFromSidebar}
         onSelectProfile={setSelectedProfileId}
@@ -3577,6 +3586,9 @@ export function App() {
               onFileDraftChange={setProjectFileDraft}
               onFileSelect={(file) => void openProjectFile(file)}
               onNavigateUp={navigateProjectFilesUp}
+              onNewConversation={() => {
+                if (selectedProject) void createProjectConversationFromProject(selectedProject.id);
+              }}
               onRefresh={() => void refreshProjectFiles()}
               onRenameFile={(file) => openProjectFileDialog('rename', file)}
               onUploadFiles={(files) => void uploadSelectedProjectFiles(files)}
@@ -3868,6 +3880,7 @@ function WorkspaceSidebar({
   onImportSkill,
   onLoadDag,
   onNewChat,
+  onNewProjectConversation,
   onNewDag,
   onDeleteConversation,
   onSelectAgentPreset,
@@ -3942,6 +3955,7 @@ function WorkspaceSidebar({
   onImportSkill: () => void;
   onLoadDag: (spec: UserDag) => void;
   onNewChat: () => void;
+  onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
   onDeleteConversation: (id: string) => void;
   onSelectAgentPreset: (id: string) => void;
@@ -4069,6 +4083,14 @@ function WorkspaceSidebar({
       const next = new Set(current);
       if (next.has(projectId)) next.delete(projectId);
       else next.add(projectId);
+      return next;
+    });
+  };
+  const expandProject = (projectId: string) => {
+    setExpandedProjectIds((current) => {
+      if (current.has(projectId)) return current;
+      const next = new Set(current);
+      next.add(projectId);
       return next;
     });
   };
@@ -4666,6 +4688,17 @@ function WorkspaceSidebar({
                       <em>{projectConversations.length ? `${projectConversations.length} 会话` : project.slug}</em>
                     </button>
                     <button
+                      className="sidebar-project-create-conversation"
+                      onClick={() => {
+                        expandProject(project.id);
+                        onNewProjectConversation(project.id);
+                      }}
+                      title="新建会话"
+                      type="button"
+                    >
+                      <Plus size={13} />
+                    </button>
+                    <button
                       aria-expanded={expanded}
                       className="sidebar-project-toggle"
                       data-open={expanded}
@@ -4711,16 +4744,6 @@ function WorkspaceSidebar({
               <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的项目' : '暂无项目'}</div>
             )}
           </div>
-          {selectedProjectId ? (
-            <button
-              className="sidebar-project-new-chat"
-              onClick={onNewChat}
-              type="button"
-            >
-              <Plus size={13} />
-              <span>在当前项目中新建会话</span>
-            </button>
-          ) : null}
         </section>
       ) : null}
 
@@ -5259,6 +5282,7 @@ function ProjectDetailWorkspace({
   onFileDraftChange,
   onFileSelect,
   onNavigateUp,
+  onNewConversation,
   onRefresh,
   onRenameFile,
   onUploadFiles,
@@ -5285,6 +5309,7 @@ function ProjectDetailWorkspace({
   onFileDraftChange: (value: string) => void;
   onFileSelect: (file: ProjectFileItem) => void;
   onNavigateUp: () => void;
+  onNewConversation: () => void;
   onRefresh: () => void;
   onRenameFile: (file: ProjectFileItem) => void;
   onUploadFiles: (files: FileList | null) => void;
@@ -5314,6 +5339,10 @@ function ProjectDetailWorkspace({
           </div>
         </div>
         <div className="project-detail-actions">
+          <button className="secondary-button compact-button" onClick={onNewConversation} type="button">
+            <Plus size={14} />
+            新建会话
+          </button>
           <button className="secondary-button compact-button" onClick={onEditProject} type="button">
             <FileText size={14} />
             编辑

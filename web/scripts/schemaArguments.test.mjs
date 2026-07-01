@@ -1977,6 +1977,27 @@ test('project sidebar is an expandable project and conversation tree', async () 
   assert.match(css, /\.sidebar-project-conversation-row\s*\{/);
 });
 
+test('project conversation creation is a row action with a detail shortcut', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const projectDetailSource = appSource.match(/function ProjectDetailWorkspace[\s\S]*?\nfunction ProjectFileManager/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(projectDetailSource, 'ProjectDetailWorkspace function should exist');
+  assert.match(appSource, /const createProjectConversationFromProject = async \(projectId: string\)/);
+  assert.match(appSource, /onNewProjectConversation=\{\(projectId\) => void createProjectConversationFromProject\(projectId\)\}/);
+  assert.match(sidebarSource, /onNewProjectConversation: \(projectId: string\) => void;/);
+  assert.match(sidebarSource, /className="sidebar-project-create-conversation"/);
+  assert.match(sidebarSource, /title="新建会话"/);
+  assert.match(sidebarSource, /onClick=\{\(\) => \{[\s\S]*expandProject\(project\.id\);[\s\S]*onNewProjectConversation\(project\.id\);[\s\S]*\}\}/);
+  assert.doesNotMatch(sidebarSource, /className="sidebar-project-new-chat"/);
+  assert.match(projectDetailSource, /onNewConversation: \(\) => void;/);
+  assert.match(projectDetailSource, /<button className="secondary-button compact-button" onClick=\{onNewConversation\} type="button">[\s\S]*<Plus size=\{14\} \/>[\s\S]*新建会话/);
+  assert.match(css, /\.sidebar-project-create-conversation\s*\{/);
+  assert.doesNotMatch(css, /\.sidebar-project-new-chat\s*\{/);
+});
+
 test('project detail workspace manages files with tree and preview', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');

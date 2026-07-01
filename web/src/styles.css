@@ -556,7 +556,8 @@ button:focus-visible {
   flex: 1 1 auto;
 }
 
-.sidebar-project-toggle {
+.sidebar-project-toggle,
+.sidebar-project-create-conversation {
   width: 30px !important;
   min-width: 30px;
   flex: 0 0 30px;
@@ -564,6 +565,12 @@ button:focus-visible {
   place-items: center;
   padding: 0 !important;
   color: #aab0b9;
+}
+
+.sidebar-project-create-conversation:hover {
+  border-color: #c6c8f7;
+  background: #f6f6ff;
+  color: #5b5bd6;
 }
 
 .sidebar-project-toggle svg {
@@ -600,27 +607,6 @@ button:focus-visible {
   border-color: #f1c4c0;
   background: #fff5f4;
   color: #9f2f2a;
-}
-
-.sidebar-project-new-chat {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  margin: 10px 4px 0 0;
-  border: 1px solid #e7e8ec;
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: #fff;
-  color: #5a606b;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.sidebar-project-new-chat:hover {
-  border-color: #5b5bd6;
-  color: #5b5bd6;
 }
 
 .sidebar-history-list span {
