@@ -3713,13 +3713,15 @@ def _delete_conversation_files(
         if not _should_delete_run_workspace(candidate, conversation_workspace):
             continue
         shutil.rmtree(candidate)
-    if (
-        delete_conversation_workspace
-        and conversation_workspace.exists()
-        and conversation_workspace.is_dir()
-        and not conversation_workspace.is_symlink()
-    ):
-        shutil.rmtree(conversation_workspace)
+    if delete_conversation_workspace:
+        _delete_workspace_root(conversation_workspace)
+
+
+def _delete_workspace_root(workspace_path: Path) -> None:
+    workspace_path = workspace_path.resolve()
+    target = workspace_path.parent if workspace_path.name == "workspace" else workspace_path
+    if target.exists() and target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
 
 
 def _should_delete_run_workspace(candidate: Path, project_workspace: Path) -> bool:

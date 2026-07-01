@@ -899,6 +899,7 @@ def test_api_deletes_standalone_conversation_workspace(persistence_client) -> No
         json={"title": "Inbox chat"},
     ).json()["conversation"]
     conversation_workspace = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    conversation_root = conversation_workspace.parent
     (conversation_workspace / "notes.txt").write_text("remove me", encoding="utf-8")
     run_state = RunState(
         run_id="tool_run_standalone_delete",
@@ -928,6 +929,7 @@ def test_api_deletes_standalone_conversation_workspace(persistence_client) -> No
     assert response.status_code == 200
     assert store.get_run(run_state.run_id) is None
     assert not conversation_workspace.exists()
+    assert not conversation_root.exists()
 
 
 def test_api_project_message_stream_persists_run_events_and_state(
