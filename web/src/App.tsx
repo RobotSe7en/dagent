@@ -61,6 +61,7 @@ import {
   createConversation,
   createMcpServer,
   createModelProvider,
+  createOrchestrationSession,
   createProject,
   createProjectFolder,
   createProjectConversation,
@@ -79,6 +80,7 @@ import {
   getSkillFile,
   getValidationStatus,
   getOnlyOfficeSettings,
+  getOrchestrationSessionByConversation,
   installSkill,
   listAgents,
   listCapabilities,
@@ -103,7 +105,7 @@ import {
   reloadPythonTools,
   resumeCapabilityReview,
   resumeDagReview,
-  runDagStream,
+  runSavedDagStream,
   saveDag,
   setCapabilityEnabled,
   setValidationEnabled as apiSetValidation,
@@ -115,6 +117,7 @@ import {
   updateMcpServer,
   updateModelProvider,
   updateOnlyOfficeSettings,
+  updateOrchestrationSession,
   updateProject,
   updatePythonTool,
   uploadProjectFiles,
@@ -165,6 +168,7 @@ import type {
   ModelProvider,
   ModelProviderInput,
   OnlyOfficeSettings,
+  OrchestrationSession,
   PythonToolConfig,
   PythonToolEntry,
   SkillDetail,
@@ -274,7 +278,6 @@ const riskLevels: RiskLevel[] = ['low', 'medium', 'high'];
 const reviewLevels: ReviewLevel[] = ['fast', 'careful'];
 const capabilityKinds: CapabilityKind[] = ['tool', 'mcp', 'skill', 'agent', 'memory'];
 const riskRank: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
-const defaultWorkspaceRoot = 'runs';
 const emptyDag: Dag = {
   dag_id: 'dag_empty',
   task_id: '',
@@ -707,6 +710,12 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
+type OrchestrationSessionKind = OrchestrationSession['kind'];
+type OrchestrationContext = {
+  conversation: ApiConversation;
+  session: OrchestrationSession;
+  request: { projectId?: string | null; conversationId: string };
+};
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
 type ChatWorkspaceSub = 'conversations' | 'projects';
 type ProjectDraft = { name: string; slug: string; description: string };
@@ -1093,7 +1102,6 @@ export function App() {
   const [editorRunTimeline, setEditorRunTimeline] = useState<RunTranscriptItem[]>([]);
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
-  const [editorWorkspaceRoot, setEditorWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [editorRunInputText, setEditorRunInputText] = useState('');
   const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
@@ -2444,7 +2452,6 @@ export function App() {
   const newEditorUserDag = () => {
     rememberCurrentEditorDraft();
     setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
-    setEditorWorkspaceRoot(defaultWorkspaceRoot);
     setEditorRunInputText('');
   };
 
@@ -2542,7 +2549,7 @@ export function App() {
         return null;
       }
       setEditorMessage(savingMessage);
-      const saved = await saveDag(spec);
+      const saved = await saveDag(spec, { projectId: selectedProjectId || null });
       const savedDag = runtimeDagFromUserDag(saved);
       const savedLayoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, savedDag);
       updateEditorDagDrafts((current) => {
@@ -2561,9 +2568,9 @@ export function App() {
     }
   };
 
-  const persistEditorUserDag = async (): Promise<boolean> => {
+  const persistEditorUserDag = async (): Promise<UserDag | null> => {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
-    return Boolean(await saveEditorDraftSpec(spec));
+    return await saveEditorDraftSpec(spec);
   };
 
   const createEditorArtifact = () => {
@@ -2616,6 +2623,69 @@ export function App() {
     setPendingChatUploads((current) => current.filter((_, itemIndex) => !removeIndexes.has(itemIndex)));
   };
 
+  const ensureOrchestrationContext = async (
+    kind: OrchestrationSessionKind,
+    title: string,
+    options: {
+      savedDagId?: string | null;
+      draftDag?: Record<string, unknown> | null;
+      uiState?: Record<string, unknown>;
+    } = {},
+  ): Promise<OrchestrationContext | null> => {
+    try {
+      let conversation = selectedConversation?.kind === kind ? selectedConversation : null;
+      if (!conversation) {
+        const createdConversation = selectedProjectId
+          ? await createProjectConversation(selectedProjectId, { title, kind })
+          : await createConversation({ title, kind });
+        conversation = createdConversation;
+        setConversations((items) => [
+          createdConversation,
+          ...items.filter((item) => item.id !== createdConversation.id),
+        ]);
+        setSelectedConversationId(conversation.id);
+        if (conversation.project_id) setSelectedProjectId(conversation.project_id);
+      }
+
+      let session = await getOrchestrationSessionByConversation(conversation.id);
+      if (!session) {
+        session = await createOrchestrationSession({
+          conversation_id: conversation.id,
+          project_id: conversation.project_id,
+          kind,
+          saved_dag_id: options.savedDagId,
+          draft_dag: options.draftDag,
+          ui_state: options.uiState ?? {},
+        });
+      } else {
+        const patch: {
+          saved_dag_id?: string | null;
+          draft_dag?: Record<string, unknown> | null;
+          ui_state?: Record<string, unknown>;
+        } = {};
+        if (Object.prototype.hasOwnProperty.call(options, 'savedDagId')) patch.saved_dag_id = options.savedDagId;
+        if (Object.prototype.hasOwnProperty.call(options, 'draftDag')) patch.draft_dag = options.draftDag;
+        if (options.uiState) patch.ui_state = options.uiState;
+        if (Object.keys(patch).length) {
+          session = await updateOrchestrationSession(session.id, patch);
+        }
+      }
+
+      return {
+        conversation,
+        session,
+        request: {
+          projectId: conversation.project_id,
+          conversationId: conversation.id,
+        },
+      };
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
+      return null;
+    }
+  };
+
   const uploadEditorFiles = async (fileList: FileList | null) => {
     const files = filesFromList(fileList);
     if (!files.length) return;
@@ -2653,13 +2723,23 @@ export function App() {
     if (!saved) return;
     const validation = validateUserDagDraft(spec);
     if (validation) return;
+    const context = await ensureOrchestrationContext(
+      'static_dag',
+      saved.name || spec.name || '静态编排',
+      {
+        savedDagId: saved.id,
+        draftDag: runtimeDagFromUserDag(saved) as unknown as Record<string, unknown>,
+        uiState: { selectedNodeId: editorSelectedId },
+      },
+    );
+    if (!context) return;
     setEditorRunning(true);
     setEditorTrace([]);
     setEditorRun(null);
     setEditorRunTimeline([]);
     setEditorMessage(`Running ${spec.name || 'DAG'}...`);
     try {
-      await runDagStream(spec.id, {
+      await runSavedDagStream(saved.id, {
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
           setEditorRunTimeline((items) => appendRunTranscriptTraceEvent(items, event));
@@ -2697,7 +2777,7 @@ export function App() {
           setEditorRunTimeline((items) => appendRunTranscriptToken(items, `\n\nRun error: ${message}`));
         },
       }, {
-        workspaceRoot: editorWorkspaceRoot,
+        conversation: context.request,
         ...(parsedInput.hasInput ? { input: parsedInput.value } : {}),
       });
     } catch (exc) {
@@ -2759,7 +2839,21 @@ export function App() {
     clearDynamicFinalAnswer();
     setDynamicStatusMessage(dynamicDag.nodes.length ? '正在根据对话和当前 DAG 重新生成...' : '正在生成 DAG...');
     try {
-      await streamMessagesTask(dynamicRequestMessages, 'dag', dynamicReviewLevel(), dynamicHandlers(), undefined, dynamicAdjust);
+      const context = await ensureOrchestrationContext(
+        'dynamic_dag',
+        conversationTitleFromPrompt(prompt),
+        { draftDag: dynamicDag as unknown as Record<string, unknown> },
+      );
+      if (!context) return;
+      await streamMessagesTask(
+        dynamicRequestMessages,
+        'dag',
+        dynamicReviewLevel(),
+        dynamicHandlers(),
+        undefined,
+        dynamicAdjust,
+        { conversation: context.request },
+      );
       setDynamicPrompt('');
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -2779,7 +2873,22 @@ export function App() {
     clearDynamicFinalAnswer();
     setDynamicStatusMessage(dynamicAdjust ? '正在运行，后续重规划会再次进入审核...' : '正在按当前 DAG 运行...');
     try {
-      await resumeDagReview(reviewId, dag, dynamicReviewLevel(), true, dynamicHandlers(), dynamicRunState);
+      const context = await ensureOrchestrationContext(
+        'dynamic_dag',
+        dag.dag_id || '动态编排',
+        { draftDag: dag as unknown as Record<string, unknown> },
+      );
+      if (!context) return;
+      await resumeDagReview(
+        reviewId,
+        dag,
+        dynamicReviewLevel(),
+        true,
+        dynamicHandlers(),
+        dynamicRunState,
+        undefined,
+        { conversation: context.request },
+      );
     } catch (exc) {
       setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {

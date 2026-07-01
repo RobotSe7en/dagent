@@ -32,7 +32,18 @@ from api.agent_presets import (
     clean_agent_preset_name,
 )
 from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
-from api.storage import Conversation, ConversationBusyError, Project, Run, RunEvent, SQLiteStore, StorageConflictError, Store
+from api.storage import (
+    Conversation,
+    ConversationBusyError,
+    OrchestrationSession,
+    Project,
+    Run,
+    RunEvent,
+    SavedDag,
+    SQLiteStore,
+    StorageConflictError,
+    Store,
+)
 from api.workspaces import LocalWorkspaceStore
 from dagent import (
     ArtifactUpload,
@@ -215,6 +226,7 @@ class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1)
+    kind: Literal["chat", "dynamic_dag", "static_dag"] = "chat"
 
 
 class ProjectFolderRequest(BaseModel):
@@ -280,6 +292,53 @@ class UserDAG(BaseModel):
     nodes: list[UserDAGNode] = Field(default_factory=list)
     edges: list[DAGEdge] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedDAGCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str | None = None
+    name: str | None = None
+    description: str = ""
+    spec: UserDAG
+    layout: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedDAGUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    spec: UserDAG | None = None
+    layout: dict[str, Any] | None = None
+    expected_revision: int | None = None
+
+
+class SavedDAGRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str | None = None
+    conversation_id: str = Field(min_length=1)
+    graph_input: Any = None
+
+
+class OrchestrationSessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str = Field(min_length=1)
+    project_id: str | None = None
+    kind: Literal["dynamic_dag", "static_dag"]
+    saved_dag_id: str | None = None
+    draft_dag: dict[str, Any] | None = None
+    ui_state: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrchestrationSessionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    saved_dag_id: str | None = None
+    draft_dag: dict[str, Any] | None = None
+    ui_state: dict[str, Any] | None = None
 
 
 class DAGValidationIssue(BaseModel):
@@ -485,6 +544,7 @@ class PersistedMessageContext:
     workspace_uri: str
     workspace_path: Path
     run_state: RunState | None = None
+    orchestration_session_id: str | None = None
 
 
 class ApiState:
@@ -1038,6 +1098,7 @@ async def create_conversation(request: ConversationCreateRequest) -> dict[str, A
             project_id=None,
             title=title,
             workspace_uri=workspace_uri,
+            kind=request.kind,
         )
     except StorageConflictError as exc:
         raise HTTPException(status_code=400, detail="Conversation already exists.") from exc
@@ -1082,6 +1143,7 @@ async def create_project_conversation(
             project_id=project.id,
             title=title,
             workspace_uri=workspace_uri,
+            kind=request.kind,
         )
     except StorageConflictError as exc:
         raise HTTPException(status_code=400, detail="Conversation already exists.") from exc
@@ -1271,6 +1333,186 @@ async def validate_user_dag(dag: UserDAG) -> dict[str, Any]:
     return DAGValidationResponse(valid=True).model_dump(mode="json")
 
 
+@app.post("/saved-dags")
+async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
+    if request.project_id is not None:
+        project = await run_in_threadpool(state.get_store().get_project, request.project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+    _validate_user_dag_or_raise(request.spec)
+    name = _clean_required_text(request.name or request.spec.name, field="DAG name")
+    description = request.description.strip()
+    try:
+        saved = await run_in_threadpool(
+            state.get_store().create_saved_dag,
+            dag_id=_new_api_id("dag"),
+            project_id=request.project_id,
+            name=name,
+            description=description,
+            spec_json=_user_dag_json(request.spec),
+            layout_json=_json_object(request.layout),
+        )
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=400, detail="Saved DAG already exists.") from exc
+    return {"saved_dag": _saved_dag_payload(saved)}
+
+
+@app.get("/saved-dags")
+async def list_saved_dags(project_id: str | None = None) -> dict[str, Any]:
+    if project_id is not None:
+        project = await run_in_threadpool(state.get_store().get_project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+    saved_dags = await run_in_threadpool(state.get_store().list_saved_dags, project_id)
+    return {"saved_dags": [_saved_dag_payload(saved) for saved in saved_dags]}
+
+
+@app.get("/saved-dags/{dag_id}")
+async def get_saved_dag(dag_id: str) -> dict[str, Any]:
+    saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    return {"saved_dag": _saved_dag_payload(saved)}
+
+
+@app.patch("/saved-dags/{dag_id}")
+async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[str, Any]:
+    existing = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    spec = _user_dag_from_saved(existing) if request.spec is None else request.spec
+    _validate_user_dag_or_raise(spec)
+    name = existing.name if request.name is None else _clean_required_text(request.name, field="DAG name")
+    description = existing.description if request.description is None else request.description.strip()
+    layout_json = existing.layout_json if request.layout is None else _json_object(request.layout)
+    try:
+        saved = await run_in_threadpool(
+            state.get_store().update_saved_dag,
+            dag_id,
+            name=name,
+            description=description,
+            spec_json=_user_dag_json(spec),
+            layout_json=layout_json,
+            expected_revision=request.expected_revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.") from exc
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"saved_dag": _saved_dag_payload(saved)}
+
+
+@app.delete("/saved-dags/{dag_id}")
+async def delete_saved_dag(dag_id: str) -> dict[str, str]:
+    deleted = await run_in_threadpool(state.get_store().archive_saved_dag, dag_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    return {"status": "deleted"}
+
+
+@app.post("/saved-dags/{dag_id}/run/stream")
+async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> StreamingResponse:
+    saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    context = await _persisted_context_from_conversation(request.project_id, request.conversation_id)
+    if saved.project_id != context.project_id:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    dag = _user_dag_from_saved(saved)
+    stream_id = _new_api_id("stream")
+    try:
+        lock = await run_in_threadpool(
+            state.get_store().acquire_conversation_lock,
+            context.conversation_id,
+            owner=stream_id,
+        )
+    except ConversationBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return StreamingResponse(
+        _persisted_static_dag_stream_events(
+            dag,
+            request.graph_input,
+            saved,
+            context,
+            stream_id,
+            lock,
+        ),
+        media_type="text/event-stream",
+    )
+
+
+@app.post("/orchestration-sessions")
+async def create_orchestration_session(request: OrchestrationSessionCreateRequest) -> dict[str, Any]:
+    context = await _persisted_context_from_conversation(request.project_id, request.conversation_id)
+    conversation = await run_in_threadpool(state.get_store().get_conversation, request.conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.kind not in ("chat", request.kind):
+        raise HTTPException(status_code=400, detail="Conversation kind does not match orchestration session kind.")
+    if request.saved_dag_id is not None:
+        saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
+        if saved is None or saved.project_id != context.project_id:
+            raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    try:
+        session = await run_in_threadpool(
+            state.get_store().create_orchestration_session,
+            session_id=_new_api_id("orch"),
+            conversation_id=context.conversation_id,
+            project_id=context.project_id,
+            kind=request.kind,
+            saved_dag_id=request.saved_dag_id,
+            draft_dag_json=None if request.draft_dag is None else _json_object(request.draft_dag),
+            ui_state_json=_json_object(request.ui_state),
+        )
+    except StorageConflictError as exc:
+        raise HTTPException(status_code=409, detail="Orchestration session already exists for conversation.") from exc
+    return {"session": _orchestration_session_payload(session)}
+
+
+@app.get("/orchestration-sessions/{session_id}")
+async def get_orchestration_session(session_id: str) -> dict[str, Any]:
+    session = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.")
+    return {"session": _orchestration_session_payload(session)}
+
+
+@app.get("/conversations/{conversation_id}/orchestration-session")
+async def get_orchestration_session_by_conversation(conversation_id: str) -> dict[str, Any]:
+    session = await run_in_threadpool(
+        state.get_store().get_orchestration_session_by_conversation,
+        conversation_id,
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.")
+    return {"session": _orchestration_session_payload(session)}
+
+
+@app.patch("/orchestration-sessions/{session_id}")
+async def update_orchestration_session(
+    session_id: str,
+    request: OrchestrationSessionUpdateRequest,
+) -> dict[str, Any]:
+    existing = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.")
+    if request.saved_dag_id is not None:
+        saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
+        if saved is None or saved.project_id != existing.project_id:
+            raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    try:
+        session = await run_in_threadpool(
+            state.get_store().update_orchestration_session,
+            session_id,
+            saved_dag_id=request.saved_dag_id,
+            draft_dag_json=None if request.draft_dag is None else _json_object(request.draft_dag),
+            ui_state_json=None if request.ui_state is None else _json_object(request.ui_state),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.") from exc
+    return {"session": _orchestration_session_payload(session)}
+
+
 @app.get("/dags/{dag_id}")
 async def get_dag(dag_id: str) -> dict[str, Any]:
     dag = state.dags.get(dag_id)
@@ -1288,6 +1530,27 @@ async def upload_dag_artifact(
     dag = state.dags.get(dag_id)
     if dag is None:
         raise HTTPException(status_code=404, detail="DAG not found.")
+    return await _upload_dag_artifact_files(dag_id, dag, artifact_id, files)
+
+
+@app.post("/saved-dags/{dag_id}/artifacts/{artifact_id}/upload")
+async def upload_saved_dag_artifact(
+    dag_id: str,
+    artifact_id: str,
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    return await _upload_dag_artifact_files(dag_id, _user_dag_from_saved(saved), artifact_id, files)
+
+
+async def _upload_dag_artifact_files(
+    dag_id: str,
+    dag: UserDAG,
+    artifact_id: str,
+    files: list[UploadFile],
+) -> dict[str, Any]:
     if artifact_id not in dag.artifacts:
         raise HTTPException(status_code=404, detail="Artifact not found.")
     if not files:
@@ -1486,6 +1749,57 @@ def _artifact_uploads_for_dag(dag_id: str) -> dict[str, list[ArtifactUpload]]:
         artifact_id: list(uploads)
         for artifact_id, uploads in state.dag_artifact_uploads.get(dag_id, {}).items()
     }
+
+
+def _validate_user_dag_or_raise(dag: UserDAG) -> None:
+    try:
+        validate_dag_spec(_compile_user_dag(dag).to_dag_spec())
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _user_dag_json(dag: UserDAG) -> str:
+    return dag.model_dump_json()
+
+
+def _json_object(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _user_dag_from_saved(saved: SavedDag) -> UserDAG:
+    try:
+        return UserDAG.model_validate_json(saved.spec_json)
+    except ValidationError as exc:
+        raise HTTPException(status_code=500, detail="Stored DAG spec is invalid.") from exc
+
+
+def _saved_dag_payload(saved: SavedDag) -> dict[str, Any]:
+    payload = saved.model_dump(mode="json")
+    payload.pop("spec_json")
+    payload.pop("layout_json")
+    payload["spec"] = _json_from_storage(saved.spec_json, fallback={})
+    payload["layout"] = _json_from_storage(saved.layout_json, fallback={})
+    return payload
+
+
+def _orchestration_session_payload(session: OrchestrationSession) -> dict[str, Any]:
+    payload = session.model_dump(mode="json")
+    payload.pop("draft_dag_json")
+    payload.pop("ui_state_json")
+    payload["draft_dag"] = (
+        None
+        if session.draft_dag_json is None
+        else _json_from_storage(session.draft_dag_json, fallback=None)
+    )
+    payload["ui_state"] = _json_from_storage(session.ui_state_json, fallback={})
+    return payload
+
+
+def _json_from_storage(value: str, *, fallback: Any) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
 
 
 def _prune_dag_artifact_uploads(dag: UserDAG) -> None:
@@ -3199,6 +3513,36 @@ async def _persisted_review_resume_stream_events(
         await run_in_threadpool(lock.release)
 
 
+async def _persisted_static_dag_stream_events(
+    dag: UserDAG,
+    graph_input: Any,
+    saved: SavedDag,
+    context: PersistedMessageContext,
+    stream_id: str,
+    lock: Any,
+):
+    try:
+        runner = state.get_runner()
+        event_source = runner.stream(
+            _compile_user_dag(dag),
+            graph_input=graph_input,
+            workspace_path=context.workspace_path,
+            artifact_uploads=_artifact_uploads_for_dag(saved.id),
+        )
+        async for payload in _persisted_run_events(
+            event_source,
+            runner=runner,
+            context=context,
+            stream_id=stream_id,
+            run_kind="static_dag",
+            create_run=True,
+            saved_dag_id=saved.id,
+        ):
+            yield _sse(payload)
+    finally:
+        await run_in_threadpool(lock.release)
+
+
 async def _persisted_run_events(
     event_source: AsyncIterator[RunStreamEvent],
     *,
@@ -3210,6 +3554,7 @@ async def _persisted_run_events(
     existing_run_id: str | None = None,
     resolve_review_id: str | None = None,
     decision_json: str | None = None,
+    saved_dag_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     store = state.get_store()
     sent_error = False
@@ -3233,6 +3578,7 @@ async def _persisted_run_events(
                         kind=run_kind,
                         status="running",
                         workspace_uri=context.workspace_uri,
+                        saved_dag_id=saved_dag_id,
                     )
                     run_created = True
                 if run_id is not None and run_created and not stream_created:
@@ -3250,6 +3596,14 @@ async def _persisted_run_events(
                     stream_created = True
             if event.type == "run.failed":
                 sent_error = True
+            if event.type == "dag.updated" and context.orchestration_session_id is not None:
+                data = payload.get("data")
+                if isinstance(data, dict) and isinstance(data.get("dag"), dict):
+                    await run_in_threadpool(
+                        store.update_orchestration_session,
+                        context.orchestration_session_id,
+                        draft_dag_json=json.dumps(data["dag"], ensure_ascii=False),
+                    )
             if run_id is not None and run_created:
                 persisted = await run_in_threadpool(
                     store.append_run_event,
@@ -3414,13 +3768,20 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
         raise HTTPException(status_code=400, detail="Persisted message streams do not accept client state.")
     if request.workspace_root is not None:
         raise HTTPException(status_code=400, detail="Persisted message streams do not accept workspace_root.")
+    return await _persisted_context_from_conversation(request.project_id, request.conversation_id)
+
+
+async def _persisted_context_from_conversation(
+    project_id: str | None,
+    conversation_id: str,
+) -> PersistedMessageContext:
     store = state.get_store()
     project = None
-    if request.project_id is not None:
-        project = await run_in_threadpool(store.get_project, request.project_id)
+    if project_id is not None:
+        project = await run_in_threadpool(store.get_project, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found.")
-    conversation = await run_in_threadpool(store.get_conversation, request.conversation_id)
+    conversation = await run_in_threadpool(store.get_conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     if project is None and conversation.project_id is not None:
@@ -3444,12 +3805,17 @@ async def _persisted_context_from_message(request: MessageRequest) -> PersistedM
                 status_code=409,
                 detail="Conversation is awaiting review; resume the pending review before sending a new message.",
             )
+    orchestration_session = await run_in_threadpool(
+        store.get_orchestration_session_by_conversation,
+        conversation.id,
+    )
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
         workspace_uri=workspace_uri,
         workspace_path=workspace_path,
         run_state=previous_run_state,
+        orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
     )
 
 

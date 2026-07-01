@@ -9,7 +9,20 @@ from pathlib import Path
 from dagent import RunState
 
 from api.storage.base import ConversationBusyError, StorageConflictError
-from api.storage.models import Conversation, Project, Review, Run, RunEvent, RunExecution, RunStatus, RunStream
+from api.storage.models import (
+    Conversation,
+    ConversationKind,
+    OrchestrationKind,
+    OrchestrationSession,
+    Project,
+    Review,
+    Run,
+    RunEvent,
+    RunExecution,
+    RunStatus,
+    RunStream,
+    SavedDag,
+)
 
 
 class _SQLiteConversationLock:
@@ -83,6 +96,8 @@ class SQLiteStore:
         with self._lock:
             self._conn.executescript(schema)
             self._ensure_column("conversations", "owner_user_id", "TEXT NOT NULL DEFAULT 'default'")
+            self._ensure_column("conversations", "kind", "TEXT NOT NULL DEFAULT 'chat'")
+            self._ensure_column("runs", "saved_dag_id", "TEXT")
             self._ensure_column("conversation_locks", "expires_at", "INTEGER NOT NULL DEFAULT 0")
             self._conn.execute("DELETE FROM conversation_locks WHERE expires_at <= ?", (_now(),))
             self._conn.commit()
@@ -188,6 +203,7 @@ class SQLiteStore:
         workspace_uri: str,
         org_id: str = "default",
         owner_user_id: str = "default",
+        kind: ConversationKind = "chat",
     ) -> Conversation:
         now = _now()
         with self._lock:
@@ -195,11 +211,12 @@ class SQLiteStore:
                 self._conn.execute(
                     """
                     INSERT INTO conversations(
-                        id, project_id, org_id, owner_user_id, title, status, workspace_uri, created_at, updated_at
+                        id, project_id, org_id, owner_user_id, kind,
+                        title, status, workspace_uri, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
                     """,
-                    (conversation_id, project_id, org_id, owner_user_id, title, workspace_uri, now, now),
+                    (conversation_id, project_id, org_id, owner_user_id, kind, title, workspace_uri, now, now),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -353,6 +370,7 @@ class SQLiteStore:
         workspace_uri: str,
         org_id: str = "default",
         execution: RunExecution = "local",
+        saved_dag_id: str | None = None,
     ) -> Run:
         now = _now()
         with self._lock:
@@ -360,9 +378,9 @@ class SQLiteStore:
                 """
                 INSERT INTO runs(
                     id, project_id, conversation_id, org_id, user_id, kind, status,
-                    execution, workspace_uri, created_at, updated_at
+                    execution, workspace_uri, saved_dag_id, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -374,6 +392,7 @@ class SQLiteStore:
                     status,
                     execution,
                     workspace_uri,
+                    saved_dag_id,
                     now,
                     now,
                 ),
@@ -670,6 +689,220 @@ class SQLiteStore:
             )
             self._conn.commit()
 
+    def create_saved_dag(
+        self,
+        *,
+        dag_id: str,
+        project_id: str | None,
+        name: str,
+        description: str,
+        spec_json: str,
+        layout_json: str = "{}",
+        org_id: str = "default",
+        owner_user_id: str = "default",
+    ) -> SavedDag:
+        now = _now()
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO saved_dags(
+                        id, project_id, org_id, owner_user_id, name, description,
+                        spec_json, layout_json, revision, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        dag_id,
+                        project_id,
+                        org_id,
+                        owner_user_id,
+                        name,
+                        description,
+                        spec_json,
+                        layout_json,
+                        now,
+                        now,
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise StorageConflictError(str(exc)) from exc
+            row = self._required_row("SELECT * FROM saved_dags WHERE id = ?", (dag_id,))
+        return _saved_dag_from_row(row)
+
+    def get_saved_dag(self, dag_id: str, *, org_id: str | None = None) -> SavedDag | None:
+        query = "SELECT * FROM saved_dags WHERE id = ? AND archived_at IS NULL"
+        params: tuple[object, ...] = (dag_id,)
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params = (dag_id, org_id)
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        return None if row is None else _saved_dag_from_row(row)
+
+    def list_saved_dags(
+        self,
+        project_id: str | None = None,
+        *,
+        standalone: bool = False,
+        org_id: str | None = None,
+    ) -> list[SavedDag]:
+        conditions = ["archived_at IS NULL"]
+        params: list[object] = []
+        if standalone:
+            conditions.append("project_id IS NULL")
+        if project_id is not None:
+            conditions.append("project_id = ?")
+            params.append(project_id)
+        if org_id is not None:
+            conditions.append("org_id = ?")
+            params.append(org_id)
+        query = "SELECT * FROM saved_dags WHERE " + " AND ".join(conditions)
+        query += " ORDER BY updated_at DESC"
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_saved_dag_from_row(row) for row in rows]
+
+    def update_saved_dag(
+        self,
+        dag_id: str,
+        *,
+        name: str,
+        description: str,
+        spec_json: str,
+        layout_json: str,
+        expected_revision: int | None = None,
+        org_id: str = "default",
+    ) -> SavedDag:
+        now = _now()
+        query = """
+            UPDATE saved_dags
+            SET name = ?,
+                description = ?,
+                spec_json = ?,
+                layout_json = ?,
+                revision = revision + 1,
+                updated_at = ?
+            WHERE id = ? AND org_id = ? AND archived_at IS NULL
+        """
+        params: list[object] = [name, description, spec_json, layout_json, now, dag_id, org_id]
+        if expected_revision is not None:
+            query += " AND revision = ?"
+            params.append(expected_revision)
+        with self._lock:
+            cursor = self._conn.execute(query, tuple(params))
+            if cursor.rowcount == 0:
+                existing = self._conn.execute(
+                    "SELECT 1 FROM saved_dags WHERE id = ? AND org_id = ? AND archived_at IS NULL",
+                    (dag_id, org_id),
+                ).fetchone()
+                self._conn.rollback()
+                if existing is None:
+                    raise KeyError(f"Saved DAG '{dag_id}' not found.")
+                raise StorageConflictError(f"Saved DAG '{dag_id}' revision conflict.")
+            self._conn.commit()
+            row = self._required_row("SELECT * FROM saved_dags WHERE id = ?", (dag_id,))
+        return _saved_dag_from_row(row)
+
+    def archive_saved_dag(self, dag_id: str, *, org_id: str | None = None) -> bool:
+        now = _now()
+        query = "UPDATE saved_dags SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL"
+        params: tuple[object, ...] = (now, now, dag_id)
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params = (now, now, dag_id, org_id)
+        with self._lock:
+            cursor = self._conn.execute(query, params)
+            self._conn.commit()
+        return cursor.rowcount > 0
+
+    def create_orchestration_session(
+        self,
+        *,
+        session_id: str,
+        conversation_id: str,
+        project_id: str | None,
+        kind: OrchestrationKind,
+        saved_dag_id: str | None = None,
+        draft_dag_json: str | None = None,
+        ui_state_json: str = "{}",
+    ) -> OrchestrationSession:
+        now = _now()
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO orchestration_sessions(
+                        id, conversation_id, project_id, kind, saved_dag_id,
+                        draft_dag_json, ui_state_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        conversation_id,
+                        project_id,
+                        kind,
+                        saved_dag_id,
+                        draft_dag_json,
+                        ui_state_json,
+                        now,
+                        now,
+                    ),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise StorageConflictError(str(exc)) from exc
+            row = self._required_row("SELECT * FROM orchestration_sessions WHERE id = ?", (session_id,))
+        return _orchestration_session_from_row(row)
+
+    def get_orchestration_session(self, session_id: str) -> OrchestrationSession | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM orchestration_sessions WHERE id = ?", (session_id,)).fetchone()
+        return None if row is None else _orchestration_session_from_row(row)
+
+    def get_orchestration_session_by_conversation(self, conversation_id: str) -> OrchestrationSession | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM orchestration_sessions WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return None if row is None else _orchestration_session_from_row(row)
+
+    def update_orchestration_session(
+        self,
+        session_id: str,
+        *,
+        saved_dag_id: str | None = None,
+        draft_dag_json: str | None = None,
+        ui_state_json: str | None = None,
+    ) -> OrchestrationSession:
+        now = _now()
+        assignments = ["updated_at = ?"]
+        params: list[object] = [now]
+        if saved_dag_id is not None:
+            assignments.append("saved_dag_id = ?")
+            params.append(saved_dag_id)
+        if draft_dag_json is not None:
+            assignments.append("draft_dag_json = ?")
+            params.append(draft_dag_json)
+        if ui_state_json is not None:
+            assignments.append("ui_state_json = ?")
+            params.append(ui_state_json)
+        params.append(session_id)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE orchestration_sessions SET {', '.join(assignments)} WHERE id = ?",
+                tuple(params),
+            )
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise KeyError(f"Orchestration session '{session_id}' not found.")
+            self._conn.commit()
+            row = self._required_row("SELECT * FROM orchestration_sessions WHERE id = ?", (session_id,))
+        return _orchestration_session_from_row(row)
+
     def _required_row(self, query: str, params: tuple[object, ...]) -> sqlite3.Row:
         row = self._conn.execute(query, params).fetchone()
         if row is None:
@@ -703,6 +936,7 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         project_id=row["project_id"],
         org_id=row["org_id"],
         owner_user_id=row["owner_user_id"],
+        kind=row["kind"],
         title=row["title"],
         status=row["status"],
         workspace_uri=row["workspace_uri"],
@@ -724,6 +958,7 @@ def _run_from_row(row: sqlite3.Row) -> Run:
         status=row["status"],
         execution=row["execution"],
         workspace_uri=row["workspace_uri"],
+        saved_dag_id=row["saved_dag_id"],
         state_json=row["state_json"],
         output_text=row["output_text"],
         error_json=row["error_json"],
@@ -775,4 +1010,35 @@ def _review_from_row(row: sqlite3.Row) -> Review:
         decision_json=row["decision_json"],
         created_at=row["created_at"],
         resolved_at=row["resolved_at"],
+    )
+
+
+def _saved_dag_from_row(row: sqlite3.Row) -> SavedDag:
+    return SavedDag(
+        id=row["id"],
+        project_id=row["project_id"],
+        org_id=row["org_id"],
+        owner_user_id=row["owner_user_id"],
+        name=row["name"],
+        description=row["description"],
+        spec_json=row["spec_json"],
+        layout_json=row["layout_json"],
+        revision=row["revision"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        archived_at=row["archived_at"],
+    )
+
+
+def _orchestration_session_from_row(row: sqlite3.Row) -> OrchestrationSession:
+    return OrchestrationSession(
+        id=row["id"],
+        conversation_id=row["conversation_id"],
+        project_id=row["project_id"],
+        kind=row["kind"],
+        saved_dag_id=row["saved_dag_id"],
+        draft_dag_json=row["draft_dag_json"],
+        ui_state_json=row["ui_state_json"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

@@ -919,8 +919,12 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.ok(runDialogSource, 'RunDagDialog function should exist');
   assert.ok(directorySource, 'CapabilityDirectory function should exist');
 
-  assert.match(appSource, /const defaultWorkspaceRoot = 'runs';/);
-  assert.match(appSource, /selectedProjectId \? '\.dagent\/projects' : '\.dagent\/runs'/);
+  assert.doesNotMatch(appSource, /const defaultWorkspaceRoot = 'runs';/);
+  assert.match(appSource, /ensureOrchestrationContext\(/);
+  assert.match(appSource, /runSavedDagStream\(saved\.id/);
+  assert.match(apiSource, /export async function runSavedDagStream/);
+  assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
+  assert.match(appSource, /selectedSidebarConversation\.project_id \? '\.dagent\/projects' : '\.dagent\/projects\/_conversations'/);
   assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
   assert.match(appSource, /<OrchestrationWorkspace[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
@@ -1077,7 +1081,8 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /当前可编辑 DAG 快照/);
   assert.match(appSource, /JSON\.stringify\(dynamicDagForPrompt\(dag\), null, 2\)/);
   assert.match(appSource, /const dynamicRequestMessages = buildDynamicDagMessages\(dynamicMessages, prompt, dynamicDag\);/);
-  assert.match(appSource, /streamMessagesTask\(dynamicRequestMessages, 'dag', dynamicReviewLevel\(\), dynamicHandlers\(\), undefined, dynamicAdjust\)/);
+  assert.match(appSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
+  assert.match(appSource, /streamMessagesTask\([\s\S]*dynamicRequestMessages,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(appSource, /function dynamicReviewLevel/);
   assert.doesNotMatch(dynamicSource, /<select[\s\S]*reviewLevels|onReviewLevelChange|reviewLevel: ReviewLevel/);
   assert.match(appSource, /className="dynamic-orchestration-chat"/);
@@ -1085,7 +1090,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(dynamicSource, /任务目标 \/ SOP/);
   assert.match(appSource, /生成 DAG/);
   assert.match(appSource, /运行/);
-  assert.match(appSource, /resumeDagReview\(reviewId, dag, dynamicReviewLevel\(\), true/);
+  assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(\),[\s\S]*dynamicRunState,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
   assert.doesNotMatch(appSource, /resumeDagReview\(reviewId, null, dynamicReviewLevel\(\), false/);
   assert.match(appSource, /const dynamicDagRef = useRef<Dag>\(emptyDag\);/);
   assert.match(appSource, /function preserveDynamicDagEdges\(nextDag: Dag\): Dag/);
@@ -1137,7 +1142,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.doesNotMatch(dynamicEventsSource, /dynamic-chat-run-status|dynamic-trace-count|traceCount|运行状态/);
   assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{selectedNormalized \? 'with-inspector' : ''\}`\}/);
   assert.doesNotMatch(appSource.match(/const onAddDynamicNode[\s\S]*?};/)?.[0] ?? '', /setDynamicSelectedId\(id\)/);
-  assert.match(appSource, /undefined, dynamicAdjust\)/);
+  assert.match(appSource, /undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(apiSource, /dynamicAdjust\?: boolean/);
   assert.match(apiSource, /body\.dynamic_adjust = dynamicAdjust/);
   assert.match(apiSource, /dynamic_adjust\?: boolean/);
@@ -1802,7 +1807,7 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(typesSource, /workspace_uri: string;/);
   assert.match(apiSource, /export async function listConversations\(\): Promise<ApiConversation\[\]>/);
   assert.match(apiSource, /export async function listProjectConversations\(projectId: string\): Promise<ApiConversation\[\]>/);
-  assert.match(apiSource, /export async function createConversation\(input: \{ title: string \}\): Promise<ApiConversation>/);
+  assert.match(apiSource, /export async function createConversation\(input: \{ title: string; kind\?: ApiConversation\['kind'\] \}\): Promise<ApiConversation>/);
   assert.match(apiSource, /export async function deleteConversation\(conversationId: string\): Promise<void>/);
   assert.match(apiSource, /export async function deleteProjectConversation\(projectId: string, conversationId: string\): Promise<void>/);
   assert.match(apiSource, /`\$\{API_BASE\}\/conversations`/);

@@ -36,6 +36,8 @@ import type {
   RunArtifactFile,
   RunArtifactPreview,
   RunArtifactsResponse,
+  OrchestrationSession,
+  SavedDag,
 } from './types';
 import { chatScopeRequestFields, type ChatCapabilityScopePayload } from './agentScope';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
@@ -193,7 +195,7 @@ export async function listProjectConversations(projectId: string): Promise<ApiCo
   return data.conversations ?? [];
 }
 
-export async function createConversation(input: { title: string }): Promise<ApiConversation> {
+export async function createConversation(input: { title: string; kind?: ApiConversation['kind'] }): Promise<ApiConversation> {
   const res = await fetch(`${API_BASE}/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -218,7 +220,10 @@ export async function deleteProjectConversation(projectId: string, conversationI
   if (!res.ok) throw new Error(await errorMessage(res));
 }
 
-export async function createProjectConversation(projectId: string, input: { title: string }): Promise<ApiConversation> {
+export async function createProjectConversation(
+  projectId: string,
+  input: { title: string; kind?: ApiConversation['kind'] },
+): Promise<ApiConversation> {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -279,21 +284,92 @@ export async function testCapability(
 }
 
 export async function listDags(): Promise<UserDag[]> {
-  const res = await fetch(`${API_BASE}/dags`);
+  const res = await fetch(`${API_BASE}/saved-dags`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dags ?? [];
+  return (data.saved_dags ?? []).map(savedDagToUserDag);
 }
 
-export async function saveDag(spec: UserDag): Promise<UserDag> {
-  const res = await fetch(`${API_BASE}/dags`, {
-    method: 'POST',
+export async function saveDag(
+  spec: UserDag,
+  options: { projectId?: string | null } = {},
+): Promise<UserDag> {
+  const existing = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(spec.id)}`);
+  if (!existing.ok && existing.status !== 404) throw new Error(await errorMessage(existing));
+  const endpoint = existing.ok
+    ? `${API_BASE}/saved-dags/${encodeURIComponent(spec.id)}`
+    : `${API_BASE}/saved-dags`;
+  const body: Record<string, unknown> = {
+    name: spec.name,
+    description: spec.description ?? '',
+    spec,
+    layout: {},
+  };
+  if (!existing.ok) body.project_id = options.projectId ?? null;
+  const res = await fetch(endpoint, {
+    method: existing.ok ? 'PATCH' : 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(spec),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
-  return data.dag;
+  return savedDagToUserDag(data.saved_dag);
+}
+
+export async function getOrchestrationSessionByConversation(
+  conversationId: string,
+): Promise<OrchestrationSession | null> {
+  const res = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversationId)}/orchestration-session`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.session;
+}
+
+export async function createOrchestrationSession(input: {
+  conversation_id: string;
+  project_id?: string | null;
+  kind: OrchestrationSession['kind'];
+  saved_dag_id?: string | null;
+  draft_dag?: Record<string, unknown> | null;
+  ui_state?: Record<string, unknown>;
+}): Promise<OrchestrationSession> {
+  const res = await fetch(`${API_BASE}/orchestration-sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.session;
+}
+
+export async function updateOrchestrationSession(
+  sessionId: string,
+  input: {
+    saved_dag_id?: string | null;
+    draft_dag?: Record<string, unknown> | null;
+    ui_state?: Record<string, unknown>;
+  },
+): Promise<OrchestrationSession> {
+  const res = await fetch(`${API_BASE}/orchestration-sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.session;
+}
+
+function savedDagToUserDag(saved: SavedDag): UserDag {
+  return {
+    ...saved.spec,
+    id: saved.id,
+    name: saved.name || saved.spec.name,
+    description: saved.description || saved.spec.description,
+    version: saved.revision,
+  };
 }
 
 export async function validateDag(spec: UserDag): Promise<DagValidationResult> {
@@ -321,7 +397,7 @@ export async function uploadDagArtifact(
     body.append('files', file, uploadFormFilename(file, options));
   }
   const res = await fetch(
-    `${API_BASE}/dags/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
+    `${API_BASE}/saved-dags/${encodeURIComponent(specId)}/artifacts/${encodeURIComponent(artifactId)}/upload`,
     {
       method: 'POST',
       body,
@@ -955,6 +1031,30 @@ export async function runDagStream(
     method: 'POST',
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body,
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await errorMessage(response));
+  }
+  await readStream(response, handlers);
+}
+
+export async function runSavedDagStream(
+  savedDagId: string,
+  handlers: StreamHandlers,
+  options: {
+    conversation: ConversationRequestContext;
+    input?: unknown;
+  },
+): Promise<void> {
+  const payload: Record<string, unknown> = {
+    conversation_id: options.conversation.conversationId,
+  };
+  if (options.conversation.projectId) payload.project_id = options.conversation.projectId;
+  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.graph_input = options.input;
+  const response = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(savedDagId)}/run/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
   if (!response.ok || !response.body) {
     throw new Error(await errorMessage(response));

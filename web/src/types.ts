@@ -20,6 +20,7 @@ export interface ApiConversation {
   project_id: string | null;
   org_id: string;
   owner_user_id: string;
+  kind: 'chat' | 'dynamic_dag' | 'static_dag';
   title: string;
   workspace_uri: string;
   status: string;
@@ -173,6 +174,33 @@ export interface UserDag {
   nodes: UserDagNode[];
   edges: DagEdge[];
   metadata?: Record<string, unknown>;
+}
+
+export interface SavedDag {
+  id: string;
+  project_id?: string | null;
+  org_id: string;
+  owner_user_id: string;
+  name: string;
+  description: string;
+  spec: UserDag;
+  layout: Record<string, unknown>;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  archived_at?: number | null;
+}
+
+export interface OrchestrationSession {
+  id: string;
+  conversation_id: string;
+  project_id?: string | null;
+  kind: 'dynamic_dag' | 'static_dag';
+  saved_dag_id?: string | null;
+  draft_dag?: Record<string, unknown> | null;
+  ui_state: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface UserDagNode {

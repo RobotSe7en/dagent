@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 RunStatus = Literal["queued", "running", "awaiting_review", "completed", "failed"]
 RunExecution = Literal["local", "sandbox", "worker"]
 ReviewStatus = Literal["pending", "resolved"]
+ConversationKind = Literal["chat", "dynamic_dag", "static_dag"]
+OrchestrationKind = Literal["dynamic_dag", "static_dag"]
 
 
 class Project(BaseModel):
@@ -29,6 +31,7 @@ class Conversation(BaseModel):
     project_id: str | None = None
     org_id: str = "default"
     owner_user_id: str = "default"
+    kind: ConversationKind = "chat"
     title: str
     status: str = "active"
     workspace_uri: str
@@ -48,6 +51,7 @@ class Run(BaseModel):
     status: RunStatus
     execution: RunExecution = "local"
     workspace_uri: str
+    saved_dag_id: str | None = None
     state_json: str | None = None
     output_text: str = ""
     error_json: str | None = None
@@ -93,3 +97,30 @@ class Review(BaseModel):
     decision_json: str | None = None
     created_at: int
     resolved_at: int | None = None
+
+
+class SavedDag(BaseModel):
+    id: str
+    project_id: str | None = None
+    org_id: str = "default"
+    owner_user_id: str = "default"
+    name: str
+    description: str = ""
+    spec_json: str
+    layout_json: str = "{}"
+    revision: int = 1
+    created_at: int
+    updated_at: int
+    archived_at: int | None = None
+
+
+class OrchestrationSession(BaseModel):
+    id: str
+    conversation_id: str
+    project_id: str | None = None
+    kind: OrchestrationKind
+    saved_dag_id: str | None = None
+    draft_dag_json: str | None = None
+    ui_state_json: str = "{}"
+    created_at: int
+    updated_at: int

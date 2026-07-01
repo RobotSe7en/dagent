@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL DEFAULT 'default',
     owner_user_id TEXT NOT NULL DEFAULT 'default',
+    kind TEXT NOT NULL DEFAULT 'chat',
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     workspace_uri TEXT NOT NULL,
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     execution TEXT NOT NULL DEFAULT 'local',
     workspace_uri TEXT NOT NULL,
+    saved_dag_id TEXT REFERENCES saved_dags(id) ON DELETE SET NULL,
     state_json TEXT,
     output_text TEXT NOT NULL DEFAULT '',
     error_json TEXT,
@@ -68,6 +70,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_project_updated
 
 CREATE INDEX IF NOT EXISTS idx_runs_conversation_updated
     ON runs(conversation_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_runs_saved_dag_updated
+    ON runs(saved_dag_id, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_runs_queued
     ON runs(status, created_at)
@@ -116,6 +121,39 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 CREATE INDEX IF NOT EXISTS idx_reviews_pending
     ON reviews(project_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS saved_dags (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    owner_user_id TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    spec_json TEXT NOT NULL,
+    layout_json TEXT NOT NULL DEFAULT '{}',
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    archived_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_dags_project_updated
+    ON saved_dags(project_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS orchestration_sessions (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL UNIQUE REFERENCES conversations(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    saved_dag_id TEXT REFERENCES saved_dags(id) ON DELETE SET NULL,
+    draft_dag_json TEXT,
+    ui_state_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orchestration_sessions_project_updated
+    ON orchestration_sessions(project_id, updated_at DESC);
 
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (1, strftime('%s', 'now'));
