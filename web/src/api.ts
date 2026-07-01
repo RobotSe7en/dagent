@@ -204,6 +204,13 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   if (!res.ok) throw new Error(await errorMessage(res));
 }
 
+export async function deleteProjectConversation(projectId: string, conversationId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
 export async function createProjectConversation(projectId: string, input: { title: string }): Promise<ApiConversation> {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`, {
     method: 'POST',

@@ -71,6 +71,7 @@ import {
   deleteMcpServer,
   deleteModelProvider,
   deleteProject,
+  deleteProjectConversation,
   deleteProjectFile,
   deletePythonTool,
   deleteSkill,
@@ -3148,7 +3149,11 @@ export function App() {
     const remaining = conversations.filter((item) => item.id !== conversation.id);
     const deletingSelected = conversation.id === selectedConversationId;
     try {
-      await deleteConversation(conversationDeleteTarget.id);
+      if (conversation.project_id) {
+        await deleteProjectConversation(conversation.project_id, conversation.id);
+      } else {
+        await deleteConversation(conversation.id);
+      }
       setConversations(remaining);
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'

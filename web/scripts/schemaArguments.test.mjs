@@ -1801,6 +1801,7 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(apiSource, /export async function listConversations\(\): Promise<ApiConversation\[\]>/);
   assert.match(apiSource, /export async function createConversation\(input: \{ title: string \}\): Promise<ApiConversation>/);
   assert.match(apiSource, /export async function deleteConversation\(conversationId: string\): Promise<void>/);
+  assert.match(apiSource, /export async function deleteProjectConversation\(projectId: string, conversationId: string\): Promise<void>/);
   assert.match(apiSource, /`\$\{API_BASE\}\/conversations`/);
   assert.match(apiSource, /`\$\{API_BASE\}\/conversations\/\$\{encodeURIComponent\(conversationId\)\}`/);
   assert.match(apiSource, /method:\s*'DELETE'/);
@@ -1810,9 +1811,11 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /listConversations\(\)/);
   assert.match(appSource, /createConversation\(\{[\s\S]*title: `会话 \$\{standaloneConversationCount \+ 1\}`/);
   assert.match(appSource, /deleteConversation,/);
+  assert.match(appSource, /deleteProjectConversation,/);
   assert.match(appSource, /const deleteConversationFromSidebar = async \(conversationId: string\)/);
   assert.match(appSource, /const confirmConversationDelete = async \(\)/);
-  assert.match(appSource, /await deleteConversation\(conversationDeleteTarget\.id\)/);
+  assert.match(appSource, /await deleteProjectConversation\(conversation\.project_id, conversation\.id\)/);
+  assert.match(appSource, /await deleteConversation\(conversation\.id\)/);
   assert.match(appSource, /const selectChatSub = \(sub: ChatWorkspaceSub\) => \{[\s\S]*setChatSub\(sub\);[\s\S]*sub === 'projects'[\s\S]*setSelectedConversationId\(''\)/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
   assert.match(sidebarSource, /chatSub: ChatWorkspaceSub;/);
@@ -1865,6 +1868,38 @@ test('persisted conversation selection hydrates the last run snapshot', async ()
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace\)\);/);
   assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result\);/);
   assert.match(appSource, /if \(!selectedConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedConversation\);/);
+});
+
+test('project conversation deletion uses the project-scoped route', async () => {
+  const { deleteProjectConversation } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      body: null,
+      json: async () => ({}),
+      text: async () => '',
+    };
+  };
+
+  try {
+    await deleteProjectConversation('proj_1', 'conv_1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/projects/proj_1/conversations/conv_1');
+  assert.equal(calls[0].init.method, 'DELETE');
+  const deleteSource = appSource.match(/const confirmConversationDelete = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(deleteSource, /conversation\.project_id[\s\S]*deleteProjectConversation\(conversation\.project_id, conversation\.id\)[\s\S]*deleteConversation\(conversation\.id\)/);
 });
 
 test('project management uses custom dialogs and standalone conversation list', async () => {
