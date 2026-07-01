@@ -5,11 +5,72 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.2`.
+The current package version is `0.6.3`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.6.3
+
+### Added
+
+- The local API now persists projects, standalone conversations, project
+  conversations, run state snapshots, run event history, and review records in
+  the API storage layer without changing the public SDK.
+- The WebUI now separates standalone conversations from projects. Projects can
+  be expanded to show their conversations, and each project exposes a detail
+  workspace with file management, directory browsing, upload, rename, delete,
+  download, preview, and document-preview configuration support.
+- Persisted chat streams can resume from stored `RunState` snapshots, including
+  pending reviews, artifact manifests, traces, and project conversation state
+  after an API process restart.
+- Standalone conversations now use a durable workspace under
+  `.dagent/projects/_conversations/<conversation_id>/workspace`; project
+  conversations share the project workspace under
+  `.dagent/projects/<project_id>/workspace`.
+
+### Changed
+
+- Persisted conversations are single-writer per conversation. The API uses
+  conversation locks with leases so another stream cannot drive the same
+  conversation concurrently.
+- Deleting a standalone conversation removes its database rows and its
+  conversation root directory. Deleting a project conversation removes the
+  conversation and run records while preserving the shared project workspace.
+- Project deletion removes the project database records and the local project
+  root directory after checking that no project conversation is active.
+- The system settings label for OnlyOffice has been renamed to document preview
+  configuration in the WebUI.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- No SDK migration action is required.
+- Existing local one-off runs and static/dynamic orchestration runs remain in
+  their previous run workspaces. New persisted chat conversations use the
+  `.dagent/projects/...` workspace layout.
+- If you tested an unreleased 0.6.3 development branch before this release, you
+  can remove any stale empty directories under `.dagent/projects/_conversations`
+  that were created before standalone conversation root cleanup was added.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### Known Limitations
+
+- Static DAG runs and the dynamic orchestration workspace still use the existing
+  run workspace model unless a workspace root is explicitly provided. They have
+  not yet been folded into project/conversation persistence.
+- The local storage backend is SQLite plus local filesystem workspaces. Cloud
+  or multi-worker deployments still need the planned Postgres, object-storage,
+  and worker execution backends.
 
 ## 0.6.2
 

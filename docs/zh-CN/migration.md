@@ -4,11 +4,59 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.2`。
+当前包版本是 `0.6.3`。
 
 ## Unreleased
 
 当前没有未发布变更。
+
+## 0.6.3
+
+### 新增
+
+- 本地 API 现在会在 API 存储层持久化项目、无项目会话、项目会话、运行状态快照、运行事件历史和
+  review 记录；公共 SDK 不接触持久化，也不需要改动。
+- WebUI 现在将无项目会话和项目分层展示。项目可以展开查看项目会话，并提供项目详情工作区，
+  支持文件管理、目录浏览、上传、重命名、删除、下载、预览，以及文档预览配置。
+- 持久化 chat stream 可以从存储的 `RunState` 快照恢复，包括 pending review、artifact
+  manifest、trace，以及 API 进程重启后的项目会话状态。
+- 无项目会话现在使用 `.dagent/projects/_conversations/<conversation_id>/workspace`
+  下的持久 workspace；项目会话共享 `.dagent/projects/<project_id>/workspace` 下的项目
+  workspace。
+
+### 改变
+
+- 持久化会话按 conversation 做单写者保护。API 使用带租约的会话锁，避免同一个会话被多个
+  stream 并发驱动。
+- 删除无项目会话会同时删除数据库记录和该会话根目录。删除项目会话会删除会话和运行记录，
+  但保留共享的项目 workspace。
+- 删除项目会在确认项目会话没有活跃 stream 后，同时删除项目数据库记录和本地项目根目录。
+- WebUI 系统设置里的 OnlyOffice 配置已重命名为文档预览配置。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- SDK 用户不需要迁移动作。
+- 已存在的本地一次性 runs、静态编排 runs、动态编排 runs 仍保留原有 run workspace 语义。
+  新的持久化 chat conversations 会使用 `.dagent/projects/...` workspace 布局。
+- 如果你测试过 0.6.3 的未发布开发分支，可以手动删除
+  `.dagent/projects/_conversations` 下由早期版本残留的空目录。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### 已知限制
+
+- 静态 DAG runs 和动态编排工作区仍使用现有 run workspace 模型，除非显式传入 workspace root；
+  它们尚未并入项目/会话持久化。
+- 当前本地存储后端是 SQLite 加本地文件系统 workspace。云端或多 worker 部署仍需要后续计划中的
+  Postgres、对象存储和 worker execution 后端。
 
 ## 0.6.2
 
