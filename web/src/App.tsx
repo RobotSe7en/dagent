@@ -227,6 +227,7 @@ import {
   appendRunTranscriptTraceEvent,
   appendRunTranscriptToken,
   buildRunDialogSummary,
+  runTranscriptFromTraceEvents,
   type RunDialogSummary,
   type RunTranscriptItem,
 } from './orchestrationRun';
@@ -529,6 +530,42 @@ function normalizeUserDagNode(node: UserDagNode): UserDagNode {
     boundary: node.boundary ?? null,
     agent: normalizeUserDagAgentConfig(node.agent),
   };
+}
+
+function normalizeComparableUserDag(spec: UserDag): UserDag {
+  return {
+    ...spec,
+    version: spec.version ?? 1,
+    description: spec.description ?? '',
+    input_schema: spec.input_schema ?? {},
+    artifacts: spec.artifacts ?? {},
+    nodes: (spec.nodes ?? []).map(normalizeUserDagNode),
+    edges: spec.edges ?? [],
+    metadata: spec.metadata ?? {},
+  };
+}
+
+function stableJsonValue(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).sort().reduce<Record<string, unknown>>((result, key) => {
+      const item = record[key];
+      if (item !== undefined) result[key] = sortJsonValue(item);
+      return result;
+    }, {});
+  }
+  return value;
+}
+
+function savedDagMatchesEditorSpec(saved: SavedDag, spec: UserDag): boolean {
+  return saved.name === spec.name
+    && saved.description === (spec.description ?? '')
+    && stableJsonValue(normalizeComparableUserDag(saved.spec)) === stableJsonValue(normalizeComparableUserDag(spec));
 }
 
 function normalizeUserDagAgentConfig(agent?: UserDagAgentConfig | null): UserDagAgentConfig | undefined {
@@ -1425,9 +1462,10 @@ export function App() {
   }, [refreshProjectFiles]);
 
   useEffect(() => {
-    projectFilesRequestRef.current += 1;
     projectFilePreviewRequestRef.current += 1;
     setProjectFilePath('');
+    setProjectFiles([]);
+    setProjectFilesError(null);
     setSelectedProjectFilePath('');
     setProjectFilePreview(null);
     setProjectFilePreviewLoading(false);
@@ -1568,8 +1606,8 @@ export function App() {
       return {
         savedDagId: saved.id,
         projectId: saved.project_id ?? null,
-        name: saved.name,
-        description: saved.description,
+        name: spec.name || saved.name,
+        description: spec.description ?? saved.description,
         revision: editorSavedDagRevision ?? saved.revision,
         spec,
         layout: savedLayoutWithNodePositions(editorSavedDagLayout, layoutPositions),
@@ -1577,13 +1615,14 @@ export function App() {
       };
     }
     const draft = editorDagDrafts[saved.id];
+    const draftSpec = draft?.spec ?? saved.spec;
     return {
       savedDagId: saved.id,
       projectId: saved.project_id ?? null,
-      name: saved.name,
-      description: saved.description,
+      name: draftSpec.name || saved.name,
+      description: draftSpec.description ?? saved.description,
       revision: draft?.revision ?? saved.revision,
-      spec: draft?.spec ?? saved.spec,
+      spec: draftSpec,
       layout: draft?.layout ?? saved.layout,
       layoutPositions: draft?.layoutPositions ?? persistedLayoutPositions,
     };
@@ -2460,7 +2499,11 @@ export function App() {
         if (orchestrationHydrationRequestRef.current !== requestId) return;
         const result = finishedRunResultFromEvents(events);
         const nextState = result?.state ?? null;
-        if (nextState?.trace) setEditorTrace(mapRunTrace(nextState.trace));
+        if (nextState?.trace) {
+          const traceEvents = mapRunTrace(nextState.trace);
+          setEditorTrace(traceEvents);
+          setEditorRunTimeline(runTranscriptFromTraceEvents(traceEvents));
+        }
         if (nextState?.dag && nextState.trace && nextState.run_id) {
           setEditorRun({
             run_id: nextState.run_id,
@@ -2814,6 +2857,8 @@ export function App() {
       const localDag = runtimeDagFromUserDag(spec);
       const localLayoutPositions = pruneNodePositions(editorLayoutPositionsRef.current, localDag);
       const saved = await saveSavedDag({
+        name: spec.name,
+        description: spec.description ?? '',
         savedDagId: editorSavedDagId,
         projectId: editorSavedDagId ? undefined : selectedProjectId || null,
         expectedRevision: editorSavedDagRevision,
@@ -2856,6 +2901,14 @@ export function App() {
 
   const persistEditorUserDag = async (): Promise<SavedDag | null> => {
     const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+    return await saveEditorDraftSpec(spec);
+  };
+
+  const ensureEditorDagSavedForRun = async (spec: UserDag): Promise<SavedDag | null> => {
+    const saved = editorSavedDagId
+      ? savedDags.find((item) => item.id === editorSavedDagId) ?? null
+      : null;
+    if (saved && savedDagMatchesEditorSpec(saved, spec)) return saved;
     return await saveEditorDraftSpec(spec);
   };
 
@@ -3022,7 +3075,7 @@ export function App() {
       setEditorMessage(parsedInput.message);
       return;
     }
-    const saved = await persistEditorUserDag();
+    const saved = await ensureEditorDagSavedForRun(spec);
     if (!saved) return;
     const validation = validateUserDagDraft(spec);
     if (validation) return;

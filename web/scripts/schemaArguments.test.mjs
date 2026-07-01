@@ -98,6 +98,7 @@ const {
   appendRunTranscriptTraceEvent,
   appendRunTranscriptToken,
   buildRunDialogSummary,
+  runTranscriptFromTraceEvents,
 } = await importTypeScript('../src/orchestrationRun.ts');
 const {
   appendCapabilityReviewDecisionTimeline,
@@ -1049,13 +1050,23 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /const \[editorDagDrafts, setEditorDagDraftsState\] = useState<Record<string, StaticDagEditorDraft>>\(\{\}\);/);
   assert.match(appSource, /const editorDagDraftsRef = useRef<Record<string, StaticDagEditorDraft>>\(\{\}\);/);
   assert.match(appSource, /const visibleSavedDags = useMemo\(\(\) => savedDags\.map/);
+  assert.match(appSource, /name: spec\.name \|\| saved\.name/);
+  assert.match(appSource, /const draftSpec = draft\?\.spec \?\? saved\.spec/);
+  assert.match(appSource, /name: draftSpec\.name \|\| saved\.name/);
   assert.match(appSource, /savedDags=\{visibleSavedDags\}/);
   assert.match(appSource, /const loadEditorUserDag = \(saved: SavedDagView\) => \{/);
   assert.match(appSource, /rememberCurrentEditorDraft\(\);[\s\S]*const draft = editorDagDraftsRef\.current\[saved\.savedDagId\];[\s\S]*savedDagId: saved\.savedDagId/);
   assert.match(appSource, /layoutPositionsFromSavedLayout\(saved\.layout\)/);
+  assert.match(appSource, /saveSavedDag\(\{[\s\S]*name: spec\.name,[\s\S]*description: spec\.description \?\? '',[\s\S]*savedDagId: editorSavedDagId/);
   assert.match(appSource, /saveSavedDag\(\{[\s\S]*savedDagId: editorSavedDagId,[\s\S]*expectedRevision: editorSavedDagRevision,[\s\S]*layout: savedLayoutWithNodePositions/);
   assert.match(appSource, /const hydrateOrchestrationConversation = useCallback\(async \(conversation: ApiConversation\) => \{/);
   assert.match(appSource, /getOrchestrationSessionByConversation\(conversation\.id\)/);
+  assert.match(appSource, /runTranscriptFromTraceEvents\(traceEvents\)/);
+  assert.match(appSource, /const ensureEditorDagSavedForRun = async \(spec: UserDag\): Promise<SavedDag \| null> => \{/);
+  assert.match(appSource, /savedDagMatchesEditorSpec\(saved, spec\)/);
+  const runEditorSpecSource = appSource.match(/const runEditorSpec = async \(\) => \{[\s\S]*?\n  function dynamicReviewLevel/)?.[0] ?? '';
+  assert.match(runEditorSpecSource, /ensureEditorDagSavedForRun\(spec\)/);
+  assert.doesNotMatch(runEditorSpecSource, /persistEditorUserDag\(\)/);
   assert.match(appSource, /targetProjectId\?: string \| null/);
   assert.match(appSource, /selectedConversation\?\.project_id === targetProjectId/);
   assert.match(appSource, /refreshConversations\(\)/);
@@ -2166,6 +2177,10 @@ test('project detail workspace manages files with tree and preview', async () =>
   assert.match(appSource, /function projectFilePreviewArtifactItem/);
   assert.match(appSource, /const projectFilesRequestRef = useRef\(0\);/);
   assert.match(appSource, /const projectFilePreviewRequestRef = useRef\(0\);/);
+  const projectSelectionResetSource = appSource.match(/useEffect\(\(\) => \{\n    (?:projectFilesRequestRef\.current \+= 1;\n    )?projectFilePreviewRequestRef\.current \+= 1;[\s\S]*?\n  \}, \[selectedProjectId\]\);/)?.[0] ?? '';
+  assert.doesNotMatch(projectSelectionResetSource, /projectFilesRequestRef\.current \+= 1;/);
+  assert.match(projectSelectionResetSource, /setProjectFiles\(\[\]\);/);
+  assert.match(projectSelectionResetSource, /setProjectFilesError\(null\);/);
   assert.match(appSource, /const requestId = projectFilesRequestRef\.current \+ 1;[\s\S]*projectFilesRequestRef\.current = requestId;[\s\S]*if \(projectFilesRequestRef\.current !== requestId\) return;/);
   assert.match(appSource, /const requestId = projectFilePreviewRequestRef\.current \+ 1;[\s\S]*projectFilePreviewRequestRef\.current = requestId;[\s\S]*if \(projectFilePreviewRequestRef\.current !== requestId\) return;/);
   assert.match(appSource, /<ProjectDetailWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
@@ -3231,6 +3246,66 @@ test('appendRunTranscriptTraceEvent records static tool results from trace snaps
     type: 'trace',
     event: traceEvent,
   });
+});
+
+test('appendRunTranscriptTraceEvent records static DAG node lifecycle events', () => {
+  const traceEvent = {
+    id: 'trace_node:completed',
+    event_id: 'trace_node',
+    type: 'node',
+    label: 'summarize',
+    detail: 'completed',
+    status: 'completed',
+    timestamp: '10:00:00',
+    node_id: 'summarize',
+    payload: {
+      node_id: 'summarize',
+      input: { topic: 'pricing' },
+      output: 'done',
+    },
+  };
+
+  const next = appendRunTranscriptTraceEvent([], traceEvent);
+
+  assert.deepEqual(next, [
+    {
+      type: 'trace',
+      event: traceEvent,
+    },
+  ]);
+});
+
+test('runTranscriptFromTraceEvents rebuilds static run timelines from persisted trace events', () => {
+  const traceEvents = [
+    {
+      id: 'node_a:completed',
+      event_id: 'node_a',
+      type: 'node',
+      label: 'collect',
+      detail: 'collected',
+      status: 'completed',
+      timestamp: '10:00:00',
+      node_id: 'collect',
+      payload: { output: 'collected' },
+    },
+    {
+      id: 'node_b:completed',
+      event_id: 'node_b',
+      type: 'node',
+      label: 'summarize',
+      detail: 'summarized',
+      status: 'completed',
+      timestamp: '10:00:01',
+      node_id: 'summarize',
+      payload: { output: 'summarized' },
+    },
+  ];
+
+  const timeline = runTranscriptFromTraceEvents(traceEvents);
+
+  assert.equal(timeline.length, 2);
+  assert.deepEqual(timeline.map((item) => item.type), ['trace', 'trace']);
+  assert.deepEqual(timeline.map((item) => item.event.node_id), ['collect', 'summarize']);
 });
 
 test('responseDeltaPayload preserves native response identity fields', () => {
