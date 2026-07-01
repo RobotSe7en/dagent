@@ -281,6 +281,19 @@ test('composer summarizes large pending upload batches instead of listing every 
   assert.match(css, /\.pending-upload-list\s*\{[^}]*max-height:\s*180px;[^}]*overflow-y:\s*auto;/s);
 });
 
+test('collapsed artifact rail still reserves safe space for user avatars', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction ProjectDetailWorkspace/)?.[0] ?? '';
+
+  assert.ok(chatWorkspaceSource, 'ChatWorkspace function should exist');
+  assert.match(chatWorkspaceSource, /<ArtifactPanel[\s\S]*open=\{artifactPanelOpen\}/);
+  assert.match(chatWorkspaceSource, /className=\{`chat-workspace \$\{artifactPanelOpen \? 'with-artifacts' : 'without-artifacts'\}`\}/);
+  assert.match(css, /\.artifact-rail\s*\{[^}]*width:\s*48px;[^}]*border-left:\s*1px solid #e7e8ec;/s);
+  assert.match(css, /\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-user-avatar-safe-space:\s*43px;/s);
+  assert.match(css, /@media \(max-width: 760px\) \{[\s\S]*\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-user-avatar-safe-space:\s*0px;/s);
+});
+
 test('upload picker keeps one visible button while supporting files and folders', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');

@@ -1247,6 +1247,7 @@ button:focus-visible {
 
 .chat-workspace.without-artifacts {
   --chat-content-max-width: 1280px;
+  --chat-user-avatar-safe-space: 43px;
 }
 
 .chat-workspace.with-artifacts {
@@ -8236,7 +8237,8 @@ pre.readonly-field {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .chat-workspace.with-artifacts {
+  .chat-workspace.with-artifacts,
+  .chat-workspace.without-artifacts {
     --chat-user-avatar-safe-space: 0px;
   }
 
