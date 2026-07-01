@@ -26,6 +26,8 @@
   agent 级 skill 可见性。
 - [结果、流式输出和 Review](results-streaming-review.md)：`RunResult`、
   `RunState`、streaming events、review checkpoints、resume 和持久化。
+- [API 后端持久化](api-backend-persistence.md)：项目、会话、run state 存储、
+  review resume 和企业化存储路径。
 
 ## 运维和升级
 

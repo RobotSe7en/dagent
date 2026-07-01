@@ -58,13 +58,21 @@ import {
 } from 'lucide-react';
 import {
   createAgent,
+  createConversation,
   createMcpServer,
   createModelProvider,
+  createProject,
+  createProjectFolder,
+  createProjectConversation,
   createPythonTool,
   deleteAgent,
   deleteCapability,
+  deleteConversation,
   deleteMcpServer,
   deleteModelProvider,
+  deleteProject,
+  deleteProjectConversation,
+  deleteProjectFile,
   deletePythonTool,
   deleteSkill,
   getSkill,
@@ -74,17 +82,25 @@ import {
   installSkill,
   listAgents,
   listCapabilities,
+  listConversations,
   listDags,
   listMcpServers,
   listModels,
+  listProjectConversations,
+  listProjectFiles,
+  listProjects,
   listPythonTools,
   listProfiles,
   listRunArtifacts,
+  listRunEvents,
   listSkills,
+  mapRunTrace,
   previewRunArtifact,
+  previewProjectFile,
+  projectFileDownloadUrl,
+  renameProjectFile,
   reloadMcpServers,
   reloadPythonTools,
-  resetSession,
   resumeCapabilityReview,
   resumeDagReview,
   runDagStream,
@@ -99,7 +115,9 @@ import {
   updateMcpServer,
   updateModelProvider,
   updateOnlyOfficeSettings,
+  updateProject,
   updatePythonTool,
+  uploadProjectFiles,
   updateAgent,
   validatePythonTool,
   activateModelProvider,
@@ -109,11 +127,13 @@ import {
   deleteProfile,
   discoverPythonToolNames,
 } from './api';
-import type { ApiRunState, ChatStreamMessage } from './api';
+import type { ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentPreset,
   AgentPresetInput,
   AgentProfile,
+  ApiConversation,
+  ApiProject,
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
@@ -130,6 +150,8 @@ import type {
   ReviewEventPayload,
   ValidationFeedbackEvent,
   ReviewLevel,
+  ProjectFileItem,
+  ProjectFilePreview,
   RunArtifactFile,
   RunArtifactPreview,
   RiskLevel,
@@ -229,6 +251,7 @@ import {
   type WorkbenchArtifactTreeNode,
   type WorkbenchArtifactItem,
 } from './workbenchArtifacts';
+import { createUiId } from './uiIds';
 import {
   bindingLabel,
   buildVariableCatalog,
@@ -331,6 +354,16 @@ function normalizeSearchQuery(query: string): string {
 function matchesSearchQuery(values: SearchableValue[], query: string): boolean {
   if (!query) return true;
   return values.some((value) => String(value ?? '').toLowerCase().includes(query));
+}
+
+function joinProjectPath(base: string, name: string): string {
+  return [base, name].map((part) => part.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/');
+}
+
+function parentProjectPath(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  parts.pop();
+  return parts.join('/');
 }
 
 function SidebarSearchField({
@@ -675,6 +708,10 @@ type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
 type ToolDirectoryTab = 'tools' | 'skills' | 'mcp';
+type ChatWorkspaceSub = 'conversations' | 'projects';
+type ProjectDraft = { name: string; slug: string; description: string };
+type ProjectFileDialogKind = 'folder' | 'rename' | 'delete';
+type TextFilePreview = RunArtifactPreview | ProjectFilePreview;
 type AgentManagementSub = 'profiles' | 'presets';
 type SystemManagementSub = 'models' | 'onlyoffice';
 type TokenChannel = 'reasoning' | 'content';
@@ -874,6 +911,100 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
 }
 
+function finishedRunResultFromEvents(events: ApiRunEvent[]): ApiRunResult | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type !== 'run.finished' && event.payload.type !== 'run.finished') continue;
+    const data = recordValue(event.payload.data);
+    const result = data ? recordValue(data.result) : null;
+    if (!result) continue;
+    return {
+      output_text: typeof result.output_text === 'string' ? result.output_text : '',
+      state: recordValue(result.state) ? result.state as ApiRunState : null,
+    };
+  }
+  return null;
+}
+
+function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === 'string') return item;
+      const record = recordValue(item);
+      if (!record) return '';
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+function messagesFromPersistedRunResult(result: ApiRunResult, traceSnapshot: TraceLogEvent[]): ChatMessage[] {
+  const state = result.state ?? null;
+  const dagSnapshot = state?.dag ?? undefined;
+  const reviewMessage = state?.pending_review?.message?.trim() ?? '';
+  const output = result.output_text.trim();
+  const fallbackContent = output || reviewMessage;
+  const messages: ChatMessage[] = (state?.internal_messages ?? []).flatMap((message): ChatMessage[] => {
+    const role = message.role;
+    if (role !== 'user' && role !== 'assistant') return [];
+    const content = visibleChatContentFromInternalMessage(message).trim();
+    if (!content) return [];
+    const timeline: MessageTimelineItem[] = [{ type: 'text', content }];
+    return [{
+      role: role as ChatMessage['role'],
+      kind: 'text' as const,
+      content,
+      timeline,
+    }];
+  });
+  if (
+    fallbackContent
+    && !messages.some((message) => message.role === 'assistant' && message.content.trim() === fallbackContent)
+  ) {
+    const timeline: MessageTimelineItem[] = [{ type: 'text', content: fallbackContent }];
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content: fallbackContent,
+      timeline,
+    });
+  }
+  let assistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'assistant') {
+      assistantIndex = index;
+      break;
+    }
+  }
+  if (assistantIndex !== -1) {
+    const message = messages[assistantIndex];
+    const timeline: MessageTimelineItem[] = dagSnapshot
+      ? [{ type: 'dag', dag: dagSnapshot }, ...(message.timeline ?? [])]
+      : message.timeline ?? [];
+    messages[assistantIndex] = {
+      ...message,
+      timeline,
+      dagSnapshot,
+      traceSnapshot,
+    };
+  } else if (dagSnapshot) {
+    const timeline: MessageTimelineItem[] = [{ type: 'dag', dag: dagSnapshot }];
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content: fallbackContent,
+      timeline,
+      dagSnapshot,
+      traceSnapshot,
+    });
+  }
+  return messages;
+}
+
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
   if (!item.runId || !item.path) return '';
   return `${item.runId}:${item.path}:${item.size ?? 'unknown'}`;
@@ -894,6 +1025,27 @@ export function App() {
   const [chatAgentScope, setChatAgentScope] = useState<AgentScopeMode>('none');
   const [selectedChatAgentIds, setSelectedChatAgentIds] = useState<string[]>([]);
   const [capabilityScopeOpen, setCapabilityScopeOpen] = useState(false);
+  const [projects, setProjects] = useState<ApiProject[]>([]);
+  const [chatSub, setChatSub] = useState<ChatWorkspaceSub>('conversations');
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [conversations, setConversations] = useState<ApiConversation[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState('');
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
+  const [projectEditOpen, setProjectEditOpen] = useState(false);
+  const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
+  const [projectDraft, setProjectDraft] = useState({ name: '', slug: '', description: '' });
+  const [conversationDeleteTargetId, setConversationDeleteTargetId] = useState('');
+  const [projectFilePath, setProjectFilePath] = useState('');
+  const [projectFiles, setProjectFiles] = useState<ProjectFileItem[]>([]);
+  const [projectFilesLoading, setProjectFilesLoading] = useState(false);
+  const [projectFilesError, setProjectFilesError] = useState<string | null>(null);
+  const [selectedProjectFilePath, setSelectedProjectFilePath] = useState('');
+  const [projectFilePreview, setProjectFilePreview] = useState<ProjectFilePreview | null>(null);
+  const [projectFilePreviewLoading, setProjectFilePreviewLoading] = useState(false);
+  const [projectFilePreviewError, setProjectFilePreviewError] = useState<string | null>(null);
+  const [projectFileDialog, setProjectFileDialog] = useState<{ kind: ProjectFileDialogKind; file?: ProjectFileItem } | null>(null);
+  const [projectFileDraft, setProjectFileDraft] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [trace, setTrace] = useState<TraceLogEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -923,6 +1075,9 @@ export function App() {
   const contentStreamedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
   const runArtifactRequestRef = useRef(0);
+  const conversationHydrationRequestRef = useRef(0);
+  const projectFilesRequestRef = useRef(0);
+  const projectFilePreviewRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
   const [consoleError, setConsoleError] = useState<string | null>(null);
   const [savedDags, setSavedDags] = useState<UserDag[]>([]);
@@ -1053,7 +1208,29 @@ export function App() {
       ? artifactPreviewError.message
       : null
   );
-  const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId],
+  );
+  const selectedConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
+    [conversations, selectedConversationId],
+  );
+  const conversationDeleteTarget = useMemo(
+    () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
+    [conversations, conversationDeleteTargetId],
+  );
+  const selectedProjectFile = useMemo(
+    () => projectFiles.find((file) => file.path === selectedProjectFilePath) ?? null,
+    [projectFiles, selectedProjectFilePath],
+  );
+  const selectedConversationProject = useMemo(
+    () => projects.find((project) => project.id === selectedConversation?.project_id) ?? null,
+    [projects, selectedConversation?.project_id],
+  );
+  const activeConversationContext = selectedConversation
+    ? { projectId: selectedConversation.project_id, conversationId: selectedConversation.id }
+    : undefined;
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -1090,6 +1267,91 @@ export function App() {
   useEffect(() => {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
+
+  const loadPersistedConversations = useCallback(async (projectItems: ApiProject[]) => {
+    const [standaloneConversations, projectConversationGroups] = await Promise.all([
+      listConversations(),
+      Promise.all(projectItems.map((project) => listProjectConversations(project.id))),
+    ]);
+    return [
+      ...standaloneConversations,
+      ...projectConversationGroups.flat(),
+    ];
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const items = await listProjects();
+      if (cancelled) return;
+      setProjects(items);
+      setSelectedProjectId((current) => (
+        current && items.some((project) => project.id === current)
+          ? current
+          : items[0]?.id ?? ''
+      ));
+      const conversationItems = await loadPersistedConversations(items);
+      if (cancelled) return;
+      setConversations(conversationItems);
+      setSelectedConversationId((current) => (
+        current && conversationItems.some((conversation) => conversation.id === current)
+          ? current
+          : conversationItems.find((conversation) => !conversation.project_id)?.id ?? ''
+      ));
+      setProjectError(null);
+    })()
+      .catch((exc) => {
+        if (cancelled) return;
+        setProjects([]);
+        setConversations([]);
+        setSelectedProjectId('');
+        setSelectedConversationId('');
+        setProjectError(exc instanceof Error ? exc.message : String(exc));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPersistedConversations]);
+
+  const refreshProjectFiles = useCallback(async () => {
+    const requestId = projectFilesRequestRef.current + 1;
+    projectFilesRequestRef.current = requestId;
+    if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects' || selectedConversation) {
+      setProjectFiles([]);
+      setProjectFilesLoading(false);
+      return;
+    }
+    const projectId = selectedProject.id;
+    const path = projectFilePath;
+    setProjectFilesLoading(true);
+    setProjectFilesError(null);
+    try {
+      const payload = await listProjectFiles(projectId, path);
+      if (projectFilesRequestRef.current !== requestId) return;
+      setProjectFiles(payload.files);
+      setProjectFilePath(payload.path);
+    } catch (exc) {
+      if (projectFilesRequestRef.current !== requestId) return;
+      setProjectFiles([]);
+      setProjectFilesError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (projectFilesRequestRef.current === requestId) setProjectFilesLoading(false);
+    }
+  }, [activeWorkspace, chatSub, projectFilePath, selectedConversation, selectedProject]);
+
+  useEffect(() => {
+    void refreshProjectFiles();
+  }, [refreshProjectFiles]);
+
+  useEffect(() => {
+    projectFilesRequestRef.current += 1;
+    projectFilePreviewRequestRef.current += 1;
+    setProjectFilePath('');
+    setSelectedProjectFilePath('');
+    setProjectFilePreview(null);
+    setProjectFilePreviewLoading(false);
+    setProjectFilePreviewError(null);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     setRunArtifactFiles([]);
@@ -1817,7 +2079,7 @@ export function App() {
   const shouldOpenDagReview = (nextDag: Dag, pendingReview?: unknown) =>
     Boolean(pendingReview) || nextDag.status === 'review_required';
 
-  const handlePendingReview = (pendingReview?: ReviewEventPayload | null) => {
+  const handlePendingReview = useCallback((pendingReview?: ReviewEventPayload | null) => {
     if (!pendingReview) return;
     if (pendingReview.kind === 'capability_review') {
       setCapabilityReviewFeedback('');
@@ -1826,11 +2088,65 @@ export function App() {
     }
     setDagReviewFeedback('');
     setDagReview(pendingReview);
-  };
+  }, []);
+
+  const applyPersistedRunResult = useCallback((result: ApiRunResult) => {
+    const nextState = result.state ?? null;
+    const nextDag = nextState?.dag ?? null;
+    const nextReview = nextState?.pending_review ?? null;
+    const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
+    setRunState(nextState);
+    setTrace(nextTrace);
+    setMessages(messagesFromPersistedRunResult(result, nextTrace));
+    setError(null);
+    setDagReview(null);
+    setDagReviewFeedback('');
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    if (nextDag) {
+      syncDag(nextDag);
+      setReviewOpen(shouldOpenDagReview(nextDag, nextReview));
+    } else {
+      syncDag(emptyDag);
+      setReviewOpen(false);
+    }
+    handlePendingReview(nextReview);
+    contentStreamedRef.current = Boolean(result.output_text.trim());
+    tokenQueueRef.current = [];
+    stopTokenTimer();
+  }, [handlePendingReview, syncDag]);
+
+  const hydrateConversationSnapshot = useCallback(async (conversation: ApiConversation) => {
+    if (!conversation.last_run_id) return;
+    const requestId = conversationHydrationRequestRef.current + 1;
+    conversationHydrationRequestRef.current = requestId;
+    try {
+      const events = await listRunEvents(conversation.last_run_id);
+      if (conversationHydrationRequestRef.current !== requestId) return;
+      const result = finishedRunResultFromEvents(events);
+      if (!result) return;
+      applyPersistedRunResult(result);
+    } catch (exc) {
+      if (conversationHydrationRequestRef.current !== requestId) return;
+      setError(exc instanceof Error ? exc.message : String(exc));
+    }
+  }, [applyPersistedRunResult]);
+
+  useEffect(() => {
+    if (!selectedConversation?.last_run_id || streaming || messages.length || runState) return;
+    void hydrateConversationSnapshot(selectedConversation);
+  }, [
+    hydrateConversationSnapshot,
+    messages.length,
+    runState,
+    selectedConversation,
+    selectedConversation?.last_run_id,
+    streaming,
+  ]);
 
   const appendTrace = (event: Omit<TraceLogEvent, 'id' | 'timestamp'>): TraceLogEvent => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const nextEvent = { ...event, id: crypto.randomUUID(), timestamp };
+    const nextEvent = { ...event, id: createUiId('trace'), timestamp };
     setTrace((items) => [...items, nextEvent]);
     return nextEvent;
   };
@@ -2471,9 +2787,39 @@ export function App() {
     }
   };
 
+  const ensureChatConversation = async (prompt: string): Promise<ApiConversation | null> => {
+    if (selectedConversation) return selectedConversation;
+    try {
+      const conversation = chatSub === 'projects'
+        ? selectedProjectId
+          ? await createProjectConversation(selectedProjectId, {
+            title: conversationTitleFromPrompt(prompt),
+          })
+          : null
+        : await createConversation({
+          title: conversationTitleFromPrompt(prompt),
+        });
+      if (!conversation) {
+        setProjectError('请先新建或选择项目。');
+        return null;
+      }
+      setConversations((items) => [conversation, ...items]);
+      setSelectedConversationId(conversation.id);
+      if (conversation.project_id) setSelectedProjectId(conversation.project_id);
+      setProjectError(null);
+      return conversation;
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+      return null;
+    }
+  };
+
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
+    const conversation = await ensureChatConversation(prompt);
+    if (!conversation) return;
+    const conversationContext = { projectId: conversation.project_id, conversationId: conversation.id };
     const uploadsForRequest = pendingChatUploads;
     setDraft('');
     setError(null);
@@ -2502,6 +2848,7 @@ export function App() {
     });
     const signal = beginStreamRequest();
     try {
+      const streamOptions = { signal, uploads: uploadsForRequest, conversation: conversationContext };
       await streamTask(prompt, target, reviewLevel, {
         onStarted: () => {
           if (uploadsForRequest.length) {
@@ -2534,6 +2881,13 @@ export function App() {
           const resultDag = result.state?.dag ?? null;
           const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
+          if (result.state?.run_id) {
+            setConversations((items) => items.map((conversation) => (
+              conversation.id === conversationContext.conversationId
+                ? { ...conversation, last_run_id: result.state?.run_id ?? conversation.last_run_id }
+                : conversation
+            )));
+          }
           flushQueuedTokensNow();
           closeAssistantReasoning();
           if (resultDag) {
@@ -2555,7 +2909,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, runState, undefined, { signal, uploads: uploadsForRequest });
+      }, capabilityScope, null, undefined, streamOptions);
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -2649,7 +3003,12 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'resume_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback, { signal });
+      }, activeConversationContext ? null : runState, feedback, {
+        signal,
+        ...(activeConversationContext ? {
+          conversation: activeConversationContext,
+        } : {}),
+      });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
         restoreDagReviewAfterAbort(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages);
@@ -2724,7 +3083,12 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'capability_review_failed', detail: message, status: 'failed' });
         },
-      }, runState, feedback, { signal });
+      }, activeConversationContext ? null : runState, feedback, {
+        signal,
+        ...(activeConversationContext ? {
+          conversation: activeConversationContext,
+        } : {}),
+      });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
         restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
@@ -2740,21 +3104,67 @@ export function App() {
     }
   };
 
+  const createProjectConversationFromProject = async (projectId: string) => {
+    if (streaming) return null;
+    const projectConversationCount = conversations.filter((conversation) => conversation.project_id === projectId).length;
+    try {
+      const conversation = await createProjectConversation(projectId, {
+        title: `会话 ${projectConversationCount + 1}`,
+      });
+      setConversations((items) => [conversation, ...items]);
+      setSelectedProjectId(projectId);
+      setSelectedConversationId(conversation.id);
+      setChatSub('projects');
+      setProjectError(null);
+      clearChatSurface();
+      return conversation;
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+      return null;
+    }
+  };
+
   const newChat = async () => {
     if (streaming) return;
-    try {
-      await resetSession();
-      const enabled = await getValidationStatus();
-      setValidationEnabled(enabled);
-      setValidationError(null);
+    if (chatSub === 'projects') {
+      if (!selectedProjectId) {
+        setProjectError('请先新建或选择项目。');
+        return;
+      }
+      await createProjectConversationFromProject(selectedProjectId);
+    } else {
+      const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
+      try {
+        const conversation = await createConversation({
+          title: `会话 ${standaloneConversationCount + 1}`,
+        });
+        setConversations((items) => [conversation, ...items]);
+        setSelectedConversationId(conversation.id);
+        setProjectError(null);
+      } catch (exc) {
+        setProjectError(exc instanceof Error ? exc.message : String(exc));
+        return;
+      }
       setDagReview(null);
       setDagReviewFeedback('');
       setCapabilityReview(null);
       setCapabilityReviewFeedback('');
       setRunState(null);
-    } catch (exc) {
-      setValidationError(exc instanceof Error ? exc.message : String(exc));
+      setMessages([]);
+      setDraft('');
+      setPendingChatUploads([]);
+      syncDag(emptyDag);
+      setTrace([]);
+      setError(null);
+      setReviewOpen(false);
+      tokenQueueRef.current = [];
+      contentStreamedRef.current = false;
+      stopTokenTimer();
     }
+  };
+
+  const clearChatSurface = () => {
+    conversationHydrationRequestRef.current += 1;
     setMessages([]);
     setDraft('');
     setPendingChatUploads([]);
@@ -2762,9 +3172,257 @@ export function App() {
     setTrace([]);
     setError(null);
     setReviewOpen(false);
+    setDagReview(null);
+    setDagReviewFeedback('');
+    setCapabilityReview(null);
+    setCapabilityReviewFeedback('');
+    setRunState(null);
+    setRunArtifactFiles([]);
+    setSelectedArtifactId('');
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
     stopTokenTimer();
+  };
+
+  const selectChatSub = (sub: ChatWorkspaceSub) => {
+    if (streaming) return;
+    if (
+      sub === chatSub
+      && (
+        (sub === 'projects' && !selectedConversationId)
+        || (sub === 'conversations' && (!selectedConversation || !selectedConversation.project_id))
+      )
+    ) {
+      return;
+    }
+    setChatSub(sub);
+    if (sub === 'projects') {
+      if (!selectedProjectId && projects[0]) setSelectedProjectId(projects[0].id);
+      setSelectedConversationId('');
+      clearChatSurface();
+      return;
+    }
+    const nextStandalone = selectedConversation && !selectedConversation.project_id
+      ? selectedConversation
+      : conversations.find((conversation) => !conversation.project_id) ?? null;
+    setSelectedConversationId(nextStandalone?.id ?? '');
+    clearChatSurface();
+  };
+
+  const selectProject = (projectId: string) => {
+    if (streaming) return;
+    if (projectId === selectedProjectId && !selectedConversationId) return;
+    setSelectedProjectId(projectId);
+    setSelectedConversationId('');
+    setChatSub('projects');
+    clearChatSurface();
+  };
+
+  const selectConversation = (conversationId: string) => {
+    if (streaming || conversationId === selectedConversationId) return;
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (conversation?.project_id) setSelectedProjectId(conversation.project_id);
+    setSelectedConversationId(conversationId);
+    clearChatSurface();
+  };
+
+  const deleteConversationFromSidebar = async (conversationId: string) => {
+    if (streaming) return;
+    setConversationDeleteTargetId(conversationId);
+  };
+
+  const confirmConversationDelete = async () => {
+    if (streaming || !conversationDeleteTarget) return;
+    const conversation = conversationDeleteTarget;
+    const remaining = conversations.filter((item) => item.id !== conversation.id);
+    const deletingSelected = conversation.id === selectedConversationId;
+    try {
+      if (conversation.project_id) {
+        await deleteProjectConversation(conversation.project_id, conversation.id);
+      } else {
+        await deleteConversation(conversation.id);
+      }
+      setConversations(remaining);
+      if (deletingSelected) {
+        const nextConversation = chatSub === 'projects'
+          ? remaining.find((item) => item.project_id === conversation.project_id) ?? null
+          : remaining.find((item) => !item.project_id) ?? null;
+        setSelectedConversationId(nextConversation?.id ?? '');
+        if (nextConversation?.project_id) setSelectedProjectId(nextConversation.project_id);
+        clearChatSurface();
+      }
+      setProjectError(null);
+      setConversationDeleteTargetId('');
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const createProjectFromSidebar = async () => {
+    if (streaming) return;
+    setProjectDraft({ name: '', slug: '', description: '' });
+    setProjectCreateOpen(true);
+  };
+
+  const submitProjectCreation = async () => {
+    const cleanName = projectDraft.name.trim();
+    if (!cleanName || streaming) return;
+    try {
+      const project = await createProject({
+        name: cleanName,
+        ...(projectDraft.slug.trim() ? { slug: projectDraft.slug.trim() } : {}),
+        ...(projectDraft.description.trim() ? { description: projectDraft.description.trim() } : {}),
+      });
+      setProjects((items) => [project, ...items]);
+      setSelectedProjectId(project.id);
+      setSelectedConversationId('');
+      setChatSub('projects');
+      setProjectCreateOpen(false);
+      setProjectError(null);
+      clearChatSurface();
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const openProjectEditDialog = () => {
+    if (!selectedProject) return;
+    setProjectDraft({
+      name: selectedProject.name,
+      slug: selectedProject.slug,
+      description: selectedProject.description ?? '',
+    });
+    setProjectEditOpen(true);
+  };
+
+  const submitProjectEdit = async () => {
+    if (!selectedProject || streaming) return;
+    const cleanName = projectDraft.name.trim();
+    if (!cleanName) return;
+    try {
+      const project = await updateProject(selectedProject.id, {
+        name: cleanName,
+        slug: projectDraft.slug.trim() || selectedProject.slug,
+        description: projectDraft.description.trim() || null,
+      });
+      setProjects((items) => items.map((item) => (item.id === project.id ? project : item)));
+      setProjectEditOpen(false);
+      setProjectError(null);
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const confirmProjectDelete = async () => {
+    if (!selectedProject || streaming) return;
+    const projectId = selectedProject.id;
+    try {
+      await deleteProject(projectId);
+      setProjects((items) => items.filter((item) => item.id !== projectId));
+      setConversations((items) => items.filter((conversation) => conversation.project_id !== projectId));
+      setSelectedProjectId('');
+      setSelectedConversationId('');
+      setProjectDeleteOpen(false);
+      setProjectFiles([]);
+      setProjectFilePreview(null);
+      setProjectError(null);
+      clearChatSurface();
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const openProjectFile = async (file: ProjectFileItem) => {
+    const requestId = projectFilePreviewRequestRef.current + 1;
+    projectFilePreviewRequestRef.current = requestId;
+    setSelectedProjectFilePath(file.path);
+    setProjectFilePreview(null);
+    setProjectFilePreviewError(null);
+    if (file.kind === 'directory') {
+      setProjectFilePath(file.path);
+      setProjectFilePreviewLoading(false);
+      return;
+    }
+    if (!selectedProject || !file.preview_url) {
+      setProjectFilePreviewLoading(false);
+      return;
+    }
+    const projectId = selectedProject.id;
+    setProjectFilePreviewLoading(true);
+    try {
+      const preview = await previewProjectFile(projectId, file.path);
+      if (projectFilePreviewRequestRef.current !== requestId) return;
+      setProjectFilePreview(preview);
+    } catch (exc) {
+      if (projectFilePreviewRequestRef.current !== requestId) return;
+      setProjectFilePreviewError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (projectFilePreviewRequestRef.current === requestId) setProjectFilePreviewLoading(false);
+    }
+  };
+
+  const navigateProjectFilesUp = () => {
+    projectFilePreviewRequestRef.current += 1;
+    setProjectFilePath((current) => parentProjectPath(current));
+    setSelectedProjectFilePath('');
+    setProjectFilePreview(null);
+    setProjectFilePreviewLoading(false);
+    setProjectFilePreviewError(null);
+  };
+
+  const uploadSelectedProjectFiles = async (files: FileList | null) => {
+    if (!selectedProject || !files?.length) return;
+    try {
+      await uploadProjectFiles(selectedProject.id, projectFilePath, Array.from(files));
+      await refreshProjectFiles();
+      setProjectError(null);
+    } catch (exc) {
+      setProjectFilesError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const openProjectFileDialog = (kind: ProjectFileDialogKind, file?: ProjectFileItem) => {
+    setProjectFileDialog({ kind, file });
+    if (kind === 'folder') {
+      setProjectFileDraft('');
+    } else {
+      setProjectFileDraft(file?.path ?? '');
+    }
+  };
+
+  const confirmProjectFileDialog = async () => {
+    if (!selectedProject || !projectFileDialog) return;
+    try {
+      if (projectFileDialog.kind === 'folder') {
+        const folderPath = joinProjectPath(projectFilePath, projectFileDraft);
+        if (!folderPath) return;
+        await createProjectFolder(selectedProject.id, folderPath);
+      } else if (projectFileDialog.kind === 'rename' && projectFileDialog.file) {
+        const nextPath = projectFileDraft.trim();
+        if (!nextPath) return;
+        await renameProjectFile(selectedProject.id, projectFileDialog.file.path, nextPath);
+        if (selectedProjectFilePath === projectFileDialog.file.path) {
+          projectFilePreviewRequestRef.current += 1;
+          setSelectedProjectFilePath(nextPath);
+          setProjectFilePreview(null);
+          setProjectFilePreviewLoading(false);
+        }
+      } else if (projectFileDialog.kind === 'delete' && projectFileDialog.file) {
+        await deleteProjectFile(selectedProject.id, projectFileDialog.file.path);
+        if (selectedProjectFilePath === projectFileDialog.file.path) {
+          projectFilePreviewRequestRef.current += 1;
+          setSelectedProjectFilePath('');
+          setProjectFilePreview(null);
+          setProjectFilePreviewLoading(false);
+          setProjectFilePreviewError(null);
+        }
+      }
+      setProjectFileDialog(null);
+      setProjectFileDraft('');
+      await refreshProjectFiles();
+    } catch (exc) {
+      setProjectFilesError(exc instanceof Error ? exc.message : String(exc));
+    }
   };
 
   return (
@@ -2775,24 +3433,29 @@ export function App() {
         agentPresetCount={agentPresets.length}
         agentPresets={agentPresets}
         artifacts={editorArtifacts}
+        chatSub={chatSub}
         collapsed={navCollapsed}
         capabilities={capabilities}
         capabilityCount={visibleToolManagementCapabilities(capabilities, '').length}
+        conversations={conversations}
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
-        history={chatHistory}
         systemSub={systemManagementSub}
         models={models}
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
+        projectError={projectError}
+        projects={projects}
         pythonTools={pythonTools}
         profiles={profiles}
         orchestrationMode={orchestrationMode}
         savedDags={visibleSavedDags}
         selectedDagId={editorUserDag.id}
         selectedAgentPresetId={selectedAgentPresetId}
+        selectedConversationId={selectedConversationId}
         selectedModelId={selectedModelId}
+        selectedProjectId={selectedProjectId}
         selectedProfileId={selectedProfileId}
         selectedToolCapabilityId={selectedToolCapabilityId}
         selectedToolMcpName={selectedToolMcpName}
@@ -2806,8 +3469,10 @@ export function App() {
         toolsQuery={toolsDirectoryQuery}
         onCreateArtifact={createEditorArtifact}
         onCreateAgentPreset={requestAgentPresetCreation}
+        onChatSubChange={selectChatSub}
         onCreateMcp={() => requestCapabilityCreation('mcp')}
         onCreateModel={requestModelCreation}
+        onCreateProject={() => void createProjectFromSidebar()}
         onCreateProfile={requestProfileCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
@@ -2815,7 +3480,9 @@ export function App() {
         onImportSkill={() => requestCapabilityCreation('skills')}
         onLoadDag={loadEditorUserDag}
         onNewChat={() => void newChat()}
+        onNewProjectConversation={(projectId) => void createProjectConversationFromProject(projectId)}
         onNewDag={newEditorUserDag}
+        onDeleteConversation={deleteConversationFromSidebar}
         onSelectProfile={setSelectedProfileId}
         onSelectAgentPreset={(id) => {
           setCreatingAgentPreset(false);
@@ -2825,6 +3492,8 @@ export function App() {
           setCreatingModel(false);
           setSelectedModelId(id);
         }}
+        onSelectConversation={selectConversation}
+        onSelectProject={selectProject}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
         onSelectToolMcp={selectToolMcpResource}
@@ -2842,7 +3511,8 @@ export function App() {
       <main className="workspace">
         {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
         {activeWorkspace === 'chat' ? (
-          <ChatWorkspace
+          selectedConversation || chatSub !== 'projects' ? (
+            <ChatWorkspace
             artifactListError={runArtifactError}
             artifactListLoading={runArtifactLoading}
             artifactPanelOpen={artifactDrawerOpen}
@@ -2858,6 +3528,8 @@ export function App() {
             messageListRef={messageListRef}
             messages={messages}
             pendingUploads={pendingChatUploads}
+            projectName={selectedConversationProject?.name ?? null}
+            conversationTitle={selectedConversation?.title ?? null}
             reviewLevel={reviewLevel}
             selectedArtifact={selectedArtifact}
             selectedArtifactId={selectedArtifactId}
@@ -2883,7 +3555,41 @@ export function App() {
             onToggleArtifacts={() => setArtifactPanelOpen((value) => !value)}
             onToggleValidation={() => void toggleValidation()}
             onUploadFiles={queueChatUploads}
-          />
+            />
+          ) : (
+            <ProjectDetailWorkspace
+              error={projectError}
+              fileDialog={projectFileDialog}
+              fileDraft={projectFileDraft}
+              project={selectedProject}
+              files={projectFiles}
+              filesError={projectFilesError}
+              filesLoading={projectFilesLoading}
+              path={projectFilePath}
+              preview={projectFilePreview}
+              previewError={projectFilePreviewError}
+              previewLoading={projectFilePreviewLoading}
+              selectedFile={selectedProjectFile}
+              onCreateFolder={() => openProjectFileDialog('folder')}
+              onDeleteFile={(file) => openProjectFileDialog('delete', file)}
+              onDeleteProject={() => setProjectDeleteOpen(true)}
+              onDialogCancel={() => setProjectFileDialog(null)}
+              onDialogConfirm={() => void confirmProjectFileDialog()}
+              onDownloadFile={(file) => {
+                if (selectedProject && file.download_url) window.open(projectFileDownloadUrl(selectedProject.id, file.path), '_blank', 'noopener');
+              }}
+              onEditProject={openProjectEditDialog}
+              onFileDraftChange={setProjectFileDraft}
+              onFileSelect={(file) => void openProjectFile(file)}
+              onNavigateUp={navigateProjectFilesUp}
+              onNewConversation={() => {
+                if (selectedProject) void createProjectConversationFromProject(selectedProject.id);
+              }}
+              onRefresh={() => void refreshProjectFiles()}
+              onRenameFile={(file) => openProjectFileDialog('rename', file)}
+              onUploadFiles={(files) => void uploadSelectedProjectFiles(files)}
+            />
+          )
         ) : activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
           <DynamicOrchestrationWorkspace
             capabilities={capabilities}
@@ -3011,6 +3717,44 @@ export function App() {
         )}
       </main>
 
+      {projectCreateOpen ? (
+        <ProjectCreateDialog
+          draft={projectDraft}
+          error={projectError}
+          onCancel={() => setProjectCreateOpen(false)}
+          onChange={setProjectDraft}
+          onSubmit={() => void submitProjectCreation()}
+        />
+      ) : null}
+
+      {projectEditOpen && selectedProject ? (
+        <ProjectEditDialog
+          draft={projectDraft}
+          error={projectError}
+          project={selectedProject}
+          onCancel={() => setProjectEditOpen(false)}
+          onChange={setProjectDraft}
+          onSubmit={() => void submitProjectEdit()}
+        />
+      ) : null}
+
+      {projectDeleteOpen && selectedProject ? (
+        <ProjectDeleteDialog
+          project={selectedProject}
+          onCancel={() => setProjectDeleteOpen(false)}
+          onConfirm={() => void confirmProjectDelete()}
+        />
+      ) : null}
+
+      {conversationDeleteTarget ? (
+        <ConversationDeleteDialog
+          conversation={conversationDeleteTarget}
+          project={projects.find((project) => project.id === conversationDeleteTarget.project_id) ?? null}
+          onCancel={() => setConversationDeleteTargetId('')}
+          onConfirm={() => void confirmConversationDelete()}
+        />
+      ) : null}
+
       {capabilityScopeOpen ? (
         <ChatCapabilityScopeDialog
           agentPresets={agentPresets}
@@ -3084,24 +3828,29 @@ function WorkspaceSidebar({
   agentPresetCount,
   agentPresets,
   artifacts,
+  chatSub,
   collapsed,
   capabilities,
   capabilityCount,
+  conversations,
   creatingAgentPreset,
   creatingModel,
-  history,
   systemSub,
   models,
   onlyOfficeEnabled,
   mcpCount,
   mcpServers,
+  projectError,
+  projects,
   orchestrationMode,
   pythonTools,
   profiles,
   savedDags,
   selectedDagId,
   selectedAgentPresetId,
+  selectedConversationId,
   selectedModelId,
+  selectedProjectId,
   selectedProfileId,
   selectedToolCapabilityId,
   selectedToolMcpName,
@@ -3115,8 +3864,10 @@ function WorkspaceSidebar({
   toolsQuery,
   onCreateArtifact,
   onCreateAgentPreset,
+  onChatSubChange,
   onCreateMcp,
   onCreateModel,
+  onCreateProject,
   onCreateProfile,
   onCreateTool,
   onDeleteArtifact,
@@ -3124,9 +3875,13 @@ function WorkspaceSidebar({
   onImportSkill,
   onLoadDag,
   onNewChat,
+  onNewProjectConversation,
   onNewDag,
+  onDeleteConversation,
   onSelectAgentPreset,
+  onSelectConversation,
   onSelectProfile,
+  onSelectProject,
   onSelectModel,
   onSelectSkillFile,
   onSelectToolCapability,
@@ -3147,24 +3902,29 @@ function WorkspaceSidebar({
   agentPresetCount: number;
   agentPresets: AgentPreset[];
   artifacts: Artifact[];
+  chatSub: ChatWorkspaceSub;
   collapsed: boolean;
   capabilities: CapabilityDefinition[];
   capabilityCount: number;
+  conversations: ApiConversation[];
   creatingAgentPreset: boolean;
   creatingModel: boolean;
-  history: Array<{ id: string; title: string; time: string }>;
   systemSub: SystemManagementSub;
   models: ModelProvider[];
   onlyOfficeEnabled: boolean;
   mcpCount: number;
   mcpServers: MCPServer[];
+  projectError: string | null;
+  projects: ApiProject[];
   orchestrationMode: OrchestrationMode;
   pythonTools: PythonToolEntry[];
   profiles: AgentProfile[];
   savedDags: UserDag[];
   selectedDagId: string;
   selectedAgentPresetId: string;
+  selectedConversationId: string;
   selectedModelId: string;
+  selectedProjectId: string;
   selectedProfileId: string;
   selectedToolCapabilityId: string;
   selectedToolMcpName: string;
@@ -3178,8 +3938,10 @@ function WorkspaceSidebar({
   toolsQuery: string;
   onCreateArtifact: () => void;
   onCreateAgentPreset: () => void;
+  onChatSubChange: (sub: ChatWorkspaceSub) => void;
   onCreateMcp: () => void;
   onCreateModel: () => void;
+  onCreateProject: () => void;
   onCreateProfile: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
@@ -3187,9 +3949,13 @@ function WorkspaceSidebar({
   onImportSkill: () => void;
   onLoadDag: (spec: UserDag) => void;
   onNewChat: () => void;
+  onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
+  onDeleteConversation: (id: string) => void;
   onSelectAgentPreset: (id: string) => void;
+  onSelectConversation: (id: string) => void;
   onSelectProfile: (id: string) => void;
+  onSelectProject: (id: string) => void;
   onSelectModel: (id: string) => void;
   onSelectSkillFile: (filePath: string | null) => void;
   onSelectToolCapability: (id: string) => void;
@@ -3205,9 +3971,14 @@ function WorkspaceSidebar({
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
+  const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
     { key: 'static' as const, label: '静态编排', icon: <GitBranch size={16} />, count: savedDags.length },
+  ];
+  const chatSubnav = [
+    { key: 'conversations' as const, label: '会话', icon: <MessageSquare size={16} />, count: standaloneConversationCount },
+    { key: 'projects' as const, label: '项目', icon: <Folder size={16} />, count: projects.length },
   ];
   const toolSubnav = [
     { key: 'tools' as const, label: '工具', icon: <Wrench size={16} />, count: capabilityCount },
@@ -3220,7 +3991,7 @@ function WorkspaceSidebar({
   ];
   const systemSubnav = [
     { key: 'models' as const, label: '模型管理', icon: <SlidersHorizontal size={16} />, count: models.length },
-    { key: 'onlyoffice' as const, label: 'OnlyOffice配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
+    { key: 'onlyoffice' as const, label: '文档预览配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
   ];
   const normalizedToolsQuery = normalizeSearchQuery(toolsQuery);
   const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
@@ -3241,6 +4012,7 @@ function WorkspaceSidebar({
   const [dagListQuery, setDagListQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [agentQuery, setAgentQuery] = useState('');
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
   const [expandedSkillNames, setExpandedSkillNames] = useState<Set<string>>(() => new Set());
   const [expandedSkillFolders, setExpandedSkillFolders] = useState<Set<string>>(() => new Set());
   const [collapsedResourceTreeKeys, setCollapsedResourceTreeKeys] = useState<Set<string>>(() => new Set());
@@ -3250,10 +4022,43 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleHistory = history.filter((item) => matchesSearchQuery(
-    [item.id, item.title, item.time],
+  const visibleConversations = conversations.filter((conversation) => !conversation.project_id && matchesSearchQuery(
+    [
+      conversation.id,
+      conversation.title,
+      conversation.status,
+    ],
     normalizedHistoryQuery,
   ));
+  const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
+  conversations.forEach((conversation) => {
+    if (!conversation.project_id) return;
+    const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
+    items.push(conversation);
+    projectConversationsByProjectId.set(conversation.project_id, items);
+  });
+  function projectConversationMatchesSearch(conversation: ApiConversation, query: string) {
+    return matchesSearchQuery(
+      [conversation.id, conversation.title, conversation.status],
+      query,
+    );
+  }
+  function projectMatchesSearch(project: ApiProject, query: string) {
+    return matchesSearchQuery(
+      [project.id, project.name, project.slug, project.description],
+      query,
+    );
+  }
+  const visibleProjects = projects.filter((project) => {
+    const projectConversations = projectConversationsByProjectId.get(project.id) ?? [];
+    return projectMatchesSearch(project, normalizedHistoryQuery) || projectConversations.some((conversation) =>
+      projectConversationMatchesSearch(conversation, normalizedHistoryQuery)
+    );
+  });
+  const selectedSidebarConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
+  const workspaceRootLabel = selectedSidebarConversation
+    ? (selectedSidebarConversation.project_id ? '.dagent/projects' : '.dagent/projects/_conversations')
+    : chatSub === 'projects' && selectedProjectId ? '.dagent/projects' : '.dagent/runs';
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
     [dag.id, dag.name, dag.description, dag.version, dag.nodes.length],
     normalizedDagListQuery,
@@ -3276,6 +4081,22 @@ function WorkspaceSidebar({
     // 切到其它工作区：展开它、收起其它。
     onSelectWorkspace(key);
     setExpandedMenu(key);
+  };
+  const toggleProjectExpansion = (projectId: string) => {
+    setExpandedProjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
+  const expandProject = (projectId: string) => {
+    setExpandedProjectIds((current) => {
+      if (current.has(projectId)) return current;
+      const next = new Set(current);
+      next.add(projectId);
+      return next;
+    });
   };
   // 通过非侧栏入口（如“新建工具/预设”）切换工作区时，展开目标的子菜单并收起其它。
   useEffect(() => {
@@ -3579,6 +4400,44 @@ function WorkspaceSidebar({
       <div className="sidebar-label">工作区</div>
       <nav className="sidebar-nav" aria-label="Workspace navigation">
         {workspaceItems.map((item) => {
+          if (item.key === 'chat') {
+            return (
+              <div className="sidebar-capability-nav" key={item.key}>
+                <button
+                  className={activeWorkspace === item.key ? 'active sidebar-capability-button' : 'sidebar-capability-button'}
+                  onClick={() => onCapabilityNavClick(item.key)}
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                  <span className="sidebar-capability-chevron" data-open={expandedMenu === item.key}>
+                    <ChevronRight size={14} />
+                  </span>
+                </button>
+                {expandedMenu === item.key ? (
+                  <div className="sidebar-subnav nested">
+                    {chatSubnav.map((subitem) => (
+                      <button
+                        className={chatSub === subitem.key ? 'active' : ''}
+                        key={subitem.key}
+                        onClick={() => {
+                          onSelectWorkspace('chat');
+                          onChatSubChange(subitem.key);
+                        }}
+                        title={subitem.label}
+                        type="button"
+                      >
+                        {subitem.icon}
+                        <span>{subitem.label}</span>
+                        <em>{subitem.count}</em>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          }
           if (item.key === 'orchestration') {
             return (
               <div className="sidebar-capability-nav" key={item.key}>
@@ -3746,11 +4605,11 @@ function WorkspaceSidebar({
         })}
       </nav>
 
-      {activeWorkspace === 'chat' ? (
+      {activeWorkspace === 'chat' && chatSub === 'conversations' ? (
         <section className="sidebar-history">
           <div className="sidebar-history-head">
-            <span>历史对话</span>
-            <button onClick={onNewChat} title="新建对话" type="button">
+            <span>会话</span>
+            <button onClick={onNewChat} title="新建会话" type="button">
               <Plus size={14} />
             </button>
           </div>
@@ -3758,17 +4617,138 @@ function WorkspaceSidebar({
             value={historyQuery}
             onChange={setHistoryQuery}
           />
+          {projectError ? <div className="sidebar-error-row">{projectError}</div> : null}
           <div className="sidebar-history-list">
-            {visibleHistory.length ? visibleHistory.map((item, index) => (
-              <button className={index === 0 ? 'active' : ''} key={item.id} type="button">
-                <span>
-                  <MessageSquare size={13} />
-                  <strong>{item.title}</strong>
-                </span>
-                <em>{item.time}</em>
-              </button>
+            {visibleConversations.length ? visibleConversations.map((conversation) => (
+              <div
+                className="sidebar-conversation-row"
+                key={conversation.id}
+              >
+                <button
+                  className={conversation.id === selectedConversationId ? 'active' : ''}
+                  onClick={() => onSelectConversation(conversation.id)}
+                  type="button"
+                >
+                  <span>
+                    <MessageSquare size={13} />
+                    <strong>{conversation.title}</strong>
+                  </span>
+                  <em>{conversation.status}</em>
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onDeleteConversation(conversation.id)}
+                  title="删除会话"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             )) : (
-              <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的对话' : '暂无历史对话'}</div>
+              <div className="sidebar-empty-row">
+                {normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话'}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'chat' && chatSub === 'projects' ? (
+        <section className="sidebar-history">
+          <div className="sidebar-history-head">
+            <span>项目</span>
+            <button onClick={onCreateProject} title="新建项目" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <SidebarSearchField
+            value={historyQuery}
+            onChange={setHistoryQuery}
+          />
+          {projectError ? <div className="sidebar-error-row">{projectError}</div> : null}
+          <div className="sidebar-history-list">
+            {visibleProjects.length ? visibleProjects.map((project) => {
+              const projectConversations = projectConversationsByProjectId.get(project.id) ?? [];
+              const displayedProjectConversations = normalizedHistoryQuery && !projectMatchesSearch(project, normalizedHistoryQuery)
+                ? projectConversations.filter((conversation) => projectConversationMatchesSearch(conversation, normalizedHistoryQuery))
+                : projectConversations;
+              const expanded = expandedProjectIds.has(project.id);
+              return (
+                <div
+                  className="sidebar-project-tree-row"
+                  key={project.id}
+                >
+                  <div className="sidebar-project-tree-main">
+                    <button
+                      className={project.id === selectedProjectId && !selectedConversationId ? 'active sidebar-project-select' : 'sidebar-project-select'}
+                      onClick={() => {
+                        onSelectProject(project.id);
+                        toggleProjectExpansion(project.id);
+                      }}
+                      title={project.workspace_uri}
+                      type="button"
+                    >
+                      <span>
+                        <Folder size={13} />
+                        <strong>{project.name}</strong>
+                      </span>
+                      <em>{projectConversations.length ? `${projectConversations.length} 会话` : project.slug}</em>
+                    </button>
+                    <button
+                      className="sidebar-project-create-conversation"
+                      onClick={() => {
+                        expandProject(project.id);
+                        onNewProjectConversation(project.id);
+                      }}
+                      title="新建会话"
+                      type="button"
+                    >
+                      <Plus size={13} />
+                    </button>
+                    <button
+                      aria-expanded={expanded}
+                      className="sidebar-project-toggle"
+                      data-open={expanded}
+                      onClick={() => toggleProjectExpansion(project.id)}
+                      title={expanded ? '收起会话' : '展开会话'}
+                      type="button"
+                    >
+                      <ChevronRight size={13} />
+                    </button>
+                  </div>
+                  {expanded ? (
+                    <div className="sidebar-project-conversation-tree">
+                      {displayedProjectConversations.length ? displayedProjectConversations.map((conversation) => (
+                        <div className="sidebar-project-conversation-row" key={conversation.id}>
+                          <button
+                            className={conversation.id === selectedConversationId ? 'active' : ''}
+                            onClick={() => onSelectConversation(conversation.id)}
+                            type="button"
+                          >
+                            <span>
+                              <MessageSquare size={12} />
+                              <strong>{conversation.title}</strong>
+                            </span>
+                            <em>{conversation.status}</em>
+                          </button>
+                          <button
+                            className="sidebar-conversation-delete"
+                            onClick={() => onDeleteConversation(conversation.id)}
+                            title="删除会话"
+                            type="button"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      )) : (
+                        <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话'}</div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }) : (
+              <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的项目' : '暂无项目'}</div>
             )}
           </div>
         </section>
@@ -4001,7 +4981,7 @@ function WorkspaceSidebar({
       <div className="sidebar-foot">
         <div className="workspace-root-chip">
           <span />
-          <code>.dagent/runs</code>
+          <code>{workspaceRootLabel}</code>
         </div>
         <div className="sidebar-user">
           <div>RX</div>
@@ -4055,6 +5035,8 @@ function ChatWorkspace({
   messageListRef,
   messages,
   pendingUploads,
+  projectName,
+  conversationTitle,
   reviewLevel,
   selectedArtifact,
   selectedArtifactId,
@@ -4092,6 +5074,8 @@ function ChatWorkspace({
   messageListRef: React.RefObject<HTMLDivElement | null>;
   messages: ChatMessage[];
   pendingUploads: File[];
+  projectName: string | null;
+  conversationTitle: string | null;
   reviewLevel: ReviewLevel;
   selectedArtifact: WorkbenchArtifactItem | null;
   selectedArtifactId: string;
@@ -4115,6 +5099,11 @@ function ChatWorkspace({
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const title = currentChatTitle(messages);
+  const sessionLabel = projectName && conversationTitle
+    ? `${projectName} / ${conversationTitle}`
+    : conversationTitle
+      ? conversationTitle
+      : 'local session';
   const [pendingUploadsExpanded, setPendingUploadsExpanded] = useState(false);
   const pendingUploadGroups = useMemo(() => buildPendingUploadGroups(pendingUploads), [pendingUploads]);
   const visiblePendingUploads = useMemo(
@@ -4134,7 +5123,7 @@ function ChatWorkspace({
             <div className="conversation-meta">
               <strong>{title}</strong>
               <span />
-              <code>session · {messages.length} turns</code>
+              <code>{sessionLabel} · {messages.length} turns</code>
             </div>
             {error ? <div className="error-banner">{error}</div> : null}
             {messages.length === 0 ? (
@@ -4276,6 +5265,602 @@ function ChatWorkspace({
         onToggle={onToggleArtifacts}
       />
     </section>
+  );
+}
+
+function ProjectDetailWorkspace({
+  error,
+  fileDialog,
+  fileDraft,
+  files,
+  filesError,
+  filesLoading,
+  path,
+  preview,
+  previewError,
+  previewLoading,
+  project,
+  selectedFile,
+  onCreateFolder,
+  onDeleteFile,
+  onDeleteProject,
+  onDialogCancel,
+  onDialogConfirm,
+  onDownloadFile,
+  onEditProject,
+  onFileDraftChange,
+  onFileSelect,
+  onNavigateUp,
+  onNewConversation,
+  onRefresh,
+  onRenameFile,
+  onUploadFiles,
+}: {
+  error: string | null;
+  fileDialog: { kind: ProjectFileDialogKind; file?: ProjectFileItem } | null;
+  fileDraft: string;
+  files: ProjectFileItem[];
+  filesError: string | null;
+  filesLoading: boolean;
+  path: string;
+  preview: ProjectFilePreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
+  project: ApiProject | null;
+  selectedFile: ProjectFileItem | null;
+  onCreateFolder: () => void;
+  onDeleteFile: (file: ProjectFileItem) => void;
+  onDeleteProject: () => void;
+  onDialogCancel: () => void;
+  onDialogConfirm: () => void;
+  onDownloadFile: (file: ProjectFileItem) => void;
+  onEditProject: () => void;
+  onFileDraftChange: (value: string) => void;
+  onFileSelect: (file: ProjectFileItem) => void;
+  onNavigateUp: () => void;
+  onNewConversation: () => void;
+  onRefresh: () => void;
+  onRenameFile: (file: ProjectFileItem) => void;
+  onUploadFiles: (files: FileList | null) => void;
+}) {
+  if (!project) {
+    return (
+      <section className="project-detail-workspace">
+        <div className="project-empty-state">
+          <Folder size={24} />
+          <strong>选择项目</strong>
+          <p>在左侧项目列表中选择一个项目后，这里会显示工作目录、文件和项目会话。</p>
+        </div>
+      </section>
+    );
+  }
+
+  const updatedAt = new Date(project.updated_at * 1000).toLocaleString();
+
+  return (
+    <section className="project-detail-workspace">
+      <header className="project-detail-header">
+        <div className="project-detail-title">
+          <Folder size={19} />
+          <div>
+            <strong>{project.name}</strong>
+            <span>{project.slug}</span>
+          </div>
+        </div>
+        <div className="project-detail-actions">
+          <button className="secondary-button compact-button" onClick={onNewConversation} type="button">
+            <Plus size={14} />
+            新建会话
+          </button>
+          <button className="secondary-button compact-button" onClick={onEditProject} type="button">
+            <FileText size={14} />
+            编辑
+          </button>
+          <button className="secondary-button danger-button compact-button" onClick={onDeleteProject} type="button">
+            <Trash2 size={14} />
+            删除
+          </button>
+        </div>
+      </header>
+
+      <div className="project-detail-body">
+        <section className="project-detail-summary">
+          <div className="project-summary-main">
+            <span>项目目录</span>
+            <code>{project.workspace_uri}</code>
+          </div>
+          <div className="project-summary-grid">
+            <div>
+              <span>组织</span>
+              <strong>{project.org_id}</strong>
+            </div>
+            <div>
+              <span>所有者</span>
+              <strong>{project.owner_user_id}</strong>
+            </div>
+            <div>
+              <span>更新</span>
+              <strong>{updatedAt}</strong>
+            </div>
+          </div>
+          {project.description ? <p>{project.description}</p> : null}
+          {error ? <div className="project-detail-error">{error}</div> : null}
+        </section>
+
+        <ProjectFileManager
+          dialog={fileDialog}
+          draft={fileDraft}
+          error={filesError}
+          files={files}
+          loading={filesLoading}
+          path={path}
+          preview={preview}
+          previewError={previewError}
+          previewLoading={previewLoading}
+          project={project}
+          selectedFile={selectedFile}
+          onCreateFolder={onCreateFolder}
+          onDeleteFile={onDeleteFile}
+          onDialogCancel={onDialogCancel}
+          onDialogConfirm={onDialogConfirm}
+          onDownloadFile={onDownloadFile}
+          onDraftChange={onFileDraftChange}
+          onFileSelect={onFileSelect}
+          onNavigateUp={onNavigateUp}
+          onRefresh={onRefresh}
+          onRenameFile={onRenameFile}
+          onUploadFiles={onUploadFiles}
+        />
+      </div>
+    </section>
+  );
+}
+
+function ProjectFileManager({
+  dialog,
+  draft,
+  error,
+  files,
+  loading,
+  path,
+  preview,
+  previewError,
+  previewLoading,
+  selectedFile,
+  onCreateFolder,
+  onDeleteFile,
+  onDialogCancel,
+  onDialogConfirm,
+  onDownloadFile,
+  onDraftChange,
+  onFileSelect,
+  onNavigateUp,
+  onRefresh,
+  onRenameFile,
+  onUploadFiles,
+}: {
+  dialog: { kind: ProjectFileDialogKind; file?: ProjectFileItem } | null;
+  draft: string;
+  error: string | null;
+  files: ProjectFileItem[];
+  loading: boolean;
+  path: string;
+  preview: ProjectFilePreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
+  project: ApiProject;
+  selectedFile: ProjectFileItem | null;
+  onCreateFolder: () => void;
+  onDeleteFile: (file: ProjectFileItem) => void;
+  onDialogCancel: () => void;
+  onDialogConfirm: () => void;
+  onDownloadFile: (file: ProjectFileItem) => void;
+  onDraftChange: (value: string) => void;
+  onFileSelect: (file: ProjectFileItem) => void;
+  onNavigateUp: () => void;
+  onRefresh: () => void;
+  onRenameFile: (file: ProjectFileItem) => void;
+  onUploadFiles: (files: FileList | null) => void;
+}) {
+  const directoryInputProps = {
+    directory: '',
+    webkitdirectory: '',
+  } as React.InputHTMLAttributes<HTMLInputElement> & { directory: string; webkitdirectory: string };
+  const onUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    onUploadFiles(event.currentTarget.files);
+    event.currentTarget.value = '';
+  };
+
+  return (
+    <section className="project-file-manager">
+      <div className="project-file-toolbar">
+        <button className="icon-button" disabled={!path || loading} onClick={onNavigateUp} title="上一级" type="button">
+          <ChevronLeft size={15} />
+        </button>
+        <div className="project-file-path">
+          <Folder size={14} />
+          <code>{path || '/'}</code>
+        </div>
+        <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
+          <RefreshCw className={loading ? 'spin' : ''} size={15} />
+        </button>
+        <label className="secondary-button compact-button project-file-upload">
+          <Upload size={14} />
+          上传文件
+          <input type="file" multiple onChange={onUploadChange} />
+        </label>
+        <label className="secondary-button compact-button project-file-upload">
+          <Folder size={14} />
+          上传目录
+          <input type="file" multiple {...directoryInputProps} onChange={onUploadChange} />
+        </label>
+        <button className="secondary-button compact-button" onClick={onCreateFolder} type="button">
+          <Plus size={14} />
+          新建文件夹
+        </button>
+      </div>
+
+      <div className="project-file-browser">
+        <div className="project-file-tree">
+          {error ? <div className="project-file-error">{error}</div> : null}
+          {loading ? (
+            <div className="project-file-empty">
+              <Loader className="spin" size={14} />
+              <span>正在加载目录...</span>
+            </div>
+          ) : files.length ? (
+            files.map((file) => (
+              <div
+                className={file.path === selectedFile?.path ? 'active project-file-row' : 'project-file-row'}
+                key={file.path}
+              >
+                <button
+                  className="project-file-main"
+                  onClick={() => onFileSelect(file)}
+                  title={file.path}
+                  type="button"
+                >
+                  {file.kind === 'directory' ? <Folder size={14} /> : <File size={14} />}
+                  <span>{file.name}</span>
+                  <em>{projectFileMeta(file)}</em>
+                </button>
+                <div className="project-file-actions">
+                  <button className="icon-button" onClick={() => onRenameFile(file)} title="重命名" type="button">
+                    <FileText size={12} />
+                  </button>
+                  {file.kind === 'file' && file.download_url ? (
+                    <button className="icon-button" onClick={() => onDownloadFile(file)} title="下载" type="button">
+                      <Download size={12} />
+                    </button>
+                  ) : null}
+                  <button className="icon-button danger-icon-button" onClick={() => onDeleteFile(file)} title="删除" type="button">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="project-file-empty">当前目录为空。</div>
+          )}
+        </div>
+
+        <ProjectFilePreviewPane
+          preview={preview}
+          previewError={previewError}
+          previewLoading={previewLoading}
+          selectedFile={selectedFile}
+        />
+      </div>
+
+      {dialog ? (
+        <ProjectFileActionDialog
+          dialog={dialog}
+          draft={draft}
+          onCancel={onDialogCancel}
+          onConfirm={onDialogConfirm}
+          onDraftChange={onDraftChange}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function ProjectFilePreviewPane({
+  preview,
+  previewError,
+  previewLoading,
+  selectedFile,
+}: {
+  preview: ProjectFilePreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
+  selectedFile: ProjectFileItem | null;
+}) {
+  if (!selectedFile) {
+    return (
+      <section className="project-file-preview">
+        <div className="project-file-preview-empty">选择项目文件后在这里预览。</div>
+      </section>
+    );
+  }
+  if (selectedFile.kind === 'directory') {
+    return (
+      <section className="project-file-preview">
+        <div className="project-file-preview-empty">目录已打开。选择一个文件查看预览。</div>
+      </section>
+    );
+  }
+
+  const selectedArtifact = projectFilePreviewArtifactItem(selectedFile);
+  const copyProjectPreview = () => {
+    if (preview?.content) void navigator.clipboard.writeText(preview.content);
+  };
+
+  return (
+    <section className="project-file-preview">
+      <ArtifactPreview
+        error={previewError}
+        loading={previewLoading}
+        preview={preview}
+        selectedArtifact={selectedArtifact}
+        onCopy={copyProjectPreview}
+      />
+    </section>
+  );
+}
+
+function ProjectFileActionDialog({
+  dialog,
+  draft,
+  onCancel,
+  onConfirm,
+  onDraftChange,
+}: {
+  dialog: { kind: ProjectFileDialogKind; file?: ProjectFileItem };
+  draft: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onDraftChange: (value: string) => void;
+}) {
+  const title = dialog.kind === 'folder'
+    ? '新建文件夹'
+    : dialog.kind === 'rename'
+      ? '重命名'
+      : '删除文件';
+  const isDelete = dialog.kind === 'delete';
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>项目文件</span>
+            <strong>{title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body">
+          {isDelete ? (
+            <p>删除 <code>{dialog.file?.path}</code> 后无法从项目目录中恢复。</p>
+          ) : (
+            <label>
+              <span>{dialog.kind === 'folder' ? '文件夹路径' : '新路径'}</span>
+              <input value={draft} onChange={(event) => onDraftChange(event.target.value)} autoFocus />
+            </label>
+          )}
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button
+            className={isDelete ? 'primary-button danger-button compact-button' : 'primary-button compact-button'}
+            disabled={!isDelete && !draft.trim()}
+            onClick={onConfirm}
+            type="button"
+          >
+            {isDelete ? '删除' : '确认'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function ProjectCreateDialog({
+  draft,
+  error,
+  onCancel,
+  onChange,
+  onSubmit,
+}: {
+  draft: ProjectDraft;
+  error: string | null;
+  onCancel: () => void;
+  onChange: (draft: ProjectDraft) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <ProjectFormDialog
+      draft={draft}
+      error={error}
+      eyebrow="新建项目"
+      submitLabel="创建项目"
+      title="创建项目"
+      onCancel={onCancel}
+      onChange={onChange}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function ProjectEditDialog({
+  draft,
+  error,
+  project,
+  onCancel,
+  onChange,
+  onSubmit,
+}: {
+  draft: ProjectDraft;
+  error: string | null;
+  project: ApiProject;
+  onCancel: () => void;
+  onChange: (draft: ProjectDraft) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <ProjectFormDialog
+      draft={draft}
+      error={error}
+      eyebrow={project.slug}
+      submitLabel="保存"
+      title="编辑项目"
+      onCancel={onCancel}
+      onChange={onChange}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function ProjectDeleteDialog({
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  project: ApiProject;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除项目">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除项目</span>
+            <strong>{project.name}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>项目记录、项目会话以及项目工作目录都会被删除。</p>
+          <code>{project.workspace_uri}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除项目</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function ConversationDeleteDialog({
+  conversation,
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  conversation: ApiConversation;
+  project: ApiProject | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const deleteMessage = conversation.project_id
+    ? '项目会话只会删除会话记录和运行历史，项目目录会保留。'
+    : '会话记录和该会话工作目录会同步删除。';
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除会话">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除会话</span>
+            <strong>{conversation.title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>{deleteMessage}</p>
+          <code>{project ? `${project.name} / ${conversation.id}` : conversation.id}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除会话</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function ProjectFormDialog({
+  draft,
+  error,
+  eyebrow,
+  submitLabel,
+  title,
+  onCancel,
+  onChange,
+  onSubmit,
+}: {
+  draft: ProjectDraft;
+  error: string | null;
+  eyebrow: string;
+  submitLabel: string;
+  title: string;
+  onCancel: () => void;
+  onChange: (draft: ProjectDraft) => void;
+  onSubmit: () => void;
+}) {
+  const updateDraft = (field: keyof ProjectDraft, value: string) => {
+    onChange({ ...draft, [field]: value });
+  };
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title}>
+      <form
+        className="project-dialog"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (draft.name.trim()) onSubmit();
+        }}
+      >
+        <header className="project-dialog-head">
+          <div>
+            <span>{eyebrow}</span>
+            <strong>{title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body project-dialog-form">
+          <label>
+            <span>名称</span>
+            <input value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} autoFocus />
+          </label>
+          <label>
+            <span>Slug</span>
+            <input value={draft.slug} onChange={(event) => updateDraft('slug', event.target.value)} />
+          </label>
+          <label>
+            <span>描述</span>
+            <textarea value={draft.description} onChange={(event) => updateDraft('description', event.target.value)} />
+          </label>
+          {error ? <div className="project-dialog-error">{error}</div> : null}
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button compact-button" disabled={!draft.name.trim()} type="submit">
+            <Check size={14} />
+            {submitLabel}
+          </button>
+        </footer>
+      </form>
+    </div>
   );
 }
 
@@ -4661,7 +6246,7 @@ function ArtifactPreview({
 }: {
   error: string | null;
   loading: boolean;
-  preview: RunArtifactPreview | null;
+  preview: TextFilePreview | null;
   selectedArtifact: WorkbenchArtifactItem | null;
   onCopy: () => void;
 }) {
@@ -4746,7 +6331,7 @@ function ArtifactPreviewBody({
 }: {
   error: string | null;
   loading: boolean;
-  preview: RunArtifactPreview | null;
+  preview: TextFilePreview | null;
   selectedArtifact: WorkbenchArtifactItem;
 }) {
   const mode = artifactPreviewMode(selectedArtifact.previewKind);
@@ -5205,14 +6790,8 @@ function currentChatTitle(messages: ChatMessage[]): string {
   return latestUser ? clipText(latestUser.content.trim(), 40) : '新对话';
 }
 
-function currentChatHistory(messages: ChatMessage[]): Array<{ id: string; title: string; time: string }> {
-  const title = currentChatTitle(messages);
-  const userTurns = messages.filter((message) => message.role === 'user').length;
-  return [{
-    id: 'current',
-    title,
-    time: userTurns ? `${userTurns} turns` : '刚刚',
-  }];
+function conversationTitleFromPrompt(prompt: string): string {
+  return clipText(prompt.trim(), 40) || '新对话';
 }
 
 function uniqueNodeId(dag: Dag) {
@@ -5248,6 +6827,35 @@ function formatFileSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function projectFileMeta(file: ProjectFileItem): string {
+  if (file.kind === 'directory') return '目录';
+  if (typeof file.size === 'number') return formatFileSize(file.size);
+  return file.media_type ?? '文件';
+}
+
+function projectFilePreviewArtifactItem(file: ProjectFileItem): WorkbenchArtifactItem {
+  return {
+    id: `project:${file.path}`,
+    name: file.name,
+    extension: projectFileExtension(file.name),
+    meta: projectFileMeta(file),
+    source: 'run',
+    path: file.path,
+    previewKind: file.preview_kind ?? undefined,
+    previewable: file.previewable,
+    previewUrl: file.preview_url ?? null,
+    downloadUrl: file.download_url ?? null,
+    onlyOfficeConfigUrl: file.onlyoffice_config_url ?? null,
+    size: file.size ?? null,
+  };
+}
+
+function projectFileExtension(name: string): string {
+  const suffix = name.split('.').filter(Boolean).pop();
+  if (!suffix || suffix === name) return 'FILE';
+  return suffix.slice(0, 5).toUpperCase();
 }
 
 function artifactDisplayPath(artifact: Artifact) {
@@ -8787,7 +10395,7 @@ function OnlyOfficeSettingsWorkspace({
             <Settings size={15} />
           </div>
           <div>
-            <strong>OnlyOffice配置</strong>
+            <strong>文档预览配置</strong>
             <span>{draft.enabled ? 'enabled' : 'disabled'}</span>
           </div>
           <div>

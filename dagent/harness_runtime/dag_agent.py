@@ -356,6 +356,7 @@ class DAGAgentLoop:
         run_id: str | None = None,
         graph_input: Any = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
+        workspace_path: str | Path | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -372,10 +373,14 @@ class DAGAgentLoop:
             self.dag_executor.capability_workspace_root
             or self.dag_executor.capability_executor.workspace_root
         )
-        workspace = create_run_workspace(
-            resolve_run_workspace_root(workspace_parent_root, workspace_root),
-            run_id=run_id,
-        )
+        if workspace_path is None:
+            workspace = create_run_workspace(
+                resolve_run_workspace_root(workspace_parent_root, workspace_root),
+                run_id=run_id,
+            )
+        else:
+            workspace = Path(workspace_path).expanduser().resolve()
+            workspace.mkdir(parents=True, exist_ok=True)
         capability_workspace_root = workspace
         artifact_states = init_artifact_states(spec.artifacts)
         materialized_artifact_ids = materialize_artifact_uploads(

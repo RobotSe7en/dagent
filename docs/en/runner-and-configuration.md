@@ -35,6 +35,14 @@ workspace. Passing `workspace=...` uses that exact directory as the dagent
 runtime workspace, so run workspaces live under `<workspace>/runs/<run_id>` by
 default.
 
+When an application already owns the execution directory, pass
+`workspace_path=...` to `Runner.run(...)` or `Runner.stream(...)`. This uses that
+exact directory for the run instead of creating a `<run_id>` subdirectory. This
+is a runtime workspace selection feature, not persistence; the caller remains
+responsible for storing any run state outside the SDK. When continuing from a
+`RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
+`workspace_path` while also continuing a state raises an error.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:
@@ -181,7 +189,7 @@ config with HS256 and sends it as the ONLYOFFICE `token`. When
 `onlyoffice.enabled` is false or the URLs are missing, the WebUI falls back to
 its built-in browser preview path.
 The same settings can be edited in the WebUI under
-System Management -> OnlyOffice Configuration.
+System Management -> Document Preview Configuration.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

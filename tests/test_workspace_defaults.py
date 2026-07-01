@@ -182,6 +182,73 @@ def test_tool_agent_continuation_reuses_run_id_and_workspace(
     assert not (tmp_path / ".dagent" / "shared" / "second.txt").exists()
 
 
+def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "project-workspace"
+    provider = MockProvider([
+        ChatResponse(
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="tool_write_file",
+                    arguments={"path": "shared/project.txt", "content": "hi"},
+                )
+            ]
+        ),
+        ChatResponse(content="done"),
+    ])
+    runner = dagent.Runner(provider=provider)
+
+    result = run(
+        runner.run(
+            dagent.ToolAgent(profile="conversation"),
+            messages=user_messages("write in project workspace"),
+            workspace_path=workspace,
+        )
+    )
+
+    assert result.workspace_path is not None
+    assert Path(result.workspace_path) == workspace.resolve()
+    assert (workspace / "shared" / "project.txt").read_text(encoding="utf-8") == "hi"
+    assert not (workspace / result.run_id).exists()
+
+
+def test_runner_rejects_conflicting_exact_workspace_path_for_continuation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    provider = MockProvider([
+        ChatResponse(content="first done"),
+        ChatResponse(content="second done"),
+    ])
+    runner = dagent.Runner(provider=provider)
+    agent = dagent.ToolAgent(profile="conversation")
+
+    first = run(
+        runner.run(
+            agent,
+            messages=user_messages("first"),
+            workspace_path=first_workspace,
+        )
+    )
+
+    with pytest.raises(ValueError, match="workspace_path"):
+        run(
+            runner.run(
+                agent,
+                messages=user_messages("second"),
+                state=first.state,
+                workspace_path=second_workspace,
+            )
+        )
+
+
 def test_dag_agent_continuation_reuses_run_id_and_workspace(
     tmp_path: Path,
     monkeypatch,
@@ -256,6 +323,33 @@ def test_static_dag_artifacts_live_under_dagent_runs(
     invocation = result.trace.root.children[0].children[0].capability_execution.invocation
     assert invocation.arguments["path"] == "notes/output.txt"
     assert not (tmp_path / ".dagent" / "notes" / "output.txt").exists()
+
+
+def test_static_dag_can_use_exact_workspace_path_without_run_subdirectory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "project-workspace"
+    dag = dagent.Dag("write_note")
+    note = dag.artifact("note", "notes/project-output.txt")
+    dag.add_node(
+        dagent.Node(
+            "write",
+            target="tool.write_file",
+            inputs={"path": note.path, "content": "hi"},
+            artifact_outputs=[note],
+            boundary=dagent.Boundary(allowed_paths=[note.path.as_expr()]),
+        )
+    )
+    runner = dagent.Runner(provider=MockProvider([]))
+
+    result = run(runner.run(dag, workspace_path=workspace))
+
+    assert result.workspace_path is not None
+    assert Path(result.workspace_path) == workspace.resolve()
+    assert (workspace / "notes" / "project-output.txt").read_text(encoding="utf-8") == "hi"
+    assert not (workspace / result.run_id).exists()
 
 
 def test_static_dag_uses_resolved_workspace_after_cwd_changes(
@@ -352,6 +446,39 @@ def test_sandbox_tool_run_records_run_id_workspace_and_mounts_dagent_workspace(
     assert workspace_path.name == result.run_id
     assert (workspace_path / "shared" / "sandbox.txt").read_text(encoding="utf-8") == "hi"
     assert not (tmp_path / ".dagent" / "shared" / "sandbox.txt").exists()
+
+
+def test_sandbox_rejects_exact_workspace_path_outside_runner_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    class FakeSandboxSession:
+        def __init__(self, _config, *, workspace_root: Path, skill_dirs=()) -> None:
+            self.workspace_root = Path(workspace_root).resolve()
+
+        def start(self) -> None:
+            self.workspace_root.mkdir(parents=True, exist_ok=True)
+
+        def close(self) -> None:
+            pass
+
+        def run_tool(self, tool_name: str, arguments: dict) -> ToolOutput:
+            return ToolOutput(content="unused")
+
+    monkeypatch.setattr(runner_module, "SandboxSession", FakeSandboxSession)
+    runner = dagent.Runner(provider=MockProvider([ChatResponse(content="done")]))
+
+    with pytest.raises(runner_module.SandboxExecutionError, match="workspace_path"):
+        run(
+            runner.run(
+                dagent.ToolAgent(profile="conversation"),
+                messages=user_messages("write outside"),
+                execution="sandbox",
+                workspace_path=tmp_path / "outside-workspace",
+            )
+        )
 
 
 def test_create_run_workspace_rejects_non_leaf_run_id(tmp_path: Path) -> None:

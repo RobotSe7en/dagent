@@ -33,6 +33,12 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 该目录本身作为 runtime workspace，因此默认 run workspace 会位于
 `<workspace>/runs/<run_id>`。
 
+如果应用已经拥有执行目录，可以给 `Runner.run(...)` 或 `Runner.stream(...)` 传入
+`workspace_path=...`。dagent 会直接使用这个目录运行，不再创建 `<run_id>` 子目录。
+这是运行时 workspace 选择能力，不是持久化能力；调用方仍然负责在 SDK 之外保存 run
+state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
+state 的同时传入了不一致的 `workspace_path`，调用会报错。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：
@@ -164,7 +170,7 @@ FastAPI backend，并且要使用 Document Server 能访问到的地址，因为
 `jwt_secret` 必须和它的 JWT secret 一致；backend 会用 HS256 签名生成的编辑器配置，
 并作为 ONLYOFFICE `token` 传给前端。当 `onlyoffice.enabled` 为 false 或 URL 缺失时，
 WebUI 会回退到内置的浏览器预览路径。同一组设置也可以在 WebUI 的
-“系统管理 -> OnlyOffice配置”中维护。
+“系统管理 -> 文档预览配置”中维护。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；

@@ -58,6 +58,11 @@ def test_auto_agent_is_public_target_without_mode_field() -> None:
     assert "mode" not in inspect.signature(dagent.AutoAgent).parameters
 
 
+def test_runner_accepts_exact_workspace_path_parameter() -> None:
+    assert "workspace_path" in inspect.signature(dagent.Runner.run).parameters
+    assert "workspace_path" in inspect.signature(dagent.Runner.stream).parameters
+
+
 def test_builtin_profiles_are_available_from_package_root() -> None:
     profile = dagent.load_builtin_profile("conversation")
 
