@@ -1290,6 +1290,7 @@ def test_api_old_task_and_dag_lifecycle_routes_are_removed() -> None:
     assert client.post("/dag-specs/task_api/run").status_code == 404
     assert client.post("/dag-specs/task_api/run/stream").status_code == 404
     assert client.post("/dag-specs/task_api/artifacts/source/upload").status_code == 404
+    assert client.post("/dags/task_api/run/stream").status_code == 404
     assert client.post("/dags/task_api/approve").status_code == 404
     assert client.post("/dags/task_api/execute").status_code == 404
     assert client.put("/dags/task_api", json={"dag": {}}).status_code == 405
@@ -3662,106 +3663,6 @@ def test_api_created_tool_capability_can_run_in_dag() -> None:
     payload = _result_dag_run(run_response.json()["result"])
     assert payload["status"] == "completed"
     assert payload["trace"]["root"]["children"][0]["output"] == "upper:ok"
-
-
-def test_api_dag_run_stream_returns_live_events_and_stores_run() -> None:
-    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
-    client = TestClient(app)
-    create_response = client.post(
-        "/dags",
-        json={
-            "id": "stream_note",
-            "name": "Stream note",
-            "artifacts": {
-                "note": {
-                    "id": "note",
-                    "paths": ["notes/output.txt"],
-                }
-            },
-            "nodes": [
-                    {
-                        "id": "write",
-                        "target": "tool.write_file",
-                        "inputs": {
-                            "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}},
-                            "content": "hello",
-                        },
-                        "artifact_outputs": ["note"],
-                        "boundary": {
-                            "allowed_paths": [
-                                {"$expr": {"type": "artifact", "artifact_id": "note", "field": "path"}}
-                            ],
-                        },
-                    }
-            ],
-        },
-    )
-    assert create_response.status_code == 200
-
-    response = client.post("/dags/stream_note/run/stream")
-
-    assert response.status_code == 200
-    events = _sse_events(response.text)
-    result = _stream_result(events[-1])
-    assert events[0]["type"] == "run.started"
-    assert events[0]["run_id"] == result["state"]["run_id"]
-    assert any(event["type"] == "trace.updated" for event in events)
-    assert events[-1]["type"] == "run.finished"
-    dag_run = _result_dag_run(result)
-    assert dag_run["status"] == "completed"
-    workspace_path = Path(dag_run["workspace_path"])
-    assert workspace_path.parent == state.runner.runtime.capability_catalog.workspace_root / "runs"
-    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
-    run_id = dag_run["run_id"]
-    assert client.get(f"/dag-runs/{run_id}").json()["dag_run"]["run_id"] == run_id
-
-
-def test_api_dag_run_stream_uses_requested_workspace_root(tmp_path: Path) -> None:
-    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
-    client = TestClient(app)
-    workspace_root = tmp_path / "stream-runs"
-    create_response = client.post(
-        "/dags",
-        json={
-            "id": "stream_workspace_note",
-            "name": "Stream workspace note",
-            "artifacts": {
-                "note": {
-                    "id": "note",
-                    "paths": ["notes/output.txt"],
-                }
-            },
-            "nodes": [
-                {
-                    "id": "write",
-                    "target": "tool.write_file",
-                    "inputs": {
-                        "path": {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}},
-                        "content": "hello",
-                    },
-                    "artifact_outputs": ["note"],
-                    "boundary": {
-                        "allowed_paths": [
-                            {"$expr": {"type": "artifact", "artifact_id": "note", "field": "absolute_path"}}
-                        ],
-                    },
-                }
-            ],
-        },
-    )
-    assert create_response.status_code == 200
-
-    response = client.post(
-        "/dags/stream_workspace_note/run/stream",
-        json={"workspace_root": str(workspace_root)},
-    )
-
-    assert response.status_code == 200
-    events = _sse_events(response.text)
-    dag_run = _result_dag_run(_stream_result(events[-1]))
-    workspace_path = Path(dag_run["workspace_path"])
-    assert workspace_path.parent == workspace_root
-    assert (workspace_path / "notes" / "output.txt").read_text(encoding="utf-8") == "hello"
 
 
 def test_api_dag_run_fails_when_required_artifact_is_missing() -> None:

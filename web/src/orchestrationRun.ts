@@ -117,7 +117,6 @@ export function appendRunTranscriptTraceEvent(
   timeline: RunTranscriptItem[],
   event: TraceLogEvent,
 ): RunTranscriptItem[] {
-  if (event.type !== 'capability') return timeline;
   const payload = event.payload ?? {};
   const invocationId = typeof payload.invocation_id === 'string' ? payload.invocation_id : '';
   const next = [...timeline];
@@ -136,6 +135,13 @@ export function appendRunTranscriptTraceEvent(
     }
   }
   return [...next, { type: 'trace', event }];
+}
+
+export function runTranscriptFromTraceEvents(events: TraceLogEvent[]): RunTranscriptItem[] {
+  return events.reduce<RunTranscriptItem[]>(
+    (timeline, event) => appendRunTranscriptTraceEvent(timeline, event),
+    [],
+  );
 }
 
 function collectArtifactReferences(

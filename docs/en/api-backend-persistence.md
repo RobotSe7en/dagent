@@ -32,15 +32,28 @@ The local backend uses SQLite through `api/storage/`:
 
 - `projects`: tenant-ready project metadata and `workspace_uri`.
 - `conversations`: standalone and project chat sessions, owner metadata,
-  workspace URI, and `last_run_id`.
-- `runs`: the current authoritative `RunState` snapshot for a run.
+  workspace URI, conversation `kind`, and `last_run_id`. Chat, dynamic DAG,
+  and static DAG conversations are separate kinds and are not reused across
+  endpoints.
+- `runs`: the current authoritative `RunState` snapshot for a run, with an
+  optional saved DAG reference for static DAG runs.
 - `run_streams`: one HTTP stream/resume execution attempt.
 - `run_events`: durable SSE event history with database event ids.
 - `reviews`: pending/resolved review metadata. Review state lives in
   `runs.state_json`, not in this table.
+- `saved_dags`: saved static DAG specs, layout metadata, revisions, and project
+  ownership.
+- `orchestration_sessions`: dynamic/static orchestration editor state attached
+  to a matching conversation kind.
 
-Artifacts are not duplicated in SQL. The backend derives artifacts from
-`RunState.trace` plus files in the workspace.
+Run artifacts are not duplicated in SQL. The backend derives run artifacts from
+`RunState.trace` plus files in the workspace. Saved static DAG input uploads are
+stored on disk under the API config directory so they survive process restarts
+and can be materialized into future static DAG run workspaces.
+
+The local SQLite schema is treated as an API/WebUI storage schema, not a public
+SDK data contract. Incompatible pre-release local databases are recreated
+instead of migrated with compatibility shims.
 
 ## Resume And Restart Behavior
 
@@ -58,6 +71,11 @@ Trace and artifact endpoints read the stored `RunState` first and fall back to
 the in-memory runner only when no database state exists. This lets completed and
 awaiting-review project runs remain inspectable after an API process restart,
 as long as the workspace files are still reachable.
+
+Dynamic and static orchestration resume through `orchestration_sessions`.
+Review resume updates the attached session draft from the final `RunState`, and
+the WebUI restores orchestration drafts from the saved session when revisiting a
+matching conversation.
 
 ## Enterprise Path
 

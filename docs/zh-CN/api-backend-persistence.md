@@ -28,16 +28,23 @@ Web UI 和 API 后端支持项目与会话：
 本地后端通过 `api/storage/` 使用 SQLite：
 
 - `projects`：预留多租户字段的项目元数据和 `workspace_uri`。
-- `conversations`：无项目会话和项目会话、owner 元数据、workspace URI 和
-  `last_run_id`。
-- `runs`：某个 run 当前权威的 `RunState` 快照。
+- `conversations`：无项目会话和项目会话、owner 元数据、workspace URI、会话
+  `kind` 和 `last_run_id`。普通 chat、动态 DAG、静态 DAG 是不同 kind，不会在
+  endpoint 之间复用。
+- `runs`：某个 run 当前权威的 `RunState` 快照；静态 DAG run 可以带 saved DAG 引用。
 - `run_streams`：一次 HTTP stream/resume 执行尝试。
 - `run_events`：带数据库 event id 的持久 SSE 事件历史。
 - `reviews`：pending/resolved review 元数据。review state 在 `runs.state_json`
   里，不在这张表里重复保存。
+- `saved_dags`：保存的静态 DAG spec、layout 元数据、revision 和 project 归属。
+- `orchestration_sessions`：绑定到同 kind conversation 的动态/静态编排编辑器状态。
 
-Artifact 不在 SQL 里重复保存。后端从 `RunState.trace` 和 workspace 文件系统派生
-artifact 列表。
+运行 artifact 不在 SQL 里重复保存。后端从 `RunState.trace` 和 workspace 文件系统派生
+run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录下的磁盘目录，API 进程重启后
+仍可在后续静态 DAG run workspace 中 materialize。
+
+本地 SQLite schema 是 API/WebUI 存储 schema，不是公开 SDK 数据 contract。检测到不兼容的
+未发布本地旧库时，后端会重建数据库，而不是添加兼容 shim 或迁移层。
 
 ## Resume 和重启行为
 
@@ -54,6 +61,10 @@ state。
 Trace 和 artifact endpoint 会先读取数据库里的 `RunState`，没有数据库 state 时才回退到
 进程内 runner。只要 workspace 文件仍可访问，API 进程重启后，completed 和
 awaiting-review 的项目 run 仍然可以查看 trace 和 artifact。
+
+动态和静态编排通过 `orchestration_sessions` 恢复。Review resume 会用最终
+`RunState` 回写关联 session 的 draft；WebUI 重新进入匹配 kind 的 conversation 时，会从
+session 恢复编排草稿。
 
 ## 企业化路径
 

@@ -4,7 +4,20 @@ from typing import Protocol
 
 from dagent import RunState
 
-from api.storage.models import Conversation, Project, Review, Run, RunEvent, RunExecution, RunStatus, RunStream
+from api.storage.models import (
+    Conversation,
+    ConversationKind,
+    OrchestrationKind,
+    OrchestrationSession,
+    Project,
+    Review,
+    Run,
+    RunEvent,
+    RunExecution,
+    RunStatus,
+    RunStream,
+    SavedDag,
+)
 
 
 class ConversationBusyError(RuntimeError):
@@ -65,6 +78,7 @@ class Store(Protocol):
         workspace_uri: str,
         org_id: str = "default",
         owner_user_id: str = "default",
+        kind: ConversationKind = "chat",
     ) -> Conversation: ...
 
     def list_conversations(
@@ -99,6 +113,7 @@ class Store(Protocol):
         workspace_uri: str,
         org_id: str = "default",
         execution: RunExecution = "local",
+        saved_dag_id: str | None = None,
     ) -> Run: ...
 
     def get_run(self, run_id: str, *, org_id: str | None = None) -> Run | None: ...
@@ -178,3 +193,67 @@ class Store(Protocol):
     def get_review(self, review_id: str, *, org_id: str | None = None) -> Review | None: ...
 
     def resolve_review(self, review_id: str, decision_json: str) -> None: ...
+
+    def create_saved_dag(
+        self,
+        *,
+        dag_id: str,
+        project_id: str | None,
+        name: str,
+        description: str,
+        spec_json: str,
+        layout_json: str = "{}",
+        org_id: str = "default",
+        owner_user_id: str = "default",
+    ) -> SavedDag: ...
+
+    def get_saved_dag(self, dag_id: str, *, org_id: str | None = None) -> SavedDag | None: ...
+
+    def list_saved_dags(
+        self,
+        project_id: str | None = None,
+        *,
+        org_id: str | None = None,
+    ) -> list[SavedDag]: ...
+
+    def update_saved_dag(
+        self,
+        dag_id: str,
+        *,
+        name: str,
+        description: str,
+        spec_json: str,
+        layout_json: str,
+        expected_revision: int | None = None,
+        org_id: str = "default",
+    ) -> SavedDag: ...
+
+    def archive_saved_dag(self, dag_id: str, *, org_id: str | None = None) -> bool: ...
+
+    def create_orchestration_session(
+        self,
+        *,
+        session_id: str,
+        conversation_id: str,
+        project_id: str | None,
+        kind: OrchestrationKind,
+        saved_dag_id: str | None = None,
+        draft_dag_json: str | None = None,
+        ui_state_json: str = "{}",
+    ) -> OrchestrationSession: ...
+
+    def get_orchestration_session(self, session_id: str) -> OrchestrationSession | None: ...
+
+    def get_orchestration_session_by_conversation(self, conversation_id: str) -> OrchestrationSession | None: ...
+
+    def update_orchestration_session(
+        self,
+        session_id: str,
+        *,
+        saved_dag_id: str | None = None,
+        draft_dag_json: str | None = None,
+        ui_state_json: str | None = None,
+        update_saved_dag_id: bool = False,
+        update_draft_dag: bool = False,
+        update_ui_state: bool = False,
+    ) -> OrchestrationSession: ...
