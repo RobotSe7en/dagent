@@ -783,7 +783,6 @@ type DynamicTraceLogEvent = TraceLogEvent & { timelineOrder: number };
 type StaticDagEditorDraft = {
   spec: UserDag;
   savedDagId: string | null;
-  projectId: string | null;
   revision: number | null;
   layout: Record<string, unknown>;
   layoutPositions: Record<string, XYPosition>;
@@ -2085,7 +2084,6 @@ export function App() {
       [draftKey]: {
         spec,
         savedDagId: editorSavedDagId,
-        projectId: editorSavedDagProjectId,
         revision: editorSavedDagRevision,
         layout: savedLayoutWithNodePositions(editorSavedDagLayout, layoutPositions),
         layoutPositions,
@@ -2095,7 +2093,6 @@ export function App() {
     editorDag,
     editorSavedDagId,
     editorSavedDagLayout,
-    editorSavedDagProjectId,
     editorSavedDagRevision,
     editorUserDag,
     updateEditorDagDrafts,
@@ -2902,7 +2899,6 @@ export function App() {
         next[saved.id] = {
           spec: saved.spec,
           savedDagId: saved.id,
-          projectId: saved.project_id ?? null,
           revision: saved.revision,
           layout: saved.layout,
           layoutPositions: savedLayoutPositions,

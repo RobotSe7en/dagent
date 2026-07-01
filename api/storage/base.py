@@ -213,7 +213,6 @@ class Store(Protocol):
         self,
         project_id: str | None = None,
         *,
-        standalone: bool = False,
         org_id: str | None = None,
     ) -> list[SavedDag]: ...
 

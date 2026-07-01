@@ -547,6 +547,7 @@ class RunArtifactOnlyOfficeConfigResponse(BaseModel):
 class PersistedMessageContext:
     project_id: str | None
     conversation_id: str
+    conversation_kind: Literal["chat", "dynamic_dag", "static_dag"]
     workspace_uri: str
     workspace_path: Path
     run_state: RunState | None = None
@@ -1454,11 +1455,12 @@ async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> Stre
 
 @app.post("/orchestration-sessions")
 async def create_orchestration_session(request: OrchestrationSessionCreateRequest) -> dict[str, Any]:
-    context = await _persisted_context_from_conversation(request.project_id, request.conversation_id)
-    conversation = await run_in_threadpool(state.get_store().get_conversation, request.conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    if conversation.kind != request.kind:
+    context = await _persisted_context_from_conversation(
+        request.project_id,
+        request.conversation_id,
+        include_orchestration_session=False,
+    )
+    if context.conversation_kind != request.kind:
         raise HTTPException(status_code=400, detail="Conversation kind does not match orchestration session kind.")
     if request.saved_dag_id is not None:
         saved = await run_in_threadpool(state.get_store().get_saved_dag, request.saved_dag_id)
@@ -1626,37 +1628,6 @@ async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": result.model_dump(mode="json")}
-
-
-@app.post("/dags/{dag_id}/run/stream")
-async def run_dag_stream(dag_id: str, request: DAGRunRequest | None = None) -> StreamingResponse:
-    dag = state.dags.get(dag_id)
-    if dag is None:
-        raise HTTPException(status_code=404, detail="DAG not found.")
-    workspace_root = _workspace_root_from_request(request)
-
-    async def events():
-        sent_error = False
-        try:
-            async for event in state.get_runner().stream(
-                _compile_user_dag(dag),
-                graph_input=None if request is None else request.graph_input,
-                workspace_root=workspace_root,
-                artifact_uploads=_artifact_uploads_for_dag(dag_id),
-            ):
-                if event.type == "run.failed":
-                    sent_error = True
-                yield _sse(event.model_dump(mode="json"))
-        except Exception as exc:
-            if not sent_error:
-                yield _sse({
-                    "type": "run.failed",
-                    "data": {"message": str(exc), "error_type": type(exc).__name__},
-                    "sequence": 0,
-                    "run_id": None,
-                })
-
-    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 def _workspace_root_from_request(request: DAGRunRequest | None) -> str:
@@ -3522,13 +3493,16 @@ async def _resume_persisted_review_stream(
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run state not found.")
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, run.workspace_uri)
-    orchestration_session = await run_in_threadpool(
-        store.get_orchestration_session_by_conversation,
-        conversation.id,
-    )
+    orchestration_session = None
+    if conversation.kind != "chat":
+        orchestration_session = await run_in_threadpool(
+            store.get_orchestration_session_by_conversation,
+            conversation.id,
+        )
     context = PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
+        conversation_kind=conversation.kind,
         workspace_uri=run.workspace_uri,
         workspace_path=workspace_path,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
@@ -3894,6 +3868,7 @@ async def _persisted_context_from_conversation(
     conversation_id: str,
     *,
     expected_kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None,
+    include_orchestration_session: bool = True,
 ) -> PersistedMessageContext:
     store = state.get_store()
     project = None
@@ -3933,13 +3908,16 @@ async def _persisted_context_from_conversation(
                 status_code=409,
                 detail="Conversation is awaiting review; resume the pending review before sending a new message.",
             )
-    orchestration_session = await run_in_threadpool(
-        store.get_orchestration_session_by_conversation,
-        conversation.id,
-    )
+    orchestration_session = None
+    if include_orchestration_session and conversation.kind != "chat":
+        orchestration_session = await run_in_threadpool(
+            store.get_orchestration_session_by_conversation,
+            conversation.id,
+        )
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
+        conversation_kind=conversation.kind,
         workspace_uri=workspace_uri,
         workspace_path=workspace_path,
         run_state=previous_run_state,

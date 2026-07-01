@@ -1018,29 +1018,6 @@ export async function resumeDagReview(
   await readStream(response, handlers);
 }
 
-export async function runDagStream(
-  specId: string,
-  handlers: StreamHandlers,
-  options: {
-    workspaceRoot?: string;
-    input?: unknown;
-  } = {},
-): Promise<void> {
-  const payload: Record<string, unknown> = {};
-  if (options.workspaceRoot?.trim()) payload.workspace_root = options.workspaceRoot.trim();
-  if (Object.prototype.hasOwnProperty.call(options, 'input')) payload.graph_input = options.input;
-  const body = Object.keys(payload).length ? JSON.stringify(payload) : undefined;
-  const response = await fetch(`${API_BASE}/dags/${encodeURIComponent(specId)}/run/stream`, {
-    method: 'POST',
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body,
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(await errorMessage(response));
-  }
-  await readStream(response, handlers);
-}
-
 export async function runSavedDagStream(
   savedDagId: string,
   handlers: StreamHandlers,

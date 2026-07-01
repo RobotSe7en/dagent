@@ -780,13 +780,10 @@ class SQLiteStore:
         self,
         project_id: str | None = None,
         *,
-        standalone: bool = False,
         org_id: str | None = None,
     ) -> list[SavedDag]:
         conditions = ["archived_at IS NULL"]
         params: list[object] = []
-        if standalone:
-            conditions.append("project_id IS NULL")
         if project_id is not None:
             conditions.append("project_id = ?")
             params.append(project_id)
