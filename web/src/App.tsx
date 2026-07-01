@@ -243,6 +243,10 @@ import {
   type MessageTimelineItem,
 } from './chatTimeline';
 import {
+  finishedRunResultFromEvents,
+  messagesFromPersistedRunResult,
+} from './persistedChat';
+import {
   artifactPreviewDownloadUrl,
   artifactPreviewMode,
   isBrowserArtifactPreviewKind,
@@ -1014,100 +1018,6 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
-}
-
-function finishedRunResultFromEvents(events: ApiRunEvent[]): ApiRunResult | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.event_type !== 'run.finished' && event.payload.type !== 'run.finished') continue;
-    const data = recordValue(event.payload.data);
-    const result = data ? recordValue(data.result) : null;
-    if (!result) continue;
-    return {
-      output_text: typeof result.output_text === 'string' ? result.output_text : '',
-      state: recordValue(result.state) ? result.state as ApiRunState : null,
-    };
-  }
-  return null;
-}
-
-function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {
-  const content = message.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => {
-      if (typeof item === 'string') return item;
-      const record = recordValue(item);
-      if (!record) return '';
-      if (typeof record.text === 'string') return record.text;
-      if (typeof record.content === 'string') return record.content;
-      return '';
-    }).filter(Boolean).join('\n');
-  }
-  return '';
-}
-
-function messagesFromPersistedRunResult(result: ApiRunResult, traceSnapshot: TraceLogEvent[]): ChatMessage[] {
-  const state = result.state ?? null;
-  const dagSnapshot = state?.dag ?? undefined;
-  const reviewMessage = state?.pending_review?.message?.trim() ?? '';
-  const output = result.output_text.trim();
-  const fallbackContent = output || reviewMessage;
-  const messages: ChatMessage[] = (state?.internal_messages ?? []).flatMap((message): ChatMessage[] => {
-    const role = message.role;
-    if (role !== 'user' && role !== 'assistant') return [];
-    const content = visibleChatContentFromInternalMessage(message).trim();
-    if (!content) return [];
-    const timeline: MessageTimelineItem[] = [{ type: 'text', content }];
-    return [{
-      role: role as ChatMessage['role'],
-      kind: 'text' as const,
-      content,
-      timeline,
-    }];
-  });
-  if (
-    fallbackContent
-    && !messages.some((message) => message.role === 'assistant' && message.content.trim() === fallbackContent)
-  ) {
-    const timeline: MessageTimelineItem[] = [{ type: 'text', content: fallbackContent }];
-    messages.push({
-      role: 'assistant',
-      kind: 'text',
-      content: fallbackContent,
-      timeline,
-    });
-  }
-  let assistantIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex !== -1) {
-    const message = messages[assistantIndex];
-    const timeline: MessageTimelineItem[] = dagSnapshot
-      ? [{ type: 'dag', dag: dagSnapshot }, ...(message.timeline ?? [])]
-      : message.timeline ?? [];
-    messages[assistantIndex] = {
-      ...message,
-      timeline,
-      dagSnapshot,
-      traceSnapshot,
-    };
-  } else if (dagSnapshot) {
-    const timeline: MessageTimelineItem[] = [{ type: 'dag', dag: dagSnapshot }];
-    messages.push({
-      role: 'assistant',
-      kind: 'text',
-      content: fallbackContent,
-      timeline,
-      dagSnapshot,
-      traceSnapshot,
-    });
-  }
-  return messages;
 }
 
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
@@ -2291,14 +2201,14 @@ export function App() {
     setDagReview(pendingReview);
   }, []);
 
-  const applyPersistedRunResult = useCallback((result: ApiRunResult) => {
+  const applyPersistedRunResult = useCallback((result: ApiRunResult, events: ApiRunEvent[] = []) => {
     const nextState = result.state ?? null;
     const nextDag = nextState?.dag ?? null;
     const nextReview = nextState?.pending_review ?? null;
     const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
     setRunState(nextState);
     setTrace(nextTrace);
-    setMessages(messagesFromPersistedRunResult(result, nextTrace));
+    setMessages(messagesFromPersistedRunResult(result, nextTrace, events));
     setError(null);
     setDagReview(null);
     setDagReviewFeedback('');
@@ -2326,7 +2236,7 @@ export function App() {
       if (conversationHydrationRequestRef.current !== requestId) return;
       const result = finishedRunResultFromEvents(events);
       if (!result) return;
-      applyPersistedRunResult(result);
+      applyPersistedRunResult(result, events);
     } catch (exc) {
       if (conversationHydrationRequestRef.current !== requestId) return;
       setError(exc instanceof Error ? exc.message : String(exc));

@@ -123,6 +123,26 @@ const {
   shouldFetchTextArtifactPreview,
 } = await importTypeScript('../src/artifactPreview.ts');
 
+function runEvent(eventId, type, data) {
+  const payloadData = type.startsWith('response.')
+    ? { response_id: 'response_1', model_step: null, ...data }
+    : data;
+  return {
+    run_id: 'run_1',
+    event_id: eventId,
+    stream_id: 'stream_1',
+    stream_seq: eventId,
+    event_type: type,
+    payload: {
+      type,
+      data: payloadData,
+      sequence: eventId,
+      run_id: 'run_1',
+    },
+    created_at: eventId,
+  };
+}
+
 test('ui id generation falls back when crypto.randomUUID is unavailable', async () => {
   const { createUiId } = await importTypeScript('../src/uiIds.ts');
   const originalCrypto = globalThis.crypto;
@@ -2037,30 +2057,134 @@ test('persisted chat streams and reviews use conversation context without requir
 test('persisted conversation selection hydrates the last run snapshot', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export interface ApiRunEvent/);
   assert.match(apiSource, /export async function listRunEvents\(runId: string, afterEventId = 0\): Promise<ApiRunEvent\[\]>/);
   assert.match(apiSource, /`\$\{API_BASE\}\/runs\/\$\{encodeURIComponent\(runId\)\}\/events\$\{params\}`/);
-  assert.match(appSource, /function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
-  assert.match(appSource, /function messagesFromPersistedRunResult\(result: ApiRunResult, traceSnapshot: TraceLogEvent\[\]\): ChatMessage\[\]/);
+  assert.match(persistedChatSource, /export function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
+  assert.match(persistedChatSource, /export function messagesFromPersistedRunResult\(/);
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
-  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace\)\);/);
-  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result\);/);
+  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult, events: ApiRunEvent\[\] = \[\]\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace, events\)\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result, events\);/);
   assert.match(appSource, /if \(!selectedChatConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatConversation\);/);
 });
 
 test('persisted conversation hydration restores user and assistant chat turns', async () => {
-  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  const hydrateSource = appSource.match(/function messagesFromPersistedRunResult[\s\S]*?\nfunction artifactPreviewCacheKey/)?.[0] ?? '';
+  const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
+  const hydrateSource = persistedChatSource.match(/export function messagesFromPersistedRunResult[\s\S]*?\nfunction appendPersistedChatMessage/)?.[0] ?? '';
 
   assert.ok(hydrateSource, 'messagesFromPersistedRunResult should exist');
-  assert.match(appSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
+  assert.match(persistedChatSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
   assert.match(hydrateSource, /state\?\.internal_messages \?\? \[\]/);
   assert.match(hydrateSource, /role !== 'user' && role !== 'assistant'/);
-  assert.match(hydrateSource, /role: role as ChatMessage\['role'\]/);
-  assert.match(hydrateSource, /const timeline: MessageTimelineItem\[\] = \[\{ type: 'text', content \}\];/);
-  assert.match(hydrateSource, /for \(let index = messages\.length - 1; index >= 0; index -= 1\)/);
-  assert.match(hydrateSource, /messages\[index\]\.role === 'assistant'/);
+  assert.match(hydrateSource, /appendPersistedChatMessage\(messages, role, content\);/);
+  assert.match(persistedChatSource, /role === 'assistant' && last\?\.role === 'assistant'/);
+  assert.match(persistedChatSource, /timeline: \[\.\.\.\(last\.timeline \?\? \[\]\), \{ type: 'text', content \}\]/);
+  assert.match(persistedChatSource, /function lastAssistantMessageIndex\(messages: ChatMessage\[\]\): number/);
+});
+
+test('persisted conversation hydration rebuilds one assistant turn with capability trace', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const trace = {
+    run_id: 'run_1',
+    status: 'completed',
+    root: {
+      id: 'trace_root',
+      kind: 'run',
+      status: 'completed',
+      label: 'run_1',
+      ref: { run_id: 'run_1' },
+      children: [
+        {
+          id: 'trace_capability',
+          kind: 'capability_call',
+          status: 'completed',
+          label: 'tool.echo',
+          ref: { capability_id: 'tool.echo', invocation_id: 'call_1' },
+          capability_execution: {
+            invocation: {
+              invocation_id: 'call_1',
+              capability_id: 'tool.echo',
+              kind: 'tool',
+              arguments: { text: 'hi' },
+            },
+            result: {
+              invocation_id: 'call_1',
+              capability_id: 'tool.echo',
+              status: 'completed',
+              content: 'echo:hi',
+            },
+          },
+          children: [],
+        },
+      ],
+    },
+  };
+  const state = {
+    run_id: 'run_1',
+    kind: 'tool',
+    status: 'completed',
+    internal_messages: [
+      { role: 'user', content: 'echo hi' },
+      { role: 'assistant', content: '我会调用工具。' },
+      { role: 'assistant', content: '完成：echo:hi' },
+    ],
+    trace,
+  };
+  const events = [
+    runEvent(1, 'response.content.delta', { delta: '我会调用工具。' }),
+    runEvent(2, 'capability.call.started', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.echo',
+      arguments: { text: 'hi' },
+    }),
+    runEvent(3, 'capability.call.completed', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.echo',
+      content: 'echo:hi',
+    }),
+    runEvent(4, 'response.content.delta', { delta: '完成：echo:hi' }),
+    runEvent(5, 'run.finished', { result: { output_text: '完成：echo:hi', state } }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+  const assistantMessages = messages.filter((message) => message.role === 'assistant');
+  const assistant = assistantMessages[0];
+
+  assert.equal(assistantMessages.length, 1);
+  assert.deepEqual(
+    assistant.timeline.map((item) => item.type),
+    ['text', 'capability', 'text'],
+  );
+  assert.equal(assistant.timeline[1].event.capability_id, 'tool.echo');
+  assert.equal(assistant.timeline[1].result.content, 'echo:hi');
+  assert.equal(assistant.traceSnapshot.length, 1);
+  assert.equal(assistant.traceSnapshot[0].type, 'capability');
+});
+
+test('persisted conversation replay reuses api stream event parsing', async () => {
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
+
+  assert.match(apiSource, /export function dispatchStreamEnvelope\(/);
+  assert.match(apiSource, /dispatchStreamEnvelope\(event, handlers, seenTraceIds\);/);
+  assert.match(persistedChatSource, /import \{[\s\S]*dispatchStreamEnvelope[\s\S]*\} from '\.\/api';/);
+  assert.match(persistedChatSource, /dispatchStreamEnvelope\(envelope, \{/);
+  assert.doesNotMatch(persistedChatSource, /function capabilityStartedEvent/);
+  assert.doesNotMatch(persistedChatSource, /function capabilityFinishedEvent/);
+  assert.doesNotMatch(persistedChatSource, /function capabilityContext/);
 });
 
 test('chat header labels standalone and project conversations', async () => {
