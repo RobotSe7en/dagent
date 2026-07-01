@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     org_id TEXT NOT NULL DEFAULT 'default',
+    owner_user_id TEXT NOT NULL DEFAULT 'default',
     title TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     workspace_uri TEXT NOT NULL,
@@ -37,7 +38,8 @@ CREATE INDEX IF NOT EXISTS idx_conversations_project_updated
 CREATE TABLE IF NOT EXISTS conversation_locks (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
     owner TEXT NOT NULL,
-    acquired_at INTEGER NOT NULL
+    acquired_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (

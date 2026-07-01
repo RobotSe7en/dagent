@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from dagent import RunState
@@ -24,17 +23,6 @@ class ConversationLock(Protocol):
     def owner(self) -> str: ...
 
     def release(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class CreateProject:
-    project_id: str
-    slug: str
-    name: str
-    workspace_uri: str
-    org_id: str = "default"
-    owner_user_id: str = "default"
-    description: str | None = None
 
 
 class Store(Protocol):
@@ -76,13 +64,28 @@ class Store(Protocol):
         title: str,
         workspace_uri: str,
         org_id: str = "default",
+        owner_user_id: str = "default",
     ) -> Conversation: ...
 
-    def list_conversations(self, project_id: str | None = None, *, org_id: str | None = None) -> list[Conversation]: ...
+    def list_conversations(
+        self,
+        project_id: str | None = None,
+        *,
+        standalone: bool = False,
+        org_id: str | None = None,
+    ) -> list[Conversation]: ...
 
     def get_conversation(self, conversation_id: str, *, org_id: str | None = None) -> Conversation | None: ...
 
-    def acquire_conversation_lock(self, conversation_id: str, *, owner: str) -> ConversationLock: ...
+    def acquire_conversation_lock(
+        self,
+        conversation_id: str,
+        *,
+        owner: str,
+        lease_seconds: int = 300,
+    ) -> ConversationLock: ...
+
+    def touch_conversation(self, conversation_id: str, *, updated_at: int | None = None) -> None: ...
 
     def create_run(
         self,

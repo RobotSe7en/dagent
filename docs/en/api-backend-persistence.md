@@ -11,10 +11,13 @@ The Web UI and API backend support projects and conversations:
 
 - A project owns one shared workspace directory:
   `.dagent/projects/<project_id>/workspace`.
+- Standalone conversations use isolated directories under
+  `.dagent/projects/_conversations/<conversation_id>/workspace`.
 - A project can contain multiple conversations.
 - The project directory is not globally locked.
 - A single conversation is single-writer: one stream or resume can drive it at a
-  time. A second writer receives `409`.
+  time. A second writer receives `409`. Conversation locks are leases so a
+  crashed process cannot leave a conversation permanently busy.
 - Different conversations in the same project can run concurrently and may touch
   the same project files.
 
@@ -28,7 +31,8 @@ store and passes the project workspace to `Runner.stream(..., workspace_path=...
 The local backend uses SQLite through `api/storage/`:
 
 - `projects`: tenant-ready project metadata and `workspace_uri`.
-- `conversations`: project chat sessions and `last_run_id`.
+- `conversations`: standalone and project chat sessions, owner metadata,
+  workspace URI, and `last_run_id`.
 - `runs`: the current authoritative `RunState` snapshot for a run.
 - `run_streams`: one HTTP stream/resume execution attempt.
 - `run_events`: durable SSE event history with database event ids.

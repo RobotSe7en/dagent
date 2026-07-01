@@ -186,6 +186,13 @@ export async function listConversations(): Promise<ApiConversation[]> {
   return data.conversations ?? [];
 }
 
+export async function listProjectConversations(projectId: string): Promise<ApiConversation[]> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversations ?? [];
+}
+
 export async function createConversation(input: { title: string }): Promise<ApiConversation> {
   const res = await fetch(`${API_BASE}/conversations`, {
     method: 'POST',
@@ -775,15 +782,15 @@ interface StreamHandlers {
   onError?: (message: string) => void;
 }
 
+interface ConversationRequestContext {
+  projectId?: string | null;
+  conversationId: string;
+}
+
 interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
-  project?: {
-    projectId?: string | null;
-    conversationId: string;
-  };
-  projectId?: string | null;
-  conversationId?: string;
+  conversation?: ConversationRequestContext;
 }
 
 export interface ChatStreamMessage {
@@ -809,12 +816,7 @@ export async function streamMessagesTask(
     Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
-  if (options.project) {
-    if (options.project.projectId) {
-      body.project_id = options.project.projectId;
-    }
-    body.conversation_id = options.project.conversationId;
-  }
+  appendConversationContext(body, options.conversation);
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     ...messageStreamRequest(body, options),
@@ -847,12 +849,7 @@ export async function streamTask(
   }
   if (state) body.state = state;
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
-  if (options.project) {
-    if (options.project.projectId) {
-      body.project_id = options.project.projectId;
-    }
-    body.conversation_id = options.project.conversationId;
-  }
+  appendConversationContext(body, options.conversation);
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
     ...messageStreamRequest(body, options),
@@ -871,6 +868,14 @@ export async function listRunEvents(runId: string, afterEventId = 0): Promise<Ap
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.events ?? [];
+}
+
+function appendConversationContext(body: Record<string, unknown>, context?: ConversationRequestContext): void {
+  if (!context) return;
+  if (context.projectId) {
+    body.project_id = context.projectId;
+  }
+  body.conversation_id = context.conversationId;
 }
 
 function messageStreamRequest(body: Record<string, unknown>, options: StreamRequestOptions): RequestInit {
@@ -899,8 +904,9 @@ export async function resumeDagReview(
   options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
-  const projectId = options.projectId;
-  const persistedResume = options.conversationId;
+  const conversationContext = options.conversation;
+  const persistedResume = conversationContext !== undefined;
+  const projectId = conversationContext?.projectId;
   const url = persistedResume
     ? projectId
       ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`
@@ -1191,8 +1197,9 @@ export async function resumeCapabilityReview(
   options: StreamRequestOptions = {},
 ): Promise<void> {
   const normalizedFeedback = feedback?.trim();
-  const projectId = options.projectId;
-  const persistedResume = options.conversationId;
+  const conversationContext = options.conversation;
+  const persistedResume = conversationContext !== undefined;
+  const projectId = conversationContext?.projectId;
   const url = persistedResume
     ? projectId
       ? `${API_BASE}/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}/resume`

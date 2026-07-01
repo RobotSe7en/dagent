@@ -10,10 +10,12 @@ Web UI 和 API 后端支持项目与会话：
 
 - 一个项目拥有一个共享 workspace 目录：
   `.dagent/projects/<project_id>/workspace`。
+- 无项目会话使用独立目录：
+  `.dagent/projects/_conversations/<conversation_id>/workspace`。
 - 一个项目可以包含多个会话。
 - 项目目录不做全局锁。
 - 单个会话是单写者：同一时间只能有一个 stream 或 resume 驱动它。第二个写入者会收到
-  `409`。
+  `409`。会话锁是 lease，进程崩溃不会让会话永久 busy。
 - 同一项目里的不同会话可以并发运行，也可能同时改同一个项目文件。
 
 项目消息仍使用现有 `/messages/stream` endpoint，只是带上 `project_id` 和
@@ -26,7 +28,8 @@ Web UI 和 API 后端支持项目与会话：
 本地后端通过 `api/storage/` 使用 SQLite：
 
 - `projects`：预留多租户字段的项目元数据和 `workspace_uri`。
-- `conversations`：项目下的聊天会话和 `last_run_id`。
+- `conversations`：无项目会话和项目会话、owner 元数据、workspace URI 和
+  `last_run_id`。
 - `runs`：某个 run 当前权威的 `RunState` 快照。
 - `run_streams`：一次 HTTP stream/resume 执行尝试。
 - `run_events`：带数据库 event id 的持久 SSE 事件历史。

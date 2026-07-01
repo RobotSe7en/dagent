@@ -86,6 +86,7 @@ import {
   listDags,
   listMcpServers,
   listModels,
+  listProjectConversations,
   listProjectFiles,
   listProjects,
   listPythonTools,
@@ -1207,7 +1208,6 @@ export function App() {
       ? artifactPreviewError.message
       : null
   );
-  const chatHistory = useMemo(() => currentChatHistory(messages), [messages]);
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
@@ -1268,51 +1268,50 @@ export function App() {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void listProjects()
-      .then((items) => {
-        if (cancelled) return;
-        setProjects(items);
-        setSelectedProjectId((current) => (
-          current && items.some((project) => project.id === current)
-            ? current
-            : items[0]?.id ?? ''
-        ));
-        setProjectError(null);
-      })
-      .catch((exc) => {
-        if (!cancelled) setProjectError(exc instanceof Error ? exc.message : String(exc));
-      });
-    return () => {
-      cancelled = true;
-    };
+  const loadPersistedConversations = useCallback(async (projectItems: ApiProject[]) => {
+    const [standaloneConversations, projectConversationGroups] = await Promise.all([
+      listConversations(),
+      Promise.all(projectItems.map((project) => listProjectConversations(project.id))),
+    ]);
+    return [
+      ...standaloneConversations,
+      ...projectConversationGroups.flat(),
+    ];
   }, []);
 
   useEffect(() => {
     let cancelled = false;
-    void listConversations()
-      .then((items) => {
-        if (cancelled) return;
-        setConversations(items);
-        setSelectedConversationId((current) => (
-          current && items.some((conversation) => conversation.id === current)
-            ? current
-            : items.find((conversation) => !conversation.project_id)?.id ?? ''
-        ));
-        setProjectError(null);
-      })
+    void (async () => {
+      const items = await listProjects();
+      if (cancelled) return;
+      setProjects(items);
+      setSelectedProjectId((current) => (
+        current && items.some((project) => project.id === current)
+          ? current
+          : items[0]?.id ?? ''
+      ));
+      const conversationItems = await loadPersistedConversations(items);
+      if (cancelled) return;
+      setConversations(conversationItems);
+      setSelectedConversationId((current) => (
+        current && conversationItems.some((conversation) => conversation.id === current)
+          ? current
+          : conversationItems.find((conversation) => !conversation.project_id)?.id ?? ''
+      ));
+      setProjectError(null);
+    })()
       .catch((exc) => {
-        if (!cancelled) {
-          setConversations([]);
-          setSelectedConversationId('');
-          setProjectError(exc instanceof Error ? exc.message : String(exc));
-        }
+        if (cancelled) return;
+        setProjects([]);
+        setConversations([]);
+        setSelectedProjectId('');
+        setSelectedConversationId('');
+        setProjectError(exc instanceof Error ? exc.message : String(exc));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPersistedConversations]);
 
   const refreshProjectFiles = useCallback(async () => {
     const requestId = projectFilesRequestRef.current + 1;
@@ -2849,7 +2848,7 @@ export function App() {
     });
     const signal = beginStreamRequest();
     try {
-      const streamOptions = { signal, uploads: uploadsForRequest, project: conversationContext };
+      const streamOptions = { signal, uploads: uploadsForRequest, conversation: conversationContext };
       await streamTask(prompt, target, reviewLevel, {
         onStarted: () => {
           if (uploadsForRequest.length) {
@@ -3007,8 +3006,7 @@ export function App() {
       }, activeConversationContext ? null : runState, feedback, {
         signal,
         ...(activeConversationContext ? {
-          projectId: activeConversationContext.projectId,
-          conversationId: activeConversationContext.conversationId,
+          conversation: activeConversationContext,
         } : {}),
       });
     } catch (exc) {
@@ -3088,8 +3086,7 @@ export function App() {
       }, activeConversationContext ? null : runState, feedback, {
         signal,
         ...(activeConversationContext ? {
-          projectId: activeConversationContext.projectId,
-          conversationId: activeConversationContext.conversationId,
+          conversation: activeConversationContext,
         } : {}),
       });
     } catch (exc) {
@@ -3443,7 +3440,6 @@ export function App() {
         conversations={conversations}
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
-        history={chatHistory}
         systemSub={systemManagementSub}
         models={models}
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
@@ -3839,7 +3835,6 @@ function WorkspaceSidebar({
   conversations,
   creatingAgentPreset,
   creatingModel,
-  history,
   systemSub,
   models,
   onlyOfficeEnabled,
@@ -3914,7 +3909,6 @@ function WorkspaceSidebar({
   conversations: ApiConversation[];
   creatingAgentPreset: boolean;
   creatingModel: boolean;
-  history: Array<{ id: string; title: string; time: string }>;
   systemSub: SystemManagementSub;
   models: ModelProvider[];
   onlyOfficeEnabled: boolean;
@@ -4028,14 +4022,6 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleHistory = history.filter((item) => matchesSearchQuery(
-    [item.id, item.title, item.time],
-    normalizedHistoryQuery,
-  ));
-  const visibleProjects = projects.filter((project) => matchesSearchQuery(
-    [project.id, project.name, project.slug, project.description],
-    normalizedHistoryQuery,
-  ));
   const visibleConversations = conversations.filter((conversation) => !conversation.project_id && matchesSearchQuery(
     [
       conversation.id,
@@ -4050,6 +4036,24 @@ function WorkspaceSidebar({
     const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
     items.push(conversation);
     projectConversationsByProjectId.set(conversation.project_id, items);
+  });
+  function projectConversationMatchesSearch(conversation: ApiConversation, query: string) {
+    return matchesSearchQuery(
+      [conversation.id, conversation.title, conversation.status],
+      query,
+    );
+  }
+  function projectMatchesSearch(project: ApiProject, query: string) {
+    return matchesSearchQuery(
+      [project.id, project.name, project.slug, project.description],
+      query,
+    );
+  }
+  const visibleProjects = projects.filter((project) => {
+    const projectConversations = projectConversationsByProjectId.get(project.id) ?? [];
+    return projectMatchesSearch(project, normalizedHistoryQuery) || projectConversations.some((conversation) =>
+      projectConversationMatchesSearch(conversation, normalizedHistoryQuery)
+    );
   });
   const selectedSidebarConversation = conversations.find((conversation) => conversation.id === selectedConversationId) ?? null;
   const workspaceRootLabel = selectedSidebarConversation
@@ -4665,6 +4669,9 @@ function WorkspaceSidebar({
           <div className="sidebar-history-list">
             {visibleProjects.length ? visibleProjects.map((project) => {
               const projectConversations = projectConversationsByProjectId.get(project.id) ?? [];
+              const displayedProjectConversations = normalizedHistoryQuery && !projectMatchesSearch(project, normalizedHistoryQuery)
+                ? projectConversations.filter((conversation) => projectConversationMatchesSearch(conversation, normalizedHistoryQuery))
+                : projectConversations;
               const expanded = expandedProjectIds.has(project.id);
               return (
                 <div
@@ -4711,7 +4718,7 @@ function WorkspaceSidebar({
                   </div>
                   {expanded ? (
                     <div className="sidebar-project-conversation-tree">
-                      {projectConversations.length ? projectConversations.map((conversation) => (
+                      {displayedProjectConversations.length ? displayedProjectConversations.map((conversation) => (
                         <div className="sidebar-project-conversation-row" key={conversation.id}>
                           <button
                             className={conversation.id === selectedConversationId ? 'active' : ''}
@@ -4734,7 +4741,7 @@ function WorkspaceSidebar({
                           </button>
                         </div>
                       )) : (
-                        <div className="sidebar-empty-row">暂无会话</div>
+                        <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话'}</div>
                       )}
                     </div>
                   ) : null}
@@ -5094,7 +5101,9 @@ function ChatWorkspace({
   const title = currentChatTitle(messages);
   const sessionLabel = projectName && conversationTitle
     ? `${projectName} / ${conversationTitle}`
-    : 'local session';
+    : conversationTitle
+      ? conversationTitle
+      : 'local session';
   const [pendingUploadsExpanded, setPendingUploadsExpanded] = useState(false);
   const pendingUploadGroups = useMemo(() => buildPendingUploadGroups(pendingUploads), [pendingUploads]);
   const visiblePendingUploads = useMemo(
@@ -5759,6 +5768,9 @@ function ConversationDeleteDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const deleteMessage = conversation.project_id
+    ? '项目会话只会删除会话记录和运行历史，项目目录会保留。'
+    : '会话记录和该会话工作目录会同步删除。';
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除会话">
       <div className="project-dialog compact-project-dialog">
@@ -5773,7 +5785,7 @@ function ConversationDeleteDialog({
         </header>
         <div className="project-dialog-body danger-dialog-body">
           <AlertTriangle size={18} />
-          <p>会话记录和该会话工作目录会同步删除。</p>
+          <p>{deleteMessage}</p>
           <code>{project ? `${project.name} / ${conversation.id}` : conversation.id}</code>
         </div>
         <footer className="project-dialog-actions">
@@ -6780,16 +6792,6 @@ function currentChatTitle(messages: ChatMessage[]): string {
 
 function conversationTitleFromPrompt(prompt: string): string {
   return clipText(prompt.trim(), 40) || '新对话';
-}
-
-function currentChatHistory(messages: ChatMessage[]): Array<{ id: string; title: string; time: string }> {
-  const title = currentChatTitle(messages);
-  const userTurns = messages.filter((message) => message.role === 'user').length;
-  return [{
-    id: 'current',
-    title,
-    time: userTurns ? `${userTurns} turns` : '刚刚',
-  }];
 }
 
 function uniqueNodeId(dag: Dag) {

@@ -13,11 +13,18 @@ from api.storage.models import Conversation, Project, Review, Run, RunEvent, Run
 
 
 class _SQLiteConversationLock:
-    def __init__(self, store: SQLiteStore, conversation_id: str, owner: str) -> None:
+    def __init__(self, store: SQLiteStore, conversation_id: str, owner: str, lease_seconds: int) -> None:
         self._store = store
         self._conversation_id = conversation_id
         self._owner = owner
+        self._lease_seconds = lease_seconds
         self._released = False
+        self._stop = threading.Event()
+        self._heartbeat: threading.Thread | None = None
+        if lease_seconds > 0:
+            interval = max(1.0, min(30.0, lease_seconds / 3))
+            self._heartbeat = threading.Thread(target=self._renew_until_released, args=(interval,), daemon=True)
+            self._heartbeat.start()
 
     @property
     def conversation_id(self) -> str:
@@ -30,8 +37,18 @@ class _SQLiteConversationLock:
     def release(self) -> None:
         if self._released:
             return
+        self._stop.set()
+        if self._heartbeat is not None:
+            self._heartbeat.join(timeout=1)
         self._store._release_conversation_lock(self._conversation_id, self._owner)
         self._released = True
+
+    def _renew_until_released(self, interval: float) -> None:
+        while not self._stop.wait(interval):
+            try:
+                self._store._renew_conversation_lock(self._conversation_id, self._owner, self._lease_seconds)
+            except sqlite3.Error:
+                return
 
     def __enter__(self) -> _SQLiteConversationLock:
         return self
@@ -65,7 +82,15 @@ class SQLiteStore:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         with self._lock:
             self._conn.executescript(schema)
+            self._ensure_column("conversations", "owner_user_id", "TEXT NOT NULL DEFAULT 'default'")
+            self._ensure_column("conversation_locks", "expires_at", "INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("DELETE FROM conversation_locks WHERE expires_at <= ?", (_now(),))
             self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def create_project(
         self,
@@ -162,6 +187,7 @@ class SQLiteStore:
         title: str,
         workspace_uri: str,
         org_id: str = "default",
+        owner_user_id: str = "default",
     ) -> Conversation:
         now = _now()
         with self._lock:
@@ -169,11 +195,11 @@ class SQLiteStore:
                 self._conn.execute(
                     """
                     INSERT INTO conversations(
-                        id, project_id, org_id, title, status, workspace_uri, created_at, updated_at
+                        id, project_id, org_id, owner_user_id, title, status, workspace_uri, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
                     """,
-                    (conversation_id, project_id, org_id, title, workspace_uri, now, now),
+                    (conversation_id, project_id, org_id, owner_user_id, title, workspace_uri, now, now),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as exc:
@@ -181,9 +207,17 @@ class SQLiteStore:
             row = self._required_row("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
         return _conversation_from_row(row)
 
-    def list_conversations(self, project_id: str | None = None, *, org_id: str | None = None) -> list[Conversation]:
+    def list_conversations(
+        self,
+        project_id: str | None = None,
+        *,
+        standalone: bool = False,
+        org_id: str | None = None,
+    ) -> list[Conversation]:
         conditions = ["archived_at IS NULL"]
         params: list[object] = []
+        if standalone:
+            conditions.append("project_id IS NULL")
         if project_id is not None:
             conditions.append("project_id = ?")
             params.append(project_id)
@@ -206,31 +240,69 @@ class SQLiteStore:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _conversation_from_row(row)
 
-    def acquire_conversation_lock(self, conversation_id: str, *, owner: str) -> _SQLiteConversationLock:
+    def acquire_conversation_lock(
+        self,
+        conversation_id: str,
+        *,
+        owner: str,
+        lease_seconds: int = 300,
+    ) -> _SQLiteConversationLock:
         now = _now()
+        lease_seconds = max(0, int(lease_seconds))
+        expires_at = now + lease_seconds
         with self._lock:
             if self._conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is None:
                 raise KeyError(f"Conversation '{conversation_id}' not found.")
+            self._conn.execute(
+                "DELETE FROM conversation_locks WHERE conversation_id = ? AND expires_at <= ?",
+                (conversation_id, now),
+            )
             try:
                 self._conn.execute(
                     """
-                    INSERT INTO conversation_locks(conversation_id, owner, acquired_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO conversation_locks(conversation_id, owner, acquired_at, expires_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (conversation_id, owner, now),
+                    (conversation_id, owner, now, expires_at),
                 )
                 self._conn.commit()
             except sqlite3.IntegrityError as exc:
                 self._conn.rollback()
                 active = self._conn.execute(
-                    "SELECT owner FROM conversation_locks WHERE conversation_id = ?",
+                    "SELECT owner, expires_at FROM conversation_locks WHERE conversation_id = ?",
                     (conversation_id,),
                 ).fetchone()
                 if active is None:
                     raise
+                if active["expires_at"] <= now:
+                    self._conn.execute("DELETE FROM conversation_locks WHERE conversation_id = ?", (conversation_id,))
+                    self._conn.execute(
+                        """
+                        INSERT INTO conversation_locks(conversation_id, owner, acquired_at, expires_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (conversation_id, owner, now, expires_at),
+                    )
+                    self._conn.commit()
+                    return _SQLiteConversationLock(self, conversation_id, owner, lease_seconds)
                 if active["owner"] != owner:
                     raise ConversationBusyError(f"Conversation '{conversation_id}' is already active.") from exc
-        return _SQLiteConversationLock(self, conversation_id, owner)
+                self._conn.execute(
+                    """
+                    UPDATE conversation_locks
+                    SET acquired_at = ?, expires_at = ?
+                    WHERE conversation_id = ? AND owner = ?
+                    """,
+                    (now, expires_at, conversation_id, owner),
+                )
+                self._conn.commit()
+        return _SQLiteConversationLock(self, conversation_id, owner, lease_seconds)
+
+    def touch_conversation(self, conversation_id: str, *, updated_at: int | None = None) -> None:
+        now = _now() if updated_at is None else updated_at
+        with self._lock:
+            self._touch_conversation_locked(conversation_id, now)
+            self._conn.commit()
 
     def _release_conversation_lock(self, conversation_id: str, owner: str) -> None:
         with self._lock:
@@ -239,6 +311,35 @@ class SQLiteStore:
                 (conversation_id, owner),
             )
             self._conn.commit()
+
+    def _renew_conversation_lock(self, conversation_id: str, owner: str, lease_seconds: int) -> None:
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE conversation_locks
+                SET expires_at = ?
+                WHERE conversation_id = ? AND owner = ?
+                """,
+                (now + lease_seconds, conversation_id, owner),
+            )
+            self._conn.commit()
+
+    def _touch_conversation_locked(self, conversation_id: str, updated_at: int) -> None:
+        self._conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (updated_at, conversation_id),
+        )
+
+    def _touch_run_conversation_locked(self, run_id: str, updated_at: int) -> None:
+        self._conn.execute(
+            """
+            UPDATE conversations
+            SET updated_at = ?
+            WHERE id = (SELECT conversation_id FROM runs WHERE id = ?)
+            """,
+            (updated_at, run_id),
+        )
 
     def create_run(
         self,
@@ -365,6 +466,7 @@ class SQLiteStore:
                 """,
                 (status, started_at, completed_at, now, run_id),
             )
+            self._touch_run_conversation_locked(run_id, now)
             self._conn.commit()
 
     def create_run_stream(
@@ -391,6 +493,8 @@ class SQLiteStore:
                 """,
                 (stream_id, run_id, project_id, conversation_id, org_id, user_id, kind, status, now),
             )
+            if conversation_id is not None:
+                self._touch_conversation_locked(conversation_id, now)
             self._conn.commit()
             row = self._required_row("SELECT * FROM run_streams WHERE id = ?", (stream_id,))
         return _run_stream_from_row(row)
@@ -494,6 +598,7 @@ class SQLiteStore:
                 """,
                 (state_json, output_text, now, run_id),
             )
+            self._touch_run_conversation_locked(run_id, now)
             self._conn.commit()
 
     def get_run_state(self, run_id: str) -> RunState | None:
@@ -510,6 +615,7 @@ class SQLiteStore:
                 "UPDATE runs SET error_json = ?, status = 'failed', updated_at = ? WHERE id = ?",
                 (error_json, now, run_id),
             )
+            self._touch_run_conversation_locked(run_id, now)
             self._conn.commit()
 
     def upsert_review(
@@ -596,6 +702,7 @@ def _conversation_from_row(row: sqlite3.Row) -> Conversation:
         id=row["id"],
         project_id=row["project_id"],
         org_id=row["org_id"],
+        owner_user_id=row["owner_user_id"],
         title=row["title"],
         status=row["status"],
         workspace_uri=row["workspace_uri"],

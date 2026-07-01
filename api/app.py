@@ -1046,7 +1046,7 @@ async def create_conversation(request: ConversationCreateRequest) -> dict[str, A
 
 @app.get("/conversations")
 async def list_conversations() -> dict[str, Any]:
-    conversations = await run_in_threadpool(state.get_store().list_conversations)
+    conversations = await run_in_threadpool(state.get_store().list_conversations, standalone=True)
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
 
 
@@ -1499,7 +1499,7 @@ def _prune_dag_artifact_uploads(dag: UserDAG) -> None:
 
 @app.get("/dag-runs/{run_id}")
 async def get_dag_run(run_id: str) -> dict[str, Any]:
-    dag_run = _dag_run_from_state(run_id)
+    dag_run = await _dag_run_from_state(run_id)
     if dag_run is None:
         raise HTTPException(status_code=404, detail="DAGRun not found.")
     return {"dag_run": dag_run.model_dump(mode="json")}
@@ -1507,7 +1507,7 @@ async def get_dag_run(run_id: str) -> dict[str, Any]:
 
 @app.get("/runs/{run_id}/artifacts")
 async def get_run_artifacts(run_id: str) -> dict[str, Any]:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run not found.")
     return _run_artifacts_response(run_state).model_dump(mode="json")
@@ -1515,7 +1515,7 @@ async def get_run_artifacts(run_id: str) -> dict[str, Any]:
 
 @app.get("/runs/{run_id}/artifacts/preview")
 async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run not found.")
     file_path = _resolve_run_artifact_path(run_state, path)
@@ -1541,7 +1541,7 @@ async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
 
 @app.get("/runs/{run_id}/artifacts/download")
 async def download_run_artifact(run_id: str, path: str) -> FileResponse:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run not found.")
     file_path = _resolve_run_artifact_path(run_state, path)
@@ -1557,7 +1557,7 @@ async def download_run_artifact(run_id: str, path: str) -> FileResponse:
 
 @app.get("/runs/{run_id}/artifacts/onlyoffice/config")
 async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str, Any]:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is None:
         raise HTTPException(status_code=404, detail="Run not found.")
     return _onlyoffice_config_response(run_state, path).model_dump(mode="json")
@@ -1571,7 +1571,7 @@ async def get_onlyoffice_file(token: str) -> FileResponse:
         file_path = _resolve_project_file_path(workspace, payload["path"])
         not_found_detail = "Project file not found."
     else:
-        run_state = _run_state_from_state(payload["run_id"])
+        run_state = await _run_state_from_state(payload["run_id"])
         if run_state is None:
             raise HTTPException(status_code=404, detail="Run not found.")
         file_path = _resolve_run_artifact_path(run_state, payload["path"])
@@ -1593,7 +1593,7 @@ async def onlyoffice_callback(token: str) -> dict[str, int]:
 
 @app.get("/dag-runs/{run_id}/artifacts")
 async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is None or run_state.kind != "static_dag":
         raise HTTPException(status_code=404, detail="DAGRun not found.")
     return _run_artifacts_response(run_state).model_dump(mode="json")
@@ -3518,11 +3518,8 @@ async def resume_message_stream(request: ResumeReviewRequest) -> StreamingRespon
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-def _run_state_from_state(run_id: str) -> RunState | None:
-    try:
-        run_state = state.get_store().get_run_state(run_id)
-    except Exception:
-        run_state = None
+async def _run_state_from_state(run_id: str) -> RunState | None:
+    run_state = await run_in_threadpool(state.get_store().get_run_state, run_id)
     if run_state is not None:
         return run_state
     if state.runner is None:
@@ -3530,8 +3527,8 @@ def _run_state_from_state(run_id: str) -> RunState | None:
     return state.runner.run_state(run_id)
 
 
-def _dag_run_from_state(run_id: str) -> DAGRun | None:
-    run_state = _run_state_from_state(run_id)
+async def _dag_run_from_state(run_id: str) -> DAGRun | None:
+    run_state = await _run_state_from_state(run_id)
     if (
         run_state is None
         or run_state.kind != "static_dag"
@@ -4216,7 +4213,7 @@ def _decode_utf8_preview(content: bytes, *, truncated: bool) -> str:
 
 @app.get("/runs/{run_id}/trace")
 async def get_run_trace(run_id: str) -> dict[str, Any]:
-    run_state = _run_state_from_state(run_id)
+    run_state = await _run_state_from_state(run_id)
     if run_state is not None and run_state.trace is not None:
         return {"run_id": run_id, "trace": run_state.trace.model_dump(mode="json")}
 

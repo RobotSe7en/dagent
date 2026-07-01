@@ -19,6 +19,7 @@ export interface ApiConversation {
   id: string;
   project_id: string | null;
   org_id: string;
+  owner_user_id: string;
   title: string;
   workspace_uri: string;
   status: string;

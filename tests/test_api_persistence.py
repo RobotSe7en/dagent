@@ -179,6 +179,27 @@ def test_sqlite_store_persists_standalone_conversation(tmp_path: Path) -> None:
     assert recovered_run.workspace_uri == workspace_uri
 
 
+def test_sqlite_store_persists_conversation_owner(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+
+    conversation = store.create_conversation(
+        conversation_id="conv_owner",
+        project_id=None,
+        title="Owned chat",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+        owner_user_id="user_123",
+    )
+    store.close()
+
+    reopened = SQLiteStore(tmp_path / "api.sqlite3")
+    recovered = reopened.get_conversation("conv_owner")
+
+    assert conversation.owner_user_id == "user_123"
+    assert recovered is not None
+    assert recovered.owner_user_id == "user_123"
+    reopened.close()
+
+
 def test_sqlite_conversation_lock_spans_store_instances(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     first = SQLiteStore(db_path)
@@ -201,6 +222,24 @@ def test_sqlite_conversation_lock_spans_store_instances(tmp_path: Path) -> None:
     second_lock.release()
     first.close()
     second.close()
+
+
+def test_sqlite_conversation_lock_can_recover_after_expired_owner_crash(tmp_path: Path) -> None:
+    db_path = tmp_path / "api.sqlite3"
+    first = SQLiteStore(db_path)
+    first.create_conversation(
+        conversation_id="conv_123",
+        project_id=None,
+        title="Inbox",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+    )
+    first.acquire_conversation_lock("conv_123", owner="crashed", lease_seconds=0)
+    first.close()
+
+    reopened = SQLiteStore(db_path)
+    lock = reopened.acquire_conversation_lock("conv_123", owner="recovered")
+    lock.release()
+    reopened.close()
 
 
 def test_run_events_have_durable_service_sequence(tmp_path: Path) -> None:
@@ -239,6 +278,44 @@ def test_run_events_have_durable_service_sequence(tmp_path: Path) -> None:
     assert second.event_id == 2
     assert second.stream_seq == 0
     assert store.list_run_events("run_123", after_event_id=1) == [second]
+
+
+def test_run_stream_activity_touches_conversation_updated_at(tmp_path: Path, monkeypatch) -> None:
+    import api.storage.sqlite as sqlite_storage
+
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 100)
+    conversation = store.create_conversation(
+        conversation_id="conv_touch",
+        project_id=None,
+        title="Inbox",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+    )
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 110)
+    store.create_run(
+        run_id="run_touch",
+        project_id=None,
+        conversation_id=conversation.id,
+        user_id="user_123",
+        kind="tool",
+        status="running",
+        workspace_uri=conversation.workspace_uri,
+    )
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 120)
+
+    store.create_run_stream(
+        stream_id="stream_touch",
+        run_id="run_touch",
+        project_id=None,
+        conversation_id=conversation.id,
+        user_id="user_123",
+        kind="tool",
+        status="running",
+    )
+
+    touched = store.get_conversation(conversation.id)
+    assert touched is not None
+    assert touched.updated_at == 120
 
 
 def test_conversation_lock_is_single_writer_and_releasable(tmp_path: Path) -> None:
@@ -579,6 +656,11 @@ def test_api_creates_and_lists_project_conversations(persistence_client) -> None
 
 
 def test_api_creates_and_lists_standalone_conversations(persistence_client) -> None:
+    project = persistence_client.post("/projects", json={"name": "Demo", "slug": "demo"}).json()["project"]
+    project_conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Project chat"},
+    ).json()["conversation"]
     response = persistence_client.post("/conversations", json={"title": "Inbox chat"})
     listed = persistence_client.get("/conversations")
 
@@ -587,10 +669,12 @@ def test_api_creates_and_lists_standalone_conversations(persistence_client) -> N
     workspace_path = Path(unquote(urlparse(conversation["workspace_uri"]).path))
     assert conversation["id"].startswith("conv_")
     assert conversation["project_id"] is None
+    assert conversation["owner_user_id"] == "default"
     assert conversation["title"] == "Inbox chat"
     assert workspace_path.is_dir()
     assert workspace_path.name == "workspace"
     assert workspace_path.parent.name == conversation["id"]
+    assert project_conversation["project_id"] == project["id"]
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
 
@@ -942,6 +1026,18 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert "notes/shared.txt" in files
     assert preview_response.status_code == 200
     assert preview_response.json()["content"] == "hello"
+
+
+def test_api_run_trace_does_not_hide_store_read_errors(persistence_client, monkeypatch) -> None:
+    store = state.get_store()
+
+    def fail_get_run_state(run_id: str) -> RunState | None:
+        raise RuntimeError(f"storage unavailable for {run_id}")
+
+    monkeypatch.setattr(store, "get_run_state", fail_get_run_state)
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        persistence_client.get("/runs/run_missing/trace")
 
 
 def test_api_project_message_stream_rejects_client_workspace_root(persistence_client) -> None:
