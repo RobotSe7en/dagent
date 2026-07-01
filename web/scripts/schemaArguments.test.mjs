@@ -210,7 +210,8 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /\.capability-code-block/);
   assert.match(css, /\.chat-workspace\s*\{[^}]*--chat-content-max-width:\s*1040px;/s);
   assert.match(css, /\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-content-max-width:\s*1280px;/s);
-  assert.match(css, /\.conversation-frame\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
+  assert.match(css, /\.chat-workspace\.with-artifacts\s*\{[^}]*--chat-user-avatar-safe-space:\s*43px;/s);
+  assert.match(css, /\.conversation-frame\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);[^}]*padding:\s*28px var\(--chat-user-avatar-safe-space,\s*0px\) 36px 0;/s);
   assert.match(css, /\.composer-card\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
   assert.match(css, /\.composer-card textarea\s*\{[^}]*resize:\s*none;/s);
   assert.match(css, /\.sidebar-history-head button svg\s*\{[^}]*display:\s*block;/s);

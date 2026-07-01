@@ -1249,6 +1249,10 @@ button:focus-visible {
   --chat-content-max-width: 1280px;
 }
 
+.chat-workspace.with-artifacts {
+  --chat-user-avatar-safe-space: 43px;
+}
+
 .chat-main {
   min-width: 0;
   min-height: 0;
@@ -1264,12 +1268,13 @@ button:focus-visible {
 }
 
 .conversation-frame {
+  box-sizing: border-box;
   width: min(var(--chat-content-max-width), calc(100% - 56px));
   display: flex;
   flex-direction: column;
   gap: 26px;
   margin: 0 auto;
-  padding: 28px 0 36px;
+  padding: 28px var(--chat-user-avatar-safe-space, 0px) 36px 0;
 }
 
 .conversation-meta {
@@ -8231,6 +8236,10 @@ pre.readonly-field {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .chat-workspace.with-artifacts {
+    --chat-user-avatar-safe-space: 0px;
+  }
+
   .artifact-drawer,
   .artifact-rail {
     display: none;
@@ -8244,7 +8253,7 @@ pre.readonly-field {
   }
 
   .conversation-frame {
-    padding-top: 16px;
+    padding: 16px 0 36px;
   }
 
   .assistant-row {
