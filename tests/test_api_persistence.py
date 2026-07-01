@@ -15,8 +15,9 @@ from api.storage import (
     SQLiteStore,
 )
 from api.workspaces import LocalWorkspaceStore
-from dagent import DAG, PendingReview, RunState, Runner
+from dagent import DAG, PendingReview, RunResult, RunState, RunStreamEvent, Runner
 from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.result import RunFinishedData, RunStartedData
 from dagent.schemas import RunTrace, RunTraceNode
 
 
@@ -1685,6 +1686,43 @@ def test_api_saved_dag_crud_persists_static_dag_spec(persistence_client) -> None
     assert listed_after_delete.json()["saved_dags"] == []
 
 
+def test_api_saved_dag_payload_falls_back_to_valid_empty_spec(
+    persistence_client,
+) -> None:
+    created = persistence_client.post(
+        "/saved-dags",
+        json={
+            "name": "Corruptible",
+            "spec": {
+                "id": "corruptible",
+                "name": "Corruptible",
+                "nodes": [
+                    {
+                        "id": "write",
+                        "target": "tool.write_file",
+                        "inputs": {"path": "reports/summary.md", "content": "hello"},
+                        "boundary": {"allowed_paths": ["."]},
+                    }
+                ],
+                "edges": [],
+            },
+        },
+    )
+    saved = created.json()["saved_dag"]
+    store = state.get_store()
+    store._conn.execute("UPDATE saved_dags SET spec_json = ? WHERE id = ?", ("{bad json", saved["id"]))
+    store._conn.commit()
+
+    response = persistence_client.get(f"/saved-dags/{saved['id']}")
+    payload = response.json()["saved_dag"]["spec"]
+
+    assert response.status_code == 200
+    assert payload["id"] == saved["id"]
+    assert payload["name"] == "Corruptible"
+    assert payload["nodes"] == []
+    assert payload["edges"] == []
+
+
 def test_api_saved_dag_stream_uses_conversation_workspace_and_persists_run(
     persistence_client,
 ) -> None:
@@ -2055,6 +2093,65 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
     assert updated["draft_dag"]["status"] == "completed"
     assert isinstance(updated["draft_dag"]["version"], int)
     assert updated["draft_dag"]["nodes"]
+
+
+def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(
+    persistence_client,
+) -> None:
+    class RunnerWithoutDag:
+        enable_validation = False
+
+        async def stream(self, *args, **kwargs):
+            run_id = "run_without_dag"
+            state_without_dag = RunState(run_id=run_id, kind="dynamic_dag", status="completed")
+            yield RunStreamEvent(type="run.started", data=RunStartedData(kind="dynamic_dag"), run_id=run_id)
+            yield RunStreamEvent(
+                type="run.finished",
+                data=RunFinishedData(result=RunResult(state=state_without_dag, output_text="done")),
+                run_id=run_id,
+            )
+
+        def run_state(self, run_id: str):
+            return None
+
+        def close(self) -> None:
+            pass
+
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+            "draft_dag": {
+                "dag_id": "existing",
+                "task_id": "existing",
+                "version": 1,
+                "status": "draft",
+                "nodes": [],
+                "edges": [],
+            },
+        },
+    ).json()["session"]
+    state.runner = RunnerWithoutDag()
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "finish without a dag"}],
+            "target": "dag",
+            "conversation_id": conversation["id"],
+        },
+    )
+    events = _sse_events(response.text)
+    updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
+
+    assert response.status_code == 200
+    assert events[-1]["type"] == "run.finished"
+    assert updated["draft_dag"]["dag_id"] == "existing"
 
 
 def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(

@@ -1184,6 +1184,8 @@ export function App() {
   const conversationHydrationRequestRef = useRef(0);
   const orchestrationHydrationRequestRef = useRef(0);
   const orchestrationHydratedKeyRef = useRef('');
+  const conversationsRef = useRef<ApiConversation[]>([]);
+  const savedDagsRef = useRef<SavedDag[]>([]);
   const projectFilesRequestRef = useRef(0);
   const projectFilePreviewRequestRef = useRef(0);
   const [capabilities, setCapabilities] = useState<CapabilityDefinition[]>([]);
@@ -1205,6 +1207,7 @@ export function App() {
   const [editorRunTimeline, setEditorRunTimeline] = useState<RunTranscriptItem[]>([]);
   const [editorMessage, setEditorMessage] = useState('');
   const [editorRunning, setEditorRunning] = useState(false);
+  const editorRunInFlightRef = useRef(false);
   const [editorRunInputText, setEditorRunInputText] = useState('');
   const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
@@ -1327,6 +1330,10 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
+  const orchestrationConversationIdsKey = useMemo(() => conversations
+    .filter((conversation) => conversation.kind === 'dynamic_dag' || conversation.kind === 'static_dag')
+    .map((conversation) => `${conversation.kind}:${conversation.project_id ?? ''}:${conversation.id}`)
+    .join('|'), [conversations]);
   const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
   const conversationDeleteTarget = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
@@ -1375,6 +1382,14 @@ export function App() {
       if (runArtifactRequestRef.current === requestId) setRunArtifactLoading(false);
     }
   }, [activeRunId]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
+
+  useEffect(() => {
+    savedDagsRef.current = savedDags;
+  }, [savedDags]);
 
   useEffect(() => {
     void refreshRunArtifacts();
@@ -2480,9 +2495,16 @@ export function App() {
         return;
       }
 
-      const saved = session.saved_dag_id
-        ? savedDags.find((item) => item.id === session.saved_dag_id) ?? null
+      let saved = session.saved_dag_id
+        ? savedDagsRef.current.find((item) => item.id === session.saved_dag_id) ?? null
         : null;
+      if (session.saved_dag_id && !saved) {
+        const latestSavedDags = await listSavedDags();
+        if (orchestrationHydrationRequestRef.current !== requestId) return;
+        savedDagsRef.current = latestSavedDags;
+        setSavedDags(latestSavedDags);
+        saved = latestSavedDags.find((item) => item.id === session.saved_dag_id) ?? null;
+      }
       const draftDag = runtimeDagFromUnknown(session.draft_dag);
       const baseSpec = saved?.spec ?? createEmptyUserDag();
       const baseLayout = saved?.layout ?? {};
@@ -2527,7 +2549,6 @@ export function App() {
     }
   }, [
     nextDynamicTimelineOrder,
-    savedDags,
     setEditorUserDagAndRuntimeDag,
     setOrderedDynamicFinalAnswer,
     syncEditorDag,
@@ -2536,17 +2557,19 @@ export function App() {
   useEffect(() => {
     if (activeWorkspace !== 'orchestration' || dynamicRunning || editorRunning) return;
     const kind: ApiConversation['kind'] = orchestrationMode === 'dynamic' ? 'dynamic_dag' : 'static_dag';
-    const current = selectedConversation?.kind === kind ? selectedConversation : null;
+    const conversationItems = conversationsRef.current;
+    const current = selectedConversationId
+      ? conversationItems.find((conversation) => conversation.id === selectedConversationId && conversation.kind === kind) ?? null
+      : null;
     const preferred = current
-      ?? conversations.find((conversation) => (
+      ?? conversationItems.find((conversation) => (
         conversation.kind === kind
         && (selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id)
       ))
-      ?? conversations.find((conversation) => conversation.kind === kind)
+      ?? conversationItems.find((conversation) => conversation.kind === kind)
       ?? null;
     if (!preferred) return;
-    const savedRevisionKey = savedDags.map((item) => `${item.id}:${item.revision}`).join('|');
-    const hydrateKey = `${kind}:${preferred.id}:${preferred.updated_at}:${preferred.last_run_id ?? ''}:${savedRevisionKey}`;
+    const hydrateKey = `${kind}:${preferred.id}`;
     if (orchestrationHydratedKeyRef.current === hydrateKey) return;
     if (preferred.id !== selectedConversationId) {
       setSelectedConversationId(preferred.id);
@@ -2557,13 +2580,11 @@ export function App() {
     void hydrateOrchestrationConversation(preferred);
   }, [
     activeWorkspace,
-    conversations,
     dynamicRunning,
     editorRunning,
     hydrateOrchestrationConversation,
+    orchestrationConversationIdsKey,
     orchestrationMode,
-    savedDags,
-    selectedConversation,
     selectedConversationId,
     selectedProjectId,
   ]);
@@ -2976,6 +2997,10 @@ export function App() {
     setPendingChatUploads((current) => current.filter((_, itemIndex) => !removeIndexes.has(itemIndex)));
   };
 
+  function isOrchestrationSessionConflict(exc: unknown): boolean {
+    return exc instanceof Error && exc.message.includes('Orchestration session already exists');
+  }
+
   const ensureOrchestrationContext = async (
     kind: OrchestrationSessionKind,
     title: string,
@@ -3008,16 +3033,25 @@ export function App() {
       }
 
       let session = await getOrchestrationSessionByConversation(conversation.id);
+      let createdSession = false;
       if (!session) {
-        session = await createOrchestrationSession({
-          conversation_id: conversation.id,
-          project_id: conversation.project_id,
-          kind,
-          saved_dag_id: options.savedDagId,
-          draft_dag: options.draftDag,
-          ui_state: options.uiState ?? {},
-        });
-      } else {
+        try {
+          session = await createOrchestrationSession({
+            conversation_id: conversation.id,
+            project_id: conversation.project_id,
+            kind,
+            saved_dag_id: options.savedDagId,
+            draft_dag: options.draftDag,
+            ui_state: options.uiState ?? {},
+          });
+          createdSession = true;
+        } catch (exc) {
+          if (!isOrchestrationSessionConflict(exc)) throw exc;
+          session = await getOrchestrationSessionByConversation(conversation.id);
+          if (!session) throw exc;
+        }
+      }
+      if (session && !createdSession) {
         const patch: {
           saved_dag_id?: string | null;
           draft_dag?: Record<string, unknown> | null;
@@ -3030,6 +3064,7 @@ export function App() {
           session = await updateOrchestrationSession(session.id, patch);
         }
       }
+      if (!session) throw new Error('Orchestration session not found.');
 
       return {
         conversation,
@@ -3072,34 +3107,35 @@ export function App() {
   };
 
   const runEditorSpec = async () => {
-    if (editorRunning) return;
-    const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
-    const parsedInput = parseDagRunInput(editorRunInputText);
-    if (!parsedInput.ok) {
-      setEditorMessage(parsedInput.message);
-      return;
-    }
-    const saved = await ensureEditorDagSavedForRun(spec);
-    if (!saved) return;
-    const validation = validateUserDagDraft(spec);
-    if (validation) return;
-    const context = await ensureOrchestrationContext(
-      'static_dag',
-      saved.name || saved.spec.name || spec.name || '静态编排',
-      {
-        targetProjectId: saved.project_id ?? null,
-        savedDagId: saved.id,
-        draftDag: runtimeDagFromUserDag(saved.spec) as unknown as Record<string, unknown>,
-        uiState: { selectedNodeId: editorSelectedId },
-      },
-    );
-    if (!context) return;
+    if (editorRunning || editorRunInFlightRef.current) return;
+    editorRunInFlightRef.current = true;
     setEditorRunning(true);
-    setEditorTrace([]);
-    setEditorRun(null);
-    setEditorRunTimeline([]);
-    setEditorMessage(`Running ${saved.name || saved.spec.name || spec.name || 'DAG'}...`);
     try {
+      const spec = userDagFromRuntimeDag(editorUserDag, editorDag);
+      const parsedInput = parseDagRunInput(editorRunInputText);
+      if (!parsedInput.ok) {
+        setEditorMessage(parsedInput.message);
+        return;
+      }
+      const saved = await ensureEditorDagSavedForRun(spec);
+      if (!saved) return;
+      const validation = validateUserDagDraft(spec);
+      if (validation) return;
+      const context = await ensureOrchestrationContext(
+        'static_dag',
+        saved.name || saved.spec.name || spec.name || '静态编排',
+        {
+          targetProjectId: saved.project_id ?? null,
+          savedDagId: saved.id,
+          draftDag: runtimeDagFromUserDag(saved.spec) as unknown as Record<string, unknown>,
+          uiState: { selectedNodeId: editorSelectedId },
+        },
+      );
+      if (!context) return;
+      setEditorTrace([]);
+      setEditorRun(null);
+      setEditorRunTimeline([]);
+      setEditorMessage(`Running ${saved.name || saved.spec.name || spec.name || 'DAG'}...`);
       await runSavedDagStream(saved.id, {
         onTrace: (event) => {
           setEditorTrace((items) => [...items, event]);
@@ -3145,6 +3181,7 @@ export function App() {
     } catch (exc) {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
     } finally {
+      editorRunInFlightRef.current = false;
       setEditorRunning(false);
     }
   };

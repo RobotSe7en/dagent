@@ -1520,7 +1520,7 @@ async def update_orchestration_session(
             session_id,
             saved_dag_id=request.saved_dag_id,
             draft_dag_json=None if request.draft_dag is None else _json_object(request.draft_dag),
-            ui_state_json=None if request.ui_state is None else _json_object(request.ui_state),
+            ui_state_json=_json_object(request.ui_state),
             update_saved_dag_id=update_saved_dag_id,
             update_draft_dag=update_draft_dag,
             update_ui_state=update_ui_state,
@@ -1869,11 +1869,15 @@ def _user_dag_from_saved(saved: SavedDag) -> UserDAG:
         raise HTTPException(status_code=500, detail="Stored DAG spec is invalid.") from exc
 
 
+def _empty_user_dag_payload(saved: SavedDag) -> dict[str, Any]:
+    return UserDAG(id=saved.id, name=saved.name or "Untitled DAG").model_dump(mode="json")
+
+
 def _saved_dag_payload(saved: SavedDag) -> dict[str, Any]:
     payload = saved.model_dump(mode="json")
     payload.pop("spec_json")
     payload.pop("layout_json")
-    payload["spec"] = _json_from_storage(saved.spec_json, fallback={})
+    payload["spec"] = _json_from_storage(saved.spec_json, fallback=_empty_user_dag_payload(saved))
     payload["layout"] = _json_from_storage(saved.layout_json, fallback={})
     return payload
 
@@ -3735,7 +3739,7 @@ async def _persisted_run_events(
                 result = getattr(event.data, "result", None)
                 if result is not None and run_id is not None:
                     completed_at = int(time.time())
-                    if context.orchestration_session_id is not None:
+                    if context.orchestration_session_id is not None and result.state.dag is not None:
                         await run_in_threadpool(
                             store.update_orchestration_session,
                             context.orchestration_session_id,
