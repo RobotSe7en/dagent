@@ -1452,6 +1452,26 @@ button:focus-visible {
   transform: none;
 }
 
+.assistant-turn-frame .process-summary-card[open] {
+  background: #fbfcfd;
+}
+
+.assistant-turn-frame .process-summary-body {
+  display: grid;
+  gap: 0;
+  background: #fbfcfd;
+}
+
+.assistant-turn-frame .process-summary-body > .think-block,
+.assistant-turn-frame .process-summary-body > .timeline-card,
+.assistant-turn-frame .process-summary-body > .capability-event-card {
+  background: #fbfcfd;
+}
+
+.assistant-turn-frame .process-summary-body > :last-child {
+  border-bottom: 0;
+}
+
 details > summary {
   list-style: none;
 }
@@ -6080,6 +6100,34 @@ details[open] .timeline-chevron {
   border-color: #fca5a5;
   color: var(--accent-red);
   background: #fef2f2;
+}
+
+.process-summary-card.process-summary-warning {
+  background: #fff7ed;
+}
+
+.process-summary-card.process-summary-warning .timeline-card-head svg:first-child {
+  color: #d97706;
+}
+
+.process-summary-card.process-summary-complete .timeline-card-head svg:first-child {
+  color: #16a34a;
+}
+
+.process-summary-head span {
+  max-width: min(58%, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.process-summary-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-raised);
 }
 
 .timeline-section,

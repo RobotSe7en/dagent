@@ -825,12 +825,12 @@ export interface ApiRunResult {
   state?: ApiRunState | null;
 }
 
-interface FinishedPayload {
+export interface FinishedPayload {
   type: 'run.finished';
   result: ApiRunResult;
 }
 
-interface StreamEnvelope {
+export interface StreamEnvelope {
   type: string;
   data?: Record<string, unknown>;
   sequence?: number;
@@ -847,7 +847,7 @@ export interface ApiRunEvent {
   created_at: number;
 }
 
-interface StreamHandlers {
+export interface StreamHandlers {
   onStarted?: (event: RunStartedStreamEvent) => void;
   onDag?: (dag: Dag) => void;
   onTrace?: (event: TraceLogEvent) => void;
@@ -1059,60 +1059,68 @@ async function readStream(response: Response, handlers: StreamHandlers) {
       const line = frame.split('\n').find((item) => item.startsWith('data: '));
       if (!line) continue;
       const event = JSON.parse(line.slice(6)) as StreamEnvelope;
-      const data = isRecord(event.data) ? event.data : {};
-      if (event.type === 'run.started') handlers.onStarted?.(runStartedPayload(data));
-      if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
-      if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
-      if (event.type === 'capability.call.started') {
-        handlers.onCapability?.({
-          type: 'capability.call.started',
-          invocation_id: String(data.invocation_id ?? ''),
-          capability_id: String(data.capability_id ?? ''),
-          arguments: isRecord(data.arguments) ? data.arguments : {},
-          ...capabilityContext(data),
-        });
-      }
-      if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
-        handlers.onCapability?.({
-          type: event.type,
-          invocation_id: String(data.invocation_id ?? ''),
-          capability_id: String(data.capability_id ?? ''),
-          content: String(data.content ?? ''),
-          ...capabilityContext(data),
-        });
-      }
-      if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(responseDeltaPayload(data));
-      if (event.type === 'response.content.delta') handlers.onContent?.(responseDeltaPayload(data));
-      if (event.type === 'validation.retry') {
-        handlers.onRetry?.({
-          type: 'validation.retry',
-          summary: String(data.summary ?? ''),
-          issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
-          reason: String(data.reason ?? ''),
-        });
-      }
-      if (event.type === 'validation.passed') {
-        handlers.onRetry?.({
-          type: 'validation.passed',
-          passed: true,
-          summary: String(data.summary ?? ''),
-          issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
-        });
-      }
-      if (event.type === 'validation.started') {
-        handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
-      }
-      if (event.type === 'review.required') {
-        const review = reviewPayload(data);
-        handlers.onReview?.(review);
-      }
-      if (event.type === 'run.finished' && data.result) {
-        const result = data.result as ApiRunResult;
-        handlers.onDone?.({ type: 'run.finished', result });
-      }
-      if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));
+      dispatchStreamEnvelope(event, handlers, seenTraceIds);
     }
   }
+}
+
+export function dispatchStreamEnvelope(
+  event: StreamEnvelope,
+  handlers: StreamHandlers,
+  seenTraceIds: Set<string> = new Set(),
+): void {
+  const data = isRecord(event.data) ? event.data : {};
+  if (event.type === 'run.started') handlers.onStarted?.(runStartedPayload(data));
+  if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
+  if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
+  if (event.type === 'capability.call.started') {
+    handlers.onCapability?.({
+      type: 'capability.call.started',
+      invocation_id: String(data.invocation_id ?? ''),
+      capability_id: String(data.capability_id ?? ''),
+      arguments: isRecord(data.arguments) ? data.arguments : {},
+      ...capabilityContext(data),
+    });
+  }
+  if (event.type === 'capability.call.completed' || event.type === 'capability.call.failed') {
+    handlers.onCapability?.({
+      type: event.type,
+      invocation_id: String(data.invocation_id ?? ''),
+      capability_id: String(data.capability_id ?? ''),
+      content: String(data.content ?? ''),
+      ...capabilityContext(data),
+    });
+  }
+  if (event.type === 'response.reasoning.delta') handlers.onReasoning?.(responseDeltaPayload(data));
+  if (event.type === 'response.content.delta') handlers.onContent?.(responseDeltaPayload(data));
+  if (event.type === 'validation.retry') {
+    handlers.onRetry?.({
+      type: 'validation.retry',
+      summary: String(data.summary ?? ''),
+      issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
+      reason: String(data.reason ?? ''),
+    });
+  }
+  if (event.type === 'validation.passed') {
+    handlers.onRetry?.({
+      type: 'validation.passed',
+      passed: true,
+      summary: String(data.summary ?? ''),
+      issues: Array.isArray(data.issues) ? data.issues as ValidationFeedbackEvent['issues'] : [],
+    });
+  }
+  if (event.type === 'validation.started') {
+    handlers.onValidating?.({ type: 'validation.started', message: String(data.message ?? '') });
+  }
+  if (event.type === 'review.required') {
+    const review = reviewPayload(data);
+    handlers.onReview?.(review);
+  }
+  if (event.type === 'run.finished' && data.result) {
+    const result = data.result as ApiRunResult;
+    handlers.onDone?.({ type: 'run.finished', result });
+  }
+  if (event.type === 'run.failed') handlers.onError?.(String(data.message ?? 'Run failed.'));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

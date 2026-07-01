@@ -237,11 +237,20 @@ import {
   appendTextTimeline,
   appendValidatingTimeline,
   appendValidationTimeline,
+  collapsedProcessTimelineParts,
   closeReasoningTimeline,
+  processTimelineSummary,
+  shouldCollapseProcessTimeline,
   upsertDagMessageTimeline,
   type ChatMessage,
+  type CollapsedProcessTimelineParts,
   type MessageTimelineItem,
+  type ProcessTimelineSummary,
 } from './chatTimeline';
+import {
+  finishedRunResultFromEvents,
+  messagesFromPersistedRunResult,
+} from './persistedChat';
 import {
   artifactPreviewDownloadUrl,
   artifactPreviewMode,
@@ -1014,100 +1023,6 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
-}
-
-function finishedRunResultFromEvents(events: ApiRunEvent[]): ApiRunResult | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.event_type !== 'run.finished' && event.payload.type !== 'run.finished') continue;
-    const data = recordValue(event.payload.data);
-    const result = data ? recordValue(data.result) : null;
-    if (!result) continue;
-    return {
-      output_text: typeof result.output_text === 'string' ? result.output_text : '',
-      state: recordValue(result.state) ? result.state as ApiRunState : null,
-    };
-  }
-  return null;
-}
-
-function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {
-  const content = message.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => {
-      if (typeof item === 'string') return item;
-      const record = recordValue(item);
-      if (!record) return '';
-      if (typeof record.text === 'string') return record.text;
-      if (typeof record.content === 'string') return record.content;
-      return '';
-    }).filter(Boolean).join('\n');
-  }
-  return '';
-}
-
-function messagesFromPersistedRunResult(result: ApiRunResult, traceSnapshot: TraceLogEvent[]): ChatMessage[] {
-  const state = result.state ?? null;
-  const dagSnapshot = state?.dag ?? undefined;
-  const reviewMessage = state?.pending_review?.message?.trim() ?? '';
-  const output = result.output_text.trim();
-  const fallbackContent = output || reviewMessage;
-  const messages: ChatMessage[] = (state?.internal_messages ?? []).flatMap((message): ChatMessage[] => {
-    const role = message.role;
-    if (role !== 'user' && role !== 'assistant') return [];
-    const content = visibleChatContentFromInternalMessage(message).trim();
-    if (!content) return [];
-    const timeline: MessageTimelineItem[] = [{ type: 'text', content }];
-    return [{
-      role: role as ChatMessage['role'],
-      kind: 'text' as const,
-      content,
-      timeline,
-    }];
-  });
-  if (
-    fallbackContent
-    && !messages.some((message) => message.role === 'assistant' && message.content.trim() === fallbackContent)
-  ) {
-    const timeline: MessageTimelineItem[] = [{ type: 'text', content: fallbackContent }];
-    messages.push({
-      role: 'assistant',
-      kind: 'text',
-      content: fallbackContent,
-      timeline,
-    });
-  }
-  let assistantIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') {
-      assistantIndex = index;
-      break;
-    }
-  }
-  if (assistantIndex !== -1) {
-    const message = messages[assistantIndex];
-    const timeline: MessageTimelineItem[] = dagSnapshot
-      ? [{ type: 'dag', dag: dagSnapshot }, ...(message.timeline ?? [])]
-      : message.timeline ?? [];
-    messages[assistantIndex] = {
-      ...message,
-      timeline,
-      dagSnapshot,
-      traceSnapshot,
-    };
-  } else if (dagSnapshot) {
-    const timeline: MessageTimelineItem[] = [{ type: 'dag', dag: dagSnapshot }];
-    messages.push({
-      role: 'assistant',
-      kind: 'text',
-      content: fallbackContent,
-      timeline,
-      dagSnapshot,
-      traceSnapshot,
-    });
-  }
-  return messages;
 }
 
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
@@ -2291,14 +2206,14 @@ export function App() {
     setDagReview(pendingReview);
   }, []);
 
-  const applyPersistedRunResult = useCallback((result: ApiRunResult) => {
+  const applyPersistedRunResult = useCallback((result: ApiRunResult, events: ApiRunEvent[] = []) => {
     const nextState = result.state ?? null;
     const nextDag = nextState?.dag ?? null;
     const nextReview = nextState?.pending_review ?? null;
     const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
     setRunState(nextState);
     setTrace(nextTrace);
-    setMessages(messagesFromPersistedRunResult(result, nextTrace));
+    setMessages(messagesFromPersistedRunResult(result, nextTrace, events));
     setError(null);
     setDagReview(null);
     setDagReviewFeedback('');
@@ -2326,7 +2241,7 @@ export function App() {
       if (conversationHydrationRequestRef.current !== requestId) return;
       const result = finishedRunResultFromEvents(events);
       if (!result) return;
-      applyPersistedRunResult(result);
+      applyPersistedRunResult(result, events);
     } catch (exc) {
       if (conversationHydrationRequestRef.current !== requestId) return;
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -7045,34 +6960,108 @@ function MessageTimeline({
   loading: boolean;
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
 }) {
-  if (!message.timeline?.length) {
+  const timeline = message.timeline;
+  if (!timeline?.length) {
     return <MessageContent content={message.content || (loading ? '...' : '')} />;
   }
+  const collapseProcess = shouldCollapseProcessTimeline(message, loading);
+  const collapsedProcess = collapseProcess ? collapsedProcessTimelineParts(timeline) : null;
 
   return (
     <div className="message-timeline">
-      {message.timeline.map((item, index) =>
-        item.type === 'capability' ? (
-          <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />
-        ) : item.type === 'dag' ? (
-          <DagSummaryCard
-            key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
-            dag={item.dag}
-            onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
-          />
-        ) : item.type === 'reasoning' ? (
-          <ReasoningBlock key={`reasoning-${index}`} content={item.content} closed={item.closed} />
-        ) : item.type === 'validation' ? (
-          <ValidationCard key={`validation-${index}`} event={item.event} />
-        ) : item.type === 'validating' ? (
-          <ValidationCard key={`validating-${index}`} />
-        ) : item.content ? (
-          <MessageContent key={`text-${index}`} content={item.content} />
-        ) : null,
-      )}
-      {!timelineHasVisibleContent(message.timeline) && !message.content && loading ? <MessageContent content="..." /> : null}
+      {collapsedProcess
+        ? renderCollapsedMessageTimeline(collapsedProcess, message, onOpenDag)
+        : timeline.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
+      {!timelineHasVisibleContent(timeline) && !message.content && loading ? <MessageContent content="..." /> : null}
     </div>
   );
+}
+
+function renderCollapsedMessageTimeline(
+  collapsedProcess: CollapsedProcessTimelineParts,
+  message: ChatMessage,
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void,
+) {
+  const finalAnswerIndex = collapsedProcess.processItems.length;
+  return [
+    <ProcessSummaryCard
+      key="process-summary"
+      summary={processTimelineSummary(collapsedProcess.processItems)}
+      items={collapsedProcess.processItems}
+      message={message}
+      onOpenDag={onOpenDag}
+    />,
+    renderMessageTimelineItem(collapsedProcess.finalAnswerItem, finalAnswerIndex, message, onOpenDag),
+    ...collapsedProcess.trailingItems.map((item, index) => (
+      renderMessageTimelineItem(item, finalAnswerIndex + index + 1, message, onOpenDag)
+    )),
+  ];
+}
+
+function renderMessageTimelineItem(
+  item: MessageTimelineItem,
+  index: number,
+  message: ChatMessage,
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void,
+) {
+  if (item.type === 'capability') {
+    return <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />;
+  }
+  if (item.type === 'dag') {
+    return (
+      <DagSummaryCard
+        key={`${item.dag.task_id || item.dag.dag_id}-${index}`}
+        dag={item.dag}
+        onOpen={() => onOpenDag(item.dag, message.traceSnapshot)}
+      />
+    );
+  }
+  if (item.type === 'reasoning') {
+    return <ReasoningBlock key={`reasoning-${index}`} content={item.content} closed={item.closed} />;
+  }
+  if (item.type === 'validation') {
+    return <ValidationCard key={`validation-${index}`} event={item.event} />;
+  }
+  if (item.type === 'validating') {
+    return <ValidationCard key={`validating-${index}`} />;
+  }
+  return item.content ? <MessageContent key={`text-${index}`} content={item.content} /> : null;
+}
+
+function ProcessSummaryCard({
+  summary,
+  items,
+  message,
+  onOpenDag,
+}: {
+  summary: ProcessTimelineSummary;
+  items: MessageTimelineItem[];
+  message: ChatMessage;
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
+}) {
+  const hasFailures = summary.failedCount > 0;
+  return (
+    <details className={`timeline-card process-summary-card ${hasFailures ? 'process-summary-warning' : 'process-summary-complete'}`}>
+      <summary className="timeline-card-head process-summary-head">
+        {hasFailures ? <AlertTriangle size={14} /> : <Check size={14} />}
+        <strong>执行过程</strong>
+        <span>{processSummaryText(summary)}</span>
+        <ChevronRight className="timeline-chevron" size={15} />
+      </summary>
+      <div className="process-summary-body">
+        {items.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
+      </div>
+    </details>
+  );
+}
+
+function processSummaryText(summary: ProcessTimelineSummary): string {
+  const parts: string[] = [];
+  if (summary.capabilityCount) parts.push(`${summary.capabilityCount} 次能力调用`);
+  if (summary.reasoningCount) parts.push(`${summary.reasoningCount} 段推理`);
+  if (summary.validationCount) parts.push(`${summary.validationCount} 次校验`);
+  if (summary.failedCount) parts.push(`${summary.failedCount} 个异常`);
+  return parts.join(' · ') || '已完成';
 }
 
 function timelineHasVisibleContent(timeline: MessageTimelineItem[] | undefined): boolean {
