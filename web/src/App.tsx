@@ -925,24 +925,83 @@ function finishedRunResultFromEvents(events: ApiRunEvent[]): ApiRunResult | null
   return null;
 }
 
+function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {
+  const content = message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === 'string') return item;
+      const record = recordValue(item);
+      if (!record) return '';
+      if (typeof record.text === 'string') return record.text;
+      if (typeof record.content === 'string') return record.content;
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
 function messagesFromPersistedRunResult(result: ApiRunResult, traceSnapshot: TraceLogEvent[]): ChatMessage[] {
   const state = result.state ?? null;
   const dagSnapshot = state?.dag ?? undefined;
   const reviewMessage = state?.pending_review?.message?.trim() ?? '';
   const output = result.output_text.trim();
-  const content = output || reviewMessage;
-  const timeline: MessageTimelineItem[] = [];
-  if (dagSnapshot) timeline.push({ type: 'dag', dag: dagSnapshot });
-  if (content) timeline.push({ type: 'text', content });
-  if (!content && !dagSnapshot) return [];
-  return [{
-    role: 'assistant',
-    kind: 'text',
-    content,
-    timeline,
-    dagSnapshot,
-    traceSnapshot,
-  }];
+  const fallbackContent = output || reviewMessage;
+  const messages: ChatMessage[] = (state?.internal_messages ?? []).flatMap((message): ChatMessage[] => {
+    const role = message.role;
+    if (role !== 'user' && role !== 'assistant') return [];
+    const content = visibleChatContentFromInternalMessage(message).trim();
+    if (!content) return [];
+    const timeline: MessageTimelineItem[] = [{ type: 'text', content }];
+    return [{
+      role: role as ChatMessage['role'],
+      kind: 'text' as const,
+      content,
+      timeline,
+    }];
+  });
+  if (
+    fallbackContent
+    && !messages.some((message) => message.role === 'assistant' && message.content.trim() === fallbackContent)
+  ) {
+    const timeline: MessageTimelineItem[] = [{ type: 'text', content: fallbackContent }];
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content: fallbackContent,
+      timeline,
+    });
+  }
+  let assistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'assistant') {
+      assistantIndex = index;
+      break;
+    }
+  }
+  if (assistantIndex !== -1) {
+    const message = messages[assistantIndex];
+    const timeline: MessageTimelineItem[] = dagSnapshot
+      ? [{ type: 'dag', dag: dagSnapshot }, ...(message.timeline ?? [])]
+      : message.timeline ?? [];
+    messages[assistantIndex] = {
+      ...message,
+      timeline,
+      dagSnapshot,
+      traceSnapshot,
+    };
+  } else if (dagSnapshot) {
+    const timeline: MessageTimelineItem[] = [{ type: 'dag', dag: dagSnapshot }];
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content: fallbackContent,
+      timeline,
+      dagSnapshot,
+      traceSnapshot,
+    });
+  }
+  return messages;
 }
 
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
@@ -2729,13 +2788,39 @@ export function App() {
     }
   };
 
+  const ensureChatConversation = async (prompt: string): Promise<ApiConversation | null> => {
+    if (selectedConversation) return selectedConversation;
+    try {
+      const conversation = chatSub === 'projects'
+        ? selectedProjectId
+          ? await createProjectConversation(selectedProjectId, {
+            title: conversationTitleFromPrompt(prompt),
+          })
+          : null
+        : await createConversation({
+          title: conversationTitleFromPrompt(prompt),
+        });
+      if (!conversation) {
+        setProjectError('请先新建或选择项目。');
+        return null;
+      }
+      setConversations((items) => [conversation, ...items]);
+      setSelectedConversationId(conversation.id);
+      if (conversation.project_id) setSelectedProjectId(conversation.project_id);
+      setProjectError(null);
+      return conversation;
+    } catch (exc) {
+      setProjectError(exc instanceof Error ? exc.message : String(exc));
+      return null;
+    }
+  };
+
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
-    if (!selectedConversation) {
-      setProjectError('请先新建会话。');
-      return;
-    }
     const prompt = draft.trim();
+    const conversation = await ensureChatConversation(prompt);
+    if (!conversation) return;
+    const conversationContext = { projectId: conversation.project_id, conversationId: conversation.id };
     const uploadsForRequest = pendingChatUploads;
     setDraft('');
     setError(null);
@@ -2764,9 +2849,7 @@ export function App() {
     });
     const signal = beginStreamRequest();
     try {
-      const streamOptions = activeConversationContext
-        ? { signal, uploads: uploadsForRequest, project: activeConversationContext }
-        : { signal, uploads: uploadsForRequest };
+      const streamOptions = { signal, uploads: uploadsForRequest, project: conversationContext };
       await streamTask(prompt, target, reviewLevel, {
         onStarted: () => {
           if (uploadsForRequest.length) {
@@ -2799,9 +2882,9 @@ export function App() {
           const resultDag = result.state?.dag ?? null;
           const resultReview = result.state?.pending_review ?? null;
           setRunState(result.state ?? null);
-          if (activeConversationContext && result.state?.run_id) {
+          if (result.state?.run_id) {
             setConversations((items) => items.map((conversation) => (
-              conversation.id === activeConversationContext.conversationId
+              conversation.id === conversationContext.conversationId
                 ? { ...conversation, last_run_id: result.state?.run_id ?? conversation.last_run_id }
                 : conversation
             )));
@@ -2827,7 +2910,7 @@ export function App() {
           setError(message);
           appendTrace({ type: 'model', label: 'dag_agent_failed', detail: message, status: 'failed' });
         },
-      }, capabilityScope, activeConversationContext ? null : runState, undefined, streamOptions);
+      }, capabilityScope, null, undefined, streamOptions);
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) return;
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -3880,12 +3963,13 @@ function WorkspaceSidebar({
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
+  const standaloneConversationCount = conversations.filter((conversation) => !conversation.project_id).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
     { key: 'static' as const, label: '静态编排', icon: <GitBranch size={16} />, count: savedDags.length },
   ];
   const chatSubnav = [
-    { key: 'conversations' as const, label: '会话', icon: <MessageSquare size={16} />, count: conversations.length },
+    { key: 'conversations' as const, label: '会话', icon: <MessageSquare size={16} />, count: standaloneConversationCount },
     { key: 'projects' as const, label: '项目', icon: <Folder size={16} />, count: projects.length },
   ];
   const toolSubnav = [
@@ -6663,6 +6747,10 @@ function clipText(value: string, maxLength: number) {
 function currentChatTitle(messages: ChatMessage[]): string {
   const latestUser = [...messages].reverse().find((message) => message.role === 'user' && message.content.trim());
   return latestUser ? clipText(latestUser.content.trim(), 40) : '新对话';
+}
+
+function conversationTitleFromPrompt(prompt: string): string {
+  return clipText(prompt.trim(), 40) || '新对话';
 }
 
 function currentChatHistory(messages: ChatMessage[]): Array<{ id: string; title: string; time: string }> {

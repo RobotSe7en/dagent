@@ -1849,8 +1849,10 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(apiSource, /projectId\s*\? `\$\{API_BASE\}\/projects\/\$\{encodeURIComponent\(projectId\)\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`[\s\S]*: `\$\{API_BASE\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`/);
   assert.match(apiSource, /persistedResume[\s\S]*approved/);
   assert.match(apiSource, /persistedResume[\s\S]*state/);
-  assert.match(runStreamSource, /const streamOptions = activeConversationContext[\s\S]*project: activeConversationContext/);
-  assert.match(runStreamSource, /activeConversationContext \? null : runState/);
+  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt\);/);
+  assert.match(runStreamSource, /const conversationContext = \{ projectId: conversation\.project_id, conversationId: conversation\.id \};/);
+  assert.match(runStreamSource, /const streamOptions = \{ signal, uploads: uploadsForRequest, project: conversationContext \};/);
+  assert.match(runStreamSource, /\}, capabilityScope, null, undefined, streamOptions\);/);
   assert.match(resumeDagSource, /conversationId: activeConversationContext\.conversationId/);
   assert.match(resumeCapabilitySource, /conversationId: activeConversationContext\.conversationId/);
 });
@@ -1868,6 +1870,43 @@ test('persisted conversation selection hydrates the last run snapshot', async ()
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace\)\);/);
   assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result\);/);
   assert.match(appSource, /if \(!selectedConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedConversation\);/);
+});
+
+test('persisted conversation hydration restores user and assistant chat turns', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const hydrateSource = appSource.match(/function messagesFromPersistedRunResult[\s\S]*?\nfunction artifactPreviewCacheKey/)?.[0] ?? '';
+
+  assert.ok(hydrateSource, 'messagesFromPersistedRunResult should exist');
+  assert.match(appSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
+  assert.match(hydrateSource, /state\?\.internal_messages \?\? \[\]/);
+  assert.match(hydrateSource, /role !== 'user' && role !== 'assistant'/);
+  assert.match(hydrateSource, /role: role as ChatMessage\['role'\]/);
+  assert.match(hydrateSource, /const timeline: MessageTimelineItem\[\] = \[\{ type: 'text', content \}\];/);
+  assert.match(hydrateSource, /for \(let index = messages\.length - 1; index >= 0; index -= 1\)/);
+  assert.match(hydrateSource, /messages\[index\]\.role === 'assistant'/);
+});
+
+test('chat send creates a standalone conversation when none is selected', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
+
+  assert.ok(runStreamSource, 'runStream function should exist');
+  assert.match(appSource, /const ensureChatConversation = async \(prompt: string\): Promise<ApiConversation \| null> => \{/);
+  assert.match(appSource, /await createConversation\(\{[\s\S]*title: conversationTitleFromPrompt\(prompt\)/);
+  assert.match(appSource, /setConversations\(\(items\) => \[conversation, \.\.\.items\]\);[\s\S]*setSelectedConversationId\(conversation\.id\);/);
+  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt\);[\s\S]*if \(!conversation\) return;/);
+  assert.match(runStreamSource, /const conversationContext = \{ projectId: conversation\.project_id, conversationId: conversation\.id \};/);
+  assert.doesNotMatch(runStreamSource, /请先新建会话/);
+});
+
+test('conversation subnav count excludes project conversations', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => !conversation\.project_id\)\.length;/);
+  assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessageSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
+  assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessageSquare size=\{16\} \/>\, count: conversations\.length \}/);
 });
 
 test('project conversation deletion uses the project-scoped route', async () => {
@@ -1992,7 +2031,7 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
   assert.match(runStreamSource, /const signal = beginStreamRequest\(\);/);
-  assert.match(runStreamSource, /const streamOptions = activeConversationContext[\s\S]*\{ signal, uploads: uploadsForRequest/);
+  assert.match(runStreamSource, /const streamOptions = \{ signal, uploads: uploadsForRequest, project: conversationContext \};/);
   assert.match(runStreamSource, /streamTask\([\s\S]*streamOptions\);/);
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
