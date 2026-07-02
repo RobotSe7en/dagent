@@ -239,6 +239,7 @@ import {
   appendValidationTimeline,
   collapsedProcessTimelineParts,
   closeReasoningTimeline,
+  isProcessTimelineItem,
   processTimelineSummary,
   shouldCollapseProcessTimeline,
   upsertDagMessageTimeline,
@@ -3560,37 +3561,11 @@ export function App() {
         return;
       }
       await createProjectConversationFromProject(selectedProjectId);
-    } else {
-      const standaloneConversationCount = conversations.filter((conversation) => (
-        conversation.kind === 'chat' && !conversation.project_id
-      )).length;
-      try {
-        const conversation = await createConversation({
-          title: `会话 ${standaloneConversationCount + 1}`,
-        });
-        setConversations((items) => [conversation, ...items]);
-        setSelectedConversationId(conversation.id);
-        setProjectError(null);
-      } catch (exc) {
-        setProjectError(exc instanceof Error ? exc.message : String(exc));
-        return;
-      }
-      setDagReview(null);
-      setDagReviewFeedback('');
-      setCapabilityReview(null);
-      setCapabilityReviewFeedback('');
-      setRunState(null);
-      setMessages([]);
-      setDraft('');
-      setPendingChatUploads([]);
-      syncDag(emptyDag);
-      setTrace([]);
-      setError(null);
-      setReviewOpen(false);
-      tokenQueueRef.current = [];
-      contentStreamedRef.current = false;
-      stopTokenTimer();
+      return;
     }
+    setSelectedConversationId('');
+    setProjectError(null);
+    clearChatSurface();
   };
 
   const clearChatSurface = () => {
@@ -6966,9 +6941,10 @@ function MessageTimeline({
   }
   const collapseProcess = shouldCollapseProcessTimeline(message, loading);
   const collapsedProcess = collapseProcess ? collapsedProcessTimelineParts(timeline) : null;
+  const liveProcessTimeline = !collapseProcess && timeline.some(isProcessTimelineItem);
 
   return (
-    <div className="message-timeline">
+    <div className={`message-timeline${liveProcessTimeline ? ' live-process-timeline' : ''}`}>
       {collapsedProcess
         ? renderCollapsedMessageTimeline(collapsedProcess, message, onOpenDag)
         : timeline.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}

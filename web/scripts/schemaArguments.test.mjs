@@ -1998,7 +1998,6 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /listConversations\(\)/);
   assert.match(appSource, /listProjectConversations\(project\.id\)/);
   assert.match(appSource, /const loadPersistedConversations = useCallback\(async \(projectItems: ApiProject\[\]\) => \{/);
-  assert.match(appSource, /createConversation\(\{[\s\S]*title: `会话 \$\{standaloneConversationCount \+ 1\}`/);
   assert.match(appSource, /deleteConversation,/);
   assert.match(appSource, /deleteProjectConversation,/);
   assert.match(appSource, /const deleteConversationFromSidebar = async \(conversationId: string\)/);
@@ -2040,6 +2039,18 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(sidebarSource, /onDeleteConversation\(conversation\.id\)/);
   assert.match(css, /\.sidebar-conversation-row\s*\{/);
   assert.match(css, /\.sidebar-conversation-delete\s*\{/);
+});
+
+test('new standalone chat does not create a placeholder conversation title', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const newChatSource = appSource.match(/const newChat = async \(\) => \{[\s\S]*?\n  const clearChatSurface/)?.[0] ?? '';
+
+  assert.ok(newChatSource, 'newChat function should exist');
+  assert.match(newChatSource, /if \(streaming\) return;/);
+  assert.match(newChatSource, /setSelectedConversationId\(''\);[\s\S]*clearChatSurface\(\);/);
+  assert.doesNotMatch(newChatSource, /standaloneConversationCount/);
+  assert.doesNotMatch(newChatSource, /createConversation\(/);
+  assert.doesNotMatch(newChatSource, /title: `会话 \$\{/);
 });
 
 test('persisted chat streams and reviews use conversation context without requiring a project', async () => {
@@ -3663,17 +3674,24 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.doesNotMatch(summarySource, /process-summary-warning/);
 });
 
-test('expanded process trace separates items with a subtle timeline treatment', async () => {
+test('expanded and live process traces share the subtle timeline treatment', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const messageTimelineSource = appSource.match(/function MessageTimeline[\s\S]*?\nfunction renderCollapsedMessageTimeline/)?.[0] ?? '';
 
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
+  assert.match(appSource, /isProcessTimelineItem/);
+  assert.match(messageTimelineSource, /const liveProcessTimeline = !collapseProcess && timeline\.some\(isProcessTimelineItem\);/);
+  assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}`\}/);
+
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
   assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.think-block,[\s\S]*\.assistant-turn-frame \.process-summary-body > \.markdown-body\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
-  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline::before/);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
