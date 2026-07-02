@@ -7,6 +7,8 @@ import re
 from typing import Mapping
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS = 60
+DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 90
 _SAFE_ENV_KEYS = {
     "ALLUSERSPROFILE",
     "APPDATA",

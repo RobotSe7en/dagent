@@ -240,7 +240,10 @@ runner.remove_mcp_server("team_fs")
 
 MCP server config 支持两种 transport。本地命令型 stdio server 可以省略
 `transport`。Streamable HTTP server 使用 `transport: "http"` 和 `url`。
-HTTP `headers` 的值会展开 host 环境中的 `${ENV_NAME}` 引用。
+HTTP `headers` 的值会展开 host 环境中的 `${ENV_NAME}` 引用。两种 transport
+都支持 `connect_timeout` 控制注册启动等待时间，默认 `60` 秒；也支持
+`tool_timeout` 控制工具调用时间，默认 `90` 秒。HTTP server 还会把这两个值用于
+HTTP client 的 connect 和 read timeout。
 
 MCP 需要可选依赖：
 

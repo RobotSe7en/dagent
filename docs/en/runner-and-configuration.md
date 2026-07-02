@@ -262,7 +262,10 @@ runner.remove_mcp_server("team_fs")
 MCP server configs support two transports. Omit `transport` for stdio servers
 that launch a local command. Use `transport: "http"` with `url` for Streamable
 HTTP servers. HTTP `headers` values expand `${ENV_NAME}` references from the
-host environment.
+host environment. Both transports support `connect_timeout` for registration
+startup, defaulting to `60` seconds, and `tool_timeout` for tool calls,
+defaulting to `90` seconds. HTTP servers also use those values for the HTTP
+client connect and read timeouts.
 
 MCP requires the optional extra:
 

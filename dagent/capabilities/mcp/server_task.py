@@ -7,7 +7,12 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
-from .config import build_http_headers, build_stdio_env
+from .config import (
+    DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+    build_http_headers,
+    build_stdio_env,
+)
 
 try:  # pragma: no cover - optional dependency is installed by dev and mcp extras
     import httpx
@@ -130,10 +135,17 @@ class MCPServerTask:
         }
         connect_timeout = self.config.get("connect_timeout")
         tool_timeout = self.config.get("tool_timeout")
-        if connect_timeout is not None or tool_timeout is not None:
-            connect = float(connect_timeout if connect_timeout is not None else 30)
-            read = float(tool_timeout if tool_timeout is not None else 300)
-            params["timeout"] = httpx.Timeout(connect, read=read)
+        connect = float(
+            connect_timeout
+            if connect_timeout is not None
+            else DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS
+        )
+        read = float(
+            tool_timeout
+            if tool_timeout is not None
+            else DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
+        )
+        params["timeout"] = httpx.Timeout(connect, read=read)
         return params
 
 

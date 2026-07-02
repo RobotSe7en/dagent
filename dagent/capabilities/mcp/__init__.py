@@ -9,6 +9,7 @@ from typing import Any
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy
 
+from .config import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
 from .handlers import make_mcp_tool_handler
 from .manager import MCPServerManager
 from .schema import normalize_mcp_input_schema, normalize_mcp_output_schema
@@ -87,7 +88,9 @@ class MCPCapabilityProvider:
             self.manager,
             server_name=server_name,
             tool_name=tool_name,
-            timeout_seconds=float(server_config.get("tool_timeout", 60)),
+            timeout_seconds=float(
+                server_config.get("tool_timeout", DEFAULT_MCP_TOOL_TIMEOUT_SECONDS)
+            ),
         )
         try:
             catalog.register(definition, handler)

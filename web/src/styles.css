@@ -128,6 +128,17 @@ button:focus-visible {
 }
 
 /* ── Review select ── */
+.review-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .review-select {
   min-height: 32px;
   border: 1px solid var(--border);
@@ -143,6 +154,75 @@ button:focus-visible {
 
 .review-select:hover {
   border-color: var(--accent-blue);
+}
+
+.run-settings-menu {
+  position: relative;
+}
+
+.run-settings-menu > summary {
+  list-style: none;
+}
+
+.run-settings-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-settings-trigger {
+  position: relative;
+}
+
+.run-settings-menu.active .run-settings-trigger::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent-blue);
+}
+
+.run-settings-popover {
+  position: absolute;
+  z-index: 55;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: grid;
+  width: 310px;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e3e6ec;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 44px rgba(31, 35, 48, 0.16);
+}
+
+.run-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.run-settings-row > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.run-settings-row strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.run-settings-row em {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .validation-toggle {
@@ -1321,11 +1401,12 @@ button:focus-visible {
 
 .user-bubble {
   max-width: min(78%, 760px);
-  border-radius: 16px 16px 4px 16px;
+  border: 1px solid rgba(103, 103, 220, 0.22);
+  border-radius: 14px 14px 6px 14px;
   padding: 13px 16px;
-  background: #5b5bd6;
+  background: #6767dc;
   color: #fff;
-  box-shadow: 0 2px 10px rgba(91, 91, 214, 0.22);
+  box-shadow: none;
   font-size: 14.5px;
   font-weight: 450;
   line-height: 1.55;
@@ -1348,6 +1429,7 @@ button:focus-visible {
 
 .assistant-row {
   gap: 13px;
+  align-items: flex-start;
 }
 
 .assistant-avatar {
@@ -1364,12 +1446,13 @@ button:focus-visible {
 
 .assistant-turn-frame {
   min-width: 0;
-  flex: 1;
+  flex: 0 1 960px;
+  max-width: min(100%, 960px);
   overflow: hidden;
   border: 1px solid #e2e4ea;
-  border-radius: 14px;
+  border-radius: 14px 14px 14px 6px;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: none;
 }
 
 .assistant-turn-frame .message-timeline {
@@ -1456,20 +1539,44 @@ button:focus-visible {
   background: #fbfcfd;
 }
 
-.assistant-turn-frame .process-summary-body {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) {
   display: grid;
-  gap: 0;
+  gap: 8px;
+  padding: 10px 12px 12px;
   background: #fbfcfd;
 }
 
-.assistant-turn-frame .process-summary-body > .think-block,
-.assistant-turn-frame .process-summary-body > .timeline-card,
-.assistant-turn-frame .process-summary-body > .capability-event-card {
-  background: #fbfcfd;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > :is(.think-block, .timeline-card, .capability-event-card, .dag-summary-card, .markdown-body) {
+  position: relative;
+  border: 1px solid #edf0f4;
+  border-left: 3px solid #d8dee8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: none;
 }
 
-.assistant-turn-frame .process-summary-body > :last-child {
-  border-bottom: 0;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .think-block {
+  border-left-color: #94a3b8;
+}
+
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .capability-event-card {
+  border-left-color: #2dd4bf;
+}
+
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .validation-card {
+  border-left-color: #818cf8;
+}
+
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .dag-summary-card {
+  border-left-color: #60a5fa;
+}
+
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .markdown-body {
+  border-left-color: #cbd5e1;
+}
+
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > :last-child {
+  margin-bottom: 0;
 }
 
 details > summary {
@@ -6100,18 +6207,6 @@ details[open] .timeline-chevron {
   border-color: #fca5a5;
   color: var(--accent-red);
   background: #fef2f2;
-}
-
-.process-summary-card.process-summary-warning {
-  background: #fff7ed;
-}
-
-.process-summary-card.process-summary-warning .timeline-card-head svg:first-child {
-  color: #d97706;
-}
-
-.process-summary-card.process-summary-complete .timeline-card-head svg:first-child {
-  color: #16a34a;
 }
 
 .process-summary-head span {

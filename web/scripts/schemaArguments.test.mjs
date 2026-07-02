@@ -246,6 +246,15 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /button:focus-visible\s*\{[^}]*outline:\s*2px solid rgba\(91, 91, 214, 0\.42\);/s);
 });
 
+test('chat message frames keep user and assistant treatment aligned', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*14px 14px 6px 14px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.assistant-row\s*\{[^}]*align-items:\s*flex-start;/s);
+  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);[^}]*border-radius:\s*14px 14px 14px 6px;[^}]*box-shadow:\s*none;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*1;/s);
+});
+
 test('composer uses the reserved upload button for pending attachments', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
@@ -303,6 +312,26 @@ test('composer summarizes large pending upload batches instead of listing every 
   assert.match(chatWorkspaceSource, /visiblePendingUploadGroups\(pendingUploadGroups, pendingUploadsExpanded/);
   assert.doesNotMatch(chatWorkspaceSource, /pendingUploads\.map\(\(file, index\)/);
   assert.match(css, /\.pending-upload-list\s*\{[^}]*max-height:\s*180px;[^}]*overflow-y:\s*auto;/s);
+});
+
+test('composer keeps review visible in Chinese and groups validation with capability scope', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
+
+  assert.match(chatWorkspaceSource, /const reviewLevelLabels: Record<ReviewLevel, string> = \{ fast: '快速审核', careful: '谨慎审核' \};/);
+  assert.match(chatWorkspaceSource, /<label className="review-control">[\s\S]*className="review-select"[\s\S]*aria-label="审核等级"/);
+  assert.match(chatWorkspaceSource, /\{reviewLevelLabels\[level\]\}/);
+  assert.doesNotMatch(chatWorkspaceSource, /<span>审核等级<\/span>/);
+  assert.doesNotMatch(chatWorkspaceSource, /\{level\} review/);
+
+  assert.match(chatWorkspaceSource, /<details className=\{`run-settings-menu \$\{validationEnabled \|\| validationError \|\| chatScopeLabel !== '全部能力' \? 'active' : ''\}`\}>/);
+  assert.match(chatWorkspaceSource, /<summary[\s\S]*title=\{`运行设置 · \$\{validationEnabled \? '验证开启' : validationError \? '验证错误' : '验证关闭'\} · \$\{chatScopeLabel\}`\}[\s\S]*<SlidersHorizontal size=\{15\} \/>/);
+  assert.match(chatWorkspaceSource, /<div className="run-settings-popover">[\s\S]*className=\{`validation-toggle \$\{validationEnabled \? 'active' : ''\} \$\{validationError \? 'error' : ''\}`\}[\s\S]*className="secondary-button compact-button scope-button"/);
+
+  assert.match(css, /\.review-control\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;/s);
+  assert.match(css, /\.run-settings-menu\s*\{[^}]*position:\s*relative;/s);
+  assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100% \+ 8px\);/s);
 });
 
 test('collapsed artifact rail still reserves safe space for user avatars', async () => {
@@ -1989,7 +2018,6 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /listConversations\(\)/);
   assert.match(appSource, /listProjectConversations\(project\.id\)/);
   assert.match(appSource, /const loadPersistedConversations = useCallback\(async \(projectItems: ApiProject\[\]\) => \{/);
-  assert.match(appSource, /createConversation\(\{[\s\S]*title: `会话 \$\{standaloneConversationCount \+ 1\}`/);
   assert.match(appSource, /deleteConversation,/);
   assert.match(appSource, /deleteProjectConversation,/);
   assert.match(appSource, /const deleteConversationFromSidebar = async \(conversationId: string\)/);
@@ -2031,6 +2059,18 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(sidebarSource, /onDeleteConversation\(conversation\.id\)/);
   assert.match(css, /\.sidebar-conversation-row\s*\{/);
   assert.match(css, /\.sidebar-conversation-delete\s*\{/);
+});
+
+test('new standalone chat does not create a placeholder conversation title', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const newChatSource = appSource.match(/const newChat = async \(\) => \{[\s\S]*?\n  const clearChatSurface/)?.[0] ?? '';
+
+  assert.ok(newChatSource, 'newChat function should exist');
+  assert.match(newChatSource, /if \(streaming\) return;/);
+  assert.match(newChatSource, /setSelectedConversationId\(''\);[\s\S]*clearChatSurface\(\);/);
+  assert.doesNotMatch(newChatSource, /standaloneConversationCount/);
+  assert.doesNotMatch(newChatSource, /createConversation\(/);
+  assert.doesNotMatch(newChatSource, /title: `会话 \$\{/);
 });
 
 test('persisted chat streams and reviews use conversation context without requiring a project', async () => {
@@ -3515,6 +3555,42 @@ test('completed assistant answers collapse reasoning and capability process trac
   });
 });
 
+test('process timeline summary treats review rejection separately from anomalies', () => {
+  const rejected = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_rejected',
+      capability_id: 'tool.write_file',
+      arguments: { path: 'notes.md' },
+    },
+    result: {
+      type: 'capability.call.failed',
+      invocation_id: 'invoke_rejected',
+      capability_id: 'tool.write_file',
+      content: '人工审核已拒绝。\n\n反馈：不要写入文件',
+    },
+  };
+  const failed = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_failed',
+      capability_id: 'tool.read_file',
+      arguments: { path: 'missing.md' },
+    },
+    result: {
+      type: 'capability.call.failed',
+      invocation_id: 'invoke_failed',
+      capability_id: 'tool.read_file',
+      content: 'FileNotFoundError: missing.md',
+    },
+  };
+
+  assert.equal(processTimelineSummary([rejected]).failedCount, 0);
+  assert.equal(processTimelineSummary([failed]).failedCount, 1);
+});
+
 test('running, answerless, and review assistant turns keep process trace expanded', () => {
   const runningCapability = {
     type: 'capability',
@@ -3605,13 +3681,41 @@ test('completed assistant answers collapse everything before the final text with
 
 test('message timeline renders completed process trace behind a collapsible summary', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const summarySource = appSource.match(/function ProcessSummaryCard[\s\S]*?\nfunction processSummaryText/)?.[0] ?? '';
 
   assert.match(appSource, /shouldCollapseProcessTimeline/);
   assert.match(appSource, /collapsedProcessTimelineParts/);
   assert.match(appSource, /function ProcessSummaryCard/);
   assert.match(appSource, /const collapsedProcess = collapseProcess \? collapsedProcessTimelineParts\(timeline\) : null;/);
+  assert.match(appSource, /completedProcessTimeline/);
+  assert.match(appSource, /completed-process-timeline/);
   assert.match(appSource, /renderCollapsedMessageTimeline/);
   assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
+  assert.match(summarySource, /<Wrench size=\{14\} \/>/);
+  assert.doesNotMatch(summarySource, /AlertTriangle/);
+  assert.doesNotMatch(summarySource, /process-summary-warning/);
+});
+
+test('expanded and live process traces share the subtle timeline treatment', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const messageTimelineSource = appSource.match(/function MessageTimeline[\s\S]*?\nfunction renderCollapsedMessageTimeline/)?.[0] ?? '';
+
+  assert.match(appSource, /isProcessTimelineItem/);
+  assert.match(messageTimelineSource, /const liveProcessTimeline = !collapseProcess && timeline\.some\(isProcessTimelineItem\);/);
+  assert.match(messageTimelineSource, /const completedProcessTimeline = Boolean\(collapsedProcess\);/);
+  assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}\$\{completedProcessTimeline \? ' completed-process-timeline' : ''\}`\}/);
+
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline::before/);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.completed-process-timeline::before/);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {

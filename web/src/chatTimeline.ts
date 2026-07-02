@@ -280,7 +280,15 @@ export function upsertDagMessageTimeline(
 }
 
 function capabilityTimelineItemFailed(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
+  if (capabilityTimelineItemRejected(item)) return false;
   return item.event.type === 'capability.call.failed' || item.result?.type === 'capability.call.failed';
+}
+
+function capabilityTimelineItemRejected(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
+  return Boolean(
+    item.result?.content?.startsWith('人工审核已拒绝')
+    || item.event.content?.startsWith('人工审核已拒绝'),
+  );
 }
 
 function messageHasFinalText(message: ChatMessage): boolean {
