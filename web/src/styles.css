@@ -1459,14 +1459,14 @@ button:focus-visible {
   background: #fbfcfd;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) {
   display: grid;
   gap: 8px;
   padding: 10px 12px 12px;
   background: #fbfcfd;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > :is(.think-block, .timeline-card, .capability-event-card, .dag-summary-card, .markdown-body) {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > :is(.think-block, .timeline-card, .capability-event-card, .dag-summary-card, .markdown-body) {
   position: relative;
   border: 1px solid #edf0f4;
   border-left: 3px solid #d8dee8;
@@ -1475,27 +1475,27 @@ button:focus-visible {
   box-shadow: none;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .think-block {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .think-block {
   border-left-color: #94a3b8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .capability-event-card {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .capability-event-card {
   border-left-color: #2dd4bf;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .validation-card {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .validation-card {
   border-left-color: #818cf8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .dag-summary-card {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .dag-summary-card {
   border-left-color: #60a5fa;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .markdown-body {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .markdown-body {
   border-left-color: #cbd5e1;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > :last-child {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > :last-child {
   margin-bottom: 0;
 }
 

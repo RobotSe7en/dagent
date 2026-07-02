@@ -3667,6 +3667,8 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.match(appSource, /collapsedProcessTimelineParts/);
   assert.match(appSource, /function ProcessSummaryCard/);
   assert.match(appSource, /const collapsedProcess = collapseProcess \? collapsedProcessTimelineParts\(timeline\) : null;/);
+  assert.match(appSource, /completedProcessTimeline/);
+  assert.match(appSource, /completed-process-timeline/);
   assert.match(appSource, /renderCollapsedMessageTimeline/);
   assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
   assert.match(summarySource, /<Wrench size=\{14\} \/>/);
@@ -3681,17 +3683,19 @@ test('expanded and live process traces share the subtle timeline treatment', asy
 
   assert.match(appSource, /isProcessTimelineItem/);
   assert.match(messageTimelineSource, /const liveProcessTimeline = !collapseProcess && timeline\.some\(isProcessTimelineItem\);/);
-  assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}`\}/);
+  assert.match(messageTimelineSource, /const completedProcessTimeline = Boolean\(collapsedProcess\);/);
+  assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}\$\{completedProcessTimeline \? ' completed-process-timeline' : ''\}`\}/);
 
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
   assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
   assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline::before/);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.completed-process-timeline::before/);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {

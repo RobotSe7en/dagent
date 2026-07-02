@@ -6942,9 +6942,10 @@ function MessageTimeline({
   const collapseProcess = shouldCollapseProcessTimeline(message, loading);
   const collapsedProcess = collapseProcess ? collapsedProcessTimelineParts(timeline) : null;
   const liveProcessTimeline = !collapseProcess && timeline.some(isProcessTimelineItem);
+  const completedProcessTimeline = Boolean(collapsedProcess);
 
   return (
-    <div className={`message-timeline${liveProcessTimeline ? ' live-process-timeline' : ''}`}>
+    <div className={`message-timeline${liveProcessTimeline ? ' live-process-timeline' : ''}${completedProcessTimeline ? ' completed-process-timeline' : ''}`}>
       {collapsedProcess
         ? renderCollapsedMessageTimeline(collapsedProcess, message, onOpenDag)
         : timeline.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
