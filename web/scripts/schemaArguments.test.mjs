@@ -206,13 +206,19 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(appSource, /'打开审查' : '查看流程'/);
   assert.match(appSource, /const \[artifactPanelOpen, setArtifactPanelOpen\] = useState\(false\);/);
   assert.match(appSource, /const artifactDrawerOpen = artifactPanelOpen;/);
-  assert.match(appSource, /artifactPanelOpen=\{artifactDrawerOpen\}/);
-  assert.match(appSource, /onToggleArtifacts=\{\(\) => setArtifactPanelOpen\(\(value\) => !value\)\}/);
+  assert.match(appSource, /const chatWorkspaceProps: Parameters<typeof ChatWorkspace>\[0\] = \{[\s\S]*artifactPanelOpen: artifactDrawerOpen/);
+  assert.match(appSource, /onToggleArtifacts: \(\) => setArtifactPanelOpen\(\(value\) => !value\)/);
   assert.match(appSource, /function UploadPicker/);
   assert.match(appSource, /<UploadPicker[\s\S]*variant="composer"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
   assert.match(appSource, /<UploadPicker[\s\S]*variant="sidebar"[\s\S]*onUploadFiles=\{onUploadFiles\}/);
+  const sidebarBrandSource = appSource.match(/<div className="sidebar-brand-row">[\s\S]*?\n      <\/div>\n\n      <div className="sidebar-label">/)?.[0] ?? '';
+  assert.ok(sidebarBrandSource, 'sidebar brand row should exist');
+  assert.doesNotMatch(sidebarBrandSource, /sidebar-collapse-button/);
+  assert.doesNotMatch(appSource, /sidebar-collapse-row/);
+  assert.match(appSource, /<div className="sidebar-user">[\s\S]*<button[\s\S]*className="sidebar-user-avatar"[\s\S]*onClick=\{collapsed \? onToggleCollapsed : undefined\}[\s\S]*title=\{collapsed \? '展开侧栏' : 'RobotSe7en'\}[\s\S]*<span className="sidebar-user-initials">RX<\/span>[\s\S]*<ChevronRight className="sidebar-user-expand" size=\{15\} \/>[\s\S]*<strong>RobotSe7en<\/strong>[\s\S]*<button className="sidebar-collapse-button" onClick=\{onToggleCollapsed\} title="收起 \/ 展开" type="button">[\s\S]*<ChevronLeft size=\{15\} \/>/);
+  assert.doesNotMatch(appSource, /workspaceRootLabel|workspace-root-chip/);
   assert.match(appSource, /pendingChatUploads/);
-  assert.match(appSource, /onUploadFiles=\{queueChatUploads\}/);
+  assert.match(appSource, /onUploadFiles: queueChatUploads/);
   assert.doesNotMatch(appSource, /const canOpen = artifacts\.length > 0|disabled=\{!canOpen\}|暂无产物/);
   assert.doesNotMatch(appSource, /composer-hint|⌘ \+ Enter 发送|当前模式/);
   assert.doesNotMatch(appSource, /designPreviewDag|designPreviewArtifacts|DesignPreviewConversation|designHistoryRows/);
@@ -224,10 +230,24 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.doesNotMatch(appSource, /task_ui_demo|grep_results\.txt|orchestration_map\.json|14 matches across 6 files/);
 
   assert.match(css, /\.design-empty-conversation/);
+  assert.match(css, /\.app-shell\s*\{[^}]*grid-template-columns:\s*230px minmax\(0, 1fr\);/s);
+  assert.match(css, /\.app-shell\.nav-collapsed\s*\{[^}]*grid-template-columns:\s*60px minmax\(0, 1fr\);/s);
   assert.match(css, /\.brand-logo-expand/);
   assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.brand-mark:hover \.brand-logo-expand/);
+  assert.doesNotMatch(css, /\.sidebar-collapse-row\b/);
+  assert.doesNotMatch(css, /workspace-root-chip/);
+  assert.match(css, /\.sidebar-user \.sidebar-collapse-button\s*\{[^}]*margin-left:\s*auto;/s);
+  assert.match(css, /\.sidebar-user-avatar\s*\{[^}]*display:\s*grid;[^}]*place-items:\s*center;/s);
+  assert.match(css, /\.sidebar-user-initials,\s*\.sidebar-user-expand\s*\{[^}]*grid-area:\s*1 \/ 1;/s);
+  assert.match(css, /\.sidebar-user-expand\s*\{[^}]*display:\s*none;/s);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user-avatar\s*\{[^}]*cursor:\s*pointer;/s);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user-avatar:hover \.sidebar-user-initials\s*\{[^}]*display:\s*none;/s);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user-avatar:hover \.sidebar-user-expand\s*\{[^}]*display:\s*block;/s);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user \.sidebar-collapse-button\s*\{[^}]*display:\s*none;/s);
+  assert.match(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user > span/s);
+  assert.doesNotMatch(css, /\.workspace-sidebar\[data-collapsed="true"\] \.sidebar-user span\s*\{[^}]*display:\s*none;/s);
   assert.match(css, /\.user-avatar/);
-  assert.match(css, /\.user-row\s*\{[^}]*--user-avatar-offset:\s*43px;[^}]*justify-content:\s*flex-end;/s);
+  assert.match(css, /\.user-row\s*\{[^}]*--user-avatar-offset:\s*var\(--chat-user-avatar-safe-space,\s*43px\);[^}]*justify-content:\s*flex-end;/s);
   assert.match(css, /\.user-avatar\s*\{[^}]*margin-right:\s*calc\(var\(--user-avatar-offset\) \* -1\);/s);
   assert.match(css, /@media \(max-width: 760px\) \{[\s\S]*\.user-row\s*\{[^}]*--user-avatar-offset:\s*0px;/s);
   assert.match(css, /\.design-workspace-placeholder/);
@@ -236,6 +256,7 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /\.chat-workspace\s*\{[^}]*--chat-content-max-width:\s*1040px;/s);
   assert.match(css, /\.chat-workspace\.without-artifacts\s*\{[^}]*--chat-content-max-width:\s*1280px;/s);
   assert.match(css, /\.chat-workspace\.with-artifacts\s*\{[^}]*--chat-user-avatar-safe-space:\s*43px;/s);
+  assert.match(css, /\.chat-main\s*\{[^}]*height:\s*100%;[^}]*display:\s*grid;[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto;/s);
   assert.match(css, /\.conversation-frame\s*\{[^}]*box-sizing:\s*border-box;[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);[^}]*padding:\s*28px var\(--chat-user-avatar-safe-space,\s*0px\) 36px 0;/s);
   assert.match(css, /\.composer-card\s*\{[^}]*width:\s*min\(var\(--chat-content-max-width\), calc\(100% - 56px\)\);/s);
   assert.match(css, /\.composer-card textarea\s*\{[^}]*resize:\s*none;/s);
@@ -314,13 +335,17 @@ test('composer summarizes large pending upload batches instead of listing every 
   assert.match(css, /\.pending-upload-list\s*\{[^}]*max-height:\s*180px;[^}]*overflow-y:\s*auto;/s);
 });
 
-test('composer keeps review visible in Chinese and groups validation with capability scope', async () => {
+test('composer keeps shared compact controls in the run settings menu', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
 
+  assert.match(chatWorkspaceSource, /const targetOptions: Array<\{ value: ChatTarget; label: string; shortLabel: string; icon: React\.ReactNode \}> = \[/);
+  assert.match(chatWorkspaceSource, /<div className="mode-switch" aria-label="运行模式">[\s\S]*title=\{option\.label\}[\s\S]*aria-label=\{option\.label\}[\s\S]*\{option\.icon\}[\s\S]*<span>\{option\.shortLabel\}<\/span>/);
+  assert.doesNotMatch(chatWorkspaceSource, />\s*\{item\}\s*<\/button>/);
   assert.match(chatWorkspaceSource, /const reviewLevelLabels: Record<ReviewLevel, string> = \{ fast: '快速审核', careful: '谨慎审核' \};/);
-  assert.match(chatWorkspaceSource, /<label className="review-control">[\s\S]*className="review-select"[\s\S]*aria-label="审核等级"/);
+  assert.doesNotMatch(chatWorkspaceSource, /<label className="review-control">/);
+  assert.match(chatWorkspaceSource, /<div className="run-settings-row">[\s\S]*<strong>审核等级<\/strong>[\s\S]*<em>\{reviewLevelLabels\[reviewLevel\]\}<\/em>[\s\S]*className="run-settings-select"[\s\S]*aria-label="审核等级"/);
   assert.match(chatWorkspaceSource, /\{reviewLevelLabels\[level\]\}/);
   assert.doesNotMatch(chatWorkspaceSource, /<span>审核等级<\/span>/);
   assert.doesNotMatch(chatWorkspaceSource, /\{level\} review/);
@@ -329,9 +354,13 @@ test('composer keeps review visible in Chinese and groups validation with capabi
   assert.match(chatWorkspaceSource, /<summary[\s\S]*title=\{`运行设置 · \$\{validationEnabled \? '验证开启' : validationError \? '验证错误' : '验证关闭'\} · \$\{chatScopeLabel\}`\}[\s\S]*<SlidersHorizontal size=\{15\} \/>/);
   assert.match(chatWorkspaceSource, /<div className="run-settings-popover">[\s\S]*className=\{`validation-toggle \$\{validationEnabled \? 'active' : ''\} \$\{validationError \? 'error' : ''\}`\}[\s\S]*className="secondary-button compact-button scope-button"/);
 
-  assert.match(css, /\.review-control\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;/s);
+  assert.doesNotMatch(css, /\.review-control\b/);
+  assert.match(css, /\.run-settings-select\s*\{[^}]*min-height:\s*32px;/s);
   assert.match(css, /\.run-settings-menu\s*\{[^}]*position:\s*relative;/s);
-  assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100% \+ 8px\);/s);
+  assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*right:\s*auto;[^}]*bottom:\s*calc\(100% \+ 8px\);[^}]*width:\s*300px;[^}]*transform:\s*translateX\(-50%\);/s);
+  assert.match(css, /\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button\s*\{[^}]*min-width:\s*50px;[^}]*padding:\s*0 7px;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button span\s*\{[^}]*font-size:\s*12px;/s);
 });
 
 test('collapsed artifact rail still reserves safe space for user avatars', async () => {
@@ -1090,7 +1119,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /runSavedDagStream\(saved\.id/);
   assert.match(apiSource, /export async function runSavedDagStream/);
   assert.match(apiSource, /\/saved-dags\/\$\{encodeURIComponent\(savedDagId\)\}\/run\/stream/);
-  assert.match(appSource, /selectedSidebarConversation\.project_id \? '\.dagent\/projects' : '\.dagent\/projects\/_conversations'/);
+  assert.doesNotMatch(appSource, /selectedSidebarConversation|workspaceRootLabel|workspace-root-chip/);
   assert.match(appSource, /run\?\.workspace_path \|\| '\.dagent\/runs'/);
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*artifacts=\{editorArtifacts\}[\s\S]*onCreateArtifact=\{createEditorArtifact\}[\s\S]*onUploadFiles=\{\(files\) => void uploadEditorFiles\(files\)\}/);
   assert.match(appSource, /<OrchestrationWorkspace[\s\S]*capabilities=\{capabilities\}[\s\S]*skills=\{skills\}[\s\S]*mcpServers=\{mcpServers\}[\s\S]*spec=\{editorUserDag\}[\s\S]*dag=\{editorDag\}[\s\S]*onSave=\{\(\) => void persistEditorUserDag\(\)\}[\s\S]*onRun=\{\(\) => void runEditorSpec\(\)\}/);
@@ -2054,11 +2083,25 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.doesNotMatch(sidebarSource, /visibleHistory/);
   assert.match(appSource, /onDeleteConversation=\{deleteConversationFromSidebar\}/);
   assert.match(sidebarSource, /onDeleteConversation: \(id: string\) => void;/);
-  assert.match(sidebarSource, /className="sidebar-conversation-row"/);
+  assert.match(sidebarSource, /className=\{conversation\.id === selectedConversationId \? 'sidebar-conversation-row active' : 'sidebar-conversation-row'\}/);
+  assert.doesNotMatch(sidebarSource, /className=\{conversation\.id === selectedConversationId \? 'active' : ''\}/);
+  const standaloneConversationRowsSource = sidebarSource.match(/visibleConversations\.length \? visibleConversations\.map\(\(conversation\) => \([\s\S]*?\)\) : \(/)?.[0] ?? '';
+  assert.ok(standaloneConversationRowsSource, 'standalone conversation rows should exist');
+  assert.match(standaloneConversationRowsSource, /<MessageSquare size=\{12\} \/>/);
+  assert.match(standaloneConversationRowsSource, /<strong>\{conversation\.title\}<\/strong>/);
+  assert.doesNotMatch(standaloneConversationRowsSource, /<em>\{conversation\.status\}<\/em>/);
   assert.match(sidebarSource, /className="sidebar-conversation-delete"/);
   assert.match(sidebarSource, /onDeleteConversation\(conversation\.id\)/);
-  assert.match(css, /\.sidebar-conversation-row\s*\{/);
-  assert.match(css, /\.sidebar-conversation-delete\s*\{/);
+  assert.match(css, /\.sidebar-history-list\s*\{[^}]*max-height:\s*min\(360px,\s*42vh\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+  assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
+  assert.match(css, /\.sidebar-history-list button\s*\{[^}]*border:\s*0;[^}]*padding:\s*7px 10px;[^}]*background:\s*transparent;/s);
+  assert.match(css, /\.sidebar-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
+  assert.doesNotMatch(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border-left:/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-project-conversation-row:hover \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
+  assert.doesNotMatch(css, /\.(?:sidebar-conversation-row|sidebar-project-conversation-row)(?:\.active|:focus-within) \.sidebar-conversation-delete|\.sidebar-history-list \.sidebar-conversation-delete:focus-visible/s);
 });
 
 test('new standalone chat does not create a placeholder conversation title', async () => {
@@ -2434,12 +2477,16 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(apiSource, /export async function updateProject/);
   assert.match(apiSource, /export async function deleteProject/);
   assert.match(appSource, /const \[projectCreateOpen, setProjectCreateOpen\] = useState\(false\);/);
+  assert.match(appSource, /const \[projectDeleteTargetId, setProjectDeleteTargetId\] = useState\(''\);/);
+  assert.match(appSource, /const projectDeleteTarget = useMemo\([\s\S]*projects\.find\(\(project\) => project\.id === projectDeleteTargetId\) \?\? null/);
+  assert.match(appSource, /const requestProjectDelete = \(projectId\?: string\) => \{[\s\S]*const targetProjectId = projectId \?\? selectedProject\?\.id;[\s\S]*if \(!targetProjectId\) return;[\s\S]*setProjectDeleteTargetId\(targetProjectId\);[\s\S]*setProjectDeleteOpen\(true\);/);
   assert.match(appSource, /const \[conversationDeleteTargetId, setConversationDeleteTargetId\] = useState\(''\);/);
   assert.match(appSource, /function ProjectCreateDialog/);
   assert.match(appSource, /function ConversationDeleteDialog/);
   assert.match(appSource, /conversation\.project_id[\s\S]*项目会话只会删除会话记录和运行历史，项目目录会保留。[\s\S]*会话记录和该会话工作目录会同步删除。/);
   assert.match(appSource, /function ProjectEditDialog/);
   assert.match(appSource, /function ProjectDeleteDialog/);
+  assert.match(appSource, /projectDeleteOpen && projectDeleteTarget/);
   assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => conversation\.kind === 'chat' && !conversation\.project_id && matchesSearchQuery/);
 });
 
@@ -2451,13 +2498,33 @@ test('project sidebar is an expandable project and conversation tree', async () 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(sidebarSource, /const \[expandedProjectIds, setExpandedProjectIds\] = useState<Set<string>>/);
   assert.match(sidebarSource, /const toggleProjectExpansion = \(projectId: string\)/);
+  assert.match(sidebarSource, /onDeleteProject: \(projectId: string\) => void;/);
   assert.match(sidebarSource, /className="sidebar-project-tree-row"/);
-  assert.match(sidebarSource, /className="sidebar-project-conversation-row"/);
+  assert.match(sidebarSource, /className=\{conversation\.id === selectedConversationId \? 'sidebar-project-conversation-row active' : 'sidebar-project-conversation-row'\}/);
+  const projectConversationRowsSource = sidebarSource.match(/displayedProjectConversations\.length \? displayedProjectConversations\.map\(\(conversation\) => \([\s\S]*?\)\) : \(/)?.[0] ?? '';
+  assert.ok(projectConversationRowsSource, 'project conversation rows should exist');
+  assert.match(projectConversationRowsSource, /<MessageSquare size=\{15\} \/>/);
+  assert.match(projectConversationRowsSource, /<strong>\{conversation\.title\}<\/strong>/);
+  assert.doesNotMatch(projectConversationRowsSource, /<em>\{conversation\.status\}<\/em>/);
   assert.match(sidebarSource, /projectConversationsByProjectId/);
   assert.match(sidebarSource, /onSelectProject\(project\.id\);[\s\S]*toggleProjectExpansion\(project\.id\);/);
+  assert.match(sidebarSource, /className=\{project\.id === selectedProjectId && !selectedConversationId \? 'sidebar-project-tree-main active' : 'sidebar-project-tree-main'\}/);
+  assert.doesNotMatch(sidebarSource, /className=\{project\.id === selectedProjectId && !selectedConversationId \? 'active sidebar-project-select' : 'sidebar-project-select'\}/);
+  assert.match(sidebarSource, /className="sidebar-project-delete"[\s\S]*onClick=\{\(\) => onDeleteProject\(project\.id\)\}[\s\S]*title="删除项目"/);
+  assert.doesNotMatch(sidebarSource, /className="sidebar-project-toggle"/);
   assert.match(sidebarSource, /onSelectConversation\(conversation\.id\)/);
+  assert.match(css, /\.sidebar-history-list\s*\{[^}]*max-height:\s*min\(360px,\s*42vh\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
+  assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-project-tree-row\s*\{/);
-  assert.match(css, /\.sidebar-project-conversation-row\s*\{/);
+  assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.sidebar-project-conversation-row > button:first-child svg\s*\{[^}]*flex:\s*0 0 auto;/s);
+  assert.match(css, /\.sidebar-project-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
+  assert.doesNotMatch(css, /\.sidebar-project-delete\s*\{[^}]*border-left:/s);
+  assert.match(css, /\.sidebar-project-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
+  assert.match(css, /\.sidebar-project-tree-main:hover \.sidebar-project-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
+  assert.doesNotMatch(css, /\.sidebar-project-tree-main(?:\.active|:focus-within) \.sidebar-project-delete|\.sidebar-project-delete:focus-visible/s);
+  assert.match(css, /\.sidebar-project-delete:hover\s*\{[^}]*color:\s*#9f2f2a;/s);
+  assert.doesNotMatch(css, /\.sidebar-project-toggle\b/);
 });
 
 test('project conversation creation is a row action with a detail shortcut', async () => {
@@ -2471,13 +2538,14 @@ test('project conversation creation is a row action with a detail shortcut', asy
   assert.match(appSource, /const createProjectConversationFromProject = async \(projectId: string\)/);
   assert.match(appSource, /onNewProjectConversation=\{\(projectId\) => void createProjectConversationFromProject\(projectId\)\}/);
   assert.match(sidebarSource, /onNewProjectConversation: \(projectId: string\) => void;/);
-  assert.match(sidebarSource, /className="sidebar-project-create-conversation"/);
-  assert.match(sidebarSource, /title="新建会话"/);
-  assert.match(sidebarSource, /onClick=\{\(\) => \{[\s\S]*expandProject\(project\.id\);[\s\S]*onNewProjectConversation\(project\.id\);[\s\S]*\}\}/);
+  assert.doesNotMatch(sidebarSource, /className="sidebar-project-create-conversation"/);
+  assert.match(sidebarSource, /className="sidebar-project-conversation-tree"[\s\S]*className="sidebar-project-create-conversation-row"[\s\S]*onClick=\{\(\) => onNewProjectConversation\(project\.id\)\}[\s\S]*title="新建会话"[\s\S]*<Plus size=\{12\} \/>[\s\S]*<span>新建会话<\/span>[\s\S]*displayedProjectConversations\.length/);
   assert.doesNotMatch(sidebarSource, /className="sidebar-project-new-chat"/);
   assert.match(projectDetailSource, /onNewConversation: \(\) => void;/);
   assert.match(projectDetailSource, /<button className="secondary-button compact-button" onClick=\{onNewConversation\} type="button">[\s\S]*<Plus size=\{14\} \/>[\s\S]*新建会话/);
-  assert.match(css, /\.sidebar-project-create-conversation\s*\{/);
+  assert.match(css, /\.sidebar-project-create-conversation-row\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*gap:\s*7px;[^}]*border:\s*1px solid #e2e4ea;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-project-create-conversation-row\s*\{[^}]*flex-direction:\s*row;[^}]*border-color:\s*#e2e4ea;/s);
+  assert.match(css, /\.sidebar-project-create-conversation-row:hover\s*\{[^}]*color:\s*#5b5bd6;/s);
   assert.doesNotMatch(css, /\.sidebar-project-new-chat\s*\{/);
 });
 
@@ -2488,18 +2556,22 @@ test('project detail workspace manages files with tree and preview', async () =>
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
   assert.match(typesSource, /export interface ProjectFileItem/);
+  assert.match(typesSource, /children\?: ProjectFileItem\[\];/);
   assert.match(typesSource, /export interface ProjectFileItem[\s\S]*onlyoffice_config_url\?: string \| null;/);
+  assert.match(typesSource, /export interface ProjectFilesResponse[\s\S]*tree\?: ProjectFileItem\[\];/);
   assert.match(typesSource, /export interface ProjectFilePreview/);
-  assert.match(apiSource, /export async function listProjectFiles/);
+  assert.match(apiSource, /export async function listProjectFiles\(projectId: string, path = '', options: \{ tree\?: boolean \} = \{\}\)/);
+  assert.match(apiSource, /if \(options\.tree\) params\.set\('tree', 'true'\);/);
   assert.match(apiSource, /export async function uploadProjectFiles/);
   assert.match(apiSource, /export async function createProjectFolder/);
   assert.match(apiSource, /export async function renameProjectFile/);
   assert.match(apiSource, /export async function deleteProjectFile/);
   assert.match(apiSource, /export async function previewProjectFile/);
   assert.match(apiSource, /export function projectFileDownloadUrl/);
-  assert.match(apiSource, /function normalizeProjectFileUrls[\s\S]*onlyoffice_config_url: normalizeApiUrl\(file\.onlyoffice_config_url\)/);
+  assert.match(apiSource, /function normalizeProjectFileUrls[\s\S]*children: file\.children\?\.map\(normalizeProjectFileUrls\)/);
   assert.match(appSource, /function ProjectDetailWorkspace/);
   assert.match(appSource, /function ProjectFileManager/);
+  assert.match(appSource, /function ProjectFileTreeNode/);
   assert.match(appSource, /function ProjectFilePreviewPane/);
   assert.match(appSource, /function projectFilePreviewArtifactItem/);
   assert.match(appSource, /const projectFilesRequestRef = useRef\(0\);/);
@@ -2509,16 +2581,88 @@ test('project detail workspace manages files with tree and preview', async () =>
   assert.match(projectSelectionResetSource, /setProjectFiles\(\[\]\);/);
   assert.match(projectSelectionResetSource, /setProjectFilesError\(null\);/);
   assert.match(appSource, /const requestId = projectFilesRequestRef\.current \+ 1;[\s\S]*projectFilesRequestRef\.current = requestId;[\s\S]*if \(projectFilesRequestRef\.current !== requestId\) return;/);
+  assert.match(appSource, /listProjectFiles\(projectId, '', \{ tree: true \}\)/);
+  assert.match(appSource, /setProjectFiles\(payload\.tree \?\? payload\.files\)/);
   assert.match(appSource, /const requestId = projectFilePreviewRequestRef\.current \+ 1;[\s\S]*projectFilePreviewRequestRef\.current = requestId;[\s\S]*if \(projectFilePreviewRequestRef\.current !== requestId\) return;/);
-  assert.match(appSource, /<ProjectDetailWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
-  assert.match(appSource, /selectedChatConversation \|\| chatSub !== 'projects' \? \([\s\S]*<ChatWorkspace[\s\S]*artifactPanelOpen=\{artifactDrawerOpen\}/);
+  assert.match(appSource, /<ProjectChatWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
+  assert.match(appSource, /chatSub === 'projects' \? \([\s\S]*<ProjectChatWorkspace[\s\S]*chatProps=\{chatWorkspaceProps\}/);
   const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';
   assert.match(projectPreviewSource, /projectFilePreviewArtifactItem\(selectedFile\)/);
   assert.match(projectPreviewSource, /<ArtifactPreview/);
+  assert.doesNotMatch(projectPreviewSource, /<ArtifactPreview[\s\S]*showHeader=\{false\}/);
+  assert.match(appSource, /showHeader = true[\s\S]*title=\{previewFullscreen \? '关闭全屏' : '全屏预览'\}/);
   assert.doesNotMatch(projectPreviewSource, /<iframe|<img/);
   assert.match(css, /\.project-detail-workspace\s*\{/);
   assert.match(css, /\.project-file-tree\s*\{/);
+  assert.match(css, /\.project-file-tree-head\s*\{/);
   assert.match(css, /\.project-file-preview\s*\{/);
+});
+
+test('project chat mode keeps project files beside the conversation', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const projectChatSource = appSource.match(/function ProjectChatWorkspace[\s\S]*?\nfunction ProjectDetailWorkspace/)?.[0] ?? '';
+  const refreshProjectFilesSource = appSource.match(/const refreshProjectFiles = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[[^\]]+\]\);/)?.[0] ?? '';
+
+  assert.ok(projectChatSource, 'ProjectChatWorkspace function should exist');
+  assert.match(appSource, /activeWorkspace === 'chat' \? \([\s\S]*chatSub === 'projects' \? \([\s\S]*<ProjectChatWorkspace/);
+  assert.match(projectChatSource, /const \[projectChatWidth, setProjectChatWidth\] = usePanelWidth\('dagent\.project-chat-width', 500, 420, 680\);/);
+  assert.match(projectChatSource, /const projectChatProps: Parameters<typeof ChatWorkspace>\[0\] = \{[\s\S]*\.\.\.chatProps,[\s\S]*artifactPanelOpen: false,[\s\S]*artifacts: \[\]/);
+  assert.match(projectChatSource, /<div className="project-chat-body" style=\{\{ '--project-chat-width': `\$\{projectChatWidth\}px` \} as React\.CSSProperties\}>[\s\S]*<ProjectFileContextPane[\s\S]*<div className="project-chat-conversation-pane">[\s\S]*<PanelResizeHandle width=\{projectChatWidth\} onResize=\{setProjectChatWidth\} \/>[\s\S]*<ChatWorkspace \{\.\.\.projectChatProps\} \/>/);
+  assert.doesNotMatch(projectChatSource, /project-chat-conversation-head|project-pane-statusbar/);
+  assert.doesNotMatch(projectChatSource, /project-chat-statusbar/);
+  assert.match(projectChatSource, /function ProjectFileContextPane/);
+  assert.match(refreshProjectFilesSource, /if \(!selectedProject \|\| activeWorkspace !== 'chat' \|\| chatSub !== 'projects'\)/);
+  assert.doesNotMatch(refreshProjectFilesSource, /selectedChatConversation/);
+  assert.match(css, /\.project-pane-statusbar\s*\{[\s\S]*min-height: 52px;/);
+  assert.match(css, /\.project-pane-statusbar > \.project-file-tree-actions\s*\{[\s\S]*display: flex;/);
+  assert.doesNotMatch(css, /\.project-chat-conversation-head\b/);
+  assert.doesNotMatch(css, /\.project-chat-statusbar\s*\{/);
+  assert.match(css, /\.project-chat-body\s*\{[\s\S]*grid-template-columns: minmax\(0, 1fr\) var\(--project-chat-width, 500px\);/);
+  assert.match(css, /\.project-file-context-pane\s*\{/);
+  assert.match(css, /\.project-chat-conversation-pane\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;[^}]*z-index:\s*2;/s);
+  assert.match(css, /\.project-chat-conversation-pane > \.panel-resize-handle\s*\{[^}]*display:\s*block;[^}]*left:\s*-6px;[^}]*width:\s*12px;[^}]*z-index:\s*20;/s);
+  assert.doesNotMatch(css, /\.project-chat-conversation-pane\s*\{[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.project-chat-conversation-pane \.chat-workspace\s*\{[\s\S]*--chat-content-max-width: calc\(var\(--project-chat-width, 500px\) - 56px\);[\s\S]*--chat-user-avatar-safe-space: 0px;/);
+  assert.match(css, /\.panel-resize-shield\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;[^}]*z-index:\s*90;[^}]*cursor:\s*col-resize;/s);
+  assert.match(appSource, /function PanelResizeHandle[\s\S]*\{dragging \? <div className="panel-resize-shield" aria-hidden="true" \/> : null\}/);
+  assert.match(css, /\.user-row\s*\{[^}]*--user-avatar-offset:\s*var\(--chat-user-avatar-safe-space,\s*43px\);/s);
+  assert.match(css, /\.project-file-context-pane \.project-file-browser\s*\{[\s\S]*grid-template-columns: 240px minmax\(0, 1fr\);/);
+  assert.match(css, /\.project-file-manager\.tree-collapsed \.project-file-browser\s*\{[\s\S]*grid-template-columns: 0 minmax\(0, 1fr\);/);
+  assert.match(css, /\.project-file-tree-main\s*\{[\s\S]*width: 100%;[\s\S]*display: grid;[\s\S]*grid-template-columns: 14px 16px minmax\(0, 1fr\);/);
+  const projectFileManagerSource = appSource.match(/function ProjectFileManager[\s\S]*?\nfunction ProjectFilePreviewPane/)?.[0] ?? '';
+  const projectTreeNodeSource = appSource.match(/function ProjectFileTreeNode[\s\S]*?\nfunction ProjectFilePreviewPane/)?.[0] ?? '';
+  const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';
+  assert.match(projectFileManagerSource, /const \[treeCollapsed, setTreeCollapsed\] = useState\(false\);/);
+  assert.match(projectFileManagerSource, /const \[uploadMenuOpen, setUploadMenuOpen\] = useState\(false\);/);
+  assert.match(projectFileManagerSource, /const \[treeMenu, setTreeMenu\] = useState<\{ file: ProjectFileItem \| null; x: number; y: number \} \| null>\(null\);/);
+  assert.match(projectFileManagerSource, /className=\{treeCollapsed \? 'project-file-manager tree-collapsed' : 'project-file-manager'\}/);
+  assert.match(projectFileManagerSource, /className="icon-button project-upload-trigger"[\s\S]*title="上传"/);
+  assert.match(projectFileManagerSource, /className="project-file-upload-menu"[\s\S]*上传文件[\s\S]*上传目录/);
+  assert.match(projectFileManagerSource, /className="project-tree-divider-toggle"[\s\S]*onClick=\{\(\) => setTreeCollapsed\(\(value\) => !value\)\}/);
+  assert.doesNotMatch(projectFileManagerSource, /project-tree-restore-button/);
+  assert.doesNotMatch(projectFileManagerSource, /title="上传文件"[\s\S]*title="上传目录"[\s\S]*onClick=\{\(\) => setTreeCollapsed\(true\)\}/);
+  assert.match(css, /\.project-upload-control\s*\{[\s\S]*position: relative;/);
+  assert.match(css, /\.project-file-upload-menu\s*\{[\s\S]*position: absolute;/);
+  assert.match(css, /\.project-tree-divider-toggle\s*\{[^}]*left: 240px;[^}]*top: 50%;[^}]*box-shadow: none;/s);
+  assert.match(css, /\.project-file-manager\.tree-collapsed \.project-tree-divider-toggle\s*\{[\s\S]*left: 0;/);
+  assert.match(projectFileManagerSource, /<ProjectFileTreeNode/);
+  const openProjectFileTreeMenuSource = projectFileManagerSource.match(/const openProjectFileTreeMenu = \(event: React\.MouseEvent, file: ProjectFileItem\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.ok(openProjectFileTreeMenuSource, 'tree context menu handler should exist');
+  assert.doesNotMatch(openProjectFileTreeMenuSource, /onFileSelect\(file\)/);
+  assert.match(projectFileManagerSource, /const openProjectFileRootMenu = \(event: React\.MouseEvent\) => \{[\s\S]*setTreeMenu\(\{ file: null, x: event\.clientX, y: event\.clientY \}\);[\s\S]*\n  \};/);
+  assert.match(projectFileManagerSource, /<div className="project-file-tree-list" onContextMenu=\{openProjectFileRootMenu\}>/);
+  assert.match(projectFileManagerSource, /const contextMenuFile = treeMenu\?\.file \?\? null;/);
+  assert.match(projectFileManagerSource, /<div[\s\S]*className="project-file-context-menu"[\s\S]*contextMenuFile\?\.name \?\? '项目根目录'[\s\S]*onCreateFolder\(contextMenuFile \?\? undefined\)[\s\S]*新建文件夹[\s\S]*contextMenuFile \? \([\s\S]*onRenameFile\(contextMenuFile\)[\s\S]*onDownloadFile\(contextMenuFile\)[\s\S]*onDeleteFile\(contextMenuFile\)/);
+  assert.doesNotMatch(projectFileManagerSource, /className="icon-button" onClick=\{onCreateFolder\} title="新建文件夹"/);
+  assert.match(appSource, /const basePath = projectFileDialog\.file[\s\S]*: '';/);
+  assert.match(projectTreeNodeSource, /onContextMenu=\{\(event\) => onContextMenu\(event, file\)\}/);
+  assert.match(projectTreeNodeSource, /<span>\{file\.name\}<\/span>/);
+  assert.doesNotMatch(projectTreeNodeSource, /project-file-actions|onRenameFile|onDownloadFile|onDeleteFile|projectFileMeta\(file\)/);
+  assert.match(projectPreviewSource, /<header className="project-file-preview-head project-pane-statusbar">[\s\S]*selectedFile\.name/);
+  assert.doesNotMatch(projectPreviewSource, /<ArtifactPreview[\s\S]*showHeader=\{false\}/);
+  assert.match(projectPreviewSource, /<ArtifactPreview[\s\S]*selectedArtifact=\{selectedArtifact\}[\s\S]*onCopy=\{copyProjectPreview\}/);
+  assert.doesNotMatch(projectFileManagerSource, /project-file-path/);
 });
 
 test('chat stop button aborts the active stream request', async () => {
@@ -2703,11 +2847,13 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /preview\.run_id !== selectedArtifact\.runId \|\| preview\.path !== selectedArtifact\.path/);
   assert.doesNotMatch(appSource, /runArtifacts: runState\?\.trace\?\.artifacts/);
   assert.doesNotMatch(appSource, /artifactPreviewText/);
-  assert.match(appSource, /onArtifactRefresh=\{refreshRunArtifacts\}/);
+  assert.match(appSource, /onArtifactRefresh: refreshRunArtifacts/);
   assert.match(appSource, /function ArtifactPreview\(/);
+  assert.match(appSource, /showHeader = true/);
   assert.match(appSource, /const downloadUrl = artifactPreviewDownloadUrl\(selectedArtifact\);/);
   assert.match(appSource, /const \[previewFullscreen, setPreviewFullscreen\] = useState\(false\);/);
   assert.match(appSource, /className="artifact-preview-title"/);
+  assert.match(appSource, /\{showHeader \? \([\s\S]*className="artifact-preview-head"[\s\S]*\) : null\}/);
   assert.match(appSource, /title=\{previewFullscreen \? '关闭全屏' : '全屏预览'\}/);
   assert.match(appSource, /data-fullscreen=\{previewFullscreen\}/);
   assert.doesNotMatch(appSource, /\{previewFullscreen \? null : body\}/);
@@ -2773,7 +2919,7 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.doesNotMatch(css, /\.artifact-tree-pane-head\b/);
   assert.doesNotMatch(css, /\.artifact-tree-pane-title\b/);
   assert.doesNotMatch(css, /\.artifact-tree-pane-toggle\b/);
-  assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*width:\s*18px;[^}]*height:\s*42px;[^}]*align-self:\s*center;[^}]*justify-self:\s*center;/s);
+  assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*width:\s*18px;[^}]*height:\s*42px;[^}]*align-self:\s*center;[^}]*justify-self:\s*center;[^}]*box-shadow:\s*none;/s);
   assert.match(css, /\.artifact-tree-list\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
   assert.match(css, /\.artifact-tree-rail-toggle\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s);
   assert.match(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*12px\);/);

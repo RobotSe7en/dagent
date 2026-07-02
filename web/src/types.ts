@@ -296,12 +296,14 @@ export interface ProjectFileItem {
   preview_url?: string | null;
   download_url?: string | null;
   onlyoffice_config_url?: string | null;
+  children?: ProjectFileItem[];
 }
 
 export interface ProjectFilesResponse {
   project_id: string;
   path: string;
   files: ProjectFileItem[];
+  tree?: ProjectFileItem[];
 }
 
 export interface ProjectFilePreview {

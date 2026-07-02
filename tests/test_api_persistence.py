@@ -712,6 +712,7 @@ def test_api_project_file_management(persistence_client) -> None:
     )
     root_list = persistence_client.get(f"/projects/{project_id}/files")
     docs_list = persistence_client.get(f"/projects/{project_id}/files", params={"path": "docs"})
+    tree_list = persistence_client.get(f"/projects/{project_id}/files", params={"tree": "true"})
     preview = persistence_client.get(
         f"/projects/{project_id}/files/preview",
         params={"path": "docs/readme.md"},
@@ -733,6 +734,10 @@ def test_api_project_file_management(persistence_client) -> None:
     assert docs_file["previewable"] is True
     assert docs_file["preview_url"].endswith("/files/preview?path=docs/readme.md")
     assert docs_file["download_url"].endswith("/files/download?path=docs/readme.md")
+    assert tree_list.status_code == 200
+    tree_paths = {item["path"]: item for item in tree_list.json()["tree"]}
+    assert tree_paths["docs"]["children"][0]["path"] == "docs/readme.md"
+    assert tree_paths["data"]["children"][0]["path"] == "data/raw"
     assert preview.status_code == 200
     assert preview.json()["preview_kind"] == "markdown"
     assert preview.json()["content"] == "# Hello\n"
@@ -837,8 +842,10 @@ def test_api_project_file_management_rejects_workspace_escape(persistence_client
     outside.mkdir()
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
     (workspace_path / "link").symlink_to(outside)
+    (workspace_path / "loop").symlink_to(workspace_path, target_is_directory=True)
 
     escaped_list = persistence_client.get(f"/projects/{project_id}/files", params={"path": "../outside"})
+    tree_list = persistence_client.get(f"/projects/{project_id}/files", params={"tree": "true"})
     escaped_folder = persistence_client.post(
         f"/projects/{project_id}/files/folder",
         json={"path": "../outside"},
@@ -853,6 +860,10 @@ def test_api_project_file_management_rejects_workspace_escape(persistence_client
     )
 
     assert escaped_list.status_code == 400
+    assert tree_list.status_code == 200
+    tree_paths = {item["path"]: item for item in tree_list.json()["tree"]}
+    assert "link" not in tree_paths
+    assert tree_paths["loop"]["children"] == []
     assert escaped_folder.status_code == 400
     assert escaped_rename.status_code == 400
     assert symlink_preview.status_code == 400
