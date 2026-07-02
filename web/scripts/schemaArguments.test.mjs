@@ -314,6 +314,26 @@ test('composer summarizes large pending upload batches instead of listing every 
   assert.match(css, /\.pending-upload-list\s*\{[^}]*max-height:\s*180px;[^}]*overflow-y:\s*auto;/s);
 });
 
+test('composer keeps review visible in Chinese and groups validation with capability scope', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
+
+  assert.match(chatWorkspaceSource, /const reviewLevelLabels: Record<ReviewLevel, string> = \{ fast: '快速审核', careful: '谨慎审核' \};/);
+  assert.match(chatWorkspaceSource, /<label className="review-control">[\s\S]*className="review-select"[\s\S]*aria-label="审核等级"/);
+  assert.match(chatWorkspaceSource, /\{reviewLevelLabels\[level\]\}/);
+  assert.doesNotMatch(chatWorkspaceSource, /<span>审核等级<\/span>/);
+  assert.doesNotMatch(chatWorkspaceSource, /\{level\} review/);
+
+  assert.match(chatWorkspaceSource, /<details className=\{`run-settings-menu \$\{validationEnabled \|\| validationError \|\| chatScopeLabel !== '全部能力' \? 'active' : ''\}`\}>/);
+  assert.match(chatWorkspaceSource, /<summary[\s\S]*title=\{`运行设置 · \$\{validationEnabled \? '验证开启' : validationError \? '验证错误' : '验证关闭'\} · \$\{chatScopeLabel\}`\}[\s\S]*<SlidersHorizontal size=\{15\} \/>/);
+  assert.match(chatWorkspaceSource, /<div className="run-settings-popover">[\s\S]*className=\{`validation-toggle \$\{validationEnabled \? 'active' : ''\} \$\{validationError \? 'error' : ''\}`\}[\s\S]*className="secondary-button compact-button scope-button"/);
+
+  assert.match(css, /\.review-control\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;/s);
+  assert.match(css, /\.run-settings-menu\s*\{[^}]*position:\s*relative;/s);
+  assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100% \+ 8px\);/s);
+});
+
 test('collapsed artifact rail still reserves safe space for user avatars', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');

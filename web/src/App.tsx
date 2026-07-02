@@ -5534,6 +5534,7 @@ function ChatWorkspace({
     () => visiblePendingUploadGroups(pendingUploadGroups, pendingUploadsExpanded, 4),
     [pendingUploadGroups, pendingUploadsExpanded],
   );
+  const reviewLevelLabels: Record<ReviewLevel, string> = { fast: '快速审核', careful: '谨慎审核' };
 
   useEffect(() => {
     if (!pendingUploads.length) setPendingUploadsExpanded(false);
@@ -5631,38 +5632,65 @@ function ChatWorkspace({
                   </button>
                 ))}
               </div>
-              <select
-                className="review-select"
-                value={reviewLevel}
-                onChange={(event) => onReviewLevelChange(event.target.value as ReviewLevel)}
-                aria-label="Review level"
-              >
-                {reviewLevels.map((level) => (
-                  <option key={level} value={level}>
-                    {level} review
-                  </option>
-                ))}
-              </select>
-              <button
-                className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
-                type="button"
-                onClick={onToggleValidation}
-                disabled={validationPending}
-                title={validationError ?? 'Validate final answers against the user request'}
-                aria-pressed={validationEnabled}
-              >
-                <span />
-                {validationPending ? 'Validation saving' : validationEnabled ? 'Validation on' : validationError ? 'Validation error' : 'Validation off'}
-              </button>
-              <button
-                className="secondary-button compact-button scope-button"
-                onClick={onOpenScope}
-                title="选择能力"
-                type="button"
-              >
-                <SlidersHorizontal size={15} />
-                {chatScopeLabel}
-              </button>
+              <label className="review-control">
+                <select
+                  className="review-select"
+                  value={reviewLevel}
+                  onChange={(event) => onReviewLevelChange(event.target.value as ReviewLevel)}
+                  aria-label="审核等级"
+                >
+                  {reviewLevels.map((level) => (
+                    <option key={level} value={level}>
+                      {reviewLevelLabels[level]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <details className={`run-settings-menu ${validationEnabled || validationError || chatScopeLabel !== '全部能力' ? 'active' : ''}`}>
+                <summary
+                  className="icon-button run-settings-trigger"
+                  title={`运行设置 · ${validationEnabled ? '验证开启' : validationError ? '验证错误' : '验证关闭'} · ${chatScopeLabel}`}
+                  aria-label="运行设置"
+                >
+                  <SlidersHorizontal size={15} />
+                </summary>
+                <div className="run-settings-popover">
+                  <div className="run-settings-row">
+                    <span>
+                      <strong>结果验证</strong>
+                      <em>{validationError ?? '检查最终回答是否贴合请求'}</em>
+                    </span>
+                    <button
+                      className={`validation-toggle ${validationEnabled ? 'active' : ''} ${validationError ? 'error' : ''}`}
+                      type="button"
+                      onClick={onToggleValidation}
+                      disabled={validationPending}
+                      title={validationError ?? '切换结果验证'}
+                      aria-pressed={validationEnabled}
+                    >
+                      <span />
+                      {validationPending ? '保存中' : validationEnabled ? '已开启' : validationError ? '异常' : '已关闭'}
+                    </button>
+                  </div>
+                  <div className="run-settings-row">
+                    <span>
+                      <strong>能力范围</strong>
+                      <em>{chatScopeLabel}</em>
+                    </span>
+                    <button
+                      className="secondary-button compact-button scope-button"
+                      onClick={(event) => {
+                        onOpenScope();
+                        event.currentTarget.closest('details')?.removeAttribute('open');
+                      }}
+                      title="选择能力"
+                      type="button"
+                    >
+                      选择
+                    </button>
+                  </div>
+                </div>
+              </details>
               {currentDag.nodes.length ? <StatusBadge status={currentDag.status} /> : null}
               <button className="primary-button chat-send-button" onClick={loading ? onStop : onRun} type="button">
                 {loading ? '停止' : '发送'}
