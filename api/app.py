@@ -91,6 +91,10 @@ from dagent.config import (
     resolve_config_relative_path,
     save_user_config,
 )
+from dagent.capabilities.mcp.config import (
+    DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+)
 from dagent.capabilities.providers import agent_capability_parameters
 from dagent.harness_runtime.artifacts import (
     ArtifactPathError,
@@ -384,8 +388,8 @@ class MCPServerRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     risk: RiskLevel = "medium"
-    connect_timeout: float = 30
-    tool_timeout: float = 60
+    connect_timeout: float = DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS
+    tool_timeout: float = DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
     include_tools: list[str] = Field(default_factory=list)
     exclude_tools: list[str] = Field(default_factory=list)
 

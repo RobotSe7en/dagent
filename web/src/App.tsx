@@ -309,8 +309,8 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
   headers: {},
   enabled: true,
   risk: 'medium',
-  connect_timeout: 30,
-  tool_timeout: 60,
+  connect_timeout: 60,
+  tool_timeout: 90,
 };
 
 const defaultPythonToolConfig: PythonToolConfig = {

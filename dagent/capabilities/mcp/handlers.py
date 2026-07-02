@@ -8,6 +8,7 @@ from typing import Any
 
 from dagent.schemas import CapabilityInvocation, CapabilityResult
 
+from .config import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
 from .errors import sanitize_error
 
 
@@ -16,7 +17,7 @@ def make_mcp_tool_handler(
     *,
     server_name: str,
     tool_name: str,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
 ):
     async def execute(invocation: CapabilityInvocation) -> CapabilityResult:
         try:

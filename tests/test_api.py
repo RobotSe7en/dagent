@@ -530,8 +530,8 @@ def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
         "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
         "enabled": True,
         "risk": "high",
-        "connect_timeout": 30,
-        "tool_timeout": 60,
+        "connect_timeout": 60,
+        "tool_timeout": 90,
     }
     assert server["tools"][0]["policy"]["network"] is True
 
@@ -4155,8 +4155,8 @@ def test_api_mcp_management_persists_user_servers_to_user_config(monkeypatch, tm
             "command": "fake",
             "enabled": True,
             "risk": "low",
-            "connect_timeout": 30,
-            "tool_timeout": 60,
+            "connect_timeout": 60,
+            "tool_timeout": 90,
         }
         assert servers["mock"]["source"] == "user"
         assert servers["mock"]["status"] == "connected"

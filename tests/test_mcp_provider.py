@@ -29,6 +29,7 @@ class FakeMCPManager:
         self.started = False
         self.shutdown_calls = 0
         self.calls: list[tuple[str, str, dict]] = []
+        self.timeouts: list[float] = []
 
     def start(self) -> None:
         self.started = True
@@ -56,6 +57,7 @@ class FakeMCPManager:
 
     def call_tool_blocking(self, server_name: str, tool_name: str, arguments: dict, timeout: float):
         self.calls.append((server_name, tool_name, arguments))
+        self.timeouts.append(timeout)
         return SimpleNamespace(
             isError=False,
             content=[SimpleNamespace(type="text", text="found:x")],
@@ -93,6 +95,7 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert payload == {"result": "found:x", "structuredContent": {"ok": True}}
     assert result.value == {"ok": True}
     assert manager.calls == [("mock-server", "lookup", {"query": "x"})]
+    assert manager.timeouts == [90]
 
 
 def test_mcp_provider_accepts_snake_case_output_schema() -> None:
@@ -284,6 +287,44 @@ def test_mcp_manager_shuts_down_server_task_after_connect_timeout(monkeypatch) -
         manager.shutdown()
 
 
+def test_mcp_manager_uses_default_connect_timeout(monkeypatch) -> None:
+    captured: dict[str, float] = {}
+
+    class FakeFuture:
+        def result(self, timeout: float):
+            captured["timeout"] = timeout
+            return None
+
+        def cancel(self) -> None:
+            return None
+
+    class FakeTask:
+        def __init__(self, name: str, config: dict) -> None:
+            self.tools = []
+            self.last_error = None
+
+        async def start(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return FakeFuture()
+
+    monkeypatch.setattr(manager_module, "MCPServerTask", FakeTask)
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    manager = MCPServerManager({"mock": {"command": "fake"}})
+    manager.available = True
+
+    try:
+        manager.start()
+        assert captured["timeout"] == 60
+    finally:
+        manager.shutdown()
+
+
 def test_stdio_env_filters_host_secrets(monkeypatch) -> None:
     monkeypatch.setenv("PATH", "safe-path")
     monkeypatch.setenv("OPENAI_API_KEY", "secret")
@@ -413,6 +454,48 @@ def test_mcp_server_task_uses_separate_http_timeouts(monkeypatch) -> None:
     assert timeout.write == 7
     assert timeout.pool == 7
     assert timeout.read == 55
+
+
+def test_mcp_server_task_uses_default_http_timeouts(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeHTTPClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    @asynccontextmanager
+    async def fake_streamable_http_client(url, *, http_client=None):
+        yield "read", "write", lambda: None
+
+    def fake_create_mcp_http_client(headers=None, timeout=None):
+        captured["timeout"] = timeout
+        return FakeHTTPClient()
+
+    monkeypatch.setattr(server_task_module, "create_mcp_http_client", fake_create_mcp_http_client)
+    monkeypatch.setattr(server_task_module, "streamable_http_client", fake_streamable_http_client)
+
+    task = MCPServerTask(
+        "remote",
+        {
+            "transport": "http",
+            "url": "https://mcp.example.test/mcp",
+        },
+    )
+
+    async def open_streams():
+        async with AsyncExitStack() as stack:
+            return await task._open_streams(stack)
+
+    run(open_streams())
+
+    timeout = captured["timeout"]
+    assert timeout.connect == 60
+    assert timeout.write == 60
+    assert timeout.pool == 60
+    assert timeout.read == 90
 
 
 def test_mcp_server_task_requires_explicit_http_transport_for_url() -> None:

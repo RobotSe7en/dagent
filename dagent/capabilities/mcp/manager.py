@@ -7,6 +7,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import threading
 from typing import Any
 
+from .config import DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS
 from .server_task import MCPServerTask, MCP_SDK_AVAILABLE
 
 
@@ -38,7 +39,14 @@ class MCPServerManager:
             futures.append((name, asyncio.run_coroutine_threadsafe(task.start(), self._loop)))
         for name, future in futures:
             try:
-                future.result(timeout=float(self.servers[name].get("connect_timeout", 30)))
+                future.result(
+                    timeout=float(
+                        self.servers[name].get(
+                            "connect_timeout",
+                            DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
+                        )
+                    )
+                )
             except FutureTimeoutError as exc:
                 self.last_errors[name] = str(exc)
                 future.cancel()
