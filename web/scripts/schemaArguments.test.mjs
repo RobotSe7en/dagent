@@ -246,6 +246,15 @@ test('chat workbench ports the design shell without mock run data', async () => 
   assert.match(css, /button:focus-visible\s*\{[^}]*outline:\s*2px solid rgba\(91, 91, 214, 0\.42\);/s);
 });
 
+test('chat message frames keep user and assistant treatment aligned', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*14px 14px 6px 14px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.assistant-row\s*\{[^}]*align-items:\s*flex-start;/s);
+  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);[^}]*border-radius:\s*14px 14px 14px 6px;[^}]*box-shadow:\s*none;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*1;/s);
+});
+
 test('composer uses the reserved upload button for pending attachments', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
