@@ -5,11 +5,63 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.4`.
+The current package version is `0.6.5`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.6.5
+
+### Added
+
+- The local API/WebUI project file browser can request a recursive project file
+  tree with nested preview and download metadata while skipping unsafe workspace
+  escapes.
+- The WebUI now summarizes completed chat process timelines so final answers
+  stay visible while reasoning, validation, and capability activity remain
+  inspectable.
+
+### Changed
+
+- MCP server registration and tool calls now share explicit default timeouts:
+  `connect_timeout` defaults to `60` seconds and `tool_timeout` defaults to `90`
+  seconds for stdio and Streamable HTTP servers.
+- The WebUI project workspace, static DAG workspace, chat drafts, run settings,
+  and completed-run traces have been refined for denser navigation and steadier
+  layouts.
+
+### Fixed
+
+- Persisted chat trace hydration now replays stored stream envelopes through the
+  same dispatcher as live streams, preventing missing or inconsistent completed
+  traces after refresh.
+- Local API workspace file URIs now use platform-aware file URI handling, fixing
+  Windows workspace paths.
+- Project file tree listing skips symlink workspace escapes and avoids directory
+  cycles.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- No SDK migration action is required.
+- MCP users who rely on the previous shorter implicit tool-call cutoff can set
+  `tool_timeout` explicitly in their MCP server config.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### Known Limitations
+
+- The local storage backend is SQLite plus local filesystem workspaces. Cloud
+  or multi-worker deployments still need the planned Postgres, object-storage,
+  and worker execution backends.
 
 ## 0.6.4
 

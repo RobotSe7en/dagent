@@ -4,11 +4,56 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.4`。
+当前包版本是 `0.6.5`。
 
 ## Unreleased
 
 - 暂无未发布变更。
+
+## 0.6.5
+
+### 新增
+
+- 本地 API/WebUI 的项目文件浏览器现在可以请求递归项目文件树，并为嵌套条目返回预览和下载
+  元数据，同时跳过不安全的 workspace escape。
+- WebUI 现在会汇总已完成 chat 的过程 timeline，使最终回答保持可见，同时仍可检查 reasoning、
+  validation 和 capability 活动。
+
+### 改变
+
+- MCP server 注册和工具调用现在使用统一的显式默认 timeout：stdio 与 Streamable HTTP server 的
+  `connect_timeout` 默认 `60` 秒，`tool_timeout` 默认 `90` 秒。
+- WebUI 的项目 workspace、静态 DAG workspace、chat drafts、运行设置和已完成运行 trace
+  展示经过打磨，导航更紧凑，布局更稳定。
+
+### 修复
+
+- 持久化 chat trace hydration 现在会通过与 live stream 相同的 dispatcher 回放已存储的
+  stream envelopes，避免刷新后已完成 trace 缺失或状态不一致。
+- 本地 API workspace file URI 现在使用平台感知的 file URI 处理，修复 Windows workspace
+  路径。
+- 项目文件树 listing 会跳过逃逸 workspace 的 symlink，并避免目录循环。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- SDK 用户不需要迁移动作。
+- 如果 MCP 用户依赖之前较短的隐式工具调用截止时间，可以在 MCP server config 里显式设置
+  `tool_timeout`。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### 已知限制
+
+- 当前本地存储后端是 SQLite 加本地文件系统 workspace。云端或多 worker 部署仍需要后续计划中的
+  Postgres、对象存储和 worker execution 后端。
 
 ## 0.6.4
 

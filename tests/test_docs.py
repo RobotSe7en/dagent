@@ -7,20 +7,30 @@ def _section(text: str, heading: str, next_heading: str) -> str:
     return text[start:end]
 
 
-def test_migration_notes_record_064_persistence_release_history() -> None:
+def _collapsed(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_migration_notes_record_065_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.6.4")
+    english_unreleased = _section(english, "## Unreleased", "## 0.6.5")
+    english_065 = _section(english, "## 0.6.5", "## 0.6.4")
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.4")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.5")
+    chinese_065 = _section(chinese, "## 0.6.5", "## 0.6.4")
     chinese_064 = _section(chinese, "## 0.6.4", "## 0.6.3")
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     assert "No unreleased changes" in english_unreleased
+    collapsed_english_065 = _collapsed(english_065)
+    assert "recursive project file tree" in collapsed_english_065
+    assert "MCP server registration and tool calls now share explicit default timeouts" in english_065
+    assert "Windows workspace paths" in english_065
     assert "local API/WebUI store now isolates chat" in english_064
     assert "orchestration sessions" in english_064
     assert "Incompatible pre-release local SQLite API databases are recreated" in english_064
@@ -31,6 +41,9 @@ def test_migration_notes_record_064_persistence_release_history() -> None:
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     assert "暂无未发布变更" in chinese_unreleased
+    assert "递归项目文件树" in chinese_065
+    assert "MCP server 注册和工具调用现在使用统一的显式默认 timeout" in chinese_065
+    assert "Windows workspace" in chinese_065
     assert "本地 API/WebUI store 现在按 kind 隔离普通 chat" in chinese_064
     assert "编排 session" in chinese_064
     assert "不兼容的未发布本地 SQLite API 旧库时会直接重建数据库" in chinese_064
