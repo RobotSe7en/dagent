@@ -381,6 +381,21 @@ function parentProjectPath(path: string): string {
   return parts.join('/');
 }
 
+function projectFileAncestorPaths(path: string): string[] {
+  const parts = path.split('/').filter(Boolean);
+  return parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+}
+
+function findProjectFileByPath(files: ProjectFileItem[], path: string): ProjectFileItem | null {
+  if (!path) return null;
+  for (const file of files) {
+    if (file.path === path) return file;
+    const child = findProjectFileByPath(file.children ?? [], path);
+    if (child) return child;
+  }
+  return null;
+}
+
 function SidebarSearchField({
   value,
   onChange,
@@ -1055,6 +1070,7 @@ export function App() {
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
   const [projectEditOpen, setProjectEditOpen] = useState(false);
   const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
+  const [projectDeleteTargetId, setProjectDeleteTargetId] = useState('');
   const [projectDraft, setProjectDraft] = useState({ name: '', slug: '', description: '' });
   const [conversationDeleteTargetId, setConversationDeleteTargetId] = useState('');
   const [projectFilePath, setProjectFilePath] = useState('');
@@ -1241,6 +1257,10 @@ export function App() {
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  const projectDeleteTarget = useMemo(
+    () => projects.find((project) => project.id === projectDeleteTargetId) ?? null,
+    [projects, projectDeleteTargetId],
+  );
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
@@ -1255,7 +1275,7 @@ export function App() {
     [conversations, conversationDeleteTargetId],
   );
   const selectedProjectFile = useMemo(
-    () => projectFiles.find((file) => file.path === selectedProjectFilePath) ?? null,
+    () => findProjectFileByPath(projectFiles, selectedProjectFilePath),
     [projectFiles, selectedProjectFilePath],
   );
   const selectedConversationProject = useMemo(
@@ -1368,20 +1388,18 @@ export function App() {
   const refreshProjectFiles = useCallback(async () => {
     const requestId = projectFilesRequestRef.current + 1;
     projectFilesRequestRef.current = requestId;
-    if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects' || selectedChatConversation) {
+    if (!selectedProject || activeWorkspace !== 'chat' || chatSub !== 'projects') {
       setProjectFiles([]);
       setProjectFilesLoading(false);
       return;
     }
     const projectId = selectedProject.id;
-    const path = projectFilePath;
     setProjectFilesLoading(true);
     setProjectFilesError(null);
     try {
-      const payload = await listProjectFiles(projectId, path);
+      const payload = await listProjectFiles(projectId, '', { tree: true });
       if (projectFilesRequestRef.current !== requestId) return;
-      setProjectFiles(payload.files);
-      setProjectFilePath(payload.path);
+      setProjectFiles(payload.tree ?? payload.files);
     } catch (exc) {
       if (projectFilesRequestRef.current !== requestId) return;
       setProjectFiles([]);
@@ -1389,7 +1407,7 @@ export function App() {
     } finally {
       if (projectFilesRequestRef.current === requestId) setProjectFilesLoading(false);
     }
-  }, [activeWorkspace, chatSub, projectFilePath, selectedChatConversation, selectedProject]);
+  }, [activeWorkspace, chatSub, selectedProject]);
 
   useEffect(() => {
     void refreshProjectFiles();
@@ -3723,20 +3741,36 @@ export function App() {
     }
   };
 
+  const requestProjectDelete = (projectId?: string) => {
+    if (streaming) return;
+    const targetProjectId = projectId ?? selectedProject?.id;
+    if (!targetProjectId) return;
+    setProjectDeleteTargetId(targetProjectId);
+    setProjectDeleteOpen(true);
+  };
+
   const confirmProjectDelete = async () => {
-    if (!selectedProject || streaming) return;
-    const projectId = selectedProject.id;
+    if (!projectDeleteTarget || streaming) return;
+    const projectId = projectDeleteTarget.id;
+    const deletingSelectedProject = projectId === selectedProjectId;
+    const deletingSelectedConversation = selectedConversation?.project_id === projectId;
     try {
       await deleteProject(projectId);
       setProjects((items) => items.filter((item) => item.id !== projectId));
       setConversations((items) => items.filter((conversation) => conversation.project_id !== projectId));
-      setSelectedProjectId('');
-      setSelectedConversationId('');
+      if (deletingSelectedProject) {
+        setSelectedProjectId('');
+        setProjectFiles([]);
+        setProjectFilePreview(null);
+        setSelectedProjectFilePath('');
+      }
+      if (deletingSelectedConversation) {
+        setSelectedConversationId('');
+        clearChatSurface();
+      }
       setProjectDeleteOpen(false);
-      setProjectFiles([]);
-      setProjectFilePreview(null);
+      setProjectDeleteTargetId('');
       setProjectError(null);
-      clearChatSurface();
     } catch (exc) {
       setProjectError(exc instanceof Error ? exc.message : String(exc));
     }
@@ -3753,6 +3787,7 @@ export function App() {
       setProjectFilePreviewLoading(false);
       return;
     }
+    setProjectFilePath(parentProjectPath(file.path));
     if (!selectedProject || !file.preview_url) {
       setProjectFilePreviewLoading(false);
       return;
@@ -3804,7 +3839,12 @@ export function App() {
     if (!selectedProject || !projectFileDialog) return;
     try {
       if (projectFileDialog.kind === 'folder') {
-        const folderPath = joinProjectPath(projectFilePath, projectFileDraft);
+        const basePath = projectFileDialog.file
+          ? projectFileDialog.file.kind === 'directory'
+            ? projectFileDialog.file.path
+            : parentProjectPath(projectFileDialog.file.path)
+          : '';
+        const folderPath = joinProjectPath(basePath, projectFileDraft);
         if (!folderPath) return;
         await createProjectFolder(selectedProject.id, folderPath);
       } else if (projectFileDialog.kind === 'rename' && projectFileDialog.file) {
@@ -3833,6 +3873,51 @@ export function App() {
     } catch (exc) {
       setProjectFilesError(exc instanceof Error ? exc.message : String(exc));
     }
+  };
+
+  const chatWorkspaceProps: Parameters<typeof ChatWorkspace>[0] = {
+    artifactListError: runArtifactError,
+    artifactListLoading: runArtifactLoading,
+    artifactPanelOpen: artifactDrawerOpen,
+    artifactPreview: selectedArtifactPreview,
+    artifactPreviewError: selectedArtifactPreviewError,
+    artifactPreviewLoading: selectedArtifactPreviewLoading,
+    artifacts: chatArtifacts,
+    chatScopeLabel,
+    currentDag: dag,
+    draft,
+    error,
+    loading: streaming,
+    messageListRef,
+    messages,
+    pendingUploads: pendingChatUploads,
+    projectName: selectedConversationProject?.name ?? null,
+    conversationTitle: selectedChatConversation?.title ?? null,
+    reviewLevel,
+    selectedArtifact,
+    selectedArtifactId,
+    target,
+    validationEnabled,
+    validationError,
+    validationPending,
+    onArtifactSelect: setSelectedArtifactId,
+    onArtifactCopy: copySelectedArtifact,
+    onArtifactRefresh: refreshRunArtifacts,
+    onDraftChange: setDraft,
+    onOpenDag: (snapshot, snapshotTrace) => {
+      syncDag(snapshot);
+      if (snapshotTrace) setTrace(snapshotTrace);
+      setReviewOpen(true);
+    },
+    onOpenScope: () => setCapabilityScopeOpen(true),
+    onReviewLevelChange: setReviewLevel,
+    onRemoveUpload: removePendingChatUploads,
+    onRun: () => void runStream(),
+    onStop: stopStream,
+    onTargetChange: setTarget,
+    onToggleArtifacts: () => setArtifactPanelOpen((value) => !value),
+    onToggleValidation: () => void toggleValidation(),
+    onUploadFiles: queueChatUploads,
   };
 
   return (
@@ -3893,6 +3978,7 @@ export function App() {
         onNewProjectConversation={(projectId) => void createProjectConversationFromProject(projectId)}
         onNewDag={newEditorUserDag}
         onDeleteConversation={deleteConversationFromSidebar}
+        onDeleteProject={requestProjectDelete}
         onSelectProfile={setSelectedProfileId}
         onSelectAgentPreset={(id) => {
           setCreatingAgentPreset(false);
@@ -3921,53 +4007,8 @@ export function App() {
       <main className="workspace">
         {consoleError ? <div className="error-banner global-error">{consoleError}</div> : null}
         {activeWorkspace === 'chat' ? (
-          selectedChatConversation || chatSub !== 'projects' ? (
-            <ChatWorkspace
-            artifactListError={runArtifactError}
-            artifactListLoading={runArtifactLoading}
-            artifactPanelOpen={artifactDrawerOpen}
-            artifactPreview={selectedArtifactPreview}
-            artifactPreviewError={selectedArtifactPreviewError}
-            artifactPreviewLoading={selectedArtifactPreviewLoading}
-            artifacts={chatArtifacts}
-            chatScopeLabel={chatScopeLabel}
-            currentDag={dag}
-            draft={draft}
-            error={error}
-            loading={streaming}
-            messageListRef={messageListRef}
-            messages={messages}
-            pendingUploads={pendingChatUploads}
-            projectName={selectedConversationProject?.name ?? null}
-            conversationTitle={selectedChatConversation?.title ?? null}
-            reviewLevel={reviewLevel}
-            selectedArtifact={selectedArtifact}
-            selectedArtifactId={selectedArtifactId}
-            target={target}
-            validationEnabled={validationEnabled}
-            validationError={validationError}
-            validationPending={validationPending}
-            onArtifactSelect={setSelectedArtifactId}
-            onArtifactCopy={copySelectedArtifact}
-            onArtifactRefresh={refreshRunArtifacts}
-            onDraftChange={setDraft}
-            onOpenDag={(snapshot, snapshotTrace) => {
-              syncDag(snapshot);
-              if (snapshotTrace) setTrace(snapshotTrace);
-              setReviewOpen(true);
-            }}
-            onOpenScope={() => setCapabilityScopeOpen(true)}
-            onReviewLevelChange={setReviewLevel}
-            onRemoveUpload={removePendingChatUploads}
-            onRun={() => void runStream()}
-            onStop={stopStream}
-            onTargetChange={setTarget}
-            onToggleArtifacts={() => setArtifactPanelOpen((value) => !value)}
-            onToggleValidation={() => void toggleValidation()}
-            onUploadFiles={queueChatUploads}
-            />
-          ) : (
-            <ProjectDetailWorkspace
+          chatSub === 'projects' ? (
+            <ProjectChatWorkspace
               error={projectError}
               fileDialog={projectFileDialog}
               fileDraft={projectFileDraft}
@@ -3980,25 +4021,23 @@ export function App() {
               previewError={projectFilePreviewError}
               previewLoading={projectFilePreviewLoading}
               selectedFile={selectedProjectFile}
-              onCreateFolder={() => openProjectFileDialog('folder')}
+              onCreateFolder={(file) => openProjectFileDialog('folder', file)}
               onDeleteFile={(file) => openProjectFileDialog('delete', file)}
-              onDeleteProject={() => setProjectDeleteOpen(true)}
               onDialogCancel={() => setProjectFileDialog(null)}
               onDialogConfirm={() => void confirmProjectFileDialog()}
               onDownloadFile={(file) => {
                 if (selectedProject && file.download_url) window.open(projectFileDownloadUrl(selectedProject.id, file.path), '_blank', 'noopener');
               }}
-              onEditProject={openProjectEditDialog}
               onFileDraftChange={setProjectFileDraft}
               onFileSelect={(file) => void openProjectFile(file)}
               onNavigateUp={navigateProjectFilesUp}
-              onNewConversation={() => {
-                if (selectedProject) void createProjectConversationFromProject(selectedProject.id);
-              }}
               onRefresh={() => void refreshProjectFiles()}
               onRenameFile={(file) => openProjectFileDialog('rename', file)}
               onUploadFiles={(files) => void uploadSelectedProjectFiles(files)}
+              chatProps={chatWorkspaceProps}
             />
+          ) : (
+            <ChatWorkspace {...chatWorkspaceProps} />
           )
         ) : activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
           <DynamicOrchestrationWorkspace
@@ -4148,10 +4187,13 @@ export function App() {
         />
       ) : null}
 
-      {projectDeleteOpen && selectedProject ? (
+      {projectDeleteOpen && projectDeleteTarget ? (
         <ProjectDeleteDialog
-          project={selectedProject}
-          onCancel={() => setProjectDeleteOpen(false)}
+          project={projectDeleteTarget}
+          onCancel={() => {
+            setProjectDeleteOpen(false);
+            setProjectDeleteTargetId('');
+          }}
           onConfirm={() => void confirmProjectDelete()}
         />
       ) : null}
@@ -4288,6 +4330,7 @@ function WorkspaceSidebar({
   onNewProjectConversation,
   onNewDag,
   onDeleteConversation,
+  onDeleteProject,
   onSelectAgentPreset,
   onSelectConversation,
   onSelectProfile,
@@ -4362,6 +4405,7 @@ function WorkspaceSidebar({
   onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
   onDeleteConversation: (id: string) => void;
+  onDeleteProject: (projectId: string) => void;
   onSelectAgentPreset: (id: string) => void;
   onSelectConversation: (id: string) => void;
   onSelectProfile: (id: string) => void;
@@ -4468,12 +4512,6 @@ function WorkspaceSidebar({
       projectConversationMatchesSearch(conversation, normalizedHistoryQuery)
     );
   });
-  const selectedSidebarConversation = conversations.find((conversation) => (
-    conversation.id === selectedConversationId && conversation.kind === 'chat'
-  )) ?? null;
-  const workspaceRootLabel = selectedSidebarConversation
-    ? (selectedSidebarConversation.project_id ? '.dagent/projects' : '.dagent/projects/_conversations')
-    : chatSub === 'projects' && selectedProjectId ? '.dagent/projects' : '.dagent/runs';
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
     [
       dag.savedDagId,
@@ -4511,14 +4549,6 @@ function WorkspaceSidebar({
       const next = new Set(current);
       if (next.has(projectId)) next.delete(projectId);
       else next.add(projectId);
-      return next;
-    });
-  };
-  const expandProject = (projectId: string) => {
-    setExpandedProjectIds((current) => {
-      if (current.has(projectId)) return current;
-      const next = new Set(current);
-      next.add(projectId);
       return next;
     });
   };
@@ -4816,9 +4846,6 @@ function WorkspaceSidebar({
           <strong>dagent</strong>
           <span>Agent DAG Harness</span>
         </div>
-        <button className="sidebar-collapse-button" onClick={onToggleCollapsed} title="收起 / 展开" type="button">
-          {collapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-        </button>
       </div>
 
       <div className="sidebar-label">工作区</div>
@@ -5045,19 +5072,17 @@ function WorkspaceSidebar({
           <div className="sidebar-history-list">
             {visibleConversations.length ? visibleConversations.map((conversation) => (
               <div
-                className="sidebar-conversation-row"
+                className={conversation.id === selectedConversationId ? 'sidebar-conversation-row active' : 'sidebar-conversation-row'}
                 key={conversation.id}
               >
                 <button
-                  className={conversation.id === selectedConversationId ? 'active' : ''}
                   onClick={() => onSelectConversation(conversation.id)}
                   type="button"
                 >
                   <span>
-                    <MessageSquare size={13} />
+                    <MessageSquare size={12} />
                     <strong>{conversation.title}</strong>
                   </span>
-                  <em>{conversation.status}</em>
                 </button>
                 <button
                   className="sidebar-conversation-delete"
@@ -5102,14 +5127,15 @@ function WorkspaceSidebar({
                   className="sidebar-project-tree-row"
                   key={project.id}
                 >
-                  <div className="sidebar-project-tree-main">
+                  <div className={project.id === selectedProjectId && !selectedConversationId ? 'sidebar-project-tree-main active' : 'sidebar-project-tree-main'}>
                     <button
-                      className={project.id === selectedProjectId && !selectedConversationId ? 'active sidebar-project-select' : 'sidebar-project-select'}
+                      aria-expanded={expanded}
+                      className="sidebar-project-select"
                       onClick={() => {
                         onSelectProject(project.id);
                         toggleProjectExpansion(project.id);
                       }}
-                      title={project.workspace_uri}
+                      title={`${project.workspace_uri} · ${expanded ? '收起会话' : '展开会话'}`}
                       type="button"
                     >
                       <span>
@@ -5119,41 +5145,38 @@ function WorkspaceSidebar({
                       <em>{projectConversations.length ? `${projectConversations.length} 会话` : project.slug}</em>
                     </button>
                     <button
-                      className="sidebar-project-create-conversation"
-                      onClick={() => {
-                        expandProject(project.id);
-                        onNewProjectConversation(project.id);
-                      }}
-                      title="新建会话"
+                      className="sidebar-project-delete"
+                      onClick={() => onDeleteProject(project.id)}
+                      title="删除项目"
                       type="button"
                     >
-                      <Plus size={13} />
-                    </button>
-                    <button
-                      aria-expanded={expanded}
-                      className="sidebar-project-toggle"
-                      data-open={expanded}
-                      onClick={() => toggleProjectExpansion(project.id)}
-                      title={expanded ? '收起会话' : '展开会话'}
-                      type="button"
-                    >
-                      <ChevronRight size={13} />
+                      <Trash2 size={12} />
                     </button>
                   </div>
                   {expanded ? (
                     <div className="sidebar-project-conversation-tree">
+                      <button
+                        className="sidebar-project-create-conversation-row"
+                        onClick={() => onNewProjectConversation(project.id)}
+                        title="新建会话"
+                        type="button"
+                      >
+                        <Plus size={12} />
+                        <span>新建会话</span>
+                      </button>
                       {displayedProjectConversations.length ? displayedProjectConversations.map((conversation) => (
-                        <div className="sidebar-project-conversation-row" key={conversation.id}>
+                        <div
+                          className={conversation.id === selectedConversationId ? 'sidebar-project-conversation-row active' : 'sidebar-project-conversation-row'}
+                          key={conversation.id}
+                        >
                           <button
-                            className={conversation.id === selectedConversationId ? 'active' : ''}
                             onClick={() => onSelectConversation(conversation.id)}
                             type="button"
                           >
                             <span>
-                              <MessageSquare size={12} />
+                              <MessageSquare size={15} />
                               <strong>{conversation.title}</strong>
                             </span>
-                            <em>{conversation.status}</em>
                           </button>
                           <button
                             className="sidebar-conversation-delete"
@@ -5403,16 +5426,24 @@ function WorkspaceSidebar({
       ) : null}
 
       <div className="sidebar-foot">
-        <div className="workspace-root-chip">
-          <span />
-          <code>{workspaceRootLabel}</code>
-        </div>
         <div className="sidebar-user">
-          <div>RX</div>
+          <button
+            className="sidebar-user-avatar"
+            onClick={collapsed ? onToggleCollapsed : undefined}
+            tabIndex={collapsed ? 0 : -1}
+            title={collapsed ? '展开侧栏' : 'RobotSe7en'}
+            type="button"
+          >
+            <span className="sidebar-user-initials">RX</span>
+            <ChevronRight className="sidebar-user-expand" size={15} />
+          </button>
           <span>
             <strong>RobotSe7en</strong>
             <em>本地运行</em>
           </span>
+          <button className="sidebar-collapse-button" onClick={onToggleCollapsed} title="收起 / 展开" type="button">
+            <ChevronLeft size={15} />
+          </button>
         </div>
       </div>
     </aside>
@@ -5451,6 +5482,7 @@ function ChatWorkspace({
   artifactPreviewError,
   artifactPreviewLoading,
   artifacts,
+  artifactsEnabled = true,
   chatScopeLabel,
   currentDag,
   draft,
@@ -5490,6 +5522,7 @@ function ChatWorkspace({
   artifactPreviewError: string | null;
   artifactPreviewLoading: boolean;
   artifacts: WorkbenchArtifactItem[];
+  artifactsEnabled?: boolean;
   chatScopeLabel: string;
   currentDag: Dag;
   draft: string;
@@ -5535,6 +5568,11 @@ function ChatWorkspace({
     [pendingUploadGroups, pendingUploadsExpanded],
   );
   const reviewLevelLabels: Record<ReviewLevel, string> = { fast: '快速审核', careful: '谨慎审核' };
+  const targetOptions: Array<{ value: ChatTarget; label: string; shortLabel: string; icon: React.ReactNode }> = [
+    { value: 'auto', label: '自动模式', shortLabel: '自动', icon: <Bot size={13} /> },
+    { value: 'dag', label: 'DAG 模式', shortLabel: 'DAG', icon: <GitBranch size={13} /> },
+    { value: 'tool', label: '工具模式', shortLabel: '工具', icon: <Wrench size={13} /> },
+  ];
 
   useEffect(() => {
     if (!pendingUploads.length) setPendingUploadsExpanded(false);
@@ -5620,32 +5658,22 @@ function ChatWorkspace({
             ) : null}
             <div className="composer-toolbar">
               <UploadPicker disabled={loading} variant="composer" onUploadFiles={onUploadFiles} />
-              <div className="mode-switch" aria-label="Agent target">
-                {(['auto', 'dag', 'tool'] as ChatTarget[]).map((item) => (
+              <div className="mode-switch" aria-label="运行模式">
+                {targetOptions.map((option) => (
                   <button
-                    key={item}
-                    className={target === item ? 'active' : ''}
-                    onClick={() => onTargetChange(item)}
+                    key={option.value}
+                    className={target === option.value ? 'active' : ''}
+                    data-mode={option.value}
+                    onClick={() => onTargetChange(option.value)}
+                    title={option.label}
+                    aria-label={option.label}
                     type="button"
                   >
-                    {item}
+                    {option.icon}
+                    <span>{option.shortLabel}</span>
                   </button>
                 ))}
               </div>
-              <label className="review-control">
-                <select
-                  className="review-select"
-                  value={reviewLevel}
-                  onChange={(event) => onReviewLevelChange(event.target.value as ReviewLevel)}
-                  aria-label="审核等级"
-                >
-                  {reviewLevels.map((level) => (
-                    <option key={level} value={level}>
-                      {reviewLevelLabels[level]}
-                    </option>
-                  ))}
-                </select>
-              </label>
               <details className={`run-settings-menu ${validationEnabled || validationError || chatScopeLabel !== '全部能力' ? 'active' : ''}`}>
                 <summary
                   className="icon-button run-settings-trigger"
@@ -5655,6 +5683,33 @@ function ChatWorkspace({
                   <SlidersHorizontal size={15} />
                 </summary>
                 <div className="run-settings-popover">
+                  <div className="run-settings-row">
+                    <span>
+                      <strong>审核等级</strong>
+                      <em>{reviewLevelLabels[reviewLevel]}</em>
+                    </span>
+                    <select
+                      className="run-settings-select"
+                      value={reviewLevel}
+                      onChange={(event) => onReviewLevelChange(event.target.value as ReviewLevel)}
+                      aria-label="审核等级"
+                    >
+                      {reviewLevels.map((level) => (
+                        <option key={level} value={level}>
+                          {reviewLevelLabels[level]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {currentDag.nodes.length ? (
+                    <div className="run-settings-row">
+                      <span>
+                        <strong>DAG 状态</strong>
+                        <em>{currentDag.nodes.length} 个节点</em>
+                      </span>
+                      <StatusBadge status={currentDag.status} />
+                    </div>
+                  ) : null}
                   <div className="run-settings-row">
                     <span>
                       <strong>结果验证</strong>
@@ -5691,7 +5746,6 @@ function ChatWorkspace({
                   </div>
                 </div>
               </details>
-              {currentDag.nodes.length ? <StatusBadge status={currentDag.status} /> : null}
               <button className="primary-button chat-send-button" onClick={loading ? onStop : onRun} type="button">
                 {loading ? '停止' : '发送'}
                 {loading ? <CircleStop size={16} /> : <Send size={16} />}
@@ -5701,22 +5755,222 @@ function ChatWorkspace({
         </div>
       </div>
 
-      <ArtifactPanel
-        error={artifactListError}
-        loading={artifactListLoading}
-        preview={artifactPreview}
-        previewError={artifactPreviewError}
-        previewLoading={artifactPreviewLoading}
-        artifacts={artifacts}
-        open={artifactPanelOpen}
-        selectedArtifact={selectedArtifact}
-        selectedArtifactId={selectedArtifactId}
-        onCopy={onArtifactCopy}
-        onRefresh={onArtifactRefresh}
-        onSelect={onArtifactSelect}
-        onToggle={onToggleArtifacts}
-      />
+      {artifactsEnabled ? (
+        <ArtifactPanel
+          error={artifactListError}
+          loading={artifactListLoading}
+          preview={artifactPreview}
+          previewError={artifactPreviewError}
+          previewLoading={artifactPreviewLoading}
+          artifacts={artifacts}
+          open={artifactPanelOpen}
+          selectedArtifact={selectedArtifact}
+          selectedArtifactId={selectedArtifactId}
+          onCopy={onArtifactCopy}
+          onRefresh={onArtifactRefresh}
+          onSelect={onArtifactSelect}
+          onToggle={onToggleArtifacts}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function ProjectChatWorkspace({
+  error,
+  fileDialog,
+  fileDraft,
+  files,
+  filesError,
+  filesLoading,
+  path,
+  preview,
+  previewError,
+  previewLoading,
+  project,
+  selectedFile,
+  chatProps,
+  onCreateFolder,
+  onDeleteFile,
+  onDialogCancel,
+  onDialogConfirm,
+  onDownloadFile,
+  onFileDraftChange,
+  onFileSelect,
+  onNavigateUp,
+  onRefresh,
+  onRenameFile,
+  onUploadFiles,
+}: {
+  error: string | null;
+  fileDialog: { kind: ProjectFileDialogKind; file?: ProjectFileItem } | null;
+  fileDraft: string;
+  files: ProjectFileItem[];
+  filesError: string | null;
+  filesLoading: boolean;
+  path: string;
+  preview: ProjectFilePreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
+  project: ApiProject | null;
+  selectedFile: ProjectFileItem | null;
+  chatProps: Parameters<typeof ChatWorkspace>[0];
+  onCreateFolder: (file?: ProjectFileItem) => void;
+  onDeleteFile: (file: ProjectFileItem) => void;
+  onDialogCancel: () => void;
+  onDialogConfirm: () => void;
+  onDownloadFile: (file: ProjectFileItem) => void;
+  onFileDraftChange: (value: string) => void;
+  onFileSelect: (file: ProjectFileItem) => void;
+  onNavigateUp: () => void;
+  onRefresh: () => void;
+  onRenameFile: (file: ProjectFileItem) => void;
+  onUploadFiles: (files: FileList | null) => void;
+}) {
+  const [projectChatWidth, setProjectChatWidth] = usePanelWidth('dagent.project-chat-width', 500, 420, 680);
+  const projectChatProps: Parameters<typeof ChatWorkspace>[0] = {
+    ...chatProps,
+    artifactPanelOpen: false,
+    artifacts: [],
+    artifactsEnabled: false,
+    artifactListError: null,
+    artifactListLoading: false,
+    artifactPreview: null,
+    artifactPreviewError: null,
+    artifactPreviewLoading: false,
+    selectedArtifact: null,
+    selectedArtifactId: '',
+    onArtifactCopy: () => undefined,
+    onArtifactRefresh: () => undefined,
+    onArtifactSelect: () => undefined,
+    onToggleArtifacts: () => undefined,
+  };
+  return (
+    <section className="project-chat-workspace without-artifacts">
+      <div className="project-chat-body" style={{ '--project-chat-width': `${projectChatWidth}px` } as React.CSSProperties}>
+        <ProjectFileContextPane
+          dialog={fileDialog}
+          draft={fileDraft}
+          error={filesError}
+          files={files}
+          loading={filesLoading}
+          path={path}
+          preview={preview}
+          previewError={previewError}
+          previewLoading={previewLoading}
+          project={project}
+          projectError={error}
+          selectedFile={selectedFile}
+          onCreateFolder={onCreateFolder}
+          onDeleteFile={onDeleteFile}
+          onDialogCancel={onDialogCancel}
+          onDialogConfirm={onDialogConfirm}
+          onDownloadFile={onDownloadFile}
+          onDraftChange={onFileDraftChange}
+          onFileSelect={onFileSelect}
+          onNavigateUp={onNavigateUp}
+          onRefresh={onRefresh}
+          onRenameFile={onRenameFile}
+          onUploadFiles={onUploadFiles}
+        />
+        <div className="project-chat-conversation-pane">
+          <PanelResizeHandle width={projectChatWidth} onResize={setProjectChatWidth} />
+          <ChatWorkspace {...projectChatProps} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProjectFileContextPane({
+  dialog,
+  draft,
+  error,
+  files,
+  loading,
+  path,
+  preview,
+  previewError,
+  previewLoading,
+  project,
+  projectError,
+  selectedFile,
+  onCreateFolder,
+  onDeleteFile,
+  onDialogCancel,
+  onDialogConfirm,
+  onDownloadFile,
+  onDraftChange,
+  onFileSelect,
+  onNavigateUp,
+  onRefresh,
+  onRenameFile,
+  onUploadFiles,
+}: {
+  dialog: { kind: ProjectFileDialogKind; file?: ProjectFileItem } | null;
+  draft: string;
+  error: string | null;
+  files: ProjectFileItem[];
+  loading: boolean;
+  path: string;
+  preview: ProjectFilePreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
+  project: ApiProject | null;
+  projectError: string | null;
+  selectedFile: ProjectFileItem | null;
+  onCreateFolder: (file?: ProjectFileItem) => void;
+  onDeleteFile: (file: ProjectFileItem) => void;
+  onDialogCancel: () => void;
+  onDialogConfirm: () => void;
+  onDownloadFile: (file: ProjectFileItem) => void;
+  onDraftChange: (value: string) => void;
+  onFileSelect: (file: ProjectFileItem) => void;
+  onNavigateUp: () => void;
+  onRefresh: () => void;
+  onRenameFile: (file: ProjectFileItem) => void;
+  onUploadFiles: (files: FileList | null) => void;
+}) {
+  if (!project) {
+    return (
+      <aside className="project-file-context-pane">
+        <div className="project-file-context-empty">
+          <Folder size={22} />
+          <strong>选择项目</strong>
+          <p>从左侧项目列表选择项目后，这里会显示目录树和文件预览。</p>
+          {projectError ? <div className="project-detail-error">{projectError}</div> : null}
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="project-file-context-pane">
+      <ProjectFileManager
+        dialog={dialog}
+        draft={draft}
+        error={error}
+        files={files}
+        loading={loading}
+        path={path}
+        preview={preview}
+        previewError={previewError}
+        previewLoading={previewLoading}
+        project={project}
+        selectedFile={selectedFile}
+        onCreateFolder={onCreateFolder}
+        onDeleteFile={onDeleteFile}
+        onDialogCancel={onDialogCancel}
+        onDialogConfirm={onDialogConfirm}
+        onDownloadFile={onDownloadFile}
+        onDraftChange={onDraftChange}
+        onFileSelect={onFileSelect}
+        onNavigateUp={onNavigateUp}
+        onRefresh={onRefresh}
+        onRenameFile={onRenameFile}
+        onUploadFiles={onUploadFiles}
+      />
+    </aside>
   );
 }
 
@@ -5760,7 +6014,7 @@ function ProjectDetailWorkspace({
   previewLoading: boolean;
   project: ApiProject | null;
   selectedFile: ProjectFileItem | null;
-  onCreateFolder: () => void;
+  onCreateFolder: (file?: ProjectFileItem) => void;
   onDeleteFile: (file: ProjectFileItem) => void;
   onDeleteProject: () => void;
   onDialogCancel: () => void;
@@ -5902,7 +6156,7 @@ function ProjectFileManager({
   previewLoading: boolean;
   project: ApiProject;
   selectedFile: ProjectFileItem | null;
-  onCreateFolder: () => void;
+  onCreateFolder: (file?: ProjectFileItem) => void;
   onDeleteFile: (file: ProjectFileItem) => void;
   onDialogCancel: () => void;
   onDialogConfirm: () => void;
@@ -5914,87 +6168,215 @@ function ProjectFileManager({
   onRenameFile: (file: ProjectFileItem) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+  const [treeMenu, setTreeMenu] = useState<{ file: ProjectFileItem | null; x: number; y: number } | null>(null);
   const directoryInputProps = {
     directory: '',
     webkitdirectory: '',
   } as React.InputHTMLAttributes<HTMLInputElement> & { directory: string; webkitdirectory: string };
   const onUploadChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadMenuOpen(false);
     onUploadFiles(event.currentTarget.files);
     event.currentTarget.value = '';
   };
+  const pathToReveal = selectedFile?.kind === 'file'
+    ? parentProjectPath(selectedFile.path)
+    : selectedFile?.path || path;
+
+  useEffect(() => {
+    if (!pathToReveal) return;
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      for (const ancestor of projectFileAncestorPaths(pathToReveal)) {
+        next.add(ancestor);
+      }
+      return next;
+    });
+  }, [pathToReveal]);
+
+  useEffect(() => {
+    if (!treeMenu && !uploadMenuOpen) return;
+    const closeProjectFileMenus = () => {
+      setTreeMenu(null);
+      setUploadMenuOpen(false);
+    };
+    const closeProjectFileMenusOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeProjectFileMenus();
+    };
+    window.addEventListener('click', closeProjectFileMenus);
+    window.addEventListener('keydown', closeProjectFileMenusOnEscape);
+    return () => {
+      window.removeEventListener('click', closeProjectFileMenus);
+      window.removeEventListener('keydown', closeProjectFileMenusOnEscape);
+    };
+  }, [treeMenu, uploadMenuOpen]);
+
+  const onToggleDirectory = (file: ProjectFileItem) => {
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(file.path)) {
+        next.delete(file.path);
+      } else {
+        next.add(file.path);
+      }
+      return next;
+    });
+    onFileSelect(file);
+  };
+  const openProjectFileTreeMenu = (event: React.MouseEvent, file: ProjectFileItem) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setUploadMenuOpen(false);
+    setTreeMenu({ file, x: event.clientX, y: event.clientY });
+  };
+  const openProjectFileRootMenu = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setUploadMenuOpen(false);
+    setTreeMenu({ file: null, x: event.clientX, y: event.clientY });
+  };
+  const contextMenuFile = treeMenu?.file ?? null;
 
   return (
-    <section className="project-file-manager">
-      <div className="project-file-toolbar">
-        <button className="icon-button" disabled={!path || loading} onClick={onNavigateUp} title="上一级" type="button">
-          <ChevronLeft size={15} />
-        </button>
-        <div className="project-file-path">
-          <Folder size={14} />
-          <code>{path || '/'}</code>
-        </div>
-        <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
-          <RefreshCw className={loading ? 'spin' : ''} size={15} />
-        </button>
-        <label className="secondary-button compact-button project-file-upload">
-          <Upload size={14} />
-          上传文件
-          <input type="file" multiple onChange={onUploadChange} />
-        </label>
-        <label className="secondary-button compact-button project-file-upload">
-          <Folder size={14} />
-          上传目录
-          <input type="file" multiple {...directoryInputProps} onChange={onUploadChange} />
-        </label>
-        <button className="secondary-button compact-button" onClick={onCreateFolder} type="button">
-          <Plus size={14} />
-          新建文件夹
-        </button>
-      </div>
-
+    <section className={treeCollapsed ? 'project-file-manager tree-collapsed' : 'project-file-manager'}>
       <div className="project-file-browser">
-        <div className="project-file-tree">
-          {error ? <div className="project-file-error">{error}</div> : null}
-          {loading ? (
-            <div className="project-file-empty">
-              <Loader className="spin" size={14} />
-              <span>正在加载目录...</span>
+        <div className="project-file-tree" aria-label="项目目录树">
+          <div className="project-file-tree-head project-pane-statusbar">
+            <div className="project-file-tree-title">
+              <Folder size={14} />
+              <span>目录</span>
             </div>
-          ) : files.length ? (
-            files.map((file) => (
-              <div
-                className={file.path === selectedFile?.path ? 'active project-file-row' : 'project-file-row'}
-                key={file.path}
-              >
+            <div className="project-file-tree-actions">
+              <button className="icon-button" disabled={loading} onClick={onRefresh} title="刷新" type="button">
+                <RefreshCw className={loading ? 'spin' : ''} size={14} />
+              </button>
+              <div className="project-upload-control">
                 <button
-                  className="project-file-main"
-                  onClick={() => onFileSelect(file)}
-                  title={file.path}
+                  className="icon-button project-upload-trigger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setTreeMenu(null);
+                    setUploadMenuOpen((value) => !value);
+                  }}
+                  title="上传"
                   type="button"
                 >
-                  {file.kind === 'directory' ? <Folder size={14} /> : <File size={14} />}
-                  <span>{file.name}</span>
-                  <em>{projectFileMeta(file)}</em>
+                  <Upload size={14} />
                 </button>
-                <div className="project-file-actions">
-                  <button className="icon-button" onClick={() => onRenameFile(file)} title="重命名" type="button">
-                    <FileText size={12} />
-                  </button>
-                  {file.kind === 'file' && file.download_url ? (
-                    <button className="icon-button" onClick={() => onDownloadFile(file)} title="下载" type="button">
-                      <Download size={12} />
-                    </button>
-                  ) : null}
-                  <button className="icon-button danger-icon-button" onClick={() => onDeleteFile(file)} title="删除" type="button">
-                    <Trash2 size={12} />
-                  </button>
-                </div>
+                {uploadMenuOpen ? (
+                  <div className="project-file-upload-menu" onClick={(event) => event.stopPropagation()}>
+                    <label className="context-menu-item project-file-upload" title="上传文件">
+                      <File size={13} />
+                      <span>上传文件</span>
+                      <input type="file" multiple onChange={onUploadChange} />
+                    </label>
+                    <label className="context-menu-item project-file-upload" title="上传目录">
+                      <Folder size={13} />
+                      <span>上传目录</span>
+                      <input type="file" multiple {...directoryInputProps} onChange={onUploadChange} />
+                    </label>
+                  </div>
+                ) : null}
               </div>
-            ))
-          ) : (
-            <div className="project-file-empty">当前目录为空。</div>
-          )}
+            </div>
+          </div>
+          <div className="project-file-tree-list" onContextMenu={openProjectFileRootMenu}>
+            {error ? <div className="project-file-error">{error}</div> : null}
+            {loading ? (
+              <div className="project-file-empty">
+                <Loader className="spin" size={14} />
+                <span>正在加载目录...</span>
+              </div>
+            ) : files.length ? (
+              files.map((file) => (
+                <ProjectFileTreeNode
+                  depth={0}
+                  expandedPaths={expandedPaths}
+                  file={file}
+                  key={file.path}
+                  selectedFile={selectedFile}
+                  onContextMenu={openProjectFileTreeMenu}
+                  onFileSelect={onFileSelect}
+                  onToggleDirectory={onToggleDirectory}
+                />
+              ))
+            ) : (
+              <div className="project-file-empty">当前目录为空。</div>
+            )}
+          </div>
         </div>
+
+        <button
+          aria-label={treeCollapsed ? '展开目录树' : '收起目录树'}
+          className="project-tree-divider-toggle"
+          onClick={() => setTreeCollapsed((value) => !value)}
+          title={treeCollapsed ? '展开目录树' : '收起目录树'}
+          type="button"
+        >
+          {treeCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
+
+        {treeMenu ? (
+          <div
+            className="project-file-context-menu"
+            style={{ left: treeMenu.x, top: treeMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="context-menu-title">{contextMenuFile?.name ?? '项目根目录'}</div>
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                onCreateFolder(contextMenuFile ?? undefined);
+                setTreeMenu(null);
+              }}
+              type="button"
+            >
+              <Plus size={13} />
+              新建文件夹
+            </button>
+            {contextMenuFile ? (
+              <>
+                <button
+                  className="context-menu-item"
+                  onClick={() => {
+                    onRenameFile(contextMenuFile);
+                    setTreeMenu(null);
+                  }}
+                  type="button"
+                >
+                  <FileText size={13} />
+                  重命名
+                </button>
+                {contextMenuFile.kind === 'file' && contextMenuFile.download_url ? (
+                  <button
+                    className="context-menu-item"
+                    onClick={() => {
+                      onDownloadFile(contextMenuFile);
+                      setTreeMenu(null);
+                    }}
+                    type="button"
+                  >
+                    <Download size={13} />
+                    下载
+                  </button>
+                ) : null}
+                <button
+                  className="context-menu-item danger"
+                  onClick={() => {
+                    onDeleteFile(contextMenuFile);
+                    setTreeMenu(null);
+                  }}
+                  type="button"
+                >
+                  <Trash2 size={13} />
+                  删除
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
 
         <ProjectFilePreviewPane
           preview={preview}
@@ -6017,6 +6399,72 @@ function ProjectFileManager({
   );
 }
 
+function ProjectFileTreeNode({
+  depth,
+  expandedPaths,
+  file,
+  selectedFile,
+  onContextMenu,
+  onFileSelect,
+  onToggleDirectory,
+}: {
+  depth: number;
+  expandedPaths: Set<string>;
+  file: ProjectFileItem;
+  selectedFile: ProjectFileItem | null;
+  onContextMenu: (event: React.MouseEvent, file: ProjectFileItem) => void;
+  onFileSelect: (file: ProjectFileItem) => void;
+  onToggleDirectory: (file: ProjectFileItem) => void;
+}) {
+  const isDirectory = file.kind === 'directory';
+  const isExpanded = isDirectory && expandedPaths.has(file.path);
+  const children = file.children ?? [];
+  const rowStyle = { '--project-file-depth': depth } as React.CSSProperties;
+  const childEmptyStyle = { '--project-file-depth': depth + 1 } as React.CSSProperties;
+
+  return (
+    <>
+      <div
+        className={file.path === selectedFile?.path ? 'active project-file-row project-file-tree-row' : 'project-file-row project-file-tree-row'}
+        onContextMenu={(event) => onContextMenu(event, file)}
+        style={rowStyle}
+      >
+        <button
+          className="project-file-tree-main"
+          onClick={() => (isDirectory ? onToggleDirectory(file) : onFileSelect(file))}
+          title={file.path}
+          type="button"
+        >
+          {isDirectory ? (
+            <ChevronRight className="project-file-chevron" data-open={isExpanded} size={13} />
+          ) : (
+            <span className="project-file-chevron-spacer" />
+          )}
+          {isDirectory ? <Folder size={14} /> : <File size={14} />}
+          <span>{file.name}</span>
+        </button>
+      </div>
+      {isExpanded && children.length ? (
+        children.map((child) => (
+          <ProjectFileTreeNode
+            depth={depth + 1}
+            expandedPaths={expandedPaths}
+            file={child}
+            key={child.path}
+            selectedFile={selectedFile}
+            onContextMenu={onContextMenu}
+            onFileSelect={onFileSelect}
+            onToggleDirectory={onToggleDirectory}
+          />
+        ))
+      ) : null}
+      {isExpanded && !children.length ? (
+        <div className="project-file-empty project-file-nested-empty" style={childEmptyStyle}>空目录</div>
+      ) : null}
+    </>
+  );
+}
+
 function ProjectFilePreviewPane({
   preview,
   previewError,
@@ -6028,9 +6476,22 @@ function ProjectFilePreviewPane({
   previewLoading: boolean;
   selectedFile: ProjectFileItem | null;
 }) {
+  const previewTitle = selectedFile?.kind === 'file' ? selectedFile.name : '文件预览';
+  const previewMeta = selectedFile?.kind === 'file' ? projectFileMeta(selectedFile) : '选择文件后预览';
+  const previewHead = (
+    <header className="project-file-preview-head project-pane-statusbar">
+      <File size={14} />
+      <div>
+        <strong>{selectedFile?.kind === 'file' ? selectedFile.name : previewTitle}</strong>
+        <span>{previewMeta}</span>
+      </div>
+    </header>
+  );
+
   if (!selectedFile) {
     return (
       <section className="project-file-preview">
+        {previewHead}
         <div className="project-file-preview-empty">选择项目文件后在这里预览。</div>
       </section>
     );
@@ -6038,6 +6499,7 @@ function ProjectFilePreviewPane({
   if (selectedFile.kind === 'directory') {
     return (
       <section className="project-file-preview">
+        {previewHead}
         <div className="project-file-preview-empty">目录已打开。选择一个文件查看预览。</div>
       </section>
     );
@@ -6446,14 +6908,20 @@ function PanelResizeHandle({ width, onResize }: { width: number; onResize: (next
   const [dragging, setDragging] = useState(false);
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
     const startX = event.clientX;
     const startWidth = width;
     setDragging(true);
+    handle.setPointerCapture(pointerId);
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
     const onMove = (moveEvent: PointerEvent) => onResize(startWidth + (startX - moveEvent.clientX));
     const onUp = () => {
       setDragging(false);
+      if (handle.hasPointerCapture(pointerId)) {
+        handle.releasePointerCapture(pointerId);
+      }
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
       window.removeEventListener('pointermove', onMove);
@@ -6470,7 +6938,9 @@ function PanelResizeHandle({ width, onResize }: { width: number; onResize: (next
       role="separator"
       aria-orientation="vertical"
       title="拖动调整宽度"
-    />
+    >
+      {dragging ? <div className="panel-resize-shield" aria-hidden="true" /> : null}
+    </div>
   );
 }
 
@@ -6694,12 +7164,14 @@ function ArtifactPreview({
   loading,
   preview,
   selectedArtifact,
+  showHeader = true,
   onCopy,
 }: {
   error: string | null;
   loading: boolean;
   preview: TextFilePreview | null;
   selectedArtifact: WorkbenchArtifactItem | null;
+  showHeader?: boolean;
   onCopy: () => void;
 }) {
   const [previewFullscreen, setPreviewFullscreen] = useState(false);
@@ -6739,31 +7211,33 @@ function ArtifactPreview({
       aria-label={previewFullscreen ? `${fileName} 预览` : undefined}
     >
       <div className="artifact-preview-fullscreen-shell">
-        <div className="artifact-preview-head">
-          <File size={14} />
-          <strong className="artifact-preview-title">{fileName}</strong>
-          <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
-            <Copy size={13} />
-          </button>
-          <a
-            className="icon-button"
-            href={downloadUrl ?? undefined}
-            download={selectedArtifact.name}
-            aria-disabled={!downloadUrl}
-            title="下载"
-          >
-            <Download size={13} />
-          </a>
-          <button
-            className="icon-button"
-            disabled={!canFullscreen}
-            onClick={() => setPreviewFullscreen((value) => !value)}
-            title={previewFullscreen ? '关闭全屏' : '全屏预览'}
-            type="button"
-          >
-            {previewFullscreen ? <X size={14} /> : <Maximize2 size={13} />}
-          </button>
-        </div>
+        {showHeader ? (
+          <div className="artifact-preview-head">
+            <File size={14} />
+            <strong className="artifact-preview-title">{fileName}</strong>
+            <button className="icon-button" disabled={!canCopy} onClick={onCopy} title="复制" type="button">
+              <Copy size={13} />
+            </button>
+            <a
+              className="icon-button"
+              href={downloadUrl ?? undefined}
+              download={selectedArtifact.name}
+              aria-disabled={!downloadUrl}
+              title="下载"
+            >
+              <Download size={13} />
+            </a>
+            <button
+              className="icon-button"
+              disabled={!canFullscreen}
+              onClick={() => setPreviewFullscreen((value) => !value)}
+              title={previewFullscreen ? '关闭全屏' : '全屏预览'}
+              type="button"
+            >
+              {previewFullscreen ? <X size={14} /> : <Maximize2 size={13} />}
+            </button>
+          </div>
+        ) : null}
         <ArtifactPreviewBody
           error={error}
           loading={loading}

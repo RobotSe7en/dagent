@@ -111,15 +111,19 @@ export async function deleteProject(projectId: string): Promise<void> {
   if (!res.ok) throw new Error(await errorMessage(res));
 }
 
-export async function listProjectFiles(projectId: string, path = ''): Promise<ProjectFilesResponse> {
-  const params = path ? `?${new URLSearchParams({ path }).toString()}` : '';
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files${params}`);
+export async function listProjectFiles(projectId: string, path = '', options: { tree?: boolean } = {}): Promise<ProjectFilesResponse> {
+  const params = new URLSearchParams();
+  if (path) params.set('path', path);
+  if (options.tree) params.set('tree', 'true');
+  const query = params.toString();
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/files${query ? `?${query}` : ''}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return {
     project_id: data.project_id ?? projectId,
     path: data.path ?? path,
     files: (data.files ?? []).map(normalizeProjectFileUrls),
+    tree: data.tree?.map(normalizeProjectFileUrls),
   };
 }
 
@@ -452,6 +456,7 @@ function normalizeProjectFileUrls(file: ProjectFileItem): ProjectFileItem {
     preview_url: normalizeApiUrl(file.preview_url),
     download_url: normalizeApiUrl(file.download_url),
     onlyoffice_config_url: normalizeApiUrl(file.onlyoffice_config_url),
+    children: file.children?.map(normalizeProjectFileUrls),
   };
 }
 

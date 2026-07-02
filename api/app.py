@@ -523,10 +523,18 @@ class ProjectFileItem(BaseModel):
     onlyoffice_config_url: str | None = None
 
 
+class ProjectFileTreeItem(ProjectFileItem):
+    children: list["ProjectFileTreeItem"] = Field(default_factory=list)
+
+
 class ProjectFilesResponse(BaseModel):
     project_id: str
     path: str
     files: list[ProjectFileItem] = Field(default_factory=list)
+
+
+class ProjectFileTreeResponse(ProjectFilesResponse):
+    tree: list[ProjectFileTreeItem] = Field(default_factory=list)
 
 
 class ProjectFilePreviewResponse(BaseModel):
@@ -945,7 +953,7 @@ async def delete_project(project_id: str) -> dict[str, str]:
 
 
 @app.get("/projects/{project_id}/files")
-async def list_project_files(project_id: str, path: str = "") -> dict[str, Any]:
+async def list_project_files(project_id: str, path: str = "", tree: bool = False) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     directory = _resolve_project_file_path(workspace, path, allow_empty=True)
     if not directory.exists():
@@ -953,13 +961,28 @@ async def list_project_files(project_id: str, path: str = "") -> dict[str, Any]:
     if not directory.is_dir():
         raise HTTPException(status_code=400, detail="Project file path is not a directory.")
     normalized_path = _normalize_project_file_path(path, allow_empty=True)
+    onlyoffice_config = _configured_onlyoffice_config()
     files = await run_in_threadpool(
         _project_file_items,
         project.id,
         workspace,
         directory,
-        _configured_onlyoffice_config(),
+        onlyoffice_config,
     )
+    if tree:
+        tree_items = await run_in_threadpool(
+            _project_file_tree_items,
+            project.id,
+            workspace,
+            directory,
+            onlyoffice_config,
+        )
+        return ProjectFileTreeResponse(
+            project_id=project.id,
+            path=normalized_path,
+            files=files,
+            tree=tree_items,
+        ).model_dump(mode="json")
     return ProjectFilesResponse(project_id=project.id, path=normalized_path, files=files).model_dump(mode="json")
 
 
@@ -4253,6 +4276,42 @@ def _project_file_items(
                 candidate,
                 onlyoffice_config=onlyoffice_config,
             ))
+        except HTTPException:
+            continue
+    return items
+
+
+def _project_file_tree_items(
+    project_id: str,
+    workspace: Path,
+    directory: Path,
+    onlyoffice_config: UserOnlyOfficeConfig | None,
+    visited: set[Path] | None = None,
+) -> list[ProjectFileTreeItem]:
+    items: list[ProjectFileTreeItem] = []
+    seen = set(visited or set())
+    seen.add(directory.resolve())
+    for candidate in sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+        try:
+            item = _project_file_item(
+                project_id,
+                workspace,
+                candidate,
+                onlyoffice_config=onlyoffice_config,
+            )
+            resolved_candidate = candidate.resolve()
+            children = (
+                _project_file_tree_items(
+                    project_id,
+                    workspace,
+                    candidate,
+                    onlyoffice_config,
+                    seen | {resolved_candidate},
+                )
+                if item.kind == "directory" and resolved_candidate not in seen
+                else []
+            )
+            items.append(ProjectFileTreeItem(**item.model_dump(), children=children))
         except HTTPException:
             continue
     return items
