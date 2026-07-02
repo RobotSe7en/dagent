@@ -6102,18 +6102,6 @@ details[open] .timeline-chevron {
   background: #fef2f2;
 }
 
-.process-summary-card.process-summary-warning {
-  background: #fff7ed;
-}
-
-.process-summary-card.process-summary-warning .timeline-card-head svg:first-child {
-  color: #d97706;
-}
-
-.process-summary-card.process-summary-complete .timeline-card-head svg:first-child {
-  color: #16a34a;
-}
-
 .process-summary-head span {
   max-width: min(58%, 360px);
   overflow: hidden;

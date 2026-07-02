@@ -7039,11 +7039,10 @@ function ProcessSummaryCard({
   message: ChatMessage;
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
 }) {
-  const hasFailures = summary.failedCount > 0;
   return (
-    <details className={`timeline-card process-summary-card ${hasFailures ? 'process-summary-warning' : 'process-summary-complete'}`}>
+    <details className="timeline-card process-summary-card">
       <summary className="timeline-card-head process-summary-head">
-        {hasFailures ? <AlertTriangle size={14} /> : <Check size={14} />}
+        <Wrench size={14} />
         <strong>执行过程</strong>
         <span>{processSummaryText(summary)}</span>
         <ChevronRight className="timeline-chevron" size={15} />

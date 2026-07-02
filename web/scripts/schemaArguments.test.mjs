@@ -3515,6 +3515,42 @@ test('completed assistant answers collapse reasoning and capability process trac
   });
 });
 
+test('process timeline summary treats review rejection separately from anomalies', () => {
+  const rejected = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_rejected',
+      capability_id: 'tool.write_file',
+      arguments: { path: 'notes.md' },
+    },
+    result: {
+      type: 'capability.call.failed',
+      invocation_id: 'invoke_rejected',
+      capability_id: 'tool.write_file',
+      content: '人工审核已拒绝。\n\n反馈：不要写入文件',
+    },
+  };
+  const failed = {
+    type: 'capability',
+    event: {
+      type: 'capability.call.started',
+      invocation_id: 'invoke_failed',
+      capability_id: 'tool.read_file',
+      arguments: { path: 'missing.md' },
+    },
+    result: {
+      type: 'capability.call.failed',
+      invocation_id: 'invoke_failed',
+      capability_id: 'tool.read_file',
+      content: 'FileNotFoundError: missing.md',
+    },
+  };
+
+  assert.equal(processTimelineSummary([rejected]).failedCount, 0);
+  assert.equal(processTimelineSummary([failed]).failedCount, 1);
+});
+
 test('running, answerless, and review assistant turns keep process trace expanded', () => {
   const runningCapability = {
     type: 'capability',
@@ -3605,6 +3641,7 @@ test('completed assistant answers collapse everything before the final text with
 
 test('message timeline renders completed process trace behind a collapsible summary', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const summarySource = appSource.match(/function ProcessSummaryCard[\s\S]*?\nfunction processSummaryText/)?.[0] ?? '';
 
   assert.match(appSource, /shouldCollapseProcessTimeline/);
   assert.match(appSource, /collapsedProcessTimelineParts/);
@@ -3612,6 +3649,9 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.match(appSource, /const collapsedProcess = collapseProcess \? collapsedProcessTimelineParts\(timeline\) : null;/);
   assert.match(appSource, /renderCollapsedMessageTimeline/);
   assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
+  assert.match(summarySource, /<Wrench size=\{14\} \/>/);
+  assert.doesNotMatch(summarySource, /AlertTriangle/);
+  assert.doesNotMatch(summarySource, /process-summary-warning/);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
