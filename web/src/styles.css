@@ -1458,18 +1458,46 @@ button:focus-visible {
 
 .assistant-turn-frame .process-summary-body {
   display: grid;
-  gap: 0;
+  gap: 8px;
+  padding: 10px 12px 12px;
   background: #fbfcfd;
 }
 
 .assistant-turn-frame .process-summary-body > .think-block,
 .assistant-turn-frame .process-summary-body > .timeline-card,
+.assistant-turn-frame .process-summary-body > .capability-event-card,
+.assistant-turn-frame .process-summary-body > .dag-summary-card,
+.assistant-turn-frame .process-summary-body > .markdown-body {
+  position: relative;
+  border: 1px solid #edf0f4;
+  border-left: 3px solid #d8dee8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.assistant-turn-frame .process-summary-body > .think-block {
+  border-left-color: #94a3b8;
+}
+
 .assistant-turn-frame .process-summary-body > .capability-event-card {
-  background: #fbfcfd;
+  border-left-color: #2dd4bf;
+}
+
+.assistant-turn-frame .process-summary-body > .validation-card {
+  border-left-color: #818cf8;
+}
+
+.assistant-turn-frame .process-summary-body > .dag-summary-card {
+  border-left-color: #60a5fa;
+}
+
+.assistant-turn-frame .process-summary-body > .markdown-body {
+  border-left-color: #cbd5e1;
 }
 
 .assistant-turn-frame .process-summary-body > :last-child {
-  border-bottom: 0;
+  margin-bottom: 0;
 }
 
 details > summary {

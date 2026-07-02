@@ -3654,6 +3654,19 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.doesNotMatch(summarySource, /process-summary-warning/);
 });
 
+test('expanded process trace separates items with a subtle timeline treatment', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body\s*\{[^}]*gap:\s*8px;[^}]*padding:\s*10px 12px 12px;/s);
+  assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.think-block,[\s\S]*\.assistant-turn-frame \.process-summary-body > \.markdown-body\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
+  assert.match(css, /\.assistant-turn-frame \.process-summary-body > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
+});
+
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
   const call = {
     type: 'capability.call.started',
