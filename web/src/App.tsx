@@ -249,6 +249,7 @@ import {
   type ProcessTimelineSummary,
 } from './chatTimeline';
 import {
+  chatMessagesFromPersistedRunEvents,
   finishedRunResultFromEvents,
   messagesFromPersistedRunResult,
 } from './persistedChat';
@@ -1039,6 +1040,35 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function isConversationActiveError(value: unknown): boolean {
+  const message = value instanceof Error ? value.message : String(value);
+  return /already active|active conversation/i.test(message);
+}
+
+async function deleteConversationOnce(conversation: ApiConversation): Promise<void> {
+  if (conversation.project_id) {
+    await deleteProjectConversation(conversation.project_id, conversation.id);
+  } else {
+    await deleteConversation(conversation.id);
+  }
+}
+
+async function deleteConversationWithActiveRetry(conversation: ApiConversation): Promise<void> {
+  try {
+    await deleteConversationOnce(conversation);
+  } catch (exc) {
+    if (!isConversationActiveError(exc)) throw exc;
+    await delay(350);
+    await deleteConversationOnce(conversation);
+  }
 }
 
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
@@ -2259,6 +2289,23 @@ export function App() {
       const events = await listRunEvents(conversation.last_run_id);
       if (conversationHydrationRequestRef.current !== requestId) return;
       const result = finishedRunResultFromEvents(events);
+      const partialMessages = chatMessagesFromPersistedRunEvents(events, result);
+      if (!result && partialMessages.length) {
+        setRunState(null);
+        setTrace([]);
+        setMessages(partialMessages);
+        setError(null);
+        setDagReview(null);
+        setDagReviewFeedback('');
+        setCapabilityReview(null);
+        setCapabilityReviewFeedback('');
+        syncDag(emptyDag);
+        setReviewOpen(false);
+        contentStreamedRef.current = partialMessages.some((message) => message.content.trim());
+        tokenQueueRef.current = [];
+        stopTokenTimer();
+        return;
+      }
       if (!result) return;
       applyPersistedRunResult(result, events);
     } catch (exc) {
@@ -3665,11 +3712,7 @@ export function App() {
     const remaining = conversations.filter((item) => item.id !== conversation.id);
     const deletingSelected = conversation.id === selectedConversationId;
     try {
-      if (conversation.project_id) {
-        await deleteProjectConversation(conversation.project_id, conversation.id);
-      } else {
-        await deleteConversation(conversation.id);
-      }
+      await deleteConversationWithActiveRetry(conversation);
       setConversations(remaining);
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'

@@ -1182,6 +1182,23 @@ def test_api_deletes_standalone_conversation_workspace(persistence_client) -> No
     assert not conversation_root.exists()
 
 
+def test_api_deletes_empty_standalone_conversation_workspace(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Interrupted chat"},
+    ).json()["conversation"]
+    conversation_workspace = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    conversation_root = conversation_workspace.parent
+
+    response = persistence_client.delete(f"/conversations/{conversation['id']}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert state.get_store().get_conversation(conversation["id"]) is None
+    assert not conversation_workspace.exists()
+    assert not conversation_root.exists()
+
+
 def test_api_project_message_stream_persists_run_events_and_state(
     persistence_client,
 ) -> None:

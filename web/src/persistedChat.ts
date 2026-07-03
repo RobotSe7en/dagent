@@ -37,9 +37,21 @@ export function chatMessagesFromPersistedRunEvents(
   events: ApiRunEvent[],
   result: ApiRunResult | null,
 ): ChatMessage[] {
-  if (!result) return [];
+  if (!result) return partialMessagesFromPersistedRunEvents(events);
   const traceSnapshot = result.state?.trace ? mapRunTrace(result.state.trace) : [];
   return messagesFromPersistedRunResult(result, traceSnapshot, events);
+}
+
+function partialMessagesFromPersistedRunEvents(events: ApiRunEvent[]): ChatMessage[] {
+  const fallbackContent = fallbackContentFromPersistedRunEvents(events);
+  const timeline = timelineFromPersistedRunEvents(events, fallbackContent);
+  if (!timeline.length) return [];
+  return [{
+    role: 'assistant',
+    kind: 'text',
+    content: textContentFromTimeline(timeline) || fallbackContent,
+    timeline,
+  }];
 }
 
 export function messagesFromPersistedRunResult(
@@ -166,6 +178,20 @@ function timelineFromPersistedRunEvents(
     timeline = settleRejectedCapabilityReviews(timeline, capabilityReviews);
   }
   return ensureFinalTextTimeline(timeline, fallbackContent);
+}
+
+function fallbackContentFromPersistedRunEvents(events: ApiRunEvent[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const envelope = streamEnvelope(events[index]);
+    const data = recordValue(envelope?.data);
+    if (envelope?.type === 'review.required' && typeof data?.message === 'string') {
+      return data.message.trim();
+    }
+    if (envelope?.type === 'run.failed' && typeof data?.message === 'string') {
+      return data.message.trim();
+    }
+  }
+  return '';
 }
 
 function appendCapabilityTimeline(

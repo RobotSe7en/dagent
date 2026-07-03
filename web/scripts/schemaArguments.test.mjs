@@ -2154,6 +2154,7 @@ test('persisted conversation selection hydrates the last run snapshot', async ()
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult, events: ApiRunEvent\[\] = \[\]\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace, events\)\);/);
   assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result, events\);/);
+  assert.match(appSource, /const partialMessages = chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
   assert.match(appSource, /if \(!selectedChatConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatConversation\);/);
 });
 
@@ -2379,6 +2380,56 @@ test('persisted conversation hydration settles rejected capability review cards'
   assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
 });
 
+test('persisted conversation hydration restores interrupted review traces without run finished', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const events = [
+    runEvent(1, 'run.started', { kind: 'tool' }),
+    runEvent(2, 'capability.call.started', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.read_file',
+      arguments: { path: '../blocked/secret.txt' },
+    }),
+    runEvent(3, 'capability.call.completed', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.read_file',
+      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
+    }),
+    runEvent(4, 'review.required', {
+      review_id: 'review_1',
+      kind: 'capability_review',
+      message: 'Review capability call: tool.read_file',
+      capability_call: {
+        invocation_id: 'call_1',
+        capability_id: 'tool.read_file',
+        tool_name: 'tool_read_file',
+        arguments: { path: '../blocked/secret.txt' },
+      },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+  const assistant = messages.find((message) => message.role === 'assistant');
+
+  assert.equal(result, null);
+  assert.ok(assistant, 'interrupted review run should hydrate a visible assistant turn');
+  assert.equal(assistant.content, 'Review capability call: tool.read_file');
+  assert.deepEqual(
+    assistant.timeline.map((item) => item.type),
+    ['capability', 'text'],
+  );
+});
+
 test('persisted conversation replay reuses api stream event parsing', async () => {
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
@@ -2463,7 +2514,9 @@ test('project conversation deletion uses the project-scoped route', async () => 
   assert.equal(calls[0].url, '/api/projects/proj_1/conversations/conv_1');
   assert.equal(calls[0].init.method, 'DELETE');
   const deleteSource = appSource.match(/const confirmConversationDelete = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
-  assert.match(deleteSource, /conversation\.project_id[\s\S]*deleteProjectConversation\(conversation\.project_id, conversation\.id\)[\s\S]*deleteConversation\(conversation\.id\)/);
+  const deleteHelperSource = appSource.match(/async function deleteConversationOnce\(conversation: ApiConversation\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.match(deleteSource, /await deleteConversationWithActiveRetry\(conversation\);/);
+  assert.match(deleteHelperSource, /conversation\.project_id[\s\S]*deleteProjectConversation\(conversation\.project_id, conversation\.id\)[\s\S]*deleteConversation\(conversation\.id\)/);
 });
 
 test('project management uses custom dialogs and standalone conversation list', async () => {
@@ -2481,6 +2534,9 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(appSource, /const projectDeleteTarget = useMemo\([\s\S]*projects\.find\(\(project\) => project\.id === projectDeleteTargetId\) \?\? null/);
   assert.match(appSource, /const requestProjectDelete = \(projectId\?: string\) => \{[\s\S]*const targetProjectId = projectId \?\? selectedProject\?\.id;[\s\S]*if \(!targetProjectId\) return;[\s\S]*setProjectDeleteTargetId\(targetProjectId\);[\s\S]*setProjectDeleteOpen\(true\);/);
   assert.match(appSource, /const \[conversationDeleteTargetId, setConversationDeleteTargetId\] = useState\(''\);/);
+  assert.match(appSource, /function isConversationActiveError\(value: unknown\): boolean/);
+  assert.match(appSource, /async function deleteConversationWithActiveRetry\(conversation: ApiConversation\): Promise<void>/);
+  assert.match(appSource, /if \(!isConversationActiveError\(exc\)\) throw exc;[\s\S]*await delay\(350\);[\s\S]*await deleteConversationOnce\(conversation\);/);
   assert.match(appSource, /function ProjectCreateDialog/);
   assert.match(appSource, /function ConversationDeleteDialog/);
   assert.match(appSource, /conversation\.project_id[\s\S]*项目会话只会删除会话记录和运行历史，项目目录会保留。[\s\S]*会话记录和该会话工作目录会同步删除。/);
