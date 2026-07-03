@@ -112,7 +112,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 本地 API 现在会在 API 存储层持久化项目、无项目会话、项目会话、运行状态快照、运行事件历史和
   review 记录；公共 SDK 不接触持久化，也不需要改动。
 - WebUI 现在将无项目会话和项目分层展示。项目可以展开查看项目会话，并提供项目详情工作区，
-  支持文件管理、目录浏览、上传、重命名、删除、下载、预览，以及文档预览配置。
+  支持文件管理、目录浏览、上传、重命名、删除、下载、预览，以及文档配置。
 - 持久化 chat stream 可以从存储的 `RunState` 快照恢复，包括 pending review、artifact
   manifest、trace，以及 API 进程重启后的项目会话状态。
 - 无项目会话现在使用 `.dagent/projects/_conversations/<conversation_id>/workspace`
@@ -126,7 +126,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 删除无项目会话会同时删除数据库记录和该会话根目录。删除项目会话会删除会话和运行记录，
   但保留共享的项目 workspace。
 - 删除项目会在确认项目会话没有活跃 stream 后，同时删除项目数据库记录和本地项目根目录。
-- WebUI 系统设置里的 OnlyOffice 配置已重命名为文档预览配置。
+- WebUI 系统设置里的 OnlyOffice 配置已重命名为文档配置。
 
 ### 破坏性改变
 
@@ -161,7 +161,11 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 本地 API 和 WebUI 暴露 OnlyOffice 配置；配置 OnlyOffice server 后，可以使用更丰富的
   文档预览能力。
 - 通过 OnlyOffice 打开的 DOCX、XLSX 和 PPTX 现在可以分别为项目文件和运行产物开启
-  edit mode。保存后的编辑会直接覆盖原文件。
+  edit mode。edit mode 会关闭 autosave，并且只有用户点击 Save 时才会写回原文件。
+- 运行产物和项目文件元数据现在包含 `version` 字段；它由文件大小和纳秒级 mtime 生成，
+  用于精确地让预览缓存失效。
+- view-only 的 ONLYOFFICE 预览会在浏览器侧保留少量最近打开的编辑器实例，加快未变化
+  文档之间的切换。
 - 聊天 workbench uploads 现在可以附加到消息，并 materialize 到 run workspace，方便
   agent 检查用户提供的文件。
 - WebUI 扩展了静态 DAG output binding 和 schema argument 编辑能力。
@@ -173,7 +177,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   便于更高密度地使用 workspace。
 - Workbench upload 处理会更严格地校验文件名和 workspace 边界。
 - OnlyOffice preview URLs 现在使用带签名的 file tokens，并在 token 中携带当前预览会话
-  是否允许保存编辑。
+  是否允许保存编辑。callback handler 只会在用户触发 force-save 时覆盖文件。
 
 ### 破坏性改变
 

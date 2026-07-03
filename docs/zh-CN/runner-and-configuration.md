@@ -176,9 +176,12 @@ HS256 签名生成的编辑器配置，并作为 ONLYOFFICE `token` 传给前端
 
 默认情况下，DOCX、XLSX 和 PPTX 文件会以 ONLYOFFICE view mode 打开。启用
 `project_file_edit_enabled` 后，项目文件可以用 edit mode 打开；启用
-`run_artifact_edit_enabled` 后，运行产物可以用 edit mode 打开。保存后的编辑会直接覆盖
-原文件。对于运行产物，这会修改 run workspace 中的文件；不会重写历史 trace 事件，也
-不会重新执行 agent。
+`run_artifact_edit_enabled` 后，运行产物可以用 edit mode 打开。edit mode 会关闭
+ONLYOFFICE autosave 并启用 force-save，因此只有用户显式点击 Save 时才会覆盖原文件。
+对于运行产物，这会修改 run workspace 中的文件；不会重写历史 trace 事件，也不会重新
+执行 agent。文件列表响应会包含根据文件大小和纳秒级 mtime 生成的 `version`，WebUI
+据此只在底层文件变化时刷新缓存预览。view-only 的 ONLYOFFICE 预览会在浏览器侧保留少量
+最近打开的编辑器实例，以加快在未变化文档之间切换的速度。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；

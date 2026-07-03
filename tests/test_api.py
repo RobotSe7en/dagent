@@ -2249,6 +2249,9 @@ def test_api_dag_create_run_and_artifacts() -> None:
     assert artifacts_response.status_code == 200
     assert artifacts_response.json()["artifacts"]["note"]["paths"] == ["notes/output.txt"]
     artifact_files = artifacts_response.json()["files"]
+    artifact_version = artifact_files[0].pop("version")
+    assert isinstance(artifact_version, str)
+    assert artifact_version
     assert artifact_files == [
         {
             "id": "dag:note:notes/output.txt",
@@ -2585,6 +2588,10 @@ def test_api_run_artifacts_preview_tool_workspace_markdown_file() -> None:
     assert artifacts_response.status_code == 200
     payload = artifacts_response.json()
     assert payload["artifacts"] == {}
+    file_payload = payload["files"][0]
+    file_version = file_payload.pop("version")
+    assert isinstance(file_version, str)
+    assert file_version
     assert payload["files"] == [
         {
             "id": "run:notes/output.md",
@@ -2783,6 +2790,9 @@ def test_api_run_artifacts_manifest_lists_unsupported_workspace_files() -> None:
 
     assert artifacts_response.status_code == 200
     files = {item["path"]: item for item in artifacts_response.json()["files"]}
+    archive_version = files["exports/archive.bin"].pop("version")
+    assert isinstance(archive_version, str)
+    assert archive_version
     assert files["exports/archive.bin"] == {
         "id": "run:exports/archive.bin",
         "artifact_id": None,
@@ -2987,6 +2997,9 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
     assert onlyoffice_config["document"]["permissions"]["protect"] is False
     assert onlyoffice_config["editorConfig"]["mode"] == "edit"
     assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
+    assert onlyoffice_config["editorConfig"]["coEditing"] == {"mode": "strict", "change": False}
+    assert onlyoffice_config["editorConfig"]["customization"]["autosave"] is False
+    assert onlyoffice_config["editorConfig"]["customization"]["forcesave"] is True
     assert onlyoffice_config["editorConfig"]["customization"]["macros"] is False
     assert onlyoffice_config["editorConfig"]["customization"]["macrosMode"] == "disable"
     assert onlyoffice_config["editorConfig"]["customization"]["plugins"] is False
@@ -3109,8 +3122,10 @@ def test_api_run_artifacts_onlyoffice_preview_config_omits_token_without_jwt_sec
 
 
 def test_api_run_artifacts_onlyoffice_callback_saves_editable_file(monkeypatch) -> None:
+    downloads: list[str] = []
+
     async def fake_download(url: str) -> bytes:
-        assert url == "http://onlyoffice.test/edited.docx"
+        downloads.append(url)
         return b"edited docx bytes"
 
     monkeypatch.setattr(app_module, "_download_onlyoffice_callback_file", fake_download, raising=False)
@@ -3140,13 +3155,26 @@ def test_api_run_artifacts_onlyoffice_callback_saves_editable_file(monkeypatch) 
     )
     callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
 
-    callback_response = client.post(
+    close_response = client.post(
         urlsplit(callback_url).path,
         json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
     )
+    command_forcesave_response = client.post(
+        urlsplit(callback_url).path,
+        json={"status": 6, "forcesavetype": 0, "url": "http://onlyoffice.test/edited.docx"},
+    )
+    callback_response = client.post(
+        urlsplit(callback_url).path,
+        json={"status": 6, "forcesavetype": 1, "url": "http://onlyoffice.test/edited.docx"},
+    )
 
+    assert close_response.status_code == 200
+    assert close_response.json() == {"error": 0}
+    assert command_forcesave_response.status_code == 200
+    assert command_forcesave_response.json() == {"error": 0}
     assert callback_response.status_code == 200
     assert callback_response.json() == {"error": 0}
+    assert downloads == ["http://onlyoffice.test/edited.docx"]
     assert target.read_bytes() == b"edited docx bytes"
 
 
@@ -3181,11 +3209,17 @@ def test_api_run_artifacts_onlyoffice_callback_rejects_view_only_token(monkeypat
     )
     callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
 
-    callback_response = client.post(
+    close_response = client.post(
         urlsplit(callback_url).path,
         json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
     )
+    callback_response = client.post(
+        urlsplit(callback_url).path,
+        json={"status": 6, "forcesavetype": 1, "url": "http://onlyoffice.test/edited.docx"},
+    )
 
+    assert close_response.status_code == 200
+    assert close_response.json() == {"error": 0}
     assert callback_response.status_code == 403
     assert target.read_bytes() == b"original docx bytes"
 

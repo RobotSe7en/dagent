@@ -18,6 +18,7 @@ export interface WorkbenchArtifactItem {
   downloadUrl?: string | null;
   onlyOfficeConfigUrl?: string | null;
   size?: number | null;
+  version?: string | null;
   status?: string;
   error?: string | null;
 }
@@ -159,6 +160,7 @@ function runFileArtifactItem(file: RunArtifactFile, runId: string | undefined): 
     downloadUrl: file.download_url ?? null,
     onlyOfficeConfigUrl: file.onlyoffice_config_url ?? null,
     size: file.size ?? null,
+    version: file.version ?? null,
     status: file.status,
     error: file.error ?? null,
   };
