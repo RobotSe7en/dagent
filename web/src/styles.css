@@ -1747,8 +1747,8 @@ button:focus-visible {
 
 .assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) {
   display: grid;
-  gap: 8px;
-  padding: 10px 12px 12px;
+  gap: 4px;
+  padding: 4px 6px 6px;
   background: #fbfcfd;
 }
 
