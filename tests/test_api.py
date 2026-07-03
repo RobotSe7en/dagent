@@ -2915,6 +2915,8 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
                     "public_api_base": "http://api.test/",
                     "jwt_secret": "onlyoffice-jwt",
                     "lang": "zh-CN",
+                    "project_file_edit_enabled": False,
+                    "run_artifact_edit_enabled": True,
                 }
             },
             sort_keys=False,
@@ -2963,7 +2965,9 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
         f"/runs/{run_id}/artifacts/onlyoffice/config?path=exports%2Fbrief.docx"
     )
 
+    issued_before = int(app_module.time.time())
     config_response = client.get(files["exports/brief.docx"]["onlyoffice_config_url"])
+    issued_after = int(app_module.time.time())
 
     assert config_response.status_code == 200
     payload = config_response.json()
@@ -2973,7 +2977,7 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
     assert onlyoffice_config["documentType"] == "word"
     assert onlyoffice_config["document"]["fileType"] == "docx"
     assert onlyoffice_config["document"]["title"] == "brief.docx"
-    assert onlyoffice_config["document"]["permissions"]["edit"] is False
+    assert onlyoffice_config["document"]["permissions"]["edit"] is True
     assert onlyoffice_config["document"]["permissions"]["review"] is False
     assert onlyoffice_config["document"]["permissions"]["comment"] is False
     assert onlyoffice_config["document"]["permissions"]["chat"] is False
@@ -2981,13 +2985,18 @@ def test_api_run_artifacts_onlyoffice_preview_config_uses_user_config() -> None:
     assert onlyoffice_config["document"]["permissions"]["modifyContentControl"] is False
     assert onlyoffice_config["document"]["permissions"]["modifyFilter"] is False
     assert onlyoffice_config["document"]["permissions"]["protect"] is False
-    assert onlyoffice_config["editorConfig"]["mode"] == "view"
+    assert onlyoffice_config["editorConfig"]["mode"] == "edit"
     assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
     assert onlyoffice_config["editorConfig"]["customization"]["macros"] is False
     assert onlyoffice_config["editorConfig"]["customization"]["macrosMode"] == "disable"
     assert onlyoffice_config["editorConfig"]["customization"]["plugins"] is False
     assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
     assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
+    callback_token = urlsplit(onlyoffice_config["editorConfig"]["callbackUrl"]).path.rsplit("/", 1)[-1]
+    callback_payload = json.loads(_base64url_decode(callback_token.split(".", 1)[0]))
+    assert callback_payload["editable"] is True
+    assert issued_before + app_module.ONLYOFFICE_EDIT_TOKEN_SECONDS <= callback_payload["exp"]
+    assert callback_payload["exp"] <= issued_after + app_module.ONLYOFFICE_EDIT_TOKEN_SECONDS
     jwt_payload = _decode_onlyoffice_jwt(onlyoffice_config["token"], "onlyoffice-jwt")
     assert jwt_payload == {
         key: value
@@ -3093,7 +3102,92 @@ def test_api_run_artifacts_onlyoffice_preview_config_omits_token_without_jwt_sec
     )
 
     assert config_response.status_code == 200
-    assert "token" not in config_response.json()["config"]
+    onlyoffice_config = config_response.json()["config"]
+    assert "token" not in onlyoffice_config
+    assert onlyoffice_config["document"]["permissions"]["edit"] is False
+    assert onlyoffice_config["editorConfig"]["mode"] == "view"
+
+
+def test_api_run_artifacts_onlyoffice_callback_saves_editable_file(monkeypatch) -> None:
+    async def fake_download(url: str) -> bytes:
+        assert url == "http://onlyoffice.test/edited.docx"
+        return b"edited docx bytes"
+
+    monkeypatch.setattr(app_module, "_download_onlyoffice_callback_file", fake_download, raising=False)
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://onlyoffice.test/",
+                    "public_api_base": "http://api.test/",
+                    "run_artifact_edit_enabled": True,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client, path="exports/brief.docx", content="original docx bytes")
+    target = workspace / "exports" / "brief.docx"
+
+    config_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/brief.docx"},
+    )
+    callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
+
+    callback_response = client.post(
+        urlsplit(callback_url).path,
+        json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
+    )
+
+    assert callback_response.status_code == 200
+    assert callback_response.json() == {"error": 0}
+    assert target.read_bytes() == b"edited docx bytes"
+
+
+def test_api_run_artifacts_onlyoffice_callback_rejects_view_only_token(monkeypatch) -> None:
+    async def fake_download(url: str) -> bytes:
+        raise AssertionError("view-only callbacks must not download edited content")
+
+    monkeypatch.setattr(app_module, "_download_onlyoffice_callback_file", fake_download, raising=False)
+    user_config_path = state.get_user_config_path()
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "onlyoffice": {
+                    "enabled": True,
+                    "document_server_url": "http://onlyoffice.test/",
+                    "public_api_base": "http://api.test/",
+                    "run_artifact_edit_enabled": False,
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+    run_id, workspace = _start_write_file_run(client, path="exports/brief.docx", content="original docx bytes")
+    target = workspace / "exports" / "brief.docx"
+
+    config_response = client.get(
+        f"/runs/{run_id}/artifacts/onlyoffice/config",
+        params={"path": "exports/brief.docx"},
+    )
+    callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
+
+    callback_response = client.post(
+        urlsplit(callback_url).path,
+        json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
+    )
+
+    assert callback_response.status_code == 403
+    assert target.read_bytes() == b"original docx bytes"
 
 
 def test_api_onlyoffice_file_routes_reject_malformed_tokens() -> None:
@@ -3158,6 +3252,8 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "public_api_base": None,
         "jwt_secret": None,
         "lang": "zh",
+        "project_file_edit_enabled": False,
+        "run_artifact_edit_enabled": False,
     }
 
     saved_response = client.put(
@@ -3168,6 +3264,8 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
             "public_api_base": " http://192.168.31.10:8001/ ",
             "jwt_secret": " onlyoffice-jwt ",
             "lang": " zh-CN ",
+            "project_file_edit_enabled": True,
+            "run_artifact_edit_enabled": True,
         },
     )
 
@@ -3178,6 +3276,8 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "public_api_base": "http://192.168.31.10:8001/",
         "jwt_secret": "onlyoffice-jwt",
         "lang": "zh-CN",
+        "project_file_edit_enabled": True,
+        "run_artifact_edit_enabled": True,
     }
     raw = yaml.safe_load(state.get_user_config_path().read_text(encoding="utf-8"))
     assert raw["onlyoffice"] == {
@@ -3186,6 +3286,8 @@ def test_api_system_onlyoffice_settings_round_trips_user_config() -> None:
         "public_api_base": "http://192.168.31.10:8001/",
         "jwt_secret": "onlyoffice-jwt",
         "lang": "zh-CN",
+        "project_file_edit_enabled": True,
+        "run_artifact_edit_enabled": True,
     }
 
     reloaded_response = client.get("/system/onlyoffice")

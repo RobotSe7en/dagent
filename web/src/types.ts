@@ -486,6 +486,8 @@ export interface OnlyOfficeSettings {
   public_api_base?: string | null;
   jwt_secret?: string | null;
   lang: string;
+  project_file_edit_enabled: boolean;
+  run_artifact_edit_enabled: boolean;
 }
 
 export type WorkspaceKey = 'chat' | 'orchestration' | 'tools' | 'agents' | 'system';

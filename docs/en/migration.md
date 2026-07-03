@@ -189,6 +189,9 @@ The current package version is `0.6.5`.
   including Office documents and PPTX artifacts.
 - The local API and WebUI expose OnlyOffice configuration for richer document
   preview workflows when an OnlyOffice server is configured.
+- OnlyOffice-backed DOCX, XLSX, and PPTX previews can now be switched into edit
+  mode independently for project files and run artifacts. Saved edits overwrite
+  the original file.
 - Chat workbench uploads can now be attached to a message and materialized into
   the run workspace so agents can inspect user-provided files.
 - Static DAG output binding and schema-argument editing support have been
@@ -201,7 +204,8 @@ The current package version is `0.6.5`.
   rail behavior have been refined for denser workspace use.
 - Workbench upload handling is stricter about filenames and workspace
   boundaries.
-- OnlyOffice preview URLs now use signed short-lived file tokens.
+- OnlyOffice preview URLs now use signed file tokens that also carry whether the
+  current preview session may save edits.
 
 ### Breaking Changes
 
@@ -210,8 +214,9 @@ The current package version is `0.6.5`.
 ### Migration Steps
 
 - No migration action is required for this patch release.
-- To use Office document previews, configure an OnlyOffice document server in
-  the WebUI system settings.
+- To use Office document previews or editing, configure an OnlyOffice document
+  server in the WebUI system settings. Editing remains off until the project-file
+  or run-artifact edit switch is enabled.
 
 ### Verification
 
@@ -222,6 +227,8 @@ The current package version is `0.6.5`.
 ### Known Limitations
 
 - Office previews require an external OnlyOffice document server.
+- Editing run artifacts mutates files in the run workspace but does not rewrite
+  stored trace history.
 - Workbench uploads are materialized into the local run workspace; they are not
   persisted across ephemeral container storage without a persistent volume.
 

@@ -73,8 +73,11 @@ The local WebUI lists files from the run workspace as run artifacts. Text,
 Markdown, and code artifacts use the text preview endpoint. PDF artifacts are
 fetched through the artifact download endpoint and rendered in the browser. When
 `~/.dagent/config.yaml` includes an enabled `onlyoffice` section, DOCX, XLSX,
-and PPTX artifacts are opened through ONLYOFFICE Document Server in view mode;
-otherwise those Office files fall back to the built-in browser renderers.
+and PPTX artifacts are opened through ONLYOFFICE Document Server in view mode.
+If `run_artifact_edit_enabled` is also enabled, those artifacts open in edit mode
+and saved edits overwrite the file in the run workspace without changing the
+historical trace. Otherwise, Office files fall back to the built-in browser
+renderers when ONLYOFFICE is not configured.
 
 ## Streaming
 

@@ -146,6 +146,8 @@ onlyoffice:
   public_api_base: "http://192.168.31.10:8000"
   jwt_secret: "onlyoffice-jwt-secret"
   lang: "zh-CN"
+  project_file_edit_enabled: false
+  run_artifact_edit_enabled: false
 ```
 
 The WebUI model list includes the project `config.yaml` provider plus user
@@ -179,17 +181,24 @@ Import failures, missing names, non-`@dagent.tool` exports, and capability id
 collisions are reported in the tool management page without failing backend
 startup.
 
-`onlyoffice` is optional and is used only by the local WebUI artifact preview.
-`document_server_url` points to the ONLYOFFICE Document Server that the browser
-can load. `public_api_base` must point to this FastAPI backend at an address the
-Document Server can reach, because generated preview configs contain signed file
-and callback URLs under that base. If the Document Server has JWT enabled,
-`jwt_secret` must match its JWT secret; the backend signs the generated editor
-config with HS256 and sends it as the ONLYOFFICE `token`. When
+`onlyoffice` is optional and is used by the local WebUI document preview and
+editing surface. `document_server_url` points to the ONLYOFFICE Document Server
+that the browser can load. `public_api_base` must point to this FastAPI backend
+at an address the Document Server can reach, because generated preview configs
+contain signed file and callback URLs under that base. If the Document Server
+has JWT enabled, `jwt_secret` must match its JWT secret; the backend signs the
+generated editor config with HS256 and sends it as the ONLYOFFICE `token`. When
 `onlyoffice.enabled` is false or the URLs are missing, the WebUI falls back to
 its built-in browser preview path.
 The same settings can be edited in the WebUI under
-System Management -> Document Preview Configuration.
+System Management -> Document Configuration.
+
+By default, DOCX, XLSX, and PPTX files open through ONLYOFFICE in view mode. Set
+`project_file_edit_enabled` to allow project files to open in edit mode, and set
+`run_artifact_edit_enabled` to allow run artifacts to open in edit mode. Saved
+edits directly overwrite the original file. For run artifacts, this changes the
+file in the run workspace; it does not rewrite historical trace events or rerun
+the agent.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

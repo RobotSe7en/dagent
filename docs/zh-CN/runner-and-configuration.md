@@ -138,6 +138,8 @@ onlyoffice:
   public_api_base: "http://192.168.31.10:8000"
   jwt_secret: "onlyoffice-jwt-secret"
   lang: "zh-CN"
+  project_file_edit_enabled: false
+  run_artifact_edit_enabled: false
 ```
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
@@ -163,14 +165,20 @@ Python 文件会作为本地代码导入，因此模块顶层代码会在加载�
 失败、名称缺失、非 `@dagent.tool` 导出以及 capability id 冲突都会显示在工具管理页，
 不会导致 backend 启动失败。
 
-`onlyoffice` 是可选配置，只由本地 WebUI artifact 预览使用。`document_server_url`
-指向浏览器能够加载的 ONLYOFFICE Document Server。`public_api_base` 必须指向这个
-FastAPI backend，并且要使用 Document Server 能访问到的地址，因为生成的预览配置会在
-这个 base 下放入签名的文件 URL 和 callback URL。如果 Document Server 启用了 JWT，
-`jwt_secret` 必须和它的 JWT secret 一致；backend 会用 HS256 签名生成的编辑器配置，
-并作为 ONLYOFFICE `token` 传给前端。当 `onlyoffice.enabled` 为 false 或 URL 缺失时，
-WebUI 会回退到内置的浏览器预览路径。同一组设置也可以在 WebUI 的
-“系统管理 -> 文档预览配置”中维护。
+`onlyoffice` 是可选配置，由本地 WebUI 文档预览与编辑界面使用。
+`document_server_url` 指向浏览器能够加载的 ONLYOFFICE Document Server。
+`public_api_base` 必须指向这个 FastAPI backend，并且要使用 Document Server 能访问到的
+地址，因为生成的预览配置会在这个 base 下放入签名的文件 URL 和 callback URL。如果
+Document Server 启用了 JWT，`jwt_secret` 必须和它的 JWT secret 一致；backend 会用
+HS256 签名生成的编辑器配置，并作为 ONLYOFFICE `token` 传给前端。当
+`onlyoffice.enabled` 为 false 或 URL 缺失时，WebUI 会回退到内置的浏览器预览路径。
+同一组设置也可以在 WebUI 的“系统管理 -> 文档配置”中维护。
+
+默认情况下，DOCX、XLSX 和 PPTX 文件会以 ONLYOFFICE view mode 打开。启用
+`project_file_edit_enabled` 后，项目文件可以用 edit mode 打开；启用
+`run_artifact_edit_enabled` 后，运行产物可以用 edit mode 打开。保存后的编辑会直接覆盖
+原文件。对于运行产物，这会修改 run workspace 中的文件；不会重写历史 trace 事件，也
+不会重新执行 agent。
 
 推荐用 `api_key_env` 配置密钥。只有当用户明确选择保存时，WebUI 才会把明文 `api_key`
 写入 `~/.dagent/config.yaml`。在平台支持的情况下，该文件会以 owner-only 权限写入；

@@ -86,6 +86,8 @@ class UserOnlyOfficeConfig(BaseModel):
     public_api_base: str | None = None
     jwt_secret: str | None = None
     lang: str = "zh"
+    project_file_edit_enabled: bool = False
+    run_artifact_edit_enabled: bool = False
 
 
 class UserDagentConfig(BaseModel):
@@ -206,6 +208,10 @@ def _onlyoffice_storage_data(config: UserOnlyOfficeConfig) -> dict[str, Any]:
         data.pop("enabled", None)
     if config.lang == "zh":
         data.pop("lang", None)
+    if not config.project_file_edit_enabled:
+        data.pop("project_file_edit_enabled", None)
+    if not config.run_artifact_edit_enabled:
+        data.pop("run_artifact_edit_enabled", None)
     if not any(value is not None and value != "" for value in data.values()):
         return {}
     return data

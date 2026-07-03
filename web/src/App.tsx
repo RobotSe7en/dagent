@@ -344,6 +344,8 @@ const defaultOnlyOfficeSettings: OnlyOfficeSettings = {
   public_api_base: null,
   jwt_secret: null,
   lang: 'zh',
+  project_file_edit_enabled: false,
+  run_artifact_edit_enabled: false,
 };
 
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
@@ -1438,6 +1440,9 @@ export function App() {
       if (projectFilesRequestRef.current === requestId) setProjectFilesLoading(false);
     }
   }, [activeWorkspace, chatSub, selectedProject]);
+  const refreshProjectFilesView = useCallback(() => {
+    void refreshProjectFiles();
+  }, [refreshProjectFiles]);
 
   useEffect(() => {
     void refreshProjectFiles();
@@ -4074,7 +4079,7 @@ export function App() {
               onFileDraftChange={setProjectFileDraft}
               onFileSelect={(file) => void openProjectFile(file)}
               onNavigateUp={navigateProjectFilesUp}
-              onRefresh={() => void refreshProjectFiles()}
+              onRefresh={refreshProjectFilesView}
               onRenameFile={(file) => openProjectFileDialog('rename', file)}
               onUploadFiles={(files) => void uploadSelectedProjectFiles(files)}
               chatProps={chatWorkspaceProps}
@@ -4490,7 +4495,7 @@ function WorkspaceSidebar({
   ];
   const systemSubnav = [
     { key: 'models' as const, label: '模型管理', icon: <SlidersHorizontal size={16} />, count: models.length },
-    { key: 'onlyoffice' as const, label: '文档预览配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
+    { key: 'onlyoffice' as const, label: '文档配置', icon: <Settings size={16} />, count: onlyOfficeEnabled ? 'ON' : 'OFF' },
   ];
   const normalizedToolsQuery = normalizeSearchQuery(toolsQuery);
   const sidebarToolTree = buildToolManagementTree(capabilities, pythonTools, normalizedToolsQuery);
@@ -6422,6 +6427,7 @@ function ProjectFileManager({
         ) : null}
 
         <ProjectFilePreviewPane
+          onRefresh={onRefresh}
           preview={preview}
           previewError={previewError}
           previewLoading={previewLoading}
@@ -6509,11 +6515,13 @@ function ProjectFileTreeNode({
 }
 
 function ProjectFilePreviewPane({
+  onRefresh,
   preview,
   previewError,
   previewLoading,
   selectedFile,
 }: {
+  onRefresh: () => void;
   preview: ProjectFilePreview | null;
   previewError: string | null;
   previewLoading: boolean;
@@ -6561,6 +6569,7 @@ function ProjectFilePreviewPane({
         preview={preview}
         selectedArtifact={selectedArtifact}
         onCopy={copyProjectPreview}
+        onPreviewRefresh={onRefresh}
       />
     </section>
   );
@@ -7129,6 +7138,7 @@ function ArtifactPanel({
           preview={preview}
           selectedArtifact={selectedArtifact}
           onCopy={onCopy}
+          onPreviewRefresh={onRefresh}
         />
       </div>
     </aside>
@@ -7205,6 +7215,7 @@ function ArtifactTree({
 function ArtifactPreview({
   error,
   loading,
+  onPreviewRefresh,
   preview,
   selectedArtifact,
   showHeader = true,
@@ -7212,6 +7223,7 @@ function ArtifactPreview({
 }: {
   error: string | null;
   loading: boolean;
+  onPreviewRefresh?: () => void;
   preview: TextFilePreview | null;
   selectedArtifact: WorkbenchArtifactItem | null;
   showHeader?: boolean;
@@ -7284,6 +7296,7 @@ function ArtifactPreview({
         <ArtifactPreviewBody
           error={error}
           loading={loading}
+          onPreviewRefresh={onPreviewRefresh}
           preview={preview}
           selectedArtifact={selectedArtifact}
         />
@@ -7295,11 +7308,13 @@ function ArtifactPreview({
 function ArtifactPreviewBody({
   error,
   loading,
+  onPreviewRefresh,
   preview,
   selectedArtifact,
 }: {
   error: string | null;
   loading: boolean;
+  onPreviewRefresh?: () => void;
   preview: TextFilePreview | null;
   selectedArtifact: WorkbenchArtifactItem;
 }) {
@@ -7311,7 +7326,7 @@ function ArtifactPreviewBody({
     return <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
   }
   if (mode === 'browser') {
-    return <ArtifactBrowserPreview selectedArtifact={selectedArtifact} />;
+    return <ArtifactBrowserPreview selectedArtifact={selectedArtifact} onPreviewRefresh={onPreviewRefresh} />;
   }
   if (mode === 'unsupported') {
     return <div className="artifact-preview-empty">此文件暂不支持预览。</div>;
@@ -7346,7 +7361,13 @@ function ArtifactPreviewBody({
   return <div className="artifact-preview-empty">选择文件后加载预览。</div>;
 }
 
-function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: WorkbenchArtifactItem }) {
+function ArtifactBrowserPreview({
+  onPreviewRefresh,
+  selectedArtifact,
+}: {
+  onPreviewRefresh?: () => void;
+  selectedArtifact: WorkbenchArtifactItem;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -7390,6 +7411,7 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
             onlyOfficeConfigUrl,
             fileName: selectedArtifact.name,
             signal: controller.signal,
+            onSaved: onPreviewRefresh,
           });
           return;
         } catch (exc) {
@@ -7420,7 +7442,7 @@ function ArtifactBrowserPreview({ selectedArtifact }: { selectedArtifact: Workbe
       handle?.destroy();
       container.replaceChildren();
     };
-  }, [downloadUrl, onlyOfficeConfigUrl, selectedArtifact.name, selectedArtifact.previewKind]);
+  }, [downloadUrl, onPreviewRefresh, onlyOfficeConfigUrl, selectedArtifact.name, selectedArtifact.previewKind]);
 
   return (
     <div className="artifact-browser-preview-shell">
@@ -11439,7 +11461,7 @@ function OnlyOfficeSettingsWorkspace({
             <Settings size={15} />
           </div>
           <div>
-            <strong>文档预览配置</strong>
+            <strong>文档配置</strong>
             <span>{draft.enabled ? 'enabled' : 'disabled'}</span>
           </div>
           <div>
@@ -11467,6 +11489,22 @@ function OnlyOfficeSettingsWorkspace({
                 type="checkbox"
               />
               <span>启用 OnlyOffice 预览</span>
+            </label>
+            <label className="model-checkbox-row">
+              <input
+                checked={draft.project_file_edit_enabled}
+                onChange={(event) => patchDraft({ project_file_edit_enabled: event.target.checked })}
+                type="checkbox"
+              />
+              <span>允许编辑项目文件</span>
+            </label>
+            <label className="model-checkbox-row">
+              <input
+                checked={draft.run_artifact_edit_enabled}
+                onChange={(event) => patchDraft({ run_artifact_edit_enabled: event.target.checked })}
+                type="checkbox"
+              />
+              <span>允许编辑运行产物</span>
             </label>
             <label>
               Document Server URL
@@ -11520,6 +11558,8 @@ function normalizeOnlyOfficeDraft(settings: OnlyOfficeSettings): OnlyOfficeSetti
     public_api_base: cleanOnlyOfficeText(settings.public_api_base),
     jwt_secret: cleanOnlyOfficeText(settings.jwt_secret),
     lang: cleanOnlyOfficeText(settings.lang) ?? 'zh',
+    project_file_edit_enabled: Boolean(settings.project_file_edit_enabled),
+    run_artifact_edit_enabled: Boolean(settings.run_artifact_edit_enabled),
   };
 }
 
