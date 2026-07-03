@@ -184,8 +184,8 @@ test('chat workbench ports the design shell without mock run data', async () => 
 
   assert.match(appSource, /const workspaceItems[\s\S]*\{ key: 'chat', label: '智能工作台'/);
   assert.match(appSource, /\{ key: 'orchestration', label: '智能体编排'/);
-  assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
-  assert.match(appSource, /\{ key: 'agents', label: '智能体管理'/);
+  assert.match(appSource, /\{ key: 'tools', label: '能力管理', icon: <Blocks size=\{16\} \/> \}/);
+  assert.match(appSource, /\{ key: 'agents', label: '智能体管理', icon: <BotMessageSquare size=\{16\} \/> \}/);
   assert.match(appSource, /\{ key: 'system', label: '系统管理'/);
   assert.match(appSource, /streamTask\(prompt, target, reviewLevel/);
   assert.match(appSource, /buildWorkbenchArtifacts\(\{[\s\S]*runFiles: runArtifactFiles/);
@@ -1427,7 +1427,7 @@ test('capability management nests resources under the sidebar menu with list cre
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.ok(directorySource, 'CapabilityDirectory should exist');
 
-  assert.match(appSource, /\{ key: 'tools', label: '能力管理'/);
+  assert.match(appSource, /\{ key: 'tools', label: '能力管理', icon: <Blocks size=\{16\} \/> \}/);
   assert.doesNotMatch(appSource, /\{ key: 'tools', label: '工具管理'/);
   assert.match(appSource, /const \[capabilityCreationIntent, setCapabilityCreationIntent\] = useState<ToolDirectoryTab \| null>\(null\);/);
   assert.match(appSource, /creationIntent=\{capabilityCreationIntent\}/);
@@ -1672,7 +1672,7 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.ok(modelSource, 'ModelManagementWorkspace should exist');
   assert.ok(onlyOfficeSource, 'OnlyOfficeSettingsWorkspace should exist');
   assert.match(typesSource, /export type WorkspaceKey = 'chat' \| 'orchestration' \| 'tools' \| 'agents' \| 'system';/);
-  assert.match(workspaceItemsSource, /\{ key: 'agents', label: '智能体管理'[\s\S]*\{ key: 'system', label: '系统管理'/);
+  assert.match(workspaceItemsSource, /\{ key: 'agents', label: '智能体管理', icon: <BotMessageSquare size=\{16\} \/> \}[\s\S]*\{ key: 'system', label: '系统管理'/);
   assert.doesNotMatch(workspaceItemsSource, /\{ key: 'models', label: '模型管理'/);
   assert.match(appReturnSource, /activeWorkspace === 'system' \? \([\s\S]*<SystemManagementWorkspace/);
   assert.match(systemSource, /activeSub === 'models' \? \(/);
@@ -1771,6 +1771,8 @@ test('agent management uses real profiles and presets instead of the placeholder
   assert.match(sidebarSource, /const agentSubnav = \[/);
   assert.match(sidebarSource, /label: '角色设定'/);
   assert.match(sidebarSource, /label: '智能体预设'/);
+  assert.match(sidebarSource, /\{ key: 'profiles' as const, label: '角色设定', icon: <UserCog size=\{16\} \/>, count: profiles\.length \}/);
+  assert.match(sidebarSource, /\{ key: 'presets' as const, label: '智能体预设', icon: <Bot size=\{16\} \/>, count: agentPresetCount \}/);
   assert.match(sidebarSource, /onAgentsSubChange\(subitem\.key\)/);
   assert.match(sidebarSource, /const builtinProfiles = visibleProfiles\.filter\(\(profile\) => profile\.source === 'builtin'\);/);
   assert.match(sidebarSource, /const customProfiles = visibleProfiles\.filter\(\(profile\) => profile\.source !== 'builtin'\);/);
@@ -2083,6 +2085,8 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(sidebarSource, /const chatSubnav = \[/);
   assert.match(sidebarSource, /label: '会话'/);
   assert.match(sidebarSource, /label: '项目'/);
+  assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
+  assert.match(sidebarSource, /\{ key: 'projects' as const, label: '项目', icon: <FolderKanban size=\{16\} \/>\, count: projects\.length \}/);
   assert.match(sidebarSource, /activeWorkspace === 'chat' && chatSub === 'conversations'/);
   assert.match(sidebarSource, /activeWorkspace === 'chat' && chatSub === 'projects'/);
   assert.match(sidebarSource, /visibleConversations/);
@@ -2478,8 +2482,8 @@ test('conversation subnav count excludes project conversations', async () => {
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*conversation\.kind === 'chat' && !conversation\.project_id[\s\S]*\)\)\.length;/);
-  assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessageSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
-  assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessageSquare size=\{16\} \/>\, count: conversations\.length \}/);
+  assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
+  assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: conversations\.length \}/);
 });
 
 test('project search matches child conversation titles', async () => {

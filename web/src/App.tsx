@@ -23,7 +23,9 @@ import {
 } from '@xyflow/react';
 import {
   AlertTriangle,
+  Blocks,
   Bot,
+  BotMessageSquare,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -35,10 +37,12 @@ import {
   File,
   FileText,
   Folder,
+  FolderKanban,
   GitBranch,
   LayoutDashboard,
   Loader,
   Maximize2,
+  MessagesSquare,
   MessageSquare,
   Plus,
   Play,
@@ -352,8 +356,8 @@ const MAX_ONLYOFFICE_PREVIEW_CACHE_SIZE = 2;
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
   { key: 'chat', label: '智能工作台', icon: <LayoutDashboard size={16} /> },
   { key: 'orchestration', label: '智能体编排', icon: <GitBranch size={16} /> },
-  { key: 'tools', label: '能力管理', icon: <Wrench size={16} /> },
-  { key: 'agents', label: '智能体管理', icon: <Bot size={16} /> },
+  { key: 'tools', label: '能力管理', icon: <Blocks size={16} /> },
+  { key: 'agents', label: '智能体管理', icon: <BotMessageSquare size={16} /> },
   { key: 'system', label: '系统管理', icon: <Settings size={16} /> },
 ];
 
@@ -4501,8 +4505,8 @@ function WorkspaceSidebar({
     { key: 'static' as const, label: '静态编排', icon: <GitBranch size={16} />, count: savedDags.length },
   ];
   const chatSubnav = [
-    { key: 'conversations' as const, label: '会话', icon: <MessageSquare size={16} />, count: standaloneConversationCount },
-    { key: 'projects' as const, label: '项目', icon: <Folder size={16} />, count: projects.length },
+    { key: 'conversations' as const, label: '会话', icon: <MessagesSquare size={16} />, count: standaloneConversationCount },
+    { key: 'projects' as const, label: '项目', icon: <FolderKanban size={16} />, count: projects.length },
   ];
   const toolSubnav = [
     { key: 'tools' as const, label: '工具', icon: <Wrench size={16} />, count: capabilityCount },
