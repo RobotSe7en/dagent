@@ -1204,6 +1204,63 @@ def test_api_deletes_conversation_without_removing_project_workspace(persistence
     assert (project_workspace / "notes.txt").read_text(encoding="utf-8") == "keep me"
 
 
+def test_api_deletes_completed_answerless_conversation_with_stale_lock(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Answerless tool chat"},
+    ).json()["conversation"]
+    conversation_workspace = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    (conversation_workspace / "scratch.txt").write_text("remove me", encoding="utf-8")
+    run_state = RunState(
+        run_id="tool_run_answerless_delete",
+        kind="tool",
+        status="completed",
+        workspace_path=str(conversation_workspace),
+        internal_messages=[
+            {"role": "user", "content": "list files"},
+            {"role": "assistant", "content": ""},
+        ],
+        input_message_count=1,
+        user_request="list files",
+        trace=RunTrace(
+            run_id="tool_run_answerless_delete",
+            root=RunTraceNode.run(run_id="tool_run_answerless_delete", status="completed"),
+            status="completed",
+        ),
+    )
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.create_run_stream(
+        stream_id="stream_answerless_stale",
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="completed",
+    )
+    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="")
+    stale_lock = store.acquire_conversation_lock(conversation["id"], owner="stale_stream")
+
+    response = persistence_client.delete(f"/conversations/{conversation['id']}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert store.get_conversation(conversation["id"]) is None
+    assert store.get_run(run_state.run_id) is None
+    assert store.list_run_events(run_state.run_id) == []
+    assert not conversation_workspace.exists()
+    stale_lock.release()
+
+
 def test_api_deletes_standalone_conversation_workspace(persistence_client) -> None:
     conversation = persistence_client.post(
         "/conversations",

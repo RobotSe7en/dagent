@@ -1233,50 +1233,37 @@ async def delete_project_conversation(project_id: str, conversation_id: str) -> 
 
 async def _delete_conversation(conversation: Conversation) -> None:
     store = state.get_store()
-    try:
-        lock = await run_in_threadpool(
-            store.acquire_conversation_lock,
-            conversation.id,
-            owner=_new_api_id("delete"),
-        )
-    except ConversationBusyError as exc:
-        raise HTTPException(status_code=409, detail="Conversation is already active.") from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Conversation not found.") from exc
-    try:
-        runs = await run_in_threadpool(
-            store.list_runs,
-            conversation_id=conversation.id,
-        )
-        run_states: list[RunState] = []
-        for run in runs:
-            run_state = await run_in_threadpool(store.get_run_state, run.id)
-            if run_state is not None:
-                run_states.append(run_state)
-        conversation_workspace = await run_in_threadpool(
-            state.get_workspaces().local_path_for,
-            conversation.workspace_uri,
-        )
-        delete_conversation_workspace = True
-        if conversation.project_id is not None:
-            project = await run_in_threadpool(store.get_project, conversation.project_id)
-            if project is not None:
-                project_workspace = await run_in_threadpool(
-                    state.get_workspaces().local_path_for,
-                    project.workspace_uri,
-                )
-                delete_conversation_workspace = conversation_workspace.resolve() != project_workspace.resolve()
-        await run_in_threadpool(
-            _delete_conversation_files,
-            run_states,
-            conversation_workspace,
-            delete_conversation_workspace=delete_conversation_workspace,
-        )
-        for run in runs:
-            await run_in_threadpool(store.delete_run, run.id)
-        deleted = await run_in_threadpool(store.delete_conversation, conversation.id)
-    finally:
-        await run_in_threadpool(lock.release)
+    runs = await run_in_threadpool(
+        store.list_runs,
+        conversation_id=conversation.id,
+    )
+    run_states: list[RunState] = []
+    for run in runs:
+        run_state = await run_in_threadpool(store.get_run_state, run.id)
+        if run_state is not None:
+            run_states.append(run_state)
+    conversation_workspace = await run_in_threadpool(
+        state.get_workspaces().local_path_for,
+        conversation.workspace_uri,
+    )
+    delete_conversation_workspace = True
+    if conversation.project_id is not None:
+        project = await run_in_threadpool(store.get_project, conversation.project_id)
+        if project is not None:
+            project_workspace = await run_in_threadpool(
+                state.get_workspaces().local_path_for,
+                project.workspace_uri,
+            )
+            delete_conversation_workspace = conversation_workspace.resolve() != project_workspace.resolve()
+    await run_in_threadpool(
+        _delete_conversation_files,
+        run_states,
+        conversation_workspace,
+        delete_conversation_workspace=delete_conversation_workspace,
+    )
+    for run in runs:
+        await run_in_threadpool(store.delete_run, run.id)
+    deleted = await run_in_threadpool(store.delete_conversation, conversation.id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 

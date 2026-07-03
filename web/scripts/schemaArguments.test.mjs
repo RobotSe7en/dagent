@@ -128,19 +128,23 @@ const {
 } = await importTypeScript('../src/artifactPreview.ts');
 
 function runEvent(eventId, type, data) {
+  return runEventInStream(eventId, 'stream_1', eventId, type, data);
+}
+
+function runEventInStream(eventId, streamId, streamSeq, type, data) {
   const payloadData = type.startsWith('response.')
     ? { response_id: 'response_1', model_step: null, ...data }
     : data;
   return {
     run_id: 'run_1',
     event_id: eventId,
-    stream_id: 'stream_1',
-    stream_seq: eventId,
+    stream_id: streamId,
+    stream_seq: streamSeq,
     event_type: type,
     payload: {
       type,
       data: payloadData,
-      sequence: eventId,
+      sequence: streamSeq,
       run_id: 'run_1',
     },
     created_at: eventId,
@@ -1510,7 +1514,7 @@ test('workspace sidebar shares search controls across lower-left resource lists'
   assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
 
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => conversation\.kind === 'chat' && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleHistory = history\.filter/);
   assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
@@ -2144,7 +2148,7 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(apiSource, /projectId\s*\? `\$\{API_BASE\}\/projects\/\$\{encodeURIComponent\(projectId\)\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`[\s\S]*: `\$\{API_BASE\}\/reviews\/\$\{encodeURIComponent\(reviewId\)\}\/resume`/);
   assert.match(apiSource, /persistedResume[\s\S]*approved/);
   assert.match(apiSource, /persistedResume[\s\S]*state/);
-  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt\);/);
+  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);/);
   assert.match(runStreamSource, /const conversationContext = \{ projectId: conversation\.project_id, conversationId: conversation\.id \};/);
   assert.match(runStreamSource, /const streamOptions = \{ signal, uploads: uploadsForRequest, conversation: conversationContext \};/);
   assert.match(runStreamSource, /\}, capabilityScope, null, undefined, streamOptions\);/);
@@ -2166,7 +2170,7 @@ test('persisted conversation selection hydrates the last run snapshot', async ()
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult, events: ApiRunEvent\[\] = \[\]\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace, events\)\);/);
   assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result, events\);/);
   assert.match(appSource, /const partialMessages = chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
-  assert.match(appSource, /if \(!selectedChatConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatConversation\);/);
+  assert.match(appSource, /if \(!selectedChatSurfaceConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
 
 test('persisted conversation hydration restores user and assistant chat turns', async () => {
@@ -2175,7 +2179,10 @@ test('persisted conversation hydration restores user and assistant chat turns', 
 
   assert.ok(hydrateSource, 'messagesFromPersistedRunResult should exist');
   assert.match(persistedChatSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
-  assert.match(hydrateSource, /state\?\.internal_messages \?\? \[\]/);
+  assert.match(persistedChatSource, /function inputMessagesFromRunState\(state: ApiRunState \| null\): Record<string, unknown>\[\]/);
+  assert.match(persistedChatSource, /state\.internal_messages \?\? \[\]/);
+  assert.match(persistedChatSource, /state\.input_message_count/);
+  assert.match(hydrateSource, /inputMessagesFromRunState\(state\)/);
   assert.match(hydrateSource, /role !== 'user' && role !== 'assistant'/);
   assert.match(hydrateSource, /appendPersistedChatMessage\(messages, role, content\);/);
   assert.match(persistedChatSource, /role === 'assistant' && last\?\.role === 'assistant'/);
@@ -2329,6 +2336,214 @@ test('persisted conversation hydration appends run finished answer after replaye
   assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
 });
 
+test('persisted dynamic DAG hydration hides internal observation prompts', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const state = {
+    run_id: 'task_73fb137e847e45c7b71ee950b4e94107',
+    kind: 'dynamic_dag',
+    status: 'completed',
+    input_message_count: 1,
+    user_request: '查找数睿通智库系统白皮书',
+    internal_messages: [
+      {
+        role: 'user',
+        content: 'Task id: task_73fb137e847e45c7b71ee950b4e94107\n查找数睿通智库系统白皮书',
+      },
+      { role: 'assistant', content: '{"nodes":[{"id":"find_white_paper"}]}' },
+      {
+        role: 'user',
+        content: [
+          'Task id: task_73fb137e847e45c7b71ee950b4e94107',
+          'DAG observation: layer_completed',
+          'Task id: task_73fb137e847e45c7b71ee950b4e94107',
+          'Completed node outputs:',
+          '- find_white_paper: /workspace/数睿通智库系统白皮书.pdf',
+          'Node executions:',
+          '- node: find_white_paper tool: tool.list_files status: completed',
+        ].join('\n'),
+      },
+      { role: 'assistant', content: 'NO_CHANGE' },
+    ],
+  };
+  const events = [
+    runEvent(1, 'run.finished', {
+      result: {
+        output_text: '已找到白皮书：/workspace/数睿通智库系统白皮书.pdf',
+        state,
+      },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+
+  assert.deepEqual(
+    messages.map((message) => [message.role, message.content]),
+    [
+      ['user', '查找数睿通智库系统白皮书'],
+      ['assistant', '已找到白皮书：/workspace/数睿通智库系统白皮书.pdf'],
+    ],
+  );
+  assert.equal(messages.some((message) => message.content.includes('DAG observation')), false);
+  assert.equal(messages.some((message) => message.content.includes('NO_CHANGE')), false);
+});
+
+test('persisted dynamic DAG hydration rebuilds visible turns from stream events', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const firstState = {
+    run_id: 'task_dynamic',
+    kind: 'dynamic_dag',
+    status: 'completed',
+    input_message_count: 1,
+    user_request: 'first request',
+    internal_messages: [
+      { role: 'user', content: 'Task id: task_dynamic\nfirst request' },
+      { role: 'assistant', content: '{"nodes":[{"id":"first"}]}' },
+    ],
+  };
+  const secondState = {
+    run_id: 'task_dynamic',
+    kind: 'dynamic_dag',
+    status: 'completed',
+    input_message_count: 5,
+    user_request: 'second request',
+    internal_messages: [
+      { role: 'user', content: 'Task id: task_dynamic\nfirst request' },
+      { role: 'assistant', content: '{"nodes":[{"id":"first"}]}' },
+      { role: 'user', content: 'Task id: task_dynamic\nDAG observation: layer_completed\nNode executions:\n- first' },
+      { role: 'assistant', content: 'NO_CHANGE' },
+      { role: 'user', content: 'second request' },
+      { role: 'assistant', content: '{"nodes":[{"id":"second"}]}' },
+    ],
+  };
+  const events = [
+    runEventInStream(1, 'stream_first', 1, 'run.finished', {
+      result: { output_text: 'first answer', state: firstState },
+    }),
+    runEventInStream(2, 'stream_second', 1, 'response.content.delta', { delta: 'second progress. ' }),
+    runEventInStream(3, 'stream_second', 2, 'run.finished', {
+      result: { output_text: 'second answer', state: secondState },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+
+  assert.deepEqual(
+    messages.map((message) => [message.role, message.content]),
+    [
+      ['user', 'first request'],
+      ['assistant', 'first answer'],
+      ['user', 'second request'],
+      ['assistant', 'second progress. second answer'],
+    ],
+  );
+  assert.equal(messages.some((message) => message.content.includes('DAG observation')), false);
+  assert.equal(messages.some((message) => message.content.includes('NO_CHANGE')), false);
+  assert.equal(messages.some((message) => message.content.includes('{"nodes"')), false);
+});
+
+test('persisted dynamic DAG hydration merges approved review resume into the original assistant turn', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const reviewDag = {
+    dag_id: 'dag_review_restore',
+    task_id: 'task_dynamic_review',
+    version: 1,
+    status: 'review_required',
+    nodes: [],
+    edges: [],
+  };
+  const completedDag = {
+    ...reviewDag,
+    version: 2,
+    status: 'completed',
+  };
+  const reviewState = {
+    run_id: 'task_dynamic_review',
+    kind: 'dynamic_dag',
+    status: 'awaiting_review',
+    input_message_count: 1,
+    user_request: 'run the reviewed dag',
+    dag: reviewDag,
+    pending_review: {
+      review_id: 'review_dynamic_1',
+      kind: 'initial_dag',
+      message: 'Review proposed DAG before execution.',
+      proposed_dag: reviewDag,
+    },
+    internal_messages: [
+      { role: 'user', content: 'Task id: task_dynamic_review\nrun the reviewed dag' },
+      { role: 'assistant', content: '{"nodes":[]}' },
+    ],
+  };
+  const completedState = {
+    ...reviewState,
+    status: 'completed',
+    dag: completedDag,
+    pending_review: null,
+  };
+  const events = [
+    runEventInStream(1, 'stream_review', 1, 'dag.updated', { dag: reviewDag }),
+    runEventInStream(2, 'stream_review', 2, 'review.required', {
+      review_id: 'review_dynamic_1',
+      kind: 'initial_dag',
+      message: 'Review proposed DAG before execution.',
+      proposed_dag: reviewDag,
+    }),
+    runEventInStream(3, 'stream_review', 3, 'run.finished', {
+      result: { output_text: '', state: reviewState },
+    }),
+    runEventInStream(4, 'stream_resume', 1, 'dag.updated', { dag: { ...reviewDag, status: 'approved' } }),
+    runEventInStream(5, 'stream_resume', 2, 'response.content.delta', { delta: 'final answer' }),
+    runEventInStream(6, 'stream_resume', 3, 'dag.updated', { dag: completedDag }),
+    runEventInStream(7, 'stream_resume', 4, 'run.finished', {
+      result: { output_text: 'final answer', state: completedState },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+
+  assert.deepEqual(messages.map((message) => message.role), ['user', 'assistant']);
+  assert.equal(messages[0].content, 'run the reviewed dag');
+  assert.equal(messages[1].content, 'final answer');
+  assert.equal(messages[1].dagSnapshot.status, 'completed');
+  const dagItems = messages[1].timeline.filter((item) => item.type === 'dag');
+  assert.equal(dagItems.length, 1);
+  assert.equal(dagItems[0].dag.status, 'completed');
+  assert.equal(messages[1].content.includes('Review proposed DAG before execution.'), false);
+});
+
 test('persisted conversation hydration settles rejected capability review cards', async () => {
   const {
     chatMessagesFromPersistedRunEvents,
@@ -2468,12 +2683,36 @@ test('chat send creates a standalone conversation when none is selected', async 
   const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
 
   assert.ok(runStreamSource, 'runStream function should exist');
-  assert.match(appSource, /const ensureChatConversation = async \(prompt: string\): Promise<ApiConversation \| null> => \{/);
+  assert.match(appSource, /const ensureChatConversation = async \(prompt: string, runTarget: ChatTarget\): Promise<ApiConversation \| null> => \{/);
   assert.match(appSource, /await createConversation\(\{[\s\S]*title: conversationTitleFromPrompt\(prompt\)/);
   assert.match(appSource, /setConversations\(\(items\) => \[conversation, \.\.\.items\]\);[\s\S]*setSelectedConversationId\(conversation\.id\);/);
-  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt\);[\s\S]*if \(!conversation\) return;/);
+  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);[\s\S]*if \(!conversation\) return;/);
   assert.match(runStreamSource, /const conversationContext = \{ projectId: conversation\.project_id, conversationId: conversation\.id \};/);
   assert.doesNotMatch(runStreamSource, /请先新建会话/);
+});
+
+test('chat DAG target creates a dynamic DAG conversation context before streaming', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const ensureConversationSource = appSource.match(/const ensureChatConversation = async[\s\S]*?\n  const runStream/)?.[0] ?? '';
+  const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
+
+  assert.ok(ensureConversationSource, 'ensureChatConversation function should exist');
+  assert.match(ensureConversationSource, /if \(runTarget === 'dag'\) \{/);
+  assert.match(ensureConversationSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
+  assert.match(ensureConversationSource, /targetProjectId: chatSub === 'projects' \? selectedProjectId : null/);
+  assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);/);
+});
+
+test('chat history treats dynamic DAG conversations as restorable chat surface sessions', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(appSource, /function isChatSurfaceConversation\(conversation: ApiConversation\): boolean \{[\s\S]*conversation\.kind === 'chat' \|\| conversation\.kind === 'dynamic_dag'/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation\)\) return;/);
+  assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation\)/);
 });
 
 test('conversation subnav count excludes project conversations', async () => {
@@ -2481,7 +2720,7 @@ test('conversation subnav count excludes project conversations', async () => {
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*conversation\.kind === 'chat' && !conversation\.project_id[\s\S]*\)\)\.length;/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id[\s\S]*\)\)\.length;/);
   assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
   assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: conversations\.length \}/);
 });
@@ -2526,7 +2765,7 @@ test('project conversation deletion uses the project-scoped route', async () => 
   assert.equal(calls[0].init.method, 'DELETE');
   const deleteSource = appSource.match(/const confirmConversationDelete = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
   const deleteHelperSource = appSource.match(/async function deleteConversationOnce\(conversation: ApiConversation\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? '';
-  assert.match(deleteSource, /await deleteConversationWithActiveRetry\(conversation\);/);
+  assert.match(deleteSource, /await deleteConversationWithActiveRetry\(conversation,\s*\{ attempts: 8 \}\);/);
   assert.match(deleteHelperSource, /conversation\.project_id[\s\S]*deleteProjectConversation\(conversation\.project_id, conversation\.id\)[\s\S]*deleteConversation\(conversation\.id\)/);
 });
 
@@ -2546,15 +2785,29 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(appSource, /const requestProjectDelete = \(projectId\?: string\) => \{[\s\S]*const targetProjectId = projectId \?\? selectedProject\?\.id;[\s\S]*if \(!targetProjectId\) return;[\s\S]*setProjectDeleteTargetId\(targetProjectId\);[\s\S]*setProjectDeleteOpen\(true\);/);
   assert.match(appSource, /const \[conversationDeleteTargetId, setConversationDeleteTargetId\] = useState\(''\);/);
   assert.match(appSource, /function isConversationActiveError\(value: unknown\): boolean/);
-  assert.match(appSource, /async function deleteConversationWithActiveRetry\(conversation: ApiConversation\): Promise<void>/);
-  assert.match(appSource, /if \(!isConversationActiveError\(exc\)\) throw exc;[\s\S]*await delay\(350\);[\s\S]*await deleteConversationOnce\(conversation\);/);
+  assert.match(appSource, /async function deleteConversationWithActiveRetry\(\s*conversation: ApiConversation,\s*options: \{ attempts\?: number \} = \{\},\s*\): Promise<void>/);
+  assert.match(appSource, /const attempts = Math\.max\(1, options\.attempts \?\? 2\);[\s\S]*if \(!isConversationActiveError\(exc\) \|\| attempt === attempts\) throw exc;[\s\S]*await delay\(350\);/);
   assert.match(appSource, /function ProjectCreateDialog/);
   assert.match(appSource, /function ConversationDeleteDialog/);
   assert.match(appSource, /conversation\.project_id[\s\S]*项目会话只会删除会话记录和运行历史，项目目录会保留。[\s\S]*会话记录和该会话工作目录会同步删除。/);
   assert.match(appSource, /function ProjectEditDialog/);
   assert.match(appSource, /function ProjectDeleteDialog/);
   assert.match(appSource, /projectDeleteOpen && projectDeleteTarget/);
-  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => conversation\.kind === 'chat' && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+});
+
+test('conversation deletion is not blocked by local streaming state', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const deleteRequestSource = appSource.match(/const deleteConversationFromSidebar = async \(conversationId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  const deleteConfirmSource = appSource.match(/const confirmConversationDelete = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+
+  assert.ok(deleteRequestSource, 'deleteConversationFromSidebar should exist');
+  assert.ok(deleteConfirmSource, 'confirmConversationDelete should exist');
+  assert.doesNotMatch(deleteRequestSource, /if \(streaming\) return;/);
+  assert.doesNotMatch(deleteConfirmSource, /if \(streaming \|\| !conversationDeleteTarget\) return;/);
+  assert.match(deleteConfirmSource, /if \(!conversationDeleteTarget\) return;/);
+  assert.match(deleteConfirmSource, /if \(streaming && conversation\.id === selectedConversationId\) \{[\s\S]*stopStream\(\);[\s\S]*\}/);
+  assert.match(appSource, /await deleteConversationWithActiveRetry\(conversation,\s*\{ attempts: 8 \}\);/);
 });
 
 test('project sidebar is an expandable project and conversation tree', async () => {

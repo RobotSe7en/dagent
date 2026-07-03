@@ -60,16 +60,19 @@ export function messagesFromPersistedRunResult(
   events: ApiRunEvent[] = [],
 ): ChatMessage[] {
   const state = result.state ?? null;
+  if (state?.kind === 'dynamic_dag') {
+    return dynamicDagMessagesFromPersistedRunResult(result, traceSnapshot, events);
+  }
   const dagSnapshot = state?.dag ?? undefined;
   const reviewMessage = state?.pending_review?.message?.trim() ?? '';
   const output = result.output_text.trim();
   const fallbackContent = output || reviewMessage;
   const messages: ChatMessage[] = [];
 
-  for (const message of state?.internal_messages ?? []) {
+  for (const message of inputMessagesFromRunState(state)) {
     const role = message.role;
     if (role !== 'user' && role !== 'assistant') continue;
-    const content = visibleChatContentFromInternalMessage(message).trim();
+    const content = visibleInputChatContentFromInternalMessage(message).trim();
     if (!content) continue;
     appendPersistedChatMessage(messages, role, content);
   }
@@ -112,6 +115,127 @@ export function messagesFromPersistedRunResult(
     });
   }
   return messages;
+}
+
+function dynamicDagMessagesFromPersistedRunResult(
+  result: ApiRunResult,
+  traceSnapshot: TraceLogEvent[],
+  events: ApiRunEvent[],
+): ChatMessage[] {
+  const groups = persistedRunEventGroups(events);
+  if (!groups.length) {
+    return dynamicDagMessagesFromResultSegment(result, traceSnapshot, events, new Set());
+  }
+
+  const messages: ChatMessage[] = [];
+  const seenUserRequests = new Set<string>();
+  const finalGroup = groups[groups.length - 1];
+  for (const group of groups) {
+    const segmentResult = finishedRunResultFromEvents(group) ?? (group === finalGroup ? result : null);
+    if (!segmentResult) {
+      appendDynamicDagSegmentMessages(messages, partialMessagesFromPersistedRunEvents(group));
+      continue;
+    }
+    const segmentTrace = segmentResult === result || segmentResult.state === result.state
+      ? traceSnapshot
+      : segmentResult.state?.trace
+        ? mapRunTrace(segmentResult.state.trace)
+        : [];
+    appendDynamicDagSegmentMessages(
+      messages,
+      dynamicDagMessagesFromResultSegment(segmentResult, segmentTrace, group, seenUserRequests),
+    );
+  }
+  return messages;
+}
+
+function dynamicDagMessagesFromResultSegment(
+  result: ApiRunResult,
+  traceSnapshot: TraceLogEvent[],
+  events: ApiRunEvent[],
+  seenUserRequests: Set<string>,
+): ChatMessage[] {
+  const state = result.state ?? null;
+  const dagSnapshot = state?.dag ?? undefined;
+  const reviewMessage = state?.pending_review?.message?.trim() ?? '';
+  const output = result.output_text.trim();
+  const fallbackContent = output || (state?.status === 'awaiting_review' && dagSnapshot ? '' : reviewMessage);
+  const messages: ChatMessage[] = [];
+  const userRequest = dynamicDagUserRequest(state);
+  if (userRequest && !seenUserRequests.has(userRequest)) {
+    seenUserRequests.add(userRequest);
+    messages.push({
+      role: 'user',
+      kind: 'text',
+      content: userRequest,
+      timeline: [{ type: 'text', content: userRequest }],
+    });
+  }
+
+  let timeline = timelineFromPersistedRunEvents(events, fallbackContent, output);
+  if (dagSnapshot) timeline = upsertDagTimeline(timeline, dagSnapshot);
+  const content = textContentFromTimeline(timeline) || fallbackContent;
+  if (content || timeline.length || dagSnapshot) {
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content,
+      timeline,
+      dagSnapshot,
+      traceSnapshot,
+    });
+  }
+  return messages;
+}
+
+function appendDynamicDagSegmentMessages(messages: ChatMessage[], segmentMessages: ChatMessage[]): void {
+  for (const message of segmentMessages) {
+    const last = messages[messages.length - 1];
+    if (message.role === 'assistant' && last?.role === 'assistant') {
+      messages[messages.length - 1] = mergePersistedAssistantMessage(last, message);
+      continue;
+    }
+    messages.push(message);
+  }
+}
+
+function mergePersistedAssistantMessage(base: ChatMessage, next: ChatMessage): ChatMessage {
+  const timeline = mergePersistedAssistantTimeline(base.timeline ?? [], next.timeline ?? []);
+  return {
+    ...base,
+    content: textContentFromTimeline(timeline) || next.content || base.content,
+    timeline,
+    dagSnapshot: next.dagSnapshot ?? base.dagSnapshot,
+    traceSnapshot: next.traceSnapshot?.length ? next.traceSnapshot : base.traceSnapshot,
+  };
+}
+
+function mergePersistedAssistantTimeline(
+  base: MessageTimelineItem[],
+  next: MessageTimelineItem[],
+): MessageTimelineItem[] {
+  let timeline = [...base];
+  for (const item of next) {
+    if (item.type === 'dag') {
+      timeline = upsertDagTimeline(timeline, item.dag);
+    } else if (item.type === 'text') {
+      timeline = appendTextTimeline(closeReasoningTimeline(timeline), item.content);
+    } else {
+      timeline = [...timeline, item];
+    }
+  }
+  return timeline;
+}
+
+function persistedRunEventGroups(events: ApiRunEvent[]): ApiRunEvent[][] {
+  const groups = new Map<string, ApiRunEvent[]>();
+  for (const event of [...events].sort((left, right) => left.event_id - right.event_id)) {
+    const streamId = event.stream_id || `event_${event.event_id}`;
+    const group = groups.get(streamId) ?? [];
+    group.push(event);
+    groups.set(streamId, group);
+  }
+  return [...groups.values()];
 }
 
 function appendPersistedChatMessage(
@@ -274,6 +398,50 @@ function textContentFromTimeline(timeline: MessageTimelineItem[]): string {
   return timeline
     .flatMap((item) => item.type === 'text' ? [item.content] : [])
     .join('');
+}
+
+function dynamicDagUserRequest(state: ApiRunState | null): string {
+  if (typeof state?.user_request === 'string' && state.user_request.trim()) {
+    return state.user_request.trim();
+  }
+  for (const message of inputMessagesFromRunState(state)) {
+    if (message.role !== 'user') continue;
+    const content = visibleInputChatContentFromInternalMessage(message).trim();
+    if (content) return content;
+  }
+  return '';
+}
+
+function inputMessagesFromRunState(state: ApiRunState | null): Record<string, unknown>[] {
+  if (!state) return [];
+  const internalMessages = state.internal_messages ?? [];
+  const count = normalizedInputMessageCount(state, internalMessages.length);
+  if (count !== null) return internalMessages.slice(0, count);
+  if (state.kind !== 'tool' && typeof state.user_request === 'string' && state.user_request.trim()) {
+    return [{ role: 'user', content: state.user_request }];
+  }
+  return internalMessages;
+}
+
+function normalizedInputMessageCount(state: ApiRunState, messageCount: number): number | null {
+  const count = state.input_message_count;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return null;
+  return Math.min(count, messageCount);
+}
+
+function visibleInputChatContentFromInternalMessage(message: Record<string, unknown>): string {
+  const content = visibleChatContentFromInternalMessage(message);
+  return message.role === 'user' ? visibleUserInputContent(content) : content;
+}
+
+function visibleUserInputContent(content: string): string {
+  const withoutTaskId = stripTaskIdHeader(content);
+  if (withoutTaskId.trimStart().startsWith('DAG observation:')) return '';
+  return withoutTaskId;
+}
+
+function stripTaskIdHeader(content: string): string {
+  return content.replace(/^Task id:\s*\S+\s*\n+/, '');
 }
 
 function visibleChatContentFromInternalMessage(message: Record<string, unknown>): string {

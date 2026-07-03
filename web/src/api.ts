@@ -819,6 +819,8 @@ export interface ApiRunState {
   kind: 'tool' | 'dynamic_dag' | 'static_dag';
   status: string;
   internal_messages: Array<Record<string, unknown>>;
+  input_message_count?: number;
+  user_request?: string;
   dynamic_adjust?: boolean;
   dag?: Dag | null;
   trace?: RunTrace | null;

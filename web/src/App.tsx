@@ -379,6 +379,10 @@ function matchesSearchQuery(values: SearchableValue[], query: string): boolean {
   return values.some((value) => String(value ?? '').toLowerCase().includes(query));
 }
 
+function isChatSurfaceConversation(conversation: ApiConversation): boolean {
+  return conversation.kind === 'chat' || conversation.kind === 'dynamic_dag';
+}
+
 function joinProjectPath(base: string, name: string): string {
   return [base, name].map((part) => part.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/');
 }
@@ -1068,13 +1072,19 @@ async function deleteConversationOnce(conversation: ApiConversation): Promise<vo
   }
 }
 
-async function deleteConversationWithActiveRetry(conversation: ApiConversation): Promise<void> {
-  try {
-    await deleteConversationOnce(conversation);
-  } catch (exc) {
-    if (!isConversationActiveError(exc)) throw exc;
-    await delay(350);
-    await deleteConversationOnce(conversation);
+async function deleteConversationWithActiveRetry(
+  conversation: ApiConversation,
+  options: { attempts?: number } = {},
+): Promise<void> {
+  const attempts = Math.max(1, options.attempts ?? 2);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await deleteConversationOnce(conversation);
+      return;
+    } catch (exc) {
+      if (!isConversationActiveError(exc) || attempt === attempts) throw exc;
+      await delay(350);
+    }
   }
 }
 
@@ -1326,6 +1336,11 @@ export function App() {
     .map((conversation) => `${conversation.kind}:${conversation.project_id ?? ''}:${conversation.id}`)
     .join('|'), [conversations]);
   const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
+  const selectedChatSurfaceConversation = (
+    selectedConversation && isChatSurfaceConversation(selectedConversation)
+      ? selectedConversation
+      : null
+  );
   const conversationDeleteTarget = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
     [conversations, conversationDeleteTargetId],
@@ -1335,11 +1350,11 @@ export function App() {
     [projectFiles, selectedProjectFilePath],
   );
   const selectedConversationProject = useMemo(
-    () => projects.find((project) => project.id === selectedChatConversation?.project_id) ?? null,
-    [projects, selectedChatConversation?.project_id],
+    () => projects.find((project) => project.id === selectedChatSurfaceConversation?.project_id) ?? null,
+    [projects, selectedChatSurfaceConversation?.project_id],
   );
-  const activeConversationContext = selectedChatConversation
-    ? { projectId: selectedChatConversation.project_id, conversationId: selectedChatConversation.id }
+  const activeConversationContext = selectedChatSurfaceConversation
+    ? { projectId: selectedChatSurfaceConversation.project_id, conversationId: selectedChatSurfaceConversation.id }
     : undefined;
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
@@ -1420,7 +1435,7 @@ export function App() {
       setSelectedConversationId((current) => (
         current && conversationItems.some((conversation) => (
           conversation.id === current
-          && conversation.kind === 'chat'
+          && isChatSurfaceConversation(conversation)
           && !conversation.project_id
         ))
           ? current
@@ -2344,14 +2359,14 @@ export function App() {
   }, [applyPersistedRunResult]);
 
   useEffect(() => {
-    if (!selectedChatConversation?.last_run_id || streaming || messages.length || runState) return;
-    void hydrateConversationSnapshot(selectedChatConversation);
+    if (!selectedChatSurfaceConversation?.last_run_id || streaming || messages.length || runState) return;
+    void hydrateConversationSnapshot(selectedChatSurfaceConversation);
   }, [
     hydrateConversationSnapshot,
     messages.length,
     runState,
-    selectedChatConversation,
-    selectedChatConversation?.last_run_id,
+    selectedChatSurfaceConversation,
+    selectedChatSurfaceConversation?.last_run_id,
     streaming,
   ]);
 
@@ -3308,7 +3323,24 @@ export function App() {
     }
   };
 
-  const ensureChatConversation = async (prompt: string): Promise<ApiConversation | null> => {
+  const ensureChatConversation = async (prompt: string, runTarget: ChatTarget): Promise<ApiConversation | null> => {
+    if (runTarget === 'dag') {
+      if (chatSub === 'projects' && !selectedProjectId) {
+        setProjectError('请先新建或选择项目。');
+        return null;
+      }
+      const context = await ensureOrchestrationContext(
+        'dynamic_dag',
+        conversationTitleFromPrompt(prompt),
+        {
+          targetProjectId: chatSub === 'projects' ? selectedProjectId : null,
+          draftDag: dag.nodes.length ? dag as unknown as Record<string, unknown> : null,
+        },
+      );
+      if (!context) return null;
+      setProjectError(null);
+      return context.conversation;
+    }
     if (selectedChatConversation) return selectedChatConversation;
     try {
       const conversation = chatSub === 'projects'
@@ -3338,7 +3370,7 @@ export function App() {
   const runStream = async () => {
     if (!draft.trim() || streaming) return;
     const prompt = draft.trim();
-    const conversation = await ensureChatConversation(prompt);
+    const conversation = await ensureChatConversation(prompt, target);
     if (!conversation) return;
     const conversationContext = { projectId: conversation.project_id, conversationId: conversation.id };
     const uploadsForRequest = pendingChatUploads;
@@ -3628,7 +3660,7 @@ export function App() {
   const createProjectConversationFromProject = async (projectId: string) => {
     if (streaming) return null;
     const projectConversationCount = conversations.filter((conversation) => (
-      conversation.kind === 'chat' && conversation.project_id === projectId
+      isChatSurfaceConversation(conversation) && conversation.project_id === projectId
     )).length;
     try {
       const conversation = await createProjectConversation(projectId, {
@@ -3731,22 +3763,24 @@ export function App() {
   };
 
   const deleteConversationFromSidebar = async (conversationId: string) => {
-    if (streaming) return;
     setConversationDeleteTargetId(conversationId);
   };
 
   const confirmConversationDelete = async () => {
-    if (streaming || !conversationDeleteTarget) return;
+    if (!conversationDeleteTarget) return;
     const conversation = conversationDeleteTarget;
+    if (streaming && conversation.id === selectedConversationId) {
+      stopStream();
+    }
     const remaining = conversations.filter((item) => item.id !== conversation.id);
     const deletingSelected = conversation.id === selectedConversationId;
     try {
-      await deleteConversationWithActiveRetry(conversation);
+      await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
       setConversations(remaining);
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'
-          ? remaining.find((item) => item.kind === 'chat' && item.project_id === conversation.project_id) ?? null
-          : remaining.find((item) => item.kind === 'chat' && !item.project_id) ?? null;
+          ? remaining.find((item) => isChatSurfaceConversation(item) && item.project_id === conversation.project_id) ?? null
+          : remaining.find((item) => isChatSurfaceConversation(item) && !item.project_id) ?? null;
         setSelectedConversationId(nextConversation?.id ?? '');
         if (nextConversation?.project_id) setSelectedProjectId(nextConversation.project_id);
         clearChatSurface();
@@ -3964,7 +3998,7 @@ export function App() {
     messages,
     pendingUploads: pendingChatUploads,
     projectName: selectedConversationProject?.name ?? null,
-    conversationTitle: selectedChatConversation?.title ?? null,
+    conversationTitle: selectedChatSurfaceConversation?.title ?? null,
     reviewLevel,
     selectedArtifact,
     selectedArtifactId,
@@ -4498,7 +4532,7 @@ function WorkspaceSidebar({
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const standaloneConversationCount = conversations.filter((conversation) => (
-    conversation.kind === 'chat' && !conversation.project_id
+    isChatSurfaceConversation(conversation) && !conversation.project_id
   )).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
@@ -4550,7 +4584,7 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleConversations = conversations.filter((conversation) => conversation.kind === 'chat' && !conversation.project_id && matchesSearchQuery(
+  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation) && !conversation.project_id && matchesSearchQuery(
     [
       conversation.id,
       conversation.title,
@@ -4560,7 +4594,7 @@ function WorkspaceSidebar({
   ));
   const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
   conversations.forEach((conversation) => {
-    if (conversation.kind !== 'chat') return;
+    if (!isChatSurfaceConversation(conversation)) return;
     if (!conversation.project_id) return;
     const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
     items.push(conversation);
