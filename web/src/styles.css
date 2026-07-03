@@ -1612,7 +1612,7 @@ button:focus-visible {
   padding: 13px 16px;
   background: #6767dc;
   color: #fff;
-  box-shadow: none;
+  box-shadow: 0 2px 12px rgba(20, 23, 30, 0.05);
   font-size: 14.5px;
   font-weight: 450;
   line-height: 1.55;

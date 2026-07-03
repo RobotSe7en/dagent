@@ -29,6 +29,7 @@ import {
   Blocks,
   Bot,
   BotMessageSquare,
+  BrainCircuit,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -7761,7 +7762,7 @@ function ReasoningBlock({ content }: { content: string; closed: boolean }) {
   return (
     <details className="think-block" open>
       <summary className="reasoning-summary">
-        <MessageSquare size={13} />
+        <BrainCircuit size={13} />
         <strong>推理过程</strong>
         <ChevronDown className="card-chevron" size={14} />
       </summary>
