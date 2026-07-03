@@ -24,6 +24,9 @@ export interface BrowserArtifactPreviewRequest {
 }
 
 export interface ArtifactPreviewRenderHandle {
+  attach?: (container: HTMLElement) => void;
+  cacheable?: boolean;
+  detach?: (container: HTMLElement) => void;
   destroy: () => void;
 }
 
@@ -127,11 +130,26 @@ async function renderOnlyOfficePreview(
     throw exc;
   }
   return {
+    attach: (nextContainer: HTMLElement) => {
+      root.removeAttribute('data-cached');
+      nextContainer.append(root);
+    },
+    cacheable: isOnlyOfficeViewMode(payload.config),
+    detach: (nextContainer: HTMLElement) => {
+      root.setAttribute('data-cached', 'true');
+      nextContainer.append(root);
+    },
     destroy: () => {
       editor.destroyEditor?.();
       root.remove();
     },
   };
+}
+
+function isOnlyOfficeViewMode(config: Record<string, unknown>): boolean {
+  const editorConfig = config.editorConfig;
+  if (!editorConfig || typeof editorConfig !== 'object') return false;
+  return (editorConfig as Record<string, unknown>).mode === 'view';
 }
 
 function onlyOfficeEvents(config: Record<string, unknown>): Record<string, (event: unknown) => void> {

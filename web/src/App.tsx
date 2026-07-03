@@ -347,6 +347,7 @@ const defaultOnlyOfficeSettings: OnlyOfficeSettings = {
   project_file_edit_enabled: false,
   run_artifact_edit_enabled: false,
 };
+const MAX_ONLYOFFICE_PREVIEW_CACHE_SIZE = 2;
 
 const workspaceItems: Array<{ key: WorkspaceKey; label: string; icon: React.ReactNode }> = [
   { key: 'chat', label: '智能工作台', icon: <LayoutDashboard size={16} /> },
@@ -1075,7 +1076,26 @@ async function deleteConversationWithActiveRetry(conversation: ApiConversation):
 
 function artifactPreviewCacheKey(item: WorkbenchArtifactItem): string {
   if (!item.runId || !item.path) return '';
-  return `${item.runId}:${item.path}:${item.size ?? 'unknown'}`;
+  return `${item.runId}:${item.path}:${item.version ?? item.size ?? 'unknown'}`;
+}
+
+function onlyOfficePreviewCacheKeyForArtifact(item: WorkbenchArtifactItem): string {
+  if (!item.onlyOfficeConfigUrl) return '';
+  return `${item.onlyOfficeConfigUrl}:${item.version ?? item.size ?? 'unknown'}`;
+}
+
+function trimOnlyOfficePreviewCache(cache: Map<string, ArtifactPreviewRenderHandle>, activeKey: string): void {
+  while (cache.size > MAX_ONLYOFFICE_PREVIEW_CACHE_SIZE) {
+    const staleKey = [...cache.keys()].find((key) => key !== activeKey) ?? cache.keys().next().value;
+    if (!staleKey) return;
+    cache.get(staleKey)?.destroy();
+    cache.delete(staleKey);
+  }
+}
+
+function destroyOnlyOfficePreviewCache(cache: Map<string, ArtifactPreviewRenderHandle>): void {
+  cache.forEach((handle) => handle.destroy());
+  cache.clear();
 }
 
 export function App() {
@@ -7091,46 +7111,33 @@ function ArtifactPanel({
       <div className="artifact-drawer-body" data-tree-expanded={artifactFilesExpanded}>
         <div className="artifact-tree-pane" data-expanded={artifactFilesExpanded}>
           {artifactFilesExpanded ? (
-            <>
-              <div className="artifact-tree-list">
-                {error ? <div className="artifact-empty">{error}</div> : null}
-                {artifactTree.length ? (
-                  <ArtifactTree
-                    depth={0}
-                    expandedFolders={expandedArtifactFolders}
-                    nodes={artifactTree}
-                    onSelect={onSelect}
-                    onToggleFolder={toggleArtifactFolder}
-                    selectedArtifactId={selectedArtifactId}
-                  />
-                ) : (
-                  <div className="artifact-empty">当前运行还没有产物。</div>
-                )}
-              </div>
-            </>
-          ) : (
-            <button
-              className="artifact-tree-rail-toggle"
-              onClick={() => setArtifactFilesExpanded(true)}
-              title="展开目录树"
-              type="button"
-            >
-              <Folder size={14} />
-              <ChevronRight size={12} />
-            </button>
-          )}
+            <div className="artifact-tree-list">
+              {error ? <div className="artifact-empty">{error}</div> : null}
+              {artifactTree.length ? (
+                <ArtifactTree
+                  depth={0}
+                  expandedFolders={expandedArtifactFolders}
+                  nodes={artifactTree}
+                  onSelect={onSelect}
+                  onToggleFolder={toggleArtifactFolder}
+                  selectedArtifactId={selectedArtifactId}
+                />
+              ) : (
+                <div className="artifact-empty">当前运行还没有产物。</div>
+              )}
+            </div>
+          ) : null}
         </div>
 
-        {artifactFilesExpanded ? (
-          <button
-            className="artifact-tree-divider-toggle"
-            onClick={() => setArtifactFilesExpanded(false)}
-            title="收起目录树"
-            type="button"
-          >
-            <ChevronLeft size={14} />
-          </button>
-        ) : null}
+        <button
+          aria-label={artifactFilesExpanded ? '收起目录树' : '展开目录树'}
+          className="artifact-tree-divider-toggle"
+          onClick={() => setArtifactFilesExpanded((value) => !value)}
+          title={artifactFilesExpanded ? '收起目录树' : '展开目录树'}
+          type="button"
+        >
+          {artifactFilesExpanded ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+        </button>
 
         <ArtifactPreview
           error={previewError}
@@ -7369,13 +7376,22 @@ function ArtifactBrowserPreview({
   selectedArtifact: WorkbenchArtifactItem;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const onlyOfficePreviewCacheRef = useRef<Map<string, ArtifactPreviewRenderHandle>>(new Map());
+  const onlyOfficePreviewCacheHostRef = useRef<HTMLDivElement | null>(null);
+  const mountedRef = useRef(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const downloadUrl = artifactPreviewDownloadUrl(selectedArtifact);
   const onlyOfficeConfigUrl = selectedArtifact.onlyOfficeConfigUrl ?? null;
 
+  useEffect(() => () => {
+    mountedRef.current = false;
+    destroyOnlyOfficePreviewCache(onlyOfficePreviewCacheRef.current);
+  }, []);
+
   useEffect(() => {
     const container = containerRef.current;
+    const cacheHost = onlyOfficePreviewCacheHostRef.current;
     const previewKind = selectedArtifact.previewKind;
     if (!container) return;
     if ((!downloadUrl && !onlyOfficeConfigUrl) || !isBrowserArtifactPreviewKind(previewKind)) {
@@ -7387,9 +7403,30 @@ function ArtifactBrowserPreview({
     let cancelled = false;
     let handle: ArtifactPreviewRenderHandle | null = null;
     const controller = new AbortController();
+    const onlyOfficePreviewCacheKey = onlyOfficeConfigUrl ? onlyOfficePreviewCacheKeyForArtifact(selectedArtifact) : '';
+    const cachedOnlyOfficePreview = onlyOfficePreviewCacheKey ? onlyOfficePreviewCacheRef.current.get(onlyOfficePreviewCacheKey) ?? null : null;
     container.replaceChildren();
     setLoading(true);
     setError(null);
+
+    if (cachedOnlyOfficePreview?.attach) {
+      handle = cachedOnlyOfficePreview;
+      onlyOfficePreviewCacheRef.current.delete(onlyOfficePreviewCacheKey);
+      onlyOfficePreviewCacheRef.current.set(onlyOfficePreviewCacheKey, cachedOnlyOfficePreview);
+      cachedOnlyOfficePreview.attach?.(container);
+      setLoading(false);
+      return () => {
+        cancelled = true;
+        controller.abort();
+        if (mountedRef.current && cacheHost) {
+          handle?.detach?.(cacheHost);
+        } else {
+          handle?.destroy();
+          if (onlyOfficePreviewCacheKey) onlyOfficePreviewCacheRef.current.delete(onlyOfficePreviewCacheKey);
+        }
+        container.replaceChildren();
+      };
+    }
 
     const renderBuiltInBrowserArtifactPreview = async () => {
       const response = await fetch(downloadUrl!, { signal: controller.signal });
@@ -7425,8 +7462,15 @@ function ArtifactBrowserPreview({
     void render()
       .then(() => {
         if (cancelled) {
+          if (onlyOfficePreviewCacheKey && onlyOfficePreviewCacheRef.current.get(onlyOfficePreviewCacheKey) === handle) {
+            onlyOfficePreviewCacheRef.current.delete(onlyOfficePreviewCacheKey);
+          }
           handle?.destroy();
           return;
+        }
+        if (handle && handle.cacheable && onlyOfficePreviewCacheKey && cacheHost) {
+          onlyOfficePreviewCacheRef.current.set(onlyOfficePreviewCacheKey, handle);
+          trimOnlyOfficePreviewCache(onlyOfficePreviewCacheRef.current, onlyOfficePreviewCacheKey);
         }
         setLoading(false);
       })
@@ -7439,10 +7483,15 @@ function ArtifactBrowserPreview({
     return () => {
       cancelled = true;
       controller.abort();
-      handle?.destroy();
+      if (handle && handle.cacheable && onlyOfficePreviewCacheKey && cacheHost && mountedRef.current) {
+        handle.detach?.(cacheHost);
+      } else {
+        handle?.destroy();
+        if (onlyOfficePreviewCacheKey) onlyOfficePreviewCacheRef.current.delete(onlyOfficePreviewCacheKey);
+      }
       container.replaceChildren();
     };
-  }, [downloadUrl, onPreviewRefresh, onlyOfficeConfigUrl, selectedArtifact.name, selectedArtifact.previewKind]);
+  }, [downloadUrl, onPreviewRefresh, onlyOfficeConfigUrl, selectedArtifact.name, selectedArtifact.previewKind, selectedArtifact.version]);
 
   return (
     <div className="artifact-browser-preview-shell">
@@ -7454,6 +7503,7 @@ function ArtifactBrowserPreview({
       ) : null}
       {error ? <div className="artifact-preview-empty">{error}</div> : null}
       <div className="artifact-browser-preview-host" ref={containerRef} />
+      <div className="artifact-browser-preview-cache" ref={onlyOfficePreviewCacheHostRef} aria-hidden="true" />
     </div>
   );
 }
@@ -7915,6 +7965,7 @@ function projectFilePreviewArtifactItem(file: ProjectFileItem): WorkbenchArtifac
     downloadUrl: file.download_url ?? null,
     onlyOfficeConfigUrl: file.onlyoffice_config_url ?? null,
     size: file.size ?? null,
+    version: file.version ?? null,
   };
 }
 

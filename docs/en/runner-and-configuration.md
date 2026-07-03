@@ -195,10 +195,15 @@ System Management -> Document Configuration.
 
 By default, DOCX, XLSX, and PPTX files open through ONLYOFFICE in view mode. Set
 `project_file_edit_enabled` to allow project files to open in edit mode, and set
-`run_artifact_edit_enabled` to allow run artifacts to open in edit mode. Saved
-edits directly overwrite the original file. For run artifacts, this changes the
-file in the run workspace; it does not rewrite historical trace events or rerun
-the agent.
+`run_artifact_edit_enabled` to allow run artifacts to open in edit mode. Edit
+mode disables ONLYOFFICE autosave and enables force-save, so only the user's
+explicit Save action overwrites the original file. For run artifacts, this
+changes the file in the run workspace; it does not rewrite historical trace
+events or rerun the agent. File list responses include a `version` value derived
+from file size and nanosecond mtime so the WebUI can refresh cached previews
+only when the backing file changes. View-only ONLYOFFICE previews keep a small
+browser-side cache of recently opened editor instances to make switching between
+unchanged documents faster.
 
 `api_key_env` is the recommended way to configure secrets. The WebUI can save a
 literal `api_key` to `~/.dagent/config.yaml` only when the user explicitly

@@ -2800,6 +2800,7 @@ details[open] .timeline-chevron {
 }
 
 .artifact-drawer-body {
+  position: relative;
   min-height: 0;
   flex: 1;
   display: grid;
@@ -2807,11 +2808,11 @@ details[open] .timeline-chevron {
 }
 
 .artifact-drawer-body[data-tree-expanded="true"] {
-  grid-template-columns: minmax(136px, 0.3fr) 0 minmax(0, 1fr);
+  grid-template-columns: minmax(136px, 0.3fr) minmax(0, 1fr);
 }
 
 .artifact-drawer-body[data-tree-expanded="false"] {
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 .artifact-tree-pane {
@@ -2824,7 +2825,9 @@ details[open] .timeline-chevron {
 }
 
 .artifact-tree-pane[data-expanded="false"] {
+  border-right: 0;
   padding: 0;
+  pointer-events: none;
 }
 
 .artifact-tree-list {
@@ -2834,13 +2837,15 @@ details[open] .timeline-chevron {
 }
 
 .artifact-tree-divider-toggle {
-  width: 18px;
-  height: 42px;
-  align-self: center;
-  justify-self: center;
-  z-index: 2;
-  display: grid;
-  place-items: center;
+  position: absolute;
+  z-index: 5;
+  left: max(136px, 23.077%);
+  top: 50%;
+  width: 22px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid #d9dce5;
   border-radius: 999px;
   background: #fff;
@@ -2848,6 +2853,7 @@ details[open] .timeline-chevron {
   cursor: pointer;
   padding: 0;
   box-shadow: none;
+  transform: translate(-50%, -50%);
 }
 
 .artifact-tree-divider-toggle:hover {
@@ -2855,23 +2861,11 @@ details[open] .timeline-chevron {
   color: #4c535f;
 }
 
-.artifact-tree-rail-toggle {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  align-content: start;
-  justify-items: center;
-  gap: 9px;
-  border: 0;
-  background: #fff;
-  color: #9aa0a8;
-  cursor: pointer;
-  padding: 12px 0;
-}
-
-.artifact-tree-rail-toggle:hover {
-  background: #f4f5f7;
-  color: #5a606b;
+.artifact-drawer-body[data-tree-expanded="false"] .artifact-tree-divider-toggle {
+  left: 0;
+  border-left: 0;
+  border-radius: 0 999px 999px 0;
+  transform: translate(0, -50%);
 }
 
 .artifact-tree-level {
@@ -3084,6 +3078,15 @@ details[open] .timeline-chevron {
 .artifact-browser-preview-host:has(.artifact-onlyoffice-preview) {
   padding: 0;
   overflow: hidden;
+}
+
+.artifact-browser-preview-cache {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .artifact-browser-preview {

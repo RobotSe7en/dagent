@@ -255,6 +255,7 @@ export interface RunArtifactFile {
   preview_kind?: RunArtifactPreviewKind | null;
   previewable: boolean;
   size?: number | null;
+  version?: string | null;
   status: string;
   error?: string | null;
   preview_url?: string | null;
@@ -293,6 +294,7 @@ export interface ProjectFileItem {
   previewable: boolean;
   size?: number | null;
   modified_at?: number | null;
+  version?: string | null;
   preview_url?: string | null;
   download_url?: string | null;
   onlyoffice_config_url?: string | null;

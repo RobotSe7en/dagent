@@ -149,8 +149,8 @@ The current package version is `0.6.5`.
   conversation and run records while preserving the shared project workspace.
 - Project deletion removes the project database records and the local project
   root directory after checking that no project conversation is active.
-- The system settings label for OnlyOffice has been renamed to document preview
-  configuration in the WebUI.
+- The system settings label for OnlyOffice has been renamed to Document
+  Configuration in the WebUI.
 
 ### Breaking Changes
 
@@ -190,8 +190,12 @@ The current package version is `0.6.5`.
 - The local API and WebUI expose OnlyOffice configuration for richer document
   preview workflows when an OnlyOffice server is configured.
 - OnlyOffice-backed DOCX, XLSX, and PPTX previews can now be switched into edit
-  mode independently for project files and run artifacts. Saved edits overwrite
-  the original file.
+  mode independently for project files and run artifacts. Edit mode disables
+  autosave and only writes back when the user clicks Save.
+- Run artifact and project file metadata now include a `version` field derived
+  from file size and nanosecond mtime for precise preview cache invalidation.
+- View-only ONLYOFFICE previews keep a small browser-side cache of recently
+  opened editor instances to speed up switching between unchanged documents.
 - Chat workbench uploads can now be attached to a message and materialized into
   the run workspace so agents can inspect user-provided files.
 - Static DAG output binding and schema-argument editing support have been
@@ -205,7 +209,8 @@ The current package version is `0.6.5`.
 - Workbench upload handling is stricter about filenames and workspace
   boundaries.
 - OnlyOffice preview URLs now use signed file tokens that also carry whether the
-  current preview session may save edits.
+  current preview session may save edits. The callback handler only overwrites
+  files for user-triggered force-save callbacks.
 
 ### Breaking Changes
 

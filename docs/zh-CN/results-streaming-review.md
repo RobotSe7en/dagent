@@ -69,9 +69,10 @@ runner workspace 时，运行 artifact 会写到 `.dagent/runs/<run_id>`。
 artifacts 使用文本预览接口；PDF artifacts 会通过 artifact download 接口拉取文件，
 并在浏览器中渲染。如果 `~/.dagent/config.yaml` 中启用了 `onlyoffice` 配置，DOCX、
 XLSX 和 PPTX artifacts 会通过 ONLYOFFICE Document Server 以 view mode 打开。如果同时
-启用 `run_artifact_edit_enabled`，这些 artifacts 会以 edit mode 打开，保存后直接覆盖
-run workspace 中的文件，但不会修改历史 trace。未配置 ONLYOFFICE 时，这些 Office 文件会
-回退到内置的浏览器渲染器。
+启用 `run_artifact_edit_enabled`，这些 artifacts 会以关闭 autosave 的 edit mode 打开；
+只有用户显式点击 Save 时才会覆盖 run workspace 中的文件，并且不会修改历史 trace。
+artifact 文件元数据会包含 `version`，WebUI 据此在文件变化时让 Office 预览缓存失效。
+未配置 ONLYOFFICE 时，这些 Office 文件会回退到内置的浏览器渲染器。
 
 ## Streaming
 

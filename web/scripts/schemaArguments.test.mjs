@@ -2619,6 +2619,8 @@ test('project detail workspace manages files with tree and preview', async () =>
 
   assert.match(typesSource, /export interface ProjectFileItem/);
   assert.match(typesSource, /children\?: ProjectFileItem\[\];/);
+  assert.match(typesSource, /export interface RunArtifactFile[\s\S]*version\?: string \| null;/);
+  assert.match(typesSource, /export interface ProjectFileItem[\s\S]*version\?: string \| null;/);
   assert.match(typesSource, /export interface ProjectFileItem[\s\S]*onlyoffice_config_url\?: string \| null;/);
   assert.match(typesSource, /export interface ProjectFilesResponse[\s\S]*tree\?: ProjectFileItem\[\];/);
   assert.match(typesSource, /export interface ProjectFilePreview/);
@@ -2653,6 +2655,7 @@ test('project detail workspace manages files with tree and preview', async () =>
   assert.doesNotMatch(appSource, /onRefresh=\{\(\) => void refreshProjectFiles\(\)\}/);
   const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';
   assert.match(projectPreviewSource, /projectFilePreviewArtifactItem\(selectedFile\)/);
+  assert.match(appSource, /version: file\.version \?\? null/);
   assert.match(projectPreviewSource, /<ArtifactPreview/);
   assert.doesNotMatch(projectPreviewSource, /<ArtifactPreview[\s\S]*showHeader=\{false\}/);
   assert.match(appSource, /showHeader = true[\s\S]*title=\{previewFullscreen \? '关闭全屏' : '全屏预览'\}/);
@@ -2899,6 +2902,7 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /const \[runArtifactFiles, setRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
   assert.match(appSource, /const runArtifactRequestRef = useRef\(0\);/);
   assert.match(appSource, /function artifactPreviewCacheKey\(item: WorkbenchArtifactItem\)/);
+  assert.match(appSource, /item\.version \?\? item\.size \?\? 'unknown'/);
   const artifactAutoOpenSource = appSource.match(/const artifactsPresentRef = useRef\(false\);[\s\S]*?\}, \[chatArtifacts\.length\]\);/)?.[0] ?? '';
   assert.ok(artifactAutoOpenSource, 'artifact auto-open effect should exist');
   assert.match(artifactAutoOpenSource, /setArtifactPanelOpen\(true\);/);
@@ -2925,11 +2929,20 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /function ArtifactPreviewBody\(/);
   assert.doesNotMatch(appSource, /<span>\{selectedArtifact\.meta\}<\/span>/);
   assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
+  assert.match(appSource, /const onlyOfficePreviewCacheRef = useRef<Map<string, ArtifactPreviewRenderHandle>>\(new Map\(\)\);/);
+  assert.match(appSource, /const onlyOfficePreviewCacheHostRef = useRef<HTMLDivElement \| null>\(null\);/);
+  assert.match(appSource, /const cachedOnlyOfficePreview = onlyOfficePreviewCacheKey \? onlyOfficePreviewCacheRef\.current\.get\(onlyOfficePreviewCacheKey\) \?\? null : null;/);
+  assert.match(appSource, /cachedOnlyOfficePreview\.attach\?\.\(container\);/);
+  assert.match(appSource, /handle\.cacheable && onlyOfficePreviewCacheKey/);
+  assert.match(appSource, /handle\.detach\?\.\(cacheHost\);/);
+  assert.match(appSource, /trimOnlyOfficePreviewCache\(onlyOfficePreviewCacheRef\.current, onlyOfficePreviewCacheKey\);/);
+  assert.match(appSource, /className="artifact-browser-preview-cache"[\s\S]*ref=\{onlyOfficePreviewCacheHostRef\}[\s\S]*aria-hidden="true"/);
   assert.match(appSource, /onPreviewRefresh=\{onRefresh\}/);
   assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
   assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
   assert.match(appSource, /signal:\s*controller\.signal/);
   assert.match(appSource, /onlyOfficeConfigUrl,\s*fileName: selectedArtifact\.name,\s*signal: controller\.signal,\s*onSaved: onPreviewRefresh/s);
+  assert.match(appSource, /\[downloadUrl, onPreviewRefresh, onlyOfficeConfigUrl, selectedArtifact\.name, selectedArtifact\.previewKind, selectedArtifact\.version\]/);
   assert.match(appSource, /catch \(exc\) \{[\s\S]*if \(isAbortError\(exc\) \|\| !downloadUrl\) throw exc;[\s\S]*await renderBuiltInBrowserArtifactPreview\(\);/);
   assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
@@ -2938,6 +2951,7 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(css, /\.artifact-preview-title\s*\{[^}]*margin-right:\s*auto;/s);
   assert.match(css, /\.artifact-preview-fullscreen\s*\{[^}]*position:\s*fixed;[^}]*inset:\s*0;/s);
   assert.match(css, /\.artifact-browser-preview-host:has\(\.artifact-onlyoffice-preview\)\s*\{[^}]*padding:\s*0;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.artifact-browser-preview-cache\s*\{[^}]*position:\s*absolute;[^}]*pointer-events:\s*none;/s);
   assert.match(css, /\.artifact-onlyoffice-preview\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
 });
 
@@ -2958,15 +2972,16 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.doesNotMatch(appSource, /className="artifact-file-label"/);
   assert.match(artifactPanelSource, /const artifactTree = useMemo\(\(\) => buildWorkbenchArtifactTree\(artifacts\), \[artifacts\]\);/);
   assert.match(artifactPanelSource, /className="artifact-drawer-body"\s*data-tree-expanded=\{artifactFilesExpanded\}/);
-  assert.match(artifactPanelSource, /<div className="artifact-tree-pane" data-expanded=\{artifactFilesExpanded\}>[\s\S]*\{artifactFilesExpanded \? \(\s*<>\s*<div className="artifact-tree-list">[\s\S]*<ArtifactTree/);
+  assert.match(artifactPanelSource, /<div className="artifact-tree-pane" data-expanded=\{artifactFilesExpanded\}>[\s\S]*\{artifactFilesExpanded \? \(\s*<div className="artifact-tree-list">[\s\S]*<ArtifactTree/);
   assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-head/);
   assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-title/);
   assert.doesNotMatch(artifactPanelSource, /<span>文件<\/span>/);
   assert.doesNotMatch(artifactPanelSource, /artifact-tree-pane-toggle/);
-  assert.match(artifactPanelSource, /\{artifactFilesExpanded \? \(\s*<button\s+className="artifact-tree-divider-toggle"[\s\S]*title="收起目录树"[\s\S]*<ChevronLeft size=\{14\} \/>[\s\S]*\)\s*:\s*null\}/);
-  assert.match(artifactPanelSource, /className="artifact-tree-rail-toggle"[\s\S]*title="展开目录树"/);
+  assert.match(artifactPanelSource, /aria-label=\{artifactFilesExpanded \? '收起目录树' : '展开目录树'\}[\s\S]*className="artifact-tree-divider-toggle"[\s\S]*title=\{artifactFilesExpanded \? '收起目录树' : '展开目录树'\}/);
+  assert.match(artifactPanelSource, /\{artifactFilesExpanded \? <ChevronLeft size=\{14\} \/> : <ChevronRight size=\{14\} \/>\}/);
+  assert.doesNotMatch(artifactPanelSource, /artifact-tree-rail-toggle/);
   assert.doesNotMatch(artifactPanelSource, /artifact-drawer-tree-toggle/);
-  assert.match(artifactPanelSource, /<\/div>\s*\n\s*\{artifactFilesExpanded \? \(/);
+  assert.match(artifactPanelSource, /<\/div>\s*\n\s*<button[\s\S]*className="artifact-tree-divider-toggle"[\s\S]*<\/button>\s*\n\s*<ArtifactPreview/);
   assert.match(artifactTreeSource, /className="artifact-tree-folder"/);
   assert.match(artifactTreeSource, /className=\{node\.item\.id === selectedArtifactId \? 'active artifact-tree-file' : 'artifact-tree-file'\}/);
   assert.doesNotMatch(artifactTreeSource, /<span className="artifact-extension">\{node\.item\.extension\}<\/span>/);
@@ -2978,16 +2993,16 @@ test('artifact drawer file list collapses independently from the preview', async
   assert.match(css, /\.artifact-drawer-title\s*\{[^}]*flex:\s*1 1 auto;/s);
   assert.match(css, /\.artifact-drawer-actions\s*\{[^}]*margin-left:\s*auto;[^}]*display:\s*flex;/s);
   assert.match(css, /\.artifact-drawer-body\s*\{[^}]*display:\s*grid;/s);
-  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(136px,\s*0\.3fr\)\s+0\s+minmax\(0,\s*1fr\);/s);
-  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\);/s);
-  assert.doesNotMatch(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(136px,\s*0\.3fr\)\s+minmax\(0,\s*1fr\);/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s*\{[^}]*grid-template-columns:\s*0\s+minmax\(0,\s*1fr\);/s);
   assert.match(css, /\.artifact-tree-pane\s*\{[^}]*overflow:\s*hidden;/s);
   assert.doesNotMatch(css, /\.artifact-tree-pane-head\b/);
   assert.doesNotMatch(css, /\.artifact-tree-pane-title\b/);
   assert.doesNotMatch(css, /\.artifact-tree-pane-toggle\b/);
-  assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*width:\s*18px;[^}]*height:\s*42px;[^}]*align-self:\s*center;[^}]*justify-self:\s*center;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.artifact-tree-divider-toggle\s*\{[^}]*position:\s*absolute;[^}]*left:\s*max\(136px,\s*23\.077%\);[^}]*width:\s*22px;[^}]*height:\s*44px;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.artifact-drawer-body\[data-tree-expanded="false"\]\s+\.artifact-tree-divider-toggle\s*\{[^}]*left:\s*0;[^}]*border-left:\s*0;[^}]*border-radius:\s*0 999px 999px 0;/s);
   assert.match(css, /\.artifact-tree-list\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
-  assert.match(css, /\.artifact-tree-rail-toggle\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s);
+  assert.doesNotMatch(css, /\.artifact-tree-rail-toggle\b/);
   assert.match(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*12px\);/);
   assert.doesNotMatch(css, /--artifact-tree-indent:\s*calc\(var\(--artifact-tree-depth,\s*0\)\s*\*\s*16px\);/);
   assert.match(css, /\.artifact-tree-file\s*\{[^}]*min-height:\s*30px;/s);
@@ -3020,6 +3035,7 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
         preview_kind: 'code',
         previewable: true,
         size: 18,
+        version: '18:100',
         status: 'created',
         error: null,
       },
@@ -3053,6 +3069,7 @@ test('workbench artifacts preserve uploaded folder paths as a directory tree', a
   });
   const tree = buildWorkbenchArtifactTree(items);
 
+  assert.equal(items.find((item) => item.path === 'uploads/project/src/index.ts')?.version, '18:100');
   assert.deepEqual(artifactFolderIdsForPath('uploads/project/src/index.ts'), [
     'folder:uploads',
     'folder:uploads/project',
@@ -3112,6 +3129,11 @@ test('artifactPreview module centralizes preview routing for future provider swa
   assert.match(previewSource, /DocsAPI\.DocEditor/);
   assert.match(previewSource, /loadOnlyOfficeScript/);
   assert.match(previewSource, /const onlyOfficeLoadedScriptUrls = new Set<string>\(\);/);
+  assert.match(previewSource, /cacheable\?: boolean;/);
+  assert.match(previewSource, /attach\?: \(container: HTMLElement\) => void;/);
+  assert.match(previewSource, /detach\?: \(container: HTMLElement\) => void;/);
+  assert.match(previewSource, /cacheable: isOnlyOfficeViewMode\(payload\.config\)/);
+  assert.match(previewSource, /function isOnlyOfficeViewMode/);
   assert.match(previewSource, /onSaved\?: \(\) => void;/);
   assert.doesNotMatch(previewSource, /onDocumentStateChange/);
   assert.match(previewSource, /events: \{[\s\S]*onRequestClose/);

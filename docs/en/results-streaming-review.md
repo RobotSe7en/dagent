@@ -75,9 +75,11 @@ fetched through the artifact download endpoint and rendered in the browser. When
 `~/.dagent/config.yaml` includes an enabled `onlyoffice` section, DOCX, XLSX,
 and PPTX artifacts are opened through ONLYOFFICE Document Server in view mode.
 If `run_artifact_edit_enabled` is also enabled, those artifacts open in edit mode
-and saved edits overwrite the file in the run workspace without changing the
-historical trace. Otherwise, Office files fall back to the built-in browser
-renderers when ONLYOFFICE is not configured.
+with autosave disabled; only the user's explicit Save action overwrites the file
+in the run workspace, and historical trace events are not changed. Artifact file
+metadata includes a `version` value so the WebUI can invalidate Office preview
+caches when the file changes. Otherwise, Office files fall back to the built-in
+browser renderers when ONLYOFFICE is not configured.
 
 ## Streaming
 

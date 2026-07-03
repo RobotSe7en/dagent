@@ -796,6 +796,8 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
     assert settings.status_code == 200
     assert listed.status_code == 200
     files = {item["path"]: item for item in listed.json()["files"]}
+    assert isinstance(files["docs/brief.docx"]["version"], str)
+    assert files["docs/brief.docx"]["version"]
     assert files["docs/report.pdf"]["onlyoffice_config_url"] is None
     assert files["docs/brief.docx"]["onlyoffice_config_url"] == (
         f"/projects/{project_id}/files/onlyoffice/config?path=docs%2Fbrief.docx"
@@ -813,6 +815,9 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
     assert onlyoffice_config["document"]["title"] == "brief.docx"
     assert onlyoffice_config["document"]["permissions"]["edit"] is True
     assert onlyoffice_config["editorConfig"]["mode"] == "edit"
+    assert onlyoffice_config["editorConfig"]["coEditing"] == {"mode": "strict", "change": False}
+    assert onlyoffice_config["editorConfig"]["customization"]["autosave"] is False
+    assert onlyoffice_config["editorConfig"]["customization"]["forcesave"] is True
     assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
     assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
     assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
@@ -836,8 +841,10 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
 
 
 def test_api_project_files_onlyoffice_callback_saves_editable_file(persistence_client, monkeypatch) -> None:
+    downloads: list[str] = []
+
     async def fake_download(url: str) -> bytes:
-        assert url == "http://onlyoffice.test/edited.docx"
+        downloads.append(url)
         return b"edited docx bytes"
 
     monkeypatch.setattr(api_app, "_download_onlyoffice_callback_file", fake_download, raising=False)
@@ -867,14 +874,21 @@ def test_api_project_files_onlyoffice_callback_saves_editable_file(persistence_c
     )
     callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
 
-    callback_response = persistence_client.post(
+    close_response = persistence_client.post(
         urlsplit(callback_url).path,
         json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
     )
+    callback_response = persistence_client.post(
+        urlsplit(callback_url).path,
+        json={"status": 6, "forcesavetype": 1, "url": "http://onlyoffice.test/edited.docx"},
+    )
 
     assert settings.status_code == 200
+    assert close_response.status_code == 200
+    assert close_response.json() == {"error": 0}
     assert callback_response.status_code == 200
     assert callback_response.json() == {"error": 0}
+    assert downloads == ["http://onlyoffice.test/edited.docx"]
     assert target.read_bytes() == b"edited docx bytes"
 
 

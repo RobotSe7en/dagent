@@ -461,6 +461,7 @@ class OnlyOfficeCallbackRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     status: int
+    forcesavetype: int | None = None
     url: str | None = None
 
 
@@ -491,6 +492,7 @@ class RunArtifactFile(BaseModel):
     preview_kind: RunArtifactPreviewKind | None = None
     previewable: bool
     size: int | None = None
+    version: str | None = None
     status: str = "created"
     error: str | None = None
     preview_url: str | None = None
@@ -529,6 +531,7 @@ class ProjectFileItem(BaseModel):
     previewable: bool = False
     size: int | None = None
     modified_at: int | None = None
+    version: str | None = None
     preview_url: str | None = None
     download_url: str | None = None
     onlyoffice_config_url: str | None = None
@@ -2002,7 +2005,7 @@ async def get_onlyoffice_file(token: str) -> FileResponse:
 @app.post("/onlyoffice/callback/{token}")
 async def onlyoffice_callback(token: str, request: OnlyOfficeCallbackRequest) -> dict[str, int]:
     payload = _onlyoffice_token_payload(token)
-    if request.status not in {2, 6}:
+    if request.status != 6 or request.forcesavetype != 1:
         return {"error": 0}
     if not payload["editable"]:
         raise HTTPException(status_code=403, detail="OnlyOffice callback is not authorized to edit this file.")
@@ -4138,12 +4141,15 @@ def _run_artifact_file(
     file_path = _resolve_workspace_path(workspace, path)
     preview_kind = _preview_kind_for_path(path)
     size: int | None = None
+    version: str | None = None
     path_error = error
     previewable = False
     if file_path is None:
         path_error = path_error or "Artifact path escapes run workspace."
     elif file_path.is_file():
-        size = file_path.stat().st_size
+        file_stat = file_path.stat()
+        size = file_stat.st_size
+        version = _file_version(file_stat)
         previewable = preview_kind is not None and (
             preview_kind in _BROWSER_PREVIEW_EXTENSIONS.values()
             or preview_kind in _TEXT_PREVIEW_KINDS
@@ -4160,6 +4166,7 @@ def _run_artifact_file(
         preview_kind=preview_kind if previewable else None,
         previewable=previewable,
         size=size,
+        version=version,
         status=status,
         error=path_error,
         preview_url=_preview_url(run_id, path) if previewable and preview_kind in _TEXT_PREVIEW_KINDS else None,
@@ -4367,6 +4374,7 @@ def _project_file_item(
         previewable=previewable,
         size=stat.st_size,
         modified_at=int(stat.st_mtime),
+        version=_file_version(stat),
         preview_url=(
             _project_file_preview_url(project_id, relative_path)
             if preview_kind in _TEXT_PREVIEW_KINDS
@@ -4575,7 +4583,13 @@ def _onlyoffice_config_response_for_file(
         },
         "editorConfig": {
             "callbackUrl": f"{public_api_base}/onlyoffice/callback/{file_token}",
+            "coEditing": {
+                "change": False,
+                "mode": "strict",
+            },
             "customization": {
+                "autosave": False,
+                "forcesave": editable,
                 "macros": False,
                 "macrosMode": "disable",
                 "plugins": False,
@@ -4621,8 +4635,12 @@ def _onlyoffice_document_type(
 
 def _onlyoffice_document_key(run_id: str, path: str, file_path: Path) -> str:
     file_stat = file_path.stat()
-    raw_key = f"{run_id}\0{path}\0{file_stat.st_size}\0{file_stat.st_mtime_ns}"
+    raw_key = f"{run_id}\0{path}\0{_file_version(file_stat)}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:48]
+
+
+def _file_version(file_stat: Any) -> str:
+    return f"{file_stat.st_size}:{file_stat.st_mtime_ns}"
 
 
 def _onlyoffice_jwt_token(payload: dict[str, Any], secret: str) -> str:
