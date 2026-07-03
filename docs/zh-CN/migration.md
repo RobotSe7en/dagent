@@ -160,6 +160,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - WebUI 现在支持更多 artifact 类型的浏览器预览，包括 Office 文档和 PPTX artifacts。
 - 本地 API 和 WebUI 暴露 OnlyOffice 配置；配置 OnlyOffice server 后，可以使用更丰富的
   文档预览能力。
+- 通过 OnlyOffice 打开的 DOCX、XLSX 和 PPTX 现在可以分别为项目文件和运行产物开启
+  edit mode。保存后的编辑会直接覆盖原文件。
 - 聊天 workbench uploads 现在可以附加到消息，并 materialize 到 run workspace，方便
   agent 检查用户提供的文件。
 - WebUI 扩展了静态 DAG output binding 和 schema argument 编辑能力。
@@ -170,7 +172,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 优化了 artifact preview chrome、artifact tree 交互，以及折叠 artifact rail 的表现，
   便于更高密度地使用 workspace。
 - Workbench upload 处理会更严格地校验文件名和 workspace 边界。
-- OnlyOffice preview URLs 现在使用带签名的短期 file tokens。
+- OnlyOffice preview URLs 现在使用带签名的 file tokens，并在 token 中携带当前预览会话
+  是否允许保存编辑。
 
 ### 破坏性改变
 
@@ -179,7 +182,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 ### 迁移步骤
 
 - 此 patch release 不需要迁移动作。
-- 如需使用 Office 文档预览，请在 WebUI 系统设置中配置 OnlyOffice document server。
+- 如需使用 Office 文档预览或编辑，请在 WebUI 系统设置中配置 OnlyOffice document
+  server。编辑能力默认关闭，需要显式开启项目文件或运行产物编辑开关。
 
 ### 验证
 
@@ -190,6 +194,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 ### 已知限制
 
 - Office previews 需要外部 OnlyOffice document server。
+- 编辑运行产物会修改 run workspace 中的文件，但不会重写已保存的 trace 历史。
 - Workbench uploads 会 materialize 到本地 run workspace；如果运行在 ephemeral container
   storage 中，需要持久卷才能跨容器保留。
 

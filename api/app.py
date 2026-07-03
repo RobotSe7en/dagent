@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,6 +123,7 @@ RUN_ARTIFACT_PREVIEW_BYTES = 200_000
 RUN_ARTIFACT_SCAN_LIMIT = 500
 RUN_ARTIFACT_SCAN_VISIT_LIMIT = 5_000
 ONLYOFFICE_TOKEN_SECONDS = 10 * 60
+ONLYOFFICE_EDIT_TOKEN_SECONDS = 24 * 60 * 60
 PROFILE_CONTENT_BYTES_LIMIT = 128 * 1024
 _MANAGED_PROFILE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -451,6 +453,15 @@ class OnlyOfficeSettingsPayload(BaseModel):
     public_api_base: str | None = None
     jwt_secret: str | None = None
     lang: str = "zh"
+    project_file_edit_enabled: bool = False
+    run_artifact_edit_enabled: bool = False
+
+
+class OnlyOfficeCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: int
+    url: str | None = None
 
 
 class PythonToolRequest(BaseModel):
@@ -1978,16 +1989,7 @@ async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str
 @app.get("/onlyoffice/files/{token}")
 async def get_onlyoffice_file(token: str) -> FileResponse:
     payload = _onlyoffice_token_payload(token)
-    if payload["scope"] == "project":
-        _project, workspace = await _project_workspace(payload["project_id"])
-        file_path = _resolve_project_file_path(workspace, payload["path"])
-        not_found_detail = "Project file not found."
-    else:
-        run_state = await _run_state_from_state(payload["run_id"])
-        if run_state is None:
-            raise HTTPException(status_code=404, detail="Run not found.")
-        file_path = _resolve_run_artifact_path(run_state, payload["path"])
-        not_found_detail = "Artifact file not found."
+    file_path, not_found_detail = await _onlyoffice_file_path_for_payload(payload)
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail=not_found_detail)
     return FileResponse(
@@ -1998,8 +2000,19 @@ async def get_onlyoffice_file(token: str) -> FileResponse:
 
 
 @app.post("/onlyoffice/callback/{token}")
-async def onlyoffice_callback(token: str) -> dict[str, int]:
-    _onlyoffice_token_payload(token)
+async def onlyoffice_callback(token: str, request: OnlyOfficeCallbackRequest) -> dict[str, int]:
+    payload = _onlyoffice_token_payload(token)
+    if request.status not in {2, 6}:
+        return {"error": 0}
+    if not payload["editable"]:
+        raise HTTPException(status_code=403, detail="OnlyOffice callback is not authorized to edit this file.")
+    if not request.url:
+        raise HTTPException(status_code=400, detail="OnlyOffice callback save URL is required.")
+    file_path, not_found_detail = await _onlyoffice_file_path_for_payload(payload)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    content = await _download_onlyoffice_callback_file(request.url)
+    await run_in_threadpool(_replace_file_bytes, file_path, content)
     return {"error": 0}
 
 
@@ -2547,6 +2560,8 @@ async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> Only
         public_api_base=_clean_optional_text(request.public_api_base),
         jwt_secret=_clean_optional_text(request.jwt_secret),
         lang=_clean_optional_text(request.lang) or "zh",
+        project_file_edit_enabled=request.project_file_edit_enabled,
+        run_artifact_edit_enabled=request.run_artifact_edit_enabled,
     )
     save_user_config(config, state.get_user_config_path())
     return _onlyoffice_settings_payload(config.onlyoffice)
@@ -3143,6 +3158,8 @@ def _onlyoffice_settings_payload(config: UserOnlyOfficeConfig) -> OnlyOfficeSett
         public_api_base=config.public_api_base,
         jwt_secret=config.jwt_secret,
         lang=config.lang,
+        project_file_edit_enabled=config.project_file_edit_enabled,
+        run_artifact_edit_enabled=config.run_artifact_edit_enabled,
     )
 
 
@@ -4524,10 +4541,15 @@ def _onlyoffice_config_response_for_file(
 
     document_server_url = _clean_onlyoffice_url(onlyoffice_config.document_server_url)
     public_api_base = _clean_onlyoffice_url(onlyoffice_config.public_api_base)
+    editable = (
+        scope == "project" and onlyoffice_config.project_file_edit_enabled
+    ) or (
+        scope == "run" and onlyoffice_config.run_artifact_edit_enabled
+    )
     file_token = (
-        _onlyoffice_file_token(run_id=owner_id, path=normalized_path)
+        _onlyoffice_file_token(run_id=owner_id, path=normalized_path, editable=editable)
         if scope == "run"
-        else _onlyoffice_file_token(project_id=owner_id, path=normalized_path)
+        else _onlyoffice_file_token(project_id=owner_id, path=normalized_path, editable=editable)
     )
     file_type = Path(normalized_path).suffix.lower().lstrip(".")
     editor_config: dict[str, Any] = {
@@ -4542,7 +4564,7 @@ def _onlyoffice_config_response_for_file(
                 "chat": False,
                 "comment": False,
                 "download": True,
-                "edit": False,
+                "edit": editable,
                 "fillForms": False,
                 "modifyContentControl": False,
                 "modifyFilter": False,
@@ -4559,7 +4581,7 @@ def _onlyoffice_config_response_for_file(
                 "plugins": False,
             },
             "lang": onlyoffice_config.lang,
-            "mode": "view",
+            "mode": "edit" if editable else "view",
         },
     }
     jwt_secret = _clean_optional_text(onlyoffice_config.jwt_secret)
@@ -4626,11 +4648,13 @@ def _onlyoffice_file_token(
     path: str,
     run_id: str | None = None,
     project_id: str | None = None,
+    editable: bool = False,
 ) -> str:
     if (run_id is None) == (project_id is None):
         raise ValueError("OnlyOffice file token requires exactly one owner.")
     payload = {
-        "exp": int(time.time()) + ONLYOFFICE_TOKEN_SECONDS,
+        "editable": editable,
+        "exp": int(time.time()) + (ONLYOFFICE_EDIT_TOKEN_SECONDS if editable else ONLYOFFICE_TOKEN_SECONDS),
         "path": path,
     }
     if run_id is not None:
@@ -4642,7 +4666,7 @@ def _onlyoffice_file_token(
     return f"{_base64_url_encode(raw)}.{_base64_url_encode(signature)}"
 
 
-def _onlyoffice_token_payload(token: str) -> dict[str, str]:
+def _onlyoffice_token_payload(token: str) -> dict[str, Any]:
     try:
         raw_value, signature_value = token.split(".", 1)
         raw = _base64_url_decode(raw_value)
@@ -4666,6 +4690,9 @@ def _onlyoffice_token_payload(token: str) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="OnlyOffice file token expired.")
     scope = str(payload.get("scope") or ("run" if payload.get("run_id") else ""))
     path = str(payload.get("path") or "")
+    editable = payload.get("editable", False)
+    if not isinstance(editable, bool):
+        raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
     if scope not in {"run", "project"} or not path:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
     if scope == "project":
@@ -4688,7 +4715,37 @@ def _onlyoffice_token_payload(token: str) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
     if _onlyoffice_document_type(_preview_kind_for_path(normalized_path)) is None:
         raise HTTPException(status_code=403, detail="Invalid OnlyOffice file token.")
-    return {"scope": scope, owner_key: owner_id, "path": normalized_path}
+    return {"scope": scope, owner_key: owner_id, "path": normalized_path, "editable": editable}
+
+
+async def _onlyoffice_file_path_for_payload(payload: dict[str, Any]) -> tuple[Path, str]:
+    if payload["scope"] == "project":
+        _project, workspace = await _project_workspace(payload["project_id"])
+        return _resolve_project_file_path(workspace, payload["path"]), "Project file not found."
+    run_state = await _run_state_from_state(payload["run_id"])
+    if run_state is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return _resolve_run_artifact_path(run_state, payload["path"]), "Artifact file not found."
+
+
+async def _download_onlyoffice_callback_file(url: str) -> bytes:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.content
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"OnlyOffice edited file download failed: {exc}") from exc
+
+
+def _replace_file_bytes(path: Path, content: bytes) -> None:
+    temp_path = path.with_name(f".{path.name}.onlyoffice-{uuid4().hex}.tmp")
+    try:
+        temp_path.write_bytes(content)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _base64_url_encode(value: bytes) -> str:

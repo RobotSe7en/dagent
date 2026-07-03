@@ -1687,7 +1687,7 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(appSource, /<WorkspaceSidebar[\s\S]*systemSub=\{systemManagementSub\}[\s\S]*models=\{models\}[\s\S]*onSystemSubChange=\{setSystemManagementSub\}/);
   assert.match(sidebarSource, /const systemSubnav = \[/);
   assert.match(sidebarSource, /label: '模型管理'/);
-  assert.match(sidebarSource, /label: '文档预览配置'/);
+  assert.match(sidebarSource, /label: '文档配置'/);
   assert.match(sidebarSource, /onSystemSubChange\(subitem\.key\)/);
   assert.match(sidebarSource, /模型列表/);
   assert.match(sidebarSource, /sidebar-model-list/);
@@ -1720,13 +1720,17 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
-  assert.match(onlyOfficeSource, /文档预览配置/);
+  assert.match(onlyOfficeSource, /文档配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
   assert.match(onlyOfficeSource, /JWT Secret/);
+  assert.match(onlyOfficeSource, /允许编辑项目文件/);
+  assert.match(onlyOfficeSource, /允许编辑运行产物/);
   assert.match(onlyOfficeSource, /updateOnlyOfficeSettings\(/);
   assert.match(typesSource, /export interface OnlyOfficeSettings/);
   assert.match(typesSource, /jwt_secret\?: string \| null;/);
+  assert.match(typesSource, /project_file_edit_enabled: boolean;/);
+  assert.match(typesSource, /run_artifact_edit_enabled: boolean;/);
 
   assert.match(apiSource, /export async function listModels/);
   assert.match(apiSource, /export async function createModelProvider/);
@@ -1736,6 +1740,8 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(apiSource, /export async function getOnlyOfficeSettings/);
   assert.match(apiSource, /export async function updateOnlyOfficeSettings/);
   assert.match(apiSource, /jwt_secret: data\.jwt_secret \?\? null/);
+  assert.match(apiSource, /project_file_edit_enabled: Boolean\(data\.project_file_edit_enabled\)/);
+  assert.match(apiSource, /run_artifact_edit_enabled: Boolean\(data\.run_artifact_edit_enabled\)/);
 
   assert.match(css, /\.design-models-workspace\s*\{[^}]*display:\s*flex;/s);
   assert.match(css, /\.sidebar-model-list/);
@@ -2642,6 +2648,9 @@ test('project detail workspace manages files with tree and preview', async () =>
   assert.match(appSource, /const requestId = projectFilePreviewRequestRef\.current \+ 1;[\s\S]*projectFilePreviewRequestRef\.current = requestId;[\s\S]*if \(projectFilePreviewRequestRef\.current !== requestId\) return;/);
   assert.match(appSource, /<ProjectChatWorkspace[\s\S]*project=\{selectedProject\}[\s\S]*files=\{projectFiles\}/);
   assert.match(appSource, /chatSub === 'projects' \? \([\s\S]*<ProjectChatWorkspace[\s\S]*chatProps=\{chatWorkspaceProps\}/);
+  assert.match(appSource, /const refreshProjectFilesView = useCallback\(\(\) => \{[\s\S]*void refreshProjectFiles\(\);[\s\S]*\}, \[refreshProjectFiles\]\);/);
+  assert.match(appSource, /onRefresh=\{refreshProjectFilesView\}/);
+  assert.doesNotMatch(appSource, /onRefresh=\{\(\) => void refreshProjectFiles\(\)\}/);
   const projectPreviewSource = appSource.match(/function ProjectFilePreviewPane[\s\S]*?\nfunction ProjectFileActionDialog/)?.[0] ?? '';
   assert.match(projectPreviewSource, /projectFilePreviewArtifactItem\(selectedFile\)/);
   assert.match(projectPreviewSource, /<ArtifactPreview/);
@@ -2916,10 +2925,11 @@ test('run artifact preview uses backend manifest files and a dedicated preview c
   assert.match(appSource, /function ArtifactPreviewBody\(/);
   assert.doesNotMatch(appSource, /<span>\{selectedArtifact\.meta\}<\/span>/);
   assert.match(appSource, /const onlyOfficeConfigUrl = selectedArtifact\.onlyOfficeConfigUrl \?\? null;/);
+  assert.match(appSource, /onPreviewRefresh=\{onRefresh\}/);
   assert.match(appSource, /href=\{downloadUrl \?\? undefined\}[\s\S]*download=\{selectedArtifact\.name\}[\s\S]*title="下载"/);
   assert.doesNotMatch(appSource, /const downloadUrl = selectedArtifact\.runId && selectedArtifact\.path/);
   assert.match(appSource, /signal:\s*controller\.signal/);
-  assert.match(appSource, /onlyOfficeConfigUrl,\s*fileName: selectedArtifact\.name,\s*signal: controller\.signal/s);
+  assert.match(appSource, /onlyOfficeConfigUrl,\s*fileName: selectedArtifact\.name,\s*signal: controller\.signal,\s*onSaved: onPreviewRefresh/s);
   assert.match(appSource, /catch \(exc\) \{[\s\S]*if \(isAbortError\(exc\) \|\| !downloadUrl\) throw exc;[\s\S]*await renderBuiltInBrowserArtifactPreview\(\);/);
   assert.match(appSource, /async function artifactResponseError\(response: Response\): Promise<string> \{[\s\S]*const payload = await response\.clone\(\)\.json\(\);[\s\S]*typeof payload\.detail === 'string'[\s\S]*JSON\.stringify\(payload\.detail\)/);
   assert.match(appSource, /selectedArtifact\.previewKind === 'markdown'/);
@@ -3102,6 +3112,9 @@ test('artifactPreview module centralizes preview routing for future provider swa
   assert.match(previewSource, /DocsAPI\.DocEditor/);
   assert.match(previewSource, /loadOnlyOfficeScript/);
   assert.match(previewSource, /const onlyOfficeLoadedScriptUrls = new Set<string>\(\);/);
+  assert.match(previewSource, /onSaved\?: \(\) => void;/);
+  assert.doesNotMatch(previewSource, /onDocumentStateChange/);
+  assert.match(previewSource, /events: \{[\s\S]*onRequestClose/);
   assert.match(previewSource, /try \{[\s\S]*new window\.DocsAPI\.DocEditor\(editorId, payload\.config\)[\s\S]*\} catch \(exc\) \{[\s\S]*root\.remove\(\);/);
   assert.match(previewSource, /if \(request\.kind === 'xlsx'\) return renderXlsxPreview\(container, request\);/);
   assert.match(previewSource, /return renderPptxPreview\(container, request\);/);

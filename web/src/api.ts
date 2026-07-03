@@ -809,6 +809,8 @@ function normalizeOnlyOfficeSettings(data: Partial<OnlyOfficeSettings>): OnlyOff
     public_api_base: data.public_api_base ?? null,
     jwt_secret: data.jwt_secret ?? null,
     lang: data.lang || 'zh',
+    project_file_edit_enabled: Boolean(data.project_file_edit_enabled),
+    run_artifact_edit_enabled: Boolean(data.run_artifact_edit_enabled),
   };
 }
 

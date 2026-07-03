@@ -19,6 +19,7 @@ export interface BrowserArtifactPreviewRequest {
   maxPdfPages?: number;
   maxSheetRows?: number;
   maxSheetColumns?: number;
+  onSaved?: () => void;
   signal?: AbortSignal;
 }
 
@@ -95,6 +96,17 @@ async function renderOnlyOfficePreview(
   if (!payload.config || typeof payload.config !== 'object') {
     throw new Error('OnlyOffice 预览配置无效。');
   }
+  const existingEvents = onlyOfficeEvents(payload.config);
+  payload.config = {
+    ...payload.config,
+    events: {
+      ...existingEvents,
+      onRequestClose: (event: unknown) => {
+        onlyOfficeEvent(existingEvents, 'onRequestClose')?.(event);
+        request.onSaved?.();
+      },
+    },
+  };
   await loadOnlyOfficeScript(payload.script_url, request.signal);
   throwIfAborted(request.signal);
   if (!window.DocsAPI?.DocEditor) throw new Error('OnlyOffice Document Server 未加载 DocsAPI。');
@@ -120,6 +132,16 @@ async function renderOnlyOfficePreview(
       root.remove();
     },
   };
+}
+
+function onlyOfficeEvents(config: Record<string, unknown>): Record<string, (event: unknown) => void> {
+  const events = config.events;
+  return events && typeof events === 'object' ? events as Record<string, (event: unknown) => void> : {};
+}
+
+function onlyOfficeEvent(events: Record<string, (event: unknown) => void>, name: string): ((event: unknown) => void) | undefined {
+  const event = events[name];
+  return typeof event === 'function' ? event : undefined;
 }
 
 function loadOnlyOfficeScript(scriptUrl: string, signal: AbortSignal | undefined): Promise<void> {

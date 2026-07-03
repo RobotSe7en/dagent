@@ -777,6 +777,8 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
             "public_api_base": "http://api.test/",
             "jwt_secret": None,
             "lang": "zh-CN",
+            "project_file_edit_enabled": True,
+            "run_artifact_edit_enabled": False,
         },
     )
     project = persistence_client.post(
@@ -809,6 +811,8 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
     assert onlyoffice_config["documentType"] == "word"
     assert onlyoffice_config["document"]["fileType"] == "docx"
     assert onlyoffice_config["document"]["title"] == "brief.docx"
+    assert onlyoffice_config["document"]["permissions"]["edit"] is True
+    assert onlyoffice_config["editorConfig"]["mode"] == "edit"
     assert onlyoffice_config["document"]["url"].startswith("http://api.test/onlyoffice/files/")
     assert onlyoffice_config["editorConfig"]["callbackUrl"].startswith("http://api.test/onlyoffice/callback/")
     assert onlyoffice_config["editorConfig"]["lang"] == "zh-CN"
@@ -829,6 +833,49 @@ def test_api_project_files_onlyoffice_preview_uses_system_config(persistence_cli
     assert callback_response.status_code == 200
     assert callback_response.json() == {"error": 0}
     assert unsupported_response.status_code == 415
+
+
+def test_api_project_files_onlyoffice_callback_saves_editable_file(persistence_client, monkeypatch) -> None:
+    async def fake_download(url: str) -> bytes:
+        assert url == "http://onlyoffice.test/edited.docx"
+        return b"edited docx bytes"
+
+    monkeypatch.setattr(api_app, "_download_onlyoffice_callback_file", fake_download, raising=False)
+    settings = persistence_client.put(
+        "/system/onlyoffice",
+        json={
+            "enabled": True,
+            "document_server_url": "http://onlyoffice.test/",
+            "public_api_base": "http://api.test/",
+            "project_file_edit_enabled": True,
+            "run_artifact_edit_enabled": False,
+        },
+    )
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Editable Office Files", "slug": "editable-office-files"},
+    ).json()["project"]
+    project_id = project["id"]
+    workspace_path = Path(unquote(urlparse(project["workspace_uri"]).path))
+    (workspace_path / "docs").mkdir()
+    target = workspace_path / "docs" / "brief.docx"
+    target.write_bytes(b"original docx bytes")
+
+    config_response = persistence_client.get(
+        f"/projects/{project_id}/files/onlyoffice/config",
+        params={"path": "docs/brief.docx"},
+    )
+    callback_url = config_response.json()["config"]["editorConfig"]["callbackUrl"]
+
+    callback_response = persistence_client.post(
+        urlsplit(callback_url).path,
+        json={"status": 2, "url": "http://onlyoffice.test/edited.docx"},
+    )
+
+    assert settings.status_code == 200
+    assert callback_response.status_code == 200
+    assert callback_response.json() == {"error": 0}
+    assert target.read_bytes() == b"edited docx bytes"
 
 
 def test_api_project_file_management_rejects_workspace_escape(persistence_client, tmp_path: Path) -> None:
