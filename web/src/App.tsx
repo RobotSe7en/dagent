@@ -7608,7 +7608,11 @@ function MessageTimeline({
     <div className={`message-timeline${liveProcessTimeline ? ' live-process-timeline' : ''}${completedProcessTimeline ? ' completed-process-timeline' : ''}`}>
       {collapsedProcess
         ? renderCollapsedMessageTimeline(collapsedProcess, message, onOpenDag)
-        : timeline.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
+        : timeline.map((item, index) =>
+            liveProcessTimeline
+              ? renderTimelineEntry(item, index, message, onOpenDag)
+              : renderMessageTimelineItem(item, index, message, onOpenDag),
+          )}
       {!timelineHasVisibleContent(timeline) && !message.content && loading ? <MessageContent content="..." /> : null}
     </div>
   );
@@ -7665,6 +7669,23 @@ function renderMessageTimelineItem(
   return item.content ? <MessageContent key={`text-${index}`} content={item.content} /> : null;
 }
 
+// 时间轴条目：给每个节点套一层不裁剪的外层，左侧的时间轴圆点挂在这层上，
+// 这样即便内部卡片自己 overflow:hidden，圆点也不会被裁掉。
+function renderTimelineEntry(
+  item: MessageTimelineItem,
+  index: number,
+  message: ChatMessage,
+  onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void,
+) {
+  const rendered = renderMessageTimelineItem(item, index, message, onOpenDag);
+  if (!rendered) return null;
+  return (
+    <div className="timeline-entry" key={`timeline-entry-${index}`}>
+      {rendered}
+    </div>
+  );
+}
+
 function ProcessSummaryCard({
   summary,
   items,
@@ -7688,7 +7709,7 @@ function ProcessSummaryCard({
         <ChevronDown className="card-chevron" size={16} />
       </summary>
       <div className="process-summary-body">
-        {items.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
+        {items.map((item, index) => renderTimelineEntry(item, index, message, onOpenDag))}
       </div>
     </details>
   );

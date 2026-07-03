@@ -1788,12 +1788,12 @@ button:focus-visible {
   background: #eceef2;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > * {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry {
   position: relative;
   min-width: 0;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > *::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry::before {
   content: '';
   position: absolute;
   top: 14px;
@@ -1805,33 +1805,36 @@ button:focus-visible {
   box-shadow: 0 0 0 2px #fff;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .think-block::before {
-  top: 17px;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .think-block)::before {
+  top: 18px;
   background: #fff;
   border: 2px solid #c9cdd6;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .capability-event-card::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card)::before {
+  top: 18px;
   background: #22c55e;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .capability-event-card.capability-event-running::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card.capability-event-running)::before {
   background: #6767dc;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .capability-event-card.capability-event-rejected::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card.capability-event-rejected)::before {
   background: #f59e0b;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .capability-event-card:is(.capability-event-error, .capability-event-failed)::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card:is(.capability-event-error, .capability-event-failed))::before {
   background: #ef4444;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .validation-card::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .validation-card)::before {
+  top: 18px;
   background: #818cf8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .dag-summary-card::before {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .dag-summary-card)::before {
+  top: 20px;
   background: #60a5fa;
 }
 
@@ -1903,7 +1906,7 @@ button:focus-visible {
 }
 
 /* 时间轴内的文本片段 */
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .markdown-body {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry > .markdown-body {
   color: #2f333b;
   font-size: 13.5px;
   line-height: 1.65;
