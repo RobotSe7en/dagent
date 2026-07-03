@@ -22,11 +22,15 @@ import {
   type XYPosition,
 } from '@xyflow/react';
 import {
+  Activity,
   AlertTriangle,
+  ArrowRight,
+  ArrowUp,
   Blocks,
   Bot,
   BotMessageSquare,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleStop,
@@ -49,9 +53,10 @@ import {
   RefreshCw,
   Save,
   Search,
-  Send,
   Settings,
   SlidersHorizontal,
+  SquareTerminal,
+  Sparkles,
   Trash2,
   Upload,
   UserCog,
@@ -5675,7 +5680,7 @@ function ChatWorkspace({
   );
   const reviewLevelLabels: Record<ReviewLevel, string> = { fast: '快速审核', careful: '谨慎审核' };
   const targetOptions: Array<{ value: ChatTarget; label: string; shortLabel: string; icon: React.ReactNode }> = [
-    { value: 'auto', label: '自动模式', shortLabel: '自动', icon: <Bot size={13} /> },
+    { value: 'auto', label: '自动模式', shortLabel: '自动', icon: <Sparkles size={13} /> },
     { value: 'dag', label: 'DAG 模式', shortLabel: 'DAG', icon: <GitBranch size={13} /> },
     { value: 'tool', label: '工具模式', shortLabel: '工具', icon: <Wrench size={13} /> },
   ];
@@ -5716,7 +5721,7 @@ function ChatWorkspace({
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) onRun();
               }}
-              placeholder="描述一个任务,或请求规划、审查、执行结果…"
+              placeholder="描述一个任务，或请求规划、审查、执行结果…"
             />
             {pendingUploadGroups.length ? (
               <div className="pending-upload-list">
@@ -5775,7 +5780,7 @@ function ChatWorkspace({
                     aria-label={option.label}
                     type="button"
                   >
-                    {option.icon}
+                    {target === option.value ? option.icon : null}
                     <span>{option.shortLabel}</span>
                   </button>
                 ))}
@@ -5854,7 +5859,7 @@ function ChatWorkspace({
               </details>
               <button className="primary-button chat-send-button" onClick={loading ? onStop : onRun} type="button">
                 {loading ? '停止' : '发送'}
-                {loading ? <CircleStop size={16} /> : <Send size={16} />}
+                {loading ? <CircleStop size={16} /> : <ArrowRight size={16} />}
               </button>
             </div>
           </div>
@@ -6995,7 +7000,7 @@ function UploadPicker({
         aria-label="上传附件"
         onClick={onSummaryClick}
       >
-        <Upload size={iconSize} />
+        {variant === 'composer' ? <ArrowUp size={iconSize} /> : <Upload size={iconSize} />}
       </summary>
       <div className="upload-picker-menu">
         <label>
@@ -7672,12 +7677,15 @@ function ProcessSummaryCard({
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void;
 }) {
   return (
-    <details className="timeline-card process-summary-card">
-      <summary className="timeline-card-head process-summary-head">
-        <Wrench size={14} />
+    <details className="process-summary-card">
+      <summary className="process-summary-head">
+        <span className="process-summary-icon"><Activity size={15} /></span>
         <strong>执行过程</strong>
-        <span>{processSummaryText(summary)}</span>
-        <ChevronRight className="timeline-chevron" size={15} />
+        <em className={`process-status-pill${summary.failedCount ? ' has-failures' : ''}`}>
+          {summary.failedCount ? '有异常' : '已完成'}
+        </em>
+        <span className="process-summary-meta">{processSummaryText(summary)}</span>
+        <ChevronDown className="card-chevron" size={16} />
       </summary>
       <div className="process-summary-body">
         {items.map((item, index) => renderMessageTimelineItem(item, index, message, onOpenDag))}
@@ -7688,7 +7696,7 @@ function ProcessSummaryCard({
 
 function processSummaryText(summary: ProcessTimelineSummary): string {
   const parts: string[] = [];
-  if (summary.capabilityCount) parts.push(`${summary.capabilityCount} 次能力调用`);
+  if (summary.capabilityCount) parts.push(`${summary.capabilityCount} 次调用`);
   if (summary.reasoningCount) parts.push(`${summary.reasoningCount} 段推理`);
   if (summary.validationCount) parts.push(`${summary.validationCount} 次校验`);
   if (summary.failedCount) parts.push(`${summary.failedCount} 个异常`);
@@ -7728,15 +7736,17 @@ function MessageContent({ content }: { content: string }) {
   );
 }
 
-function ReasoningBlock({ content, closed }: { content: string; closed: boolean }) {
+function ReasoningBlock({ content }: { content: string; closed: boolean }) {
   return (
-    <details className="think-block" open={!closed}>
+    <details className="think-block" open>
       <summary className="reasoning-summary">
-        <Bot size={14} />
+        <MessageSquare size={13} />
         <strong>推理过程</strong>
-        <ChevronRight className="timeline-chevron" size={15} />
+        <ChevronDown className="card-chevron" size={14} />
       </summary>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '...'}</ReactMarkdown>
+      <div className="reasoning-body">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || '...'}</ReactMarkdown>
+      </div>
     </details>
   );
 }
@@ -7825,7 +7835,7 @@ function ValidationCard({ event }: { event?: ValidationFeedbackEvent }) {
         {validating ? <Loader size={14} /> : passed ? <Check size={14} /> : <AlertTriangle size={14} />}
         <strong>结果校验</strong>
         <span>{statusLabel}</span>
-        <ChevronRight className="timeline-chevron" size={15} />
+        <ChevronDown className="card-chevron" size={15} />
       </summary>
       {validating ? (
         <div className="timeline-section">
@@ -7878,13 +7888,18 @@ function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; 
     : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
   const argsText = formatCapabilityArguments(event.arguments);
   const eventClass = rejectedByReview ? 'capability-event-rejected' : showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
+  const statusIcon = statusLabel === 'running'
+    ? <Loader size={11} />
+    : statusLabel === 'done'
+      ? <Check size={11} />
+      : <X size={11} />;
   return (
     <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">
-        <Wrench size={14} />
+        <span className="capability-event-icon"><SquareTerminal size={14} /></span>
         <strong>{event.capability_id}</strong>
-        <span>{statusLabel}</span>
-        <ChevronRight className="timeline-chevron" size={15} />
+        <span className="capability-event-status">{statusIcon}{statusLabel}</span>
+        <ChevronDown className="card-chevron" size={15} />
       </summary>
       {argsText ? (
         <div className="capability-section">
