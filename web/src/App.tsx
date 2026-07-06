@@ -391,21 +391,61 @@ function matchesSearchQuery(values: SearchableValue[], query: string): boolean {
   return values.some((value) => String(value ?? '').toLowerCase().includes(query));
 }
 
-function isChatSurfaceConversation(conversation: ApiConversation): boolean {
-  return conversation.kind === 'chat' || conversation.kind === 'dynamic_dag';
+const ORCHESTRATION_WORKSPACE_SURFACE = 'orchestration_workspace';
+const SMART_WORKBENCH_SURFACE = 'smart_workbench';
+
+function orchestrationSessionSurface(session: OrchestrationSession | null | undefined): string {
+  const surface = session?.ui_state?.surface;
+  return typeof surface === 'string' ? surface : '';
 }
 
-function isStandaloneDynamicOrchestration(conversation: ApiConversation): boolean {
-  return conversation.kind === 'dynamic_dag' && !conversation.project_id;
+function orchestrationWorkspaceUiState(uiState: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...uiState, surface: ORCHESTRATION_WORKSPACE_SURFACE };
+}
+
+function smartWorkbenchUiState(uiState: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...uiState, surface: SMART_WORKBENCH_SURFACE };
+}
+
+function isOrchestrationWorkspaceConversation(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  if (conversation.kind !== 'dynamic_dag') return false;
+  const session = sessionsByConversationId[conversation.id];
+  if (session === undefined) return false;
+  const surface = orchestrationSessionSurface(session);
+  if (surface) return surface === ORCHESTRATION_WORKSPACE_SURFACE;
+  return !conversation.project_id;
+}
+
+function isChatSurfaceConversation(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  if (conversation.kind === 'chat') return true;
+  if (conversation.kind !== 'dynamic_dag') return false;
+  const session = sessionsByConversationId[conversation.id];
+  if (session === undefined) return false;
+  return !isOrchestrationWorkspaceConversation(conversation, sessionsByConversationId);
+}
+
+function isStandaloneDynamicOrchestration(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  return conversation.kind === 'dynamic_dag' && !conversation.project_id
+    && isOrchestrationWorkspaceConversation(conversation, sessionsByConversationId);
 }
 
 function isSelectableOrchestrationConversation(
   conversation: ApiConversation,
   kind: ApiConversation['kind'],
   selectedProjectId: string,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
 ): boolean {
   if (conversation.kind !== kind) return false;
-  if (kind === 'dynamic_dag') return isStandaloneDynamicOrchestration(conversation);
+  if (kind === 'dynamic_dag') return isStandaloneDynamicOrchestration(conversation, sessionsByConversationId);
   return selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id;
 }
 
@@ -828,6 +868,7 @@ type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
 type OrchestrationSessionKind = OrchestrationSession['kind'];
+type OrchestrationSessionsByConversationId = Record<string, OrchestrationSession | null | undefined>;
 type OrchestrationContext = {
   conversation: ApiConversation;
   session: OrchestrationSession;
@@ -1164,6 +1205,7 @@ export function App() {
   const [chatSub, setChatSub] = useState<ChatWorkspaceSub>('conversations');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [conversations, setConversations] = useState<ApiConversation[]>([]);
+  const [orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId] = useState<OrchestrationSessionsByConversationId>({});
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -1379,12 +1421,15 @@ export function App() {
     [conversations, selectedConversationId],
   );
   const orchestrationConversationIdsKey = useMemo(() => conversations
-    .filter((conversation) => isStandaloneDynamicOrchestration(conversation) || conversation.kind === 'static_dag')
+    .filter((conversation) => (
+      isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)
+      || conversation.kind === 'static_dag'
+    ))
     .map((conversation) => `${conversation.kind}:${conversation.project_id ?? ''}:${conversation.id}`)
-    .join('|'), [conversations]);
+    .join('|'), [conversations, orchestrationSessionsByConversationId]);
   const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
   const selectedChatSurfaceConversation = (
-    selectedConversation && isChatSurfaceConversation(selectedConversation)
+    selectedConversation && isChatSurfaceConversation(selectedConversation, orchestrationSessionsByConversationId)
       ? selectedConversation
       : null
   );
@@ -1417,12 +1462,12 @@ export function App() {
     : undefined;
   const normalizedDynamicConversationQuery = normalizeSearchQuery(dynamicConversationQuery);
   const visibleDynamicConversations = useMemo(() => conversations.filter((conversation) => {
-    if (!isStandaloneDynamicOrchestration(conversation)) return false;
+    if (!isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)) return false;
     return matchesSearchQuery(
       [conversation.id, conversation.title, conversation.status],
       normalizedDynamicConversationQuery,
     );
-  }), [conversations, normalizedDynamicConversationQuery]);
+  }), [conversations, normalizedDynamicConversationQuery, orchestrationSessionsByConversationId]);
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -1501,6 +1546,33 @@ export function App() {
     };
   }, [editorSavedDagId]);
 
+  const rememberOrchestrationSession = useCallback((
+    session: OrchestrationSession | null,
+    conversationId?: string,
+  ) => {
+    const targetConversationId = session?.conversation_id ?? conversationId;
+    if (!targetConversationId) return;
+    setOrchestrationSessionsByConversationId((items) => ({
+      ...items,
+      [targetConversationId]: session,
+    }));
+  }, []);
+
+  const loadOrchestrationSessionsForConversations = useCallback(async (conversationItems: ApiConversation[]) => {
+    const entries = await Promise.all(conversationItems
+      .filter((conversation) => conversation.kind === 'dynamic_dag')
+      .map(async (conversation): Promise<[string, OrchestrationSession | null]> => [
+        conversation.id,
+        await getOrchestrationSessionByConversation(conversation.id),
+      ]));
+    const sessionsByConversationId: OrchestrationSessionsByConversationId = {};
+    entries.forEach(([conversationId, session]) => {
+      sessionsByConversationId[conversationId] = session;
+    });
+    setOrchestrationSessionsByConversationId(sessionsByConversationId);
+    return sessionsByConversationId;
+  }, []);
+
   const loadPersistedConversations = useCallback(async (projectItems: ApiProject[]) => {
     const [standaloneConversations, projectConversationGroups] = await Promise.all([
       listConversations(),
@@ -1514,9 +1586,10 @@ export function App() {
 
   const refreshConversations = useCallback(async (projectItems: ApiProject[] = projects) => {
     const conversationItems = await loadPersistedConversations(projectItems);
+    await loadOrchestrationSessionsForConversations(conversationItems);
     setConversations(conversationItems);
     return conversationItems;
-  }, [loadPersistedConversations, projects]);
+  }, [loadOrchestrationSessionsForConversations, loadPersistedConversations, projects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1531,11 +1604,13 @@ export function App() {
       ));
       const conversationItems = await loadPersistedConversations(items);
       if (cancelled) return;
+      const sessionsByConversationId = await loadOrchestrationSessionsForConversations(conversationItems);
+      if (cancelled) return;
       setConversations(conversationItems);
       setSelectedConversationId((current) => (
         current && conversationItems.some((conversation) => (
           conversation.id === current
-          && isChatSurfaceConversation(conversation)
+          && isChatSurfaceConversation(conversation, sessionsByConversationId)
           && !conversation.project_id
         ))
           ? current
@@ -1554,7 +1629,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadPersistedConversations]);
+  }, [loadOrchestrationSessionsForConversations, loadPersistedConversations]);
 
   const refreshProjectFiles = useCallback(async () => {
     const requestId = projectFilesRequestRef.current + 1;
@@ -2610,6 +2685,7 @@ export function App() {
     try {
       const session = await getOrchestrationSessionByConversation(conversation.id);
       if (orchestrationHydrationRequestRef.current !== requestId || !session) return;
+      rememberOrchestrationSession(session);
       const selectedNodeId = typeof session.ui_state?.selectedNodeId === 'string'
         ? session.ui_state.selectedNodeId
         : '';
@@ -2691,6 +2767,7 @@ export function App() {
       else setEditorMessage(message);
     }
   }, [
+    rememberOrchestrationSession,
     nextDynamicTimelineOrder,
     setEditorUserDagAndRuntimeDag,
     setOrderedDynamicFinalAnswer,
@@ -2704,11 +2781,21 @@ export function App() {
     const current = selectedConversationId
       ? conversationItems.find((conversation) => (
         conversation.id === selectedConversationId
-        && isSelectableOrchestrationConversation(conversation, kind, selectedProjectId)
+        && isSelectableOrchestrationConversation(
+          conversation,
+          kind,
+          selectedProjectId,
+          orchestrationSessionsByConversationId,
+        )
       )) ?? null
       : null;
     const preferred = current
-      ?? conversationItems.find((conversation) => isSelectableOrchestrationConversation(conversation, kind, selectedProjectId))
+      ?? conversationItems.find((conversation) => isSelectableOrchestrationConversation(
+        conversation,
+        kind,
+        selectedProjectId,
+        orchestrationSessionsByConversationId,
+      ))
       ?? null;
     if (!preferred) return;
     const hydrateKey = `${kind}:${preferred.id}`;
@@ -2726,6 +2813,7 @@ export function App() {
     editorRunning,
     hydrateOrchestrationConversation,
     orchestrationConversationIdsKey,
+    orchestrationSessionsByConversationId,
     orchestrationMode,
     selectedConversationId,
     selectedProjectId,
@@ -3247,10 +3335,19 @@ export function App() {
       const targetProjectId = Object.prototype.hasOwnProperty.call(options, 'targetProjectId')
         ? options.targetProjectId ?? null
         : selectedProjectId || null;
+      const targetSurface = kind === 'dynamic_dag' && typeof options.uiState?.surface === 'string'
+        ? options.uiState.surface
+        : '';
       let conversation = (
         selectedConversation?.kind === kind
         && selectedConversation?.project_id === targetProjectId
       ) ? selectedConversation : null;
+      if (conversation && targetSurface) {
+        const matchesSurface = targetSurface === ORCHESTRATION_WORKSPACE_SURFACE
+          ? isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)
+          : isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId);
+        if (!matchesSurface) conversation = null;
+      }
       if (!conversation) {
         const createdConversation = targetProjectId
           ? await createProjectConversation(targetProjectId, { title, kind })
@@ -3265,6 +3362,7 @@ export function App() {
       }
 
       let session = await getOrchestrationSessionByConversation(conversation.id);
+      rememberOrchestrationSession(session, conversation.id);
       let createdSession = false;
       if (!session) {
         try {
@@ -3277,10 +3375,12 @@ export function App() {
             ui_state: options.uiState ?? {},
           });
           createdSession = true;
+          rememberOrchestrationSession(session);
         } catch (exc) {
           if (!isOrchestrationSessionConflict(exc)) throw exc;
           session = await getOrchestrationSessionByConversation(conversation.id);
           if (!session) throw exc;
+          rememberOrchestrationSession(session);
         }
       }
       if (session && !createdSession) {
@@ -3294,6 +3394,7 @@ export function App() {
         if (options.uiState) patch.ui_state = options.uiState;
         if (Object.keys(patch).length) {
           session = await updateOrchestrationSession(session.id, patch);
+          rememberOrchestrationSession(session);
         }
       }
       if (!session) throw new Error('Orchestration session not found.');
@@ -3322,8 +3423,9 @@ export function App() {
         project_id: conversation.project_id,
         kind: 'dynamic_dag',
         draft_dag: null,
-        ui_state: {},
+        ui_state: orchestrationWorkspaceUiState(),
       });
+      rememberOrchestrationSession(session);
       setConversations((items) => [
         conversation,
         ...items.filter((item) => item.id !== conversation.id),
@@ -3342,7 +3444,7 @@ export function App() {
   const selectDynamicOrchestration = async (conversationId: string) => {
     if (dynamicRunning || editorRunning) return;
     const conversation = conversationsRef.current.find((item) => item.id === conversationId);
-    if (!conversation || !isStandaloneDynamicOrchestration(conversation)) return;
+    if (!conversation || !isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)) return;
     setSelectedConversationId(conversation.id);
     clearDynamicWorkspace();
     orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
@@ -3373,6 +3475,11 @@ export function App() {
     try {
       await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
       setConversations((items) => items.filter((item) => item.id !== conversation.id));
+      setOrchestrationSessionsByConversationId((items) => {
+        const nextItems = { ...items };
+        delete nextItems[conversation.id];
+        return nextItems;
+      });
       setDynamicConversationDeleteTargetId('');
       setDynamicConversationEditTargetId((current) => (current === conversation.id ? '' : current));
       if (selectedConversationId === conversation.id) {
@@ -3586,6 +3693,7 @@ export function App() {
         {
           targetProjectId: null,
           draftDag: dynamicDag as unknown as Record<string, unknown>,
+          uiState: orchestrationWorkspaceUiState(),
         },
       );
       if (!context) return;
@@ -3624,6 +3732,7 @@ export function App() {
         {
           targetProjectId: null,
           draftDag: dag as unknown as Record<string, unknown>,
+          uiState: orchestrationWorkspaceUiState(),
         },
       );
       if (!context) return;
@@ -3657,6 +3766,7 @@ export function App() {
         {
           targetProjectId: chatSub === 'projects' ? selectedProjectId : null,
           draftDag: dag.nodes.length ? dag as unknown as Record<string, unknown> : null,
+          uiState: smartWorkbenchUiState(),
         },
       );
       if (!context) return null;
@@ -3982,7 +4092,7 @@ export function App() {
   const createProjectConversationFromProject = async (projectId: string) => {
     if (streaming) return null;
     const projectConversationCount = conversations.filter((conversation) => (
-      isChatSurfaceConversation(conversation) && conversation.project_id === projectId
+      isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && conversation.project_id === projectId
     )).length;
     try {
       const conversation = await createProjectConversation(projectId, {
@@ -4099,10 +4209,21 @@ export function App() {
     try {
       await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
       setConversations(remaining);
+      setOrchestrationSessionsByConversationId((items) => {
+        const nextItems = { ...items };
+        delete nextItems[conversation.id];
+        return nextItems;
+      });
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'
-          ? remaining.find((item) => isChatSurfaceConversation(item) && item.project_id === conversation.project_id) ?? null
-          : remaining.find((item) => isChatSurfaceConversation(item) && !item.project_id) ?? null;
+          ? remaining.find((item) => (
+            isChatSurfaceConversation(item, orchestrationSessionsByConversationId)
+            && item.project_id === conversation.project_id
+          )) ?? null
+          : remaining.find((item) => (
+            isChatSurfaceConversation(item, orchestrationSessionsByConversationId)
+            && !item.project_id
+          )) ?? null;
         setSelectedConversationId(nextConversation?.id ?? '');
         if (nextConversation?.project_id) setSelectedProjectId(nextConversation.project_id);
         clearChatSurface();
@@ -4368,6 +4489,7 @@ export function App() {
         systemSub={systemManagementSub}
         models={models}
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
+        orchestrationSessionsByConversationId={orchestrationSessionsByConversationId}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
         projectError={projectError}
@@ -4776,6 +4898,7 @@ function WorkspaceSidebar({
   systemSub,
   models,
   onlyOfficeEnabled,
+  orchestrationSessionsByConversationId,
   mcpCount,
   mcpServers,
   projectError,
@@ -4859,6 +4982,7 @@ function WorkspaceSidebar({
   systemSub: SystemManagementSub;
   models: ModelProvider[];
   onlyOfficeEnabled: boolean;
+  orchestrationSessionsByConversationId: OrchestrationSessionsByConversationId;
   mcpCount: number;
   mcpServers: MCPServer[];
   projectError: string | null;
@@ -4926,7 +5050,7 @@ function WorkspaceSidebar({
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const standaloneConversationCount = conversations.filter((conversation) => (
-    isChatSurfaceConversation(conversation) && !conversation.project_id
+    isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && !conversation.project_id
   )).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
@@ -4978,7 +5102,7 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation) && !conversation.project_id && matchesSearchQuery(
+  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && !conversation.project_id && matchesSearchQuery(
     [
       conversation.id,
       conversation.title,
@@ -4988,7 +5112,7 @@ function WorkspaceSidebar({
   ));
   const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
   conversations.forEach((conversation) => {
-    if (!isChatSurfaceConversation(conversation)) return;
+    if (!isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId)) return;
     if (!conversation.project_id) return;
     const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
     items.push(conversation);

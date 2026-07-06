@@ -1232,7 +1232,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   const hydrationEffectSource = appSource.match(/useEffect\(\(\) => \{\s*if \(activeWorkspace !== 'orchestration'[\s\S]*?\n  \}, \[[\s\S]*?orchestrationConversationIdsKey,[\s\S]*?\]\);/)?.[0] ?? '';
   assert.ok(hydrationEffectSource, 'orchestration hydration effect should exist');
   assert.match(hydrationEffectSource, /conversationsRef\.current/);
-  assert.match(hydrationEffectSource, /isSelectableOrchestrationConversation\(conversation, kind, selectedProjectId\)/);
+  assert.match(hydrationEffectSource, /isSelectableOrchestrationConversation\(\s*conversation,\s*kind,\s*selectedProjectId,\s*orchestrationSessionsByConversationId,\s*\)/);
   assert.match(hydrationEffectSource, /const hydrateKey = `\$\{kind\}:\$\{preferred\.id\}`;/);
   assert.doesNotMatch(hydrationEffectSource, /savedRevisionKey|preferred\.updated_at|preferred\.last_run_id|savedDags\.map/);
   assert.doesNotMatch(hydrationEffectSource, /\n\s*conversations,\n|\n\s*savedDags,\n|\n\s*selectedConversation,\n/);
@@ -1500,11 +1500,18 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(apiSource, /export async function updateProjectConversation/);
   assert.match(appSource, /updateConversation,/);
   assert.match(appSource, /updateProjectConversation,/);
+  assert.match(appSource, /const ORCHESTRATION_WORKSPACE_SURFACE = 'orchestration_workspace';/);
+  assert.match(appSource, /const SMART_WORKBENCH_SURFACE = 'smart_workbench';/);
+  assert.match(appSource, /type OrchestrationSessionsByConversationId = Record<string, OrchestrationSession \| null \| undefined>;/);
+  assert.match(appSource, /const \[orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId\] = useState<OrchestrationSessionsByConversationId>\(\{\}\);/);
+  assert.match(appSource, /const loadOrchestrationSessionsForConversations = useCallback/);
+  assert.match(appSource, /getOrchestrationSessionByConversation\(conversation\.id\)/);
   assert.match(appSource, /const \[dynamicConversationQuery, setDynamicConversationQuery\] = useState\(''\);/);
-  assert.match(appSource, /function isStandaloneDynamicOrchestration\(conversation: ApiConversation\): boolean \{[\s\S]*conversation\.kind === 'dynamic_dag' && !conversation\.project_id/);
-  assert.match(appSource, /function isSelectableOrchestrationConversation\([\s\S]*kind === 'dynamic_dag'[\s\S]*isStandaloneDynamicOrchestration\(conversation\)/);
+  assert.match(appSource, /function isOrchestrationWorkspaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*ORCHESTRATION_WORKSPACE_SURFACE/);
+  assert.match(appSource, /function isStandaloneDynamicOrchestration\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'dynamic_dag' && !conversation\.project_id/);
+  assert.match(appSource, /function isSelectableOrchestrationConversation\([\s\S]*kind === 'dynamic_dag'[\s\S]*isStandaloneDynamicOrchestration\(conversation, sessionsByConversationId\)/);
   assert.match(appSource, /const visibleDynamicConversations = useMemo\(\(\) => conversations\.filter/);
-  assert.match(appSource, /if \(!isStandaloneDynamicOrchestration\(conversation\)\) return false;/);
+  assert.match(appSource, /if \(!isStandaloneDynamicOrchestration\(conversation, orchestrationSessionsByConversationId\)\) return false;/);
   assert.match(appSource, /const clearDynamicWorkspace = useCallback\(\(\) => \{/);
   assert.match(appSource, /const createDynamicOrchestration = async \(\) => \{/);
   assert.match(appSource, /const selectDynamicOrchestration = async \(conversationId: string\) => \{/);
@@ -1522,9 +1529,10 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(appSource, /function DynamicConversationDeleteDialog/);
   const createDynamicSource = appSource.match(/const createDynamicOrchestration = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
   assert.match(createDynamicSource, /await createConversation\(\{ title: '动态编排', kind: 'dynamic_dag' \}\)/);
+  assert.match(createDynamicSource, /ui_state: orchestrationWorkspaceUiState\(\)/);
   assert.doesNotMatch(createDynamicSource, /createProjectConversation|selectedProjectId|setSelectedProjectId/);
   const selectDynamicSource = appSource.match(/const selectDynamicOrchestration = async \(conversationId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
-  assert.match(selectDynamicSource, /isStandaloneDynamicOrchestration\(conversation\)/);
+  assert.match(selectDynamicSource, /isStandaloneDynamicOrchestration\(conversation, orchestrationSessionsByConversationId\)/);
   assert.doesNotMatch(selectDynamicSource, /setSelectedProjectId/);
 });
 
@@ -1671,7 +1679,7 @@ test('workspace sidebar shares search controls across lower-left resource lists'
   assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
 
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleHistory = history\.filter/);
   assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
@@ -2214,8 +2222,10 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /type ChatWorkspaceSub = 'conversations' \| 'projects';/);
   assert.match(appSource, /const \[chatSub, setChatSub\] = useState<ChatWorkspaceSub>\('conversations'\);/);
   assert.match(appSource, /const \[conversations, setConversations\] = useState<ApiConversation\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId\] = useState<OrchestrationSessionsByConversationId>\(\{\}\);/);
   assert.match(appSource, /listConversations\(\)/);
   assert.match(appSource, /listProjectConversations\(project\.id\)/);
+  assert.match(appSource, /loadOrchestrationSessionsForConversations\(conversationItems\)/);
   assert.match(appSource, /const loadPersistedConversations = useCallback\(async \(projectItems: ApiProject\[\]\) => \{/);
   assert.match(appSource, /deleteConversation,/);
   assert.match(appSource, /deleteProjectConversation,/);
@@ -2237,11 +2247,12 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(selectWorkspaceSource, /setActiveWorkspace\(workspace\);/);
   assert.match(selectWorkspaceSource, /workspace === 'chat' && chatSub === 'conversations'[\s\S]*setSelectedConversationId\(''\);[\s\S]*clearChatSurface\(\);/);
   assert.match(appSource, /onSelectWorkspace=\{selectWorkspace\}/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*orchestrationSessionsByConversationId=\{orchestrationSessionsByConversationId\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
   assert.doesNotMatch(appSource, /history=\{chatHistory\}/);
   assert.doesNotMatch(appSource, /const chatHistory = useMemo\(\(\) => currentChatHistory/);
   assert.doesNotMatch(appSource, /function currentChatHistory/);
   assert.match(sidebarSource, /chatSub: ChatWorkspaceSub;/);
+  assert.match(sidebarSource, /orchestrationSessionsByConversationId: OrchestrationSessionsByConversationId;/);
   assert.match(sidebarSource, /onChatSubChange: \(sub: ChatWorkspaceSub\) => void;/);
   assert.match(sidebarSource, /const chatSubnav = \[/);
   assert.match(sidebarSource, /label: '会话'/);
@@ -2857,19 +2868,21 @@ test('chat DAG target creates a dynamic DAG conversation context before streamin
   assert.match(ensureConversationSource, /if \(runTarget === 'dag'\) \{/);
   assert.match(ensureConversationSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
   assert.match(ensureConversationSource, /targetProjectId: chatSub === 'projects' \? selectedProjectId : null/);
+  assert.match(ensureConversationSource, /uiState: smartWorkbenchUiState\(\)/);
   assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);/);
 });
 
-test('chat history treats dynamic DAG conversations as restorable chat surface sessions', async () => {
+test('chat history only treats smart workbench dynamic DAG conversations as chat surface sessions', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(appSource, /function isChatSurfaceConversation\(conversation: ApiConversation\): boolean \{[\s\S]*conversation\.kind === 'chat' \|\| conversation\.kind === 'dynamic_dag'/);
-  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id/);
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
-  assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation\)\) return;/);
-  assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation\)/);
+  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'chat'[\s\S]*!isOrchestrationWorkspaceConversation\(conversation, sessionsByConversationId\)/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)\) return;/);
+  assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation, orchestrationSessionsByConversationId\)/);
+  assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
 });
 
 test('conversation subnav count excludes project conversations', async () => {
@@ -2877,7 +2890,7 @@ test('conversation subnav count excludes project conversations', async () => {
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id[\s\S]*\)\)\.length;/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id[\s\S]*\)\)\.length;/);
   assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
   assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: conversations\.length \}/);
 });
@@ -2950,7 +2963,7 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(appSource, /function ProjectEditDialog/);
   assert.match(appSource, /function ProjectDeleteDialog/);
   assert.match(appSource, /projectDeleteOpen && projectDeleteTarget/);
-  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
 });
 
 test('conversation deletion is not blocked by local streaming state', async () => {
