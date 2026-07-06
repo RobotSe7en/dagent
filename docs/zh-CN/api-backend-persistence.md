@@ -65,7 +65,13 @@ PATCH /projects/{project_id}/conversations/{conversation_id}
 GET /conversations/{conversation_id}/runs
 GET /orchestration-sessions/{session_id}/runs
 GET /saved-dags/{dag_id}/runs
+DELETE /runs/{run_id}
 ```
+
+`DELETE /runs/{run_id}` 表示删除一条运行历史。它会删除 run 记录、stream/event/state
+记录、该 run 的 review 记录、专属 run workspace，以及 `run_id` 匹配该 run 的可见
+`conversation_messages`。等待审核中的 run 也可以删除；这样做会有意丢弃对应的 pending
+review 和该 run 的可见会话记录。
 
 ## Resume 和重启行为
 

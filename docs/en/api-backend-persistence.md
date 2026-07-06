@@ -77,7 +77,14 @@ PATCH /projects/{project_id}/conversations/{conversation_id}
 GET /conversations/{conversation_id}/runs
 GET /orchestration-sessions/{session_id}/runs
 GET /saved-dags/{dag_id}/runs
+DELETE /runs/{run_id}
 ```
+
+`DELETE /runs/{run_id}` removes the run history entry. It deletes the run row,
+stream/event/state records, review records for that run, any dedicated run
+workspace, and visible `conversation_messages` whose `run_id` matches the
+deleted run. Awaiting-review runs can be deleted; doing so intentionally
+discards the pending review and the visible transcript for that run.
 
 ## Resume And Restart Behavior
 

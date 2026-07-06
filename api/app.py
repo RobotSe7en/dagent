@@ -4489,20 +4489,26 @@ async def _persisted_context_from_conversation(
     else:
         workspace_uri = conversation.workspace_uri
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, workspace_uri)
-    previous_run_state = None
-    if conversation.last_run_id is not None:
-        previous_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
-        if previous_run_state is not None and previous_run_state.status == "awaiting_review":
-            raise HTTPException(
-                status_code=409,
-                detail="Conversation is awaiting review; resume the pending review before sending a new message.",
-            )
     orchestration_session = None
     if include_orchestration_session and conversation.kind != "chat":
         orchestration_session = await run_in_threadpool(
             store.get_orchestration_session_by_conversation,
             conversation.id,
         )
+    orchestration_surface = _orchestration_session_surface(orchestration_session)
+    previous_run_state = None
+    if conversation.last_run_id is not None:
+        stored_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
+        if stored_run_state is not None and stored_run_state.status == "awaiting_review":
+            raise HTTPException(
+                status_code=409,
+                detail="Conversation is awaiting review; resume the pending review before sending a new message.",
+            )
+        if not (
+            conversation.kind == "dynamic_dag"
+            and orchestration_surface == ORCHESTRATION_WORKSPACE_SURFACE
+        ):
+            previous_run_state = stored_run_state
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
@@ -4511,7 +4517,7 @@ async def _persisted_context_from_conversation(
         workspace_path=workspace_path,
         run_state=previous_run_state,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
-        orchestration_surface=_orchestration_session_surface(orchestration_session),
+        orchestration_surface=orchestration_surface,
     )
 
 
@@ -5504,7 +5510,9 @@ def _sse(payload: dict[str, Any]) -> str:
 def _run_summary_payload(run: Run) -> dict[str, Any]:
     payload = run.model_dump(mode="json")
     state_json = payload.pop("state_json")
+    error_json = payload.pop("error_json")
     payload["has_state"] = state_json is not None
+    payload["has_error"] = error_json is not None
     return payload
 
 
