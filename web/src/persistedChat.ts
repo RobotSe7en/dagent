@@ -63,15 +63,6 @@ export function messagesFromPersistedRunResult(
   if (state?.kind === 'dynamic_dag') {
     return dynamicDagMessagesFromPersistedRunResult(result, traceSnapshot, events);
   }
-  return chatMessagesFromPersistedRunResult(result, traceSnapshot, events);
-}
-
-function chatMessagesFromPersistedRunResult(
-  result: ApiRunResult,
-  traceSnapshot: TraceLogEvent[],
-  events: ApiRunEvent[],
-): ChatMessage[] {
-  const state = result.state ?? null;
   const dagSnapshot = state?.dag ?? undefined;
   const reviewMessage = state?.pending_review?.message?.trim() ?? '';
   const output = result.output_text.trim();
@@ -86,14 +77,14 @@ function chatMessagesFromPersistedRunResult(
     appendPersistedChatMessage(messages, role, content);
   }
 
-  const groups = persistedRunEventGroups(events);
-  if (groups.length) {
-    appendPersistedChatEventGroups(messages, groups, result, traceSnapshot);
-    return messages;
-  }
+  const assistantIndex = lastAssistantMessageIndex(messages);
+  const lastAssistantContent = assistantIndex === -1 ? '' : messages[assistantIndex].content.trim();
+  const eventTimeline = timelineFromPersistedRunEvents(events, fallbackContent || lastAssistantContent, output);
+  const replayedText = textContentFromTimeline(eventTimeline);
 
   if (
     fallbackContent
+    && !eventTimeline.length
     && !messages.some((message) => message.role === 'assistant' && message.content.trim() === fallbackContent)
   ) {
     appendPersistedChatMessage(messages, 'assistant', fallbackContent);
@@ -102,81 +93,28 @@ function chatMessagesFromPersistedRunResult(
   const nextAssistantIndex = lastAssistantMessageIndex(messages);
   if (nextAssistantIndex !== -1) {
     const message = messages[nextAssistantIndex];
-    let timeline = message.timeline ?? [];
+    let timeline = eventTimeline.length ? eventTimeline : message.timeline ?? [];
     if (dagSnapshot) timeline = upsertDagTimeline(timeline, dagSnapshot);
     messages[nextAssistantIndex] = {
       ...message,
-      content: message.content || fallbackContent,
+      content: replayedText || message.content || fallbackContent,
       timeline,
       dagSnapshot,
       traceSnapshot,
     };
-  } else if (dagSnapshot) {
-    let timeline: MessageTimelineItem[] = [];
+  } else if (dagSnapshot || eventTimeline.length) {
+    let timeline = eventTimeline;
     if (dagSnapshot) timeline = upsertDagTimeline(timeline, dagSnapshot);
     messages.push({
       role: 'assistant',
       kind: 'text',
-      content: fallbackContent,
+      content: replayedText || fallbackContent,
       timeline,
       dagSnapshot,
       traceSnapshot,
     });
   }
   return messages;
-}
-
-function appendPersistedChatEventGroups(
-  messages: ChatMessage[],
-  groups: ApiRunEvent[][],
-  finalResult: ApiRunResult,
-  finalTraceSnapshot: TraceLogEvent[],
-): void {
-  const finalGroup = groups[groups.length - 1];
-  let assistantCursor = 0;
-  for (const group of groups) {
-    const segmentResult = finishedRunResultFromEvents(group) ?? (group === finalGroup ? finalResult : null);
-    const segmentState = segmentResult?.state ?? (group === finalGroup ? finalResult.state ?? null : null);
-    const segmentTrace = segmentResult === finalResult || segmentState === finalResult.state
-      ? finalTraceSnapshot
-      : segmentState?.trace
-        ? mapRunTrace(segmentState.trace)
-        : [];
-    const dagSnapshot = segmentState?.dag ?? (group === finalGroup ? finalResult.state?.dag ?? undefined : undefined);
-    const reviewMessage = segmentState?.pending_review?.message?.trim() ?? '';
-    const output = segmentResult?.output_text.trim() ?? (group === finalGroup ? finalResult.output_text.trim() : '');
-    const fallbackContent = output || reviewMessage || fallbackContentFromPersistedRunEvents(group);
-    let timeline = timelineFromPersistedRunEvents(group, fallbackContent, output || fallbackContent);
-    if (dagSnapshot) timeline = upsertDagTimeline(timeline, dagSnapshot);
-    const replayedText = textContentFromTimeline(timeline);
-    const content = replayedText || fallbackContent;
-    if (!content && !timeline.length && !dagSnapshot) continue;
-
-    const assistantIndex = nextAssistantMessageIndex(messages, assistantCursor);
-    if (assistantIndex !== -1) {
-      const message = messages[assistantIndex];
-      const nextTimeline = timeline.length ? timeline : message.timeline ?? [];
-      messages[assistantIndex] = {
-        ...message,
-        content: content || message.content,
-        timeline: nextTimeline,
-        dagSnapshot: dagSnapshot ?? message.dagSnapshot,
-        traceSnapshot: segmentTrace,
-      };
-      assistantCursor = assistantIndex + 1;
-      continue;
-    }
-
-    messages.push({
-      role: 'assistant',
-      kind: 'text',
-      content,
-      timeline,
-      dagSnapshot,
-      traceSnapshot: segmentTrace,
-    });
-    assistantCursor = messages.length;
-  }
 }
 
 function dynamicDagMessagesFromPersistedRunResult(
@@ -451,13 +389,6 @@ function lastTextTimelineItem(timeline: MessageTimelineItem[]): Extract<MessageT
 
 function lastAssistantMessageIndex(messages: ChatMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'assistant') return index;
-  }
-  return -1;
-}
-
-function nextAssistantMessageIndex(messages: ChatMessage[], startIndex: number): number {
-  for (let index = Math.max(0, startIndex); index < messages.length; index += 1) {
     if (messages[index].role === 'assistant') return index;
   }
   return -1;

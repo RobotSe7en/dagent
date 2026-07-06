@@ -2380,55 +2380,6 @@ test('persisted conversation selection hydrates the last run snapshot', async ()
   assert.match(appSource, /if \(!selectedChatSurfaceConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
 
-test('persisted conversation hydration keeps user and assistant order across streams', async () => {
-  const {
-    chatMessagesFromPersistedRunEvents,
-    finishedRunResultFromEvents,
-  } = await importTypeScriptModule('../src/persistedChat.ts', [
-    '../src/persistedChat.ts',
-    '../src/chatTimeline.ts',
-    '../src/api.ts',
-    '../src/agentScope.ts',
-    '../src/dagArtifacts.ts',
-    '../src/streamProtocol.ts',
-  ]);
-  const state = {
-    run_id: 'run_chat',
-    kind: 'tool',
-    status: 'completed',
-    input_message_count: 3,
-    internal_messages: [
-      { role: 'user', content: 'first question' },
-      { role: 'assistant', content: 'first answer' },
-      { role: 'user', content: 'second question' },
-      { role: 'assistant', content: 'second answer' },
-    ],
-  };
-  const events = [
-    runEventInStream(1, 'stream_first', 1, 'response.content.delta', { delta: 'first answer' }),
-    runEventInStream(2, 'stream_first', 2, 'run.finished', {
-      result: { output_text: 'first answer', state: { ...state, input_message_count: 1 } },
-    }),
-    runEventInStream(3, 'stream_second', 1, 'response.content.delta', { delta: 'second answer' }),
-    runEventInStream(4, 'stream_second', 2, 'run.finished', {
-      result: { output_text: 'second answer', state },
-    }),
-  ];
-
-  const result = finishedRunResultFromEvents(events);
-  const messages = chatMessagesFromPersistedRunEvents(events, result);
-
-  assert.deepEqual(
-    messages.map((message) => [message.role, message.content]),
-    [
-      ['user', 'first question'],
-      ['assistant', 'first answer'],
-      ['user', 'second question'],
-      ['assistant', 'second answer'],
-    ],
-  );
-});
-
 test('persisted conversation hydration restores user and assistant chat turns', async () => {
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
   const hydrateSource = persistedChatSource.match(/export function messagesFromPersistedRunResult[\s\S]*?\nfunction appendPersistedChatMessage/)?.[0] ?? '';
