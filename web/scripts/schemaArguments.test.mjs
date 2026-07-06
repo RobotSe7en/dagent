@@ -274,10 +274,10 @@ test('chat workbench ports the design shell without mock run data', async () => 
 test('chat message frames keep user and assistant treatment aligned', async () => {
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
-  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*14px 14px 6px 14px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*16px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*0 2px 12px rgba\(20, 23, 30, 0\.05\);/s);
   assert.match(css, /\.assistant-row\s*\{[^}]*align-items:\s*flex-start;/s);
-  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);[^}]*border-radius:\s*14px 14px 14px 6px;[^}]*box-shadow:\s*none;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*4px;[^}]*padding:\s*4px 6px 6px;/s);
+  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*16px;[^}]*padding:\s*18px 18px 18px 42px;/s);
   assert.doesNotMatch(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*1;/s);
 });
 
@@ -346,7 +346,7 @@ test('composer keeps shared compact controls in the run settings menu', async ()
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
 
   assert.match(chatWorkspaceSource, /const targetOptions: Array<\{ value: ChatTarget; label: string; shortLabel: string; icon: React\.ReactNode \}> = \[/);
-  assert.match(chatWorkspaceSource, /<div className="mode-switch" aria-label="运行模式">[\s\S]*title=\{option\.label\}[\s\S]*aria-label=\{option\.label\}[\s\S]*\{option\.icon\}[\s\S]*<span>\{option\.shortLabel\}<\/span>/);
+  assert.match(chatWorkspaceSource, /<div className="mode-switch" aria-label="运行模式">[\s\S]*title=\{option\.label\}[\s\S]*aria-label=\{option\.label\}[\s\S]*\{target === option\.value \? option\.icon : null\}[\s\S]*<span>\{option\.shortLabel\}<\/span>/);
   assert.doesNotMatch(chatWorkspaceSource, />\s*\{item\}\s*<\/button>/);
   assert.match(chatWorkspaceSource, /const reviewLevelLabels: Record<ReviewLevel, string> = \{ fast: '快速审核', careful: '谨慎审核' \};/);
   assert.doesNotMatch(chatWorkspaceSource, /<label className="review-control">/);
@@ -364,8 +364,8 @@ test('composer keeps shared compact controls in the run settings menu', async ()
   assert.match(css, /\.run-settings-menu\s*\{[^}]*position:\s*relative;/s);
   assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*right:\s*auto;[^}]*bottom:\s*calc\(100% \+ 8px\);[^}]*width:\s*300px;[^}]*transform:\s*translateX\(-50%\);/s);
   assert.match(css, /\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
-  assert.match(css, /\.composer-toolbar \.mode-switch button\s*\{[^}]*min-width:\s*50px;[^}]*padding:\s*0 7px;/s);
-  assert.match(css, /\.composer-toolbar \.mode-switch button span\s*\{[^}]*font-size:\s*12px;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button\s*\{[^}]*min-width:\s*50px;[^}]*padding:\s*0 12px;[^}]*font-size:\s*12\.5px;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button span\s*\{[^}]*font-size:\s*12\.5px;/s);
 });
 
 test('collapsed artifact rail still reserves safe space for user avatars', async () => {
@@ -2252,11 +2252,11 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-history-list button\s*\{[^}]*border:\s*0;[^}]*padding:\s*7px 10px;[^}]*background:\s*transparent;/s);
   assert.match(css, /\.sidebar-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
-  assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
-  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active,\s*\.sidebar-saved-dag-row:hover,\s*\.sidebar-saved-dag-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete,\s*\.sidebar-context-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border-left:/s);
-  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
-  assert.match(css, /\.sidebar-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-project-conversation-row:hover \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete,\s*\.sidebar-context-list \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-project-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-saved-dag-row:hover \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
   assert.doesNotMatch(css, /\.(?:sidebar-conversation-row|sidebar-project-conversation-row)(?:\.active|:focus-within) \.sidebar-conversation-delete|\.sidebar-history-list \.sidebar-conversation-delete:focus-visible/s);
 });
 
@@ -2977,7 +2977,7 @@ test('project sidebar is an expandable project and conversation tree', async () 
   assert.match(css, /\.sidebar-history-list\s*\{[^}]*max-height:\s*min\(360px,\s*42vh\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-project-tree-row\s*\{/);
-  assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row,\s*\.sidebar-saved-dag-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
   assert.match(css, /\.sidebar-project-conversation-row > button:first-child svg\s*\{[^}]*flex:\s*0 0 auto;/s);
   assert.match(css, /\.sidebar-project-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-project-delete\s*\{[^}]*border-left:/s);
@@ -4327,7 +4327,7 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.match(appSource, /completed-process-timeline/);
   assert.match(appSource, /renderCollapsedMessageTimeline/);
   assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
-  assert.match(summarySource, /<Wrench size=\{14\} \/>/);
+  assert.match(summarySource, /<Activity size=\{15\} \/>/);
   assert.doesNotMatch(summarySource, /AlertTriangle/);
   assert.doesNotMatch(summarySource, /process-summary-warning/);
 });
@@ -4342,16 +4342,15 @@ test('expanded and live process traces share the subtle timeline treatment', asy
   assert.match(messageTimelineSource, /const completedProcessTimeline = Boolean\(collapsedProcess\);/);
   assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}\$\{completedProcessTimeline \? ' completed-process-timeline' : ''\}`\}/);
 
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*4px;[^}]*padding:\s*4px 6px 6px;/s);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline::before/);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.completed-process-timeline::before/);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*16px;[^}]*padding:\s*18px 18px 18px 42px;/s);
+  assert.match(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline\s*\{[^}]*border:\s*1px solid #e2e4ea;[^}]*border-radius:\s*16px;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)::before\s*\{[^}]*left:\s*22px;[^}]*background:\s*#eceef2;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry::before\s*\{[^}]*left:\s*-24px;[^}]*background:\s*#6767dc;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.think-block\)::before\s*\{[^}]*background:\s*#fff;[^}]*border:\s*2px solid #c9cdd6;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.capability-event-card\)::before\s*\{[^}]*background:\s*#22c55e;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.capability-event-card\.capability-event-rejected\)::before\s*\{[^}]*background:\s*#f59e0b;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.validation-card\)::before\s*\{[^}]*background:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.dag-summary-card\)::before\s*\{[^}]*background:\s*#60a5fa;/s);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {
