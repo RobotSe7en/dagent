@@ -403,6 +403,13 @@ export async function listSavedDagRuns(savedDagId: string): Promise<ApiRunSummar
   return data.runs ?? [];
 }
 
+export async function deleteRun(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
 export async function getOrchestrationSessionByConversation(
   conversationId: string,
 ): Promise<OrchestrationSession | null> {

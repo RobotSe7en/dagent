@@ -1369,6 +1369,22 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return {"run": _run_summary_payload(run)}
 
 
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str) -> dict[str, str]:
+    store = state.get_store()
+    run = await run_in_threadpool(store.get_run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    if run.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="Active runs cannot be deleted.")
+    run_state = await run_in_threadpool(store.get_run_state, run.id)
+    await run_in_threadpool(_delete_run_files, run, run_state)
+    deleted = await run_in_threadpool(store.delete_run, run.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return {"status": "deleted"}
+
+
 @app.get("/runs/{run_id}/events")
 async def get_run_events(run_id: str, after_event_id: int = 0) -> dict[str, Any]:
     run = await run_in_threadpool(state.get_store().get_run, run_id)
@@ -4326,6 +4342,21 @@ def _delete_conversation_files(
         shutil.rmtree(candidate)
     if delete_conversation_workspace:
         _delete_workspace_root(conversation_workspace)
+
+
+def _delete_run_files(run: Run, run_state: RunState | None) -> None:
+    if run_state is None or not run_state.workspace_path:
+        return
+    try:
+        parent_workspace = state.get_workspaces().local_path_for_existing(run.workspace_uri).resolve()
+    except ValueError:
+        return
+    candidate = Path(run_state.workspace_path).resolve()
+    if candidate == parent_workspace:
+        return
+    if not _should_delete_run_workspace(candidate, parent_workspace):
+        return
+    shutil.rmtree(candidate)
 
 
 def _delete_workspace_root(workspace_path: Path) -> None:

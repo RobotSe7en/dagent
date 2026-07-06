@@ -513,13 +513,42 @@ class SQLiteStore:
         return [_run_from_row(row) for row in rows]
 
     def delete_run(self, run_id: str, *, org_id: str | None = None) -> bool:
+        select_query = "SELECT conversation_id FROM runs WHERE id = ?"
         query = "DELETE FROM runs WHERE id = ?"
         params: tuple[object, ...] = (run_id,)
         if org_id is not None:
+            select_query += " AND org_id = ?"
             query += " AND org_id = ?"
             params = (run_id, org_id)
         with self._lock:
+            row = self._conn.execute(select_query, params).fetchone()
+            if row is None:
+                return False
             cursor = self._conn.execute(query, params)
+            conversation_id = row["conversation_id"]
+            if conversation_id is not None:
+                replacement = self._conn.execute(
+                    """
+                    SELECT id FROM runs
+                    WHERE conversation_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                self._conn.execute(
+                    """
+                    UPDATE conversations
+                    SET last_run_id = ?, updated_at = ?
+                    WHERE id = ? AND last_run_id = ?
+                    """,
+                    (
+                        None if replacement is None else replacement["id"],
+                        _now(),
+                        conversation_id,
+                        run_id,
+                    ),
+                )
             self._conn.commit()
         return cursor.rowcount > 0
 

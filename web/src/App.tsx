@@ -85,6 +85,7 @@ import {
   deleteProjectConversation,
   deleteProjectFile,
   deletePythonTool,
+  deleteRun,
   deleteSavedDag,
   deleteSkill,
   getSkill,
@@ -856,6 +857,7 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
+type OrchestrationInspectorMode = 'node' | 'artifacts';
 type OrchestrationSessionKind = OrchestrationSession['kind'];
 type OrchestrationSessionsByConversationId = Record<string, OrchestrationSession | null | undefined>;
 type OrchestrationContext = {
@@ -895,7 +897,18 @@ type RunHistoryPanelData = {
   selectedRunId: string;
   loading: boolean;
   error: string | null;
+  deletingRunId: string;
   onSelectRun: (runId: string) => void;
+  onOpenArtifacts: (runId: string) => void;
+  onDeleteRun: (runId: string) => void;
+};
+type OrchestrationArtifactPanelData = {
+  runId: string;
+  files: RunArtifactFile[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onClose: () => void;
 };
 
 interface QueuedAssistantToken {
@@ -1275,6 +1288,14 @@ export function App() {
   const [staticSelectedRunId, setStaticSelectedRunId] = useState('');
   const [staticRunHistoryLoading, setStaticRunHistoryLoading] = useState(false);
   const [staticRunHistoryError, setStaticRunHistoryError] = useState<string | null>(null);
+  const [staticDeletingRunId, setStaticDeletingRunId] = useState('');
+  const [staticRunDeleteTargetId, setStaticRunDeleteTargetId] = useState('');
+  const [staticInspectorMode, setStaticInspectorMode] = useState<OrchestrationInspectorMode>('node');
+  const [staticRunHistoryCollapsed, setStaticRunHistoryCollapsed] = useState(false);
+  const [staticRunArtifactFiles, setStaticRunArtifactFiles] = useState<RunArtifactFile[]>([]);
+  const [staticRunArtifactLoading, setStaticRunArtifactLoading] = useState(false);
+  const [staticRunArtifactError, setStaticRunArtifactError] = useState<string | null>(null);
+  const staticRunArtifactRequestRef = useRef(0);
   const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
   const [dynamicPrompt, setDynamicPrompt] = useState('');
@@ -1302,6 +1323,14 @@ export function App() {
   const [dynamicSelectedRunId, setDynamicSelectedRunId] = useState('');
   const [dynamicRunHistoryLoading, setDynamicRunHistoryLoading] = useState(false);
   const [dynamicRunHistoryError, setDynamicRunHistoryError] = useState<string | null>(null);
+  const [dynamicDeletingRunId, setDynamicDeletingRunId] = useState('');
+  const [dynamicRunDeleteTargetId, setDynamicRunDeleteTargetId] = useState('');
+  const [dynamicInspectorMode, setDynamicInspectorMode] = useState<OrchestrationInspectorMode>('node');
+  const [dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed] = useState(false);
+  const [dynamicRunArtifactFiles, setDynamicRunArtifactFiles] = useState<RunArtifactFile[]>([]);
+  const [dynamicRunArtifactLoading, setDynamicRunArtifactLoading] = useState(false);
+  const [dynamicRunArtifactError, setDynamicRunArtifactError] = useState<string | null>(null);
+  const dynamicRunArtifactRequestRef = useRef(0);
   const [agentManagementSub, setAgentManagementSub] = useState<AgentManagementSub>('profiles');
   const [systemManagementSub, setSystemManagementSub] = useState<SystemManagementSub>('models');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -1377,6 +1406,8 @@ export function App() {
     selectedChatAgentIds.length,
   );
   const activeRunId = runState?.run_id ?? null;
+  const staticArtifactRunId = staticSelectedRunId || editorRun?.run_id || '';
+  const dynamicArtifactRunId = dynamicSelectedRunId || dynamicRunState?.run_id || '';
   const chatArtifacts = useMemo(
     () => buildWorkbenchArtifacts({
       dag,
@@ -1427,9 +1458,17 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === dynamicConversationDeleteTargetId) ?? null,
     [conversations, dynamicConversationDeleteTargetId],
   );
+  const dynamicRunDeleteTarget = useMemo(
+    () => dynamicRunHistory.find((run) => run.id === dynamicRunDeleteTargetId) ?? null,
+    [dynamicRunDeleteTargetId, dynamicRunHistory],
+  );
   const staticDagDeleteTarget = useMemo(
     () => savedDags.find((saved) => saved.id === staticDagDeleteTargetId) ?? null,
     [savedDags, staticDagDeleteTargetId],
+  );
+  const staticRunDeleteTarget = useMemo(
+    () => staticRunHistory.find((run) => run.id === staticRunDeleteTargetId) ?? null,
+    [staticRunDeleteTargetId, staticRunHistory],
   );
   const selectedProjectFile = useMemo(
     () => findProjectFileByPath(projectFiles, selectedProjectFilePath),
@@ -1483,6 +1522,54 @@ export function App() {
     }
   }, [activeRunId]);
 
+  const refreshStaticRunArtifacts = useCallback(async () => {
+    const requestId = staticRunArtifactRequestRef.current + 1;
+    staticRunArtifactRequestRef.current = requestId;
+    if (!staticArtifactRunId) {
+      setStaticRunArtifactFiles([]);
+      setStaticRunArtifactError(null);
+      setStaticRunArtifactLoading(false);
+      return;
+    }
+    setStaticRunArtifactLoading(true);
+    setStaticRunArtifactError(null);
+    try {
+      const payload = await listRunArtifacts(staticArtifactRunId);
+      if (staticRunArtifactRequestRef.current !== requestId) return;
+      setStaticRunArtifactFiles(payload.files);
+    } catch (exc) {
+      if (staticRunArtifactRequestRef.current !== requestId) return;
+      setStaticRunArtifactFiles([]);
+      setStaticRunArtifactError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (staticRunArtifactRequestRef.current === requestId) setStaticRunArtifactLoading(false);
+    }
+  }, [staticArtifactRunId]);
+
+  const refreshDynamicRunArtifacts = useCallback(async () => {
+    const requestId = dynamicRunArtifactRequestRef.current + 1;
+    dynamicRunArtifactRequestRef.current = requestId;
+    if (!dynamicArtifactRunId) {
+      setDynamicRunArtifactFiles([]);
+      setDynamicRunArtifactError(null);
+      setDynamicRunArtifactLoading(false);
+      return;
+    }
+    setDynamicRunArtifactLoading(true);
+    setDynamicRunArtifactError(null);
+    try {
+      const payload = await listRunArtifacts(dynamicArtifactRunId);
+      if (dynamicRunArtifactRequestRef.current !== requestId) return;
+      setDynamicRunArtifactFiles(payload.files);
+    } catch (exc) {
+      if (dynamicRunArtifactRequestRef.current !== requestId) return;
+      setDynamicRunArtifactFiles([]);
+      setDynamicRunArtifactError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (dynamicRunArtifactRequestRef.current === requestId) setDynamicRunArtifactLoading(false);
+    }
+  }, [dynamicArtifactRunId]);
+
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
@@ -1494,6 +1581,16 @@ export function App() {
   useEffect(() => {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
+
+  useEffect(() => {
+    if (staticInspectorMode !== 'artifacts') return;
+    void refreshStaticRunArtifacts();
+  }, [refreshStaticRunArtifacts, staticInspectorMode]);
+
+  useEffect(() => {
+    if (dynamicInspectorMode !== 'artifacts') return;
+    void refreshDynamicRunArtifacts();
+  }, [dynamicInspectorMode, refreshDynamicRunArtifacts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2221,6 +2318,13 @@ export function App() {
     setEditorRun(null);
     setEditorRunTimeline([]);
     setEditorMessage('');
+    setStaticSelectedRunId('');
+    setStaticInspectorMode('node');
+    setStaticRunArtifactFiles([]);
+    setStaticRunArtifactError(null);
+    setStaticRunArtifactLoading(false);
+    setStaticDeletingRunId('');
+    setStaticRunDeleteTargetId('');
   }, [syncEditorDag]);
 
   const patchEditorUserDag = (patch: Partial<UserDag>) => {
@@ -2648,6 +2752,12 @@ export function App() {
     setDynamicSelectedRunId('');
     setDynamicRunHistoryError(null);
     setDynamicRunHistoryLoading(false);
+    setDynamicInspectorMode('node');
+    setDynamicRunArtifactFiles([]);
+    setDynamicRunArtifactError(null);
+    setDynamicRunArtifactLoading(false);
+    setDynamicDeletingRunId('');
+    setDynamicRunDeleteTargetId('');
     dynamicTimelineOrderRef.current = 0;
   }, []);
 
@@ -3051,6 +3161,31 @@ export function App() {
       }
     } catch (exc) {
       setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteStaticRunHistory = async (runId: string) => {
+    if (!runId || staticDeletingRunId) return;
+    setStaticDeletingRunId(runId);
+    setStaticRunHistoryError(null);
+    try {
+      await deleteRun(runId);
+      setStaticRunHistory((runs) => runs.filter((run) => run.id !== runId));
+      setStaticRunDeleteTargetId('');
+      if (staticSelectedRunId === runId || editorRun?.run_id === runId) {
+        setStaticSelectedRunId('');
+        setEditorRun(null);
+        setEditorTrace([]);
+        setEditorRunTimeline([]);
+        setStaticRunArtifactFiles([]);
+        setStaticRunArtifactError(null);
+        setStaticRunArtifactLoading(false);
+        if (staticInspectorMode === 'artifacts') setStaticInspectorMode('node');
+      }
+    } catch (exc) {
+      setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setStaticDeletingRunId('');
     }
   };
 
@@ -3596,6 +3731,31 @@ export function App() {
       if (result?.output_text) setOrderedDynamicFinalAnswer(result.output_text);
     } catch (exc) {
       setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteDynamicRunHistory = async (runId: string) => {
+    if (!runId || dynamicDeletingRunId) return;
+    setDynamicDeletingRunId(runId);
+    setDynamicRunHistoryError(null);
+    try {
+      await deleteRun(runId);
+      setDynamicRunHistory((runs) => runs.filter((run) => run.id !== runId));
+      setDynamicRunDeleteTargetId('');
+      if (dynamicSelectedRunId === runId || dynamicRunState?.run_id === runId) {
+        setDynamicSelectedRunId('');
+        setDynamicRunState(null);
+        setDynamicTrace([]);
+        clearDynamicFinalAnswer();
+        setDynamicRunArtifactFiles([]);
+        setDynamicRunArtifactError(null);
+        setDynamicRunArtifactLoading(false);
+        if (dynamicInspectorMode === 'artifacts') setDynamicInspectorMode('node');
+      }
+    } catch (exc) {
+      setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setDynamicDeletingRunId('');
     }
   };
 
@@ -4528,20 +4688,40 @@ export function App() {
             messageOrder={dynamicMessageOrder}
             messages={dynamicMessages}
             trace={dynamicTrace}
+            inspectorMode={dynamicInspectorMode}
+            artifactPanel={{
+              runId: dynamicArtifactRunId,
+              files: dynamicRunArtifactFiles,
+              loading: dynamicRunArtifactLoading,
+              error: dynamicRunArtifactError,
+              onRefresh: refreshDynamicRunArtifacts,
+              onClose: () => setDynamicInspectorMode('node'),
+            }}
             runHistory={{
               runs: dynamicRunHistory,
               selectedRunId: dynamicSelectedRunId,
               loading: dynamicRunHistoryLoading,
               error: dynamicRunHistoryError,
+              deletingRunId: dynamicDeletingRunId,
               onSelectRun: (runId) => void selectDynamicRunHistory(runId),
+              onOpenArtifacts: (runId) => {
+                setDynamicSelectedRunId(runId);
+                setDynamicInspectorMode('artifacts');
+              },
+              onDeleteRun: setDynamicRunDeleteTargetId,
             }}
+            runHistoryCollapsed={dynamicRunHistoryCollapsed}
+            onToggleRunHistory={() => setDynamicRunHistoryCollapsed((collapsed) => !collapsed)}
             onAddNode={onAddDynamicNode}
             onPatchNode={onPatchDynamicNode}
             onDeleteNode={onDeleteDynamicNode}
             onNodesChange={onDynamicNodesChange}
             onEdgesChange={onDynamicEdgesChange}
             onConnect={onDynamicConnect}
-            onSelectNode={setDynamicSelectedId}
+            onSelectNode={(id) => {
+              setDynamicSelectedId(id);
+              if (id) setDynamicInspectorMode('node');
+            }}
             onPromptChange={setDynamicPrompt}
             onDynamicAdjustChange={setDynamicAdjust}
             onGenerate={() => void generateDynamicDag()}
@@ -4559,13 +4739,30 @@ export function App() {
             selectedId={editorSelectedId}
             trace={editorTrace}
             run={editorRun}
+            inspectorMode={staticInspectorMode}
+            artifactPanel={{
+              runId: staticArtifactRunId,
+              files: staticRunArtifactFiles,
+              loading: staticRunArtifactLoading,
+              error: staticRunArtifactError,
+              onRefresh: refreshStaticRunArtifacts,
+              onClose: () => setStaticInspectorMode('node'),
+            }}
             runHistory={{
               runs: staticRunHistory,
               selectedRunId: staticSelectedRunId,
               loading: staticRunHistoryLoading,
               error: staticRunHistoryError,
+              deletingRunId: staticDeletingRunId,
               onSelectRun: (runId) => void selectStaticRunHistory(runId),
+              onOpenArtifacts: (runId) => {
+                setStaticSelectedRunId(runId);
+                setStaticInspectorMode('artifacts');
+              },
+              onDeleteRun: setStaticRunDeleteTargetId,
             }}
+            runHistoryCollapsed={staticRunHistoryCollapsed}
+            onToggleRunHistory={() => setStaticRunHistoryCollapsed((collapsed) => !collapsed)}
             runTimeline={editorRunTimeline}
             message={editorMessage}
             running={editorRunning}
@@ -4580,7 +4777,10 @@ export function App() {
             onNodesChange={onEditorNodesChange}
             onEdgesChange={onEditorEdgesChange}
             onConnect={onEditorConnect}
-            onSelectNode={setEditorSelectedId}
+            onSelectNode={(id) => {
+              setEditorSelectedId(id);
+              if (id) setStaticInspectorMode('node');
+            }}
           />
         ) : activeWorkspace === 'tools' ? (
           <CapabilityDirectory
@@ -4715,12 +4915,30 @@ export function App() {
         />
       ) : null}
 
+      {dynamicRunDeleteTarget ? (
+        <RunHistoryDeleteDialog
+          run={dynamicRunDeleteTarget}
+          deleting={dynamicDeletingRunId === dynamicRunDeleteTarget.id}
+          onCancel={() => setDynamicRunDeleteTargetId('')}
+          onConfirm={() => void deleteDynamicRunHistory(dynamicRunDeleteTarget.id)}
+        />
+      ) : null}
+
       {staticDagDeleteTarget ? (
         <SavedDagDeleteDialog
           savedDag={staticDagDeleteTarget}
           project={projects.find((project) => project.id === staticDagDeleteTarget.project_id) ?? null}
           onCancel={() => setStaticDagDeleteTargetId('')}
           onConfirm={() => void confirmDeleteSavedDag()}
+        />
+      ) : null}
+
+      {staticRunDeleteTarget ? (
+        <RunHistoryDeleteDialog
+          run={staticRunDeleteTarget}
+          deleting={staticDeletingRunId === staticRunDeleteTarget.id}
+          onCancel={() => setStaticRunDeleteTargetId('')}
+          onConfirm={() => void deleteStaticRunHistory(staticRunDeleteTarget.id)}
         />
       ) : null}
 
@@ -7433,6 +7651,45 @@ function SavedDagDeleteDialog({
   );
 }
 
+function RunHistoryDeleteDialog({
+  run,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  run: ApiRunSummary;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除运行">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除运行</span>
+            <strong>{run.id}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} disabled={deleting} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>运行事件、产物记录和对应工作目录都会被删除。</p>
+          <code>{run.output_text || `${run.status} · ${new Date(run.updated_at * 1000).toLocaleString()}`}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} disabled={deleting} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} disabled={deleting} type="button">
+            {deleting ? '删除中...' : '删除运行'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ProjectFormDialog({
   draft,
   error,
@@ -9353,7 +9610,11 @@ function DynamicOrchestrationWorkspace({
   messageOrder,
   messages,
   trace,
+  inspectorMode,
+  artifactPanel,
   runHistory,
+  runHistoryCollapsed,
+  onToggleRunHistory,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -9381,7 +9642,11 @@ function DynamicOrchestrationWorkspace({
   messageOrder: number;
   messages: DynamicChatMessage[];
   trace: DynamicTraceLogEvent[];
+  inspectorMode: OrchestrationInspectorMode;
+  artifactPanel: OrchestrationArtifactPanelData;
   runHistory: RunHistoryPanelData;
+  runHistoryCollapsed: boolean;
+  onToggleRunHistory: () => void;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -9412,6 +9677,7 @@ function DynamicOrchestrationWorkspace({
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const firstNodePosition = () => nodes.length ? undefined : canvasCenterNodePosition(flowInstance, canvasRef.current);
+  const hasInspector = inspectorMode === 'artifacts' || Boolean(selectedNormalized);
   const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
     if (!selectedNode || !selectedInvocation) return;
     onPatchNode(selectedNode.id, {
@@ -9497,7 +9763,7 @@ function DynamicOrchestrationWorkspace({
           </div>
         </div>
 
-        <div className={`dynamic-orchestration-body ${selectedNormalized ? 'with-inspector' : ''}`}>
+        <div className={`dynamic-orchestration-body ${hasInspector ? 'with-inspector' : ''}`}>
           <div className="orchestration-canvas dynamic-orchestration-canvas" ref={canvasRef}>
             <ReactFlow
               className="orchestration-flow"
@@ -9527,7 +9793,9 @@ function DynamicOrchestrationWorkspace({
               </button>
             ) : null}
           </div>
-          {selectedNormalized ? (
+          {inspectorMode === 'artifacts' ? (
+            <RunArtifactsInspector {...artifactPanel} />
+          ) : selectedNormalized ? (
             <aside className="node-inspector dynamic-node-inspector" aria-label="节点检查器">
               <div className="node-inspector-body">
                 <div className="node-inspector-title">
@@ -9613,7 +9881,14 @@ function DynamicOrchestrationWorkspace({
             </aside>
           ) : null}
         </div>
-        <RunHistoryPanel title="运行历史" runHistory={runHistory} />
+        <RunHistoryPanel
+          title="运行历史"
+          runHistory={runHistory}
+          collapsed={runHistoryCollapsed}
+          onToggleCollapsed={onToggleRunHistory}
+          onOpenArtifacts={runHistory.onOpenArtifacts}
+          onDeleteRun={runHistory.onDeleteRun}
+        />
       </div>
     </section>
   );
@@ -9668,37 +9943,147 @@ function CanvasViewportControls({
   );
 }
 
+function RunArtifactsInspector({
+  runId,
+  files,
+  loading,
+  error,
+  onRefresh,
+  onClose,
+}: OrchestrationArtifactPanelData) {
+  const sortedFiles = [...files].sort((left, right) => left.path.localeCompare(right.path));
+  return (
+    <aside className="node-inspector run-artifacts-inspector" aria-label="产物检查器">
+      <div className="node-inspector-body">
+        <div className="node-inspector-title run-artifacts-title">
+          <span>产物检查器</span>
+          <strong>{runId || '未选择运行'}</strong>
+          <div className="run-artifacts-actions">
+            <button onClick={onRefresh} disabled={!runId || loading} title="刷新产物" type="button">
+              {loading ? <Loader size={14} className="spin" /> : <RefreshCw size={14} />}
+            </button>
+            <button onClick={onClose} title="关闭产物检查器" type="button">
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        {error ? <div className="sidebar-error-row">{error}</div> : null}
+        {!runId ? (
+          <div className="empty-state compact">选择一次运行查看产物。</div>
+        ) : sortedFiles.length ? (
+          <div className="run-artifacts-list">
+            {sortedFiles.map((file) => (
+              <div className="run-artifact-row" key={file.id}>
+                <FileText size={15} />
+                <div className="run-artifact-main">
+                  <strong title={file.path}>{file.name || file.path}</strong>
+                  <span title={file.path}>{file.path}</span>
+                  <em>
+                    {file.source === 'dag_artifact' ? 'DAG artifact' : '运行文件'}
+                    {' · '}
+                    {file.status}
+                    {typeof file.size === 'number' ? ` · ${formatFileSize(file.size)}` : ''}
+                  </em>
+                  {file.error ? <p>{file.error}</p> : null}
+                </div>
+                <div className="run-artifact-actions">
+                  {file.previewable && file.preview_url ? (
+                    <a href={file.preview_url} target="_blank" rel="noreferrer" title="预览">
+                      <File size={13} />
+                    </a>
+                  ) : null}
+                  {file.download_url ? (
+                    <a href={file.download_url} target="_blank" rel="noreferrer" title="下载">
+                      <Download size={13} />
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state compact">{loading ? '正在加载产物...' : '本次运行还没有可用文件。'}</div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 function RunHistoryPanel({
   title,
   runHistory,
+  collapsed,
+  onToggleCollapsed,
+  onOpenArtifacts,
+  onDeleteRun,
 }: {
   title: string;
   runHistory: RunHistoryPanelData;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onOpenArtifacts: (runId: string) => void;
+  onDeleteRun: (runId: string) => void;
 }) {
-  const { runs, selectedRunId, loading, error, onSelectRun } = runHistory;
+  const { runs, selectedRunId, loading, error, deletingRunId, onSelectRun } = runHistory;
   return (
-    <section className="run-history-panel">
+    <section className={`run-history-panel ${collapsed ? 'collapsed' : ''}`}>
       <div className="run-history-head">
+        <button
+          className="run-history-toggle"
+          onClick={onToggleCollapsed}
+          title={collapsed ? '展开运行历史' : '收起运行历史'}
+          type="button"
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        </button>
         <strong>{title}</strong>
         <span>{loading ? '加载中' : `${runs.length} 次运行`}</span>
       </div>
-      {error ? <div className="sidebar-error-row">{error}</div> : null}
-      <div className="run-history-list">
-        {runs.length ? runs.map((run) => (
-          <button
-            className={run.id === selectedRunId ? 'active' : ''}
-            key={run.id}
-            onClick={() => onSelectRun(run.id)}
-            type="button"
-          >
-            <span>{run.status}</span>
-            <strong>{run.id}</strong>
-            <em>{run.output_text || new Date(run.updated_at * 1000).toLocaleString()}</em>
-          </button>
-        )) : (
-          <div className="run-history-empty">{loading ? '正在加载运行历史' : '暂无运行历史'}</div>
-        )}
-      </div>
+      {collapsed ? null : (
+        <>
+          {error ? <div className="sidebar-error-row">{error}</div> : null}
+          <div className="run-history-list">
+            {runs.length ? runs.map((run) => {
+              const deleting = deletingRunId === run.id;
+              return (
+                <div className={run.id === selectedRunId ? 'run-history-row active' : 'run-history-row'} key={run.id}>
+                  <button
+                    className="run-history-main"
+                    disabled={deleting}
+                    onClick={() => onSelectRun(run.id)}
+                    type="button"
+                  >
+                    <span>{run.status}</span>
+                    <strong>{run.id}</strong>
+                    <em>{run.output_text || new Date(run.updated_at * 1000).toLocaleString()}</em>
+                  </button>
+                  <div className="run-history-actions">
+                    <button
+                      disabled={deleting}
+                      onClick={() => onOpenArtifacts(run.id)}
+                      title="查看产物"
+                      type="button"
+                    >
+                      <Folder size={13} />
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={deleting}
+                      onClick={() => onDeleteRun(run.id)}
+                      title="删除运行"
+                      type="button"
+                    >
+                      {deleting ? <Loader size={13} className="spin" /> : <Trash2 size={13} />}
+                    </button>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div className="run-history-empty">{loading ? '正在加载运行历史' : '暂无运行历史'}</div>
+            )}
+          </div>
+        </>
+      )}
     </section>
   );
 }
@@ -9714,7 +10099,11 @@ function OrchestrationWorkspace({
   selectedId,
   trace,
   run,
+  inspectorMode,
+  artifactPanel,
   runHistory,
+  runHistoryCollapsed,
+  onToggleRunHistory,
   runTimeline,
   message,
   running,
@@ -9741,7 +10130,11 @@ function OrchestrationWorkspace({
   selectedId: string;
   trace: TraceLogEvent[];
   run: DagRun | null;
+  inspectorMode: OrchestrationInspectorMode;
+  artifactPanel: OrchestrationArtifactPanelData;
   runHistory: RunHistoryPanelData;
+  runHistoryCollapsed: boolean;
+  onToggleRunHistory: () => void;
   runTimeline: RunTranscriptItem[];
   message: string;
   running: boolean;
@@ -9983,10 +10376,19 @@ function OrchestrationWorkspace({
             ) : null}
           </div>
         ) : null}
-        <RunHistoryPanel title="运行历史" runHistory={runHistory} />
+        <RunHistoryPanel
+          title="运行历史"
+          runHistory={runHistory}
+          collapsed={runHistoryCollapsed}
+          onToggleCollapsed={onToggleRunHistory}
+          onOpenArtifacts={runHistory.onOpenArtifacts}
+          onDeleteRun={runHistory.onDeleteRun}
+        />
       </div>
 
-      {selectedNormalized ? (
+      {inspectorMode === 'artifacts' ? (
+        <RunArtifactsInspector {...artifactPanel} />
+      ) : selectedNormalized ? (
         <aside className="node-inspector static-node-inspector" aria-label="节点检查器">
           <div className="node-inspector-body">
             <div className="node-inspector-title">

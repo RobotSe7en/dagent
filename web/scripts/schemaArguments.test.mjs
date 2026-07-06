@@ -932,6 +932,7 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
 
 test('orchestration history api helpers use expected endpoints', async () => {
   const {
+    deleteRun,
     deleteSavedDag,
     listConversationRuns,
     listConversations,
@@ -972,6 +973,7 @@ test('orchestration history api helpers use expected endpoints', async () => {
     await listOrchestrationSessionRuns('orch 1');
     await listSavedDagRuns('dag 1');
     await deleteSavedDag('dag 1');
+    await deleteRun('run 1');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -990,6 +992,8 @@ test('orchestration history api helpers use expected endpoints', async () => {
   assert.equal(calls[7].url, '/api/saved-dags/dag%201/runs');
   assert.equal(calls[8].url, '/api/saved-dags/dag%201');
   assert.equal(calls[8].init.method, 'DELETE');
+  assert.equal(calls[9].url, '/api/runs/run%201');
+  assert.equal(calls[9].init.method, 'DELETE');
 });
 
 test('value binding helpers create labels and rewrite node output references', () => {
@@ -1441,7 +1445,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(dynamicEventsSource, /row\.events\.length/);
   assert.doesNotMatch(dynamicEventsSource, /<p>\{clipText\(message|<p>\{clipText\(event\.detail/);
   assert.doesNotMatch(dynamicEventsSource, /dynamic-chat-run-status|dynamic-trace-count|traceCount|运行状态/);
-  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{selectedNormalized \? 'with-inspector' : ''\}`\}/);
+  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{hasInspector \? 'with-inspector' : ''\}`\}/);
   assert.doesNotMatch(appSource.match(/const onAddDynamicNode[\s\S]*?};/)?.[0] ?? '', /setDynamicSelectedId\(id\)/);
   assert.match(appSource, /undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(apiSource, /dynamicAdjust\?: boolean/);
@@ -1550,26 +1554,44 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.ok(orchestrationSource, 'OrchestrationWorkspace function should exist');
   assert.match(apiSource, /export async function deleteSavedDag/);
+  assert.match(apiSource, /export async function deleteRun/);
   assert.match(apiSource, /export async function listSavedDagRuns/);
   assert.match(appSource, /deleteSavedDag,/);
+  assert.match(appSource, /deleteRun,/);
   assert.match(appSource, /listSavedDagRuns,/);
   assert.match(appSource, /const \[staticDagDeleteTargetId, setStaticDagDeleteTargetId\] = useState\(''\);/);
   assert.match(appSource, /const \[staticRunHistory, setStaticRunHistory\] = useState<ApiRunSummary\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[staticDeletingRunId, setStaticDeletingRunId\] = useState\(''\);/);
+  assert.match(appSource, /const \[staticInspectorMode, setStaticInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
+  assert.match(appSource, /const \[staticRunHistoryCollapsed, setStaticRunHistoryCollapsed\] = useState\(false\);/);
+  assert.match(appSource, /const \[staticRunArtifactFiles, setStaticRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
+  assert.match(appSource, /const staticArtifactRunId = staticSelectedRunId \|\| editorRun\?\.run_id \|\| '';/);
+  assert.match(appSource, /listRunArtifacts\(staticArtifactRunId\)/);
   assert.match(appSource, /const confirmDeleteSavedDag = async \(\) => \{/);
   assert.match(appSource, /await deleteSavedDag\(staticDagDeleteTargetId\)/);
   assert.match(appSource, /listSavedDagRuns\(editorSavedDagId\)/);
   assert.match(appSource, /const selectStaticRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /const deleteStaticRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /await deleteRun\(runId\)/);
   assert.match(appSource, /finishedRunResultFromEvents\(events\)/);
   assert.match(appSource, /const traceEvents = mapRunTrace\(runState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(\(items\) => traceEvents\.reduce\(\(timeline, event\) => appendRunTranscriptTraceEvent\(timeline, event\), items\)\);/);
   assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
   assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
   assert.match(appSource, /function SavedDagDeleteDialog/);
   assert.match(appSource, /function RunHistoryPanel/);
+  assert.match(appSource, /function RunArtifactsInspector/);
+  assert.match(appSource, /aria-label="产物检查器"/);
   assert.match(orchestrationSource, /runHistory=\{runHistory\}/);
-  assert.match(orchestrationSource, /<RunHistoryPanel[\s\S]*title="运行历史"/);
+  assert.match(orchestrationSource, /runHistoryCollapsed: boolean;/);
+  assert.match(orchestrationSource, /artifactPanel: OrchestrationArtifactPanelData;/);
+  assert.match(orchestrationSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*collapsed=\{runHistoryCollapsed\}[\s\S]*onOpenArtifacts=\{runHistory\.onOpenArtifacts\}[\s\S]*onDeleteRun=\{runHistory\.onDeleteRun\}/);
+  assert.match(orchestrationSource, /<RunArtifactsInspector[\s\S]*\{\.\.\.artifactPanel\}/);
   assert.match(css, /\.sidebar-saved-dag-row/);
   assert.match(css, /\.run-history-panel/);
+  assert.match(css, /\.run-history-panel\.collapsed/);
+  assert.match(css, /\.run-history-toggle/);
   assert.match(css, /\.run-history-list/);
+  assert.match(css, /\.run-artifacts-inspector/);
 });
 
 test('dynamic orchestration workspace shows session run history', async () => {
@@ -1581,14 +1603,27 @@ test('dynamic orchestration workspace shows session run history', async () => {
   assert.match(apiSource, /export async function listOrchestrationSessionRuns/);
   assert.match(appSource, /listOrchestrationSessionRuns,/);
   assert.match(appSource, /const \[dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId\] = useState\(''\);/);
+  assert.match(appSource, /const \[dynamicDeletingRunId, setDynamicDeletingRunId\] = useState\(''\);/);
+  assert.match(appSource, /const \[dynamicInspectorMode, setDynamicInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
+  assert.match(appSource, /const \[dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed\] = useState\(false\);/);
+  assert.match(appSource, /const \[dynamicRunArtifactFiles, setDynamicRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
+  assert.match(appSource, /const dynamicArtifactRunId = dynamicSelectedRunId \|\| dynamicRunState\?\.run_id \|\| '';/);
+  assert.match(appSource, /listRunArtifacts\(dynamicArtifactRunId\)/);
   assert.match(appSource, /setDynamicOrchestrationSessionId\(session\.id\)/);
   assert.match(appSource, /listOrchestrationSessionRuns\(dynamicOrchestrationSessionId\)/);
   assert.match(appSource, /const selectDynamicRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /const deleteDynamicRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /await deleteRun\(runId\)/);
   assert.match(appSource, /setDynamicSelectedRunId\(runId\)/);
   assert.match(appSource, /setDynamicTrace\(mapRunTrace\(nextState\.trace\)\.map/);
   assert.match(appSource, /runHistory=\{\{[\s\S]*runs: dynamicRunHistory,[\s\S]*selectedRunId: dynamicSelectedRunId/);
   assert.match(dynamicSource, /runHistory: RunHistoryPanelData;/);
-  assert.match(dynamicSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*runHistory=\{runHistory\}/);
+  assert.match(dynamicSource, /runHistoryCollapsed: boolean;/);
+  assert.match(dynamicSource, /artifactPanel: OrchestrationArtifactPanelData;/);
+  assert.match(dynamicSource, /const hasInspector = inspectorMode === 'artifacts' \|\| Boolean\(selectedNormalized\);/);
+  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{hasInspector \? 'with-inspector' : ''\}`\}/);
+  assert.match(dynamicSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*runHistory=\{runHistory\}[\s\S]*collapsed=\{runHistoryCollapsed\}[\s\S]*onOpenArtifacts=\{runHistory\.onOpenArtifacts\}[\s\S]*onDeleteRun=\{runHistory\.onDeleteRun\}/);
+  assert.match(dynamicSource, /<RunArtifactsInspector[\s\S]*\{\.\.\.artifactPanel\}/);
 });
 
 test('capability management nests resources under the sidebar menu with list creation actions', async () => {

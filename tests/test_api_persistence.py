@@ -1142,6 +1142,75 @@ def test_api_lists_standalone_conversation_runs(persistence_client) -> None:
     assert [item["id"] for item in response.json()["runs"]] == ["run_dynamic"]
 
 
+def test_api_deletes_run_database_records_and_run_workspace(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    conversation_workspace = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    run_workspace = conversation_workspace / "runs" / "dag_run_delete_one"
+    run_workspace.mkdir(parents=True)
+    (run_workspace / "artifact.txt").write_text("delete me", encoding="utf-8")
+    run_state = RunState(
+        run_id="dag_run_delete_one",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_path=str(run_workspace),
+        trace=RunTrace(
+            run_id="dag_run_delete_one",
+            root=RunTraceNode.run(run_id="dag_run_delete_one", status="completed"),
+            status="completed",
+        ),
+    )
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.create_run_stream(
+        stream_id="stream_delete_one",
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="dynamic_dag",
+        status="completed",
+    )
+    store.append_run_event(
+        run_id=run_state.run_id,
+        stream_id="stream_delete_one",
+        event_type="run.started",
+        payload_json='{"type":"run.started"}',
+    )
+    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="done")
+    store.upsert_review(
+        review_id="review_delete_one",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="dag_review",
+    )
+
+    response = persistence_client.delete(f"/runs/{run_state.run_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert persistence_client.get(f"/runs/{run_state.run_id}").status_code == 404
+    assert persistence_client.get(f"/runs/{run_state.run_id}/events").status_code == 404
+    assert persistence_client.get(f"/runs/{run_state.run_id}/artifacts").status_code == 404
+    assert store.get_run(run_state.run_id) is None
+    assert store.list_run_events(run_state.run_id) == []
+    assert store.list_run_streams(run_state.run_id) == []
+    assert store.get_review("review_delete_one") is None
+    assert store.get_conversation(conversation["id"]).last_run_id is None
+    assert conversation_workspace.exists()
+    assert not run_workspace.exists()
+
+
 def test_api_lists_orchestration_session_runs(persistence_client) -> None:
     conversation = persistence_client.post(
         "/conversations",
