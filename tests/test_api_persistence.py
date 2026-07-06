@@ -609,6 +609,41 @@ def test_run_events_have_durable_service_sequence(tmp_path: Path) -> None:
     assert store.list_run_events("run_123", after_event_id=1) == [second]
 
 
+def test_sqlite_store_deleting_run_deletes_conversation_messages(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    conversation = store.create_conversation(
+        conversation_id="conv_run_messages",
+        project_id=None,
+        title="Inbox",
+        workspace_uri=workspace_uri,
+    )
+    run = store.create_run(
+        run_id="run_messages",
+        project_id=None,
+        conversation_id=conversation.id,
+        user_id="default",
+        kind="tool",
+        status="completed",
+        workspace_uri=workspace_uri,
+    )
+    store.append_conversation_message(
+        message_id="msg_assistant",
+        conversation_id=conversation.id,
+        project_id=None,
+        role="assistant",
+        run_id=run.id,
+        status="completed",
+        content="done",
+        timeline_json='[{"type":"text","content":"done"}]',
+    )
+
+    assert [message.id for message in store.list_conversation_messages(conversation.id)] == ["msg_assistant"]
+
+    assert store.delete_run(run.id) is True
+    assert store.list_conversation_messages(conversation.id) == []
+
+
 def test_run_stream_activity_touches_conversation_updated_at(tmp_path: Path, monkeypatch) -> None:
     import api.storage.sqlite as sqlite_storage
 
@@ -1194,6 +1229,16 @@ def test_api_deletes_run_database_records_and_run_workspace(persistence_client) 
         project_id=None,
         kind="dag_review",
     )
+    store.append_conversation_message(
+        message_id="msg_delete_one",
+        conversation_id=conversation["id"],
+        project_id=None,
+        role="assistant",
+        run_id=run_state.run_id,
+        status="completed",
+        content="done",
+        timeline_json='[{"type":"text","content":"done"}]',
+    )
 
     response = persistence_client.delete(f"/runs/{run_state.run_id}")
 
@@ -1206,6 +1251,7 @@ def test_api_deletes_run_database_records_and_run_workspace(persistence_client) 
     assert store.list_run_events(run_state.run_id) == []
     assert store.list_run_streams(run_state.run_id) == []
     assert store.get_review("review_delete_one") is None
+    assert store.list_conversation_messages(conversation["id"]) == []
     assert store.get_conversation(conversation["id"]).last_run_id is None
     assert conversation_workspace.exists()
     assert not run_workspace.exists()
@@ -1657,6 +1703,9 @@ def test_api_project_message_stream_persists_run_events_and_state(
     )
     run_response = persistence_client.get(f"/runs/{run_id}")
     replay_response = persistence_client.get(f"/runs/{run_id}/events", params={"after_event_id": 1})
+    messages_response = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/messages"
+    )
 
     assert persisted_run is not None
     assert persisted_run.project_id == project["id"]
@@ -1679,6 +1728,20 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert replay_response.status_code == 200
     assert [event["event_id"] for event in replay_response.json()["events"]] == list(range(2, len(events) + 1))
     assert replay_response.json()["events"][0]["payload"]["sequence"] == 2
+    assert messages_response.status_code == 200
+    persisted_messages = messages_response.json()["messages"]
+    assert [message["role"] for message in persisted_messages] == ["user", "assistant"]
+    assert persisted_messages[0]["content"] == "write the note"
+    assert persisted_messages[1]["content"] == "done"
+    assert persisted_messages[1]["run_id"] == run_id
+    assert persisted_messages[1]["status"] == "completed"
+    capability_items = [
+        item for item in persisted_messages[1]["timeline"]
+        if item["type"] == "capability"
+    ]
+    assert len(capability_items) == 1
+    assert capability_items[0]["status"] == "completed"
+    assert capability_items[0]["result"]["type"] == "capability.call.completed"
 
     state.close_runner()
     trace_response = persistence_client.get(f"/runs/{run_id}/trace")
@@ -1696,6 +1759,49 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert "notes/shared.txt" in files
     assert preview_response.status_code == 200
     assert preview_response.json()["content"] == "hello"
+
+
+def test_api_message_stream_failure_before_run_started_updates_conversation_message(
+    persistence_client,
+) -> None:
+    class FailingRunner:
+        enable_validation = False
+
+        async def stream(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+            yield
+
+        def run_state(self, run_id: str):
+            return None
+
+        def close(self) -> None:
+            pass
+
+    state.runner = FailingRunner()
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Failing chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "please fail"}],
+            "target": "tool",
+            "conversation_id": conversation["id"],
+        },
+    )
+    events = _sse_events(response.text)
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert response.status_code == 200
+    assert events[-1]["type"] == "run.failed"
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "failed"
+    assert "provider unavailable" in messages[1]["content"]
+    assert messages[1]["timeline"][-1]["type"] == "text"
 
 
 def test_api_run_trace_does_not_hide_store_read_errors(persistence_client, monkeypatch) -> None:
@@ -1988,6 +2094,9 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     resume_result = resume_events[-1]["data"]["result"]
     review = state.get_store().get_review(review_id)
     run_state = state.get_store().get_run_state(run_id)
+    messages_response = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/messages"
+    )
 
     assert resume_response.status_code == 200
     assert resume_result["state"]["run_id"] == run_id
@@ -1997,6 +2106,18 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     assert review.status == "resolved"
     assert run_state is not None
     assert run_state.status == "completed"
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == "I will stop."
+    assert messages[1]["status"] == "completed"
+    capability_items = [
+        item for item in messages[1]["timeline"]
+        if item["type"] == "capability"
+    ]
+    assert len(capability_items) == 1
+    assert capability_items[0]["status"] == "rejected"
+    assert capability_items[0]["result"]["type"] == "capability.call.failed"
 
 
 def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
@@ -2527,6 +2648,7 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     )
     updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
     persisted_runs = state.get_store().list_runs(conversation_id=conversation["id"])
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
 
     assert response.status_code == 200
     assert any(event["type"] == "dag.updated" for event in _sse_events(response.text))
@@ -2539,6 +2661,55 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     assert persisted_runs[0].workspace_uri == conversation["workspace_uri"]
     assert persisted_runs[0].workspace_uri != project["workspace_uri"]
     assert "/_conversations/" in persisted_runs[0].workspace_uri
+    assert messages_response.status_code == 200
+    assert messages_response.json()["messages"] == []
+
+
+def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
+    persistence_client,
+) -> None:
+    state.runner = Runner(
+        provider=MockProvider([
+            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
+            ChatResponse(content="Final answer: echo:ok"),
+        ])
+    )
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Smart DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+            "ui_state": {"surface": "smart_workbench"},
+        },
+    ).json()["session"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "echo ok through a smart DAG"}],
+            "target": "dag",
+            "review_level": "fast",
+            "conversation_id": conversation["id"],
+        },
+    )
+    result = _sse_events(response.text)[-1]["data"]["result"]
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert response.status_code == 200
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "echo ok through a smart DAG"
+    assert messages[1]["run_id"] == result["state"]["run_id"]
+    assert messages[1]["content"] == "Final answer: echo:ok"
+    assert messages[1]["status"] == "completed"
+    assert messages[1]["dag"]["status"] == "completed"
+    assert any(item["type"] == "dag" for item in messages[1]["timeline"])
+    assert any(item["type"] == "text" and item["content"] == "Final answer: echo:ok" for item in messages[1]["timeline"])
 
 
 def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(

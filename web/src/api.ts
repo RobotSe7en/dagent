@@ -40,6 +40,7 @@ import type {
   OrchestrationSession,
   SavedDag,
 } from './types';
+import type { MessageTimelineItem } from './chatTimeline';
 import { chatScopeRequestFields, type ChatCapabilityScopePayload } from './agentScope';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 import {
@@ -940,6 +941,23 @@ export interface ApiRunEvent {
   created_at: number;
 }
 
+export interface ApiConversationMessage {
+  id: string;
+  conversation_id: string;
+  project_id?: string | null;
+  role: 'user' | 'assistant';
+  run_id?: string | null;
+  turn_index: number;
+  status: 'created' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'rejected';
+  content: string;
+  timeline: MessageTimelineItem[];
+  dag?: Dag | null;
+  trace?: RunTrace | null;
+  pending_review?: ReviewEventPayload | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface StreamHandlers {
   onStarted?: (event: RunStartedStreamEvent) => void;
   onDag?: (dag: Dag) => void;
@@ -1040,6 +1058,19 @@ export async function listRunEvents(runId: string, afterEventId = 0): Promise<Ap
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.events ?? [];
+}
+
+export async function listConversationMessages(
+  conversationId: string,
+  projectId?: string | null,
+): Promise<ApiConversationMessage[]> {
+  const path = projectId
+    ? `/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`
+    : `/conversations/${encodeURIComponent(conversationId)}/messages`;
+  const res = await fetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.messages ?? [];
 }
 
 function appendConversationContext(body: Record<string, unknown>, context?: ConversationRequestContext): void {

@@ -97,6 +97,7 @@ import {
   listAgents,
   listCapabilities,
   listConversations,
+  listConversationMessages,
   listSavedDags,
   listMcpServers,
   listModels,
@@ -146,7 +147,7 @@ import {
   deleteProfile,
   discoverPythonToolNames,
 } from './api';
-import type { ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
+import type { ApiConversationMessage, ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentPreset,
   AgentPresetInput,
@@ -1123,6 +1124,26 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
     ...history.map((message) => ({ role: message.role, content: message.content })),
     { role: 'user', content: dynamicPromptWithDagContext(prompt, dag) },
   ];
+}
+
+function chatMessagesFromApiConversationMessages(items: ApiConversationMessage[]): ChatMessage[] {
+  return items.map((item) => {
+    const content = item.content ?? '';
+    const timeline = item.timeline?.length
+      ? item.timeline
+      : content
+        ? [{ type: 'text' as const, content }]
+        : undefined;
+    const traceSnapshot = item.trace ? mapRunTrace(item.trace) : undefined;
+    return {
+      role: item.role,
+      kind: 'text' as const,
+      content,
+      ...(timeline ? { timeline } : {}),
+      ...(item.dag ? { dagSnapshot: item.dag } : {}),
+      ...(traceSnapshot?.length ? { traceSnapshot } : {}),
+    };
+  });
 }
 
 function isAbortError(value: unknown): boolean {
@@ -2560,14 +2581,21 @@ export function App() {
     setDagReview(pendingReview);
   }, []);
 
-  const applyPersistedRunResult = useCallback((result: ApiRunResult, events: ApiRunEvent[] = []) => {
+  const applyPersistedRunResult = useCallback((
+    result: ApiRunResult,
+    events: ApiRunEvent[] = [],
+    restoredMessages: ChatMessage[] = [],
+  ) => {
     const nextState = result.state ?? null;
     const nextDag = nextState?.dag ?? null;
     const nextReview = nextState?.pending_review ?? null;
     const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
+    const nextMessages = restoredMessages.length
+      ? restoredMessages
+      : messagesFromPersistedRunResult(result, nextTrace, events);
     setRunState(nextState);
     setTrace(nextTrace);
-    setMessages(messagesFromPersistedRunResult(result, nextTrace, events));
+    setMessages(nextMessages);
     setError(null);
     setDagReview(null);
     setDagReviewFeedback('');
@@ -2581,20 +2609,27 @@ export function App() {
       setReviewOpen(false);
     }
     handlePendingReview(nextReview);
-    contentStreamedRef.current = Boolean(result.output_text.trim());
+    contentStreamedRef.current = Boolean(
+      result.output_text.trim() || nextMessages.some((message) => message.role === 'assistant' && message.content.trim()),
+    );
     tokenQueueRef.current = [];
     stopTokenTimer();
   }, [handlePendingReview, syncDag]);
 
   const hydrateConversationSnapshot = useCallback(async (conversation: ApiConversation) => {
-    if (!conversation.last_run_id) return;
     const requestId = conversationHydrationRequestRef.current + 1;
     conversationHydrationRequestRef.current = requestId;
     try {
-      const events = await listRunEvents(conversation.last_run_id);
+      const [conversationMessages, events] = await Promise.all([
+        listConversationMessages(conversation.id, conversation.project_id),
+        conversation.last_run_id ? listRunEvents(conversation.last_run_id) : Promise.resolve([]),
+      ]);
       if (conversationHydrationRequestRef.current !== requestId) return;
+      const restoredMessages = chatMessagesFromApiConversationMessages(conversationMessages);
       const result = finishedRunResultFromEvents(events);
-      const partialMessages = chatMessagesFromPersistedRunEvents(events, result);
+      const partialMessages = restoredMessages.length
+        ? restoredMessages
+        : chatMessagesFromPersistedRunEvents(events, result);
       if (!result && partialMessages.length) {
         setRunState(null);
         setTrace([]);
@@ -2612,7 +2647,7 @@ export function App() {
         return;
       }
       if (!result) return;
-      applyPersistedRunResult(result, events);
+      applyPersistedRunResult(result, events, restoredMessages);
     } catch (exc) {
       if (conversationHydrationRequestRef.current !== requestId) return;
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -2620,14 +2655,13 @@ export function App() {
   }, [applyPersistedRunResult]);
 
   useEffect(() => {
-    if (!selectedChatSurfaceConversation?.last_run_id || streaming || messages.length || runState) return;
+    if (!selectedChatSurfaceConversation || streaming || messages.length || runState) return;
     void hydrateConversationSnapshot(selectedChatSurfaceConversation);
   }, [
     hydrateConversationSnapshot,
     messages.length,
     runState,
     selectedChatSurfaceConversation,
-    selectedChatSurfaceConversation?.last_run_id,
     streaming,
   ]);
 
@@ -8510,7 +8544,7 @@ function renderMessageTimelineItem(
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void,
 ) {
   if (item.type === 'capability') {
-    return <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />;
+    return <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} item={item} />;
   }
   if (item.type === 'dag') {
     return (
@@ -8762,22 +8796,43 @@ function hasNonZeroExitCode(content?: string): boolean {
   return match !== null && match[1] !== '0';
 }
 
-function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
+function CapabilityEventCard({ item }: { item: Extract<MessageTimelineItem, { type: 'capability' }> }) {
+  const { event, result } = item;
   const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
   const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
   const rejectedByReview = Boolean(result?.content?.startsWith('人工审核已拒绝'));
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
-  const statusLabel = result
-    ? (rejectedByReview ? '已拒绝' : isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
+  const explicitStatus = item.status;
+  const statusLabel = explicitStatus === 'awaiting_review'
+    ? '待审核'
+    : explicitStatus === 'rejected'
+      ? '已拒绝'
+      : explicitStatus === 'completed'
+        ? 'done'
+        : explicitStatus === 'failed'
+          ? 'failed'
+          : result
+            ? (rejectedByReview ? '已拒绝' : isError ? 'failed' : isExitError ? 'error' : 'done')
+            : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
+  const statusClass = statusLabel === '待审核'
+    ? 'review'
+    : statusLabel === '已拒绝'
+      ? 'rejected'
+      : statusLabel;
   const argsText = formatCapabilityArguments(event.arguments);
-  const eventClass = rejectedByReview ? 'capability-event-rejected' : showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
-  const statusIcon = statusLabel === 'running'
+  const eventClass = statusClass === 'rejected' || rejectedByReview
+    ? 'capability-event-rejected'
+    : showError
+      ? 'capability-event-error'
+      : `capability-event-${statusClass}`;
+  const statusIcon = statusClass === 'running'
     ? <Loader size={11} />
-    : statusLabel === 'done'
+    : statusClass === 'done'
       ? <Check size={11} />
-      : <X size={11} />;
+      : statusClass === 'review'
+        ? <AlertTriangle size={11} />
+        : <X size={11} />;
   return (
     <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">

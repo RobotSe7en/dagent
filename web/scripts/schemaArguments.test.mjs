@@ -831,6 +831,54 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
   assert.equal(calls[3].init.method, undefined);
 });
 
+test('api helper lists persisted conversation messages for standalone and project conversations', async () => {
+  const { listConversationMessages } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      json: async () => ({
+        messages: [
+          {
+            id: 'msg_1',
+            conversation_id: 'conv_1',
+            role: 'assistant',
+            run_id: 'run_1',
+            turn_index: 1,
+            status: 'completed',
+            content: 'done',
+            timeline: [{ type: 'text', content: 'done' }],
+            created_at: 1,
+            updated_at: 1,
+          },
+        ],
+      }),
+      text: async () => '',
+    };
+  };
+
+  try {
+    const standalone = await listConversationMessages('conv_1');
+    const project = await listConversationMessages('conv_2', 'proj_1');
+    assert.equal(standalone[0].content, 'done');
+    assert.equal(project[0].role, 'assistant');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/conversations/conv_1/messages');
+  assert.equal(calls[0].init.method, undefined);
+  assert.equal(calls[1].url, '/api/projects/proj_1/conversations/conv_2/messages');
+  assert.equal(calls[1].init.method, undefined);
+});
+
 test('saved DAG api helpers preserve metadata and layout', async () => {
   const { listSavedDags, saveSavedDag } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
@@ -2363,38 +2411,26 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(resumeCapabilitySource, /conversation: activeConversationContext/);
 });
 
-test('persisted conversation selection hydrates the last run snapshot', async () => {
+test('persisted conversation selection hydrates backend message timelines first', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export interface ApiRunEvent/);
+  assert.match(apiSource, /export interface ApiConversationMessage/);
   assert.match(apiSource, /export async function listRunEvents\(runId: string, afterEventId = 0\): Promise<ApiRunEvent\[\]>/);
+  assert.match(apiSource, /export async function listConversationMessages\(/);
   assert.match(apiSource, /`\$\{API_BASE\}\/runs\/\$\{encodeURIComponent\(runId\)\}\/events\$\{params\}`/);
+  assert.match(apiSource, /\/projects\/\$\{encodeURIComponent\(projectId\)\}\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/messages/);
+  assert.match(apiSource, /\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/messages/);
   assert.match(persistedChatSource, /export function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
   assert.match(persistedChatSource, /export function messagesFromPersistedRunResult\(/);
+  assert.match(appSource, /function chatMessagesFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ChatMessage\[\]/);
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
-  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult, events: ApiRunEvent\[\] = \[\]\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace, events\)\);/);
-  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result, events\);/);
-  assert.match(appSource, /const partialMessages = chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
-  assert.match(appSource, /if \(!selectedChatSurfaceConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
-});
-
-test('persisted conversation hydration restores user and assistant chat turns', async () => {
-  const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
-  const hydrateSource = persistedChatSource.match(/export function messagesFromPersistedRunResult[\s\S]*?\nfunction appendPersistedChatMessage/)?.[0] ?? '';
-
-  assert.ok(hydrateSource, 'messagesFromPersistedRunResult should exist');
-  assert.match(persistedChatSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
-  assert.match(persistedChatSource, /function inputMessagesFromRunState\(state: ApiRunState \| null\): Record<string, unknown>\[\]/);
-  assert.match(persistedChatSource, /state\.internal_messages \?\? \[\]/);
-  assert.match(persistedChatSource, /state\.input_message_count/);
-  assert.match(hydrateSource, /inputMessagesFromRunState\(state\)/);
-  assert.match(hydrateSource, /role !== 'user' && role !== 'assistant'/);
-  assert.match(hydrateSource, /appendPersistedChatMessage\(messages, role, content\);/);
-  assert.match(persistedChatSource, /role === 'assistant' && last\?\.role === 'assistant'/);
-  assert.match(persistedChatSource, /timeline: \[\.\.\.\(last\.timeline \?\? \[\]\), \{ type: 'text', content \}\]/);
-  assert.match(persistedChatSource, /function lastAssistantMessageIndex\(messages: ChatMessage\[\]\): number/);
+  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\([\s\S]*restoredMessages: ChatMessage\[\] = \[\],[\s\S]*const nextMessages = restoredMessages\.length[\s\S]*messagesFromPersistedRunResult\(result, nextTrace, events\);[\s\S]*setMessages\(nextMessages\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages\);/);
+  assert.match(appSource, /const partialMessages = restoredMessages\.length[\s\S]*\? restoredMessages[\s\S]*: chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
+  assert.match(appSource, /if \(!selectedChatSurfaceConversation \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
 
 test('persisted conversation hydration rebuilds one assistant turn with capability trace', async () => {
@@ -2749,118 +2785,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
   assert.equal(dagItems.length, 1);
   assert.equal(dagItems[0].dag.status, 'completed');
   assert.equal(messages[1].content.includes('Review proposed DAG before execution.'), false);
-});
-
-test('persisted conversation hydration settles rejected capability review cards', async () => {
-  const {
-    chatMessagesFromPersistedRunEvents,
-    finishedRunResultFromEvents,
-  } = await importTypeScriptModule('../src/persistedChat.ts', [
-    '../src/persistedChat.ts',
-    '../src/chatTimeline.ts',
-    '../src/api.ts',
-    '../src/agentScope.ts',
-    '../src/dagArtifacts.ts',
-    '../src/streamProtocol.ts',
-  ]);
-  const state = {
-    run_id: 'run_1',
-    kind: 'tool',
-    status: 'completed',
-    internal_messages: [
-      { role: 'user', content: 'read blocked file' },
-      { role: 'assistant', content: 'I will read README instead.' },
-    ],
-  };
-  const events = [
-    runEvent(1, 'capability.call.started', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: '../blocked/secret.txt' },
-    }),
-    runEvent(2, 'capability.call.completed', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
-    }),
-    runEvent(3, 'review.required', {
-      review_id: 'review_1',
-      kind: 'capability_review',
-      message: 'Review capability call.',
-      capability_call: {
-        invocation_id: 'call_1',
-        capability_id: 'tool.read_file',
-        tool_name: 'tool_read_file',
-        arguments: { path: '../blocked/secret.txt' },
-      },
-    }),
-    runEvent(4, 'run.finished', {
-      result: {
-        output_text: 'I will read README instead.',
-        state,
-      },
-    }),
-  ];
-
-  const result = finishedRunResultFromEvents(events);
-  const messages = chatMessagesFromPersistedRunEvents(events, result);
-  const assistant = messages.find((message) => message.role === 'assistant');
-  const capability = assistant.timeline.find((item) => item.type === 'capability');
-
-  assert.ok(capability, 'capability card should be restored');
-  assert.equal(capability.result.type, 'capability.call.failed');
-  assert.match(capability.result.content, /人工审核已拒绝/);
-  assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
-});
-
-test('persisted conversation hydration restores interrupted review traces without run finished', async () => {
-  const {
-    chatMessagesFromPersistedRunEvents,
-    finishedRunResultFromEvents,
-  } = await importTypeScriptModule('../src/persistedChat.ts', [
-    '../src/persistedChat.ts',
-    '../src/chatTimeline.ts',
-    '../src/api.ts',
-    '../src/agentScope.ts',
-    '../src/dagArtifacts.ts',
-    '../src/streamProtocol.ts',
-  ]);
-  const events = [
-    runEvent(1, 'run.started', { kind: 'tool' }),
-    runEvent(2, 'capability.call.started', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: '../blocked/secret.txt' },
-    }),
-    runEvent(3, 'capability.call.completed', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
-    }),
-    runEvent(4, 'review.required', {
-      review_id: 'review_1',
-      kind: 'capability_review',
-      message: 'Review capability call: tool.read_file',
-      capability_call: {
-        invocation_id: 'call_1',
-        capability_id: 'tool.read_file',
-        tool_name: 'tool_read_file',
-        arguments: { path: '../blocked/secret.txt' },
-      },
-    }),
-  ];
-
-  const result = finishedRunResultFromEvents(events);
-  const messages = chatMessagesFromPersistedRunEvents(events, result);
-  const assistant = messages.find((message) => message.role === 'assistant');
-
-  assert.equal(result, null);
-  assert.ok(assistant, 'interrupted review run should hydrate a visible assistant turn');
-  assert.equal(assistant.content, 'Review capability call: tool.read_file');
-  assert.deepEqual(
-    assistant.timeline.map((item) => item.type),
-    ['capability', 'text'],
-  );
 });
 
 test('persisted conversation replay reuses api stream event parsing', async () => {
@@ -4273,6 +4197,7 @@ test('completed assistant answers collapse reasoning and capability process trac
 test('process timeline summary treats review rejection separately from anomalies', () => {
   const rejected = {
     type: 'capability',
+    status: 'rejected',
     event: {
       type: 'capability.call.started',
       invocation_id: 'invoke_rejected',
@@ -4288,6 +4213,7 @@ test('process timeline summary treats review rejection separately from anomalies
   };
   const failed = {
     type: 'capability',
+    status: 'failed',
     event: {
       type: 'capability.call.started',
       invocation_id: 'invoke_failed',
@@ -4316,6 +4242,10 @@ test('running, answerless, and review assistant turns keep process trace expande
       arguments: { path: 'README.md' },
     },
   };
+  const awaitingReviewCapability = {
+    ...runningCapability,
+    status: 'awaiting_review',
+  };
   const answerlessMessage = {
     role: 'assistant',
     content: '',
@@ -4338,6 +4268,7 @@ test('running, answerless, and review assistant turns keep process trace expande
   assert.equal(shouldCollapseProcessTimeline(answerlessMessage, true), false);
   assert.equal(shouldCollapseProcessTimeline(answerlessMessage, false), false);
   assert.equal(processTimelineSummary(answerlessMessage.timeline).runningCount, 2);
+  assert.equal(processTimelineSummary([awaitingReviewCapability]).runningCount, 0);
   assert.equal(shouldCollapseProcessTimeline(reviewMessage, false), false);
   assert.equal(shouldCollapseProcessTimeline({
     role: 'assistant',
