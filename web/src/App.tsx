@@ -106,6 +106,7 @@ import {
   listProfiles,
   listRunArtifacts,
   listRunEvents,
+  listOrchestrationSessionRuns,
   listSavedDagRuns,
   listSkills,
   mapRunTrace,
@@ -1251,6 +1252,7 @@ export function App() {
   const [dynamicConversationEditTargetId, setDynamicConversationEditTargetId] = useState('');
   const [dynamicConversationEditTitle, setDynamicConversationEditTitle] = useState('');
   const [dynamicConversationDeleteTargetId, setDynamicConversationDeleteTargetId] = useState('');
+  const [dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId] = useState('');
   const [dynamicRunHistory, setDynamicRunHistory] = useState<ApiRunSummary[]>([]);
   const [dynamicSelectedRunId, setDynamicSelectedRunId] = useState('');
   const [dynamicRunHistoryLoading, setDynamicRunHistoryLoading] = useState(false);
@@ -2575,6 +2577,7 @@ export function App() {
     setDynamicMessage('');
     setDynamicMessageOrder(0);
     setDynamicRunState(null);
+    setDynamicOrchestrationSessionId('');
     setDynamicRunHistory([]);
     setDynamicSelectedRunId('');
     setDynamicRunHistoryError(null);
@@ -2602,10 +2605,12 @@ export function App() {
         ? session.ui_state.selectedNodeId
         : '';
       if (session.kind === 'dynamic_dag') {
+        setDynamicOrchestrationSessionId(session.id);
         const draftDag = runtimeDagFromUnknown(session.draft_dag);
         if (draftDag) syncDynamicDag(draftDag);
         if (selectedNodeId) setDynamicSelectedId(selectedNodeId);
         if (conversation.last_run_id) {
+          setDynamicSelectedRunId(conversation.last_run_id);
           const events = await listRunEvents(conversation.last_run_id);
           if (orchestrationHydrationRequestRef.current !== requestId) return;
           const result = finishedRunResultFromEvents(events);
@@ -2622,6 +2627,7 @@ export function App() {
         }
         return;
       }
+      setDynamicOrchestrationSessionId('');
 
       let saved = session.saved_dag_id
         ? savedDagsRef.current.find((item) => item.id === session.saved_dag_id) ?? null
@@ -2716,6 +2722,39 @@ export function App() {
     selectedConversationId,
     selectedProjectId,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!dynamicOrchestrationSessionId) {
+      setDynamicRunHistory([]);
+      setDynamicSelectedRunId('');
+      setDynamicRunHistoryError(null);
+      setDynamicRunHistoryLoading(false);
+      return;
+    }
+    setDynamicRunHistoryLoading(true);
+    setDynamicRunHistoryError(null);
+    void listOrchestrationSessionRuns(dynamicOrchestrationSessionId)
+      .then((runs) => {
+        if (cancelled) return;
+        setDynamicRunHistory(runs);
+        setDynamicSelectedRunId((current) => (
+          current && runs.some((run) => run.id === current) ? current : ''
+        ));
+      })
+      .catch((exc) => {
+        if (cancelled) return;
+        setDynamicRunHistory([]);
+        setDynamicSelectedRunId('');
+        setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+      })
+      .finally(() => {
+        if (!cancelled) setDynamicRunHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dynamicOrchestrationSessionId]);
 
   const updateDynamicDag = (updater: (current: Dag) => Dag) => {
     setDynamicDag((current) => {
@@ -3273,7 +3312,7 @@ export function App() {
       const conversation = targetProjectId
         ? await createProjectConversation(targetProjectId, { title: '动态编排', kind: 'dynamic_dag' })
         : await createConversation({ title: '动态编排', kind: 'dynamic_dag' });
-      await createOrchestrationSession({
+      const session = await createOrchestrationSession({
         conversation_id: conversation.id,
         project_id: conversation.project_id,
         kind: 'dynamic_dag',
@@ -3285,6 +3324,7 @@ export function App() {
         ...items.filter((item) => item.id !== conversation.id),
       ]);
       clearDynamicWorkspace();
+      setDynamicOrchestrationSessionId(session.id);
       orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
       setSelectedConversationId(conversation.id);
       if (conversation.project_id) setSelectedProjectId(conversation.project_id);
@@ -3456,7 +3496,7 @@ export function App() {
     return 'careful';
   }
 
-  const dynamicHandlers = (conversationContext?: OrchestrationContext['request']) => ({
+  const dynamicHandlers = (conversationContext?: OrchestrationContext['request'], sessionId?: string) => ({
     onDag: (nextDag: Dag) => {
       syncDynamicDag(preserveDynamicDagEdges(nextDag));
       setDynamicStatusMessage(`DAG ${nextDag.status} · ${nextDag.nodes.length} 节点`);
@@ -3471,7 +3511,15 @@ export function App() {
       const state = payload.result.state ?? null;
       setDynamicRunState(state);
       if (state?.dag) syncDynamicDag(preserveDynamicDagEdges(state.dag));
-      if (conversationContext && state?.run_id) void refreshConversations();
+      if (conversationContext && state?.run_id) {
+        void refreshConversations();
+        setDynamicSelectedRunId(state.run_id);
+      }
+      if (sessionId && state?.run_id) {
+        void listOrchestrationSessionRuns(sessionId)
+          .then((runs) => setDynamicRunHistory(runs))
+          .catch((exc) => setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
+      }
       if (state?.pending_review) {
         clearDynamicFinalAnswer();
         const content = 'DAG 已生成，可编辑节点后点击「运行」。';
@@ -3494,6 +3542,27 @@ export function App() {
     },
   });
 
+  const selectDynamicRunHistory = async (runId: string) => {
+    try {
+      setDynamicSelectedRunId(runId);
+      setDynamicRunHistoryError(null);
+      const events = await listRunEvents(runId);
+      const result = finishedRunResultFromEvents(events);
+      const nextState = result?.state ?? null;
+      setDynamicRunState(nextState);
+      if (nextState?.dag) syncDynamicDag(preserveDynamicDagEdges(nextState.dag));
+      if (nextState?.trace) {
+        setDynamicTrace(mapRunTrace(nextState.trace).map((event) => ({
+          ...event,
+          timelineOrder: nextDynamicTimelineOrder(),
+        })));
+      }
+      if (result?.output_text) setOrderedDynamicFinalAnswer(result.output_text);
+    } catch (exc) {
+      setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
   const generateDynamicDag = async () => {
     if (!dynamicPrompt.trim() || dynamicRunning) return;
     const prompt = dynamicPrompt.trim();
@@ -3514,11 +3583,12 @@ export function App() {
         },
       );
       if (!context) return;
+      setDynamicOrchestrationSessionId(context.session.id);
       await streamMessagesTask(
         dynamicRequestMessages,
         'dag',
         dynamicReviewLevel(),
-        dynamicHandlers(context.request),
+        dynamicHandlers(context.request, context.session.id),
         undefined,
         dynamicAdjust,
         { conversation: context.request },
@@ -3551,12 +3621,13 @@ export function App() {
         },
       );
       if (!context) return;
+      setDynamicOrchestrationSessionId(context.session.id);
       await resumeDagReview(
         reviewId,
         dag,
         dynamicReviewLevel(),
         true,
-        dynamicHandlers(context.request),
+        dynamicHandlers(context.request, context.session.id),
         dynamicRunState,
         undefined,
         { conversation: context.request },
@@ -4418,6 +4489,13 @@ export function App() {
             messageOrder={dynamicMessageOrder}
             messages={dynamicMessages}
             trace={dynamicTrace}
+            runHistory={{
+              runs: dynamicRunHistory,
+              selectedRunId: dynamicSelectedRunId,
+              loading: dynamicRunHistoryLoading,
+              error: dynamicRunHistoryError,
+              onSelectRun: (runId) => void selectDynamicRunHistory(runId),
+            }}
             onAddNode={onAddDynamicNode}
             onPatchNode={onPatchDynamicNode}
             onDeleteNode={onDeleteDynamicNode}
@@ -9234,6 +9312,7 @@ function DynamicOrchestrationWorkspace({
   messageOrder,
   messages,
   trace,
+  runHistory,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -9261,6 +9340,7 @@ function DynamicOrchestrationWorkspace({
   messageOrder: number;
   messages: DynamicChatMessage[];
   trace: DynamicTraceLogEvent[];
+  runHistory: RunHistoryPanelData;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -9492,6 +9572,7 @@ function DynamicOrchestrationWorkspace({
             </aside>
           ) : null}
         </div>
+        <RunHistoryPanel title="运行历史" runHistory={runHistory} />
       </div>
     </section>
   );

@@ -1544,6 +1544,25 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(css, /\.run-history-list/);
 });
 
+test('dynamic orchestration workspace shows session run history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const dynamicSource = appSource.match(/function DynamicOrchestrationWorkspace[\s\S]*?\nfunction OrchestrationWorkspace/)?.[0] ?? '';
+
+  assert.ok(dynamicSource, 'DynamicOrchestrationWorkspace function should exist');
+  assert.match(apiSource, /export async function listOrchestrationSessionRuns/);
+  assert.match(appSource, /listOrchestrationSessionRuns,/);
+  assert.match(appSource, /const \[dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId\] = useState\(''\);/);
+  assert.match(appSource, /setDynamicOrchestrationSessionId\(session\.id\)/);
+  assert.match(appSource, /listOrchestrationSessionRuns\(dynamicOrchestrationSessionId\)/);
+  assert.match(appSource, /const selectDynamicRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /setDynamicSelectedRunId\(runId\)/);
+  assert.match(appSource, /setDynamicTrace\(mapRunTrace\(nextState\.trace\)\.map/);
+  assert.match(appSource, /runHistory=\{\{[\s\S]*runs: dynamicRunHistory,[\s\S]*selectedRunId: dynamicSelectedRunId/);
+  assert.match(dynamicSource, /runHistory: RunHistoryPanelData;/);
+  assert.match(dynamicSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*runHistory=\{runHistory\}/);
+});
+
 test('capability management nests resources under the sidebar menu with list creation actions', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
