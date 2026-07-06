@@ -930,6 +930,68 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
   });
 });
 
+test('orchestration history api helpers use expected endpoints', async () => {
+  const {
+    deleteSavedDag,
+    listConversationRuns,
+    listConversations,
+    listOrchestrationSessionRuns,
+    listProjectConversationRuns,
+    listProjectConversations,
+    listSavedDagRuns,
+    updateConversation,
+    updateProjectConversation,
+  } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      json: async () => ({
+        conversation: { id: 'conv_1', title: 'Renamed', kind: 'dynamic_dag' },
+        conversations: [{ id: 'conv_1', title: 'Dynamic', kind: 'dynamic_dag' }],
+        runs: [{ id: 'run_1', status: 'completed', has_state: true }],
+      }),
+      text: async () => '',
+    };
+  };
+
+  try {
+    await listConversations({ kind: 'dynamic_dag' });
+    await listProjectConversations('proj 1', { kind: 'dynamic_dag' });
+    await updateConversation('conv 1', { title: 'Renamed' });
+    await updateProjectConversation('proj 1', 'conv 1', { title: 'Project Renamed' });
+    await listConversationRuns('conv 1');
+    await listProjectConversationRuns('proj 1', 'conv 1');
+    await listOrchestrationSessionRuns('orch 1');
+    await listSavedDagRuns('dag 1');
+    await deleteSavedDag('dag 1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/conversations?kind=dynamic_dag');
+  assert.equal(calls[1].url, '/api/projects/proj%201/conversations?kind=dynamic_dag');
+  assert.equal(calls[2].url, '/api/conversations/conv%201');
+  assert.equal(calls[2].init.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[2].init.body), { title: 'Renamed' });
+  assert.equal(calls[3].url, '/api/projects/proj%201/conversations/conv%201');
+  assert.equal(calls[3].init.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[3].init.body), { title: 'Project Renamed' });
+  assert.equal(calls[4].url, '/api/conversations/conv%201/runs');
+  assert.equal(calls[5].url, '/api/projects/proj%201/conversations/conv%201/runs');
+  assert.equal(calls[6].url, '/api/orchestration-sessions/orch%201/runs');
+  assert.equal(calls[7].url, '/api/saved-dags/dag%201/runs');
+  assert.equal(calls[8].url, '/api/saved-dags/dag%201');
+  assert.equal(calls[8].init.method, 'DELETE');
+});
+
 test('value binding helpers create labels and rewrite node output references', () => {
   const binding = makeNodeOutputBinding('search', 'value', ['title']);
 
@@ -2046,8 +2108,8 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(typesSource, /project_id: string \| null;/);
   assert.match(typesSource, /workspace_uri: string;/);
-  assert.match(apiSource, /export async function listConversations\(\): Promise<ApiConversation\[\]>/);
-  assert.match(apiSource, /export async function listProjectConversations\(projectId: string\): Promise<ApiConversation\[\]>/);
+  assert.match(apiSource, /export async function listConversations\(options: \{ kind\?: ApiConversation\['kind'\] \} = \{\}\): Promise<ApiConversation\[\]>/);
+  assert.match(apiSource, /export async function listProjectConversations\(\s*projectId: string,\s*options: \{ kind\?: ApiConversation\['kind'\] \} = \{\},\s*\): Promise<ApiConversation\[\]>/);
   assert.match(apiSource, /export async function createConversation\(input: \{ title: string; kind\?: ApiConversation\['kind'\] \}\): Promise<ApiConversation>/);
   assert.match(apiSource, /export async function deleteConversation\(conversationId: string\): Promise<void>/);
   assert.match(apiSource, /export async function deleteProjectConversation\(projectId: string, conversationId: string\): Promise<void>/);
