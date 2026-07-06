@@ -3026,10 +3026,21 @@ test('project conversation creation is a row action with a detail shortcut', asy
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const projectDetailSource = appSource.match(/function ProjectDetailWorkspace[\s\S]*?\nfunction ProjectFileManager/)?.[0] ?? '';
+  const createProjectConversationSource = appSource.match(/const createProjectConversationFromProject = async \(projectId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  const ensureConversationSource = appSource.match(/const ensureChatConversation = async[\s\S]*?\n  const runStream/)?.[0] ?? '';
+  const newChatSource = appSource.match(/const newChat = async \(\) => \{[\s\S]*?\n  const clearChatSurface/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.ok(projectDetailSource, 'ProjectDetailWorkspace function should exist');
   assert.match(appSource, /const createProjectConversationFromProject = async \(projectId: string\)/);
+  assert.match(createProjectConversationSource, /setSelectedProjectId\(projectId\)/);
+  assert.match(createProjectConversationSource, /setSelectedConversationId\(''\)/);
+  assert.match(createProjectConversationSource, /setChatSub\('projects'\)/);
+  assert.match(createProjectConversationSource, /clearChatSurface\(\)/);
+  assert.doesNotMatch(createProjectConversationSource, /createProjectConversation\(/);
+  assert.doesNotMatch(createProjectConversationSource, /title: `会话 \$\{/);
+  assert.match(newChatSource, /await createProjectConversationFromProject\(selectedProjectId\)/);
+  assert.match(ensureConversationSource, /createProjectConversation\(selectedProjectId,\s*\{[\s\S]*title: conversationTitleFromPrompt\(prompt\)/);
   assert.match(appSource, /onNewProjectConversation=\{\(projectId\) => void createProjectConversationFromProject\(projectId\)\}/);
   assert.match(sidebarSource, /onNewProjectConversation: \(projectId: string\) => void;/);
   assert.doesNotMatch(sidebarSource, /className="sidebar-project-create-conversation"/);

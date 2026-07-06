@@ -4014,24 +4014,12 @@ export function App() {
 
   const createProjectConversationFromProject = async (projectId: string) => {
     if (streaming) return null;
-    const projectConversationCount = conversations.filter((conversation) => (
-      isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && conversation.project_id === projectId
-    )).length;
-    try {
-      const conversation = await createProjectConversation(projectId, {
-        title: `会话 ${projectConversationCount + 1}`,
-      });
-      setConversations((items) => [conversation, ...items]);
-      setSelectedProjectId(projectId);
-      setSelectedConversationId(conversation.id);
-      setChatSub('projects');
-      setProjectError(null);
-      clearChatSurface();
-      return conversation;
-    } catch (exc) {
-      setProjectError(exc instanceof Error ? exc.message : String(exc));
-      return null;
-    }
+    setSelectedProjectId(projectId);
+    setSelectedConversationId('');
+    setChatSub('projects');
+    setProjectError(null);
+    clearChatSurface();
+    return null;
   };
 
   const newChat = async () => {
