@@ -626,7 +626,17 @@ button:focus-visible {
 }
 
 .sidebar-project-tree-main,
-.sidebar-project-conversation-row,
+.sidebar-project-conversation-row {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid #edf0f4;
+  border-radius: 9px;
+  background: #fff;
+  overflow: hidden;
+}
+
 .sidebar-saved-dag-row {
   min-width: 0;
   display: flex;
@@ -643,7 +653,11 @@ button:focus-visible {
 .sidebar-project-tree-main:hover,
 .sidebar-project-tree-main.active,
 .sidebar-project-conversation-row:hover,
-.sidebar-project-conversation-row.active,
+.sidebar-project-conversation-row.active {
+  border-color: #e7e8ec;
+  background: #f0f1f4;
+}
+
 .sidebar-saved-dag-row:hover,
 .sidebar-saved-dag-row.active {
   border-color: #e7e8ec;
@@ -727,7 +741,21 @@ button:focus-visible {
   flex: 0 0 auto;
 }
 
-.sidebar-history-list .sidebar-conversation-delete,
+.sidebar-history-list .sidebar-conversation-delete {
+  width: 30px;
+  min-width: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: #aab0b9;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
 .sidebar-context-list .sidebar-conversation-delete {
   width: 30px;
   min-width: 30px;
@@ -744,13 +772,22 @@ button:focus-visible {
 }
 
 .sidebar-conversation-row:hover .sidebar-conversation-delete,
-.sidebar-project-conversation-row:hover .sidebar-conversation-delete,
+.sidebar-project-conversation-row:hover .sidebar-conversation-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .sidebar-saved-dag-row:hover .sidebar-conversation-delete {
   opacity: 1;
   pointer-events: auto;
 }
 
-.sidebar-history-list .sidebar-conversation-delete:hover,
+.sidebar-history-list .sidebar-conversation-delete:hover {
+  border-color: #f1c4c0;
+  background: #fff5f4;
+  color: #9f2f2a;
+}
+
 .sidebar-context-list .sidebar-conversation-delete:hover {
   border-color: #f1c4c0;
   background: #fff5f4;
@@ -1625,11 +1662,11 @@ button:focus-visible {
 .user-bubble {
   max-width: min(78%, 760px);
   border: 1px solid rgba(103, 103, 220, 0.22);
-  border-radius: 16px;
+  border-radius: 14px 14px 6px 14px;
   padding: 13px 16px;
   background: #6767dc;
   color: #fff;
-  box-shadow: 0 2px 12px rgba(20, 23, 30, 0.05);
+  box-shadow: none;
   font-size: 14.5px;
   font-weight: 450;
   line-height: 1.55;
@@ -1673,6 +1710,8 @@ button:focus-visible {
   min-width: 0;
   flex: 0 1 960px;
   max-width: min(100%, 960px);
+  border-radius: 14px 14px 14px 6px;
+  box-shadow: none;
 }
 
 .assistant-turn-frame .message-timeline {
@@ -1780,79 +1819,46 @@ button:focus-visible {
 }
 
 /* ── 执行过程时间轴（展开态与流式实时态共用） ── */
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) {
   position: relative;
   display: grid;
-  gap: 16px;
-  padding: 18px 18px 18px 42px;
+  gap: 4px;
+  padding: 4px 6px 6px;
   background: #fff;
 }
 
-.assistant-turn-frame .message-timeline.live-process-timeline {
+.assistant-turn-frame :is(.message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) {
   border: 1px solid #e2e4ea;
   border-radius: 16px;
-  box-shadow: 0 2px 12px rgba(20, 23, 30, 0.05);
+  box-shadow: none;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline)::before {
-  content: '';
-  position: absolute;
-  top: 22px;
-  bottom: 22px;
-  left: 22px;
-  width: 2px;
-  border-radius: 2px;
-  background: #eceef2;
-}
-
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry {
-  position: relative;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry {
   min-width: 0;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry::before {
-  content: '';
-  position: absolute;
-  top: 14px;
-  left: -24px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #6767dc;
-  box-shadow: 0 0 0 2px #fff;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > :is(.think-block, .timeline-card, .capability-event-card, .dag-summary-card, .validation-card, .markdown-body) {
+  border-left: 3px solid #d8dee8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .think-block)::before {
-  top: 18px;
-  background: #fff;
-  border: 2px solid #c9cdd6;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .think-block {
+  border-left-color: #94a3b8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card)::before {
-  top: 18px;
-  background: #22c55e;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .capability-event-card {
+  border-left-color: #2dd4bf;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card.capability-event-running)::before {
-  background: #6767dc;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .validation-card {
+  border-left-color: #818cf8;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card.capability-event-rejected)::before {
-  background: #f59e0b;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .dag-summary-card {
+  border-left-color: #60a5fa;
 }
 
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .capability-event-card:is(.capability-event-error, .capability-event-failed))::before {
-  background: #ef4444;
-}
-
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .validation-card)::before {
-  top: 18px;
-  background: #818cf8;
-}
-
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry:has(> .dag-summary-card)::before {
-  top: 20px;
-  background: #60a5fa;
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .markdown-body {
+  border-left-color: #cbd5e1;
 }
 
 /* 时间轴内的推理块：整体圆角卡片，浅灰 header + 展开后带框正文 */
@@ -1923,7 +1929,7 @@ button:focus-visible {
 }
 
 /* 时间轴内的文本片段 */
-.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline) > .timeline-entry > .markdown-body {
+.assistant-turn-frame :is(.process-summary-body, .message-timeline.live-process-timeline, .message-timeline.completed-process-timeline) > .timeline-entry > .markdown-body {
   color: #2f333b;
   font-size: 13.5px;
   line-height: 1.65;
@@ -2815,15 +2821,15 @@ details[open] > summary .card-chevron {
   gap: 4px;
   border: 0;
   border-radius: 999px;
-  padding: 0 12px;
+  padding: 0 7px;
   color: #8b909a;
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .composer-toolbar .mode-switch button span {
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1;
 }
 

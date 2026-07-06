@@ -22,7 +22,6 @@ import {
   type XYPosition,
 } from '@xyflow/react';
 import {
-  Activity,
   AlertTriangle,
   ArrowRight,
   ArrowUp,
@@ -6225,7 +6224,7 @@ function ChatWorkspace({
                     aria-label={option.label}
                     type="button"
                   >
-                    {target === option.value ? option.icon : null}
+                    {option.icon}
                     <span>{option.shortLabel}</span>
                   </button>
                 ))}
@@ -8266,7 +8265,7 @@ function ProcessSummaryCard({
   return (
     <details className="process-summary-card">
       <summary className="process-summary-head">
-        <span className="process-summary-icon"><Activity size={15} /></span>
+        <span className="process-summary-icon"><Wrench size={14} /></span>
         <strong>执行过程</strong>
         <em className={`process-status-pill${summary.failedCount ? ' has-failures' : ''}`}>
           {summary.failedCount ? '有异常' : '已完成'}
