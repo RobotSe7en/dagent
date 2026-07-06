@@ -129,6 +129,8 @@ import {
   updateOnlyOfficeSettings,
   updateOrchestrationSession,
   updateProject,
+  updateConversation,
+  updateProjectConversation,
   updatePythonTool,
   uploadProjectFiles,
   updateAgent,
@@ -147,6 +149,7 @@ import type {
   AgentProfile,
   ApiConversation,
   ApiProject,
+  ApiRunSummary,
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
@@ -1230,6 +1233,14 @@ export function App() {
   const [dynamicMessage, setDynamicMessage] = useState('');
   const [dynamicMessageOrder, setDynamicMessageOrder] = useState(0);
   const [dynamicRunning, setDynamicRunning] = useState(false);
+  const [dynamicConversationQuery, setDynamicConversationQuery] = useState('');
+  const [dynamicConversationEditTargetId, setDynamicConversationEditTargetId] = useState('');
+  const [dynamicConversationEditTitle, setDynamicConversationEditTitle] = useState('');
+  const [dynamicConversationDeleteTargetId, setDynamicConversationDeleteTargetId] = useState('');
+  const [dynamicRunHistory, setDynamicRunHistory] = useState<ApiRunSummary[]>([]);
+  const [dynamicSelectedRunId, setDynamicSelectedRunId] = useState('');
+  const [dynamicRunHistoryLoading, setDynamicRunHistoryLoading] = useState(false);
+  const [dynamicRunHistoryError, setDynamicRunHistoryError] = useState<string | null>(null);
   const [agentManagementSub, setAgentManagementSub] = useState<AgentManagementSub>('profiles');
   const [systemManagementSub, setSystemManagementSub] = useState<SystemManagementSub>('models');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -1351,6 +1362,14 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
     [conversations, conversationDeleteTargetId],
   );
+  const dynamicConversationEditTarget = useMemo(
+    () => conversations.find((conversation) => conversation.id === dynamicConversationEditTargetId) ?? null,
+    [conversations, dynamicConversationEditTargetId],
+  );
+  const dynamicConversationDeleteTarget = useMemo(
+    () => conversations.find((conversation) => conversation.id === dynamicConversationDeleteTargetId) ?? null,
+    [conversations, dynamicConversationDeleteTargetId],
+  );
   const selectedProjectFile = useMemo(
     () => findProjectFileByPath(projectFiles, selectedProjectFilePath),
     [projectFiles, selectedProjectFilePath],
@@ -1362,6 +1381,19 @@ export function App() {
   const activeConversationContext = selectedChatSurfaceConversation
     ? { projectId: selectedChatSurfaceConversation.project_id, conversationId: selectedChatSurfaceConversation.id }
     : undefined;
+  const normalizedDynamicConversationQuery = normalizeSearchQuery(dynamicConversationQuery);
+  const visibleDynamicConversations = useMemo(() => conversations.filter((conversation) => {
+    if (conversation.kind !== 'dynamic_dag') return false;
+    if (selectedProjectId) {
+      if (conversation.project_id !== selectedProjectId) return false;
+    } else if (conversation.project_id) {
+      return false;
+    }
+    return matchesSearchQuery(
+      [conversation.id, conversation.title, conversation.status],
+      normalizedDynamicConversationQuery,
+    );
+  }), [conversations, normalizedDynamicConversationQuery, selectedProjectId]);
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -2482,6 +2514,23 @@ export function App() {
     setDynamicSelectedId((current) => normalized.nodes.some((node) => node.id === current) ? current : '');
   };
 
+  const clearDynamicWorkspace = useCallback(() => {
+    syncDynamicDag(emptyDag);
+    setDynamicTrace([]);
+    setDynamicMessages([]);
+    setDynamicFinalAnswer('');
+    setDynamicFinalAnswerOrder(0);
+    setDynamicPrompt('');
+    setDynamicMessage('');
+    setDynamicMessageOrder(0);
+    setDynamicRunState(null);
+    setDynamicRunHistory([]);
+    setDynamicSelectedRunId('');
+    setDynamicRunHistoryError(null);
+    setDynamicRunHistoryLoading(false);
+    dynamicTimelineOrderRef.current = 0;
+  }, []);
+
   function preserveDynamicDagEdges(nextDag: Dag): Dag {
     const nextEdges = nextDag.edges ?? [];
     if (nextEdges.length || !dynamicDagRef.current.edges.length) return nextDag;
@@ -3105,6 +3154,83 @@ export function App() {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
       setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
       return null;
+    }
+  };
+
+  const createDynamicOrchestration = async () => {
+    if (dynamicRunning || editorRunning) return;
+    try {
+      const targetProjectId = selectedProjectId || null;
+      const conversation = targetProjectId
+        ? await createProjectConversation(targetProjectId, { title: '动态编排', kind: 'dynamic_dag' })
+        : await createConversation({ title: '动态编排', kind: 'dynamic_dag' });
+      await createOrchestrationSession({
+        conversation_id: conversation.id,
+        project_id: conversation.project_id,
+        kind: 'dynamic_dag',
+        draft_dag: null,
+        ui_state: {},
+      });
+      setConversations((items) => [
+        conversation,
+        ...items.filter((item) => item.id !== conversation.id),
+      ]);
+      clearDynamicWorkspace();
+      orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
+      setSelectedConversationId(conversation.id);
+      if (conversation.project_id) setSelectedProjectId(conversation.project_id);
+      setDynamicStatusMessage('');
+      await refreshConversations();
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const selectDynamicOrchestration = async (conversationId: string) => {
+    if (dynamicRunning || editorRunning) return;
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation || conversation.kind !== 'dynamic_dag') return;
+    setSelectedConversationId(conversation.id);
+    if (conversation.project_id) setSelectedProjectId(conversation.project_id);
+    clearDynamicWorkspace();
+    orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
+    await hydrateOrchestrationConversation(conversation);
+  };
+
+  const saveDynamicConversationTitle = async () => {
+    const conversation = conversations.find((item) => item.id === dynamicConversationEditTargetId);
+    const title = dynamicConversationEditTitle.trim();
+    if (!conversation || !title || conversation.kind !== 'dynamic_dag') return;
+    try {
+      const updated = conversation.project_id
+        ? await updateProjectConversation(conversation.project_id, conversation.id, { title })
+        : await updateConversation(conversation.id, { title });
+      setConversations((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setDynamicConversationEditTargetId('');
+      setDynamicConversationEditTitle('');
+      setDynamicStatusMessage('');
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteDynamicOrchestration = async () => {
+    if (dynamicRunning || editorRunning) return;
+    const conversation = conversations.find((item) => item.id === dynamicConversationDeleteTargetId);
+    if (!conversation || conversation.kind !== 'dynamic_dag') return;
+    try {
+      await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
+      setConversations((items) => items.filter((item) => item.id !== conversation.id));
+      setDynamicConversationDeleteTargetId('');
+      setDynamicConversationEditTargetId((current) => (current === conversation.id ? '' : current));
+      if (selectedConversationId === conversation.id) {
+        setSelectedConversationId('');
+        orchestrationHydratedKeyRef.current = '';
+        clearDynamicWorkspace();
+      }
+      setDynamicStatusMessage('');
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
@@ -4047,6 +4173,8 @@ export function App() {
         conversations={conversations}
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
+        dynamicConversationQuery={dynamicConversationQuery}
+        dynamicConversations={visibleDynamicConversations}
         systemSub={systemManagementSub}
         models={models}
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
@@ -4083,10 +4211,16 @@ export function App() {
         onCreateProfile={requestProfileCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
+        onDeleteDynamicOrchestration={setDynamicConversationDeleteTargetId}
         onEditArtifact={(artifactId) => setEditingArtifactId(artifactId)}
+        onEditDynamicOrchestration={(conversationId, title) => {
+          setDynamicConversationEditTargetId(conversationId);
+          setDynamicConversationEditTitle(title);
+        }}
         onImportSkill={() => requestCapabilityCreation('skills')}
         onLoadDag={loadEditorUserDag}
         onNewChat={() => void newChat()}
+        onNewDynamicOrchestration={() => void createDynamicOrchestration()}
         onNewProjectConversation={(projectId) => void createProjectConversationFromProject(projectId)}
         onNewDag={newEditorUserDag}
         onDeleteConversation={deleteConversationFromSidebar}
@@ -4101,6 +4235,7 @@ export function App() {
           setSelectedModelId(id);
         }}
         onSelectConversation={selectConversation}
+        onSelectDynamicOrchestration={(conversationId) => void selectDynamicOrchestration(conversationId)}
         onSelectProject={selectProject}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
@@ -4112,6 +4247,7 @@ export function App() {
         onSystemSubChange={setSystemManagementSub}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
+        onDynamicConversationQueryChange={setDynamicConversationQuery}
         onToolsQueryChange={setToolsDirectoryQuery}
         onUploadSkillFile={(file) => void loadSkillFile(file)}
         onUploadFiles={(files) => void uploadEditorFiles(files)}
@@ -4319,6 +4455,28 @@ export function App() {
         />
       ) : null}
 
+      {dynamicConversationEditTarget ? (
+        <DynamicConversationRenameDialog
+          conversation={dynamicConversationEditTarget}
+          value={dynamicConversationEditTitle}
+          onCancel={() => {
+            setDynamicConversationEditTargetId('');
+            setDynamicConversationEditTitle('');
+          }}
+          onChange={setDynamicConversationEditTitle}
+          onSave={() => void saveDynamicConversationTitle()}
+        />
+      ) : null}
+
+      {dynamicConversationDeleteTarget ? (
+        <DynamicConversationDeleteDialog
+          conversation={dynamicConversationDeleteTarget}
+          project={projects.find((project) => project.id === dynamicConversationDeleteTarget.project_id) ?? null}
+          onCancel={() => setDynamicConversationDeleteTargetId('')}
+          onConfirm={() => void deleteDynamicOrchestration()}
+        />
+      ) : null}
+
       {capabilityScopeOpen ? (
         <ChatCapabilityScopeDialog
           agentPresets={agentPresets}
@@ -4399,6 +4557,8 @@ function WorkspaceSidebar({
   conversations,
   creatingAgentPreset,
   creatingModel,
+  dynamicConversationQuery,
+  dynamicConversations,
   systemSub,
   models,
   onlyOfficeEnabled,
@@ -4435,16 +4595,20 @@ function WorkspaceSidebar({
   onCreateProfile,
   onCreateTool,
   onDeleteArtifact,
+  onDeleteDynamicOrchestration,
   onEditArtifact,
+  onEditDynamicOrchestration,
   onImportSkill,
   onLoadDag,
   onNewChat,
+  onNewDynamicOrchestration,
   onNewProjectConversation,
   onNewDag,
   onDeleteConversation,
   onDeleteProject,
   onSelectAgentPreset,
   onSelectConversation,
+  onSelectDynamicOrchestration,
   onSelectProfile,
   onSelectProject,
   onSelectModel,
@@ -4458,6 +4622,7 @@ function WorkspaceSidebar({
   onSystemSubChange,
   onToolsSubChange,
   onToggleCollapsed,
+  onDynamicConversationQueryChange,
   onToolsQueryChange,
   onUploadSkillFile,
   onUploadFiles,
@@ -4474,6 +4639,8 @@ function WorkspaceSidebar({
   conversations: ApiConversation[];
   creatingAgentPreset: boolean;
   creatingModel: boolean;
+  dynamicConversationQuery: string;
+  dynamicConversations: ApiConversation[];
   systemSub: SystemManagementSub;
   models: ModelProvider[];
   onlyOfficeEnabled: boolean;
@@ -4510,16 +4677,20 @@ function WorkspaceSidebar({
   onCreateProfile: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
+  onDeleteDynamicOrchestration: (conversationId: string) => void;
   onEditArtifact: (artifactId: string) => void;
+  onEditDynamicOrchestration: (conversationId: string, title: string) => void;
   onImportSkill: () => void;
   onLoadDag: (saved: SavedDagView) => void;
   onNewChat: () => void;
+  onNewDynamicOrchestration: () => void;
   onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
   onDeleteConversation: (id: string) => void;
   onDeleteProject: (projectId: string) => void;
   onSelectAgentPreset: (id: string) => void;
   onSelectConversation: (id: string) => void;
+  onSelectDynamicOrchestration: (conversationId: string) => void;
   onSelectProfile: (id: string) => void;
   onSelectProject: (id: string) => void;
   onSelectModel: (id: string) => void;
@@ -4533,6 +4704,7 @@ function WorkspaceSidebar({
   onSystemSubChange: (sub: SystemManagementSub) => void;
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
+  onDynamicConversationQueryChange: (query: string) => void;
   onToolsQueryChange: (query: string) => void;
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
@@ -5308,6 +5480,57 @@ function WorkspaceSidebar({
               );
             }) : (
               <div className="sidebar-empty-row">{normalizedHistoryQuery ? '没有匹配的项目' : '暂无项目'}</div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
+        <section className="sidebar-context-section">
+          <div className="sidebar-history-head">
+            <span>动态编排</span>
+            <button onClick={onNewDynamicOrchestration} title="新建动态编排" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <SidebarSearchField
+            value={dynamicConversationQuery}
+            onChange={onDynamicConversationQueryChange}
+          />
+          <div className="sidebar-context-list">
+            {dynamicConversations.length ? dynamicConversations.map((conversation) => (
+              <div
+                className={conversation.id === selectedConversationId ? 'sidebar-conversation-row active' : 'sidebar-conversation-row'}
+                key={conversation.id}
+              >
+                <button onClick={() => onSelectDynamicOrchestration(conversation.id)} type="button">
+                  <span>
+                    <Play size={13} />
+                    <strong>{conversation.title}</strong>
+                  </span>
+                  <em>{conversation.status}</em>
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onEditDynamicOrchestration(conversation.id, conversation.title)}
+                  title="重命名"
+                  type="button"
+                >
+                  <FileText size={12} />
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onDeleteDynamicOrchestration(conversation.id)}
+                  title="删除"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            )) : (
+              <div className="sidebar-empty-row">
+                {normalizeSearchQuery(dynamicConversationQuery) ? '没有匹配的动态编排' : '暂无动态编排'}
+              </div>
             )}
           </div>
         </section>
@@ -6821,6 +7044,90 @@ function ConversationDeleteDialog({
         <footer className="project-dialog-actions">
           <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
           <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除会话</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function DynamicConversationRenameDialog({
+  conversation,
+  value,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  conversation: ApiConversation;
+  value: string;
+  onCancel: () => void;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="重命名动态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>重命名动态编排</span>
+            <strong>{conversation.title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body">
+          <label>
+            <span>名称</span>
+            <input
+              autoFocus
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onSave();
+              }}
+            />
+          </label>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button compact-button" onClick={onSave} type="button">保存</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function DynamicConversationDeleteDialog({
+  conversation,
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  conversation: ApiConversation;
+  project: ApiProject | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除动态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除动态编排</span>
+            <strong>{conversation.title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>动态编排会话、草稿状态和运行历史都会被删除。</p>
+          <code>{project ? `${project.name} / ${conversation.id}` : conversation.id}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除动态编排</button>
         </footer>
       </div>
     </div>

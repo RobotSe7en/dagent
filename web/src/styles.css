@@ -609,6 +609,11 @@ button:focus-visible {
   flex: 1 1 auto;
 }
 
+.sidebar-context-list .sidebar-conversation-row > button:first-child {
+  border: 0;
+  border-radius: 0;
+}
+
 .sidebar-project-tree-row {
   min-width: 0;
   display: grid;
@@ -713,7 +718,8 @@ button:focus-visible {
   flex: 0 0 auto;
 }
 
-.sidebar-history-list .sidebar-conversation-delete {
+.sidebar-history-list .sidebar-conversation-delete,
+.sidebar-context-list .sidebar-conversation-delete {
   width: 30px;
   min-width: 30px;
   flex: 0 0 30px;
@@ -734,7 +740,8 @@ button:focus-visible {
   pointer-events: auto;
 }
 
-.sidebar-history-list .sidebar-conversation-delete:hover {
+.sidebar-history-list .sidebar-conversation-delete:hover,
+.sidebar-context-list .sidebar-conversation-delete:hover {
   border-color: #f1c4c0;
   background: #fff5f4;
   color: #9f2f2a;

@@ -1484,6 +1484,35 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(css, /\.dynamic-event-bubble p\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*pre-wrap;[^}]*max-height:/s);
 });
 
+test('dynamic orchestration sidebar manages persisted history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(apiSource, /export async function updateConversation/);
+  assert.match(apiSource, /export async function updateProjectConversation/);
+  assert.match(appSource, /updateConversation,/);
+  assert.match(appSource, /updateProjectConversation,/);
+  assert.match(appSource, /const \[dynamicConversationQuery, setDynamicConversationQuery\] = useState\(''\);/);
+  assert.match(appSource, /const visibleDynamicConversations = useMemo\(\(\) => conversations\.filter/);
+  assert.match(appSource, /const clearDynamicWorkspace = useCallback\(\(\) => \{/);
+  assert.match(appSource, /const createDynamicOrchestration = async \(\) => \{/);
+  assert.match(appSource, /const selectDynamicOrchestration = async \(conversationId: string\) => \{/);
+  assert.match(appSource, /const saveDynamicConversationTitle = async \(\) => \{/);
+  assert.match(appSource, /const deleteDynamicOrchestration = async \(\) => \{/);
+  assert.match(appSource, /dynamicConversations=\{visibleDynamicConversations\}/);
+  assert.match(appSource, /dynamicConversationQuery=\{dynamicConversationQuery\}/);
+  assert.match(appSource, /onNewDynamicOrchestration=\{\(\) => void createDynamicOrchestration\(\)\}/);
+  assert.match(sidebarSource, /activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic'/);
+  assert.match(sidebarSource, /dynamicConversations\.length \? dynamicConversations\.map/);
+  assert.match(sidebarSource, /onSelectDynamicOrchestration\(conversation\.id\)/);
+  assert.match(sidebarSource, /onEditDynamicOrchestration\(conversation\.id, conversation\.title\)/);
+  assert.match(sidebarSource, /onDeleteDynamicOrchestration\(conversation\.id\)/);
+  assert.match(appSource, /function DynamicConversationRenameDialog/);
+  assert.match(appSource, /function DynamicConversationDeleteDialog/);
+});
+
 test('capability management nests resources under the sidebar menu with list creation actions', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
