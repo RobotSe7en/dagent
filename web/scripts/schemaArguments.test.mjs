@@ -1513,6 +1513,37 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(appSource, /function DynamicConversationDeleteDialog/);
 });
 
+test('static orchestration sidebar supports saved DAG delete and run history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(orchestrationSource, 'OrchestrationWorkspace function should exist');
+  assert.match(apiSource, /export async function deleteSavedDag/);
+  assert.match(apiSource, /export async function listSavedDagRuns/);
+  assert.match(appSource, /deleteSavedDag,/);
+  assert.match(appSource, /listSavedDagRuns,/);
+  assert.match(appSource, /const \[staticDagDeleteTargetId, setStaticDagDeleteTargetId\] = useState\(''\);/);
+  assert.match(appSource, /const \[staticRunHistory, setStaticRunHistory\] = useState<ApiRunSummary\[\]>\(\[\]\);/);
+  assert.match(appSource, /const confirmDeleteSavedDag = async \(\) => \{/);
+  assert.match(appSource, /await deleteSavedDag\(staticDagDeleteTargetId\)/);
+  assert.match(appSource, /listSavedDagRuns\(editorSavedDagId\)/);
+  assert.match(appSource, /const selectStaticRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /finishedRunResultFromEvents\(events\)/);
+  assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
+  assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
+  assert.match(appSource, /function SavedDagDeleteDialog/);
+  assert.match(appSource, /function RunHistoryPanel/);
+  assert.match(orchestrationSource, /runHistory=\{runHistory\}/);
+  assert.match(orchestrationSource, /<RunHistoryPanel[\s\S]*title="运行历史"/);
+  assert.match(css, /\.sidebar-saved-dag-row/);
+  assert.match(css, /\.run-history-panel/);
+  assert.match(css, /\.run-history-list/);
+});
+
 test('capability management nests resources under the sidebar menu with list creation actions', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');

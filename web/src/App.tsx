@@ -85,6 +85,7 @@ import {
   deleteProjectConversation,
   deleteProjectFile,
   deletePythonTool,
+  deleteSavedDag,
   deleteSkill,
   getSkill,
   getSkillFile,
@@ -105,6 +106,7 @@ import {
   listProfiles,
   listRunArtifacts,
   listRunEvents,
+  listSavedDagRuns,
   listSkills,
   mapRunTrace,
   previewRunArtifact,
@@ -843,6 +845,13 @@ type SavedDagView = {
   layout: Record<string, unknown>;
   layoutPositions: Record<string, XYPosition>;
 };
+type RunHistoryPanelData = {
+  runs: ApiRunSummary[];
+  selectedRunId: string;
+  loading: boolean;
+  error: string | null;
+  onSelectRun: (runId: string) => void;
+};
 
 interface QueuedAssistantToken {
   channel: TokenChannel;
@@ -1215,6 +1224,11 @@ export function App() {
   const [editorRunning, setEditorRunning] = useState(false);
   const editorRunInFlightRef = useRef(false);
   const [editorRunInputText, setEditorRunInputText] = useState('');
+  const [staticDagDeleteTargetId, setStaticDagDeleteTargetId] = useState('');
+  const [staticRunHistory, setStaticRunHistory] = useState<ApiRunSummary[]>([]);
+  const [staticSelectedRunId, setStaticSelectedRunId] = useState('');
+  const [staticRunHistoryLoading, setStaticRunHistoryLoading] = useState(false);
+  const [staticRunHistoryError, setStaticRunHistoryError] = useState<string | null>(null);
   const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
   const [dynamicPrompt, setDynamicPrompt] = useState('');
@@ -1370,6 +1384,10 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === dynamicConversationDeleteTargetId) ?? null,
     [conversations, dynamicConversationDeleteTargetId],
   );
+  const staticDagDeleteTarget = useMemo(
+    () => savedDags.find((saved) => saved.id === staticDagDeleteTargetId) ?? null,
+    [savedDags, staticDagDeleteTargetId],
+  );
   const selectedProjectFile = useMemo(
     () => findProjectFileByPath(projectFiles, selectedProjectFilePath),
     [projectFiles, selectedProjectFilePath],
@@ -1438,6 +1456,39 @@ export function App() {
   useEffect(() => {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!editorSavedDagId) {
+      setStaticRunHistory([]);
+      setStaticSelectedRunId('');
+      setStaticRunHistoryError(null);
+      setStaticRunHistoryLoading(false);
+      return;
+    }
+    setStaticRunHistoryLoading(true);
+    setStaticRunHistoryError(null);
+    void listSavedDagRuns(editorSavedDagId)
+      .then((runs) => {
+        if (cancelled) return;
+        setStaticRunHistory(runs);
+        setStaticSelectedRunId((current) => (
+          current && runs.some((run) => run.id === current) ? current : ''
+        ));
+      })
+      .catch((exc) => {
+        if (cancelled) return;
+        setStaticRunHistory([]);
+        setStaticSelectedRunId('');
+        setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+      })
+      .finally(() => {
+        if (!cancelled) setStaticRunHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editorSavedDagId]);
 
   const loadPersistedConversations = useCallback(async (projectItems: ApiProject[]) => {
     const [standaloneConversations, projectConversationGroups] = await Promise.all([
@@ -2851,6 +2902,10 @@ export function App() {
     rememberCurrentEditorDraft();
     setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
     setEditorRunInputText('');
+    setEditorTrace([]);
+    setEditorRun(null);
+    setEditorRunTimeline([]);
+    setStaticSelectedRunId('');
   };
 
   const loadEditorUserDag = (saved: SavedDagView) => {
@@ -2866,6 +2921,60 @@ export function App() {
         layout: draft?.layout ?? saved.layout,
       },
     );
+  };
+
+  const confirmDeleteSavedDag = async () => {
+    if (!staticDagDeleteTargetId) return;
+    try {
+      const deletingCurrent = editorSavedDagId === staticDagDeleteTargetId;
+      await deleteSavedDag(staticDagDeleteTargetId);
+      setSavedDags((items) => items.filter((item) => item.id !== staticDagDeleteTargetId));
+      updateEditorDagDrafts((items) => {
+        const next = { ...items };
+        delete next[staticDagDeleteTargetId];
+        return next;
+      });
+      if (deletingCurrent) {
+        setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
+        setEditorTrace([]);
+        setEditorRun(null);
+        setEditorRunTimeline([]);
+        setEditorRunInputText('');
+        setStaticRunHistory([]);
+        setStaticSelectedRunId('');
+        setEditorMessage('已删除当前静态编排。');
+      }
+      setStaticDagDeleteTargetId('');
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const selectStaticRunHistory = async (runId: string) => {
+    try {
+      setStaticSelectedRunId(runId);
+      setStaticRunHistoryError(null);
+      const events = await listRunEvents(runId);
+      const result = finishedRunResultFromEvents(events);
+      const nextState = result?.state ?? null;
+      if (nextState?.trace) {
+        const traceEvents = mapRunTrace(nextState.trace);
+        setEditorTrace(traceEvents);
+        setEditorRunTimeline(runTranscriptFromTraceEvents(traceEvents));
+      }
+      if (nextState?.dag && nextState.trace && nextState.run_id) {
+        setEditorRun({
+          run_id: nextState.run_id,
+          spec_id: nextState.spec_id ?? null,
+          workspace_path: nextState.workspace_path ?? '',
+          dag: nextState.dag,
+          trace: nextState.trace,
+          status: dagRunStatus(nextState.status),
+        });
+      }
+    } catch (exc) {
+      setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
   };
 
   const addEditorNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
@@ -3317,6 +3426,10 @@ export function App() {
           setEditorRun(dagRun);
           syncEditorDag(dagRun.dag);
           void refreshConversations();
+          setStaticSelectedRunId(dagRun.run_id);
+          void listSavedDagRuns(saved.id)
+            .then((runs) => setStaticRunHistory(runs))
+            .catch((exc) => setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
           setEditorMessage(`Run ${dagRun.status}.`);
           setEditorRunTimeline((items) => appendRunTranscriptToken(
             items,
@@ -4212,6 +4325,7 @@ export function App() {
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
         onDeleteDynamicOrchestration={setDynamicConversationDeleteTargetId}
+        onDeleteSavedDag={setStaticDagDeleteTargetId}
         onEditArtifact={(artifactId) => setEditingArtifactId(artifactId)}
         onEditDynamicOrchestration={(conversationId, title) => {
           setDynamicConversationEditTargetId(conversationId);
@@ -4328,6 +4442,13 @@ export function App() {
             selectedId={editorSelectedId}
             trace={editorTrace}
             run={editorRun}
+            runHistory={{
+              runs: staticRunHistory,
+              selectedRunId: staticSelectedRunId,
+              loading: staticRunHistoryLoading,
+              error: staticRunHistoryError,
+              onSelectRun: (runId) => void selectStaticRunHistory(runId),
+            }}
             runTimeline={editorRunTimeline}
             message={editorMessage}
             running={editorRunning}
@@ -4477,6 +4598,15 @@ export function App() {
         />
       ) : null}
 
+      {staticDagDeleteTarget ? (
+        <SavedDagDeleteDialog
+          savedDag={staticDagDeleteTarget}
+          project={projects.find((project) => project.id === staticDagDeleteTarget.project_id) ?? null}
+          onCancel={() => setStaticDagDeleteTargetId('')}
+          onConfirm={() => void confirmDeleteSavedDag()}
+        />
+      ) : null}
+
       {capabilityScopeOpen ? (
         <ChatCapabilityScopeDialog
           agentPresets={agentPresets}
@@ -4596,6 +4726,7 @@ function WorkspaceSidebar({
   onCreateTool,
   onDeleteArtifact,
   onDeleteDynamicOrchestration,
+  onDeleteSavedDag,
   onEditArtifact,
   onEditDynamicOrchestration,
   onImportSkill,
@@ -4678,6 +4809,7 @@ function WorkspaceSidebar({
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
   onDeleteDynamicOrchestration: (conversationId: string) => void;
+  onDeleteSavedDag: (savedDagId: string) => void;
   onEditArtifact: (artifactId: string) => void;
   onEditDynamicOrchestration: (conversationId: string, title: string) => void;
   onImportSkill: () => void;
@@ -5550,20 +5682,31 @@ function WorkspaceSidebar({
           />
           <div className="sidebar-context-list">
             {visibleSavedDags.length ? visibleSavedDags.map((item) => (
-              <button
-                className={item.savedDagId === selectedDagId ? 'active' : ''}
+              <div
+                className={item.savedDagId === selectedDagId ? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'}
                 key={item.savedDagId}
-                onClick={() => onLoadDag(item)}
-                title={item.name || item.spec.name || item.spec.id}
-                type="button"
               >
-                <span>
-                  <GitBranch size={13} />
-                  <strong>{item.name || item.spec.name || item.spec.id}</strong>
-                  <code>v{item.revision}</code>
-                </span>
-                <em>{item.description || item.spec.description || `${item.spec.nodes.length} 节点`}</em>
-              </button>
+                <button
+                  onClick={() => onLoadDag(item)}
+                  title={item.name || item.spec.name || item.spec.id}
+                  type="button"
+                >
+                  <span>
+                    <GitBranch size={13} />
+                    <strong>{item.name || item.spec.name || item.spec.id}</strong>
+                    <code>v{item.revision}</code>
+                  </span>
+                  <em>{item.description || item.spec.description || `${item.spec.nodes.length} 节点`}</em>
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onDeleteSavedDag(item.savedDagId)}
+                  title="删除静态编排"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             )) : (
               <div className="sidebar-empty-row">{normalizedDagListQuery ? '没有匹配的编排' : '暂无编排'}</div>
             )}
@@ -7128,6 +7271,43 @@ function DynamicConversationDeleteDialog({
         <footer className="project-dialog-actions">
           <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
           <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除动态编排</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function SavedDagDeleteDialog({
+  savedDag,
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  savedDag: SavedDag;
+  project: ApiProject | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除静态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除静态编排</span>
+            <strong>{savedDag.name || savedDag.spec.name || savedDag.spec.id}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>静态编排会被归档并从列表移除，已有运行记录仍可通过运行接口保留。</p>
+          <code>{project ? `${project.name} / ${savedDag.id}` : savedDag.id}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除静态编排</button>
         </footer>
       </div>
     </div>
@@ -9366,6 +9546,41 @@ function CanvasViewportControls({
   );
 }
 
+function RunHistoryPanel({
+  title,
+  runHistory,
+}: {
+  title: string;
+  runHistory: RunHistoryPanelData;
+}) {
+  const { runs, selectedRunId, loading, error, onSelectRun } = runHistory;
+  return (
+    <section className="run-history-panel">
+      <div className="run-history-head">
+        <strong>{title}</strong>
+        <span>{loading ? '加载中' : `${runs.length} 次运行`}</span>
+      </div>
+      {error ? <div className="sidebar-error-row">{error}</div> : null}
+      <div className="run-history-list">
+        {runs.length ? runs.map((run) => (
+          <button
+            className={run.id === selectedRunId ? 'active' : ''}
+            key={run.id}
+            onClick={() => onSelectRun(run.id)}
+            type="button"
+          >
+            <span>{run.status}</span>
+            <strong>{run.id}</strong>
+            <em>{run.output_text || new Date(run.updated_at * 1000).toLocaleString()}</em>
+          </button>
+        )) : (
+          <div className="run-history-empty">{loading ? '正在加载运行历史' : '暂无运行历史'}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function OrchestrationWorkspace({
   capabilities,
   skills,
@@ -9377,6 +9592,7 @@ function OrchestrationWorkspace({
   selectedId,
   trace,
   run,
+  runHistory,
   runTimeline,
   message,
   running,
@@ -9403,6 +9619,7 @@ function OrchestrationWorkspace({
   selectedId: string;
   trace: TraceLogEvent[];
   run: DagRun | null;
+  runHistory: RunHistoryPanelData;
   runTimeline: RunTranscriptItem[];
   message: string;
   running: boolean;
@@ -9644,6 +9861,7 @@ function OrchestrationWorkspace({
             ) : null}
           </div>
         ) : null}
+        <RunHistoryPanel title="运行历史" runHistory={runHistory} />
       </div>
 
       {selectedNormalized ? (
