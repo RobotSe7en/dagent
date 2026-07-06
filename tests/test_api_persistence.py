@@ -1080,6 +1080,130 @@ def test_api_creates_and_lists_standalone_conversations(persistence_client) -> N
     assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
 
 
+def test_api_renames_standalone_dynamic_conversation(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Original Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+
+    response = persistence_client.patch(
+        f"/conversations/{conversation['id']}",
+        json={"title": "Renamed Dynamic"},
+    )
+    listed = persistence_client.get("/conversations", params={"kind": "dynamic_dag"})
+
+    assert response.status_code == 200
+    assert response.json()["conversation"]["title"] == "Renamed Dynamic"
+    assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
+
+
+def test_api_renames_project_dynamic_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Original Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+
+    response = persistence_client.patch(
+        f"/projects/{project['id']}/conversations/{conversation['id']}",
+        json={"title": "Project Dynamic"},
+    )
+    listed = persistence_client.get(
+        f"/projects/{project['id']}/conversations",
+        params={"kind": "dynamic_dag"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conversation"]["title"] == "Project Dynamic"
+    assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
+
+
+def test_api_lists_standalone_conversation_runs(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    state.get_store().create_run(
+        run_id="run_dynamic",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+
+    response = persistence_client.get(f"/conversations/{conversation['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_dynamic"]
+
+
+def test_api_lists_orchestration_session_runs(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={"conversation_id": conversation["id"], "kind": "dynamic_dag"},
+    ).json()["session"]
+    state.get_store().create_run(
+        run_id="run_dynamic",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+
+    response = persistence_client.get(f"/orchestration-sessions/{session['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_dynamic"]
+
+
+def test_api_lists_saved_dag_runs(persistence_client) -> None:
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={
+            "name": "Runnable",
+            "spec": {
+                "id": "runnable",
+                "name": "Runnable",
+                "nodes": [
+                    {
+                        "id": "write",
+                        "target": "tool.write_file",
+                        "inputs": {"path": "reports/summary.md", "content": "hello"},
+                        "boundary": {"allowed_paths": ["."]},
+                    }
+                ],
+                "edges": [],
+            },
+        },
+    ).json()["saved_dag"]
+    state.get_store().create_run(
+        run_id="run_static",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri="file:///tmp/workspace",
+        saved_dag_id=saved["id"],
+    )
+
+    response = persistence_client.get(f"/saved-dags/{saved['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_static"]
+
+
 def test_api_rejects_conversation_for_missing_project(persistence_client) -> None:
     response = persistence_client.post(
         "/projects/proj_missing/conversations",

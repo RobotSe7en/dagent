@@ -241,6 +241,12 @@ class ConversationCreateRequest(BaseModel):
     kind: Literal["chat", "dynamic_dag", "static_dag"] = "chat"
 
 
+class ConversationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+
+
 class ProjectFolderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1154,9 +1160,36 @@ async def create_conversation(request: ConversationCreateRequest) -> dict[str, A
 
 
 @app.get("/conversations")
-async def list_conversations() -> dict[str, Any]:
-    conversations = await run_in_threadpool(state.get_store().list_conversations, standalone=True)
+async def list_conversations(kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None) -> dict[str, Any]:
+    conversations = await run_in_threadpool(
+        state.get_store().list_conversations,
+        standalone=True,
+        kind=kind,
+    )
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
+
+
+async def _update_conversation_title(conversation: Conversation, title: str) -> Conversation:
+    clean_title = _clean_required_text(title, field="Conversation title")
+    try:
+        return await run_in_threadpool(
+            state.get_store().update_conversation,
+            conversation.id,
+            title=clean_title,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found.") from exc
+
+
+@app.patch("/conversations/{conversation_id}")
+async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> dict[str, Any]:
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(status_code=400, detail="Project conversations must be updated through the project route.")
+    updated = await _update_conversation_title(conversation, request.title)
+    return {"conversation": updated.model_dump(mode="json")}
 
 
 @app.delete("/conversations/{conversation_id}")
@@ -1199,11 +1232,18 @@ async def create_project_conversation(
 
 
 @app.get("/projects/{project_id}/conversations")
-async def list_project_conversations(project_id: str) -> dict[str, Any]:
+async def list_project_conversations(
+    project_id: str,
+    kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None,
+) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    conversations = await run_in_threadpool(state.get_store().list_conversations, project_id)
+    conversations = await run_in_threadpool(
+        state.get_store().list_conversations,
+        project_id,
+        kind=kind,
+    )
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
 
 
@@ -1216,6 +1256,22 @@ async def get_project_conversation(project_id: str, conversation_id: str) -> dic
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.patch("/projects/{project_id}/conversations/{conversation_id}")
+async def update_project_conversation(
+    project_id: str,
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    updated = await _update_conversation_title(conversation, request.title)
+    return {"conversation": updated.model_dump(mode="json")}
 
 
 @app.delete("/projects/{project_id}/conversations/{conversation_id}")
@@ -1268,6 +1324,32 @@ async def _delete_conversation(conversation: Conversation) -> None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
 
+async def _conversation_run_summaries(
+    conversation: Conversation,
+    *,
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        project_id=project_id,
+        conversation_id=conversation.id,
+    )
+    return [_run_summary_payload(run) for run in runs]
+
+
+@app.get("/conversations/{conversation_id}/runs")
+async def list_conversation_runs(conversation_id: str) -> dict[str, Any]:
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Project conversation runs must be listed through the project route.",
+        )
+    return {"runs": await _conversation_run_summaries(conversation)}
+
+
 @app.get("/projects/{project_id}/conversations/{conversation_id}/runs")
 async def list_project_conversation_runs(project_id: str, conversation_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
@@ -1276,12 +1358,7 @@ async def list_project_conversation_runs(project_id: str, conversation_id: str) 
     conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    runs = await run_in_threadpool(
-        state.get_store().list_runs,
-        project_id=project.id,
-        conversation_id=conversation.id,
-    )
-    return {"runs": [_run_summary_payload(run) for run in runs]}
+    return {"runs": await _conversation_run_summaries(conversation, project_id=project.id)}
 
 
 @app.get("/runs/{run_id}")
@@ -1410,6 +1487,18 @@ async def get_saved_dag(dag_id: str) -> dict[str, Any]:
     return {"saved_dag": _saved_dag_payload(saved)}
 
 
+@app.get("/saved-dags/{dag_id}/runs")
+async def list_saved_dag_runs(dag_id: str) -> dict[str, Any]:
+    saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        saved_dag_id=saved.id,
+    )
+    return {"runs": [_run_summary_payload(run) for run in runs]}
+
+
 @app.patch("/saved-dags/{dag_id}")
 async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[str, Any]:
     existing = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
@@ -1516,6 +1605,18 @@ async def get_orchestration_session(session_id: str) -> dict[str, Any]:
     if session is None:
         raise HTTPException(status_code=404, detail="Orchestration session not found.")
     return {"session": _orchestration_session_payload(session)}
+
+
+@app.get("/orchestration-sessions/{session_id}/runs")
+async def list_orchestration_session_runs(session_id: str) -> dict[str, Any]:
+    session = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.")
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        conversation_id=session.conversation_id,
+    )
+    return {"runs": [_run_summary_payload(run) for run in runs]}
 
 
 @app.get("/conversations/{conversation_id}/orchestration-session")
