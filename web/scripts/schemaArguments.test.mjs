@@ -2429,6 +2429,89 @@ test('persisted conversation hydration keeps user and assistant order across str
   );
 });
 
+test('persisted conversation hydration keeps same-turn capability streams in one assistant message', async () => {
+  const {
+    chatMessagesFromPersistedRunEvents,
+    finishedRunResultFromEvents,
+  } = await importTypeScriptModule('../src/persistedChat.ts', [
+    '../src/persistedChat.ts',
+    '../src/chatTimeline.ts',
+    '../src/api.ts',
+    '../src/agentScope.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const completedState = {
+    run_id: 'run_chat',
+    kind: 'tool',
+    status: 'completed',
+    input_message_count: 1,
+    internal_messages: [
+      { role: 'user', content: 'inspect files' },
+      { role: 'assistant', content: 'Finished.' },
+    ],
+  };
+  const reviewState = {
+    ...completedState,
+    status: 'awaiting_review',
+    pending_review: {
+      kind: 'capability_review',
+      review_id: 'review_1',
+      message: 'Review capability call: tool.read_file',
+      capability_call: {
+        invocation_id: 'call_2',
+        capability_id: 'tool.read_file',
+      },
+    },
+  };
+  const events = [
+    runEventInStream(1, 'stream_initial', 1, 'response.reasoning.delta', { delta: 'Need to inspect inputs.' }),
+    runEventInStream(2, 'stream_initial', 2, 'capability.call.started', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.list_dir',
+      arguments: { path: '.' },
+    }),
+    runEventInStream(3, 'stream_initial', 3, 'capability.call.completed', {
+      invocation_id: 'call_1',
+      capability_id: 'tool.list_dir',
+      content: 'README.md',
+    }),
+    runEventInStream(4, 'stream_initial', 4, 'run.finished', {
+      result: { output_text: '', state: reviewState },
+    }),
+    runEventInStream(5, 'stream_resume', 1, 'response.reasoning.delta', { delta: 'Continue after approval.' }),
+    runEventInStream(6, 'stream_resume', 2, 'capability.call.started', {
+      invocation_id: 'call_2',
+      capability_id: 'tool.read_file',
+      arguments: { path: 'README.md' },
+    }),
+    runEventInStream(7, 'stream_resume', 3, 'capability.call.completed', {
+      invocation_id: 'call_2',
+      capability_id: 'tool.read_file',
+      content: '# dagent',
+    }),
+    runEventInStream(8, 'stream_resume', 4, 'response.content.delta', { delta: 'Finished.' }),
+    runEventInStream(9, 'stream_resume', 5, 'run.finished', {
+      result: { output_text: 'Finished.', state: completedState },
+    }),
+  ];
+
+  const result = finishedRunResultFromEvents(events);
+  const messages = chatMessagesFromPersistedRunEvents(events, result);
+  const assistantMessages = messages.filter((message) => message.role === 'assistant');
+
+  assert.equal(assistantMessages.length, 1);
+  assert.deepEqual(
+    messages.map((message) => message.role),
+    ['user', 'assistant'],
+  );
+  assert.deepEqual(
+    assistantMessages[0].timeline.map((item) => item.type),
+    ['reasoning', 'capability', 'text', 'reasoning', 'capability', 'text'],
+  );
+  assert.equal(assistantMessages[0].timeline.filter((item) => item.type === 'capability').length, 2);
+});
+
 test('persisted conversation hydration restores user and assistant chat turns', async () => {
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
   const hydrateSource = persistedChatSource.match(/export function messagesFromPersistedRunResult[\s\S]*?\nfunction appendPersistedChatMessage/)?.[0] ?? '';
