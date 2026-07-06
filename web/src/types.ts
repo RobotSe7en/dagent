@@ -30,6 +30,24 @@ export interface ApiConversation {
   archived_at?: number | null;
 }
 
+export interface ApiRunSummary {
+  id: string;
+  project_id?: string | null;
+  conversation_id?: string | null;
+  kind?: string | null;
+  status: string;
+  execution: 'local' | 'sandbox' | 'worker';
+  workspace_uri: string;
+  saved_dag_id?: string | null;
+  output_text: string;
+  has_state: boolean;
+  has_error: boolean;
+  created_at: number;
+  started_at?: number | null;
+  completed_at?: number | null;
+  updated_at: number;
+}
+
 export type ValuePathItem = string | number;
 
 export type ValueExpr =

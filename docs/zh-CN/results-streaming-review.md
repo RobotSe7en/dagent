@@ -74,6 +74,9 @@ XLSX 和 PPTX artifacts 会通过 ONLYOFFICE Document Server 以 view mode 打�
 artifact 文件元数据会包含 `version`，WebUI 据此在文件变化时让 Office 预览缓存失效。
 未配置 ONLYOFFICE 时，这些 Office 文件会回退到内置的浏览器渲染器。
 
+WebUI 可以通过持久化运行历史查看历史编排 runs。选择某个历史动态或静态编排 run
+会恢复其 trace、输出和 artifacts 供检查，但不会修改当前动态草稿或已保存的静态 DAG。
+
 ## Streaming
 
 `Runner.stream(...)` 运行 target，并 yield 类型化的 `RunStreamEvent` objects。事件

@@ -37,6 +37,7 @@ from api.python_tools import discover_python_tool_names, load_python_tool_source
 from api.storage import (
     Conversation,
     ConversationBusyError,
+    ConversationMessage,
     OrchestrationSession,
     Project,
     Run,
@@ -187,6 +188,7 @@ class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     messages: list[dict[str, Any]] = Field(min_length=1)
+    visible_message: str | None = None
     state: RunState | None = None
     target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
@@ -239,6 +241,12 @@ class ConversationCreateRequest(BaseModel):
 
     title: str = Field(min_length=1)
     kind: Literal["chat", "dynamic_dag", "static_dag"] = "chat"
+
+
+class ConversationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
 
 
 class ProjectFolderRequest(BaseModel):
@@ -578,6 +586,384 @@ class PersistedMessageContext:
     workspace_path: Path
     run_state: RunState | None = None
     orchestration_session_id: str | None = None
+    orchestration_surface: str | None = None
+
+
+ORCHESTRATION_WORKSPACE_SURFACE = "orchestration_workspace"
+SMART_WORKBENCH_SURFACE = "smart_workbench"
+
+
+def _should_project_conversation_messages(context: PersistedMessageContext) -> bool:
+    return context.conversation_kind == "chat" or (
+        context.conversation_kind == "dynamic_dag"
+        and context.orchestration_surface in {
+            ORCHESTRATION_WORKSPACE_SURFACE,
+            SMART_WORKBENCH_SURFACE,
+        }
+    )
+
+
+class ConversationMessageProjection:
+    def __init__(
+        self,
+        *,
+        message_id: str,
+        context: PersistedMessageContext,
+        user_message_id: str | None = None,
+        run_id: str | None = None,
+        content: str = "",
+        status: str = "running",
+        timeline: list[dict[str, Any]] | None = None,
+        dag: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
+        pending_review: dict[str, Any] | None = None,
+    ) -> None:
+        self.message_id = message_id
+        self.context = context
+        self.user_message_id = user_message_id
+        self.user_message_run_id: str | None = None
+        self.run_id = run_id
+        self.content = content
+        self.status = status
+        self.timeline = timeline or []
+        self.dag = dag
+        self.trace = trace
+        self.pending_review = pending_review
+        self._streamed_content = bool(content.strip())
+
+    @classmethod
+    async def start_for_message_request(
+        cls,
+        request: MessageRequest,
+        context: PersistedMessageContext,
+    ) -> "ConversationMessageProjection | None":
+        if not _should_project_conversation_messages(context):
+            return None
+        store = state.get_store()
+        visible_content = (
+            request.visible_message
+            if request.visible_message is not None
+            else _visible_chat_message_content(request.messages[-1])
+        )
+        user_content = visible_content.strip()
+        user_message_id = None
+        if user_content:
+            user_message = await run_in_threadpool(
+                store.append_conversation_message,
+                message_id=_new_api_id("msg"),
+                conversation_id=context.conversation_id,
+                project_id=context.project_id,
+                role="user",
+                content=user_content,
+                status="completed",
+            )
+            user_message_id = user_message.id
+        assistant = await run_in_threadpool(
+            store.append_conversation_message,
+            message_id=_new_api_id("msg"),
+            conversation_id=context.conversation_id,
+            project_id=context.project_id,
+            role="assistant",
+            content="",
+            status="running",
+            run_id=None,
+        )
+        return cls(
+            message_id=assistant.id,
+            context=context,
+            user_message_id=user_message_id,
+            run_id=assistant.run_id,
+            content=assistant.content,
+            status=assistant.status,
+            timeline=_json_array(assistant.timeline_json),
+            dag=_json_object_or_none(assistant.dag_json),
+            trace=_json_object_or_none(assistant.trace_json),
+            pending_review=_json_object_or_none(assistant.pending_review_json),
+        )
+
+    @classmethod
+    async def resume_for_review(
+        cls,
+        run_state: RunState,
+        context: PersistedMessageContext,
+        decision: ReviewDecision,
+    ) -> "ConversationMessageProjection | None":
+        if not _should_project_conversation_messages(context):
+            return None
+        store = state.get_store()
+        message = await run_in_threadpool(
+            store.get_last_assistant_message_for_run,
+            context.conversation_id,
+            run_state.run_id,
+        )
+        if message is None:
+            message = await run_in_threadpool(
+                store.append_conversation_message,
+                message_id=_new_api_id("msg"),
+                conversation_id=context.conversation_id,
+                project_id=context.project_id,
+                role="assistant",
+                content="",
+                status="running",
+                run_id=run_state.run_id,
+            )
+        projection = cls(
+            message_id=message.id,
+            context=context,
+            run_id=message.run_id,
+            content=message.content,
+            status=message.status,
+            timeline=_json_array(message.timeline_json),
+            dag=_json_object_or_none(message.dag_json),
+            trace=_json_object_or_none(message.trace_json),
+            pending_review=_json_object_or_none(message.pending_review_json),
+        )
+        await projection.apply_review_decision(decision)
+        return projection
+
+    async def apply_review_decision(self, decision: ReviewDecision) -> None:
+        if decision.approved or not self.pending_review:
+            return
+        capability_call = self.pending_review.get("capability_call")
+        if not isinstance(capability_call, dict):
+            return
+        invocation_id = str(capability_call.get("invocation_id") or "")
+        capability_id = str(capability_call.get("capability_id") or "")
+        if not invocation_id:
+            return
+        content = "人工审核已拒绝。"
+        if decision.feedback:
+            content = f"{content}\n\n反馈：{decision.feedback}"
+        result = {
+            "type": "capability.call.failed",
+            "invocation_id": invocation_id,
+            "capability_id": capability_id,
+            "arguments": capability_call.get("arguments") or {},
+            "content": content,
+        }
+        self._upsert_capability_result(invocation_id, result, status="rejected")
+        self.pending_review = None
+        self.status = "running"
+        await self.save()
+
+    async def handle_payload(self, payload: dict[str, Any]) -> None:
+        event_type = str(payload.get("type") or "")
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        assert isinstance(data, dict)
+        if payload.get("run_id"):
+            self.run_id = str(payload["run_id"])
+        if event_type == "run.started":
+            self.status = "running"
+            await self.bind_user_message_to_run()
+        elif event_type == "response.reasoning.delta":
+            self._append_reasoning(str(data.get("delta") or ""))
+        elif event_type == "response.content.delta":
+            self._append_text(str(data.get("delta") or ""))
+        elif event_type == "capability.call.started":
+            self._upsert_capability_started(_stream_timeline_event(payload))
+        elif event_type == "capability.call.completed":
+            event = _stream_timeline_event(payload)
+            if str(event.get("content") or "").startswith("[PENDING_REVIEW]"):
+                self._mark_capability_status(str(event.get("invocation_id") or ""), "awaiting_review")
+                self.status = "awaiting_review"
+            else:
+                self._upsert_capability_result(str(event.get("invocation_id") or ""), event, status="completed")
+        elif event_type == "capability.call.failed":
+            event = _stream_timeline_event(payload)
+            self._upsert_capability_result(str(event.get("invocation_id") or ""), event, status="failed")
+        elif event_type == "dag.updated":
+            dag = data.get("dag")
+            if isinstance(dag, dict):
+                self.dag = dag
+                self._upsert_dag(dag)
+        elif event_type == "trace.updated":
+            trace = data.get("trace")
+            if isinstance(trace, dict):
+                self.trace = trace
+        elif event_type == "validation.started":
+            self.timeline.append({"type": "validating"})
+        elif event_type in {"validation.passed", "validation.retry"}:
+            self.timeline.append({"type": "validation", "event": _stream_timeline_event(payload)})
+        elif event_type == "review.required":
+            self.pending_review = data
+            self.status = "awaiting_review"
+            capability_call = data.get("capability_call")
+            if isinstance(capability_call, dict):
+                self._mark_capability_status(str(capability_call.get("invocation_id") or ""), "awaiting_review")
+        elif event_type == "run.finished":
+            result = data.get("result")
+            if isinstance(result, dict):
+                output_text = str(result.get("output_text") or "")
+                if output_text and not self._streamed_content:
+                    self._append_text(output_text)
+                result_state = result.get("state")
+                if isinstance(result_state, dict):
+                    status = str(result_state.get("status") or "")
+                    if status:
+                        self.status = status
+                    dag = result_state.get("dag")
+                    if isinstance(dag, dict):
+                        self.dag = dag
+                    trace = result_state.get("trace")
+                    if isinstance(trace, dict):
+                        self.trace = trace
+                    pending_review = result_state.get("pending_review")
+                    self.pending_review = pending_review if isinstance(pending_review, dict) else None
+        elif event_type == "run.failed":
+            message = str(data.get("message") or "Run failed.")
+            self.status = "failed"
+            self._append_text(message)
+        await self.save()
+
+    async def bind_user_message_to_run(self) -> None:
+        if not self.user_message_id or not self.run_id or self.user_message_run_id == self.run_id:
+            return
+        await run_in_threadpool(
+            state.get_store().set_conversation_message_run_id,
+            self.user_message_id,
+            self.run_id,
+        )
+        self.user_message_run_id = self.run_id
+
+    async def save(self) -> None:
+        await run_in_threadpool(
+            state.get_store().update_conversation_message,
+            self.message_id,
+            content=self.content,
+            status=_message_status(self.status),
+            timeline_json=json.dumps(self.timeline, ensure_ascii=False),
+            run_id=self.run_id,
+            dag_json=None if self.dag is None else json.dumps(self.dag, ensure_ascii=False),
+            trace_json=None if self.trace is None else json.dumps(self.trace, ensure_ascii=False),
+            pending_review_json=None if self.pending_review is None else json.dumps(self.pending_review, ensure_ascii=False),
+        )
+
+    def _append_reasoning(self, content: str) -> None:
+        if not content:
+            return
+        last = self.timeline[-1] if self.timeline else None
+        if isinstance(last, dict) and last.get("type") == "reasoning" and not last.get("closed"):
+            last["content"] = f"{last.get('content') or ''}{content}"
+        else:
+            self.timeline.append({"type": "reasoning", "content": content, "closed": False})
+
+    def _append_text(self, content: str) -> None:
+        if not content:
+            return
+        self._close_reasoning()
+        self.content = f"{self.content}{content}"
+        self._streamed_content = True
+        last = self.timeline[-1] if self.timeline else None
+        if isinstance(last, dict) and last.get("type") == "text":
+            last["content"] = f"{last.get('content') or ''}{content}"
+        else:
+            self.timeline.append({"type": "text", "content": content})
+
+    def _close_reasoning(self) -> None:
+        for item in reversed(self.timeline):
+            if item.get("type") == "reasoning" and not item.get("closed"):
+                item["closed"] = True
+                return
+
+    def _upsert_capability_started(self, event: dict[str, Any]) -> None:
+        invocation_id = str(event.get("invocation_id") or "")
+        existing = self._capability_item(invocation_id)
+        if existing is not None:
+            existing["event"] = event
+            existing.setdefault("status", "running")
+            return
+        self._close_reasoning()
+        self.timeline.append({"type": "capability", "status": "running", "event": event})
+
+    def _upsert_capability_result(self, invocation_id: str, result: dict[str, Any], *, status: str) -> None:
+        existing = self._capability_item(invocation_id)
+        if existing is None:
+            existing = {"type": "capability", "event": result}
+            self.timeline.append(existing)
+        existing["result"] = result
+        existing["status"] = status
+
+    def _mark_capability_status(self, invocation_id: str, status: str) -> None:
+        existing = self._capability_item(invocation_id)
+        if existing is not None:
+            existing["status"] = status
+
+    def _capability_item(self, invocation_id: str) -> dict[str, Any] | None:
+        if not invocation_id:
+            return None
+        for item in reversed(self.timeline):
+            if item.get("type") != "capability":
+                continue
+            event = item.get("event")
+            if isinstance(event, dict) and event.get("invocation_id") == invocation_id:
+                return item
+        return None
+
+    def _upsert_dag(self, dag: dict[str, Any]) -> None:
+        dag_key = dag.get("task_id") or dag.get("dag_id")
+        for index, item in enumerate(self.timeline):
+            if item.get("type") != "dag":
+                continue
+            existing = item.get("dag")
+            if isinstance(existing, dict) and (existing.get("task_id") or existing.get("dag_id")) == dag_key:
+                self.timeline[index] = {"type": "dag", "dag": dag}
+                return
+        self.timeline.append({"type": "dag", "dag": dag})
+
+
+def _visible_chat_message_content(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                value = item.get("text")
+                if isinstance(value, str):
+                    parts.append(value)
+                else:
+                    value = item.get("content")
+                    if isinstance(value, str):
+                        parts.append(value)
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def _json_array(raw: str | None) -> list[dict[str, Any]]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _json_object_or_none(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _stream_timeline_event(payload: dict[str, Any]) -> dict[str, Any]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    assert isinstance(data, dict)
+    return {"type": payload.get("type"), **data}
+
+
+def _message_status(status: str) -> Literal["created", "running", "awaiting_review", "completed", "failed", "rejected"]:
+    if status in {"created", "running", "awaiting_review", "completed", "failed", "rejected"}:
+        return status  # type: ignore[return-value]
+    return "running"
 
 
 class ApiState:
@@ -955,7 +1341,16 @@ async def delete_project(project_id: str) -> dict[str, str]:
                 ))
             except ConversationBusyError as exc:
                 raise HTTPException(status_code=409, detail="Project has active conversations.") from exc
+        runs = await run_in_threadpool(store.list_runs, project_id=project.id)
+        run_states: dict[str, RunState | None] = {}
+        for run in runs:
+            run_states[run.id] = await run_in_threadpool(store.get_run_state, run.id)
+        saved_dags = await run_in_threadpool(store.list_saved_dags, project.id)
         workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+        for run in runs:
+            await run_in_threadpool(_delete_run_files, run, run_states[run.id])
+        for saved_dag in saved_dags:
+            await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(saved_dag.id), ignore_errors=True)
         await run_in_threadpool(_delete_project_workspace, project, workspace_path)
         deleted = await run_in_threadpool(store.delete_project, project.id)
         if not deleted:
@@ -1154,9 +1549,36 @@ async def create_conversation(request: ConversationCreateRequest) -> dict[str, A
 
 
 @app.get("/conversations")
-async def list_conversations() -> dict[str, Any]:
-    conversations = await run_in_threadpool(state.get_store().list_conversations, standalone=True)
+async def list_conversations(kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None) -> dict[str, Any]:
+    conversations = await run_in_threadpool(
+        state.get_store().list_conversations,
+        standalone=True,
+        kind=kind,
+    )
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
+
+
+async def _update_conversation_title(conversation: Conversation, title: str) -> Conversation:
+    clean_title = _clean_required_text(title, field="Conversation title")
+    try:
+        return await run_in_threadpool(
+            state.get_store().update_conversation,
+            conversation.id,
+            title=clean_title,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Conversation not found.") from exc
+
+
+@app.patch("/conversations/{conversation_id}")
+async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> dict[str, Any]:
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(status_code=400, detail="Project conversations must be updated through the project route.")
+    updated = await _update_conversation_title(conversation, request.title)
+    return {"conversation": updated.model_dump(mode="json")}
 
 
 @app.delete("/conversations/{conversation_id}")
@@ -1199,11 +1621,18 @@ async def create_project_conversation(
 
 
 @app.get("/projects/{project_id}/conversations")
-async def list_project_conversations(project_id: str) -> dict[str, Any]:
+async def list_project_conversations(
+    project_id: str,
+    kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None,
+) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    conversations = await run_in_threadpool(state.get_store().list_conversations, project_id)
+    conversations = await run_in_threadpool(
+        state.get_store().list_conversations,
+        project_id,
+        kind=kind,
+    )
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
 
 
@@ -1216,6 +1645,22 @@ async def get_project_conversation(project_id: str, conversation_id: str) -> dic
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation": conversation.model_dump(mode="json")}
+
+
+@app.patch("/projects/{project_id}/conversations/{conversation_id}")
+async def update_project_conversation(
+    project_id: str,
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    updated = await _update_conversation_title(conversation, request.title)
+    return {"conversation": updated.model_dump(mode="json")}
 
 
 @app.delete("/projects/{project_id}/conversations/{conversation_id}")
@@ -1268,6 +1713,32 @@ async def _delete_conversation(conversation: Conversation) -> None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
 
+async def _conversation_run_summaries(
+    conversation: Conversation,
+    *,
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        project_id=project_id,
+        conversation_id=conversation.id,
+    )
+    return [_run_summary_payload(run) for run in runs]
+
+
+@app.get("/conversations/{conversation_id}/runs")
+async def list_conversation_runs(conversation_id: str) -> dict[str, Any]:
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Project conversation runs must be listed through the project route.",
+        )
+    return {"runs": await _conversation_run_summaries(conversation)}
+
+
 @app.get("/projects/{project_id}/conversations/{conversation_id}/runs")
 async def list_project_conversation_runs(project_id: str, conversation_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
@@ -1276,12 +1747,33 @@ async def list_project_conversation_runs(project_id: str, conversation_id: str) 
     conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
     if conversation is None or conversation.project_id != project.id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    runs = await run_in_threadpool(
-        state.get_store().list_runs,
-        project_id=project.id,
-        conversation_id=conversation.id,
-    )
-    return {"runs": [_run_summary_payload(run) for run in runs]}
+    return {"runs": await _conversation_run_summaries(conversation, project_id=project.id)}
+
+
+@app.get("/conversations/{conversation_id}/messages")
+async def list_conversation_messages(conversation_id: str) -> dict[str, Any]:
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conversation.project_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Project conversation messages must be listed through the project route.",
+        )
+    messages = await run_in_threadpool(state.get_store().list_conversation_messages, conversation.id)
+    return {"messages": [_conversation_message_payload(message) for message in messages]}
+
+
+@app.get("/projects/{project_id}/conversations/{conversation_id}/messages")
+async def list_project_conversation_messages(project_id: str, conversation_id: str) -> dict[str, Any]:
+    project = await run_in_threadpool(state.get_store().get_project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
+    if conversation is None or conversation.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = await run_in_threadpool(state.get_store().list_conversation_messages, conversation.id)
+    return {"messages": [_conversation_message_payload(message) for message in messages]}
 
 
 @app.get("/runs/{run_id}")
@@ -1290,6 +1782,22 @@ async def get_run(run_id: str) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found.")
     return {"run": _run_summary_payload(run)}
+
+
+@app.delete("/runs/{run_id}")
+async def delete_run(run_id: str) -> dict[str, str]:
+    store = state.get_store()
+    run = await run_in_threadpool(store.get_run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    if run.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="Active runs cannot be deleted.")
+    run_state = await run_in_threadpool(store.get_run_state, run.id)
+    await run_in_threadpool(_delete_run_files, run, run_state)
+    deleted = await run_in_threadpool(store.delete_run, run.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return {"status": "deleted"}
 
 
 @app.get("/runs/{run_id}/events")
@@ -1410,6 +1918,18 @@ async def get_saved_dag(dag_id: str) -> dict[str, Any]:
     return {"saved_dag": _saved_dag_payload(saved)}
 
 
+@app.get("/saved-dags/{dag_id}/runs")
+async def list_saved_dag_runs(dag_id: str) -> dict[str, Any]:
+    saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Saved DAG not found.")
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        saved_dag_id=saved.id,
+    )
+    return {"runs": [_run_summary_payload(run) for run in runs]}
+
+
 @app.patch("/saved-dags/{dag_id}")
 async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[str, Any]:
     existing = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
@@ -1516,6 +2036,18 @@ async def get_orchestration_session(session_id: str) -> dict[str, Any]:
     if session is None:
         raise HTTPException(status_code=404, detail="Orchestration session not found.")
     return {"session": _orchestration_session_payload(session)}
+
+
+@app.get("/orchestration-sessions/{session_id}/runs")
+async def list_orchestration_session_runs(session_id: str) -> dict[str, Any]:
+    session = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Orchestration session not found.")
+    runs = await run_in_threadpool(
+        state.get_store().list_runs,
+        conversation_id=session.conversation_id,
+    )
+    return {"runs": [_run_summary_payload(run) for run in runs]}
 
 
 @app.get("/conversations/{conversation_id}/orchestration-session")
@@ -1892,6 +2424,16 @@ def _orchestration_session_payload(session: OrchestrationSession) -> dict[str, A
     )
     payload["ui_state"] = _json_from_storage(session.ui_state_json, fallback={})
     return payload
+
+
+def _orchestration_session_surface(session: OrchestrationSession | None) -> str | None:
+    if session is None:
+        return None
+    ui_state = _json_from_storage(session.ui_state_json, fallback={})
+    if not isinstance(ui_state, dict):
+        return None
+    surface = ui_state.get("surface")
+    return surface if isinstance(surface, str) else None
 
 
 def _json_from_storage(value: str, *, fallback: Any) -> Any:
@@ -3540,6 +4082,7 @@ async def _resume_persisted_review_stream(
         workspace_uri=run.workspace_uri,
         workspace_path=workspace_path,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
+        orchestration_surface=_orchestration_session_surface(orchestration_session),
     )
     stream_id = _new_api_id("stream")
     try:
@@ -3573,6 +4116,7 @@ async def _persisted_message_stream_events(
 ):
     try:
         runner = state.get_runner()
+        message_projection = await ConversationMessageProjection.start_for_message_request(request, context)
         event_source = gate_chat_display(
             runner.stream(
                 agent,
@@ -3591,6 +4135,7 @@ async def _persisted_message_stream_events(
             run_kind=context.run_state.kind if context.run_state is not None else request.target,
             create_run=context.run_state is None,
             existing_run_id=None if context.run_state is None else context.run_state.run_id,
+            message_projection=message_projection,
         ):
             yield _sse(payload)
     finally:
@@ -3606,6 +4151,7 @@ async def _persisted_review_resume_stream_events(
 ):
     try:
         runner = state.get_runner()
+        message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
         event_source = gate_chat_display(
             runner.resume_stream(decision, state=run_state),
             validation_enabled=runner.enable_validation,
@@ -3620,6 +4166,7 @@ async def _persisted_review_resume_stream_events(
             existing_run_id=run_state.run_id,
             resolve_review_id=decision.review_id,
             decision_json=_review_decision_json(decision),
+            message_projection=message_projection,
         ):
             yield _sse(payload)
     finally:
@@ -3668,6 +4215,7 @@ async def _persisted_run_events(
     resolve_review_id: str | None = None,
     decision_json: str | None = None,
     saved_dag_id: str | None = None,
+    message_projection: ConversationMessageProjection | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     store = state.get_store()
     sent_error = False
@@ -3709,6 +4257,8 @@ async def _persisted_run_events(
                     stream_created = True
             if event.type == "run.failed":
                 sent_error = True
+            if message_projection is not None:
+                await message_projection.handle_payload(payload)
             if event.type == "dag.updated" and context.orchestration_session_id is not None:
                 data = payload.get("data")
                 if isinstance(data, dict) and isinstance(data.get("dag"), dict):
@@ -3796,6 +4346,8 @@ async def _persisted_run_events(
                 "sequence": 0,
                 "run_id": run_id,
             }
+            if message_projection is not None:
+                await message_projection.handle_payload(error_payload)
             persisted = await run_in_threadpool(
                 store.append_run_event,
                 run_id=run_id,
@@ -3820,12 +4372,15 @@ async def _persisted_run_events(
             if not sent_error:
                 yield error_payload
         elif not sent_error:
-            yield {
+            error_payload = {
                 "type": "run.failed",
                 "data": {"message": str(exc), "error_type": type(exc).__name__},
                 "sequence": 0,
                 "run_id": None,
             }
+            if message_projection is not None:
+                await message_projection.handle_payload(error_payload)
+            yield error_payload
 
 
 async def _message_request_from_http(http_request: Request) -> tuple[MessageRequest, list[ArtifactUpload]]:
@@ -3934,20 +4489,26 @@ async def _persisted_context_from_conversation(
     else:
         workspace_uri = conversation.workspace_uri
     workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, workspace_uri)
-    previous_run_state = None
-    if conversation.last_run_id is not None:
-        previous_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
-        if previous_run_state is not None and previous_run_state.status == "awaiting_review":
-            raise HTTPException(
-                status_code=409,
-                detail="Conversation is awaiting review; resume the pending review before sending a new message.",
-            )
     orchestration_session = None
     if include_orchestration_session and conversation.kind != "chat":
         orchestration_session = await run_in_threadpool(
             store.get_orchestration_session_by_conversation,
             conversation.id,
         )
+    orchestration_surface = _orchestration_session_surface(orchestration_session)
+    previous_run_state = None
+    if conversation.last_run_id is not None:
+        stored_run_state = await run_in_threadpool(store.get_run_state, conversation.last_run_id)
+        if stored_run_state is not None and stored_run_state.status == "awaiting_review":
+            raise HTTPException(
+                status_code=409,
+                detail="Conversation is awaiting review; resume the pending review before sending a new message.",
+            )
+        if not (
+            conversation.kind == "dynamic_dag"
+            and orchestration_surface == ORCHESTRATION_WORKSPACE_SURFACE
+        ):
+            previous_run_state = stored_run_state
     return PersistedMessageContext(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
@@ -3956,6 +4517,7 @@ async def _persisted_context_from_conversation(
         workspace_path=workspace_path,
         run_state=previous_run_state,
         orchestration_session_id=None if orchestration_session is None else orchestration_session.id,
+        orchestration_surface=orchestration_surface,
     )
 
 
@@ -4225,6 +4787,21 @@ def _delete_conversation_files(
         shutil.rmtree(candidate)
     if delete_conversation_workspace:
         _delete_workspace_root(conversation_workspace)
+
+
+def _delete_run_files(run: Run, run_state: RunState | None) -> None:
+    if run_state is None or not run_state.workspace_path:
+        return
+    try:
+        parent_workspace = state.get_workspaces().local_path_for_existing(run.workspace_uri).resolve()
+    except ValueError:
+        return
+    candidate = Path(run_state.workspace_path).resolve()
+    if candidate == parent_workspace:
+        return
+    if not _should_delete_run_workspace(candidate, parent_workspace):
+        return
+    shutil.rmtree(candidate)
 
 
 def _delete_workspace_root(workspace_path: Path) -> None:
@@ -4933,7 +5510,9 @@ def _sse(payload: dict[str, Any]) -> str:
 def _run_summary_payload(run: Run) -> dict[str, Any]:
     payload = run.model_dump(mode="json")
     state_json = payload.pop("state_json")
+    error_json = payload.pop("error_json")
     payload["has_state"] = state_json is not None
+    payload["has_error"] = error_json is not None
     return payload
 
 
@@ -4947,6 +5526,15 @@ def _run_event_payload(event: RunEvent) -> dict[str, Any]:
     if isinstance(event_payload, dict):
         event_payload["sequence"] = event.event_id
     payload["payload"] = event_payload
+    return payload
+
+
+def _conversation_message_payload(message: ConversationMessage) -> dict[str, Any]:
+    payload = message.model_dump(mode="json")
+    payload["timeline"] = _json_array(payload.pop("timeline_json"))
+    payload["dag"] = _json_object_or_none(payload.pop("dag_json"))
+    payload["trace"] = _json_object_or_none(payload.pop("trace_json"))
+    payload["pending_review"] = _json_object_or_none(payload.pop("pending_review_json"))
     return payload
 
 

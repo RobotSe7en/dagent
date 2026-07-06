@@ -274,10 +274,10 @@ test('chat workbench ports the design shell without mock run data', async () => 
 test('chat message frames keep user and assistant treatment aligned', async () => {
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
 
-  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*14px 14px 6px 14px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*none;/s);
+  assert.match(css, /\.user-bubble\s*\{[^}]*border:\s*1px solid rgba\(103, 103, 220, 0\.22\);[^}]*border-radius:\s*16px;[^}]*background:\s*#6767dc;[^}]*color:\s*#fff;[^}]*box-shadow:\s*0 2px 12px rgba\(20, 23, 30, 0\.05\);/s);
   assert.match(css, /\.assistant-row\s*\{[^}]*align-items:\s*flex-start;/s);
-  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);[^}]*border-radius:\s*14px 14px 14px 6px;[^}]*box-shadow:\s*none;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*4px;[^}]*padding:\s*4px 6px 6px;/s);
+  assert.match(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*0 1 960px;[^}]*max-width:\s*min\(100%, 960px\);/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*16px;[^}]*padding:\s*18px 18px 18px 42px;/s);
   assert.doesNotMatch(css, /\.assistant-turn-frame\s*\{[^}]*flex:\s*1;/s);
 });
 
@@ -346,7 +346,7 @@ test('composer keeps shared compact controls in the run settings menu', async ()
   const chatWorkspaceSource = appSource.match(/function ChatWorkspace[\s\S]*?\nfunction DesignEmptyConversation/)?.[0] ?? '';
 
   assert.match(chatWorkspaceSource, /const targetOptions: Array<\{ value: ChatTarget; label: string; shortLabel: string; icon: React\.ReactNode \}> = \[/);
-  assert.match(chatWorkspaceSource, /<div className="mode-switch" aria-label="运行模式">[\s\S]*title=\{option\.label\}[\s\S]*aria-label=\{option\.label\}[\s\S]*\{option\.icon\}[\s\S]*<span>\{option\.shortLabel\}<\/span>/);
+  assert.match(chatWorkspaceSource, /<div className="mode-switch" aria-label="运行模式">[\s\S]*title=\{option\.label\}[\s\S]*aria-label=\{option\.label\}[\s\S]*\{target === option\.value \? option\.icon : null\}[\s\S]*<span>\{option\.shortLabel\}<\/span>/);
   assert.doesNotMatch(chatWorkspaceSource, />\s*\{item\}\s*<\/button>/);
   assert.match(chatWorkspaceSource, /const reviewLevelLabels: Record<ReviewLevel, string> = \{ fast: '快速审核', careful: '谨慎审核' \};/);
   assert.doesNotMatch(chatWorkspaceSource, /<label className="review-control">/);
@@ -364,8 +364,8 @@ test('composer keeps shared compact controls in the run settings menu', async ()
   assert.match(css, /\.run-settings-menu\s*\{[^}]*position:\s*relative;/s);
   assert.match(css, /\.run-settings-popover\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*right:\s*auto;[^}]*bottom:\s*calc\(100% \+ 8px\);[^}]*width:\s*300px;[^}]*transform:\s*translateX\(-50%\);/s);
   assert.match(css, /\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
-  assert.match(css, /\.composer-toolbar \.mode-switch button\s*\{[^}]*min-width:\s*50px;[^}]*padding:\s*0 7px;/s);
-  assert.match(css, /\.composer-toolbar \.mode-switch button span\s*\{[^}]*font-size:\s*12px;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button\s*\{[^}]*min-width:\s*50px;[^}]*padding:\s*0 12px;[^}]*font-size:\s*12\.5px;/s);
+  assert.match(css, /\.composer-toolbar \.mode-switch button span\s*\{[^}]*font-size:\s*12\.5px;/s);
 });
 
 test('collapsed artifact rail still reserves safe space for user avatars', async () => {
@@ -744,7 +744,7 @@ test('mcp sidebar selection distinguishes servers from child tools', () => {
 });
 
 test('api helpers send agent preset and chat scope request bodies', async () => {
-  const { createAgent, listRunEvents, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
+  const { createAgent, listRunEvents, streamMessagesTask, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
     '../src/dagArtifacts.ts',
@@ -798,6 +798,15 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
       agentScope: 'selected',
       agentIds: ['agent.helper'],
     });
+    await streamMessagesTask(
+      [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+      'dag',
+      'fast',
+      {},
+      undefined,
+      true,
+      { visibleMessage: 'visible prompt' },
+    );
     const events = await listRunEvents('run_abc', 7);
     assert.deepEqual(events, [{ event_id: 8, event_type: 'run.finished' }]);
   } finally {
@@ -827,8 +836,63 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
     agent_scope: 'selected',
     agent_ids: ['agent.helper'],
   });
-  assert.equal(calls[3].url, '/api/runs/run_abc/events?after_event_id=7');
-  assert.equal(calls[3].init.method, undefined);
+  assert.deepEqual(JSON.parse(calls[3].init.body), {
+    messages: [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+    target: 'dag',
+    review_level: 'fast',
+    dynamic_adjust: true,
+    visible_message: 'visible prompt',
+  });
+  assert.equal(calls[4].url, '/api/runs/run_abc/events?after_event_id=7');
+  assert.equal(calls[4].init.method, undefined);
+});
+
+test('api helper lists persisted conversation messages for standalone and project conversations', async () => {
+  const { listConversationMessages } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      json: async () => ({
+        messages: [
+          {
+            id: 'msg_1',
+            conversation_id: 'conv_1',
+            role: 'assistant',
+            run_id: 'run_1',
+            turn_index: 1,
+            status: 'completed',
+            content: 'done',
+            timeline: [{ type: 'text', content: 'done' }],
+            created_at: 1,
+            updated_at: 1,
+          },
+        ],
+      }),
+      text: async () => '',
+    };
+  };
+
+  try {
+    const standalone = await listConversationMessages('conv_1');
+    const project = await listConversationMessages('conv_2', 'proj_1');
+    assert.equal(standalone[0].content, 'done');
+    assert.equal(project[0].role, 'assistant');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/conversations/conv_1/messages');
+  assert.equal(calls[0].init.method, undefined);
+  assert.equal(calls[1].url, '/api/projects/proj_1/conversations/conv_2/messages');
+  assert.equal(calls[1].init.method, undefined);
 });
 
 test('saved DAG api helpers preserve metadata and layout', async () => {
@@ -928,6 +992,72 @@ test('saved DAG api helpers preserve metadata and layout', async () => {
     layout: savedDag.layout,
     expected_revision: 4,
   });
+});
+
+test('orchestration history api helpers use expected endpoints', async () => {
+  const {
+    deleteRun,
+    deleteSavedDag,
+    listConversationRuns,
+    listConversations,
+    listOrchestrationSessionRuns,
+    listProjectConversationRuns,
+    listProjectConversations,
+    listSavedDagRuns,
+    updateConversation,
+    updateProjectConversation,
+  } = await importTypeScriptModule('../src/api.ts', [
+    '../src/agentScope.ts',
+    '../src/api.ts',
+    '../src/dagArtifacts.ts',
+    '../src/streamProtocol.ts',
+  ]);
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      json: async () => ({
+        conversation: { id: 'conv_1', title: 'Renamed', kind: 'dynamic_dag' },
+        conversations: [{ id: 'conv_1', title: 'Dynamic', kind: 'dynamic_dag' }],
+        runs: [{ id: 'run_1', status: 'completed', has_state: true }],
+      }),
+      text: async () => '',
+    };
+  };
+
+  try {
+    await listConversations({ kind: 'dynamic_dag' });
+    await listProjectConversations('proj 1', { kind: 'dynamic_dag' });
+    await updateConversation('conv 1', { title: 'Renamed' });
+    await updateProjectConversation('proj 1', 'conv 1', { title: 'Project Renamed' });
+    await listConversationRuns('conv 1');
+    await listProjectConversationRuns('proj 1', 'conv 1');
+    await listOrchestrationSessionRuns('orch 1');
+    await listSavedDagRuns('dag 1');
+    await deleteSavedDag('dag 1');
+    await deleteRun('run 1');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls[0].url, '/api/conversations?kind=dynamic_dag');
+  assert.equal(calls[1].url, '/api/projects/proj%201/conversations?kind=dynamic_dag');
+  assert.equal(calls[2].url, '/api/conversations/conv%201');
+  assert.equal(calls[2].init.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[2].init.body), { title: 'Renamed' });
+  assert.equal(calls[3].url, '/api/projects/proj%201/conversations/conv%201');
+  assert.equal(calls[3].init.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[3].init.body), { title: 'Project Renamed' });
+  assert.equal(calls[4].url, '/api/conversations/conv%201/runs');
+  assert.equal(calls[5].url, '/api/projects/proj%201/conversations/conv%201/runs');
+  assert.equal(calls[6].url, '/api/orchestration-sessions/orch%201/runs');
+  assert.equal(calls[7].url, '/api/saved-dags/dag%201/runs');
+  assert.equal(calls[8].url, '/api/saved-dags/dag%201');
+  assert.equal(calls[8].init.method, 'DELETE');
+  assert.equal(calls[9].url, '/api/runs/run%201');
+  assert.equal(calls[9].init.method, 'DELETE');
 });
 
 test('value binding helpers create labels and rewrite node output references', () => {
@@ -1166,13 +1296,14 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /savedDagMatchesEditorSpec\(saved, spec\)/);
   assert.match(appSource, /const savedDagsRef = useRef<SavedDag\[\]>\(\[\]\);/);
   assert.match(appSource, /const conversationsRef = useRef<ApiConversation\[\]>\(\[\]\);/);
-  assert.match(appSource, /const orchestrationConversationIdsKey = useMemo/);
-  const hydrationEffectSource = appSource.match(/useEffect\(\(\) => \{\s*if \(activeWorkspace !== 'orchestration'[\s\S]*?\n  \}, \[[\s\S]*?orchestrationConversationIdsKey,[\s\S]*?\]\);/)?.[0] ?? '';
-  assert.ok(hydrationEffectSource, 'orchestration hydration effect should exist');
-  assert.match(hydrationEffectSource, /conversationsRef\.current/);
-  assert.match(hydrationEffectSource, /const hydrateKey = `\$\{kind\}:\$\{preferred\.id\}`;/);
-  assert.doesNotMatch(hydrationEffectSource, /savedRevisionKey|preferred\.updated_at|preferred\.last_run_id|savedDags\.map/);
-  assert.doesNotMatch(hydrationEffectSource, /\n\s*conversations,\n|\n\s*savedDags,\n|\n\s*selectedConversation,\n/);
+  assert.doesNotMatch(appSource, /const orchestrationConversationIdsKey = useMemo/);
+  assert.doesNotMatch(appSource, /const preferred = current[\s\S]*conversationItems\.find\(\(conversation\) => isSelectableOrchestrationConversation/);
+  assert.doesNotMatch(appSource, /void hydrateOrchestrationConversation\(preferred\)/);
+  const newEditorSource = appSource.match(/const newEditorUserDag = \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.ok(newEditorSource, 'newEditorUserDag function should exist');
+  assert.match(newEditorSource, /setEditorUserDagAndRuntimeDag\(createEmptyUserDag\(\), \{\}\)/);
+  assert.match(newEditorSource, /setSelectedConversationId\(''\)/);
+  assert.match(newEditorSource, /orchestrationHydratedKeyRef\.current = ''/);
   const ensureContextSource = appSource.match(/const ensureOrchestrationContext = async \([\s\S]*?\n  const uploadEditorFiles/)?.[0] ?? '';
   assert.ok(ensureContextSource, 'ensureOrchestrationContext function should exist');
   assert.match(ensureContextSource, /catch \(exc\) \{[\s\S]*isOrchestrationSessionConflict\(exc\)[\s\S]*getOrchestrationSessionByConversation\(conversation\.id\)/);
@@ -1315,15 +1446,20 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /JSON\.stringify\(dynamicDagForPrompt\(dag\), null, 2\)/);
   assert.match(appSource, /const dynamicRequestMessages = buildDynamicDagMessages\(dynamicMessages, prompt, dynamicDag\);/);
   assert.match(appSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
-  assert.match(appSource, /streamMessagesTask\([\s\S]*dynamicRequestMessages,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(context\.request\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
+  assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
+  assert.doesNotMatch(appSource, /targetProjectId:\s*selectedProjectId \|\| null,[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
+  assert.match(appSource, /streamMessagesTask\([\s\S]*dynamicRequestMessages,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(appSource, /function dynamicReviewLevel/);
   assert.doesNotMatch(dynamicSource, /<select[\s\S]*reviewLevels|onReviewLevelChange|reviewLevel: ReviewLevel/);
+  assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
+  assert.doesNotMatch(dynamicSource, /DagReviewDialog|reviewOpen|setReviewOpen|setDagReview/);
   assert.match(appSource, /className="dynamic-orchestration-chat"/);
   assert.match(dynamicSource, /<div className="dynamic-chat-head">\s*<strong>动态编排<\/strong>\s*<\/div>/);
   assert.doesNotMatch(dynamicSource, /任务目标 \/ SOP/);
   assert.match(appSource, /生成 DAG/);
   assert.match(appSource, /运行/);
-  assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(context\.request\),[\s\S]*dynamicRunState,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
+  assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dag as unknown as Record<string, unknown>/);
+  assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*dynamicRunState,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
   assert.doesNotMatch(appSource, /resumeDagReview\(reviewId, null, dynamicReviewLevel\(\), false/);
   assert.match(appSource, /const dynamicDagRef = useRef<Dag>\(emptyDag\);/);
   assert.match(appSource, /function preserveDynamicDagEdges\(nextDag: Dag\): Dag/);
@@ -1373,7 +1509,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(dynamicEventsSource, /row\.events\.length/);
   assert.doesNotMatch(dynamicEventsSource, /<p>\{clipText\(message|<p>\{clipText\(event\.detail/);
   assert.doesNotMatch(dynamicEventsSource, /dynamic-chat-run-status|dynamic-trace-count|traceCount|运行状态/);
-  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{selectedNormalized \? 'with-inspector' : ''\}`\}/);
+  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{hasInspector \? 'with-inspector' : ''\}`\}/);
   assert.doesNotMatch(appSource.match(/const onAddDynamicNode[\s\S]*?};/)?.[0] ?? '', /setDynamicSelectedId\(id\)/);
   assert.match(appSource, /undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(apiSource, /dynamicAdjust\?: boolean/);
@@ -1420,6 +1556,158 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(css, /\.dynamic-final-result/);
   assert.match(css, /\.dynamic-node-result-card\.running/);
   assert.match(css, /\.dynamic-event-bubble p\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*white-space:\s*pre-wrap;[^}]*max-height:/s);
+});
+
+test('dynamic orchestration sidebar manages persisted history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.match(apiSource, /export async function updateConversation/);
+  assert.match(apiSource, /export async function updateProjectConversation/);
+  assert.match(appSource, /updateConversation,/);
+  assert.match(appSource, /updateProjectConversation,/);
+  assert.match(appSource, /const ORCHESTRATION_WORKSPACE_SURFACE = 'orchestration_workspace';/);
+  assert.match(appSource, /const SMART_WORKBENCH_SURFACE = 'smart_workbench';/);
+  assert.match(appSource, /type OrchestrationSessionsByConversationId = Record<string, OrchestrationSession \| null \| undefined>;/);
+  assert.match(appSource, /const \[orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId\] = useState<OrchestrationSessionsByConversationId>\(\{\}\);/);
+  assert.match(appSource, /const loadOrchestrationSessionsForConversations = useCallback/);
+  assert.match(appSource, /getOrchestrationSessionByConversation\(conversation\.id\)/);
+  assert.match(appSource, /const \[dynamicConversationQuery, setDynamicConversationQuery\] = useState\(''\);/);
+  assert.match(appSource, /function isOrchestrationWorkspaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*ORCHESTRATION_WORKSPACE_SURFACE/);
+  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*SMART_WORKBENCH_SURFACE/);
+  assert.doesNotMatch(appSource, /return !conversation\.project_id;/);
+  assert.match(appSource, /function isStandaloneDynamicOrchestration\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'dynamic_dag' && !conversation\.project_id/);
+  assert.doesNotMatch(appSource, /function isSelectableOrchestrationConversation/);
+  assert.match(appSource, /const visibleDynamicConversations = useMemo\(\(\) => conversations\.filter/);
+  assert.match(appSource, /if \(!isStandaloneDynamicOrchestration\(conversation, orchestrationSessionsByConversationId\)\) return false;/);
+  assert.match(appSource, /const clearDynamicWorkspace = useCallback\(\(\) => \{/);
+  assert.match(appSource, /const createDynamicOrchestration = async \(\) => \{/);
+  assert.match(appSource, /const selectDynamicOrchestration = async \(conversationId: string\) => \{/);
+  assert.match(appSource, /const saveDynamicConversationTitle = async \(\) => \{/);
+  assert.match(appSource, /const deleteDynamicOrchestration = async \(\) => \{/);
+  assert.match(appSource, /dynamicConversations=\{visibleDynamicConversations\}/);
+  assert.match(appSource, /dynamicConversationQuery=\{dynamicConversationQuery\}/);
+  assert.match(appSource, /onNewDynamicOrchestration=\{\(\) => void createDynamicOrchestration\(\)\}/);
+  assert.match(sidebarSource, /activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic'/);
+  assert.match(sidebarSource, /dynamicConversations\.length \? dynamicConversations\.map/);
+  assert.match(sidebarSource, /onSelectDynamicOrchestration\(conversation\.id\)/);
+  assert.match(sidebarSource, /onEditDynamicOrchestration\(conversation\.id, conversation\.title\)/);
+  assert.match(sidebarSource, /onDeleteDynamicOrchestration\(conversation\.id\)/);
+  assert.match(appSource, /function DynamicConversationRenameDialog/);
+  assert.match(appSource, /function DynamicConversationDeleteDialog/);
+  const createDynamicSource = appSource.match(/const createDynamicOrchestration = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(createDynamicSource, /clearDynamicWorkspace\(\)/);
+  assert.match(createDynamicSource, /setSelectedConversationId\(''\)/);
+  assert.match(createDynamicSource, /orchestrationHydratedKeyRef\.current = ''/);
+  assert.doesNotMatch(createDynamicSource, /createConversation|createOrchestrationSession|refreshConversations|createProjectConversation|selectedProjectId|setSelectedProjectId/);
+  const generateDynamicSource = appSource.match(/const generateDynamicDag = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(generateDynamicSource, /conversationTitleFromPrompt\(prompt\)/);
+  assert.match(generateDynamicSource, /uiState: orchestrationWorkspaceUiState\(\)/);
+  assert.match(generateDynamicSource, /visibleMessage: prompt/);
+  const selectDynamicSource = appSource.match(/const selectDynamicOrchestration = async \(conversationId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectDynamicSource, /isStandaloneDynamicOrchestration\(conversation, orchestrationSessionsByConversationId\)/);
+  assert.doesNotMatch(selectDynamicSource, /setSelectedProjectId/);
+  const hydrateOrchestrationSource = appSource.match(/const hydrateOrchestrationConversation = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*?\n  \}, \[/)?.[0] ?? '';
+  assert.match(hydrateOrchestrationSource, /listConversationMessages\(conversation\.id, conversation\.project_id\)/);
+  assert.match(hydrateOrchestrationSource, /setDynamicMessages\(messagesFromApiConversationMessages\(conversationMessages, nextDynamicTimelineOrder\)\)/);
+});
+
+test('static orchestration sidebar supports saved DAG delete and run history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
+  const orchestrationSource = appSource.match(/function OrchestrationWorkspace[\s\S]*?\nfunction RunDagDialog/)?.[0] ?? '';
+
+  assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
+  assert.ok(orchestrationSource, 'OrchestrationWorkspace function should exist');
+  assert.match(apiSource, /export async function deleteSavedDag/);
+  assert.match(apiSource, /export async function deleteRun/);
+  assert.match(apiSource, /export async function listSavedDagRuns/);
+  assert.match(appSource, /deleteSavedDag,/);
+  assert.match(appSource, /deleteRun,/);
+  assert.match(appSource, /listSavedDagRuns,/);
+  assert.match(appSource, /const \[staticDagDeleteTargetId, setStaticDagDeleteTargetId\] = useState\(''\);/);
+  assert.match(appSource, /const \[staticRunHistory, setStaticRunHistory\] = useState<ApiRunSummary\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[staticDeletingRunId, setStaticDeletingRunId\] = useState\(''\);/);
+  assert.match(appSource, /const \[staticInspectorMode, setStaticInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
+  assert.match(appSource, /const \[staticRunHistoryCollapsed, setStaticRunHistoryCollapsed\] = useState\(true\);/);
+  assert.match(appSource, /const \[staticRunArtifactFiles, setStaticRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
+  assert.match(appSource, /const staticArtifactRunId = staticSelectedRunId \|\| editorRun\?\.run_id \|\| '';/);
+  assert.match(appSource, /listRunArtifacts\(staticArtifactRunId\)/);
+  assert.match(appSource, /const confirmDeleteSavedDag = async \(\) => \{/);
+  assert.match(appSource, /await deleteSavedDag\(staticDagDeleteTargetId\)/);
+  assert.match(appSource, /listSavedDagRuns\(editorSavedDagId\)/);
+  assert.match(appSource, /const selectStaticRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /const deleteStaticRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /await deleteRun\(runId\)/);
+  assert.match(appSource, /finishedRunResultFromEvents\(events\)/);
+  const selectStaticRunSource = appSource.match(/const selectStaticRunHistory = async \(runId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectStaticRunSource, /setEditorTrace\(\[\]\);[\s\S]*setEditorRunTimeline\(\[\]\);[\s\S]*setEditorRun\(null\);/);
+  assert.match(selectStaticRunSource, /const traceEvents = mapRunTrace\(nextState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(runTranscriptFromTraceEvents\(traceEvents\)\);/);
+  assert.match(selectStaticRunSource, /const nextDag = nextState\.dag;[\s\S]*syncEditorDag\(nextDag\);[\s\S]*setEditorUserDag\(\(current\) => userDagFromRuntimeDag\(current, nextDag\)\);/);
+  assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
+  assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
+  assert.match(appSource, /function SavedDagDeleteDialog/);
+  assert.match(appSource, /function RunHistoryPanel/);
+  assert.match(appSource, /function runStatusLabel\(status: string\): string/);
+  assert.match(appSource, /function formatRunHistoryTime\(run: ApiRunSummary\): string/);
+  assert.match(appSource, /<span>\{runStatusLabel\(run\.status\)\}<\/span>/);
+  assert.match(appSource, /<strong>\{run\.id\}<\/strong>/);
+  assert.match(appSource, /<em>\{formatRunHistoryTime\(run\)\}<\/em>/);
+  assert.doesNotMatch(appSource, /run\.output_text \|\| new Date\(run\.updated_at/);
+  assert.match(appSource, /function RunArtifactsInspector/);
+  assert.match(appSource, /aria-label="产物检查器"/);
+  assert.match(orchestrationSource, /runHistory=\{runHistory\}/);
+  assert.match(orchestrationSource, /runHistoryCollapsed: boolean;/);
+  assert.match(orchestrationSource, /artifactPanel: OrchestrationArtifactPanelData;/);
+  assert.match(orchestrationSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*collapsed=\{runHistoryCollapsed\}[\s\S]*onOpenArtifacts=\{runHistory\.onOpenArtifacts\}[\s\S]*onDeleteRun=\{runHistory\.onDeleteRun\}/);
+  assert.match(orchestrationSource, /<RunArtifactsInspector[\s\S]*\{\.\.\.artifactPanel\}/);
+  assert.match(css, /\.sidebar-saved-dag-row/);
+  assert.match(css, /\.run-history-panel/);
+  assert.match(css, /\.run-history-panel\.collapsed/);
+  assert.match(css, /\.run-history-toggle/);
+  assert.match(css, /\.run-history-toggle svg\s*\{[^}]*display:\s*block;/s);
+  assert.match(css, /\.run-history-list/);
+  assert.match(css, /\.run-history-actions\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
+  assert.match(css, /\.run-history-row:hover \.run-history-actions,\s*\.run-history-row:focus-within \.run-history-actions\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
+  assert.match(css, /\.run-artifacts-inspector/);
+});
+
+test('dynamic orchestration workspace shows session run history', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
+  const dynamicSource = appSource.match(/function DynamicOrchestrationWorkspace[\s\S]*?\nfunction OrchestrationWorkspace/)?.[0] ?? '';
+
+  assert.ok(dynamicSource, 'DynamicOrchestrationWorkspace function should exist');
+  assert.match(apiSource, /export async function listOrchestrationSessionRuns/);
+  assert.match(appSource, /listOrchestrationSessionRuns,/);
+  assert.match(appSource, /const \[dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId\] = useState\(''\);/);
+  assert.match(appSource, /const \[dynamicDeletingRunId, setDynamicDeletingRunId\] = useState\(''\);/);
+  assert.match(appSource, /const \[dynamicInspectorMode, setDynamicInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
+  assert.match(appSource, /const \[dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed\] = useState\(true\);/);
+  assert.match(appSource, /const \[dynamicRunArtifactFiles, setDynamicRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
+  assert.match(appSource, /const dynamicArtifactRunId = dynamicSelectedRunId \|\| dynamicRunState\?\.run_id \|\| '';/);
+  assert.match(appSource, /listRunArtifacts\(dynamicArtifactRunId\)/);
+  assert.match(appSource, /setDynamicOrchestrationSessionId\(session\.id\)/);
+  assert.match(appSource, /listOrchestrationSessionRuns\(dynamicOrchestrationSessionId\)/);
+  assert.match(appSource, /const selectDynamicRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /const deleteDynamicRunHistory = async \(runId: string\) => \{/);
+  assert.match(appSource, /await deleteRun\(runId\)/);
+  assert.match(appSource, /setDynamicSelectedRunId\(runId\)/);
+  const selectDynamicRunSource = appSource.match(/const selectDynamicRunHistory = async \(runId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectDynamicRunSource, /setDynamicTrace\(\[\]\);[\s\S]*clearDynamicFinalAnswer\(\);/);
+  assert.match(selectDynamicRunSource, /setDynamicTrace\(mapRunTrace\(nextState\.trace\)\.map/);
+  assert.match(appSource, /runHistory=\{\{[\s\S]*runs: dynamicRunHistory,[\s\S]*selectedRunId: dynamicSelectedRunId/);
+  assert.match(dynamicSource, /runHistory: RunHistoryPanelData;/);
+  assert.match(dynamicSource, /runHistoryCollapsed: boolean;/);
+  assert.match(dynamicSource, /artifactPanel: OrchestrationArtifactPanelData;/);
+  assert.match(dynamicSource, /const hasInspector = inspectorMode === 'artifacts' \|\| Boolean\(selectedNormalized\);/);
+  assert.match(dynamicSource, /className=\{`dynamic-orchestration-body \$\{hasInspector \? 'with-inspector' : ''\}`\}/);
+  assert.match(dynamicSource, /<RunHistoryPanel[\s\S]*title="运行历史"[\s\S]*runHistory=\{runHistory\}[\s\S]*collapsed=\{runHistoryCollapsed\}[\s\S]*onOpenArtifacts=\{runHistory\.onOpenArtifacts\}[\s\S]*onDeleteRun=\{runHistory\.onDeleteRun\}/);
+  assert.match(dynamicSource, /<RunArtifactsInspector[\s\S]*\{\.\.\.artifactPanel\}/);
 });
 
 test('capability management nests resources under the sidebar menu with list creation actions', async () => {
@@ -1514,7 +1802,7 @@ test('workspace sidebar shares search controls across lower-left resource lists'
   assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
 
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleHistory = history\.filter/);
   assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
@@ -2046,8 +2334,8 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(typesSource, /project_id: string \| null;/);
   assert.match(typesSource, /workspace_uri: string;/);
-  assert.match(apiSource, /export async function listConversations\(\): Promise<ApiConversation\[\]>/);
-  assert.match(apiSource, /export async function listProjectConversations\(projectId: string\): Promise<ApiConversation\[\]>/);
+  assert.match(apiSource, /export async function listConversations\(options: \{ kind\?: ApiConversation\['kind'\] \} = \{\}\): Promise<ApiConversation\[\]>/);
+  assert.match(apiSource, /export async function listProjectConversations\(\s*projectId: string,\s*options: \{ kind\?: ApiConversation\['kind'\] \} = \{\},\s*\): Promise<ApiConversation\[\]>/);
   assert.match(apiSource, /export async function createConversation\(input: \{ title: string; kind\?: ApiConversation\['kind'\] \}\): Promise<ApiConversation>/);
   assert.match(apiSource, /export async function deleteConversation\(conversationId: string\): Promise<void>/);
   assert.match(apiSource, /export async function deleteProjectConversation\(projectId: string, conversationId: string\): Promise<void>/);
@@ -2057,8 +2345,10 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(appSource, /type ChatWorkspaceSub = 'conversations' \| 'projects';/);
   assert.match(appSource, /const \[chatSub, setChatSub\] = useState<ChatWorkspaceSub>\('conversations'\);/);
   assert.match(appSource, /const \[conversations, setConversations\] = useState<ApiConversation\[\]>\(\[\]\);/);
+  assert.match(appSource, /const \[orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId\] = useState<OrchestrationSessionsByConversationId>\(\{\}\);/);
   assert.match(appSource, /listConversations\(\)/);
   assert.match(appSource, /listProjectConversations\(project\.id\)/);
+  assert.match(appSource, /loadOrchestrationSessionsForConversations\(conversationItems\)/);
   assert.match(appSource, /const loadPersistedConversations = useCallback\(async \(projectItems: ApiProject\[\]\) => \{/);
   assert.match(appSource, /deleteConversation,/);
   assert.match(appSource, /deleteProjectConversation,/);
@@ -2080,11 +2370,12 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(selectWorkspaceSource, /setActiveWorkspace\(workspace\);/);
   assert.match(selectWorkspaceSource, /workspace === 'chat' && chatSub === 'conversations'[\s\S]*setSelectedConversationId\(''\);[\s\S]*clearChatSurface\(\);/);
   assert.match(appSource, /onSelectWorkspace=\{selectWorkspace\}/);
-  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
+  assert.match(appSource, /<WorkspaceSidebar[\s\S]*chatSub=\{chatSub\}[\s\S]*conversations=\{conversations\}[\s\S]*orchestrationSessionsByConversationId=\{orchestrationSessionsByConversationId\}[\s\S]*onChatSubChange=\{selectChatSub\}/);
   assert.doesNotMatch(appSource, /history=\{chatHistory\}/);
   assert.doesNotMatch(appSource, /const chatHistory = useMemo\(\(\) => currentChatHistory/);
   assert.doesNotMatch(appSource, /function currentChatHistory/);
   assert.match(sidebarSource, /chatSub: ChatWorkspaceSub;/);
+  assert.match(sidebarSource, /orchestrationSessionsByConversationId: OrchestrationSessionsByConversationId;/);
   assert.match(sidebarSource, /onChatSubChange: \(sub: ChatWorkspaceSub\) => void;/);
   assert.match(sidebarSource, /const chatSubnav = \[/);
   assert.match(sidebarSource, /label: '会话'/);
@@ -2111,11 +2402,11 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-history-list button\s*\{[^}]*border:\s*0;[^}]*padding:\s*7px 10px;[^}]*background:\s*transparent;/s);
   assert.match(css, /\.sidebar-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
-  assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
-  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active,\s*\.sidebar-saved-dag-row:hover,\s*\.sidebar-saved-dag-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete,\s*\.sidebar-context-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border-left:/s);
-  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
-  assert.match(css, /\.sidebar-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-project-conversation-row:hover \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
+  assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete,\s*\.sidebar-context-list \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);
+  assert.match(css, /\.sidebar-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-project-conversation-row:hover \.sidebar-conversation-delete,\s*\.sidebar-saved-dag-row:hover \.sidebar-conversation-delete\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
   assert.doesNotMatch(css, /\.(?:sidebar-conversation-row|sidebar-project-conversation-row)(?:\.active|:focus-within) \.sidebar-conversation-delete|\.sidebar-history-list \.sidebar-conversation-delete:focus-visible/s);
 });
 
@@ -2156,38 +2447,27 @@ test('persisted chat streams and reviews use conversation context without requir
   assert.match(resumeCapabilitySource, /conversation: activeConversationContext/);
 });
 
-test('persisted conversation selection hydrates the last run snapshot', async () => {
+test('persisted conversation selection hydrates backend message timelines first', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export interface ApiRunEvent/);
+  assert.match(apiSource, /export interface ApiConversationMessage/);
   assert.match(apiSource, /export async function listRunEvents\(runId: string, afterEventId = 0\): Promise<ApiRunEvent\[\]>/);
+  assert.match(apiSource, /export async function listConversationMessages\(/);
   assert.match(apiSource, /`\$\{API_BASE\}\/runs\/\$\{encodeURIComponent\(runId\)\}\/events\$\{params\}`/);
+  assert.match(apiSource, /\/projects\/\$\{encodeURIComponent\(projectId\)\}\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/messages/);
+  assert.match(apiSource, /\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/messages/);
   assert.match(persistedChatSource, /export function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
   assert.match(persistedChatSource, /export function messagesFromPersistedRunResult\(/);
+  assert.match(appSource, /function chatMessagesFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ChatMessage\[\]/);
+  assert.match(appSource, /function latestPendingReviewFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ReviewEventPayload \| null/);
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
-  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\(result: ApiRunResult, events: ApiRunEvent\[\] = \[\]\) => \{[\s\S]*setRunState\(nextState\);[\s\S]*setTrace\(nextTrace\);[\s\S]*setMessages\(messagesFromPersistedRunResult\(result, nextTrace, events\)\);/);
-  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*await listRunEvents\(conversation\.last_run_id\);[\s\S]*finishedRunResultFromEvents\(events\);[\s\S]*applyPersistedRunResult\(result, events\);/);
-  assert.match(appSource, /const partialMessages = chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
-  assert.match(appSource, /if \(!selectedChatSurfaceConversation\?\.last_run_id \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
-});
-
-test('persisted conversation hydration restores user and assistant chat turns', async () => {
-  const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
-  const hydrateSource = persistedChatSource.match(/export function messagesFromPersistedRunResult[\s\S]*?\nfunction appendPersistedChatMessage/)?.[0] ?? '';
-
-  assert.ok(hydrateSource, 'messagesFromPersistedRunResult should exist');
-  assert.match(persistedChatSource, /function visibleChatContentFromInternalMessage\(message: Record<string, unknown>\): string/);
-  assert.match(persistedChatSource, /function inputMessagesFromRunState\(state: ApiRunState \| null\): Record<string, unknown>\[\]/);
-  assert.match(persistedChatSource, /state\.internal_messages \?\? \[\]/);
-  assert.match(persistedChatSource, /state\.input_message_count/);
-  assert.match(hydrateSource, /inputMessagesFromRunState\(state\)/);
-  assert.match(hydrateSource, /role !== 'user' && role !== 'assistant'/);
-  assert.match(hydrateSource, /appendPersistedChatMessage\(messages, role, content\);/);
-  assert.match(persistedChatSource, /role === 'assistant' && last\?\.role === 'assistant'/);
-  assert.match(persistedChatSource, /timeline: \[\.\.\.\(last\.timeline \?\? \[\]\), \{ type: 'text', content \}\]/);
-  assert.match(persistedChatSource, /function lastAssistantMessageIndex\(messages: ChatMessage\[\]\): number/);
+  assert.match(appSource, /const applyPersistedRunResult = useCallback\(\([\s\S]*restoredMessages: ChatMessage\[\] = \[\],[\s\S]*const nextMessages = restoredMessages\.length[\s\S]*messagesFromPersistedRunResult\(result, nextTrace, events\);[\s\S]*setMessages\(nextMessages\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*const pendingReview = latestPendingReviewFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages\);/);
+  assert.match(appSource, /const partialMessages = restoredMessages\.length[\s\S]*\? restoredMessages[\s\S]*: chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);[\s\S]*handlePendingReview\(pendingReview\);/);
+  assert.match(appSource, /if \(!selectedChatSurfaceConversation \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
 
 test('persisted conversation hydration rebuilds one assistant turn with capability trace', async () => {
@@ -2544,118 +2824,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
   assert.equal(messages[1].content.includes('Review proposed DAG before execution.'), false);
 });
 
-test('persisted conversation hydration settles rejected capability review cards', async () => {
-  const {
-    chatMessagesFromPersistedRunEvents,
-    finishedRunResultFromEvents,
-  } = await importTypeScriptModule('../src/persistedChat.ts', [
-    '../src/persistedChat.ts',
-    '../src/chatTimeline.ts',
-    '../src/api.ts',
-    '../src/agentScope.ts',
-    '../src/dagArtifacts.ts',
-    '../src/streamProtocol.ts',
-  ]);
-  const state = {
-    run_id: 'run_1',
-    kind: 'tool',
-    status: 'completed',
-    internal_messages: [
-      { role: 'user', content: 'read blocked file' },
-      { role: 'assistant', content: 'I will read README instead.' },
-    ],
-  };
-  const events = [
-    runEvent(1, 'capability.call.started', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: '../blocked/secret.txt' },
-    }),
-    runEvent(2, 'capability.call.completed', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
-    }),
-    runEvent(3, 'review.required', {
-      review_id: 'review_1',
-      kind: 'capability_review',
-      message: 'Review capability call.',
-      capability_call: {
-        invocation_id: 'call_1',
-        capability_id: 'tool.read_file',
-        tool_name: 'tool_read_file',
-        arguments: { path: '../blocked/secret.txt' },
-      },
-    }),
-    runEvent(4, 'run.finished', {
-      result: {
-        output_text: 'I will read README instead.',
-        state,
-      },
-    }),
-  ];
-
-  const result = finishedRunResultFromEvents(events);
-  const messages = chatMessagesFromPersistedRunEvents(events, result);
-  const assistant = messages.find((message) => message.role === 'assistant');
-  const capability = assistant.timeline.find((item) => item.type === 'capability');
-
-  assert.ok(capability, 'capability card should be restored');
-  assert.equal(capability.result.type, 'capability.call.failed');
-  assert.match(capability.result.content, /人工审核已拒绝/);
-  assert.equal(shouldCollapseProcessTimeline(assistant, false), true);
-});
-
-test('persisted conversation hydration restores interrupted review traces without run finished', async () => {
-  const {
-    chatMessagesFromPersistedRunEvents,
-    finishedRunResultFromEvents,
-  } = await importTypeScriptModule('../src/persistedChat.ts', [
-    '../src/persistedChat.ts',
-    '../src/chatTimeline.ts',
-    '../src/api.ts',
-    '../src/agentScope.ts',
-    '../src/dagArtifacts.ts',
-    '../src/streamProtocol.ts',
-  ]);
-  const events = [
-    runEvent(1, 'run.started', { kind: 'tool' }),
-    runEvent(2, 'capability.call.started', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      arguments: { path: '../blocked/secret.txt' },
-    }),
-    runEvent(3, 'capability.call.completed', {
-      invocation_id: 'call_1',
-      capability_id: 'tool.read_file',
-      content: "[PENDING_REVIEW] Capability 'tool.read_file' requires human review.",
-    }),
-    runEvent(4, 'review.required', {
-      review_id: 'review_1',
-      kind: 'capability_review',
-      message: 'Review capability call: tool.read_file',
-      capability_call: {
-        invocation_id: 'call_1',
-        capability_id: 'tool.read_file',
-        tool_name: 'tool_read_file',
-        arguments: { path: '../blocked/secret.txt' },
-      },
-    }),
-  ];
-
-  const result = finishedRunResultFromEvents(events);
-  const messages = chatMessagesFromPersistedRunEvents(events, result);
-  const assistant = messages.find((message) => message.role === 'assistant');
-
-  assert.equal(result, null);
-  assert.ok(assistant, 'interrupted review run should hydrate a visible assistant turn');
-  assert.equal(assistant.content, 'Review capability call: tool.read_file');
-  assert.deepEqual(
-    assistant.timeline.map((item) => item.type),
-    ['capability', 'text'],
-  );
-});
-
 test('persisted conversation replay reuses api stream event parsing', async () => {
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
@@ -2700,19 +2868,21 @@ test('chat DAG target creates a dynamic DAG conversation context before streamin
   assert.match(ensureConversationSource, /if \(runTarget === 'dag'\) \{/);
   assert.match(ensureConversationSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
   assert.match(ensureConversationSource, /targetProjectId: chatSub === 'projects' \? selectedProjectId : null/);
+  assert.match(ensureConversationSource, /uiState: smartWorkbenchUiState\(\)/);
   assert.match(runStreamSource, /const conversation = await ensureChatConversation\(prompt, target\);/);
 });
 
-test('chat history treats dynamic DAG conversations as restorable chat surface sessions', async () => {
+test('chat history only treats smart workbench dynamic DAG conversations as chat surface sessions', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(appSource, /function isChatSurfaceConversation\(conversation: ApiConversation\): boolean \{[\s\S]*conversation\.kind === 'chat' \|\| conversation\.kind === 'dynamic_dag'/);
-  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id/);
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
-  assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation\)\) return;/);
-  assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation\)/);
+  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'chat'[\s\S]*orchestrationSessionSurface\(session\) === SMART_WORKBENCH_SURFACE/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id/);
+  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)\) return;/);
+  assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation, orchestrationSessionsByConversationId\)/);
+  assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
 });
 
 test('conversation subnav count excludes project conversations', async () => {
@@ -2720,7 +2890,7 @@ test('conversation subnav count excludes project conversations', async () => {
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation\) && !conversation\.project_id[\s\S]*\)\)\.length;/);
+  assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id[\s\S]*\)\)\.length;/);
   assert.match(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: standaloneConversationCount \}/);
   assert.doesNotMatch(sidebarSource, /\{ key: 'conversations' as const, label: '会话', icon: <MessagesSquare size=\{16\} \/>\, count: conversations\.length \}/);
 });
@@ -2793,7 +2963,7 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(appSource, /function ProjectEditDialog/);
   assert.match(appSource, /function ProjectDeleteDialog/);
   assert.match(appSource, /projectDeleteOpen && projectDeleteTarget/);
-  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
 });
 
 test('conversation deletion is not blocked by local streaming state', async () => {
@@ -2836,7 +3006,7 @@ test('project sidebar is an expandable project and conversation tree', async () 
   assert.match(css, /\.sidebar-history-list\s*\{[^}]*max-height:\s*min\(360px,\s*42vh\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s);
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-project-tree-row\s*\{/);
-  assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row,\s*\.sidebar-saved-dag-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
   assert.match(css, /\.sidebar-project-conversation-row > button:first-child svg\s*\{[^}]*flex:\s*0 0 auto;/s);
   assert.match(css, /\.sidebar-project-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-project-delete\s*\{[^}]*border-left:/s);
@@ -2852,10 +3022,21 @@ test('project conversation creation is a row action with a detail shortcut', asy
   const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
   const projectDetailSource = appSource.match(/function ProjectDetailWorkspace[\s\S]*?\nfunction ProjectFileManager/)?.[0] ?? '';
+  const createProjectConversationSource = appSource.match(/const createProjectConversationFromProject = async \(projectId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  const ensureConversationSource = appSource.match(/const ensureChatConversation = async[\s\S]*?\n  const runStream/)?.[0] ?? '';
+  const newChatSource = appSource.match(/const newChat = async \(\) => \{[\s\S]*?\n  const clearChatSurface/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.ok(projectDetailSource, 'ProjectDetailWorkspace function should exist');
   assert.match(appSource, /const createProjectConversationFromProject = async \(projectId: string\)/);
+  assert.match(createProjectConversationSource, /setSelectedProjectId\(projectId\)/);
+  assert.match(createProjectConversationSource, /setSelectedConversationId\(''\)/);
+  assert.match(createProjectConversationSource, /setChatSub\('projects'\)/);
+  assert.match(createProjectConversationSource, /clearChatSurface\(\)/);
+  assert.doesNotMatch(createProjectConversationSource, /createProjectConversation\(/);
+  assert.doesNotMatch(createProjectConversationSource, /title: `会话 \$\{/);
+  assert.match(newChatSource, /await createProjectConversationFromProject\(selectedProjectId\)/);
+  assert.match(ensureConversationSource, /createProjectConversation\(selectedProjectId,\s*\{[\s\S]*title: conversationTitleFromPrompt\(prompt\)/);
   assert.match(appSource, /onNewProjectConversation=\{\(projectId\) => void createProjectConversationFromProject\(projectId\)\}/);
   assert.match(sidebarSource, /onNewProjectConversation: \(projectId: string\) => void;/);
   assert.doesNotMatch(sidebarSource, /className="sidebar-project-create-conversation"/);
@@ -4053,6 +4234,7 @@ test('completed assistant answers collapse reasoning and capability process trac
 test('process timeline summary treats review rejection separately from anomalies', () => {
   const rejected = {
     type: 'capability',
+    status: 'rejected',
     event: {
       type: 'capability.call.started',
       invocation_id: 'invoke_rejected',
@@ -4068,6 +4250,7 @@ test('process timeline summary treats review rejection separately from anomalies
   };
   const failed = {
     type: 'capability',
+    status: 'failed',
     event: {
       type: 'capability.call.started',
       invocation_id: 'invoke_failed',
@@ -4096,6 +4279,10 @@ test('running, answerless, and review assistant turns keep process trace expande
       arguments: { path: 'README.md' },
     },
   };
+  const awaitingReviewCapability = {
+    ...runningCapability,
+    status: 'awaiting_review',
+  };
   const answerlessMessage = {
     role: 'assistant',
     content: '',
@@ -4118,6 +4305,7 @@ test('running, answerless, and review assistant turns keep process trace expande
   assert.equal(shouldCollapseProcessTimeline(answerlessMessage, true), false);
   assert.equal(shouldCollapseProcessTimeline(answerlessMessage, false), false);
   assert.equal(processTimelineSummary(answerlessMessage.timeline).runningCount, 2);
+  assert.equal(processTimelineSummary([awaitingReviewCapability]).runningCount, 0);
   assert.equal(shouldCollapseProcessTimeline(reviewMessage, false), false);
   assert.equal(shouldCollapseProcessTimeline({
     role: 'assistant',
@@ -4186,7 +4374,7 @@ test('message timeline renders completed process trace behind a collapsible summ
   assert.match(appSource, /completed-process-timeline/);
   assert.match(appSource, /renderCollapsedMessageTimeline/);
   assert.match(appSource, /<ProcessSummaryCard[\s\S]*items=\{collapsedProcess\.processItems\}/);
-  assert.match(summarySource, /<Wrench size=\{14\} \/>/);
+  assert.match(summarySource, /<Activity size=\{15\} \/>/);
   assert.doesNotMatch(summarySource, /AlertTriangle/);
   assert.doesNotMatch(summarySource, /process-summary-warning/);
 });
@@ -4201,16 +4389,15 @@ test('expanded and live process traces share the subtle timeline treatment', asy
   assert.match(messageTimelineSource, /const completedProcessTimeline = Boolean\(collapsedProcess\);/);
   assert.match(messageTimelineSource, /className=\{`message-timeline\$\{liveProcessTimeline \? ' live-process-timeline' : ''\}\$\{completedProcessTimeline \? ' completed-process-timeline' : ''\}`\}/);
 
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\)\s*\{[^}]*gap:\s*4px;[^}]*padding:\s*4px 6px 6px;/s);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.process-summary-body::before/);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline::before/);
-  assert.doesNotMatch(css, /\.assistant-turn-frame \.message-timeline\.completed-process-timeline::before/);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > :is\(\.think-block, \.timeline-card, \.capability-event-card, \.dag-summary-card, \.markdown-body\)\s*\{[^}]*border-left:\s*3px solid #d8dee8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.think-block\s*\{[^}]*border-left-color:\s*#94a3b8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.capability-event-card\s*\{[^}]*border-left-color:\s*#2dd4bf;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.validation-card\s*\{[^}]*border-left-color:\s*#818cf8;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.dag-summary-card\s*\{[^}]*border-left-color:\s*#60a5fa;/s);
-  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline, \.message-timeline\.completed-process-timeline\) > \.markdown-body\s*\{[^}]*border-left-color:\s*#cbd5e1;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)\s*\{[^}]*gap:\s*16px;[^}]*padding:\s*18px 18px 18px 42px;/s);
+  assert.match(css, /\.assistant-turn-frame \.message-timeline\.live-process-timeline\s*\{[^}]*border:\s*1px solid #e2e4ea;[^}]*border-radius:\s*16px;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\)::before\s*\{[^}]*left:\s*22px;[^}]*background:\s*#eceef2;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry::before\s*\{[^}]*left:\s*-24px;[^}]*background:\s*#6767dc;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.think-block\)::before\s*\{[^}]*background:\s*#fff;[^}]*border:\s*2px solid #c9cdd6;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.capability-event-card\)::before\s*\{[^}]*background:\s*#22c55e;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.capability-event-card\.capability-event-rejected\)::before\s*\{[^}]*background:\s*#f59e0b;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.validation-card\)::before\s*\{[^}]*background:\s*#818cf8;/s);
+  assert.match(css, /\.assistant-turn-frame :is\(\.process-summary-body, \.message-timeline\.live-process-timeline\) > \.timeline-entry:has\(> \.dag-summary-card\)::before\s*\{[^}]*background:\s*#60a5fa;/s);
 });
 
 test('appendRunTranscriptCapability pairs capability results with prior calls', () => {

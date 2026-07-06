@@ -12,6 +12,9 @@ from api.storage.base import ConversationBusyError, StorageConflictError
 from api.storage.models import (
     Conversation,
     ConversationKind,
+    ConversationMessage,
+    ConversationMessageRole,
+    ConversationMessageStatus,
     OrchestrationKind,
     OrchestrationSession,
     Project,
@@ -265,17 +268,21 @@ class SQLiteStore:
         *,
         standalone: bool = False,
         org_id: str | None = None,
+        kind: ConversationKind | None = None,
     ) -> list[Conversation]:
         conditions = ["archived_at IS NULL"]
         params: list[object] = []
         if standalone:
             conditions.append("project_id IS NULL")
-        if project_id is not None:
+        elif project_id is not None:
             conditions.append("project_id = ?")
             params.append(project_id)
         if org_id is not None:
             conditions.append("org_id = ?")
             params.append(org_id)
+        if kind is not None:
+            conditions.append("kind = ?")
+            params.append(kind)
         query = "SELECT * FROM conversations WHERE " + " AND ".join(conditions)
         query += " ORDER BY updated_at DESC"
         with self._lock:
@@ -291,6 +298,33 @@ class SQLiteStore:
         with self._lock:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _conversation_from_row(row)
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str,
+        org_id: str = "default",
+    ) -> Conversation:
+        now = _now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE conversations
+                SET title = ?, updated_at = ?
+                WHERE id = ? AND org_id = ? AND archived_at IS NULL
+                """,
+                (title, now, conversation_id, org_id),
+            )
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise KeyError(f"Conversation '{conversation_id}' not found.")
+            self._conn.commit()
+            row = self._required_row(
+                "SELECT * FROM conversations WHERE id = ? AND org_id = ?",
+                (conversation_id, org_id),
+            )
+        return _conversation_from_row(row)
 
     def acquire_conversation_lock(
         self,
@@ -456,6 +490,7 @@ class SQLiteStore:
         *,
         project_id: str | None = None,
         conversation_id: str | None = None,
+        saved_dag_id: str | None = None,
         org_id: str | None = None,
     ) -> list[Run]:
         conditions: list[str] = []
@@ -466,6 +501,9 @@ class SQLiteStore:
         if conversation_id is not None:
             conditions.append("conversation_id = ?")
             params.append(conversation_id)
+        if saved_dag_id is not None:
+            conditions.append("saved_dag_id = ?")
+            params.append(saved_dag_id)
         if org_id is not None:
             conditions.append("org_id = ?")
             params.append(org_id)
@@ -478,13 +516,42 @@ class SQLiteStore:
         return [_run_from_row(row) for row in rows]
 
     def delete_run(self, run_id: str, *, org_id: str | None = None) -> bool:
+        select_query = "SELECT conversation_id FROM runs WHERE id = ?"
         query = "DELETE FROM runs WHERE id = ?"
         params: tuple[object, ...] = (run_id,)
         if org_id is not None:
+            select_query += " AND org_id = ?"
             query += " AND org_id = ?"
             params = (run_id, org_id)
         with self._lock:
+            row = self._conn.execute(select_query, params).fetchone()
+            if row is None:
+                return False
             cursor = self._conn.execute(query, params)
+            conversation_id = row["conversation_id"]
+            if conversation_id is not None:
+                replacement = self._conn.execute(
+                    """
+                    SELECT id FROM runs
+                    WHERE conversation_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                ).fetchone()
+                self._conn.execute(
+                    """
+                    UPDATE conversations
+                    SET last_run_id = ?, updated_at = ?
+                    WHERE id = ? AND last_run_id = ?
+                    """,
+                    (
+                        None if replacement is None else replacement["id"],
+                        _now(),
+                        conversation_id,
+                        run_id,
+                    ),
+                )
             self._conn.commit()
         return cursor.rowcount > 0
 
@@ -640,6 +707,175 @@ class SQLiteStore:
                 (run_id, after_event_id),
             ).fetchall()
         return [_run_event_from_row(row) for row in rows]
+
+    def append_conversation_message(
+        self,
+        *,
+        message_id: str,
+        conversation_id: str,
+        project_id: str | None,
+        role: ConversationMessageRole,
+        content: str = "",
+        run_id: str | None = None,
+        status: ConversationMessageStatus = "created",
+        timeline_json: str = "[]",
+        dag_json: str | None = None,
+        trace_json: str | None = None,
+        pending_review_json: str | None = None,
+        org_id: str = "default",
+    ) -> ConversationMessage:
+        now = _now()
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                turn_index = int(
+                    self._conn.execute(
+                        "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM conversation_messages WHERE conversation_id = ?",
+                        (conversation_id,),
+                    ).fetchone()[0]
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO conversation_messages(
+                        id, conversation_id, project_id, org_id, role, run_id,
+                        turn_index, status, content, timeline_json, dag_json,
+                        trace_json, pending_review_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        conversation_id,
+                        project_id,
+                        org_id,
+                        role,
+                        run_id,
+                        turn_index,
+                        status,
+                        content,
+                        timeline_json,
+                        dag_json,
+                        trace_json,
+                        pending_review_json,
+                        now,
+                        now,
+                    ),
+                )
+                self._touch_conversation_locked(conversation_id, now)
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            row = self._required_row("SELECT * FROM conversation_messages WHERE id = ?", (message_id,))
+        return _conversation_message_from_row(row)
+
+    def update_conversation_message(
+        self,
+        message_id: str,
+        *,
+        content: str,
+        status: ConversationMessageStatus,
+        timeline_json: str,
+        run_id: str | None = None,
+        dag_json: str | None = None,
+        trace_json: str | None = None,
+        pending_review_json: str | None = None,
+        org_id: str = "default",
+    ) -> ConversationMessage:
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE conversation_messages
+                SET content = ?, status = ?, timeline_json = ?, run_id = ?,
+                    dag_json = ?, trace_json = ?, pending_review_json = ?, updated_at = ?
+                WHERE id = ? AND org_id = ?
+                """,
+                (
+                    content,
+                    status,
+                    timeline_json,
+                    run_id,
+                    dag_json,
+                    trace_json,
+                    pending_review_json,
+                    now,
+                    message_id,
+                    org_id,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM conversation_messages WHERE id = ? AND org_id = ?",
+                (message_id, org_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Conversation message '{message_id}' not found.")
+            self._touch_conversation_locked(row["conversation_id"], now)
+            self._conn.commit()
+        return _conversation_message_from_row(row)
+
+    def set_conversation_message_run_id(
+        self,
+        message_id: str,
+        run_id: str,
+        *,
+        org_id: str = "default",
+    ) -> ConversationMessage:
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE conversation_messages
+                SET run_id = ?, updated_at = ?
+                WHERE id = ? AND org_id = ?
+                """,
+                (run_id, now, message_id, org_id),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM conversation_messages WHERE id = ? AND org_id = ?",
+                (message_id, org_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Conversation message '{message_id}' not found.")
+            self._touch_conversation_locked(row["conversation_id"], now)
+            self._conn.commit()
+        return _conversation_message_from_row(row)
+
+    def list_conversation_messages(
+        self,
+        conversation_id: str,
+        *,
+        org_id: str | None = None,
+    ) -> list[ConversationMessage]:
+        query = "SELECT * FROM conversation_messages WHERE conversation_id = ?"
+        params: list[object] = [conversation_id]
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params.append(org_id)
+        query += " ORDER BY turn_index ASC, created_at ASC"
+        with self._lock:
+            rows = self._conn.execute(query, tuple(params)).fetchall()
+        return [_conversation_message_from_row(row) for row in rows]
+
+    def get_last_assistant_message_for_run(
+        self,
+        conversation_id: str,
+        run_id: str,
+        *,
+        org_id: str | None = None,
+    ) -> ConversationMessage | None:
+        query = """
+            SELECT * FROM conversation_messages
+            WHERE conversation_id = ? AND run_id = ? AND role = 'assistant'
+        """
+        params: list[object] = [conversation_id, run_id]
+        if org_id is not None:
+            query += " AND org_id = ?"
+            params.append(org_id)
+        query += " ORDER BY turn_index DESC, created_at DESC LIMIT 1"
+        with self._lock:
+            row = self._conn.execute(query, tuple(params)).fetchone()
+        return None if row is None else _conversation_message_from_row(row)
 
     def save_run_state(self, run_id: str, state_json: str, output_text: str) -> None:
         now = _now()
@@ -1041,6 +1277,26 @@ def _run_event_from_row(row: sqlite3.Row) -> RunEvent:
         event_type=row["event_type"],
         payload_json=row["payload_json"],
         created_at=row["created_at"],
+    )
+
+
+def _conversation_message_from_row(row: sqlite3.Row) -> ConversationMessage:
+    return ConversationMessage(
+        id=row["id"],
+        conversation_id=row["conversation_id"],
+        project_id=row["project_id"],
+        org_id=row["org_id"],
+        role=row["role"],
+        run_id=row["run_id"],
+        turn_index=row["turn_index"],
+        status=row["status"],
+        content=row["content"],
+        timeline_json=row["timeline_json"],
+        dag_json=row["dag_json"],
+        trace_json=row["trace_json"],
+        pending_review_json=row["pending_review_json"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 

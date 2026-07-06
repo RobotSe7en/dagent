@@ -34,6 +34,9 @@ Web UI 和 API 后端支持项目与会话：
 - `runs`：某个 run 当前权威的 `RunState` 快照；静态 DAG run 可以带 saved DAG 引用。
 - `run_streams`：一次 HTTP stream/resume 执行尝试。
 - `run_events`：带数据库 event id 的持久 SSE 事件历史。
+- `conversation_messages`：投影后的可见 user/assistant 消息时间线；用于普通
+  chat conversation，以及明确标记为 `smart_workbench` 或
+  `orchestration_workspace` surface 的动态 DAG conversation。
 - `reviews`：pending/resolved review 元数据。review state 在 `runs.state_json`
   里，不在这张表里重复保存。
 - `saved_dags`：保存的静态 DAG spec、layout 元数据、revision 和 project 归属。
@@ -45,6 +48,30 @@ run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录
 
 本地 SQLite schema 是 API/WebUI 存储 schema，不是公开 SDK 数据 contract。检测到不兼容的
 未发布本地旧库时，后端会重建数据库，而不是添加兼容 shim 或迁移层。
+
+## 编排历史
+
+编排历史通过现有 API 持久化对象管理。动态编排历史保存为 `dynamic_dag`
+conversation，并绑定 `orchestration_sessions` 和 runs。在编排工作区里，动态编排
+session 是无项目 conversation，使用无项目 conversation workspace，不使用项目
+workspace。项目范围的 DAG conversation 仍属于智能工作台的项目流程。静态编排历史保存为
+`saved_dags`，运行历史通过 `saved_dag_id` 关联到 runs。
+
+WebUI 使用这些 endpoint 管理编排历史：
+
+```text
+PATCH /conversations/{conversation_id}
+PATCH /projects/{project_id}/conversations/{conversation_id}
+GET /conversations/{conversation_id}/runs
+GET /orchestration-sessions/{session_id}/runs
+GET /saved-dags/{dag_id}/runs
+DELETE /runs/{run_id}
+```
+
+`DELETE /runs/{run_id}` 表示删除一条运行历史。它会删除 run 记录、stream/event/state
+记录、该 run 的 review 记录、专属 run workspace，以及 `run_id` 匹配该 run 的可见
+`conversation_messages`。等待审核中的 run 也可以删除；这样做会有意丢弃对应的 pending
+review 和该 run 的可见会话记录。
 
 ## Resume 和重启行为
 

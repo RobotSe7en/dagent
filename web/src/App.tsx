@@ -85,6 +85,8 @@ import {
   deleteProjectConversation,
   deleteProjectFile,
   deletePythonTool,
+  deleteRun,
+  deleteSavedDag,
   deleteSkill,
   getSkill,
   getSkillFile,
@@ -95,6 +97,7 @@ import {
   listAgents,
   listCapabilities,
   listConversations,
+  listConversationMessages,
   listSavedDags,
   listMcpServers,
   listModels,
@@ -105,6 +108,8 @@ import {
   listProfiles,
   listRunArtifacts,
   listRunEvents,
+  listOrchestrationSessionRuns,
+  listSavedDagRuns,
   listSkills,
   mapRunTrace,
   previewRunArtifact,
@@ -129,6 +134,8 @@ import {
   updateOnlyOfficeSettings,
   updateOrchestrationSession,
   updateProject,
+  updateConversation,
+  updateProjectConversation,
   updatePythonTool,
   uploadProjectFiles,
   updateAgent,
@@ -140,13 +147,14 @@ import {
   deleteProfile,
   discoverPythonToolNames,
 } from './api';
-import type { ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
+import type { ApiConversationMessage, ApiRunEvent, ApiRunResult, ApiRunState, ChatStreamMessage } from './api';
 import type {
   AgentPreset,
   AgentPresetInput,
   AgentProfile,
   ApiConversation,
   ApiProject,
+  ApiRunSummary,
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
@@ -385,8 +393,50 @@ function matchesSearchQuery(values: SearchableValue[], query: string): boolean {
   return values.some((value) => String(value ?? '').toLowerCase().includes(query));
 }
 
-function isChatSurfaceConversation(conversation: ApiConversation): boolean {
-  return conversation.kind === 'chat' || conversation.kind === 'dynamic_dag';
+const ORCHESTRATION_WORKSPACE_SURFACE = 'orchestration_workspace';
+const SMART_WORKBENCH_SURFACE = 'smart_workbench';
+
+function orchestrationSessionSurface(session: OrchestrationSession | null | undefined): string {
+  const surface = session?.ui_state?.surface;
+  return typeof surface === 'string' ? surface : '';
+}
+
+function orchestrationWorkspaceUiState(uiState: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...uiState, surface: ORCHESTRATION_WORKSPACE_SURFACE };
+}
+
+function smartWorkbenchUiState(uiState: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...uiState, surface: SMART_WORKBENCH_SURFACE };
+}
+
+function isOrchestrationWorkspaceConversation(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  if (conversation.kind !== 'dynamic_dag') return false;
+  const session = sessionsByConversationId[conversation.id];
+  if (session === undefined) return false;
+  const surface = orchestrationSessionSurface(session);
+  return surface === ORCHESTRATION_WORKSPACE_SURFACE;
+}
+
+function isChatSurfaceConversation(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  if (conversation.kind === 'chat') return true;
+  if (conversation.kind !== 'dynamic_dag') return false;
+  const session = sessionsByConversationId[conversation.id];
+  if (session === undefined) return false;
+  return orchestrationSessionSurface(session) === SMART_WORKBENCH_SURFACE;
+}
+
+function isStandaloneDynamicOrchestration(
+  conversation: ApiConversation,
+  sessionsByConversationId: OrchestrationSessionsByConversationId,
+): boolean {
+  return conversation.kind === 'dynamic_dag' && !conversation.project_id
+    && isOrchestrationWorkspaceConversation(conversation, sessionsByConversationId);
 }
 
 function joinProjectPath(base: string, name: string): string {
@@ -807,7 +857,9 @@ function capabilityRisk(capability?: CapabilityDefinition): RiskLevel {
 type ChatTarget = 'auto' | 'tool' | 'dag';
 type ChatScopeMode = 'all' | 'custom';
 type OrchestrationMode = 'dynamic' | 'static';
+type OrchestrationInspectorMode = 'node' | 'artifacts';
 type OrchestrationSessionKind = OrchestrationSession['kind'];
+type OrchestrationSessionsByConversationId = Record<string, OrchestrationSession | null | undefined>;
 type OrchestrationContext = {
   conversation: ApiConversation;
   session: OrchestrationSession;
@@ -839,6 +891,24 @@ type SavedDagView = {
   spec: UserDag;
   layout: Record<string, unknown>;
   layoutPositions: Record<string, XYPosition>;
+};
+type RunHistoryPanelData = {
+  runs: ApiRunSummary[];
+  selectedRunId: string;
+  loading: boolean;
+  error: string | null;
+  deletingRunId: string;
+  onSelectRun: (runId: string) => void;
+  onOpenArtifacts: (runId: string) => void;
+  onDeleteRun: (runId: string) => void;
+};
+type OrchestrationArtifactPanelData = {
+  runId: string;
+  files: RunArtifactFile[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onClose: () => void;
 };
 
 interface QueuedAssistantToken {
@@ -1055,6 +1125,67 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
   ];
 }
 
+function runStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    queued: '排队中',
+    planned: '已计划',
+    running: '运行中',
+    awaiting_review: '待审核',
+    completed: '已完成',
+    failed: '失败',
+    rejected: '已拒绝',
+    cancelled: '已取消',
+    skipped: '已跳过',
+  };
+  return labels[status] ?? status;
+}
+
+function formatRunHistoryTime(run: ApiRunSummary): string {
+  const timestamp = run.completed_at ?? run.started_at ?? run.updated_at ?? run.created_at;
+  return new Date(timestamp * 1000).toLocaleString();
+}
+
+function chatMessagesFromApiConversationMessages(items: ApiConversationMessage[]): ChatMessage[] {
+  return items.map((item) => {
+    const content = item.content ?? '';
+    const timeline = item.timeline?.length
+      ? item.timeline
+      : content
+        ? [{ type: 'text' as const, content }]
+        : undefined;
+    const traceSnapshot = item.trace ? mapRunTrace(item.trace) : undefined;
+    return {
+      role: item.role,
+      kind: 'text' as const,
+      content,
+      ...(timeline ? { timeline } : {}),
+      ...(item.dag ? { dagSnapshot: item.dag } : {}),
+      ...(traceSnapshot?.length ? { traceSnapshot } : {}),
+    };
+  });
+}
+
+function latestPendingReviewFromApiConversationMessages(items: ApiConversationMessage[]): ReviewEventPayload | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const review = items[index].pending_review;
+    if (review) return review;
+  }
+  return null;
+}
+
+function messagesFromApiConversationMessages(
+  items: ApiConversationMessage[],
+  nextOrder: () => number,
+): DynamicChatMessage[] {
+  return items
+    .filter((item) => (item.role === 'user' || item.role === 'assistant') && item.content.trim())
+    .map((item) => ({
+      role: item.role,
+      content: item.content,
+      timelineOrder: nextOrder(),
+    }));
+}
+
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === 'AbortError';
 }
@@ -1137,6 +1268,7 @@ export function App() {
   const [chatSub, setChatSub] = useState<ChatWorkspaceSub>('conversations');
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [conversations, setConversations] = useState<ApiConversation[]>([]);
+  const [orchestrationSessionsByConversationId, setOrchestrationSessionsByConversationId] = useState<OrchestrationSessionsByConversationId>({});
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -1212,6 +1344,19 @@ export function App() {
   const [editorRunning, setEditorRunning] = useState(false);
   const editorRunInFlightRef = useRef(false);
   const [editorRunInputText, setEditorRunInputText] = useState('');
+  const [staticDagDeleteTargetId, setStaticDagDeleteTargetId] = useState('');
+  const [staticRunHistory, setStaticRunHistory] = useState<ApiRunSummary[]>([]);
+  const [staticSelectedRunId, setStaticSelectedRunId] = useState('');
+  const [staticRunHistoryLoading, setStaticRunHistoryLoading] = useState(false);
+  const [staticRunHistoryError, setStaticRunHistoryError] = useState<string | null>(null);
+  const [staticDeletingRunId, setStaticDeletingRunId] = useState('');
+  const [staticRunDeleteTargetId, setStaticRunDeleteTargetId] = useState('');
+  const [staticInspectorMode, setStaticInspectorMode] = useState<OrchestrationInspectorMode>('node');
+  const [staticRunHistoryCollapsed, setStaticRunHistoryCollapsed] = useState(true);
+  const [staticRunArtifactFiles, setStaticRunArtifactFiles] = useState<RunArtifactFile[]>([]);
+  const [staticRunArtifactLoading, setStaticRunArtifactLoading] = useState(false);
+  const [staticRunArtifactError, setStaticRunArtifactError] = useState<string | null>(null);
+  const staticRunArtifactRequestRef = useRef(0);
   const [editingArtifactId, setEditingArtifactId] = useState('');
   const [orchestrationMode, setOrchestrationMode] = useState<OrchestrationMode>('dynamic');
   const [dynamicPrompt, setDynamicPrompt] = useState('');
@@ -1230,6 +1375,23 @@ export function App() {
   const [dynamicMessage, setDynamicMessage] = useState('');
   const [dynamicMessageOrder, setDynamicMessageOrder] = useState(0);
   const [dynamicRunning, setDynamicRunning] = useState(false);
+  const [dynamicConversationQuery, setDynamicConversationQuery] = useState('');
+  const [dynamicConversationEditTargetId, setDynamicConversationEditTargetId] = useState('');
+  const [dynamicConversationEditTitle, setDynamicConversationEditTitle] = useState('');
+  const [dynamicConversationDeleteTargetId, setDynamicConversationDeleteTargetId] = useState('');
+  const [dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId] = useState('');
+  const [dynamicRunHistory, setDynamicRunHistory] = useState<ApiRunSummary[]>([]);
+  const [dynamicSelectedRunId, setDynamicSelectedRunId] = useState('');
+  const [dynamicRunHistoryLoading, setDynamicRunHistoryLoading] = useState(false);
+  const [dynamicRunHistoryError, setDynamicRunHistoryError] = useState<string | null>(null);
+  const [dynamicDeletingRunId, setDynamicDeletingRunId] = useState('');
+  const [dynamicRunDeleteTargetId, setDynamicRunDeleteTargetId] = useState('');
+  const [dynamicInspectorMode, setDynamicInspectorMode] = useState<OrchestrationInspectorMode>('node');
+  const [dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed] = useState(true);
+  const [dynamicRunArtifactFiles, setDynamicRunArtifactFiles] = useState<RunArtifactFile[]>([]);
+  const [dynamicRunArtifactLoading, setDynamicRunArtifactLoading] = useState(false);
+  const [dynamicRunArtifactError, setDynamicRunArtifactError] = useState<string | null>(null);
+  const dynamicRunArtifactRequestRef = useRef(0);
   const [agentManagementSub, setAgentManagementSub] = useState<AgentManagementSub>('profiles');
   const [systemManagementSub, setSystemManagementSub] = useState<SystemManagementSub>('models');
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -1305,6 +1467,8 @@ export function App() {
     selectedChatAgentIds.length,
   );
   const activeRunId = runState?.run_id ?? null;
+  const staticArtifactRunId = staticSelectedRunId || editorRun?.run_id || '';
+  const dynamicArtifactRunId = dynamicSelectedRunId || dynamicRunState?.run_id || '';
   const chatArtifacts = useMemo(
     () => buildWorkbenchArtifacts({
       dag,
@@ -1337,19 +1501,35 @@ export function App() {
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
-  const orchestrationConversationIdsKey = useMemo(() => conversations
-    .filter((conversation) => conversation.kind === 'dynamic_dag' || conversation.kind === 'static_dag')
-    .map((conversation) => `${conversation.kind}:${conversation.project_id ?? ''}:${conversation.id}`)
-    .join('|'), [conversations]);
   const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
   const selectedChatSurfaceConversation = (
-    selectedConversation && isChatSurfaceConversation(selectedConversation)
+    selectedConversation && isChatSurfaceConversation(selectedConversation, orchestrationSessionsByConversationId)
       ? selectedConversation
       : null
   );
   const conversationDeleteTarget = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationDeleteTargetId) ?? null,
     [conversations, conversationDeleteTargetId],
+  );
+  const dynamicConversationEditTarget = useMemo(
+    () => conversations.find((conversation) => conversation.id === dynamicConversationEditTargetId) ?? null,
+    [conversations, dynamicConversationEditTargetId],
+  );
+  const dynamicConversationDeleteTarget = useMemo(
+    () => conversations.find((conversation) => conversation.id === dynamicConversationDeleteTargetId) ?? null,
+    [conversations, dynamicConversationDeleteTargetId],
+  );
+  const dynamicRunDeleteTarget = useMemo(
+    () => dynamicRunHistory.find((run) => run.id === dynamicRunDeleteTargetId) ?? null,
+    [dynamicRunDeleteTargetId, dynamicRunHistory],
+  );
+  const staticDagDeleteTarget = useMemo(
+    () => savedDags.find((saved) => saved.id === staticDagDeleteTargetId) ?? null,
+    [savedDags, staticDagDeleteTargetId],
+  );
+  const staticRunDeleteTarget = useMemo(
+    () => staticRunHistory.find((run) => run.id === staticRunDeleteTargetId) ?? null,
+    [staticRunDeleteTargetId, staticRunHistory],
   );
   const selectedProjectFile = useMemo(
     () => findProjectFileByPath(projectFiles, selectedProjectFilePath),
@@ -1362,6 +1542,14 @@ export function App() {
   const activeConversationContext = selectedChatSurfaceConversation
     ? { projectId: selectedChatSurfaceConversation.project_id, conversationId: selectedChatSurfaceConversation.id }
     : undefined;
+  const normalizedDynamicConversationQuery = normalizeSearchQuery(dynamicConversationQuery);
+  const visibleDynamicConversations = useMemo(() => conversations.filter((conversation) => {
+    if (!isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)) return false;
+    return matchesSearchQuery(
+      [conversation.id, conversation.title, conversation.status],
+      normalizedDynamicConversationQuery,
+    );
+  }), [conversations, normalizedDynamicConversationQuery, orchestrationSessionsByConversationId]);
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -1395,6 +1583,54 @@ export function App() {
     }
   }, [activeRunId]);
 
+  const refreshStaticRunArtifacts = useCallback(async () => {
+    const requestId = staticRunArtifactRequestRef.current + 1;
+    staticRunArtifactRequestRef.current = requestId;
+    if (!staticArtifactRunId) {
+      setStaticRunArtifactFiles([]);
+      setStaticRunArtifactError(null);
+      setStaticRunArtifactLoading(false);
+      return;
+    }
+    setStaticRunArtifactLoading(true);
+    setStaticRunArtifactError(null);
+    try {
+      const payload = await listRunArtifacts(staticArtifactRunId);
+      if (staticRunArtifactRequestRef.current !== requestId) return;
+      setStaticRunArtifactFiles(payload.files);
+    } catch (exc) {
+      if (staticRunArtifactRequestRef.current !== requestId) return;
+      setStaticRunArtifactFiles([]);
+      setStaticRunArtifactError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (staticRunArtifactRequestRef.current === requestId) setStaticRunArtifactLoading(false);
+    }
+  }, [staticArtifactRunId]);
+
+  const refreshDynamicRunArtifacts = useCallback(async () => {
+    const requestId = dynamicRunArtifactRequestRef.current + 1;
+    dynamicRunArtifactRequestRef.current = requestId;
+    if (!dynamicArtifactRunId) {
+      setDynamicRunArtifactFiles([]);
+      setDynamicRunArtifactError(null);
+      setDynamicRunArtifactLoading(false);
+      return;
+    }
+    setDynamicRunArtifactLoading(true);
+    setDynamicRunArtifactError(null);
+    try {
+      const payload = await listRunArtifacts(dynamicArtifactRunId);
+      if (dynamicRunArtifactRequestRef.current !== requestId) return;
+      setDynamicRunArtifactFiles(payload.files);
+    } catch (exc) {
+      if (dynamicRunArtifactRequestRef.current !== requestId) return;
+      setDynamicRunArtifactFiles([]);
+      setDynamicRunArtifactError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      if (dynamicRunArtifactRequestRef.current === requestId) setDynamicRunArtifactLoading(false);
+    }
+  }, [dynamicArtifactRunId]);
+
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
@@ -1406,6 +1642,76 @@ export function App() {
   useEffect(() => {
     void refreshRunArtifacts();
   }, [refreshRunArtifacts]);
+
+  useEffect(() => {
+    if (staticInspectorMode !== 'artifacts') return;
+    void refreshStaticRunArtifacts();
+  }, [refreshStaticRunArtifacts, staticInspectorMode]);
+
+  useEffect(() => {
+    if (dynamicInspectorMode !== 'artifacts') return;
+    void refreshDynamicRunArtifacts();
+  }, [dynamicInspectorMode, refreshDynamicRunArtifacts]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!editorSavedDagId) {
+      setStaticRunHistory([]);
+      setStaticSelectedRunId('');
+      setStaticRunHistoryError(null);
+      setStaticRunHistoryLoading(false);
+      return;
+    }
+    setStaticRunHistoryLoading(true);
+    setStaticRunHistoryError(null);
+    void listSavedDagRuns(editorSavedDagId)
+      .then((runs) => {
+        if (cancelled) return;
+        setStaticRunHistory(runs);
+        setStaticSelectedRunId((current) => (
+          current && runs.some((run) => run.id === current) ? current : ''
+        ));
+      })
+      .catch((exc) => {
+        if (cancelled) return;
+        setStaticRunHistory([]);
+        setStaticSelectedRunId('');
+        setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+      })
+      .finally(() => {
+        if (!cancelled) setStaticRunHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editorSavedDagId]);
+
+  const rememberOrchestrationSession = useCallback((
+    session: OrchestrationSession | null,
+    conversationId?: string,
+  ) => {
+    const targetConversationId = session?.conversation_id ?? conversationId;
+    if (!targetConversationId) return;
+    setOrchestrationSessionsByConversationId((items) => ({
+      ...items,
+      [targetConversationId]: session,
+    }));
+  }, []);
+
+  const loadOrchestrationSessionsForConversations = useCallback(async (conversationItems: ApiConversation[]) => {
+    const entries = await Promise.all(conversationItems
+      .filter((conversation) => conversation.kind === 'dynamic_dag')
+      .map(async (conversation): Promise<[string, OrchestrationSession | null]> => [
+        conversation.id,
+        await getOrchestrationSessionByConversation(conversation.id),
+      ]));
+    const sessionsByConversationId: OrchestrationSessionsByConversationId = {};
+    entries.forEach(([conversationId, session]) => {
+      sessionsByConversationId[conversationId] = session;
+    });
+    setOrchestrationSessionsByConversationId(sessionsByConversationId);
+    return sessionsByConversationId;
+  }, []);
 
   const loadPersistedConversations = useCallback(async (projectItems: ApiProject[]) => {
     const [standaloneConversations, projectConversationGroups] = await Promise.all([
@@ -1420,9 +1726,10 @@ export function App() {
 
   const refreshConversations = useCallback(async (projectItems: ApiProject[] = projects) => {
     const conversationItems = await loadPersistedConversations(projectItems);
+    await loadOrchestrationSessionsForConversations(conversationItems);
     setConversations(conversationItems);
     return conversationItems;
-  }, [loadPersistedConversations, projects]);
+  }, [loadOrchestrationSessionsForConversations, loadPersistedConversations, projects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1437,11 +1744,13 @@ export function App() {
       ));
       const conversationItems = await loadPersistedConversations(items);
       if (cancelled) return;
+      const sessionsByConversationId = await loadOrchestrationSessionsForConversations(conversationItems);
+      if (cancelled) return;
       setConversations(conversationItems);
       setSelectedConversationId((current) => (
         current && conversationItems.some((conversation) => (
           conversation.id === current
-          && isChatSurfaceConversation(conversation)
+          && isChatSurfaceConversation(conversation, sessionsByConversationId)
           && !conversation.project_id
         ))
           ? current
@@ -1460,7 +1769,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadPersistedConversations]);
+  }, [loadOrchestrationSessionsForConversations, loadPersistedConversations]);
 
   const refreshProjectFiles = useCallback(async () => {
     const requestId = projectFilesRequestRef.current + 1;
@@ -2070,6 +2379,13 @@ export function App() {
     setEditorRun(null);
     setEditorRunTimeline([]);
     setEditorMessage('');
+    setStaticSelectedRunId('');
+    setStaticInspectorMode('node');
+    setStaticRunArtifactFiles([]);
+    setStaticRunArtifactError(null);
+    setStaticRunArtifactLoading(false);
+    setStaticDeletingRunId('');
+    setStaticRunDeleteTargetId('');
   }, [syncEditorDag]);
 
   const patchEditorUserDag = (patch: Partial<UserDag>) => {
@@ -2301,18 +2617,27 @@ export function App() {
       setCapabilityReview(pendingReview as ReviewEventPayload);
       return;
     }
+    if (pendingReview.proposed_dag) syncDag(pendingReview.proposed_dag);
     setDagReviewFeedback('');
     setDagReview(pendingReview);
-  }, []);
+    setReviewOpen(true);
+  }, [syncDag]);
 
-  const applyPersistedRunResult = useCallback((result: ApiRunResult, events: ApiRunEvent[] = []) => {
+  const applyPersistedRunResult = useCallback((
+    result: ApiRunResult,
+    events: ApiRunEvent[] = [],
+    restoredMessages: ChatMessage[] = [],
+  ) => {
     const nextState = result.state ?? null;
     const nextDag = nextState?.dag ?? null;
     const nextReview = nextState?.pending_review ?? null;
     const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
+    const nextMessages = restoredMessages.length
+      ? restoredMessages
+      : messagesFromPersistedRunResult(result, nextTrace, events);
     setRunState(nextState);
     setTrace(nextTrace);
-    setMessages(messagesFromPersistedRunResult(result, nextTrace, events));
+    setMessages(nextMessages);
     setError(null);
     setDagReview(null);
     setDagReviewFeedback('');
@@ -2326,20 +2651,28 @@ export function App() {
       setReviewOpen(false);
     }
     handlePendingReview(nextReview);
-    contentStreamedRef.current = Boolean(result.output_text.trim());
+    contentStreamedRef.current = Boolean(
+      result.output_text.trim() || nextMessages.some((message) => message.role === 'assistant' && message.content.trim()),
+    );
     tokenQueueRef.current = [];
     stopTokenTimer();
   }, [handlePendingReview, syncDag]);
 
   const hydrateConversationSnapshot = useCallback(async (conversation: ApiConversation) => {
-    if (!conversation.last_run_id) return;
     const requestId = conversationHydrationRequestRef.current + 1;
     conversationHydrationRequestRef.current = requestId;
     try {
-      const events = await listRunEvents(conversation.last_run_id);
+      const [conversationMessages, events] = await Promise.all([
+        listConversationMessages(conversation.id, conversation.project_id),
+        conversation.last_run_id ? listRunEvents(conversation.last_run_id) : Promise.resolve([]),
+      ]);
       if (conversationHydrationRequestRef.current !== requestId) return;
+      const restoredMessages = chatMessagesFromApiConversationMessages(conversationMessages);
+      const pendingReview = latestPendingReviewFromApiConversationMessages(conversationMessages);
       const result = finishedRunResultFromEvents(events);
-      const partialMessages = chatMessagesFromPersistedRunEvents(events, result);
+      const partialMessages = restoredMessages.length
+        ? restoredMessages
+        : chatMessagesFromPersistedRunEvents(events, result);
       if (!result && partialMessages.length) {
         setRunState(null);
         setTrace([]);
@@ -2351,13 +2684,14 @@ export function App() {
         setCapabilityReviewFeedback('');
         syncDag(emptyDag);
         setReviewOpen(false);
+        handlePendingReview(pendingReview);
         contentStreamedRef.current = partialMessages.some((message) => message.content.trim());
         tokenQueueRef.current = [];
         stopTokenTimer();
         return;
       }
       if (!result) return;
-      applyPersistedRunResult(result, events);
+      applyPersistedRunResult(result, events, restoredMessages);
     } catch (exc) {
       if (conversationHydrationRequestRef.current !== requestId) return;
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -2365,14 +2699,13 @@ export function App() {
   }, [applyPersistedRunResult]);
 
   useEffect(() => {
-    if (!selectedChatSurfaceConversation?.last_run_id || streaming || messages.length || runState) return;
+    if (!selectedChatSurfaceConversation || streaming || messages.length || runState) return;
     void hydrateConversationSnapshot(selectedChatSurfaceConversation);
   }, [
     hydrateConversationSnapshot,
     messages.length,
     runState,
     selectedChatSurfaceConversation,
-    selectedChatSurfaceConversation?.last_run_id,
     streaming,
   ]);
 
@@ -2482,6 +2815,30 @@ export function App() {
     setDynamicSelectedId((current) => normalized.nodes.some((node) => node.id === current) ? current : '');
   };
 
+  const clearDynamicWorkspace = useCallback(() => {
+    syncDynamicDag(emptyDag);
+    setDynamicTrace([]);
+    setDynamicMessages([]);
+    setDynamicFinalAnswer('');
+    setDynamicFinalAnswerOrder(0);
+    setDynamicPrompt('');
+    setDynamicMessage('');
+    setDynamicMessageOrder(0);
+    setDynamicRunState(null);
+    setDynamicOrchestrationSessionId('');
+    setDynamicRunHistory([]);
+    setDynamicSelectedRunId('');
+    setDynamicRunHistoryError(null);
+    setDynamicRunHistoryLoading(false);
+    setDynamicInspectorMode('node');
+    setDynamicRunArtifactFiles([]);
+    setDynamicRunArtifactError(null);
+    setDynamicRunArtifactLoading(false);
+    setDynamicDeletingRunId('');
+    setDynamicRunDeleteTargetId('');
+    dynamicTimelineOrderRef.current = 0;
+  }, []);
+
   function preserveDynamicDagEdges(nextDag: Dag): Dag {
     const nextEdges = nextDag.edges ?? [];
     if (nextEdges.length || !dynamicDagRef.current.edges.length) return nextDag;
@@ -2496,16 +2853,25 @@ export function App() {
     const requestId = orchestrationHydrationRequestRef.current + 1;
     orchestrationHydrationRequestRef.current = requestId;
     try {
-      const session = await getOrchestrationSessionByConversation(conversation.id);
+      const [session, conversationMessages] = await Promise.all([
+        getOrchestrationSessionByConversation(conversation.id),
+        listConversationMessages(conversation.id, conversation.project_id),
+      ]);
       if (orchestrationHydrationRequestRef.current !== requestId || !session) return;
+      rememberOrchestrationSession(session);
       const selectedNodeId = typeof session.ui_state?.selectedNodeId === 'string'
         ? session.ui_state.selectedNodeId
         : '';
       if (session.kind === 'dynamic_dag') {
+        setDynamicOrchestrationSessionId(session.id);
+        setDynamicMessages(messagesFromApiConversationMessages(conversationMessages, nextDynamicTimelineOrder));
         const draftDag = runtimeDagFromUnknown(session.draft_dag);
         if (draftDag) syncDynamicDag(draftDag);
         if (selectedNodeId) setDynamicSelectedId(selectedNodeId);
         if (conversation.last_run_id) {
+          setDynamicSelectedRunId(conversation.last_run_id);
+          setDynamicTrace([]);
+          clearDynamicFinalAnswer();
           const events = await listRunEvents(conversation.last_run_id);
           if (orchestrationHydrationRequestRef.current !== requestId) return;
           const result = finishedRunResultFromEvents(events);
@@ -2522,6 +2888,7 @@ export function App() {
         }
         return;
       }
+      setDynamicOrchestrationSessionId('');
 
       let saved = session.saved_dag_id
         ? savedDagsRef.current.find((item) => item.id === session.saved_dag_id) ?? null
@@ -2576,6 +2943,8 @@ export function App() {
       else setEditorMessage(message);
     }
   }, [
+    clearDynamicFinalAnswer,
+    rememberOrchestrationSession,
     nextDynamicTimelineOrder,
     setEditorUserDagAndRuntimeDag,
     setOrderedDynamicFinalAnswer,
@@ -2583,39 +2952,37 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (activeWorkspace !== 'orchestration' || dynamicRunning || editorRunning) return;
-    const kind: ApiConversation['kind'] = orchestrationMode === 'dynamic' ? 'dynamic_dag' : 'static_dag';
-    const conversationItems = conversationsRef.current;
-    const current = selectedConversationId
-      ? conversationItems.find((conversation) => conversation.id === selectedConversationId && conversation.kind === kind) ?? null
-      : null;
-    const preferred = current
-      ?? conversationItems.find((conversation) => (
-        conversation.kind === kind
-        && (selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id)
-      ))
-      ?? conversationItems.find((conversation) => conversation.kind === kind)
-      ?? null;
-    if (!preferred) return;
-    const hydrateKey = `${kind}:${preferred.id}`;
-    if (orchestrationHydratedKeyRef.current === hydrateKey) return;
-    if (preferred.id !== selectedConversationId) {
-      setSelectedConversationId(preferred.id);
-      if (preferred.project_id) setSelectedProjectId(preferred.project_id);
+    let cancelled = false;
+    if (!dynamicOrchestrationSessionId) {
+      setDynamicRunHistory([]);
+      setDynamicSelectedRunId('');
+      setDynamicRunHistoryError(null);
+      setDynamicRunHistoryLoading(false);
       return;
     }
-    orchestrationHydratedKeyRef.current = hydrateKey;
-    void hydrateOrchestrationConversation(preferred);
-  }, [
-    activeWorkspace,
-    dynamicRunning,
-    editorRunning,
-    hydrateOrchestrationConversation,
-    orchestrationConversationIdsKey,
-    orchestrationMode,
-    selectedConversationId,
-    selectedProjectId,
-  ]);
+    setDynamicRunHistoryLoading(true);
+    setDynamicRunHistoryError(null);
+    void listOrchestrationSessionRuns(dynamicOrchestrationSessionId)
+      .then((runs) => {
+        if (cancelled) return;
+        setDynamicRunHistory(runs);
+        setDynamicSelectedRunId((current) => (
+          current && runs.some((run) => run.id === current) ? current : ''
+        ));
+      })
+      .catch((exc) => {
+        if (cancelled) return;
+        setDynamicRunHistory([]);
+        setDynamicSelectedRunId('');
+        setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+      })
+      .finally(() => {
+        if (!cancelled) setDynamicRunHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dynamicOrchestrationSessionId]);
 
   const updateDynamicDag = (updater: (current: Dag) => Dag) => {
     setDynamicDag((current) => {
@@ -2801,7 +3168,16 @@ export function App() {
   const newEditorUserDag = () => {
     rememberCurrentEditorDraft();
     setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
+    setSelectedConversationId('');
+    orchestrationHydratedKeyRef.current = '';
     setEditorRunInputText('');
+    setEditorTrace([]);
+    setEditorRun(null);
+    setEditorRunTimeline([]);
+    setStaticRunHistory([]);
+    setStaticSelectedRunId('');
+    setStaticRunHistoryError(null);
+    setStaticRunHistoryLoading(false);
   };
 
   const loadEditorUserDag = (saved: SavedDagView) => {
@@ -2817,6 +3193,91 @@ export function App() {
         layout: draft?.layout ?? saved.layout,
       },
     );
+  };
+
+  const confirmDeleteSavedDag = async () => {
+    if (!staticDagDeleteTargetId) return;
+    try {
+      const deletingCurrent = editorSavedDagId === staticDagDeleteTargetId;
+      await deleteSavedDag(staticDagDeleteTargetId);
+      setSavedDags((items) => items.filter((item) => item.id !== staticDagDeleteTargetId));
+      updateEditorDagDrafts((items) => {
+        const next = { ...items };
+        delete next[staticDagDeleteTargetId];
+        return next;
+      });
+      if (deletingCurrent) {
+        setEditorUserDagAndRuntimeDag(createEmptyUserDag(), {});
+        setEditorTrace([]);
+        setEditorRun(null);
+        setEditorRunTimeline([]);
+        setEditorRunInputText('');
+        setStaticRunHistory([]);
+        setStaticSelectedRunId('');
+        setEditorMessage('已删除当前静态编排。');
+      }
+      setStaticDagDeleteTargetId('');
+    } catch (exc) {
+      setEditorMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const selectStaticRunHistory = async (runId: string) => {
+    try {
+      setStaticSelectedRunId(runId);
+      setStaticRunHistoryError(null);
+      setEditorTrace([]);
+      setEditorRunTimeline([]);
+      setEditorRun(null);
+      const events = await listRunEvents(runId);
+      const result = finishedRunResultFromEvents(events);
+      const nextState = result?.state ?? null;
+      if (nextState?.trace) {
+        const traceEvents = mapRunTrace(nextState.trace);
+        setEditorTrace(traceEvents);
+        setEditorRunTimeline(runTranscriptFromTraceEvents(traceEvents));
+      }
+      if (nextState?.dag && nextState.trace && nextState.run_id) {
+        const nextDag = nextState.dag;
+        setEditorRun({
+          run_id: nextState.run_id,
+          spec_id: nextState.spec_id ?? null,
+          workspace_path: nextState.workspace_path ?? '',
+          dag: nextDag,
+          trace: nextState.trace,
+          status: dagRunStatus(nextState.status),
+        });
+        syncEditorDag(nextDag);
+        setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
+      }
+    } catch (exc) {
+      setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteStaticRunHistory = async (runId: string) => {
+    if (!runId || staticDeletingRunId) return;
+    setStaticDeletingRunId(runId);
+    setStaticRunHistoryError(null);
+    try {
+      await deleteRun(runId);
+      setStaticRunHistory((runs) => runs.filter((run) => run.id !== runId));
+      setStaticRunDeleteTargetId('');
+      if (staticSelectedRunId === runId || editorRun?.run_id === runId) {
+        setStaticSelectedRunId('');
+        setEditorRun(null);
+        setEditorTrace([]);
+        setEditorRunTimeline([]);
+        setStaticRunArtifactFiles([]);
+        setStaticRunArtifactError(null);
+        setStaticRunArtifactLoading(false);
+        if (staticInspectorMode === 'artifacts') setStaticInspectorMode('node');
+      }
+    } catch (exc) {
+      setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setStaticDeletingRunId('');
+    }
   };
 
   const addEditorNode = (capability?: CapabilityDefinition, position?: XYPosition) => {
@@ -3042,10 +3503,19 @@ export function App() {
       const targetProjectId = Object.prototype.hasOwnProperty.call(options, 'targetProjectId')
         ? options.targetProjectId ?? null
         : selectedProjectId || null;
+      const targetSurface = kind === 'dynamic_dag' && typeof options.uiState?.surface === 'string'
+        ? options.uiState.surface
+        : '';
       let conversation = (
         selectedConversation?.kind === kind
         && selectedConversation?.project_id === targetProjectId
       ) ? selectedConversation : null;
+      if (conversation && targetSurface) {
+        const matchesSurface = targetSurface === ORCHESTRATION_WORKSPACE_SURFACE
+          ? isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)
+          : isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId);
+        if (!matchesSurface) conversation = null;
+      }
       if (!conversation) {
         const createdConversation = targetProjectId
           ? await createProjectConversation(targetProjectId, { title, kind })
@@ -3060,6 +3530,7 @@ export function App() {
       }
 
       let session = await getOrchestrationSessionByConversation(conversation.id);
+      rememberOrchestrationSession(session, conversation.id);
       let createdSession = false;
       if (!session) {
         try {
@@ -3072,10 +3543,12 @@ export function App() {
             ui_state: options.uiState ?? {},
           });
           createdSession = true;
+          rememberOrchestrationSession(session);
         } catch (exc) {
           if (!isOrchestrationSessionConflict(exc)) throw exc;
           session = await getOrchestrationSessionByConversation(conversation.id);
           if (!session) throw exc;
+          rememberOrchestrationSession(session);
         }
       }
       if (session && !createdSession) {
@@ -3089,6 +3562,7 @@ export function App() {
         if (options.uiState) patch.ui_state = options.uiState;
         if (Object.keys(patch).length) {
           session = await updateOrchestrationSession(session.id, patch);
+          rememberOrchestrationSession(session);
         }
       }
       if (!session) throw new Error('Orchestration session not found.');
@@ -3105,6 +3579,66 @@ export function App() {
       setEditorMessage(exc instanceof Error ? exc.message : String(exc));
       setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
       return null;
+    }
+  };
+
+  const createDynamicOrchestration = async () => {
+    if (dynamicRunning || editorRunning) return;
+    clearDynamicWorkspace();
+    setSelectedConversationId('');
+    orchestrationHydratedKeyRef.current = '';
+    setDynamicStatusMessage('');
+  };
+
+  const selectDynamicOrchestration = async (conversationId: string) => {
+    if (dynamicRunning || editorRunning) return;
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation || !isStandaloneDynamicOrchestration(conversation, orchestrationSessionsByConversationId)) return;
+    setSelectedConversationId(conversation.id);
+    clearDynamicWorkspace();
+    orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
+    await hydrateOrchestrationConversation(conversation);
+  };
+
+  const saveDynamicConversationTitle = async () => {
+    const conversation = conversations.find((item) => item.id === dynamicConversationEditTargetId);
+    const title = dynamicConversationEditTitle.trim();
+    if (!conversation || !title || conversation.kind !== 'dynamic_dag') return;
+    try {
+      const updated = conversation.project_id
+        ? await updateProjectConversation(conversation.project_id, conversation.id, { title })
+        : await updateConversation(conversation.id, { title });
+      setConversations((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setDynamicConversationEditTargetId('');
+      setDynamicConversationEditTitle('');
+      setDynamicStatusMessage('');
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteDynamicOrchestration = async () => {
+    if (dynamicRunning || editorRunning) return;
+    const conversation = conversations.find((item) => item.id === dynamicConversationDeleteTargetId);
+    if (!conversation || conversation.kind !== 'dynamic_dag') return;
+    try {
+      await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
+      setConversations((items) => items.filter((item) => item.id !== conversation.id));
+      setOrchestrationSessionsByConversationId((items) => {
+        const nextItems = { ...items };
+        delete nextItems[conversation.id];
+        return nextItems;
+      });
+      setDynamicConversationDeleteTargetId('');
+      setDynamicConversationEditTargetId((current) => (current === conversation.id ? '' : current));
+      if (selectedConversationId === conversation.id) {
+        setSelectedConversationId('');
+        orchestrationHydratedKeyRef.current = '';
+        clearDynamicWorkspace();
+      }
+      setDynamicStatusMessage('');
+    } catch (exc) {
+      setDynamicStatusMessage(exc instanceof Error ? exc.message : String(exc));
     }
   };
 
@@ -3180,6 +3714,9 @@ export function App() {
         onDone: (payload) => {
           const runState = payload.result.state;
           if (!runState?.dag || !runState.trace || !runState.run_id) return;
+          const traceEvents = mapRunTrace(runState.trace);
+          setEditorTrace(traceEvents);
+          setEditorRunTimeline((items) => traceEvents.reduce((timeline, event) => appendRunTranscriptTraceEvent(timeline, event), items));
           const dagRun = {
             run_id: runState.run_id,
             spec_id: runState.spec_id ?? null,
@@ -3191,6 +3728,10 @@ export function App() {
           setEditorRun(dagRun);
           syncEditorDag(dagRun.dag);
           void refreshConversations();
+          setStaticSelectedRunId(dagRun.run_id);
+          void listSavedDagRuns(saved.id)
+            .then((runs) => setStaticRunHistory(runs))
+            .catch((exc) => setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
           setEditorMessage(`Run ${dagRun.status}.`);
           setEditorRunTimeline((items) => appendRunTranscriptToken(
             items,
@@ -3217,7 +3758,7 @@ export function App() {
     return 'careful';
   }
 
-  const dynamicHandlers = (conversationContext?: OrchestrationContext['request']) => ({
+  const dynamicHandlers = (conversationContext?: OrchestrationContext['request'], sessionId?: string) => ({
     onDag: (nextDag: Dag) => {
       syncDynamicDag(preserveDynamicDagEdges(nextDag));
       setDynamicStatusMessage(`DAG ${nextDag.status} · ${nextDag.nodes.length} 节点`);
@@ -3232,7 +3773,15 @@ export function App() {
       const state = payload.result.state ?? null;
       setDynamicRunState(state);
       if (state?.dag) syncDynamicDag(preserveDynamicDagEdges(state.dag));
-      if (conversationContext && state?.run_id) void refreshConversations();
+      if (conversationContext && state?.run_id) {
+        void refreshConversations();
+        setDynamicSelectedRunId(state.run_id);
+      }
+      if (sessionId && state?.run_id) {
+        void listOrchestrationSessionRuns(sessionId)
+          .then((runs) => setDynamicRunHistory(runs))
+          .catch((exc) => setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc)));
+      }
       if (state?.pending_review) {
         clearDynamicFinalAnswer();
         const content = 'DAG 已生成，可编辑节点后点击「运行」。';
@@ -3255,6 +3804,54 @@ export function App() {
     },
   });
 
+  const selectDynamicRunHistory = async (runId: string) => {
+    try {
+      setDynamicSelectedRunId(runId);
+      setDynamicRunHistoryError(null);
+      setDynamicTrace([]);
+      clearDynamicFinalAnswer();
+      const events = await listRunEvents(runId);
+      const result = finishedRunResultFromEvents(events);
+      const nextState = result?.state ?? null;
+      setDynamicRunState(nextState);
+      if (nextState?.dag) syncDynamicDag(preserveDynamicDagEdges(nextState.dag));
+      if (nextState?.trace) {
+        setDynamicTrace(mapRunTrace(nextState.trace).map((event) => ({
+          ...event,
+          timelineOrder: nextDynamicTimelineOrder(),
+        })));
+      }
+      if (result?.output_text) setOrderedDynamicFinalAnswer(result.output_text);
+    } catch (exc) {
+      setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
+  const deleteDynamicRunHistory = async (runId: string) => {
+    if (!runId || dynamicDeletingRunId) return;
+    setDynamicDeletingRunId(runId);
+    setDynamicRunHistoryError(null);
+    try {
+      await deleteRun(runId);
+      setDynamicRunHistory((runs) => runs.filter((run) => run.id !== runId));
+      setDynamicRunDeleteTargetId('');
+      if (dynamicSelectedRunId === runId || dynamicRunState?.run_id === runId) {
+        setDynamicSelectedRunId('');
+        setDynamicRunState(null);
+        setDynamicTrace([]);
+        clearDynamicFinalAnswer();
+        setDynamicRunArtifactFiles([]);
+        setDynamicRunArtifactError(null);
+        setDynamicRunArtifactLoading(false);
+        if (dynamicInspectorMode === 'artifacts') setDynamicInspectorMode('node');
+      }
+    } catch (exc) {
+      setDynamicRunHistoryError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setDynamicDeletingRunId('');
+    }
+  };
+
   const generateDynamicDag = async () => {
     if (!dynamicPrompt.trim() || dynamicRunning) return;
     const prompt = dynamicPrompt.trim();
@@ -3270,19 +3867,21 @@ export function App() {
         'dynamic_dag',
         conversationTitleFromPrompt(prompt),
         {
-          targetProjectId: selectedProjectId || null,
+          targetProjectId: null,
           draftDag: dynamicDag as unknown as Record<string, unknown>,
+          uiState: orchestrationWorkspaceUiState(),
         },
       );
       if (!context) return;
+      setDynamicOrchestrationSessionId(context.session.id);
       await streamMessagesTask(
         dynamicRequestMessages,
         'dag',
         dynamicReviewLevel(),
-        dynamicHandlers(context.request),
+        dynamicHandlers(context.request, context.session.id),
         undefined,
         dynamicAdjust,
-        { conversation: context.request },
+        { conversation: context.request, visibleMessage: prompt },
       );
       setDynamicPrompt('');
     } catch (exc) {
@@ -3307,17 +3906,19 @@ export function App() {
         'dynamic_dag',
         dag.dag_id || '动态编排',
         {
-          targetProjectId: selectedProjectId || null,
+          targetProjectId: null,
           draftDag: dag as unknown as Record<string, unknown>,
+          uiState: orchestrationWorkspaceUiState(),
         },
       );
       if (!context) return;
+      setDynamicOrchestrationSessionId(context.session.id);
       await resumeDagReview(
         reviewId,
         dag,
         dynamicReviewLevel(),
         true,
-        dynamicHandlers(context.request),
+        dynamicHandlers(context.request, context.session.id),
         dynamicRunState,
         undefined,
         { conversation: context.request },
@@ -3341,6 +3942,7 @@ export function App() {
         {
           targetProjectId: chatSub === 'projects' ? selectedProjectId : null,
           draftDag: dag.nodes.length ? dag as unknown as Record<string, unknown> : null,
+          uiState: smartWorkbenchUiState(),
         },
       );
       if (!context) return null;
@@ -3665,24 +4267,12 @@ export function App() {
 
   const createProjectConversationFromProject = async (projectId: string) => {
     if (streaming) return null;
-    const projectConversationCount = conversations.filter((conversation) => (
-      isChatSurfaceConversation(conversation) && conversation.project_id === projectId
-    )).length;
-    try {
-      const conversation = await createProjectConversation(projectId, {
-        title: `会话 ${projectConversationCount + 1}`,
-      });
-      setConversations((items) => [conversation, ...items]);
-      setSelectedProjectId(projectId);
-      setSelectedConversationId(conversation.id);
-      setChatSub('projects');
-      setProjectError(null);
-      clearChatSurface();
-      return conversation;
-    } catch (exc) {
-      setProjectError(exc instanceof Error ? exc.message : String(exc));
-      return null;
-    }
+    setSelectedProjectId(projectId);
+    setSelectedConversationId('');
+    setChatSub('projects');
+    setProjectError(null);
+    clearChatSurface();
+    return null;
   };
 
   const newChat = async () => {
@@ -3783,10 +4373,21 @@ export function App() {
     try {
       await deleteConversationWithActiveRetry(conversation, { attempts: 8 });
       setConversations(remaining);
+      setOrchestrationSessionsByConversationId((items) => {
+        const nextItems = { ...items };
+        delete nextItems[conversation.id];
+        return nextItems;
+      });
       if (deletingSelected) {
         const nextConversation = chatSub === 'projects'
-          ? remaining.find((item) => isChatSurfaceConversation(item) && item.project_id === conversation.project_id) ?? null
-          : remaining.find((item) => isChatSurfaceConversation(item) && !item.project_id) ?? null;
+          ? remaining.find((item) => (
+            isChatSurfaceConversation(item, orchestrationSessionsByConversationId)
+            && item.project_id === conversation.project_id
+          )) ?? null
+          : remaining.find((item) => (
+            isChatSurfaceConversation(item, orchestrationSessionsByConversationId)
+            && !item.project_id
+          )) ?? null;
         setSelectedConversationId(nextConversation?.id ?? '');
         if (nextConversation?.project_id) setSelectedProjectId(nextConversation.project_id);
         clearChatSurface();
@@ -4047,9 +4648,12 @@ export function App() {
         conversations={conversations}
         creatingAgentPreset={creatingAgentPreset}
         creatingModel={creatingModel}
+        dynamicConversationQuery={dynamicConversationQuery}
+        dynamicConversations={visibleDynamicConversations}
         systemSub={systemManagementSub}
         models={models}
         onlyOfficeEnabled={onlyOfficeSettings.enabled}
+        orchestrationSessionsByConversationId={orchestrationSessionsByConversationId}
         mcpCount={mcpServers.length}
         mcpServers={mcpServers}
         projectError={projectError}
@@ -4083,10 +4687,17 @@ export function App() {
         onCreateProfile={requestProfileCreation}
         onCreateTool={() => requestCapabilityCreation('tools')}
         onDeleteArtifact={deleteEditorArtifact}
+        onDeleteDynamicOrchestration={setDynamicConversationDeleteTargetId}
+        onDeleteSavedDag={setStaticDagDeleteTargetId}
         onEditArtifact={(artifactId) => setEditingArtifactId(artifactId)}
+        onEditDynamicOrchestration={(conversationId, title) => {
+          setDynamicConversationEditTargetId(conversationId);
+          setDynamicConversationEditTitle(title);
+        }}
         onImportSkill={() => requestCapabilityCreation('skills')}
         onLoadDag={loadEditorUserDag}
         onNewChat={() => void newChat()}
+        onNewDynamicOrchestration={() => void createDynamicOrchestration()}
         onNewProjectConversation={(projectId) => void createProjectConversationFromProject(projectId)}
         onNewDag={newEditorUserDag}
         onDeleteConversation={deleteConversationFromSidebar}
@@ -4101,6 +4712,7 @@ export function App() {
           setSelectedModelId(id);
         }}
         onSelectConversation={selectConversation}
+        onSelectDynamicOrchestration={(conversationId) => void selectDynamicOrchestration(conversationId)}
         onSelectProject={selectProject}
         onSelectSkillFile={(filePath) => void selectSkillFile(filePath)}
         onSelectToolCapability={setSelectedToolCapabilityId}
@@ -4112,6 +4724,7 @@ export function App() {
         onSystemSubChange={setSystemManagementSub}
         onToolsSubChange={selectToolsDirectoryTab}
         onToggleCollapsed={() => setNavCollapsed((value) => !value)}
+        onDynamicConversationQueryChange={setDynamicConversationQuery}
         onToolsQueryChange={setToolsDirectoryQuery}
         onUploadSkillFile={(file) => void loadSkillFile(file)}
         onUploadFiles={(files) => void uploadEditorFiles(files)}
@@ -4168,13 +4781,40 @@ export function App() {
             messageOrder={dynamicMessageOrder}
             messages={dynamicMessages}
             trace={dynamicTrace}
+            inspectorMode={dynamicInspectorMode}
+            artifactPanel={{
+              runId: dynamicArtifactRunId,
+              files: dynamicRunArtifactFiles,
+              loading: dynamicRunArtifactLoading,
+              error: dynamicRunArtifactError,
+              onRefresh: refreshDynamicRunArtifacts,
+              onClose: () => setDynamicInspectorMode('node'),
+            }}
+            runHistory={{
+              runs: dynamicRunHistory,
+              selectedRunId: dynamicSelectedRunId,
+              loading: dynamicRunHistoryLoading,
+              error: dynamicRunHistoryError,
+              deletingRunId: dynamicDeletingRunId,
+              onSelectRun: (runId) => void selectDynamicRunHistory(runId),
+              onOpenArtifacts: (runId) => {
+                setDynamicSelectedRunId(runId);
+                setDynamicInspectorMode('artifacts');
+              },
+              onDeleteRun: setDynamicRunDeleteTargetId,
+            }}
+            runHistoryCollapsed={dynamicRunHistoryCollapsed}
+            onToggleRunHistory={() => setDynamicRunHistoryCollapsed((collapsed) => !collapsed)}
             onAddNode={onAddDynamicNode}
             onPatchNode={onPatchDynamicNode}
             onDeleteNode={onDeleteDynamicNode}
             onNodesChange={onDynamicNodesChange}
             onEdgesChange={onDynamicEdgesChange}
             onConnect={onDynamicConnect}
-            onSelectNode={setDynamicSelectedId}
+            onSelectNode={(id) => {
+              setDynamicSelectedId(id);
+              if (id) setDynamicInspectorMode('node');
+            }}
             onPromptChange={setDynamicPrompt}
             onDynamicAdjustChange={setDynamicAdjust}
             onGenerate={() => void generateDynamicDag()}
@@ -4192,6 +4832,30 @@ export function App() {
             selectedId={editorSelectedId}
             trace={editorTrace}
             run={editorRun}
+            inspectorMode={staticInspectorMode}
+            artifactPanel={{
+              runId: staticArtifactRunId,
+              files: staticRunArtifactFiles,
+              loading: staticRunArtifactLoading,
+              error: staticRunArtifactError,
+              onRefresh: refreshStaticRunArtifacts,
+              onClose: () => setStaticInspectorMode('node'),
+            }}
+            runHistory={{
+              runs: staticRunHistory,
+              selectedRunId: staticSelectedRunId,
+              loading: staticRunHistoryLoading,
+              error: staticRunHistoryError,
+              deletingRunId: staticDeletingRunId,
+              onSelectRun: (runId) => void selectStaticRunHistory(runId),
+              onOpenArtifacts: (runId) => {
+                setStaticSelectedRunId(runId);
+                setStaticInspectorMode('artifacts');
+              },
+              onDeleteRun: setStaticRunDeleteTargetId,
+            }}
+            runHistoryCollapsed={staticRunHistoryCollapsed}
+            onToggleRunHistory={() => setStaticRunHistoryCollapsed((collapsed) => !collapsed)}
             runTimeline={editorRunTimeline}
             message={editorMessage}
             running={editorRunning}
@@ -4206,7 +4870,10 @@ export function App() {
             onNodesChange={onEditorNodesChange}
             onEdgesChange={onEditorEdgesChange}
             onConnect={onEditorConnect}
-            onSelectNode={setEditorSelectedId}
+            onSelectNode={(id) => {
+              setEditorSelectedId(id);
+              if (id) setStaticInspectorMode('node');
+            }}
           />
         ) : activeWorkspace === 'tools' ? (
           <CapabilityDirectory
@@ -4319,6 +4986,55 @@ export function App() {
         />
       ) : null}
 
+      {dynamicConversationEditTarget ? (
+        <DynamicConversationRenameDialog
+          conversation={dynamicConversationEditTarget}
+          value={dynamicConversationEditTitle}
+          onCancel={() => {
+            setDynamicConversationEditTargetId('');
+            setDynamicConversationEditTitle('');
+          }}
+          onChange={setDynamicConversationEditTitle}
+          onSave={() => void saveDynamicConversationTitle()}
+        />
+      ) : null}
+
+      {dynamicConversationDeleteTarget ? (
+        <DynamicConversationDeleteDialog
+          conversation={dynamicConversationDeleteTarget}
+          project={projects.find((project) => project.id === dynamicConversationDeleteTarget.project_id) ?? null}
+          onCancel={() => setDynamicConversationDeleteTargetId('')}
+          onConfirm={() => void deleteDynamicOrchestration()}
+        />
+      ) : null}
+
+      {dynamicRunDeleteTarget ? (
+        <RunHistoryDeleteDialog
+          run={dynamicRunDeleteTarget}
+          deleting={dynamicDeletingRunId === dynamicRunDeleteTarget.id}
+          onCancel={() => setDynamicRunDeleteTargetId('')}
+          onConfirm={() => void deleteDynamicRunHistory(dynamicRunDeleteTarget.id)}
+        />
+      ) : null}
+
+      {staticDagDeleteTarget ? (
+        <SavedDagDeleteDialog
+          savedDag={staticDagDeleteTarget}
+          project={projects.find((project) => project.id === staticDagDeleteTarget.project_id) ?? null}
+          onCancel={() => setStaticDagDeleteTargetId('')}
+          onConfirm={() => void confirmDeleteSavedDag()}
+        />
+      ) : null}
+
+      {staticRunDeleteTarget ? (
+        <RunHistoryDeleteDialog
+          run={staticRunDeleteTarget}
+          deleting={staticDeletingRunId === staticRunDeleteTarget.id}
+          onCancel={() => setStaticRunDeleteTargetId('')}
+          onConfirm={() => void deleteStaticRunHistory(staticRunDeleteTarget.id)}
+        />
+      ) : null}
+
       {capabilityScopeOpen ? (
         <ChatCapabilityScopeDialog
           agentPresets={agentPresets}
@@ -4339,7 +5055,7 @@ export function App() {
         />
       ) : null}
 
-      {reviewOpen && dag.nodes.length ? (
+      {activeWorkspace === 'chat' && reviewOpen && dag.nodes.length ? (
         <DagReviewDialog
           dag={dag}
           nodes={nodes}
@@ -4399,9 +5115,12 @@ function WorkspaceSidebar({
   conversations,
   creatingAgentPreset,
   creatingModel,
+  dynamicConversationQuery,
+  dynamicConversations,
   systemSub,
   models,
   onlyOfficeEnabled,
+  orchestrationSessionsByConversationId,
   mcpCount,
   mcpServers,
   projectError,
@@ -4435,16 +5154,21 @@ function WorkspaceSidebar({
   onCreateProfile,
   onCreateTool,
   onDeleteArtifact,
+  onDeleteDynamicOrchestration,
+  onDeleteSavedDag,
   onEditArtifact,
+  onEditDynamicOrchestration,
   onImportSkill,
   onLoadDag,
   onNewChat,
+  onNewDynamicOrchestration,
   onNewProjectConversation,
   onNewDag,
   onDeleteConversation,
   onDeleteProject,
   onSelectAgentPreset,
   onSelectConversation,
+  onSelectDynamicOrchestration,
   onSelectProfile,
   onSelectProject,
   onSelectModel,
@@ -4458,6 +5182,7 @@ function WorkspaceSidebar({
   onSystemSubChange,
   onToolsSubChange,
   onToggleCollapsed,
+  onDynamicConversationQueryChange,
   onToolsQueryChange,
   onUploadSkillFile,
   onUploadFiles,
@@ -4474,9 +5199,12 @@ function WorkspaceSidebar({
   conversations: ApiConversation[];
   creatingAgentPreset: boolean;
   creatingModel: boolean;
+  dynamicConversationQuery: string;
+  dynamicConversations: ApiConversation[];
   systemSub: SystemManagementSub;
   models: ModelProvider[];
   onlyOfficeEnabled: boolean;
+  orchestrationSessionsByConversationId: OrchestrationSessionsByConversationId;
   mcpCount: number;
   mcpServers: MCPServer[];
   projectError: string | null;
@@ -4510,16 +5238,21 @@ function WorkspaceSidebar({
   onCreateProfile: () => void;
   onCreateTool: () => void;
   onDeleteArtifact: (artifactId: string) => void;
+  onDeleteDynamicOrchestration: (conversationId: string) => void;
+  onDeleteSavedDag: (savedDagId: string) => void;
   onEditArtifact: (artifactId: string) => void;
+  onEditDynamicOrchestration: (conversationId: string, title: string) => void;
   onImportSkill: () => void;
   onLoadDag: (saved: SavedDagView) => void;
   onNewChat: () => void;
+  onNewDynamicOrchestration: () => void;
   onNewProjectConversation: (projectId: string) => void;
   onNewDag: () => void;
   onDeleteConversation: (id: string) => void;
   onDeleteProject: (projectId: string) => void;
   onSelectAgentPreset: (id: string) => void;
   onSelectConversation: (id: string) => void;
+  onSelectDynamicOrchestration: (conversationId: string) => void;
   onSelectProfile: (id: string) => void;
   onSelectProject: (id: string) => void;
   onSelectModel: (id: string) => void;
@@ -4533,12 +5266,13 @@ function WorkspaceSidebar({
   onSystemSubChange: (sub: SystemManagementSub) => void;
   onToolsSubChange: (tab: ToolDirectoryTab) => void;
   onToggleCollapsed: () => void;
+  onDynamicConversationQueryChange: (query: string) => void;
   onToolsQueryChange: (query: string) => void;
   onUploadSkillFile: (file: File | undefined) => void;
   onUploadFiles: (files: FileList | null) => void;
 }) {
   const standaloneConversationCount = conversations.filter((conversation) => (
-    isChatSurfaceConversation(conversation) && !conversation.project_id
+    isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && !conversation.project_id
   )).length;
   const orchestrationSubnav = [
     { key: 'dynamic' as const, label: '动态编排', icon: <Play size={16} />, count: 'DAG' },
@@ -4590,7 +5324,7 @@ function WorkspaceSidebar({
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation) && !conversation.project_id && matchesSearchQuery(
+  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && !conversation.project_id && matchesSearchQuery(
     [
       conversation.id,
       conversation.title,
@@ -4600,7 +5334,7 @@ function WorkspaceSidebar({
   ));
   const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
   conversations.forEach((conversation) => {
-    if (!isChatSurfaceConversation(conversation)) return;
+    if (!isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId)) return;
     if (!conversation.project_id) return;
     const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
     items.push(conversation);
@@ -5313,6 +6047,57 @@ function WorkspaceSidebar({
         </section>
       ) : null}
 
+      {activeWorkspace === 'orchestration' && orchestrationMode === 'dynamic' ? (
+        <section className="sidebar-context-section">
+          <div className="sidebar-history-head">
+            <span>动态编排</span>
+            <button onClick={onNewDynamicOrchestration} title="新建动态编排" type="button">
+              <Plus size={14} />
+            </button>
+          </div>
+          <SidebarSearchField
+            value={dynamicConversationQuery}
+            onChange={onDynamicConversationQueryChange}
+          />
+          <div className="sidebar-context-list">
+            {dynamicConversations.length ? dynamicConversations.map((conversation) => (
+              <div
+                className={conversation.id === selectedConversationId ? 'sidebar-conversation-row active' : 'sidebar-conversation-row'}
+                key={conversation.id}
+              >
+                <button onClick={() => onSelectDynamicOrchestration(conversation.id)} type="button">
+                  <span>
+                    <Play size={13} />
+                    <strong>{conversation.title}</strong>
+                  </span>
+                  <em>{conversation.status}</em>
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onEditDynamicOrchestration(conversation.id, conversation.title)}
+                  title="重命名"
+                  type="button"
+                >
+                  <FileText size={12} />
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onDeleteDynamicOrchestration(conversation.id)}
+                  title="删除"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            )) : (
+              <div className="sidebar-empty-row">
+                {normalizeSearchQuery(dynamicConversationQuery) ? '没有匹配的动态编排' : '暂无动态编排'}
+              </div>
+            )}
+          </div>
+        </section>
+      ) : null}
+
       {activeWorkspace === 'orchestration' && orchestrationMode === 'static' ? (
         <section className="sidebar-context-section">
           <div className="sidebar-history-head">
@@ -5327,20 +6112,31 @@ function WorkspaceSidebar({
           />
           <div className="sidebar-context-list">
             {visibleSavedDags.length ? visibleSavedDags.map((item) => (
-              <button
-                className={item.savedDagId === selectedDagId ? 'active' : ''}
+              <div
+                className={item.savedDagId === selectedDagId ? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'}
                 key={item.savedDagId}
-                onClick={() => onLoadDag(item)}
-                title={item.name || item.spec.name || item.spec.id}
-                type="button"
               >
-                <span>
-                  <GitBranch size={13} />
-                  <strong>{item.name || item.spec.name || item.spec.id}</strong>
-                  <code>v{item.revision}</code>
-                </span>
-                <em>{item.description || item.spec.description || `${item.spec.nodes.length} 节点`}</em>
-              </button>
+                <button
+                  onClick={() => onLoadDag(item)}
+                  title={item.name || item.spec.name || item.spec.id}
+                  type="button"
+                >
+                  <span>
+                    <GitBranch size={13} />
+                    <strong>{item.name || item.spec.name || item.spec.id}</strong>
+                    <code>v{item.revision}</code>
+                  </span>
+                  <em>{item.description || item.spec.description || `${item.spec.nodes.length} 节点`}</em>
+                </button>
+                <button
+                  className="sidebar-conversation-delete"
+                  onClick={() => onDeleteSavedDag(item.savedDagId)}
+                  title="删除静态编排"
+                  type="button"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
             )) : (
               <div className="sidebar-empty-row">{normalizedDagListQuery ? '没有匹配的编排' : '暂无编排'}</div>
             )}
@@ -6827,6 +7623,166 @@ function ConversationDeleteDialog({
   );
 }
 
+function DynamicConversationRenameDialog({
+  conversation,
+  value,
+  onCancel,
+  onChange,
+  onSave,
+}: {
+  conversation: ApiConversation;
+  value: string;
+  onCancel: () => void;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="重命名动态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>重命名动态编排</span>
+            <strong>{conversation.title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body">
+          <label>
+            <span>名称</span>
+            <input
+              autoFocus
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') onSave();
+              }}
+            />
+          </label>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button compact-button" onClick={onSave} type="button">保存</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function DynamicConversationDeleteDialog({
+  conversation,
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  conversation: ApiConversation;
+  project: ApiProject | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除动态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除动态编排</span>
+            <strong>{conversation.title}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>动态编排会话、草稿状态和运行历史都会被删除。</p>
+          <code>{project ? `${project.name} / ${conversation.id}` : conversation.id}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除动态编排</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function SavedDagDeleteDialog({
+  savedDag,
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  savedDag: SavedDag;
+  project: ApiProject | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除静态编排">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除静态编排</span>
+            <strong>{savedDag.name || savedDag.spec.name || savedDag.spec.id}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>静态编排会被归档并从列表移除，已有运行记录仍可通过运行接口保留。</p>
+          <code>{project ? `${project.name} / ${savedDag.id}` : savedDag.id}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} type="button">删除静态编排</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RunHistoryDeleteDialog({
+  run,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  run: ApiRunSummary;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="删除运行">
+      <div className="project-dialog compact-project-dialog">
+        <header className="project-dialog-head">
+          <div>
+            <span>删除运行</span>
+            <strong>{run.id}</strong>
+          </div>
+          <button className="icon-button" onClick={onCancel} disabled={deleting} title="关闭" type="button">
+            <X size={14} />
+          </button>
+        </header>
+        <div className="project-dialog-body danger-dialog-body">
+          <AlertTriangle size={18} />
+          <p>运行事件、产物记录和对应工作目录都会被删除。</p>
+          <code>{run.output_text || `${run.status} · ${new Date(run.updated_at * 1000).toLocaleString()}`}</code>
+        </div>
+        <footer className="project-dialog-actions">
+          <button className="secondary-button compact-button" onClick={onCancel} disabled={deleting} type="button">取消</button>
+          <button className="primary-button danger-button compact-button" onClick={onConfirm} disabled={deleting} type="button">
+            {deleting ? '删除中...' : '删除运行'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ProjectFormDialog({
   draft,
   error,
@@ -7647,7 +8603,7 @@ function renderMessageTimelineItem(
   onOpenDag: (dag: Dag, trace?: TraceLogEvent[]) => void,
 ) {
   if (item.type === 'capability') {
-    return <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} event={item.event} result={item.result} />;
+    return <CapabilityEventCard key={`${item.event.invocation_id}-${index}`} item={item} />;
   }
   if (item.type === 'dag') {
     return (
@@ -7899,22 +8855,43 @@ function hasNonZeroExitCode(content?: string): boolean {
   return match !== null && match[1] !== '0';
 }
 
-function CapabilityEventCard({ event, result }: { event: CapabilityStreamEvent; result?: CapabilityStreamEvent }) {
+function CapabilityEventCard({ item }: { item: Extract<MessageTimelineItem, { type: 'capability' }> }) {
+  const { event, result } = item;
   const resultContent = result?.content || (event.type !== 'capability.call.started' ? event.content || '' : '');
   const isError = result?.type === 'capability.call.failed' || event.type === 'capability.call.failed';
   const rejectedByReview = Boolean(result?.content?.startsWith('人工审核已拒绝'));
   const isExitError = !isError && hasNonZeroExitCode(resultContent);
   const showError = isError || isExitError;
-  const statusLabel = result
-    ? (rejectedByReview ? '已拒绝' : isError ? 'failed' : isExitError ? 'error' : 'done')
-    : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
+  const explicitStatus = item.status;
+  const statusLabel = explicitStatus === 'awaiting_review'
+    ? '待审核'
+    : explicitStatus === 'rejected'
+      ? '已拒绝'
+      : explicitStatus === 'completed'
+        ? 'done'
+        : explicitStatus === 'failed'
+          ? 'failed'
+          : result
+            ? (rejectedByReview ? '已拒绝' : isError ? 'failed' : isExitError ? 'error' : 'done')
+            : (event.type === 'capability.call.started' ? 'running' : event.type === 'capability.call.failed' ? 'failed' : 'done');
+  const statusClass = statusLabel === '待审核'
+    ? 'review'
+    : statusLabel === '已拒绝'
+      ? 'rejected'
+      : statusLabel;
   const argsText = formatCapabilityArguments(event.arguments);
-  const eventClass = rejectedByReview ? 'capability-event-rejected' : showError ? 'capability-event-error' : `capability-event-${statusLabel}`;
-  const statusIcon = statusLabel === 'running'
+  const eventClass = statusClass === 'rejected' || rejectedByReview
+    ? 'capability-event-rejected'
+    : showError
+      ? 'capability-event-error'
+      : `capability-event-${statusClass}`;
+  const statusIcon = statusClass === 'running'
     ? <Loader size={11} />
-    : statusLabel === 'done'
+    : statusClass === 'done'
       ? <Check size={11} />
-      : <X size={11} />;
+      : statusClass === 'review'
+        ? <AlertTriangle size={11} />
+        : <X size={11} />;
   return (
     <details className={`capability-event-card ${eventClass}`}>
       <summary className="capability-event-head">
@@ -8747,6 +9724,11 @@ function DynamicOrchestrationWorkspace({
   messageOrder,
   messages,
   trace,
+  inspectorMode,
+  artifactPanel,
+  runHistory,
+  runHistoryCollapsed,
+  onToggleRunHistory,
   onAddNode,
   onPatchNode,
   onDeleteNode,
@@ -8774,6 +9756,11 @@ function DynamicOrchestrationWorkspace({
   messageOrder: number;
   messages: DynamicChatMessage[];
   trace: DynamicTraceLogEvent[];
+  inspectorMode: OrchestrationInspectorMode;
+  artifactPanel: OrchestrationArtifactPanelData;
+  runHistory: RunHistoryPanelData;
+  runHistoryCollapsed: boolean;
+  onToggleRunHistory: () => void;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
@@ -8804,6 +9791,7 @@ function DynamicOrchestrationWorkspace({
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const firstNodePosition = () => nodes.length ? undefined : canvasCenterNodePosition(flowInstance, canvasRef.current);
+  const hasInspector = inspectorMode === 'artifacts' || Boolean(selectedNormalized);
   const patchSelectedInvocation = (patch: Partial<CapabilityInvocation>) => {
     if (!selectedNode || !selectedInvocation) return;
     onPatchNode(selectedNode.id, {
@@ -8889,7 +9877,7 @@ function DynamicOrchestrationWorkspace({
           </div>
         </div>
 
-        <div className={`dynamic-orchestration-body ${selectedNormalized ? 'with-inspector' : ''}`}>
+        <div className={`dynamic-orchestration-body ${hasInspector ? 'with-inspector' : ''}`}>
           <div className="orchestration-canvas dynamic-orchestration-canvas" ref={canvasRef}>
             <ReactFlow
               className="orchestration-flow"
@@ -8919,7 +9907,9 @@ function DynamicOrchestrationWorkspace({
               </button>
             ) : null}
           </div>
-          {selectedNormalized ? (
+          {inspectorMode === 'artifacts' ? (
+            <RunArtifactsInspector {...artifactPanel} />
+          ) : selectedNormalized ? (
             <aside className="node-inspector dynamic-node-inspector" aria-label="节点检查器">
               <div className="node-inspector-body">
                 <div className="node-inspector-title">
@@ -9005,6 +9995,14 @@ function DynamicOrchestrationWorkspace({
             </aside>
           ) : null}
         </div>
+        <RunHistoryPanel
+          title="运行历史"
+          runHistory={runHistory}
+          collapsed={runHistoryCollapsed}
+          onToggleCollapsed={onToggleRunHistory}
+          onOpenArtifacts={runHistory.onOpenArtifacts}
+          onDeleteRun={runHistory.onDeleteRun}
+        />
       </div>
     </section>
   );
@@ -9059,6 +10057,151 @@ function CanvasViewportControls({
   );
 }
 
+function RunArtifactsInspector({
+  runId,
+  files,
+  loading,
+  error,
+  onRefresh,
+  onClose,
+}: OrchestrationArtifactPanelData) {
+  const sortedFiles = [...files].sort((left, right) => left.path.localeCompare(right.path));
+  return (
+    <aside className="node-inspector run-artifacts-inspector" aria-label="产物检查器">
+      <div className="node-inspector-body">
+        <div className="node-inspector-title run-artifacts-title">
+          <span>产物检查器</span>
+          <strong>{runId || '未选择运行'}</strong>
+          <div className="run-artifacts-actions">
+            <button onClick={onRefresh} disabled={!runId || loading} title="刷新产物" type="button">
+              {loading ? <Loader size={14} className="spin" /> : <RefreshCw size={14} />}
+            </button>
+            <button onClick={onClose} title="关闭产物检查器" type="button">
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        {error ? <div className="sidebar-error-row">{error}</div> : null}
+        {!runId ? (
+          <div className="empty-state compact">选择一次运行查看产物。</div>
+        ) : sortedFiles.length ? (
+          <div className="run-artifacts-list">
+            {sortedFiles.map((file) => (
+              <div className="run-artifact-row" key={file.id}>
+                <FileText size={15} />
+                <div className="run-artifact-main">
+                  <strong title={file.path}>{file.name || file.path}</strong>
+                  <span title={file.path}>{file.path}</span>
+                  <em>
+                    {file.source === 'dag_artifact' ? 'DAG artifact' : '运行文件'}
+                    {' · '}
+                    {file.status}
+                    {typeof file.size === 'number' ? ` · ${formatFileSize(file.size)}` : ''}
+                  </em>
+                  {file.error ? <p>{file.error}</p> : null}
+                </div>
+                <div className="run-artifact-actions">
+                  {file.previewable && file.preview_url ? (
+                    <a href={file.preview_url} target="_blank" rel="noreferrer" title="预览">
+                      <File size={13} />
+                    </a>
+                  ) : null}
+                  {file.download_url ? (
+                    <a href={file.download_url} target="_blank" rel="noreferrer" title="下载">
+                      <Download size={13} />
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state compact">{loading ? '正在加载产物...' : '本次运行还没有可用文件。'}</div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function RunHistoryPanel({
+  title,
+  runHistory,
+  collapsed,
+  onToggleCollapsed,
+  onOpenArtifacts,
+  onDeleteRun,
+}: {
+  title: string;
+  runHistory: RunHistoryPanelData;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onOpenArtifacts: (runId: string) => void;
+  onDeleteRun: (runId: string) => void;
+}) {
+  const { runs, selectedRunId, loading, error, deletingRunId, onSelectRun } = runHistory;
+  return (
+    <section className={`run-history-panel ${collapsed ? 'collapsed' : ''}`}>
+      <div className="run-history-head">
+        <button
+          className="run-history-toggle"
+          onClick={onToggleCollapsed}
+          title={collapsed ? '展开运行历史' : '收起运行历史'}
+          type="button"
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        </button>
+        <strong>{title}</strong>
+        <span>{loading ? '加载中' : `${runs.length} 次运行`}</span>
+      </div>
+      {collapsed ? null : (
+        <>
+          {error ? <div className="sidebar-error-row">{error}</div> : null}
+          <div className="run-history-list">
+            {runs.length ? runs.map((run) => {
+              const deleting = deletingRunId === run.id;
+              return (
+                <div className={run.id === selectedRunId ? 'run-history-row active' : 'run-history-row'} key={run.id}>
+                  <button
+                    className="run-history-main"
+                    disabled={deleting}
+                    onClick={() => onSelectRun(run.id)}
+                    type="button"
+                  >
+                    <span>{runStatusLabel(run.status)}</span>
+                    <strong>{run.id}</strong>
+                    <em>{formatRunHistoryTime(run)}</em>
+                  </button>
+                  <div className="run-history-actions">
+                    <button
+                      disabled={deleting}
+                      onClick={() => onOpenArtifacts(run.id)}
+                      title="查看产物"
+                      type="button"
+                    >
+                      <Folder size={13} />
+                    </button>
+                    <button
+                      className="danger"
+                      disabled={deleting}
+                      onClick={() => onDeleteRun(run.id)}
+                      title="删除运行"
+                      type="button"
+                    >
+                      {deleting ? <Loader size={13} className="spin" /> : <Trash2 size={13} />}
+                    </button>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div className="run-history-empty">{loading ? '正在加载运行历史' : '暂无运行历史'}</div>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function OrchestrationWorkspace({
   capabilities,
   skills,
@@ -9070,6 +10213,11 @@ function OrchestrationWorkspace({
   selectedId,
   trace,
   run,
+  inspectorMode,
+  artifactPanel,
+  runHistory,
+  runHistoryCollapsed,
+  onToggleRunHistory,
   runTimeline,
   message,
   running,
@@ -9096,6 +10244,11 @@ function OrchestrationWorkspace({
   selectedId: string;
   trace: TraceLogEvent[];
   run: DagRun | null;
+  inspectorMode: OrchestrationInspectorMode;
+  artifactPanel: OrchestrationArtifactPanelData;
+  runHistory: RunHistoryPanelData;
+  runHistoryCollapsed: boolean;
+  onToggleRunHistory: () => void;
   runTimeline: RunTranscriptItem[];
   message: string;
   running: boolean;
@@ -9337,9 +10490,19 @@ function OrchestrationWorkspace({
             ) : null}
           </div>
         ) : null}
+        <RunHistoryPanel
+          title="运行历史"
+          runHistory={runHistory}
+          collapsed={runHistoryCollapsed}
+          onToggleCollapsed={onToggleRunHistory}
+          onOpenArtifacts={runHistory.onOpenArtifacts}
+          onDeleteRun={runHistory.onDeleteRun}
+        />
       </div>
 
-      {selectedNormalized ? (
+      {inspectorMode === 'artifacts' ? (
+        <RunArtifactsInspector {...artifactPanel} />
+      ) : selectedNormalized ? (
         <aside className="node-inspector static-node-inspector" aria-label="节点检查器">
           <div className="node-inspector-body">
             <div className="node-inspector-title">

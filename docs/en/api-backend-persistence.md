@@ -39,6 +39,9 @@ The local backend uses SQLite through `api/storage/`:
   optional saved DAG reference for static DAG runs.
 - `run_streams`: one HTTP stream/resume execution attempt.
 - `run_events`: durable SSE event history with database event ids.
+- `conversation_messages`: visible user/assistant message timelines projected
+  for chat conversations and dynamic DAG conversations that have an explicit
+  `smart_workbench` or `orchestration_workspace` surface.
 - `reviews`: pending/resolved review metadata. Review state lives in
   `runs.state_json`, not in this table.
 - `saved_dags`: saved static DAG specs, layout metadata, revisions, and project
@@ -54,6 +57,34 @@ and can be materialized into future static DAG run workspaces.
 The local SQLite schema is treated as an API/WebUI storage schema, not a public
 SDK data contract. Incompatible pre-release local databases are recreated
 instead of migrated with compatibility shims.
+
+## Orchestration History
+
+Orchestration history is managed through existing API persistence objects.
+Dynamic orchestration history is stored as `dynamic_dag` conversations with
+attached `orchestration_sessions` and runs. In the orchestration workspace,
+dynamic orchestration sessions are standalone conversations and use standalone
+conversation workspaces, not project workspaces. Project-scoped DAG
+conversations remain part of the smart workbench project flow. Static
+orchestration history is stored as `saved_dags` plus runs linked by
+`saved_dag_id`.
+
+The WebUI uses these endpoints to manage orchestration history:
+
+```text
+PATCH /conversations/{conversation_id}
+PATCH /projects/{project_id}/conversations/{conversation_id}
+GET /conversations/{conversation_id}/runs
+GET /orchestration-sessions/{session_id}/runs
+GET /saved-dags/{dag_id}/runs
+DELETE /runs/{run_id}
+```
+
+`DELETE /runs/{run_id}` removes the run history entry. It deletes the run row,
+stream/event/state records, review records for that run, any dedicated run
+workspace, and visible `conversation_messages` whose `run_id` matches the
+deleted run. Awaiting-review runs can be deleted; doing so intentionally
+discards the pending review and the visible transcript for that run.
 
 ## Resume And Restart Behavior
 

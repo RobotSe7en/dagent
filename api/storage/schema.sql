@@ -107,6 +107,30 @@ CREATE TABLE IF NOT EXISTS run_events (
     UNIQUE(run_id, stream_id, stream_seq)
 );
 
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL DEFAULT 'default',
+    role TEXT NOT NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE CASCADE,
+    turn_index INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created',
+    content TEXT NOT NULL DEFAULT '',
+    timeline_json TEXT NOT NULL DEFAULT '[]',
+    dag_json TEXT,
+    trace_json TEXT,
+    pending_review_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_turn
+    ON conversation_messages(conversation_id, turn_index ASC);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_run
+    ON conversation_messages(run_id);
+
 CREATE TABLE IF NOT EXISTS reviews (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

@@ -7,6 +7,9 @@ from dagent import RunState
 from api.storage.models import (
     Conversation,
     ConversationKind,
+    ConversationMessage,
+    ConversationMessageRole,
+    ConversationMessageStatus,
     OrchestrationKind,
     OrchestrationSession,
     Project,
@@ -87,9 +90,18 @@ class Store(Protocol):
         *,
         standalone: bool = False,
         org_id: str | None = None,
+        kind: ConversationKind | None = None,
     ) -> list[Conversation]: ...
 
     def get_conversation(self, conversation_id: str, *, org_id: str | None = None) -> Conversation | None: ...
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str,
+        org_id: str = "default",
+    ) -> Conversation: ...
 
     def acquire_conversation_lock(
         self,
@@ -123,6 +135,7 @@ class Store(Protocol):
         *,
         project_id: str | None = None,
         conversation_id: str | None = None,
+        saved_dag_id: str | None = None,
         org_id: str | None = None,
     ) -> list[Run]: ...
 
@@ -173,6 +186,60 @@ class Store(Protocol):
     ) -> RunEvent: ...
 
     def list_run_events(self, run_id: str, *, after_event_id: int = 0) -> list[RunEvent]: ...
+
+    def append_conversation_message(
+        self,
+        *,
+        message_id: str,
+        conversation_id: str,
+        project_id: str | None,
+        role: ConversationMessageRole,
+        content: str = "",
+        run_id: str | None = None,
+        status: ConversationMessageStatus = "created",
+        timeline_json: str = "[]",
+        dag_json: str | None = None,
+        trace_json: str | None = None,
+        pending_review_json: str | None = None,
+        org_id: str = "default",
+    ) -> ConversationMessage: ...
+
+    def update_conversation_message(
+        self,
+        message_id: str,
+        *,
+        content: str,
+        status: ConversationMessageStatus,
+        timeline_json: str,
+        run_id: str | None = None,
+        dag_json: str | None = None,
+        trace_json: str | None = None,
+        pending_review_json: str | None = None,
+        org_id: str = "default",
+    ) -> ConversationMessage: ...
+
+    def set_conversation_message_run_id(
+        self,
+        message_id: str,
+        run_id: str,
+        *,
+        org_id: str = "default",
+    ) -> ConversationMessage: ...
+
+    def list_conversation_messages(
+        self,
+        conversation_id: str,
+        *,
+        org_id: str | None = None,
+    ) -> list[ConversationMessage]: ...
+
+    def get_last_assistant_message_for_run(
+        self,
+        conversation_id: str,
+        run_id: str,
+        *,
+        org_id: str | None = None,
+    ) -> ConversationMessage | None: ...
 
     def save_run_state(self, run_id: str, state_json: str, output_text: str) -> None: ...
 

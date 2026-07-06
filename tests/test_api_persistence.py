@@ -319,6 +319,53 @@ def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_sqlite_store_updates_conversation_title(tmp_path: Path, monkeypatch) -> None:
+    import api.storage.sqlite as sqlite_storage
+
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 100)
+    conversation = store.create_conversation(
+        conversation_id="conv_rename",
+        project_id=None,
+        title="Original",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+        kind="dynamic_dag",
+    )
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 150)
+
+    updated = store.update_conversation(conversation.id, title="Renamed")
+    recovered = store.get_conversation(conversation.id)
+
+    assert updated.title == "Renamed"
+    assert updated.updated_at == 150
+    assert recovered is not None
+    assert recovered.title == "Renamed"
+    assert recovered.updated_at == 150
+
+
+def test_sqlite_store_filters_conversations_by_kind(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store.create_conversation(
+        conversation_id="conv_chat",
+        project_id=None,
+        title="Chat",
+        workspace_uri=workspace_uri,
+        kind="chat",
+    )
+    store.create_conversation(
+        conversation_id="conv_dynamic",
+        project_id=None,
+        title="Dynamic",
+        workspace_uri=workspace_uri,
+        kind="dynamic_dag",
+    )
+
+    dynamic = store.list_conversations(standalone=True, kind="dynamic_dag")
+
+    assert [conversation.id for conversation in dynamic] == ["conv_dynamic"]
+
+
 def test_sqlite_store_persists_saved_dags_and_sessions(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     store = SQLiteStore(db_path)
@@ -439,6 +486,49 @@ def test_sqlite_store_tracks_saved_dag_on_runs(tmp_path: Path) -> None:
     assert recovered.saved_dag_id == "dag_source"
 
 
+def test_sqlite_store_filters_runs_by_saved_dag(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store.create_saved_dag(
+        dag_id="dag_one",
+        project_id=None,
+        name="One",
+        description="",
+        spec_json='{"id":"one","name":"One","nodes":[],"edges":[]}',
+    )
+    store.create_saved_dag(
+        dag_id="dag_two",
+        project_id=None,
+        name="Two",
+        description="",
+        spec_json='{"id":"two","name":"Two","nodes":[],"edges":[]}',
+    )
+    store.create_run(
+        run_id="run_one",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri=workspace_uri,
+        saved_dag_id="dag_one",
+    )
+    store.create_run(
+        run_id="run_two",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri=workspace_uri,
+        saved_dag_id="dag_two",
+    )
+
+    runs = store.list_runs(saved_dag_id="dag_one")
+
+    assert [run.id for run in runs] == ["run_one"]
+
+
 def test_sqlite_conversation_lock_spans_store_instances(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     first = SQLiteStore(db_path)
@@ -517,6 +607,41 @@ def test_run_events_have_durable_service_sequence(tmp_path: Path) -> None:
     assert second.event_id == 2
     assert second.stream_seq == 0
     assert store.list_run_events("run_123", after_event_id=1) == [second]
+
+
+def test_sqlite_store_deleting_run_deletes_conversation_messages(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    conversation = store.create_conversation(
+        conversation_id="conv_run_messages",
+        project_id=None,
+        title="Inbox",
+        workspace_uri=workspace_uri,
+    )
+    run = store.create_run(
+        run_id="run_messages",
+        project_id=None,
+        conversation_id=conversation.id,
+        user_id="default",
+        kind="tool",
+        status="completed",
+        workspace_uri=workspace_uri,
+    )
+    store.append_conversation_message(
+        message_id="msg_assistant",
+        conversation_id=conversation.id,
+        project_id=None,
+        role="assistant",
+        run_id=run.id,
+        status="completed",
+        content="done",
+        timeline_json='[{"type":"text","content":"done"}]',
+    )
+
+    assert [message.id for message in store.list_conversation_messages(conversation.id)] == ["msg_assistant"]
+
+    assert store.delete_run(run.id) is True
+    assert store.list_conversation_messages(conversation.id) == []
 
 
 def test_run_stream_activity_touches_conversation_updated_at(tmp_path: Path, monkeypatch) -> None:
@@ -990,6 +1115,210 @@ def test_api_creates_and_lists_standalone_conversations(persistence_client) -> N
     assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
 
 
+def test_api_renames_standalone_dynamic_conversation(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Original Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+
+    response = persistence_client.patch(
+        f"/conversations/{conversation['id']}",
+        json={"title": "Renamed Dynamic"},
+    )
+    listed = persistence_client.get("/conversations", params={"kind": "dynamic_dag"})
+
+    assert response.status_code == 200
+    assert response.json()["conversation"]["title"] == "Renamed Dynamic"
+    assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
+
+
+def test_api_renames_project_dynamic_conversation(persistence_client) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Original Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+
+    response = persistence_client.patch(
+        f"/projects/{project['id']}/conversations/{conversation['id']}",
+        json={"title": "Project Dynamic"},
+    )
+    listed = persistence_client.get(
+        f"/projects/{project['id']}/conversations",
+        params={"kind": "dynamic_dag"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conversation"]["title"] == "Project Dynamic"
+    assert [item["id"] for item in listed.json()["conversations"]] == [conversation["id"]]
+
+
+def test_api_lists_standalone_conversation_runs(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    state.get_store().create_run(
+        run_id="run_dynamic",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+
+    response = persistence_client.get(f"/conversations/{conversation['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_dynamic"]
+
+
+def test_api_deletes_run_database_records_and_run_workspace(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    conversation_workspace = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    run_workspace = conversation_workspace / "runs" / "dag_run_delete_one"
+    run_workspace.mkdir(parents=True)
+    (run_workspace / "artifact.txt").write_text("delete me", encoding="utf-8")
+    run_state = RunState(
+        run_id="dag_run_delete_one",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_path=str(run_workspace),
+        trace=RunTrace(
+            run_id="dag_run_delete_one",
+            root=RunTraceNode.run(run_id="dag_run_delete_one", status="completed"),
+            status="completed",
+        ),
+    )
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.create_run_stream(
+        stream_id="stream_delete_one",
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="dynamic_dag",
+        status="completed",
+    )
+    store.append_run_event(
+        run_id=run_state.run_id,
+        stream_id="stream_delete_one",
+        event_type="run.started",
+        payload_json='{"type":"run.started"}',
+    )
+    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="done")
+    store.upsert_review(
+        review_id="review_delete_one",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="dag_review",
+    )
+    store.append_conversation_message(
+        message_id="msg_delete_one",
+        conversation_id=conversation["id"],
+        project_id=None,
+        role="assistant",
+        run_id=run_state.run_id,
+        status="completed",
+        content="done",
+        timeline_json='[{"type":"text","content":"done"}]',
+    )
+
+    response = persistence_client.delete(f"/runs/{run_state.run_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert persistence_client.get(f"/runs/{run_state.run_id}").status_code == 404
+    assert persistence_client.get(f"/runs/{run_state.run_id}/events").status_code == 404
+    assert persistence_client.get(f"/runs/{run_state.run_id}/artifacts").status_code == 404
+    assert store.get_run(run_state.run_id) is None
+    assert store.list_run_events(run_state.run_id) == []
+    assert store.list_run_streams(run_state.run_id) == []
+    assert store.get_review("review_delete_one") is None
+    assert store.list_conversation_messages(conversation["id"]) == []
+    assert store.get_conversation(conversation["id"]).last_run_id is None
+    assert conversation_workspace.exists()
+    assert not run_workspace.exists()
+
+
+def test_api_lists_orchestration_session_runs(persistence_client) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={"conversation_id": conversation["id"], "kind": "dynamic_dag"},
+    ).json()["session"]
+    state.get_store().create_run(
+        run_id="run_dynamic",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="completed",
+        workspace_uri=conversation["workspace_uri"],
+    )
+
+    response = persistence_client.get(f"/orchestration-sessions/{session['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_dynamic"]
+
+
+def test_api_lists_saved_dag_runs(persistence_client) -> None:
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={
+            "name": "Executable",
+            "spec": {
+                "id": "executable",
+                "name": "Executable",
+                "nodes": [
+                    {
+                        "id": "write",
+                        "target": "tool.write_file",
+                        "inputs": {"path": "reports/summary.md", "content": "hello"},
+                        "boundary": {"allowed_paths": ["."]},
+                    }
+                ],
+                "edges": [],
+            },
+        },
+    ).json()["saved_dag"]
+    state.get_store().create_run(
+        run_id="run_static",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri="file:///tmp/workspace",
+        saved_dag_id=saved["id"],
+    )
+
+    response = persistence_client.get(f"/saved-dags/{saved['id']}/runs")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["runs"]] == ["run_static"]
+
+
 def test_api_rejects_conversation_for_missing_project(persistence_client) -> None:
     response = persistence_client.post(
         "/projects/proj_missing/conversations",
@@ -1159,6 +1488,87 @@ def test_api_deletes_conversation_runs_and_per_run_workspace(persistence_client,
     assert store.list_run_events(run_state.run_id) == []
     assert store.get_review("review_delete") is None
     assert not run_workspace.exists()
+
+
+def test_api_deletes_project_run_files_and_saved_dag_artifacts(
+    persistence_client,
+    tmp_path: Path,
+) -> None:
+    project = persistence_client.post(
+        "/projects",
+        json={"name": "Demo", "slug": "demo"},
+    ).json()["project"]
+    conversation = persistence_client.post(
+        f"/projects/{project['id']}/conversations",
+        json={"title": "Project chat"},
+    ).json()["conversation"]
+    run_workspace = tmp_path / ".dagent" / "runs" / "tool_run_project_delete"
+    run_workspace.mkdir(parents=True)
+    (run_workspace / "scratch.txt").write_text("remove me", encoding="utf-8")
+    run_state = RunState(
+        run_id="tool_run_project_delete",
+        kind="tool",
+        status="completed",
+        workspace_path=str(run_workspace),
+        trace=RunTrace(
+            run_id="tool_run_project_delete",
+            root=RunTraceNode.run(run_id="tool_run_project_delete", status="completed"),
+            status="completed",
+        ),
+    )
+    spec = {
+        "id": "project_upload",
+        "name": "Project Upload",
+        "artifacts": {
+            "source": {
+                "id": "source",
+                "paths": ["uploads/source.txt"],
+                "description": "source",
+            }
+        },
+        "nodes": [
+            {
+                "id": "read",
+                "target": "tool.read_file",
+                "inputs": {"path": "uploads/source.txt"},
+                "artifact_inputs": ["source"],
+                "boundary": {"allowed_paths": ["uploads/source.txt"]},
+            }
+        ],
+        "edges": [],
+    }
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=project["id"],
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="completed",
+        workspace_uri=project["workspace_uri"],
+    )
+    store.save_run_state(run_state.run_id, run_state.model_dump_json(), output_text="done")
+    saved = persistence_client.post(
+        "/saved-dags",
+        json={"project_id": project["id"], "name": "Project Upload", "spec": spec},
+    ).json()["saved_dag"]
+    upload = persistence_client.post(
+        f"/saved-dags/{saved['id']}/artifacts/source/upload",
+        files={"files": ("source.txt", b"hello", "text/plain")},
+    )
+    artifact_root = api_app._saved_dag_artifact_root(saved["id"])
+
+    assert upload.status_code == 200
+    assert artifact_root.exists()
+
+    response = persistence_client.delete(f"/projects/{project['id']}")
+
+    assert response.status_code == 200
+    assert store.get_project(project["id"]) is None
+    assert store.get_run(run_state.run_id) is None
+    assert store.get_saved_dag(saved["id"]) is None
+    assert not run_workspace.exists()
+    assert not artifact_root.exists()
 
 
 def test_api_deletes_conversation_without_removing_project_workspace(persistence_client) -> None:
@@ -1374,6 +1784,9 @@ def test_api_project_message_stream_persists_run_events_and_state(
     )
     run_response = persistence_client.get(f"/runs/{run_id}")
     replay_response = persistence_client.get(f"/runs/{run_id}/events", params={"after_event_id": 1})
+    messages_response = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/messages"
+    )
 
     assert persisted_run is not None
     assert persisted_run.project_id == project["id"]
@@ -1392,10 +1805,27 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert run_response.status_code == 200
     assert run_response.json()["run"]["id"] == run_id
     assert "state_json" not in run_response.json()["run"]
+    assert "error_json" not in run_response.json()["run"]
     assert run_response.json()["run"]["has_state"] is True
+    assert run_response.json()["run"]["has_error"] is False
     assert replay_response.status_code == 200
     assert [event["event_id"] for event in replay_response.json()["events"]] == list(range(2, len(events) + 1))
     assert replay_response.json()["events"][0]["payload"]["sequence"] == 2
+    assert messages_response.status_code == 200
+    persisted_messages = messages_response.json()["messages"]
+    assert [message["role"] for message in persisted_messages] == ["user", "assistant"]
+    assert persisted_messages[0]["content"] == "write the note"
+    assert persisted_messages[0]["run_id"] == run_id
+    assert persisted_messages[1]["content"] == "done"
+    assert persisted_messages[1]["run_id"] == run_id
+    assert persisted_messages[1]["status"] == "completed"
+    capability_items = [
+        item for item in persisted_messages[1]["timeline"]
+        if item["type"] == "capability"
+    ]
+    assert len(capability_items) == 1
+    assert capability_items[0]["status"] == "completed"
+    assert capability_items[0]["result"]["type"] == "capability.call.completed"
 
     state.close_runner()
     trace_response = persistence_client.get(f"/runs/{run_id}/trace")
@@ -1413,6 +1843,88 @@ def test_api_project_message_stream_persists_run_events_and_state(
     assert "notes/shared.txt" in files
     assert preview_response.status_code == 200
     assert preview_response.json()["content"] == "hello"
+
+    delete_response = persistence_client.delete(f"/runs/{run_id}")
+    messages_after_delete = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/messages"
+    )
+
+    assert delete_response.status_code == 200
+    assert messages_after_delete.status_code == 200
+    assert messages_after_delete.json()["messages"] == []
+
+
+def test_api_run_summary_hides_error_json_and_reports_error_flag(
+    persistence_client,
+) -> None:
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Failed run"},
+    ).json()["conversation"]
+    store = state.get_store()
+    store.create_run(
+        run_id="run_failed_summary",
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="user_123",
+        kind="tool",
+        status="running",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_error("run_failed_summary", json.dumps({"message": "boom"}))
+
+    response = persistence_client.get("/runs/run_failed_summary")
+
+    assert response.status_code == 200
+    run = response.json()["run"]
+    assert run["id"] == "run_failed_summary"
+    assert "state_json" not in run
+    assert "error_json" not in run
+    assert run["has_state"] is False
+    assert run["has_error"] is True
+
+
+def test_api_message_stream_failure_before_run_started_updates_conversation_message(
+    persistence_client,
+) -> None:
+    class FailingRunner:
+        enable_validation = False
+
+        async def stream(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+            yield
+
+        def run_state(self, run_id: str):
+            return None
+
+        def close(self) -> None:
+            pass
+
+    state.runner = FailingRunner()
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Failing chat"},
+    ).json()["conversation"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "please fail"}],
+            "target": "tool",
+            "conversation_id": conversation["id"],
+        },
+    )
+    events = _sse_events(response.text)
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert response.status_code == 200
+    assert events[-1]["type"] == "run.failed"
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["status"] == "failed"
+    assert "provider unavailable" in messages[1]["content"]
+    assert messages[1]["timeline"][-1]["type"] == "text"
 
 
 def test_api_run_trace_does_not_hide_store_read_errors(persistence_client, monkeypatch) -> None:
@@ -1705,6 +2217,9 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     resume_result = resume_events[-1]["data"]["result"]
     review = state.get_store().get_review(review_id)
     run_state = state.get_store().get_run_state(run_id)
+    messages_response = persistence_client.get(
+        f"/projects/{project['id']}/conversations/{conversation['id']}/messages"
+    )
 
     assert resume_response.status_code == 200
     assert resume_result["state"]["run_id"] == run_id
@@ -1714,6 +2229,18 @@ def test_api_project_review_resume_uses_db_state_after_runner_restart(
     assert review.status == "resolved"
     assert run_state is not None
     assert run_state.status == "completed"
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == "I will stop."
+    assert messages[1]["status"] == "completed"
+    capability_items = [
+        item for item in messages[1]["timeline"]
+        if item["type"] == "capability"
+    ]
+    assert len(capability_items) == 1
+    assert capability_items[0]["status"] == "rejected"
+    assert capability_items[0]["result"]["type"] == "capability.call.failed"
 
 
 def test_api_standalone_review_resume_uses_db_state_after_runner_restart(
@@ -2208,7 +2735,7 @@ def test_api_orchestration_session_patch_rejects_null_ui_state(persistence_clien
     assert json.loads(stored.ui_state_json) == {"selectedNodeId": "answer"}
 
 
-def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
+def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     persistence_client,
 ) -> None:
     state.runner = Runner(
@@ -2222,14 +2749,13 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
         json={"name": "Dynamic", "slug": "dynamic"},
     ).json()["project"]
     conversation = persistence_client.post(
-        f"/projects/{project['id']}/conversations",
+        "/conversations",
         json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
     ).json()["conversation"]
     session = persistence_client.post(
         "/orchestration-sessions",
         json={
             "conversation_id": conversation["id"],
-            "project_id": project["id"],
             "kind": "dynamic_dag",
         },
     ).json()["session"]
@@ -2240,17 +2766,191 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
             "messages": [{"role": "user", "content": "echo ok through a DAG"}],
             "target": "dag",
             "review_level": "fast",
-            "project_id": project["id"],
             "conversation_id": conversation["id"],
         },
     )
     updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
+    persisted_runs = state.get_store().list_runs(conversation_id=conversation["id"])
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
 
     assert response.status_code == 200
     assert any(event["type"] == "dag.updated" for event in _sse_events(response.text))
+    assert updated["project_id"] is None
     assert updated["draft_dag"]["status"] == "completed"
     assert isinstance(updated["draft_dag"]["version"], int)
     assert updated["draft_dag"]["nodes"]
+    assert len(persisted_runs) == 1
+    assert persisted_runs[0].project_id is None
+    assert persisted_runs[0].workspace_uri == conversation["workspace_uri"]
+    assert persisted_runs[0].workspace_uri != project["workspace_uri"]
+    assert "/_conversations/" in persisted_runs[0].workspace_uri
+    assert messages_response.status_code == 200
+    assert messages_response.json()["messages"] == []
+
+
+def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
+    persistence_client,
+) -> None:
+    state.runner = Runner(
+        provider=MockProvider([
+            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
+            ChatResponse(content="Final answer: echo:ok"),
+        ])
+    )
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Smart DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+            "ui_state": {"surface": "smart_workbench"},
+        },
+    ).json()["session"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "echo ok through a smart DAG"}],
+            "target": "dag",
+            "review_level": "fast",
+            "conversation_id": conversation["id"],
+        },
+    )
+    result = _sse_events(response.text)[-1]["data"]["result"]
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert response.status_code == 200
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "echo ok through a smart DAG"
+    assert messages[1]["run_id"] == result["state"]["run_id"]
+    assert messages[1]["content"] == "Final answer: echo:ok"
+    assert messages[1]["status"] == "completed"
+    assert messages[1]["dag"]["status"] == "completed"
+    assert any(item["type"] == "dag" for item in messages[1]["timeline"])
+    assert any(item["type"] == "text" and item["content"] == "Final answer: echo:ok" for item in messages[1]["timeline"])
+
+
+def test_api_orchestration_workspace_dynamic_dag_stream_persists_visible_messages(
+    persistence_client,
+) -> None:
+    state.runner = Runner(
+        provider=MockProvider([
+            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
+            ChatResponse(content="Final answer: echo:ok"),
+        ])
+    )
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+            "ui_state": {"surface": "orchestration_workspace"},
+        },
+    ).json()["session"]
+
+    response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "visible prompt\n\ninternal DAG context should stay hidden",
+                }
+            ],
+            "visible_message": "visible prompt",
+            "target": "dag",
+            "review_level": "fast",
+            "conversation_id": conversation["id"],
+        },
+    )
+    result = _sse_events(response.text)[-1]["data"]["result"]
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert response.status_code == 200
+    assert result["state"]["status"] == "completed"
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "visible prompt"
+    assert messages[0]["run_id"] == result["state"]["run_id"]
+    assert messages[1]["run_id"] == result["state"]["run_id"]
+    assert messages[1]["status"] == "completed"
+
+
+def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_history_entries(
+    persistence_client,
+) -> None:
+    state.runner = Runner(
+        provider=MockProvider([
+            ChatResponse(content='task: first\nanswer = tool_echo(text="one")\n'),
+            ChatResponse(content="first final"),
+            ChatResponse(content='task: second\nanswer = tool_echo(text="two")\n'),
+            ChatResponse(content="second final"),
+        ])
+    )
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+            "ui_state": {"surface": "orchestration_workspace"},
+        },
+    ).json()["session"]
+
+    first_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "first"}],
+            "target": "dag",
+            "review_level": "fast",
+            "conversation_id": conversation["id"],
+        },
+    )
+    second_response = persistence_client.post(
+        "/messages/stream",
+        json={
+            "messages": [{"role": "user", "content": "second"}],
+            "target": "dag",
+            "review_level": "fast",
+            "conversation_id": conversation["id"],
+        },
+    )
+    first_result = _sse_events(first_response.text)[-1]["data"]["result"]
+    second_result = _sse_events(second_response.text)[-1]["data"]["result"]
+    first_run_id = first_result["state"]["run_id"]
+    second_run_id = second_result["state"]["run_id"]
+    runs_response = persistence_client.get(f"/orchestration-sessions/{session['id']}/runs")
+    messages_response = persistence_client.get(f"/conversations/{conversation['id']}/messages")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_run_id != first_run_id
+    assert runs_response.status_code == 200
+    run_ids = [run["id"] for run in runs_response.json()["runs"]]
+    assert len(run_ids) == 2
+    assert set(run_ids) == {first_run_id, second_run_id}
+    assert messages_response.status_code == 200
+    messages = messages_response.json()["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant", "user", "assistant"]
+    assert [message["run_id"] for message in messages] == [
+        first_run_id,
+        first_run_id,
+        second_run_id,
+        second_run_id,
+    ]
 
 
 def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(

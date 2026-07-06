@@ -91,6 +91,9 @@ The current package version is `0.6.5`.
 
 ### Fixed
 
+- The dynamic orchestration page now keeps its history and run workspaces
+  separate from projects. Project-scoped DAG conversations remain in the smart
+  workbench project flow.
 - Static orchestration run events and final timelines no longer disappear after
   run completion.
 - Static orchestration hydration no longer replays saved DAG state over the

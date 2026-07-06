@@ -4,6 +4,7 @@ import type {
   AgentProfile,
   ApiConversation,
   ApiProject,
+  ApiRunSummary,
   CapabilityDefinition,
   CapabilityKind,
   CapabilityResult,
@@ -39,6 +40,7 @@ import type {
   OrchestrationSession,
   SavedDag,
 } from './types';
+import type { MessageTimelineItem } from './chatTimeline';
 import { chatScopeRequestFields, type ChatCapabilityScopePayload } from './agentScope';
 import { uploadFormFilename, type UploadFormFilenameOptions } from './dagArtifacts';
 import {
@@ -185,15 +187,24 @@ export function projectFileDownloadUrl(projectId: string, path: string): string 
   return `${API_BASE}/projects/${encodeURIComponent(projectId)}/files/download?${params.toString()}`;
 }
 
-export async function listConversations(): Promise<ApiConversation[]> {
-  const res = await fetch(`${API_BASE}/conversations`);
+export async function listConversations(options: { kind?: ApiConversation['kind'] } = {}): Promise<ApiConversation[]> {
+  const params = new URLSearchParams();
+  if (options.kind) params.set('kind', options.kind);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/conversations${suffix}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.conversations ?? [];
 }
 
-export async function listProjectConversations(projectId: string): Promise<ApiConversation[]> {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations`);
+export async function listProjectConversations(
+  projectId: string,
+  options: { kind?: ApiConversation['kind'] } = {},
+): Promise<ApiConversation[]> {
+  const params = new URLSearchParams();
+  if (options.kind) params.set('kind', options.kind);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations${suffix}`);
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.conversations ?? [];
@@ -217,11 +228,40 @@ export async function deleteConversation(conversationId: string): Promise<void> 
   if (!res.ok) throw new Error(await errorMessage(res));
 }
 
+export async function updateConversation(
+  conversationId: string,
+  input: { title: string },
+): Promise<ApiConversation> {
+  const res = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversation;
+}
+
 export async function deleteProjectConversation(projectId: string, conversationId: string): Promise<void> {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`, {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function updateProjectConversation(
+  projectId: string,
+  conversationId: string,
+  input: { title: string },
+): Promise<ApiConversation> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.conversation;
 }
 
 export async function createProjectConversation(
@@ -236,6 +276,23 @@ export async function createProjectConversation(
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.conversation;
+}
+
+export async function listConversationRuns(conversationId: string): Promise<ApiRunSummary[]> {
+  const res = await fetch(`${API_BASE}/conversations/${encodeURIComponent(conversationId)}/runs`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.runs ?? [];
+}
+
+export async function listProjectConversationRuns(
+  projectId: string,
+  conversationId: string,
+): Promise<ApiRunSummary[]> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/runs`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.runs ?? [];
 }
 
 export async function listCapabilities(kind?: CapabilityKind): Promise<CapabilityDefinition[]> {
@@ -333,6 +390,27 @@ export async function saveSavedDag(input: {
   return data.saved_dag;
 }
 
+export async function deleteSavedDag(savedDagId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(savedDagId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
+export async function listSavedDagRuns(savedDagId: string): Promise<ApiRunSummary[]> {
+  const res = await fetch(`${API_BASE}/saved-dags/${encodeURIComponent(savedDagId)}/runs`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.runs ?? [];
+}
+
+export async function deleteRun(runId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+}
+
 export async function getOrchestrationSessionByConversation(
   conversationId: string,
 ): Promise<OrchestrationSession | null> {
@@ -377,6 +455,13 @@ export async function updateOrchestrationSession(
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.session;
+}
+
+export async function listOrchestrationSessionRuns(sessionId: string): Promise<ApiRunSummary[]> {
+  const res = await fetch(`${API_BASE}/orchestration-sessions/${encodeURIComponent(sessionId)}/runs`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.runs ?? [];
 }
 
 export async function validateDag(spec: UserDag): Promise<DagValidationResult> {
@@ -856,6 +941,23 @@ export interface ApiRunEvent {
   created_at: number;
 }
 
+export interface ApiConversationMessage {
+  id: string;
+  conversation_id: string;
+  project_id?: string | null;
+  role: 'user' | 'assistant';
+  run_id?: string | null;
+  turn_index: number;
+  status: 'created' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'rejected';
+  content: string;
+  timeline: MessageTimelineItem[];
+  dag?: Dag | null;
+  trace?: RunTrace | null;
+  pending_review?: ReviewEventPayload | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface StreamHandlers {
   onStarted?: (event: RunStartedStreamEvent) => void;
   onDag?: (dag: Dag) => void;
@@ -879,6 +981,7 @@ interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
   conversation?: ConversationRequestContext;
+  visibleMessage?: string;
 }
 
 export interface ChatStreamMessage {
@@ -904,6 +1007,7 @@ export async function streamMessagesTask(
     Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
+  if (typeof options.visibleMessage === 'string') body.visible_message = options.visibleMessage;
   appendConversationContext(body, options.conversation);
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',
@@ -956,6 +1060,19 @@ export async function listRunEvents(runId: string, afterEventId = 0): Promise<Ap
   if (!res.ok) throw new Error(await errorMessage(res));
   const data = await res.json();
   return data.events ?? [];
+}
+
+export async function listConversationMessages(
+  conversationId: string,
+  projectId?: string | null,
+): Promise<ApiConversationMessage[]> {
+  const path = projectId
+    ? `/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages`
+    : `/conversations/${encodeURIComponent(conversationId)}/messages`;
+  const res = await fetch(`${API_BASE}${path}`);
+  if (!res.ok) throw new Error(await errorMessage(res));
+  const data = await res.json();
+  return data.messages ?? [];
 }
 
 function appendConversationContext(body: Record<string, unknown>, context?: ConversationRequestContext): void {

@@ -20,7 +20,7 @@ export type MessageTimelineItem =
   | { type: 'text'; content: string }
   | { type: 'reasoning'; content: string; closed: boolean }
   | { type: 'dag'; dag: Dag }
-  | { type: 'capability'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
+  | { type: 'capability'; status?: 'running' | 'awaiting_review' | 'completed' | 'failed' | 'rejected'; event: CapabilityStreamEvent; result?: CapabilityStreamEvent }
   | { type: 'validation'; event: ValidationFeedbackEvent }
   | { type: 'validating' };
 
@@ -66,7 +66,9 @@ export function processTimelineSummary(timeline: MessageTimelineItem[] | undefin
     } else if (item.type === 'capability') {
       summary.capabilityCount += 1;
       if (capabilityTimelineItemFailed(item)) summary.failedCount += 1;
-      if (item.event.type === 'capability.call.started' && !item.result) summary.runningCount += 1;
+      if (item.status === 'running' || (!item.status && item.event.type === 'capability.call.started' && !item.result)) {
+        summary.runningCount += 1;
+      }
     } else if (item.type === 'validation') {
       summary.validationCount += 1;
       if (item.event.type === 'validation.retry' || item.event.passed === false) summary.failedCount += 1;
@@ -281,12 +283,13 @@ export function upsertDagMessageTimeline(
 
 function capabilityTimelineItemFailed(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
   if (capabilityTimelineItemRejected(item)) return false;
-  return item.event.type === 'capability.call.failed' || item.result?.type === 'capability.call.failed';
+  return item.status === 'failed' || item.event.type === 'capability.call.failed' || item.result?.type === 'capability.call.failed';
 }
 
 function capabilityTimelineItemRejected(item: Extract<MessageTimelineItem, { type: 'capability' }>): boolean {
   return Boolean(
-    item.result?.content?.startsWith('人工审核已拒绝')
+    item.status === 'rejected'
+    || item.result?.content?.startsWith('人工审核已拒绝')
     || item.event.content?.startsWith('人工审核已拒绝'),
   );
 }

@@ -10,6 +10,8 @@ RunExecution = Literal["local", "sandbox", "worker"]
 ReviewStatus = Literal["pending", "resolved"]
 ConversationKind = Literal["chat", "dynamic_dag", "static_dag"]
 OrchestrationKind = Literal["dynamic_dag", "static_dag"]
+ConversationMessageRole = Literal["user", "assistant"]
+ConversationMessageStatus = Literal["created", "running", "awaiting_review", "completed", "failed", "rejected"]
 
 
 class Project(BaseModel):
@@ -85,6 +87,24 @@ class RunEvent(BaseModel):
     event_type: str
     payload_json: str
     created_at: int
+
+
+class ConversationMessage(BaseModel):
+    id: str
+    conversation_id: str
+    project_id: str | None = None
+    org_id: str = "default"
+    role: ConversationMessageRole
+    run_id: str | None = None
+    turn_index: int
+    status: ConversationMessageStatus = "created"
+    content: str = ""
+    timeline_json: str = "[]"
+    dag_json: str | None = None
+    trace_json: str | None = None
+    pending_review_json: str | None = None
+    created_at: int
+    updated_at: int
 
 
 class Review(BaseModel):

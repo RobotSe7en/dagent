@@ -81,6 +81,11 @@ metadata includes a `version` value so the WebUI can invalidate Office preview
 caches when the file changes. Otherwise, Office files fall back to the built-in
 browser renderers when ONLYOFFICE is not configured.
 
+The WebUI can inspect historical orchestration runs through persisted run
+history. Selecting a historical dynamic or static orchestration run restores
+its trace, output, and artifacts for inspection without mutating the current
+dynamic draft or saved static DAG.
+
 ## Streaming
 
 `Runner.stream(...)` runs a target and yields typed `RunStreamEvent` objects with

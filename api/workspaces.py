@@ -22,6 +22,9 @@ class LocalWorkspaceStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def local_path_for_existing(self, uri: str) -> Path:
+        return self._file_uri_path(uri)
+
     def sync_in(self, uri: str) -> Path:
         return self.local_path_for(uri)
 
