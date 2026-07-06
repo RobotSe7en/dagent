@@ -1611,7 +1611,7 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(appSource, /const \[staticRunHistory, setStaticRunHistory\] = useState<ApiRunSummary\[\]>\(\[\]\);/);
   assert.match(appSource, /const \[staticDeletingRunId, setStaticDeletingRunId\] = useState\(''\);/);
   assert.match(appSource, /const \[staticInspectorMode, setStaticInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
-  assert.match(appSource, /const \[staticRunHistoryCollapsed, setStaticRunHistoryCollapsed\] = useState\(false\);/);
+  assert.match(appSource, /const \[staticRunHistoryCollapsed, setStaticRunHistoryCollapsed\] = useState\(true\);/);
   assert.match(appSource, /const \[staticRunArtifactFiles, setStaticRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
   assert.match(appSource, /const staticArtifactRunId = staticSelectedRunId \|\| editorRun\?\.run_id \|\| '';/);
   assert.match(appSource, /listRunArtifacts\(staticArtifactRunId\)/);
@@ -1627,6 +1627,12 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
   assert.match(appSource, /function SavedDagDeleteDialog/);
   assert.match(appSource, /function RunHistoryPanel/);
+  assert.match(appSource, /function runStatusLabel\(status: string\): string/);
+  assert.match(appSource, /function formatRunHistoryTime\(run: ApiRunSummary\): string/);
+  assert.match(appSource, /<span>\{runStatusLabel\(run\.status\)\}<\/span>/);
+  assert.match(appSource, /<strong>\{run\.id\}<\/strong>/);
+  assert.match(appSource, /<em>\{formatRunHistoryTime\(run\)\}<\/em>/);
+  assert.doesNotMatch(appSource, /run\.output_text \|\| new Date\(run\.updated_at/);
   assert.match(appSource, /function RunArtifactsInspector/);
   assert.match(appSource, /aria-label="产物检查器"/);
   assert.match(orchestrationSource, /runHistory=\{runHistory\}/);
@@ -1638,7 +1644,10 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(css, /\.run-history-panel/);
   assert.match(css, /\.run-history-panel\.collapsed/);
   assert.match(css, /\.run-history-toggle/);
+  assert.match(css, /\.run-history-toggle svg\s*\{[^}]*display:\s*block;/s);
   assert.match(css, /\.run-history-list/);
+  assert.match(css, /\.run-history-actions\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s);
+  assert.match(css, /\.run-history-row:hover \.run-history-actions,\s*\.run-history-row:focus-within \.run-history-actions\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s);
   assert.match(css, /\.run-artifacts-inspector/);
 });
 
@@ -1653,7 +1662,7 @@ test('dynamic orchestration workspace shows session run history', async () => {
   assert.match(appSource, /const \[dynamicOrchestrationSessionId, setDynamicOrchestrationSessionId\] = useState\(''\);/);
   assert.match(appSource, /const \[dynamicDeletingRunId, setDynamicDeletingRunId\] = useState\(''\);/);
   assert.match(appSource, /const \[dynamicInspectorMode, setDynamicInspectorMode\] = useState<OrchestrationInspectorMode>\('node'\);/);
-  assert.match(appSource, /const \[dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed\] = useState\(false\);/);
+  assert.match(appSource, /const \[dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed\] = useState\(true\);/);
   assert.match(appSource, /const \[dynamicRunArtifactFiles, setDynamicRunArtifactFiles\] = useState<RunArtifactFile\[\]>\(\[\]\);/);
   assert.match(appSource, /const dynamicArtifactRunId = dynamicSelectedRunId \|\| dynamicRunState\?\.run_id \|\| '';/);
   assert.match(appSource, /listRunArtifacts\(dynamicArtifactRunId\)/);

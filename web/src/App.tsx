@@ -1126,6 +1126,26 @@ function buildDynamicDagMessages(history: DynamicChatMessage[], prompt: string, 
   ];
 }
 
+function runStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    queued: '排队中',
+    planned: '已计划',
+    running: '运行中',
+    awaiting_review: '待审核',
+    completed: '已完成',
+    failed: '失败',
+    rejected: '已拒绝',
+    cancelled: '已取消',
+    skipped: '已跳过',
+  };
+  return labels[status] ?? status;
+}
+
+function formatRunHistoryTime(run: ApiRunSummary): string {
+  const timestamp = run.completed_at ?? run.started_at ?? run.updated_at ?? run.created_at;
+  return new Date(timestamp * 1000).toLocaleString();
+}
+
 function chatMessagesFromApiConversationMessages(items: ApiConversationMessage[]): ChatMessage[] {
   return items.map((item) => {
     const content = item.content ?? '';
@@ -1312,7 +1332,7 @@ export function App() {
   const [staticDeletingRunId, setStaticDeletingRunId] = useState('');
   const [staticRunDeleteTargetId, setStaticRunDeleteTargetId] = useState('');
   const [staticInspectorMode, setStaticInspectorMode] = useState<OrchestrationInspectorMode>('node');
-  const [staticRunHistoryCollapsed, setStaticRunHistoryCollapsed] = useState(false);
+  const [staticRunHistoryCollapsed, setStaticRunHistoryCollapsed] = useState(true);
   const [staticRunArtifactFiles, setStaticRunArtifactFiles] = useState<RunArtifactFile[]>([]);
   const [staticRunArtifactLoading, setStaticRunArtifactLoading] = useState(false);
   const [staticRunArtifactError, setStaticRunArtifactError] = useState<string | null>(null);
@@ -1347,7 +1367,7 @@ export function App() {
   const [dynamicDeletingRunId, setDynamicDeletingRunId] = useState('');
   const [dynamicRunDeleteTargetId, setDynamicRunDeleteTargetId] = useState('');
   const [dynamicInspectorMode, setDynamicInspectorMode] = useState<OrchestrationInspectorMode>('node');
-  const [dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed] = useState(false);
+  const [dynamicRunHistoryCollapsed, setDynamicRunHistoryCollapsed] = useState(true);
   const [dynamicRunArtifactFiles, setDynamicRunArtifactFiles] = useState<RunArtifactFile[]>([]);
   const [dynamicRunArtifactLoading, setDynamicRunArtifactLoading] = useState(false);
   const [dynamicRunArtifactError, setDynamicRunArtifactError] = useState<string | null>(null);
@@ -10108,9 +10128,9 @@ function RunHistoryPanel({
                     onClick={() => onSelectRun(run.id)}
                     type="button"
                   >
-                    <span>{run.status}</span>
+                    <span>{runStatusLabel(run.status)}</span>
                     <strong>{run.id}</strong>
-                    <em>{run.output_text || new Date(run.updated_at * 1000).toLocaleString()}</em>
+                    <em>{formatRunHistoryTime(run)}</em>
                   </button>
                   <div className="run-history-actions">
                     <button

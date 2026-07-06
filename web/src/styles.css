@@ -3528,6 +3528,8 @@ details[open] > summary .card-chevron {
 .run-history-toggle {
   width: 24px;
   height: 24px;
+  padding: 0;
+  flex-shrink: 0;
   display: inline-grid;
   place-items: center;
   border: 1px solid #e2e4ea;
@@ -3535,6 +3537,11 @@ details[open] > summary .card-chevron {
   background: #fff;
   color: #6b717b;
   cursor: pointer;
+  line-height: 0;
+}
+
+.run-history-toggle svg {
+  display: block;
 }
 
 .run-history-toggle:hover {
@@ -3601,6 +3608,15 @@ details[open] > summary .card-chevron {
   display: flex;
   align-items: stretch;
   border-left: 1px solid #eef0f3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.run-history-row:hover .run-history-actions,
+.run-history-row:focus-within .run-history-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .run-history-actions button {
