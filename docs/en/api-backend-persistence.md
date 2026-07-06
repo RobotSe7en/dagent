@@ -55,6 +55,23 @@ The local SQLite schema is treated as an API/WebUI storage schema, not a public
 SDK data contract. Incompatible pre-release local databases are recreated
 instead of migrated with compatibility shims.
 
+## Orchestration History
+
+Orchestration history is managed through existing API persistence objects.
+Dynamic orchestration history is stored as `dynamic_dag` conversations with
+attached `orchestration_sessions` and runs. Static orchestration history is
+stored as `saved_dags` plus runs linked by `saved_dag_id`.
+
+The WebUI uses these endpoints to manage orchestration history:
+
+```text
+PATCH /conversations/{conversation_id}
+PATCH /projects/{project_id}/conversations/{conversation_id}
+GET /conversations/{conversation_id}/runs
+GET /orchestration-sessions/{session_id}/runs
+GET /saved-dags/{dag_id}/runs
+```
+
 ## Resume And Restart Behavior
 
 For review resume, use:

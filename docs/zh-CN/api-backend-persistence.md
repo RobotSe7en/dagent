@@ -46,6 +46,22 @@ run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录
 本地 SQLite schema 是 API/WebUI 存储 schema，不是公开 SDK 数据 contract。检测到不兼容的
 未发布本地旧库时，后端会重建数据库，而不是添加兼容 shim 或迁移层。
 
+## 编排历史
+
+编排历史通过现有 API 持久化对象管理。动态编排历史保存为 `dynamic_dag`
+conversation，并绑定 `orchestration_sessions` 和 runs。静态编排历史保存为
+`saved_dags`，运行历史通过 `saved_dag_id` 关联到 runs。
+
+WebUI 使用这些 endpoint 管理编排历史：
+
+```text
+PATCH /conversations/{conversation_id}
+PATCH /projects/{project_id}/conversations/{conversation_id}
+GET /conversations/{conversation_id}/runs
+GET /orchestration-sessions/{session_id}/runs
+GET /saved-dags/{dag_id}/runs
+```
+
 ## Resume 和重启行为
 
 项目 review resume 使用：
