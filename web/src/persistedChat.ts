@@ -134,8 +134,6 @@ function appendPersistedChatEventGroups(
 ): void {
   const finalGroup = groups[groups.length - 1];
   let assistantCursor = 0;
-  let previousAssistantIndex = -1;
-  let previousInputBoundary: number | null = null;
   for (const group of groups) {
     const segmentResult = finishedRunResultFromEvents(group) ?? (group === finalGroup ? finalResult : null);
     const segmentState = segmentResult?.state ?? (group === finalGroup ? finalResult.state ?? null : null);
@@ -153,27 +151,6 @@ function appendPersistedChatEventGroups(
     const replayedText = textContentFromTimeline(timeline);
     const content = replayedText || fallbackContent;
     if (!content && !timeline.length && !dagSnapshot) continue;
-    const segmentMessage: ChatMessage = {
-      role: 'assistant',
-      kind: 'text',
-      content,
-      timeline,
-      dagSnapshot,
-      traceSnapshot: segmentTrace,
-    };
-    const inputBoundary = inputBoundaryFromRunState(segmentState);
-
-    if (
-      previousAssistantIndex !== -1
-      && inputBoundary !== null
-      && inputBoundary === previousInputBoundary
-    ) {
-      messages[previousAssistantIndex] = mergePersistedAssistantMessage(
-        messages[previousAssistantIndex],
-        segmentMessage,
-      );
-      continue;
-    }
 
     const assistantIndex = nextAssistantMessageIndex(messages, assistantCursor);
     if (assistantIndex !== -1) {
@@ -187,14 +164,17 @@ function appendPersistedChatEventGroups(
         traceSnapshot: segmentTrace,
       };
       assistantCursor = assistantIndex + 1;
-      previousAssistantIndex = assistantIndex;
-      previousInputBoundary = inputBoundary;
       continue;
     }
 
-    messages.push(segmentMessage);
-    previousAssistantIndex = messages.length - 1;
-    previousInputBoundary = inputBoundary;
+    messages.push({
+      role: 'assistant',
+      kind: 'text',
+      content,
+      timeline,
+      dagSnapshot,
+      traceSnapshot: segmentTrace,
+    });
     assistantCursor = messages.length;
   }
 }
@@ -510,11 +490,6 @@ function inputMessagesFromRunState(state: ApiRunState | null): Record<string, un
     return [{ role: 'user', content: state.user_request }];
   }
   return internalMessages;
-}
-
-function inputBoundaryFromRunState(state: ApiRunState | null): number | null {
-  if (!state) return null;
-  return normalizedInputMessageCount(state, (state.internal_messages ?? []).length);
 }
 
 function normalizedInputMessageCount(state: ApiRunState, messageCount: number): number | null {
