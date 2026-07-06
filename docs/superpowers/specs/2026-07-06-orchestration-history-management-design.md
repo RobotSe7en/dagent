@@ -5,10 +5,11 @@
 Add complete history management for the orchestration workspace without changing
 the public Python SDK.
 
-Dynamic orchestration history is managed as `dynamic_dag` conversations.
-Static orchestration history is managed as saved DAG assets. Both can be
-standalone or project-scoped because the existing workspace model already
-supports both.
+Dynamic orchestration history is managed as standalone `dynamic_dag`
+conversations in the orchestration workspace. Static orchestration history is
+managed as saved DAG assets. Project-scoped DAG conversations remain part of the
+smart workbench project flow and are not shown or created by the dynamic
+orchestration page.
 
 ## Current State
 
@@ -316,16 +317,15 @@ When `activeWorkspace === "orchestration"` and
 List source:
 
 - Use `conversations` already loaded by the app.
-- Filter to `conversation.kind === "dynamic_dag"`.
-- Respect selected project context:
-  - If a project is selected, prefer project dynamic conversations.
-  - If no project is selected, show standalone dynamic conversations.
+- Filter to `conversation.kind === "dynamic_dag"` and `project_id == null`.
+- Do not respect the selected project context; the dynamic orchestration page is
+  independent from project workspaces.
 - Search title, id, and status.
 
 Actions:
 
-- New: create `dynamic_dag` conversation and orchestration session, then clear
-  the dynamic workspace state.
+- New: create a standalone `dynamic_dag` conversation and orchestration session,
+  then clear the dynamic workspace state.
 - Select: hydrate the conversation using the existing
   `hydrateOrchestrationConversation`.
 - Rename: call the new conversation update helper, refresh local conversation
@@ -346,6 +346,9 @@ For the selected dynamic orchestration session:
 - Selecting a historical run does not patch `orchestration_sessions.draft_dag`.
 - Running the dynamic orchestration always uses the current draft and active
   conversation, not the selected historical run.
+- Generated DAG review happens in the dynamic orchestration canvas. Clicking
+  Run resumes the pending DAG review as approved and starts execution. The
+  global DAG review dialog remains only for smart workbench DAG conversations.
 
 ### Static DAG Sidebar
 
@@ -428,7 +431,10 @@ git diff --check
 Manual UI checks:
 
 - Create, rename, select, and delete a dynamic orchestration.
+- Confirm dynamic orchestration runs use a standalone conversation workspace,
+  even when a project is selected elsewhere in the UI.
 - Run dynamic orchestration twice and switch between history entries.
+- Confirm smart workbench DAG conversations still use the DAG review dialog.
 - Create, edit, run, and delete a static saved DAG.
 - Run a static saved DAG twice and switch between history entries.
 - Confirm normal chat conversations and project file browsing still work.

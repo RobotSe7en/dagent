@@ -2422,7 +2422,7 @@ def test_api_orchestration_session_patch_rejects_null_ui_state(persistence_clien
     assert json.loads(stored.ui_state_json) == {"selectedNodeId": "answer"}
 
 
-def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
+def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     persistence_client,
 ) -> None:
     state.runner = Runner(
@@ -2436,14 +2436,13 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
         json={"name": "Dynamic", "slug": "dynamic"},
     ).json()["project"]
     conversation = persistence_client.post(
-        f"/projects/{project['id']}/conversations",
+        "/conversations",
         json={"title": "Dynamic DAG session", "kind": "dynamic_dag"},
     ).json()["conversation"]
     session = persistence_client.post(
         "/orchestration-sessions",
         json={
             "conversation_id": conversation["id"],
-            "project_id": project["id"],
             "kind": "dynamic_dag",
         },
     ).json()["session"]
@@ -2454,17 +2453,23 @@ def test_api_dynamic_dag_stream_updates_orchestration_session_draft(
             "messages": [{"role": "user", "content": "echo ok through a DAG"}],
             "target": "dag",
             "review_level": "fast",
-            "project_id": project["id"],
             "conversation_id": conversation["id"],
         },
     )
     updated = persistence_client.get(f"/orchestration-sessions/{session['id']}").json()["session"]
+    persisted_runs = state.get_store().list_runs(conversation_id=conversation["id"])
 
     assert response.status_code == 200
     assert any(event["type"] == "dag.updated" for event in _sse_events(response.text))
+    assert updated["project_id"] is None
     assert updated["draft_dag"]["status"] == "completed"
     assert isinstance(updated["draft_dag"]["version"], int)
     assert updated["draft_dag"]["nodes"]
+    assert len(persisted_runs) == 1
+    assert persisted_runs[0].project_id is None
+    assert persisted_runs[0].workspace_uri == conversation["workspace_uri"]
+    assert persisted_runs[0].workspace_uri != project["workspace_uri"]
+    assert "/_conversations/" in persisted_runs[0].workspace_uri
 
 
 def test_api_dynamic_dag_stream_keeps_session_when_finished_state_has_no_dag(

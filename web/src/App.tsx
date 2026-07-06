@@ -395,6 +395,20 @@ function isChatSurfaceConversation(conversation: ApiConversation): boolean {
   return conversation.kind === 'chat' || conversation.kind === 'dynamic_dag';
 }
 
+function isStandaloneDynamicOrchestration(conversation: ApiConversation): boolean {
+  return conversation.kind === 'dynamic_dag' && !conversation.project_id;
+}
+
+function isSelectableOrchestrationConversation(
+  conversation: ApiConversation,
+  kind: ApiConversation['kind'],
+  selectedProjectId: string,
+): boolean {
+  if (conversation.kind !== kind) return false;
+  if (kind === 'dynamic_dag') return isStandaloneDynamicOrchestration(conversation);
+  return selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id;
+}
+
 function joinProjectPath(base: string, name: string): string {
   return [base, name].map((part) => part.trim().replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/');
 }
@@ -1365,7 +1379,7 @@ export function App() {
     [conversations, selectedConversationId],
   );
   const orchestrationConversationIdsKey = useMemo(() => conversations
-    .filter((conversation) => conversation.kind === 'dynamic_dag' || conversation.kind === 'static_dag')
+    .filter((conversation) => isStandaloneDynamicOrchestration(conversation) || conversation.kind === 'static_dag')
     .map((conversation) => `${conversation.kind}:${conversation.project_id ?? ''}:${conversation.id}`)
     .join('|'), [conversations]);
   const selectedChatConversation = selectedConversation?.kind === 'chat' ? selectedConversation : null;
@@ -1403,17 +1417,12 @@ export function App() {
     : undefined;
   const normalizedDynamicConversationQuery = normalizeSearchQuery(dynamicConversationQuery);
   const visibleDynamicConversations = useMemo(() => conversations.filter((conversation) => {
-    if (conversation.kind !== 'dynamic_dag') return false;
-    if (selectedProjectId) {
-      if (conversation.project_id !== selectedProjectId) return false;
-    } else if (conversation.project_id) {
-      return false;
-    }
+    if (!isStandaloneDynamicOrchestration(conversation)) return false;
     return matchesSearchQuery(
       [conversation.id, conversation.title, conversation.status],
       normalizedDynamicConversationQuery,
     );
-  }), [conversations, normalizedDynamicConversationQuery, selectedProjectId]);
+  }), [conversations, normalizedDynamicConversationQuery]);
   const dynamicGraph = useMemo(() => graphFromDag(dynamicDag, dynamicLayoutPositions), [dynamicDag, dynamicLayoutPositions]);
   const selectedSidebarSkill = useMemo(
     () => skills.find((skill) => skillLookupName(skill) === selectedToolSkillName) ?? skills[0],
@@ -2693,21 +2702,20 @@ export function App() {
     const kind: ApiConversation['kind'] = orchestrationMode === 'dynamic' ? 'dynamic_dag' : 'static_dag';
     const conversationItems = conversationsRef.current;
     const current = selectedConversationId
-      ? conversationItems.find((conversation) => conversation.id === selectedConversationId && conversation.kind === kind) ?? null
+      ? conversationItems.find((conversation) => (
+        conversation.id === selectedConversationId
+        && isSelectableOrchestrationConversation(conversation, kind, selectedProjectId)
+      )) ?? null
       : null;
     const preferred = current
-      ?? conversationItems.find((conversation) => (
-        conversation.kind === kind
-        && (selectedProjectId ? conversation.project_id === selectedProjectId : !conversation.project_id)
-      ))
-      ?? conversationItems.find((conversation) => conversation.kind === kind)
+      ?? conversationItems.find((conversation) => isSelectableOrchestrationConversation(conversation, kind, selectedProjectId))
       ?? null;
     if (!preferred) return;
     const hydrateKey = `${kind}:${preferred.id}`;
     if (orchestrationHydratedKeyRef.current === hydrateKey) return;
     if (preferred.id !== selectedConversationId) {
       setSelectedConversationId(preferred.id);
-      if (preferred.project_id) setSelectedProjectId(preferred.project_id);
+      if (kind !== 'dynamic_dag' && preferred.project_id) setSelectedProjectId(preferred.project_id);
       return;
     }
     orchestrationHydratedKeyRef.current = hydrateKey;
@@ -3308,10 +3316,7 @@ export function App() {
   const createDynamicOrchestration = async () => {
     if (dynamicRunning || editorRunning) return;
     try {
-      const targetProjectId = selectedProjectId || null;
-      const conversation = targetProjectId
-        ? await createProjectConversation(targetProjectId, { title: '动态编排', kind: 'dynamic_dag' })
-        : await createConversation({ title: '动态编排', kind: 'dynamic_dag' });
+      const conversation = await createConversation({ title: '动态编排', kind: 'dynamic_dag' });
       const session = await createOrchestrationSession({
         conversation_id: conversation.id,
         project_id: conversation.project_id,
@@ -3327,7 +3332,6 @@ export function App() {
       setDynamicOrchestrationSessionId(session.id);
       orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
       setSelectedConversationId(conversation.id);
-      if (conversation.project_id) setSelectedProjectId(conversation.project_id);
       setDynamicStatusMessage('');
       await refreshConversations();
     } catch (exc) {
@@ -3338,9 +3342,8 @@ export function App() {
   const selectDynamicOrchestration = async (conversationId: string) => {
     if (dynamicRunning || editorRunning) return;
     const conversation = conversationsRef.current.find((item) => item.id === conversationId);
-    if (!conversation || conversation.kind !== 'dynamic_dag') return;
+    if (!conversation || !isStandaloneDynamicOrchestration(conversation)) return;
     setSelectedConversationId(conversation.id);
-    if (conversation.project_id) setSelectedProjectId(conversation.project_id);
     clearDynamicWorkspace();
     orchestrationHydratedKeyRef.current = `dynamic_dag:${conversation.id}`;
     await hydrateOrchestrationConversation(conversation);
@@ -3455,6 +3458,9 @@ export function App() {
         onDone: (payload) => {
           const runState = payload.result.state;
           if (!runState?.dag || !runState.trace || !runState.run_id) return;
+          const traceEvents = mapRunTrace(runState.trace);
+          setEditorTrace(traceEvents);
+          setEditorRunTimeline((items) => traceEvents.reduce((timeline, event) => appendRunTranscriptTraceEvent(timeline, event), items));
           const dagRun = {
             run_id: runState.run_id,
             spec_id: runState.spec_id ?? null,
@@ -3578,7 +3584,7 @@ export function App() {
         'dynamic_dag',
         conversationTitleFromPrompt(prompt),
         {
-          targetProjectId: selectedProjectId || null,
+          targetProjectId: null,
           draftDag: dynamicDag as unknown as Record<string, unknown>,
         },
       );
@@ -3616,7 +3622,7 @@ export function App() {
         'dynamic_dag',
         dag.dag_id || '动态编排',
         {
-          targetProjectId: selectedProjectId || null,
+          targetProjectId: null,
           draftDag: dag as unknown as Record<string, unknown>,
         },
       );
@@ -4705,7 +4711,7 @@ export function App() {
         />
       ) : null}
 
-      {reviewOpen && dag.nodes.length ? (
+      {activeWorkspace === 'chat' && reviewOpen && dag.nodes.length ? (
         <DagReviewDialog
           dag={dag}
           nodes={nodes}

@@ -1232,6 +1232,7 @@ test('updated orchestration and tools workspaces use real backend data with the 
   const hydrationEffectSource = appSource.match(/useEffect\(\(\) => \{\s*if \(activeWorkspace !== 'orchestration'[\s\S]*?\n  \}, \[[\s\S]*?orchestrationConversationIdsKey,[\s\S]*?\]\);/)?.[0] ?? '';
   assert.ok(hydrationEffectSource, 'orchestration hydration effect should exist');
   assert.match(hydrationEffectSource, /conversationsRef\.current/);
+  assert.match(hydrationEffectSource, /isSelectableOrchestrationConversation\(conversation, kind, selectedProjectId\)/);
   assert.match(hydrationEffectSource, /const hydrateKey = `\$\{kind\}:\$\{preferred\.id\}`;/);
   assert.doesNotMatch(hydrationEffectSource, /savedRevisionKey|preferred\.updated_at|preferred\.last_run_id|savedDags\.map/);
   assert.doesNotMatch(hydrationEffectSource, /\n\s*conversations,\n|\n\s*savedDags,\n|\n\s*selectedConversation,\n/);
@@ -1377,14 +1378,19 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(appSource, /JSON\.stringify\(dynamicDagForPrompt\(dag\), null, 2\)/);
   assert.match(appSource, /const dynamicRequestMessages = buildDynamicDagMessages\(dynamicMessages, prompt, dynamicDag\);/);
   assert.match(appSource, /ensureOrchestrationContext\(\s*'dynamic_dag'/);
+  assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
+  assert.doesNotMatch(appSource, /targetProjectId:\s*selectedProjectId \|\| null,[\s\S]*draftDag: dynamicDag as unknown as Record<string, unknown>/);
   assert.match(appSource, /streamMessagesTask\([\s\S]*dynamicRequestMessages,[\s\S]*'dag',[\s\S]*dynamicReviewLevel\(\),[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*undefined,[\s\S]*dynamicAdjust,[\s\S]*\{ conversation: context\.request \}/);
   assert.match(appSource, /function dynamicReviewLevel/);
   assert.doesNotMatch(dynamicSource, /<select[\s\S]*reviewLevels|onReviewLevelChange|reviewLevel: ReviewLevel/);
+  assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
+  assert.doesNotMatch(dynamicSource, /DagReviewDialog|reviewOpen|setReviewOpen|setDagReview/);
   assert.match(appSource, /className="dynamic-orchestration-chat"/);
   assert.match(dynamicSource, /<div className="dynamic-chat-head">\s*<strong>动态编排<\/strong>\s*<\/div>/);
   assert.doesNotMatch(dynamicSource, /任务目标 \/ SOP/);
   assert.match(appSource, /生成 DAG/);
   assert.match(appSource, /运行/);
+  assert.match(appSource, /targetProjectId:\s*null,\s*[\s\S]*draftDag: dag as unknown as Record<string, unknown>/);
   assert.match(appSource, /resumeDagReview\([\s\S]*reviewId,[\s\S]*dag,[\s\S]*dynamicReviewLevel\(\),[\s\S]*true,[\s\S]*dynamicHandlers\(context\.request, context\.session\.id\),[\s\S]*dynamicRunState,[\s\S]*undefined,[\s\S]*\{ conversation: context\.request \}/);
   assert.doesNotMatch(appSource, /resumeDagReview\(reviewId, null, dynamicReviewLevel\(\), false/);
   assert.match(appSource, /const dynamicDagRef = useRef<Dag>\(emptyDag\);/);
@@ -1495,7 +1501,10 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(appSource, /updateConversation,/);
   assert.match(appSource, /updateProjectConversation,/);
   assert.match(appSource, /const \[dynamicConversationQuery, setDynamicConversationQuery\] = useState\(''\);/);
+  assert.match(appSource, /function isStandaloneDynamicOrchestration\(conversation: ApiConversation\): boolean \{[\s\S]*conversation\.kind === 'dynamic_dag' && !conversation\.project_id/);
+  assert.match(appSource, /function isSelectableOrchestrationConversation\([\s\S]*kind === 'dynamic_dag'[\s\S]*isStandaloneDynamicOrchestration\(conversation\)/);
   assert.match(appSource, /const visibleDynamicConversations = useMemo\(\(\) => conversations\.filter/);
+  assert.match(appSource, /if \(!isStandaloneDynamicOrchestration\(conversation\)\) return false;/);
   assert.match(appSource, /const clearDynamicWorkspace = useCallback\(\(\) => \{/);
   assert.match(appSource, /const createDynamicOrchestration = async \(\) => \{/);
   assert.match(appSource, /const selectDynamicOrchestration = async \(conversationId: string\) => \{/);
@@ -1511,6 +1520,12 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(sidebarSource, /onDeleteDynamicOrchestration\(conversation\.id\)/);
   assert.match(appSource, /function DynamicConversationRenameDialog/);
   assert.match(appSource, /function DynamicConversationDeleteDialog/);
+  const createDynamicSource = appSource.match(/const createDynamicOrchestration = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(createDynamicSource, /await createConversation\(\{ title: '动态编排', kind: 'dynamic_dag' \}\)/);
+  assert.doesNotMatch(createDynamicSource, /createProjectConversation|selectedProjectId|setSelectedProjectId/);
+  const selectDynamicSource = appSource.match(/const selectDynamicOrchestration = async \(conversationId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectDynamicSource, /isStandaloneDynamicOrchestration\(conversation\)/);
+  assert.doesNotMatch(selectDynamicSource, /setSelectedProjectId/);
 });
 
 test('static orchestration sidebar supports saved DAG delete and run history', async () => {
@@ -1533,6 +1548,7 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(appSource, /listSavedDagRuns\(editorSavedDagId\)/);
   assert.match(appSource, /const selectStaticRunHistory = async \(runId: string\) => \{/);
   assert.match(appSource, /finishedRunResultFromEvents\(events\)/);
+  assert.match(appSource, /const traceEvents = mapRunTrace\(runState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(\(items\) => traceEvents\.reduce\(\(timeline, event\) => appendRunTranscriptTraceEvent\(timeline, event\), items\)\);/);
   assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
   assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
   assert.match(appSource, /function SavedDagDeleteDialog/);

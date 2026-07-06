@@ -49,7 +49,9 @@ run artifact 列表。保存的静态 DAG 输入上传会写入 API 配置目录
 ## 编排历史
 
 编排历史通过现有 API 持久化对象管理。动态编排历史保存为 `dynamic_dag`
-conversation，并绑定 `orchestration_sessions` 和 runs。静态编排历史保存为
+conversation，并绑定 `orchestration_sessions` 和 runs。在编排工作区里，动态编排
+session 是无项目 conversation，使用无项目 conversation workspace，不使用项目
+workspace。项目范围的 DAG conversation 仍属于智能工作台的项目流程。静态编排历史保存为
 `saved_dags`，运行历史通过 `saved_dag_id` 关联到 runs。
 
 WebUI 使用这些 endpoint 管理编排历史：

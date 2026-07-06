@@ -59,8 +59,12 @@ instead of migrated with compatibility shims.
 
 Orchestration history is managed through existing API persistence objects.
 Dynamic orchestration history is stored as `dynamic_dag` conversations with
-attached `orchestration_sessions` and runs. Static orchestration history is
-stored as `saved_dags` plus runs linked by `saved_dag_id`.
+attached `orchestration_sessions` and runs. In the orchestration workspace,
+dynamic orchestration sessions are standalone conversations and use standalone
+conversation workspaces, not project workspaces. Project-scoped DAG
+conversations remain part of the smart workbench project flow. Static
+orchestration history is stored as `saved_dags` plus runs linked by
+`saved_dag_id`.
 
 The WebUI uses these endpoints to manage orchestration history:
 

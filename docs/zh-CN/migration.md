@@ -78,6 +78,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ### 修复
 
+- 动态编排页面现在会把自己的历史和运行 workspace 与项目分离。项目范围的 DAG
+  conversation 仍保留在智能工作台项目流程中。
 - 静态编排运行完成后，运行事件和最终 timeline 不再消失。
 - 静态编排 hydration 不再在保存或刷新 conversation 后，用保存的 DAG 状态覆盖当前编辑器和
   已完成运行结果。
