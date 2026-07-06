@@ -265,17 +265,21 @@ class SQLiteStore:
         *,
         standalone: bool = False,
         org_id: str | None = None,
+        kind: ConversationKind | None = None,
     ) -> list[Conversation]:
         conditions = ["archived_at IS NULL"]
         params: list[object] = []
         if standalone:
             conditions.append("project_id IS NULL")
-        if project_id is not None:
+        elif project_id is not None:
             conditions.append("project_id = ?")
             params.append(project_id)
         if org_id is not None:
             conditions.append("org_id = ?")
             params.append(org_id)
+        if kind is not None:
+            conditions.append("kind = ?")
+            params.append(kind)
         query = "SELECT * FROM conversations WHERE " + " AND ".join(conditions)
         query += " ORDER BY updated_at DESC"
         with self._lock:
@@ -291,6 +295,33 @@ class SQLiteStore:
         with self._lock:
             row = self._conn.execute(query, params).fetchone()
         return None if row is None else _conversation_from_row(row)
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str,
+        org_id: str = "default",
+    ) -> Conversation:
+        now = _now()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE conversations
+                SET title = ?, updated_at = ?
+                WHERE id = ? AND org_id = ? AND archived_at IS NULL
+                """,
+                (title, now, conversation_id, org_id),
+            )
+            if cursor.rowcount == 0:
+                self._conn.rollback()
+                raise KeyError(f"Conversation '{conversation_id}' not found.")
+            self._conn.commit()
+            row = self._required_row(
+                "SELECT * FROM conversations WHERE id = ? AND org_id = ?",
+                (conversation_id, org_id),
+            )
+        return _conversation_from_row(row)
 
     def acquire_conversation_lock(
         self,
@@ -456,6 +487,7 @@ class SQLiteStore:
         *,
         project_id: str | None = None,
         conversation_id: str | None = None,
+        saved_dag_id: str | None = None,
         org_id: str | None = None,
     ) -> list[Run]:
         conditions: list[str] = []
@@ -466,6 +498,9 @@ class SQLiteStore:
         if conversation_id is not None:
             conditions.append("conversation_id = ?")
             params.append(conversation_id)
+        if saved_dag_id is not None:
+            conditions.append("saved_dag_id = ?")
+            params.append(saved_dag_id)
         if org_id is not None:
             conditions.append("org_id = ?")
             params.append(org_id)

@@ -319,6 +319,53 @@ def test_sqlite_store_persists_conversation_kind(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_sqlite_store_updates_conversation_title(tmp_path: Path, monkeypatch) -> None:
+    import api.storage.sqlite as sqlite_storage
+
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 100)
+    conversation = store.create_conversation(
+        conversation_id="conv_rename",
+        project_id=None,
+        title="Original",
+        workspace_uri=f"file://{tmp_path / 'workspace'}",
+        kind="dynamic_dag",
+    )
+    monkeypatch.setattr(sqlite_storage.time, "time", lambda: 150)
+
+    updated = store.update_conversation(conversation.id, title="Renamed")
+    recovered = store.get_conversation(conversation.id)
+
+    assert updated.title == "Renamed"
+    assert updated.updated_at == 150
+    assert recovered is not None
+    assert recovered.title == "Renamed"
+    assert recovered.updated_at == 150
+
+
+def test_sqlite_store_filters_conversations_by_kind(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store.create_conversation(
+        conversation_id="conv_chat",
+        project_id=None,
+        title="Chat",
+        workspace_uri=workspace_uri,
+        kind="chat",
+    )
+    store.create_conversation(
+        conversation_id="conv_dynamic",
+        project_id=None,
+        title="Dynamic",
+        workspace_uri=workspace_uri,
+        kind="dynamic_dag",
+    )
+
+    dynamic = store.list_conversations(standalone=True, kind="dynamic_dag")
+
+    assert [conversation.id for conversation in dynamic] == ["conv_dynamic"]
+
+
 def test_sqlite_store_persists_saved_dags_and_sessions(tmp_path: Path) -> None:
     db_path = tmp_path / "api.sqlite3"
     store = SQLiteStore(db_path)
@@ -437,6 +484,49 @@ def test_sqlite_store_tracks_saved_dag_on_runs(tmp_path: Path) -> None:
     assert run.saved_dag_id == "dag_source"
     assert recovered is not None
     assert recovered.saved_dag_id == "dag_source"
+
+
+def test_sqlite_store_filters_runs_by_saved_dag(tmp_path: Path) -> None:
+    store = SQLiteStore(tmp_path / "api.sqlite3")
+    workspace_uri = f"file://{tmp_path / 'workspace'}"
+    store.create_saved_dag(
+        dag_id="dag_one",
+        project_id=None,
+        name="One",
+        description="",
+        spec_json='{"id":"one","name":"One","nodes":[],"edges":[]}',
+    )
+    store.create_saved_dag(
+        dag_id="dag_two",
+        project_id=None,
+        name="Two",
+        description="",
+        spec_json='{"id":"two","name":"Two","nodes":[],"edges":[]}',
+    )
+    store.create_run(
+        run_id="run_one",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri=workspace_uri,
+        saved_dag_id="dag_one",
+    )
+    store.create_run(
+        run_id="run_two",
+        project_id=None,
+        conversation_id=None,
+        user_id="default",
+        kind="static_dag",
+        status="completed",
+        workspace_uri=workspace_uri,
+        saved_dag_id="dag_two",
+    )
+
+    runs = store.list_runs(saved_dag_id="dag_one")
+
+    assert [run.id for run in runs] == ["run_one"]
 
 
 def test_sqlite_conversation_lock_spans_store_instances(tmp_path: Path) -> None:

@@ -87,9 +87,18 @@ class Store(Protocol):
         *,
         standalone: bool = False,
         org_id: str | None = None,
+        kind: ConversationKind | None = None,
     ) -> list[Conversation]: ...
 
     def get_conversation(self, conversation_id: str, *, org_id: str | None = None) -> Conversation | None: ...
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str,
+        org_id: str = "default",
+    ) -> Conversation: ...
 
     def acquire_conversation_lock(
         self,
@@ -123,6 +132,7 @@ class Store(Protocol):
         *,
         project_id: str | None = None,
         conversation_id: str | None = None,
+        saved_dag_id: str | None = None,
         org_id: str | None = None,
     ) -> list[Run]: ...
 
