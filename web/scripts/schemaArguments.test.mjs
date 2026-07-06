@@ -2479,19 +2479,24 @@ test('persisted conversation hydration keeps same-turn capability streams in one
     runEventInStream(4, 'stream_initial', 4, 'run.finished', {
       result: { output_text: '', state: reviewState },
     }),
-    runEventInStream(5, 'stream_resume', 1, 'response.reasoning.delta', { delta: 'Continue after approval.' }),
-    runEventInStream(6, 'stream_resume', 2, 'capability.call.started', {
+    runEventInStream(5, 'stream_initial', 5, 'review.required', {
+      review_id: 'review_1',
+      kind: 'capability_review',
+      message: 'Review capability call: tool.read_file',
+    }),
+    runEventInStream(6, 'stream_resume', 1, 'response.reasoning.delta', { delta: 'Continue after approval.' }),
+    runEventInStream(7, 'stream_resume', 2, 'capability.call.started', {
       invocation_id: 'call_2',
       capability_id: 'tool.read_file',
       arguments: { path: 'README.md' },
     }),
-    runEventInStream(7, 'stream_resume', 3, 'capability.call.completed', {
+    runEventInStream(8, 'stream_resume', 3, 'capability.call.completed', {
       invocation_id: 'call_2',
       capability_id: 'tool.read_file',
       content: '# dagent',
     }),
-    runEventInStream(8, 'stream_resume', 4, 'response.content.delta', { delta: 'Finished.' }),
-    runEventInStream(9, 'stream_resume', 5, 'run.finished', {
+    runEventInStream(9, 'stream_resume', 4, 'response.content.delta', { delta: 'Finished.' }),
+    runEventInStream(10, 'stream_resume', 5, 'run.finished', {
       result: { output_text: 'Finished.', state: completedState },
     }),
   ];
@@ -2507,8 +2512,9 @@ test('persisted conversation hydration keeps same-turn capability streams in one
   );
   assert.deepEqual(
     assistantMessages[0].timeline.map((item) => item.type),
-    ['reasoning', 'capability', 'text', 'reasoning', 'capability', 'text'],
+    ['reasoning', 'capability', 'reasoning', 'capability', 'text'],
   );
+  assert.equal(assistantMessages[0].content.includes('Review capability call'), false);
   assert.equal(assistantMessages[0].timeline.filter((item) => item.type === 'capability').length, 2);
 });
 
