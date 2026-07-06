@@ -147,10 +147,7 @@ function appendPersistedChatEventGroups(
     const dagSnapshot = segmentState?.dag ?? (group === finalGroup ? finalResult.state?.dag ?? undefined : undefined);
     const reviewMessage = segmentState?.pending_review?.message?.trim() ?? '';
     const output = segmentResult?.output_text.trim() ?? (group === finalGroup ? finalResult.output_text.trim() : '');
-    const includeReviewFallback = group === finalGroup && segmentState?.status === 'awaiting_review';
-    const fallbackContent = output
-      || (includeReviewFallback ? reviewMessage : '')
-      || fallbackContentFromPersistedRunEvents(group, { includeReviewMessage: includeReviewFallback });
+    const fallbackContent = output || reviewMessage || fallbackContentFromPersistedRunEvents(group);
     let timeline = timelineFromPersistedRunEvents(group, fallbackContent, output || fallbackContent);
     if (dagSnapshot) timeline = upsertDagTimeline(timeline, dagSnapshot);
     const replayedText = textContentFromTimeline(timeline);
@@ -389,15 +386,11 @@ function timelineFromPersistedRunEvents(
   return ensureFinalTextTimeline(timeline, fallbackContent);
 }
 
-function fallbackContentFromPersistedRunEvents(
-  events: ApiRunEvent[],
-  options: { includeReviewMessage?: boolean } = {},
-): string {
-  const includeReviewMessage = options.includeReviewMessage ?? true;
+function fallbackContentFromPersistedRunEvents(events: ApiRunEvent[]): string {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const envelope = streamEnvelope(events[index]);
     const data = recordValue(envelope?.data);
-    if (includeReviewMessage && envelope?.type === 'review.required' && typeof data?.message === 'string') {
+    if (envelope?.type === 'review.required' && typeof data?.message === 'string') {
       return data.message.trim();
     }
     if (envelope?.type === 'run.failed' && typeof data?.message === 'string') {
