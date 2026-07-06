@@ -265,7 +265,9 @@ Extend `web/src/api.ts` with typed helpers:
 - `listSavedDagRuns(savedDagId)`
 - `deleteSavedDag(savedDagId)`
 
-Keep existing helpers compatible by making new arguments optional.
+Keep helper signatures explicit. Add optional arguments only when the current
+caller needs an optional behavior, such as a visible message projection field
+for dynamic orchestration prompts.
 
 Add frontend types:
 
@@ -441,8 +443,10 @@ Manual UI checks:
 
 ## Rollout
 
-This is an additive API/WebUI change. Existing API routes and frontend flows
-remain compatible. Existing local SQLite databases do not need schema changes.
+This is an additive API/WebUI change. Existing public SDK surfaces do not
+change. Local API/WebUI SQLite storage gains the `conversation_messages` table;
+pre-release local databases are not kept alive with compatibility shims or
+legacy request-shape conversion.
 
 Docs to update with implementation:
 

@@ -814,6 +814,33 @@ class SQLiteStore:
             self._conn.commit()
         return _conversation_message_from_row(row)
 
+    def set_conversation_message_run_id(
+        self,
+        message_id: str,
+        run_id: str,
+        *,
+        org_id: str = "default",
+    ) -> ConversationMessage:
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE conversation_messages
+                SET run_id = ?, updated_at = ?
+                WHERE id = ? AND org_id = ?
+                """,
+                (run_id, now, message_id, org_id),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM conversation_messages WHERE id = ? AND org_id = ?",
+                (message_id, org_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Conversation message '{message_id}' not found.")
+            self._touch_conversation_locked(row["conversation_id"], now)
+            self._conn.commit()
+        return _conversation_message_from_row(row)
+
     def list_conversation_messages(
         self,
         conversation_id: str,

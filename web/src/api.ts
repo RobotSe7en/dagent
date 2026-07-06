@@ -981,6 +981,7 @@ interface StreamRequestOptions {
   signal?: AbortSignal;
   uploads?: File[];
   conversation?: ConversationRequestContext;
+  visibleMessage?: string;
 }
 
 export interface ChatStreamMessage {
@@ -1006,6 +1007,7 @@ export async function streamMessagesTask(
     Object.assign(body, chatScopeRequestFields(capabilityScope));
   }
   if (typeof dynamicAdjust === 'boolean') body.dynamic_adjust = dynamicAdjust;
+  if (typeof options.visibleMessage === 'string') body.visible_message = options.visibleMessage;
   appendConversationContext(body, options.conversation);
   const response = await fetch(`${API_BASE}/messages/stream`, {
     method: 'POST',

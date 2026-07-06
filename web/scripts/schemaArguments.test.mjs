@@ -744,7 +744,7 @@ test('mcp sidebar selection distinguishes servers from child tools', () => {
 });
 
 test('api helpers send agent preset and chat scope request bodies', async () => {
-  const { createAgent, listRunEvents, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
+  const { createAgent, listRunEvents, streamMessagesTask, streamTask, updateAgent } = await importTypeScriptModule('../src/api.ts', [
     '../src/agentScope.ts',
     '../src/api.ts',
     '../src/dagArtifacts.ts',
@@ -798,6 +798,15 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
       agentScope: 'selected',
       agentIds: ['agent.helper'],
     });
+    await streamMessagesTask(
+      [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+      'dag',
+      'fast',
+      {},
+      undefined,
+      true,
+      { visibleMessage: 'visible prompt' },
+    );
     const events = await listRunEvents('run_abc', 7);
     assert.deepEqual(events, [{ event_id: 8, event_type: 'run.finished' }]);
   } finally {
@@ -827,8 +836,15 @@ test('api helpers send agent preset and chat scope request bodies', async () => 
     agent_scope: 'selected',
     agent_ids: ['agent.helper'],
   });
-  assert.equal(calls[3].url, '/api/runs/run_abc/events?after_event_id=7');
-  assert.equal(calls[3].init.method, undefined);
+  assert.deepEqual(JSON.parse(calls[3].init.body), {
+    messages: [{ role: 'user', content: 'visible prompt\n\ninternal context' }],
+    target: 'dag',
+    review_level: 'fast',
+    dynamic_adjust: true,
+    visible_message: 'visible prompt',
+  });
+  assert.equal(calls[4].url, '/api/runs/run_abc/events?after_event_id=7');
+  assert.equal(calls[4].init.method, undefined);
 });
 
 test('api helper lists persisted conversation messages for standalone and project conversations', async () => {
@@ -1560,6 +1576,8 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   assert.match(appSource, /getOrchestrationSessionByConversation\(conversation\.id\)/);
   assert.match(appSource, /const \[dynamicConversationQuery, setDynamicConversationQuery\] = useState\(''\);/);
   assert.match(appSource, /function isOrchestrationWorkspaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*ORCHESTRATION_WORKSPACE_SURFACE/);
+  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*SMART_WORKBENCH_SURFACE/);
+  assert.doesNotMatch(appSource, /return !conversation\.project_id;/);
   assert.match(appSource, /function isStandaloneDynamicOrchestration\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'dynamic_dag' && !conversation\.project_id/);
   assert.doesNotMatch(appSource, /function isSelectableOrchestrationConversation/);
   assert.match(appSource, /const visibleDynamicConversations = useMemo\(\(\) => conversations\.filter/);
@@ -1587,9 +1605,13 @@ test('dynamic orchestration sidebar manages persisted history', async () => {
   const generateDynamicSource = appSource.match(/const generateDynamicDag = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
   assert.match(generateDynamicSource, /conversationTitleFromPrompt\(prompt\)/);
   assert.match(generateDynamicSource, /uiState: orchestrationWorkspaceUiState\(\)/);
+  assert.match(generateDynamicSource, /visibleMessage: prompt/);
   const selectDynamicSource = appSource.match(/const selectDynamicOrchestration = async \(conversationId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
   assert.match(selectDynamicSource, /isStandaloneDynamicOrchestration\(conversation, orchestrationSessionsByConversationId\)/);
   assert.doesNotMatch(selectDynamicSource, /setSelectedProjectId/);
+  const hydrateOrchestrationSource = appSource.match(/const hydrateOrchestrationConversation = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*?\n  \}, \[/)?.[0] ?? '';
+  assert.match(hydrateOrchestrationSource, /listConversationMessages\(conversation\.id, conversation\.project_id\)/);
+  assert.match(hydrateOrchestrationSource, /setDynamicMessages\(messagesFromApiConversationMessages\(conversationMessages, nextDynamicTimelineOrder\)\)/);
 });
 
 test('static orchestration sidebar supports saved DAG delete and run history', async () => {
@@ -1622,7 +1644,10 @@ test('static orchestration sidebar supports saved DAG delete and run history', a
   assert.match(appSource, /const deleteStaticRunHistory = async \(runId: string\) => \{/);
   assert.match(appSource, /await deleteRun\(runId\)/);
   assert.match(appSource, /finishedRunResultFromEvents\(events\)/);
-  assert.match(appSource, /const traceEvents = mapRunTrace\(runState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(\(items\) => traceEvents\.reduce\(\(timeline, event\) => appendRunTranscriptTraceEvent\(timeline, event\), items\)\);/);
+  const selectStaticRunSource = appSource.match(/const selectStaticRunHistory = async \(runId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectStaticRunSource, /setEditorTrace\(\[\]\);[\s\S]*setEditorRunTimeline\(\[\]\);[\s\S]*setEditorRun\(null\);/);
+  assert.match(selectStaticRunSource, /const traceEvents = mapRunTrace\(nextState\.trace\);[\s\S]*setEditorTrace\(traceEvents\);[\s\S]*setEditorRunTimeline\(runTranscriptFromTraceEvents\(traceEvents\)\);/);
+  assert.match(selectStaticRunSource, /const nextDag = nextState\.dag;[\s\S]*syncEditorDag\(nextDag\);[\s\S]*setEditorUserDag\(\(current\) => userDagFromRuntimeDag\(current, nextDag\)\);/);
   assert.match(sidebarSource, /className=\{item\.savedDagId === selectedDagId \? 'sidebar-saved-dag-row active' : 'sidebar-saved-dag-row'\}/);
   assert.match(sidebarSource, /onDeleteSavedDag\(item\.savedDagId\)/);
   assert.match(appSource, /function SavedDagDeleteDialog/);
@@ -1672,7 +1697,9 @@ test('dynamic orchestration workspace shows session run history', async () => {
   assert.match(appSource, /const deleteDynamicRunHistory = async \(runId: string\) => \{/);
   assert.match(appSource, /await deleteRun\(runId\)/);
   assert.match(appSource, /setDynamicSelectedRunId\(runId\)/);
-  assert.match(appSource, /setDynamicTrace\(mapRunTrace\(nextState\.trace\)\.map/);
+  const selectDynamicRunSource = appSource.match(/const selectDynamicRunHistory = async \(runId: string\) => \{[\s\S]*?\n  \};/)?.[0] ?? '';
+  assert.match(selectDynamicRunSource, /setDynamicTrace\(\[\]\);[\s\S]*clearDynamicFinalAnswer\(\);/);
+  assert.match(selectDynamicRunSource, /setDynamicTrace\(mapRunTrace\(nextState\.trace\)\.map/);
   assert.match(appSource, /runHistory=\{\{[\s\S]*runs: dynamicRunHistory,[\s\S]*selectedRunId: dynamicSelectedRunId/);
   assert.match(dynamicSource, /runHistory: RunHistoryPanelData;/);
   assert.match(dynamicSource, /runHistoryCollapsed: boolean;/);
@@ -2435,10 +2462,11 @@ test('persisted conversation selection hydrates backend message timelines first'
   assert.match(persistedChatSource, /export function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
   assert.match(persistedChatSource, /export function messagesFromPersistedRunResult\(/);
   assert.match(appSource, /function chatMessagesFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ChatMessage\[\]/);
+  assert.match(appSource, /function latestPendingReviewFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ReviewEventPayload \| null/);
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\([\s\S]*restoredMessages: ChatMessage\[\] = \[\],[\s\S]*const nextMessages = restoredMessages\.length[\s\S]*messagesFromPersistedRunResult\(result, nextTrace, events\);[\s\S]*setMessages\(nextMessages\);/);
-  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages\);/);
-  assert.match(appSource, /const partialMessages = restoredMessages\.length[\s\S]*\? restoredMessages[\s\S]*: chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*const pendingReview = latestPendingReviewFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages\);/);
+  assert.match(appSource, /const partialMessages = restoredMessages\.length[\s\S]*\? restoredMessages[\s\S]*: chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);[\s\S]*handlePendingReview\(pendingReview\);/);
   assert.match(appSource, /if \(!selectedChatSurfaceConversation \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
 
@@ -2849,7 +2877,7 @@ test('chat history only treats smart workbench dynamic DAG conversations as chat
   const sidebarSource = appSource.match(/function WorkspaceSidebar[\s\S]*?\nfunction DesignWorkspacePlaceholder/)?.[0] ?? '';
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
-  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'chat'[\s\S]*!isOrchestrationWorkspaceConversation\(conversation, sessionsByConversationId\)/);
+  assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'chat'[\s\S]*orchestrationSessionSurface\(session\) === SMART_WORKBENCH_SURFACE/);
   assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id/);
   assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
   assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)\) return;/);

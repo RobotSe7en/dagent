@@ -39,6 +39,9 @@ The local backend uses SQLite through `api/storage/`:
   optional saved DAG reference for static DAG runs.
 - `run_streams`: one HTTP stream/resume execution attempt.
 - `run_events`: durable SSE event history with database event ids.
+- `conversation_messages`: visible user/assistant message timelines projected
+  for chat conversations and dynamic DAG conversations that have an explicit
+  `smart_workbench` or `orchestration_workspace` surface.
 - `reviews`: pending/resolved review metadata. Review state lives in
   `runs.state_json`, not in this table.
 - `saved_dags`: saved static DAG specs, layout metadata, revisions, and project

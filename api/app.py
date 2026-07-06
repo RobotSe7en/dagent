@@ -188,6 +188,7 @@ class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     messages: list[dict[str, Any]] = Field(min_length=1)
+    visible_message: str | None = None
     state: RunState | None = None
     target: MessageTarget = "auto"
     review_level: ReviewLevel = "fast"
@@ -588,13 +589,17 @@ class PersistedMessageContext:
     orchestration_surface: str | None = None
 
 
+ORCHESTRATION_WORKSPACE_SURFACE = "orchestration_workspace"
 SMART_WORKBENCH_SURFACE = "smart_workbench"
 
 
 def _should_project_conversation_messages(context: PersistedMessageContext) -> bool:
     return context.conversation_kind == "chat" or (
         context.conversation_kind == "dynamic_dag"
-        and context.orchestration_surface == SMART_WORKBENCH_SURFACE
+        and context.orchestration_surface in {
+            ORCHESTRATION_WORKSPACE_SURFACE,
+            SMART_WORKBENCH_SURFACE,
+        }
     )
 
 
@@ -604,6 +609,7 @@ class ConversationMessageProjection:
         *,
         message_id: str,
         context: PersistedMessageContext,
+        user_message_id: str | None = None,
         run_id: str | None = None,
         content: str = "",
         status: str = "running",
@@ -614,6 +620,8 @@ class ConversationMessageProjection:
     ) -> None:
         self.message_id = message_id
         self.context = context
+        self.user_message_id = user_message_id
+        self.user_message_run_id: str | None = None
         self.run_id = run_id
         self.content = content
         self.status = status
@@ -632,9 +640,15 @@ class ConversationMessageProjection:
         if not _should_project_conversation_messages(context):
             return None
         store = state.get_store()
-        user_content = _visible_chat_message_content(request.messages[-1]).strip()
+        visible_content = (
+            request.visible_message
+            if request.visible_message is not None
+            else _visible_chat_message_content(request.messages[-1])
+        )
+        user_content = visible_content.strip()
+        user_message_id = None
         if user_content:
-            await run_in_threadpool(
+            user_message = await run_in_threadpool(
                 store.append_conversation_message,
                 message_id=_new_api_id("msg"),
                 conversation_id=context.conversation_id,
@@ -643,6 +657,7 @@ class ConversationMessageProjection:
                 content=user_content,
                 status="completed",
             )
+            user_message_id = user_message.id
         assistant = await run_in_threadpool(
             store.append_conversation_message,
             message_id=_new_api_id("msg"),
@@ -651,11 +666,12 @@ class ConversationMessageProjection:
             role="assistant",
             content="",
             status="running",
-            run_id=None if context.run_state is None else context.run_state.run_id,
+            run_id=None,
         )
         return cls(
             message_id=assistant.id,
             context=context,
+            user_message_id=user_message_id,
             run_id=assistant.run_id,
             content=assistant.content,
             status=assistant.status,
@@ -738,6 +754,7 @@ class ConversationMessageProjection:
             self.run_id = str(payload["run_id"])
         if event_type == "run.started":
             self.status = "running"
+            await self.bind_user_message_to_run()
         elif event_type == "response.reasoning.delta":
             self._append_reasoning(str(data.get("delta") or ""))
         elif event_type == "response.content.delta":
@@ -797,6 +814,16 @@ class ConversationMessageProjection:
             self.status = "failed"
             self._append_text(message)
         await self.save()
+
+    async def bind_user_message_to_run(self) -> None:
+        if not self.user_message_id or not self.run_id or self.user_message_run_id == self.run_id:
+            return
+        await run_in_threadpool(
+            state.get_store().set_conversation_message_run_id,
+            self.user_message_id,
+            self.run_id,
+        )
+        self.user_message_run_id = self.run_id
 
     async def save(self) -> None:
         await run_in_threadpool(
@@ -1314,7 +1341,16 @@ async def delete_project(project_id: str) -> dict[str, str]:
                 ))
             except ConversationBusyError as exc:
                 raise HTTPException(status_code=409, detail="Project has active conversations.") from exc
+        runs = await run_in_threadpool(store.list_runs, project_id=project.id)
+        run_states: dict[str, RunState | None] = {}
+        for run in runs:
+            run_states[run.id] = await run_in_threadpool(store.get_run_state, run.id)
+        saved_dags = await run_in_threadpool(store.list_saved_dags, project.id)
         workspace_path = await run_in_threadpool(state.get_workspaces().local_path_for, project.workspace_uri)
+        for run in runs:
+            await run_in_threadpool(_delete_run_files, run, run_states[run.id])
+        for saved_dag in saved_dags:
+            await run_in_threadpool(shutil.rmtree, _saved_dag_artifact_root(saved_dag.id), ignore_errors=True)
         await run_in_threadpool(_delete_project_workspace, project, workspace_path)
         deleted = await run_in_threadpool(store.delete_project, project.id)
         if not deleted:

@@ -34,6 +34,9 @@ Web UI 和 API 后端支持项目与会话：
 - `runs`：某个 run 当前权威的 `RunState` 快照；静态 DAG run 可以带 saved DAG 引用。
 - `run_streams`：一次 HTTP stream/resume 执行尝试。
 - `run_events`：带数据库 event id 的持久 SSE 事件历史。
+- `conversation_messages`：投影后的可见 user/assistant 消息时间线；用于普通
+  chat conversation，以及明确标记为 `smart_workbench` 或
+  `orchestration_workspace` surface 的动态 DAG conversation。
 - `reviews`：pending/resolved review 元数据。review state 在 `runs.state_json`
   里，不在这张表里重复保存。
 - `saved_dags`：保存的静态 DAG spec、layout 元数据、revision 和 project 归属。

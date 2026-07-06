@@ -417,8 +417,7 @@ function isOrchestrationWorkspaceConversation(
   const session = sessionsByConversationId[conversation.id];
   if (session === undefined) return false;
   const surface = orchestrationSessionSurface(session);
-  if (surface) return surface === ORCHESTRATION_WORKSPACE_SURFACE;
-  return !conversation.project_id;
+  return surface === ORCHESTRATION_WORKSPACE_SURFACE;
 }
 
 function isChatSurfaceConversation(
@@ -429,7 +428,7 @@ function isChatSurfaceConversation(
   if (conversation.kind !== 'dynamic_dag') return false;
   const session = sessionsByConversationId[conversation.id];
   if (session === undefined) return false;
-  return !isOrchestrationWorkspaceConversation(conversation, sessionsByConversationId);
+  return orchestrationSessionSurface(session) === SMART_WORKBENCH_SURFACE;
 }
 
 function isStandaloneDynamicOrchestration(
@@ -1164,6 +1163,27 @@ function chatMessagesFromApiConversationMessages(items: ApiConversationMessage[]
       ...(traceSnapshot?.length ? { traceSnapshot } : {}),
     };
   });
+}
+
+function latestPendingReviewFromApiConversationMessages(items: ApiConversationMessage[]): ReviewEventPayload | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const review = items[index].pending_review;
+    if (review) return review;
+  }
+  return null;
+}
+
+function messagesFromApiConversationMessages(
+  items: ApiConversationMessage[],
+  nextOrder: () => number,
+): DynamicChatMessage[] {
+  return items
+    .filter((item) => (item.role === 'user' || item.role === 'assistant') && item.content.trim())
+    .map((item) => ({
+      role: item.role,
+      content: item.content,
+      timelineOrder: nextOrder(),
+    }));
 }
 
 function isAbortError(value: unknown): boolean {
@@ -2597,9 +2617,11 @@ export function App() {
       setCapabilityReview(pendingReview as ReviewEventPayload);
       return;
     }
+    if (pendingReview.proposed_dag) syncDag(pendingReview.proposed_dag);
     setDagReviewFeedback('');
     setDagReview(pendingReview);
-  }, []);
+    setReviewOpen(true);
+  }, [syncDag]);
 
   const applyPersistedRunResult = useCallback((
     result: ApiRunResult,
@@ -2646,6 +2668,7 @@ export function App() {
       ]);
       if (conversationHydrationRequestRef.current !== requestId) return;
       const restoredMessages = chatMessagesFromApiConversationMessages(conversationMessages);
+      const pendingReview = latestPendingReviewFromApiConversationMessages(conversationMessages);
       const result = finishedRunResultFromEvents(events);
       const partialMessages = restoredMessages.length
         ? restoredMessages
@@ -2661,6 +2684,7 @@ export function App() {
         setCapabilityReviewFeedback('');
         syncDag(emptyDag);
         setReviewOpen(false);
+        handlePendingReview(pendingReview);
         contentStreamedRef.current = partialMessages.some((message) => message.content.trim());
         tokenQueueRef.current = [];
         stopTokenTimer();
@@ -2829,7 +2853,10 @@ export function App() {
     const requestId = orchestrationHydrationRequestRef.current + 1;
     orchestrationHydrationRequestRef.current = requestId;
     try {
-      const session = await getOrchestrationSessionByConversation(conversation.id);
+      const [session, conversationMessages] = await Promise.all([
+        getOrchestrationSessionByConversation(conversation.id),
+        listConversationMessages(conversation.id, conversation.project_id),
+      ]);
       if (orchestrationHydrationRequestRef.current !== requestId || !session) return;
       rememberOrchestrationSession(session);
       const selectedNodeId = typeof session.ui_state?.selectedNodeId === 'string'
@@ -2837,11 +2864,14 @@ export function App() {
         : '';
       if (session.kind === 'dynamic_dag') {
         setDynamicOrchestrationSessionId(session.id);
+        setDynamicMessages(messagesFromApiConversationMessages(conversationMessages, nextDynamicTimelineOrder));
         const draftDag = runtimeDagFromUnknown(session.draft_dag);
         if (draftDag) syncDynamicDag(draftDag);
         if (selectedNodeId) setDynamicSelectedId(selectedNodeId);
         if (conversation.last_run_id) {
           setDynamicSelectedRunId(conversation.last_run_id);
+          setDynamicTrace([]);
+          clearDynamicFinalAnswer();
           const events = await listRunEvents(conversation.last_run_id);
           if (orchestrationHydrationRequestRef.current !== requestId) return;
           const result = finishedRunResultFromEvents(events);
@@ -2913,6 +2943,7 @@ export function App() {
       else setEditorMessage(message);
     }
   }, [
+    clearDynamicFinalAnswer,
     rememberOrchestrationSession,
     nextDynamicTimelineOrder,
     setEditorUserDagAndRuntimeDag,
@@ -3195,6 +3226,9 @@ export function App() {
     try {
       setStaticSelectedRunId(runId);
       setStaticRunHistoryError(null);
+      setEditorTrace([]);
+      setEditorRunTimeline([]);
+      setEditorRun(null);
       const events = await listRunEvents(runId);
       const result = finishedRunResultFromEvents(events);
       const nextState = result?.state ?? null;
@@ -3204,14 +3238,17 @@ export function App() {
         setEditorRunTimeline(runTranscriptFromTraceEvents(traceEvents));
       }
       if (nextState?.dag && nextState.trace && nextState.run_id) {
+        const nextDag = nextState.dag;
         setEditorRun({
           run_id: nextState.run_id,
           spec_id: nextState.spec_id ?? null,
           workspace_path: nextState.workspace_path ?? '',
-          dag: nextState.dag,
+          dag: nextDag,
           trace: nextState.trace,
           status: dagRunStatus(nextState.status),
         });
+        syncEditorDag(nextDag);
+        setEditorUserDag((current) => userDagFromRuntimeDag(current, nextDag));
       }
     } catch (exc) {
       setStaticRunHistoryError(exc instanceof Error ? exc.message : String(exc));
@@ -3771,6 +3808,8 @@ export function App() {
     try {
       setDynamicSelectedRunId(runId);
       setDynamicRunHistoryError(null);
+      setDynamicTrace([]);
+      clearDynamicFinalAnswer();
       const events = await listRunEvents(runId);
       const result = finishedRunResultFromEvents(events);
       const nextState = result?.state ?? null;
@@ -3842,7 +3881,7 @@ export function App() {
         dynamicHandlers(context.request, context.session.id),
         undefined,
         dynamicAdjust,
-        { conversation: context.request },
+        { conversation: context.request, visibleMessage: prompt },
       );
       setDynamicPrompt('');
     } catch (exc) {

@@ -218,6 +218,14 @@ class Store(Protocol):
         org_id: str = "default",
     ) -> ConversationMessage: ...
 
+    def set_conversation_message_run_id(
+        self,
+        message_id: str,
+        run_id: str,
+        *,
+        org_id: str = "default",
+    ) -> ConversationMessage: ...
+
     def list_conversation_messages(
         self,
         conversation_id: str,
