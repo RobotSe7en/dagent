@@ -23,6 +23,11 @@ Repository = "https://github.com/RobotSe7en/dagent"
 Issues = "https://github.com/RobotSe7en/dagent/issues"
 
 [project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "python-multipart>=0.0.20",
+    "uvicorn[standard]>=0.32",
+]
 dev = [
     "fastapi>=0.115",
     "httpx[socks]>=0.28.1",
@@ -43,7 +48,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.setuptools.packages.find]
-include = ["dagent*"]
+include = ["dagent*", "api*"]
 
 [tool.setuptools.package-data]
 dagent = ["resources/profiles/*.md"]
+"api.storage" = ["schema.sql"]
