@@ -21,7 +21,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -33,7 +33,6 @@ from api.agent_presets import (
     AgentPresetUpdateRequest,
     clean_agent_preset_name,
 )
-from api.extensions import DefaultExtensions, Principal, ServerExtensions
 from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
 from api.storage import (
     Conversation,
@@ -44,6 +43,7 @@ from api.storage import (
     Run,
     RunEvent,
     SavedDag,
+    SQLiteStore,
     StorageConflictError,
     Store,
 )
@@ -992,7 +992,6 @@ class ApiState:
         self.validation_override: bool | None = None
         self.store: Store | None = None
         self.workspaces: LocalWorkspaceStore | None = None
-        self.extensions: ServerExtensions = DefaultExtensions()
 
     def get_runner(self) -> Runner:
         if self.runner is None:
@@ -1008,16 +1007,13 @@ class ApiState:
 
     def get_store(self) -> Store:
         if self.store is None:
-            self.store = self.extensions.store_factory(self.get_user_config_path().parent)
+            self.store = SQLiteStore(self.get_user_config_path().parent / "api.sqlite3")
         return self.store
 
     def get_workspaces(self) -> LocalWorkspaceStore:
         if self.workspaces is None:
-            self.workspaces = self.extensions.workspace_factory(self.get_user_config_path().parent)
+            self.workspaces = LocalWorkspaceStore(self.get_user_config_path().parent / "projects")
         return self.workspaces
-
-    def principal(self, request: Request) -> Principal:
-        return self.extensions.principal(request)
 
     def _create_runner(self) -> Runner:
         active_model = self.active_model()
@@ -1245,15 +1241,21 @@ class ApiState:
 
 
 state = ApiState()
-router = APIRouter()
+app = FastAPI(title="dagent API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@router.get("/health")
+@app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/projects")
+@app.post("/projects")
 async def create_project(request: ProjectCreateRequest) -> dict[str, Any]:
     project_id = _new_api_id("proj")
     slug = _clean_project_slug(request.slug or request.name)
@@ -1276,13 +1278,13 @@ async def create_project(request: ProjectCreateRequest) -> dict[str, Any]:
     return {"project": project.model_dump(mode="json")}
 
 
-@router.get("/projects")
+@app.get("/projects")
 async def list_projects() -> dict[str, Any]:
     projects = await run_in_threadpool(state.get_store().list_projects)
     return {"projects": [project.model_dump(mode="json") for project in projects]}
 
 
-@router.get("/projects/{project_id}")
+@app.get("/projects/{project_id}")
 async def get_project(project_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
@@ -1290,7 +1292,7 @@ async def get_project(project_id: str) -> dict[str, Any]:
     return {"project": project.model_dump(mode="json")}
 
 
-@router.patch("/projects/{project_id}")
+@app.patch("/projects/{project_id}")
 async def update_project(project_id: str, request: ProjectUpdateRequest) -> dict[str, Any]:
     store = state.get_store()
     project = await run_in_threadpool(store.get_project, project_id)
@@ -1320,7 +1322,7 @@ async def update_project(project_id: str, request: ProjectUpdateRequest) -> dict
     return {"project": updated.model_dump(mode="json")}
 
 
-@router.delete("/projects/{project_id}")
+@app.delete("/projects/{project_id}")
 async def delete_project(project_id: str) -> dict[str, str]:
     store = state.get_store()
     project = await run_in_threadpool(store.get_project, project_id)
@@ -1359,7 +1361,7 @@ async def delete_project(project_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.get("/projects/{project_id}/files")
+@app.get("/projects/{project_id}/files")
 async def list_project_files(project_id: str, path: str = "", tree: bool = False) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     directory = _resolve_project_file_path(workspace, path, allow_empty=True)
@@ -1393,7 +1395,7 @@ async def list_project_files(project_id: str, path: str = "", tree: bool = False
     return ProjectFilesResponse(project_id=project.id, path=normalized_path, files=files).model_dump(mode="json")
 
 
-@router.post("/projects/{project_id}/files/upload")
+@app.post("/projects/{project_id}/files/upload")
 async def upload_project_files(
     project_id: str,
     path: str = Form(""),
@@ -1428,7 +1430,7 @@ async def upload_project_files(
     return {"files": [item.model_dump(mode="json") for item in uploaded]}
 
 
-@router.post("/projects/{project_id}/files/folder")
+@app.post("/projects/{project_id}/files/folder")
 async def create_project_folder(project_id: str, request: ProjectFolderRequest) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     folder = _resolve_project_file_path(workspace, request.path)
@@ -1443,7 +1445,7 @@ async def create_project_folder(project_id: str, request: ProjectFolderRequest) 
     ).model_dump(mode="json")}
 
 
-@router.patch("/projects/{project_id}/files")
+@app.patch("/projects/{project_id}/files")
 async def move_project_file(project_id: str, request: ProjectFileMoveRequest) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     source = _resolve_project_file_path(workspace, request.path)
@@ -1467,7 +1469,7 @@ async def move_project_file(project_id: str, request: ProjectFileMoveRequest) ->
     ).model_dump(mode="json")}
 
 
-@router.delete("/projects/{project_id}/files")
+@app.delete("/projects/{project_id}/files")
 async def delete_project_file(project_id: str, request: ProjectFileDeleteRequest) -> dict[str, str]:
     _project, workspace = await _project_workspace(project_id)
     target = _resolve_project_file_path(workspace, request.path)
@@ -1480,7 +1482,7 @@ async def delete_project_file(project_id: str, request: ProjectFileDeleteRequest
     return {"status": "deleted"}
 
 
-@router.get("/projects/{project_id}/files/preview")
+@app.get("/projects/{project_id}/files/preview")
 async def preview_project_file(project_id: str, path: str) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     file_path = _resolve_project_file_path(workspace, path)
@@ -1505,13 +1507,13 @@ async def preview_project_file(project_id: str, path: str) -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
-@router.get("/projects/{project_id}/files/onlyoffice/config")
+@app.get("/projects/{project_id}/files/onlyoffice/config")
 async def get_project_file_onlyoffice_config(project_id: str, path: str) -> dict[str, Any]:
     project, workspace = await _project_workspace(project_id)
     return _project_file_onlyoffice_config_response(project, workspace, path).model_dump(mode="json")
 
 
-@router.get("/projects/{project_id}/files/download")
+@app.get("/projects/{project_id}/files/download")
 async def download_project_file(project_id: str, path: str) -> FileResponse:
     _project, workspace = await _project_workspace(project_id)
     file_path = _resolve_project_file_path(workspace, path)
@@ -1525,7 +1527,7 @@ async def download_project_file(project_id: str, path: str) -> FileResponse:
     )
 
 
-@router.post("/conversations")
+@app.post("/conversations")
 async def create_conversation(request: ConversationCreateRequest) -> dict[str, Any]:
     conversation_id = _new_api_id("conv")
     title = _clean_required_text(request.title, field="Conversation title")
@@ -1546,7 +1548,7 @@ async def create_conversation(request: ConversationCreateRequest) -> dict[str, A
     return {"conversation": conversation.model_dump(mode="json")}
 
 
-@router.get("/conversations")
+@app.get("/conversations")
 async def list_conversations(kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None) -> dict[str, Any]:
     conversations = await run_in_threadpool(
         state.get_store().list_conversations,
@@ -1568,7 +1570,7 @@ async def _update_conversation_title(conversation: Conversation, title: str) -> 
         raise HTTPException(status_code=404, detail="Conversation not found.") from exc
 
 
-@router.patch("/conversations/{conversation_id}")
+@app.patch("/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> dict[str, Any]:
     conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
     if conversation is None:
@@ -1579,7 +1581,7 @@ async def update_conversation(conversation_id: str, request: ConversationUpdateR
     return {"conversation": updated.model_dump(mode="json")}
 
 
-@router.delete("/conversations/{conversation_id}")
+@app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str) -> dict[str, str]:
     store = state.get_store()
     conversation = await run_in_threadpool(store.get_conversation, conversation_id)
@@ -1591,7 +1593,7 @@ async def delete_conversation(conversation_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.post("/projects/{project_id}/conversations")
+@app.post("/projects/{project_id}/conversations")
 async def create_project_conversation(
     project_id: str,
     request: ConversationCreateRequest,
@@ -1618,7 +1620,7 @@ async def create_project_conversation(
     return {"conversation": conversation.model_dump(mode="json")}
 
 
-@router.get("/projects/{project_id}/conversations")
+@app.get("/projects/{project_id}/conversations")
 async def list_project_conversations(
     project_id: str,
     kind: Literal["chat", "dynamic_dag", "static_dag"] | None = None,
@@ -1634,7 +1636,7 @@ async def list_project_conversations(
     return {"conversations": [conversation.model_dump(mode="json") for conversation in conversations]}
 
 
-@router.get("/projects/{project_id}/conversations/{conversation_id}")
+@app.get("/projects/{project_id}/conversations/{conversation_id}")
 async def get_project_conversation(project_id: str, conversation_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
@@ -1645,7 +1647,7 @@ async def get_project_conversation(project_id: str, conversation_id: str) -> dic
     return {"conversation": conversation.model_dump(mode="json")}
 
 
-@router.patch("/projects/{project_id}/conversations/{conversation_id}")
+@app.patch("/projects/{project_id}/conversations/{conversation_id}")
 async def update_project_conversation(
     project_id: str,
     conversation_id: str,
@@ -1661,7 +1663,7 @@ async def update_project_conversation(
     return {"conversation": updated.model_dump(mode="json")}
 
 
-@router.delete("/projects/{project_id}/conversations/{conversation_id}")
+@app.delete("/projects/{project_id}/conversations/{conversation_id}")
 async def delete_project_conversation(project_id: str, conversation_id: str) -> dict[str, str]:
     store = state.get_store()
     project = await run_in_threadpool(store.get_project, project_id)
@@ -1724,7 +1726,7 @@ async def _conversation_run_summaries(
     return [_run_summary_payload(run) for run in runs]
 
 
-@router.get("/conversations/{conversation_id}/runs")
+@app.get("/conversations/{conversation_id}/runs")
 async def list_conversation_runs(conversation_id: str) -> dict[str, Any]:
     conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
     if conversation is None:
@@ -1737,7 +1739,7 @@ async def list_conversation_runs(conversation_id: str) -> dict[str, Any]:
     return {"runs": await _conversation_run_summaries(conversation)}
 
 
-@router.get("/projects/{project_id}/conversations/{conversation_id}/runs")
+@app.get("/projects/{project_id}/conversations/{conversation_id}/runs")
 async def list_project_conversation_runs(project_id: str, conversation_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
@@ -1748,7 +1750,7 @@ async def list_project_conversation_runs(project_id: str, conversation_id: str) 
     return {"runs": await _conversation_run_summaries(conversation, project_id=project.id)}
 
 
-@router.get("/conversations/{conversation_id}/messages")
+@app.get("/conversations/{conversation_id}/messages")
 async def list_conversation_messages(conversation_id: str) -> dict[str, Any]:
     conversation = await run_in_threadpool(state.get_store().get_conversation, conversation_id)
     if conversation is None:
@@ -1762,7 +1764,7 @@ async def list_conversation_messages(conversation_id: str) -> dict[str, Any]:
     return {"messages": [_conversation_message_payload(message) for message in messages]}
 
 
-@router.get("/projects/{project_id}/conversations/{conversation_id}/messages")
+@app.get("/projects/{project_id}/conversations/{conversation_id}/messages")
 async def list_project_conversation_messages(project_id: str, conversation_id: str) -> dict[str, Any]:
     project = await run_in_threadpool(state.get_store().get_project, project_id)
     if project is None:
@@ -1774,7 +1776,7 @@ async def list_project_conversation_messages(project_id: str, conversation_id: s
     return {"messages": [_conversation_message_payload(message) for message in messages]}
 
 
-@router.get("/runs/{run_id}")
+@app.get("/runs/{run_id}")
 async def get_run(run_id: str) -> dict[str, Any]:
     run = await run_in_threadpool(state.get_store().get_run, run_id)
     if run is None:
@@ -1782,7 +1784,7 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return {"run": _run_summary_payload(run)}
 
 
-@router.delete("/runs/{run_id}")
+@app.delete("/runs/{run_id}")
 async def delete_run(run_id: str) -> dict[str, str]:
     store = state.get_store()
     run = await run_in_threadpool(store.get_run, run_id)
@@ -1798,7 +1800,7 @@ async def delete_run(run_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.get("/runs/{run_id}/events")
+@app.get("/runs/{run_id}/events")
 async def get_run_events(run_id: str, after_event_id: int = 0) -> dict[str, Any]:
     run = await run_in_threadpool(state.get_store().get_run, run_id)
     if run is None:
@@ -1811,12 +1813,12 @@ async def get_run_events(run_id: str, after_event_id: int = 0) -> dict[str, Any]
     return {"events": [_run_event_payload(event) for event in events]}
 
 
-@router.get("/settings/validation")
+@app.get("/settings/validation")
 async def get_validation_status() -> dict[str, bool]:
     return {"enabled": state.get_runner().enable_validation}
 
 
-@router.post("/settings/validation")
+@app.post("/settings/validation")
 async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
     runner = state.get_runner()
     state.validation_override = payload.get("enabled", False)
@@ -1824,7 +1826,7 @@ async def toggle_validation(payload: dict[str, bool]) -> dict[str, bool]:
     return {"enabled": runner.enable_validation}
 
 
-@router.post("/session/reset")
+@app.post("/session/reset")
 async def reset_session() -> dict[str, str]:
     state.close_runner()
     state.dags.clear()
@@ -1841,7 +1843,7 @@ async def reset_session() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/dags")
+@app.get("/dags")
 async def list_dags() -> dict[str, Any]:
     return {
         "dags": [
@@ -1851,7 +1853,7 @@ async def list_dags() -> dict[str, Any]:
     }
 
 
-@router.post("/dags")
+@app.post("/dags")
 async def create_dag(dag: UserDAG) -> dict[str, Any]:
     try:
         validate_dag_spec(_compile_user_dag(dag).to_dag_spec())
@@ -1862,7 +1864,7 @@ async def create_dag(dag: UserDAG) -> dict[str, Any]:
     return {"dag": dag.model_dump(mode="json")}
 
 
-@router.post("/dags/validate")
+@app.post("/dags/validate")
 async def validate_user_dag(dag: UserDAG) -> dict[str, Any]:
     try:
         validate_dag_spec(_compile_user_dag(dag).to_dag_spec())
@@ -1874,7 +1876,7 @@ async def validate_user_dag(dag: UserDAG) -> dict[str, Any]:
     return DAGValidationResponse(valid=True).model_dump(mode="json")
 
 
-@router.post("/saved-dags")
+@app.post("/saved-dags")
 async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
     if request.project_id is not None:
         project = await run_in_threadpool(state.get_store().get_project, request.project_id)
@@ -1898,7 +1900,7 @@ async def create_saved_dag(request: SavedDAGCreateRequest) -> dict[str, Any]:
     return {"saved_dag": _saved_dag_payload(saved)}
 
 
-@router.get("/saved-dags")
+@app.get("/saved-dags")
 async def list_saved_dags(project_id: str | None = None) -> dict[str, Any]:
     if project_id is not None:
         project = await run_in_threadpool(state.get_store().get_project, project_id)
@@ -1908,7 +1910,7 @@ async def list_saved_dags(project_id: str | None = None) -> dict[str, Any]:
     return {"saved_dags": [_saved_dag_payload(saved) for saved in saved_dags]}
 
 
-@router.get("/saved-dags/{dag_id}")
+@app.get("/saved-dags/{dag_id}")
 async def get_saved_dag(dag_id: str) -> dict[str, Any]:
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
@@ -1916,7 +1918,7 @@ async def get_saved_dag(dag_id: str) -> dict[str, Any]:
     return {"saved_dag": _saved_dag_payload(saved)}
 
 
-@router.get("/saved-dags/{dag_id}/runs")
+@app.get("/saved-dags/{dag_id}/runs")
 async def list_saved_dag_runs(dag_id: str) -> dict[str, Any]:
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
@@ -1928,7 +1930,7 @@ async def list_saved_dag_runs(dag_id: str) -> dict[str, Any]:
     return {"runs": [_run_summary_payload(run) for run in runs]}
 
 
-@router.patch("/saved-dags/{dag_id}")
+@app.patch("/saved-dags/{dag_id}")
 async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[str, Any]:
     existing = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if existing is None:
@@ -1955,7 +1957,7 @@ async def update_saved_dag(dag_id: str, request: SavedDAGUpdateRequest) -> dict[
     return {"saved_dag": _saved_dag_payload(saved)}
 
 
-@router.delete("/saved-dags/{dag_id}")
+@app.delete("/saved-dags/{dag_id}")
 async def delete_saved_dag(dag_id: str) -> dict[str, str]:
     deleted = await run_in_threadpool(state.get_store().archive_saved_dag, dag_id)
     if not deleted:
@@ -1964,7 +1966,7 @@ async def delete_saved_dag(dag_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.post("/saved-dags/{dag_id}/run/stream")
+@app.post("/saved-dags/{dag_id}/run/stream")
 async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> StreamingResponse:
     saved = await run_in_threadpool(state.get_store().get_saved_dag, dag_id)
     if saved is None:
@@ -1999,7 +2001,7 @@ async def run_saved_dag_stream(dag_id: str, request: SavedDAGRunRequest) -> Stre
     )
 
 
-@router.post("/orchestration-sessions")
+@app.post("/orchestration-sessions")
 async def create_orchestration_session(request: OrchestrationSessionCreateRequest) -> dict[str, Any]:
     context = await _persisted_context_from_conversation(
         request.project_id,
@@ -2028,7 +2030,7 @@ async def create_orchestration_session(request: OrchestrationSessionCreateReques
     return {"session": _orchestration_session_payload(session)}
 
 
-@router.get("/orchestration-sessions/{session_id}")
+@app.get("/orchestration-sessions/{session_id}")
 async def get_orchestration_session(session_id: str) -> dict[str, Any]:
     session = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
     if session is None:
@@ -2036,7 +2038,7 @@ async def get_orchestration_session(session_id: str) -> dict[str, Any]:
     return {"session": _orchestration_session_payload(session)}
 
 
-@router.get("/orchestration-sessions/{session_id}/runs")
+@app.get("/orchestration-sessions/{session_id}/runs")
 async def list_orchestration_session_runs(session_id: str) -> dict[str, Any]:
     session = await run_in_threadpool(state.get_store().get_orchestration_session, session_id)
     if session is None:
@@ -2048,7 +2050,7 @@ async def list_orchestration_session_runs(session_id: str) -> dict[str, Any]:
     return {"runs": [_run_summary_payload(run) for run in runs]}
 
 
-@router.get("/conversations/{conversation_id}/orchestration-session")
+@app.get("/conversations/{conversation_id}/orchestration-session")
 async def get_orchestration_session_by_conversation(conversation_id: str) -> dict[str, Any]:
     session = await run_in_threadpool(
         state.get_store().get_orchestration_session_by_conversation,
@@ -2059,7 +2061,7 @@ async def get_orchestration_session_by_conversation(conversation_id: str) -> dic
     return {"session": _orchestration_session_payload(session)}
 
 
-@router.patch("/orchestration-sessions/{session_id}")
+@app.patch("/orchestration-sessions/{session_id}")
 async def update_orchestration_session(
     session_id: str,
     request: OrchestrationSessionUpdateRequest,
@@ -2090,7 +2092,7 @@ async def update_orchestration_session(
     return {"session": _orchestration_session_payload(session)}
 
 
-@router.get("/dags/{dag_id}")
+@app.get("/dags/{dag_id}")
 async def get_dag(dag_id: str) -> dict[str, Any]:
     dag = state.dags.get(dag_id)
     if dag is None:
@@ -2098,7 +2100,7 @@ async def get_dag(dag_id: str) -> dict[str, Any]:
     return {"dag": dag.model_dump(mode="json")}
 
 
-@router.post("/dags/{dag_id}/artifacts/{artifact_id}/upload")
+@app.post("/dags/{dag_id}/artifacts/{artifact_id}/upload")
 async def upload_dag_artifact(
     dag_id: str,
     artifact_id: str,
@@ -2110,7 +2112,7 @@ async def upload_dag_artifact(
     return await _upload_dag_artifact_files(dag_id, dag, artifact_id, files)
 
 
-@router.post("/saved-dags/{dag_id}/artifacts/{artifact_id}/upload")
+@app.post("/saved-dags/{dag_id}/artifacts/{artifact_id}/upload")
 async def upload_saved_dag_artifact(
     dag_id: str,
     artifact_id: str,
@@ -2170,7 +2172,7 @@ async def _validated_artifact_uploads(
     return uploads
 
 
-@router.post("/dags/{dag_id}/run")
+@app.post("/dags/{dag_id}/run")
 async def run_dag(dag_id: str, request: DAGRunRequest | None = None) -> dict[str, Any]:
     dag = state.dags.get(dag_id)
     if dag is None:
@@ -2450,7 +2452,7 @@ def _prune_dag_artifact_uploads(dag: UserDAG) -> None:
             del uploads[artifact_id]
 
 
-@router.get("/dag-runs/{run_id}")
+@app.get("/dag-runs/{run_id}")
 async def get_dag_run(run_id: str) -> dict[str, Any]:
     dag_run = await _dag_run_from_state(run_id)
     if dag_run is None:
@@ -2458,7 +2460,7 @@ async def get_dag_run(run_id: str) -> dict[str, Any]:
     return {"dag_run": dag_run.model_dump(mode="json")}
 
 
-@router.get("/runs/{run_id}/artifacts")
+@app.get("/runs/{run_id}/artifacts")
 async def get_run_artifacts(run_id: str) -> dict[str, Any]:
     run_state = await _run_state_from_state(run_id)
     if run_state is None:
@@ -2466,7 +2468,7 @@ async def get_run_artifacts(run_id: str) -> dict[str, Any]:
     return _run_artifacts_response(run_state).model_dump(mode="json")
 
 
-@router.get("/runs/{run_id}/artifacts/preview")
+@app.get("/runs/{run_id}/artifacts/preview")
 async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
     run_state = await _run_state_from_state(run_id)
     if run_state is None:
@@ -2492,7 +2494,7 @@ async def preview_run_artifact(run_id: str, path: str) -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
-@router.get("/runs/{run_id}/artifacts/download")
+@app.get("/runs/{run_id}/artifacts/download")
 async def download_run_artifact(run_id: str, path: str) -> FileResponse:
     run_state = await _run_state_from_state(run_id)
     if run_state is None:
@@ -2508,7 +2510,7 @@ async def download_run_artifact(run_id: str, path: str) -> FileResponse:
     )
 
 
-@router.get("/runs/{run_id}/artifacts/onlyoffice/config")
+@app.get("/runs/{run_id}/artifacts/onlyoffice/config")
 async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str, Any]:
     run_state = await _run_state_from_state(run_id)
     if run_state is None:
@@ -2516,7 +2518,7 @@ async def get_run_artifact_onlyoffice_config(run_id: str, path: str) -> dict[str
     return _onlyoffice_config_response(run_state, path).model_dump(mode="json")
 
 
-@router.get("/onlyoffice/files/{token}")
+@app.get("/onlyoffice/files/{token}")
 async def get_onlyoffice_file(token: str) -> FileResponse:
     payload = _onlyoffice_token_payload(token)
     file_path, not_found_detail = await _onlyoffice_file_path_for_payload(payload)
@@ -2529,7 +2531,7 @@ async def get_onlyoffice_file(token: str) -> FileResponse:
     )
 
 
-@router.post("/onlyoffice/callback/{token}")
+@app.post("/onlyoffice/callback/{token}")
 async def onlyoffice_callback(token: str, request: OnlyOfficeCallbackRequest) -> dict[str, int]:
     payload = _onlyoffice_token_payload(token)
     if request.status != 6 or request.forcesavetype != 1:
@@ -2546,7 +2548,7 @@ async def onlyoffice_callback(token: str, request: OnlyOfficeCallbackRequest) ->
     return {"error": 0}
 
 
-@router.get("/dag-runs/{run_id}/artifacts")
+@app.get("/dag-runs/{run_id}/artifacts")
 async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
     run_state = await _run_state_from_state(run_id)
     if run_state is None or run_state.kind != "static_dag":
@@ -2554,7 +2556,7 @@ async def get_dag_run_artifacts(run_id: str) -> dict[str, Any]:
     return _run_artifacts_response(run_state).model_dump(mode="json")
 
 
-@router.get("/capabilities")
+@app.get("/capabilities")
 async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     runner = state.get_runner()
     definitions = list(runner.list_capabilities(kind=kind))
@@ -2572,7 +2574,7 @@ async def list_capabilities(kind: str | None = None) -> dict[str, Any]:
     }
 
 
-@router.get("/agents")
+@app.get("/agents")
 async def list_agents() -> dict[str, Any]:
     store = state.agent_preset_store()
     presets, errors = _agent_presets_available_for_registration(store)
@@ -2586,7 +2588,7 @@ async def list_agents() -> dict[str, Any]:
     }
 
 
-@router.post("/agents")
+@app.post("/agents")
 async def create_agent(request: AgentPreset) -> dict[str, Any]:
     name = _clean_agent_preset_name(request.name)
     store = state.agent_preset_store()
@@ -2609,7 +2611,7 @@ async def create_agent(request: AgentPreset) -> dict[str, Any]:
     return {"agent": _agent_preset_payload(saved)}
 
 
-@router.put("/agents/{name}")
+@app.put("/agents/{name}")
 async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str, Any]:
     preset_name = _clean_agent_preset_name(name)
     store = state.agent_preset_store()
@@ -2633,7 +2635,7 @@ async def update_agent(name: str, request: AgentPresetUpdateRequest) -> dict[str
     return {"agent": _agent_preset_payload(saved)}
 
 
-@router.delete("/agents/{name}")
+@app.delete("/agents/{name}")
 async def delete_agent(name: str) -> dict[str, str]:
     preset_name = _clean_agent_preset_name(name)
     store = state.agent_preset_store()
@@ -2785,7 +2787,7 @@ def _agent_profile_candidates() -> list[tuple[str, AgentProfile]]:
     return sorted(candidates.values(), key=lambda item: item[1].name)
 
 
-@router.post("/capabilities")
+@app.post("/capabilities")
 async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     runner = state.get_runner()
     try:
@@ -2797,7 +2799,7 @@ async def create_capability(definition: CapabilityDefinition) -> dict[str, Any]:
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
-@router.put("/capabilities/{capability_id}")
+@app.put("/capabilities/{capability_id}")
 async def update_capability(capability_id: str, definition: CapabilityDefinition) -> dict[str, Any]:
     runner = state.get_runner()
     if capability_id != definition.id:
@@ -2815,7 +2817,7 @@ async def update_capability(capability_id: str, definition: CapabilityDefinition
     return {"capability": runner.get_capability(definition.id).model_dump(mode="json")}
 
 
-@router.delete("/capabilities/{capability_id}")
+@app.delete("/capabilities/{capability_id}")
 async def delete_capability(capability_id: str) -> dict[str, str]:
     runner = state.get_runner()
     definition = runner.get_capability(capability_id)
@@ -2830,23 +2832,23 @@ async def delete_capability(capability_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.post("/capabilities/{capability_id}/enable")
+@app.post("/capabilities/{capability_id}/enable")
 async def enable_capability(capability_id: str) -> dict[str, Any]:
     return _set_capability_enabled(capability_id, True)
 
 
-@router.post("/capabilities/{capability_id}/disable")
+@app.post("/capabilities/{capability_id}/disable")
 async def disable_capability(capability_id: str) -> dict[str, Any]:
     return _set_capability_enabled(capability_id, False)
 
 
-@router.get("/python-tools")
+@app.get("/python-tools")
 async def list_python_tools() -> dict[str, Any]:
     state.get_runner()
     return {"tools": [_python_tool_payload(config) for config in state.custom_python_tools]}
 
 
-@router.post("/python-tools")
+@app.post("/python-tools")
 async def create_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     with state.python_tool_lock:
         state.sync_user_config()
@@ -2859,7 +2861,7 @@ async def create_python_tool(request: PythonToolRequest) -> dict[str, Any]:
         return {"tool": _python_tool_payload(config)}
 
 
-@router.post("/python-tools/validate")
+@app.post("/python-tools/validate")
 async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     config = _python_tool_config_from_request(request)
     result = load_python_tool_sources(
@@ -2887,7 +2889,7 @@ async def validate_python_tool(request: PythonToolRequest) -> dict[str, Any]:
     }
 
 
-@router.post("/python-tools/discover")
+@app.post("/python-tools/discover")
 async def discover_python_tools(request: Request) -> dict[str, list[str]]:
     source_text = await _python_tool_discovery_source(request)
     try:
@@ -2900,7 +2902,7 @@ async def discover_python_tools(request: Request) -> dict[str, list[str]]:
     return {"names": names}
 
 
-@router.post("/python-tools/upload")
+@app.post("/python-tools/upload")
 async def upload_python_tool(
     file: UploadFile = File(...),
     id: str = Form(...),
@@ -2944,14 +2946,14 @@ async def upload_python_tool(
             raise
 
 
-@router.post("/python-tools/reload")
+@app.post("/python-tools/reload")
 async def reload_python_tools() -> dict[str, Any]:
     with state.python_tool_lock:
         _reload_python_tools()
         return await list_python_tools()
 
 
-@router.put("/python-tools/{tool_id}")
+@app.put("/python-tools/{tool_id}")
 async def update_python_tool(tool_id: str, request: PythonToolRequest) -> dict[str, Any]:
     with state.python_tool_lock:
         state.sync_user_config()
@@ -2977,7 +2979,7 @@ async def update_python_tool(tool_id: str, request: PythonToolRequest) -> dict[s
         return {"tool": _python_tool_payload(config)}
 
 
-@router.delete("/python-tools/{tool_id}")
+@app.delete("/python-tools/{tool_id}")
 async def delete_python_tool(tool_id: str) -> dict[str, str]:
     with state.python_tool_lock:
         state.sync_user_config()
@@ -2992,7 +2994,7 @@ async def delete_python_tool(tool_id: str) -> dict[str, str]:
         return {"status": "deleted"}
 
 
-@router.get("/models", response_model=ModelListResponse)
+@app.get("/models", response_model=ModelListResponse)
 async def list_models() -> ModelListResponse:
     return ModelListResponse(
         models=_model_provider_payloads(),
@@ -3000,7 +3002,7 @@ async def list_models() -> ModelListResponse:
     )
 
 
-@router.post("/models", response_model=ModelMutationResponse)
+@app.post("/models", response_model=ModelMutationResponse)
 async def create_model_provider(request: ModelProviderRequest) -> ModelMutationResponse:
     state.sync_user_config()
     model_id = _clean_model_id(request.id)
@@ -3019,7 +3021,7 @@ async def create_model_provider(request: ModelProviderRequest) -> ModelMutationR
     )
 
 
-@router.put("/models/{model_id}", response_model=ModelMutationResponse)
+@app.put("/models/{model_id}", response_model=ModelMutationResponse)
 async def update_model_provider(model_id: str, request: ModelProviderRequest) -> ModelMutationResponse:
     state.sync_user_config()
     clean_model_id = _clean_model_id(model_id)
@@ -3044,7 +3046,7 @@ async def update_model_provider(model_id: str, request: ModelProviderRequest) ->
     )
 
 
-@router.delete("/models/{model_id}", response_model=ModelDeleteResponse)
+@app.delete("/models/{model_id}", response_model=ModelDeleteResponse)
 async def delete_model_provider(model_id: str) -> ModelDeleteResponse:
     state.sync_user_config()
     clean_model_id = _clean_model_id(model_id)
@@ -3058,7 +3060,7 @@ async def delete_model_provider(model_id: str) -> ModelDeleteResponse:
     return ModelDeleteResponse(status="deleted", active_model_id=_active_model_id())
 
 
-@router.post("/models/{model_id}/activate", response_model=ModelMutationResponse)
+@app.post("/models/{model_id}/activate", response_model=ModelMutationResponse)
 async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     state.sync_user_config()
     clean_model_id = _clean_model_id(model_id, allow_config=True)
@@ -3076,12 +3078,12 @@ async def activate_model_provider(model_id: str) -> ModelMutationResponse:
     return ModelMutationResponse(model=_user_model_payload(model, active=True), active_model_id=clean_model_id)
 
 
-@router.get("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+@app.get("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
 async def get_onlyoffice_settings() -> OnlyOfficeSettingsPayload:
     return _onlyoffice_settings_payload(state._current_user_config().onlyoffice)
 
 
-@router.put("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
+@app.put("/system/onlyoffice", response_model=OnlyOfficeSettingsPayload)
 async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> OnlyOfficeSettingsPayload:
     config = state._current_user_config()
     config.onlyoffice = UserOnlyOfficeConfig(
@@ -3097,12 +3099,12 @@ async def update_onlyoffice_settings(request: OnlyOfficeSettingsPayload) -> Only
     return _onlyoffice_settings_payload(config.onlyoffice)
 
 
-@router.get("/mcp/servers")
+@app.get("/mcp/servers")
 async def list_mcp_servers() -> dict[str, Any]:
     return {"servers": _mcp_server_payloads(state.get_runner())}
 
 
-@router.post("/mcp/servers")
+@app.post("/mcp/servers")
 async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
     state.sync_user_config()
     name = _clean_name(request.name, field="MCP server name")
@@ -3122,7 +3124,7 @@ async def create_mcp_server(request: MCPServerRequest) -> dict[str, Any]:
     return {"server": _mcp_server_payload(name, "user", state.custom_mcp_servers[name], state.get_runner())}
 
 
-@router.put("/mcp/servers/{name}")
+@app.put("/mcp/servers/{name}")
 async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, Any]:
     state.sync_user_config()
     server_name = _clean_name(name, field="MCP server name")
@@ -3143,7 +3145,7 @@ async def update_mcp_server(name: str, request: MCPServerRequest) -> dict[str, A
     return {"server": _mcp_server_payload(server_name, "user", state.custom_mcp_servers[server_name], state.get_runner())}
 
 
-@router.delete("/mcp/servers/{name}")
+@app.delete("/mcp/servers/{name}")
 async def delete_mcp_server(name: str) -> dict[str, str]:
     state.sync_user_config()
     server_name = _clean_name(name, field="MCP server name")
@@ -3160,7 +3162,7 @@ async def delete_mcp_server(name: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.post("/mcp/reload")
+@app.post("/mcp/reload")
 async def reload_mcp_servers() -> dict[str, Any]:
     state.sync_user_config()
     try:
@@ -3177,7 +3179,7 @@ def _ensure_mcp_server_removable(name: str) -> None:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/skills")
+@app.get("/skills")
 async def list_skills() -> dict[str, Any]:
     try:
         return {"skills": [skill.as_list_item() for skill in state.skill_store().list()]}
@@ -3185,7 +3187,7 @@ async def list_skills() -> dict[str, Any]:
         raise _skill_http_exception(exc) from exc
 
 
-@router.get("/skills/{name:path}")
+@app.get("/skills/{name:path}")
 async def get_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
     try:
         return state.skill_store().view(name, file_path=file_path).as_payload()
@@ -3193,7 +3195,7 @@ async def get_skill(name: str, file_path: str | None = None) -> dict[str, Any]:
         raise _skill_http_exception(exc) from exc
 
 
-@router.post("/skills/install")
+@app.post("/skills/install")
 async def install_skill(
     file: UploadFile | None = File(None),
     content: str | None = Form(None),
@@ -3225,7 +3227,7 @@ async def install_skill(
     return {"skill": view.as_payload()}
 
 
-@router.delete("/skills/{name:path}")
+@app.delete("/skills/{name:path}")
 async def delete_skill(name: str) -> dict[str, str]:
     try:
         state.skill_store().delete(name)
@@ -3234,13 +3236,13 @@ async def delete_skill(name: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@router.get("/profiles")
+@app.get("/profiles")
 async def list_profiles() -> dict[str, Any]:
     profiles, warnings = _profile_payloads()
     return {"profiles": profiles, "warnings": warnings}
 
 
-@router.post("/profiles")
+@app.post("/profiles")
 async def create_profile(request: ProfileCreateRequest) -> dict[str, Any]:
     name = _clean_managed_profile_name(request.name)
     _validate_profile_content(request.content)
@@ -3250,7 +3252,7 @@ async def create_profile(request: ProfileCreateRequest) -> dict[str, Any]:
     return {"profile": _profile_payload(profile, "managed")}
 
 
-@router.put("/profiles/{name}")
+@app.put("/profiles/{name}")
 async def update_profile(name: str, request: ProfileUpdateRequest) -> dict[str, Any]:
     profile_name = _clean_managed_profile_name(name)
     _validate_profile_content(request.content)
@@ -3262,7 +3264,7 @@ async def update_profile(name: str, request: ProfileUpdateRequest) -> dict[str, 
     return {"profile": _profile_payload(profile, "managed")}
 
 
-@router.delete("/profiles/{name}")
+@app.delete("/profiles/{name}")
 async def delete_profile(name: str) -> dict[str, str]:
     profile_name = _clean_managed_profile_name(name)
     store = state.managed_profile_store()
@@ -3342,7 +3344,7 @@ def _ensure_managed_profile_name_available(name: str) -> None:
         raise HTTPException(status_code=400, detail=f"Profile '{name}' already exists in the configured profile directory.")
 
 
-@router.get("/sandbox/status")
+@app.get("/sandbox/status")
 async def sandbox_status() -> dict[str, Any]:
     runner = state.get_runner()
     status = runner.sandbox_status()
@@ -3956,7 +3958,7 @@ def _skill_http_exception(exc: SkillStoreError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/capabilities/{capability_id}/test")
+@app.post("/capabilities/{capability_id}/test")
 async def test_capability(capability_id: str, request: CapabilityTestRequest) -> dict[str, Any]:
     runner = state.get_runner()
     if runner.get_capability(capability_id) is None:
@@ -3965,7 +3967,7 @@ async def test_capability(capability_id: str, request: CapabilityTestRequest) ->
     return {"result": result.model_dump(mode="json")}
 
 
-@router.post("/messages/stream")
+@app.post("/messages/stream")
 async def message_stream(http_request: Request) -> StreamingResponse:
     request, input_uploads = await _message_request_from_http(http_request)
     persisted_context = await _persisted_context_from_message(request)
@@ -4015,7 +4017,7 @@ async def message_stream(http_request: Request) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
-@router.post("/projects/{project_id}/reviews/{review_id}/resume")
+@app.post("/projects/{project_id}/reviews/{review_id}/resume")
 async def resume_project_review_stream(
     project_id: str,
     review_id: str,
@@ -4024,7 +4026,7 @@ async def resume_project_review_stream(
     return await _resume_persisted_review_stream(review_id, request, project_id=project_id)
 
 
-@router.post("/reviews/{review_id}/resume")
+@app.post("/reviews/{review_id}/resume")
 async def resume_review_stream(
     review_id: str,
     request: ProjectResumeReviewRequest,
@@ -4552,7 +4554,7 @@ def _clean_project_slug(value: str) -> str:
     return slug
 
 
-@router.post("/messages/resume")
+@app.post("/messages/resume")
 async def resume_message_stream(request: ResumeReviewRequest) -> StreamingResponse:
     async def events():
         decision = ReviewDecision(
@@ -5385,7 +5387,7 @@ def _decode_utf8_preview(content: bytes, *, truncated: bool) -> str:
     return decoder.decode(content, final=False)
 
 
-@router.get("/runs/{run_id}/trace")
+@app.get("/runs/{run_id}/trace")
 async def get_run_trace(run_id: str) -> dict[str, Any]:
     run_state = await _run_state_from_state(run_id)
     if run_state is not None and run_state.trace is not None:
@@ -5568,21 +5570,3 @@ def _chat_stream_event_payload(event: RunStreamEvent, runner: Runner) -> dict[st
         data["capability_call"] = review_payload["capability_call"]
     data["payload"] = review_payload.get("payload") or {}
     return payload
-
-
-def create_app(extensions: ServerExtensions | None = None) -> FastAPI:
-    """Compose the API server; `None` selects the single-user defaults."""
-    state.extensions = extensions or DefaultExtensions()
-    application = FastAPI(title="dagent API", version="0.1.0")
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    application.include_router(router)
-    state.extensions.configure_app(application)
-    return application
-
-
-app = create_app()
