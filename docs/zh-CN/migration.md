@@ -8,6 +8,10 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+### 改变
+
+- MCP 工具调用现在默认使用 `300` 秒超时，本地 WebUI MCP 表单也支持配置工具超时。
+
 ### 修复
 
 - MCP 连接和工具调用超时现在会返回明确的 timeout 文案，不再是空错误文本。

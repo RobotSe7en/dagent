@@ -27,6 +27,7 @@ def test_migration_notes_record_065_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     assert "MCP connection and tool-call timeouts now report explicit timeout messages" in english_unreleased
+    assert "MCP tool calls now default to a `300` second timeout" in english_unreleased
     collapsed_english_065 = _collapsed(english_065)
     assert "recursive project file tree" in collapsed_english_065
     assert "MCP server registration and tool calls now share explicit default timeouts" in english_065
@@ -41,6 +42,7 @@ def test_migration_notes_record_065_release_history() -> None:
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     assert "MCP 连接和工具调用超时现在会返回明确的 timeout 文案" in chinese_unreleased
+    assert "MCP 工具调用现在默认使用 `300` 秒超时" in chinese_unreleased
     assert "递归项目文件树" in chinese_065
     assert "MCP server 注册和工具调用现在使用统一的显式默认 timeout" in chinese_065
     assert "Windows workspace" in chinese_065

@@ -1898,6 +1898,8 @@ test('tools management ports the full design columns while keeping backend actio
   assert.match(directorySource, /tool-schema-block/);
   assert.match(directorySource, /skill-editor-toolbar/);
   assert.match(directorySource, /mcp-config-form/);
+  assert.match(directorySource, /tool_timeout/);
+  assert.match(directorySource, /工具超时/);
   assert.match(directorySource, /className="status-badge mcp-status-badge"/);
   assert.match(appSource, /if \(status === 'connected'\) return '已连接';/);
   assert.doesNotMatch(appSource, /if \(status === 'connected'\) return 'connected';/);

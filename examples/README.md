@@ -53,4 +53,5 @@ MCP requires the optional MCP extra. To test local stdio MCP registration from
 the WebUI, add a server with command `uv` and args `--directory`, this
 repository root, `run`, `python`, `-m`, `examples.local_test_mcp`. The test
 server's `echo` tool intentionally waits 130 seconds before returning so MCP
-tool timeout handling can be verified.
+tool timeout handling can be verified by setting `tool_timeout` below 130
+seconds.

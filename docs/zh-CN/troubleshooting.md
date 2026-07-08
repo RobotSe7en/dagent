@@ -62,7 +62,7 @@ Streamable HTTP `url` 和 `headers` 可以访问远程 MCP server。如果 serve
 
 如果启动很慢，调大 `connect_timeout`；如果工具已经启动但运行中失败，调大
 `tool_timeout`。超时失败会带明确文案，例如 `timed out after 60 seconds` 或
-`MCP tool 'search' on server 'docs' timed out after 90 seconds`。
+`MCP tool 'search' on server 'docs' timed out after 300 seconds`。
 
 ## Unknown Capability
 

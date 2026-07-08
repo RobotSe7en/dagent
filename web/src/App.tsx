@@ -329,7 +329,7 @@ const defaultMcpConfig: { name: string } & MCPServerConfig = {
   enabled: true,
   risk: 'medium',
   connect_timeout: 60,
-  tool_timeout: 90,
+  tool_timeout: 300,
 };
 
 const defaultPythonToolConfig: PythonToolConfig = {
@@ -12055,6 +12055,15 @@ function CapabilityDirectory({
     const transport = mcpDraft.transport ?? 'stdio';
     const setTransport = (nextTransport: MCPServerConfig['transport']) =>
       setMcpDraft((current) => ({ ...current, transport: nextTransport }));
+    const setToolTimeout = (rawValue: string) => {
+      const nextValue = Number(rawValue);
+      setMcpDraft((current) => ({
+        ...current,
+        tool_timeout: Number.isFinite(nextValue) && nextValue > 0
+          ? nextValue
+          : defaultMcpConfig.tool_timeout,
+      }));
+    };
     return (
       <>
         <div className="mcp-transport-field">
@@ -12078,6 +12087,16 @@ function CapabilityDirectory({
             </button>
           </div>
         </div>
+        <label>
+          工具超时（秒）
+          <input
+            min={1}
+            step={1}
+            type="number"
+            value={mcpDraft.tool_timeout ?? defaultMcpConfig.tool_timeout}
+            onChange={(event) => setToolTimeout(event.target.value)}
+          />
+        </label>
         {transport === 'http' ? (
           <>
             <label>URL<input value={mcpDraft.url ?? ''} onChange={(event) => setMcpDraft((current) => ({ ...current, url: event.target.value }))} /></label>

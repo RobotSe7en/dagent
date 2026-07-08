@@ -65,7 +65,7 @@ discovered tool cannot register.
 If startup is slow, increase `connect_timeout`; if a tool starts but fails while
 running, increase `tool_timeout`. Timeout failures include explicit messages
 such as `timed out after 60 seconds` or `MCP tool 'search' on server 'docs'
-timed out after 90 seconds`.
+timed out after 300 seconds`.
 
 ## Unknown Capability
 

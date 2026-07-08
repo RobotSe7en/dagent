@@ -9,6 +9,11 @@ The current package version is `0.6.5`.
 
 ## Unreleased
 
+### Changed
+
+- MCP tool calls now default to a `300` second timeout, and the local WebUI MCP
+  form exposes the tool timeout setting.
+
 ### Fixed
 
 - MCP connection and tool-call timeouts now report explicit timeout messages

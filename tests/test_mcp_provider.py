@@ -96,7 +96,7 @@ def test_mcp_provider_registers_discovered_tools_with_safe_names() -> None:
     assert payload == {"result": "found:x", "structuredContent": {"ok": True}}
     assert result.value == {"ok": True}
     assert manager.calls == [("mock-server", "lookup", {"query": "x"})]
-    assert manager.timeouts == [90]
+    assert manager.timeouts == [300]
 
 
 def test_mcp_provider_accepts_snake_case_output_schema() -> None:
@@ -517,7 +517,7 @@ def test_mcp_server_task_uses_default_http_timeouts(monkeypatch) -> None:
     assert timeout.connect == 60
     assert timeout.write == 60
     assert timeout.pool == 60
-    assert timeout.read == 90
+    assert timeout.read == 300
 
 
 def test_mcp_server_task_requires_explicit_http_transport_for_url() -> None:

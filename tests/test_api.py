@@ -531,7 +531,7 @@ def test_api_memory_http_mcp_server_uses_url_config(monkeypatch) -> None:
         "enabled": True,
         "risk": "high",
         "connect_timeout": 60,
-        "tool_timeout": 90,
+        "tool_timeout": 300,
     }
     assert server["tools"][0]["policy"]["network"] is True
 
@@ -4292,7 +4292,7 @@ def test_api_mcp_management_persists_user_servers_to_user_config(monkeypatch, tm
             "enabled": True,
             "risk": "low",
             "connect_timeout": 60,
-            "tool_timeout": 90,
+            "tool_timeout": 300,
         }
         assert servers["mock"]["source"] == "user"
         assert servers["mock"]["status"] == "connected"
