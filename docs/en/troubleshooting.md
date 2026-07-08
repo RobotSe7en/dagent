@@ -62,6 +62,11 @@ the configured Streamable HTTP `url` and `headers` work against the remote MCP
 server. MCP registration is rolled back if the server cannot connect or a
 discovered tool cannot register.
 
+If startup is slow, increase `connect_timeout`; if a tool starts but fails while
+running, increase `tool_timeout`. Timeout failures include explicit messages
+such as `timed out after 60 seconds` or `MCP tool 'search' on server 'docs'
+timed out after 90 seconds`.
+
 ## Unknown Capability
 
 List registered capabilities:

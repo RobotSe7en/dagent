@@ -18,6 +18,7 @@ credentials.
 | `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
+| `local_test_mcp.py` | Run a local stdio MCP server for registration and tool-call diagnostics. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Capabilities](../docs/en/capabilities.md) |
 | `quickstart.py` | Stream a model-backed quickstart agent against a real provider. | [Quick Start](../docs/en/quick-start.md), [Installation](../docs/en/installation.md) |
 
 ## Run Examples
@@ -48,6 +49,8 @@ MCP runtime registration is available through:
 - `Runner.replace_mcp_server(name, config)`
 - `Runner.remove_mcp_server(name)`
 
-It requires the optional MCP extra and a real MCP server, so it is covered
-in [Runner and Configuration](../docs/en/runner-and-configuration.md) rather than
-exercised by these offline examples.
+MCP requires the optional MCP extra. To test local stdio MCP registration from
+the WebUI, add a server with command `uv` and args `--directory`, this
+repository root, `run`, `python`, `-m`, `examples.local_test_mcp`. The test
+server's `echo` tool intentionally waits 130 seconds before returning so MCP
+tool timeout handling can be verified.

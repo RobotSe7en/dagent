@@ -38,17 +38,11 @@ class MCPServerManager:
             self.tasks[name] = task
             futures.append((name, asyncio.run_coroutine_threadsafe(task.start(), self._loop)))
         for name, future in futures:
+            connect_timeout = _connect_timeout_seconds(self.servers[name])
             try:
-                future.result(
-                    timeout=float(
-                        self.servers[name].get(
-                            "connect_timeout",
-                            DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
-                        )
-                    )
-                )
-            except FutureTimeoutError as exc:
-                self.last_errors[name] = str(exc)
+                future.result(timeout=connect_timeout)
+            except FutureTimeoutError:
+                self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
                 future.cancel()
                 self._discard_task(name)
             except Exception as exc:
@@ -80,7 +74,10 @@ class MCPServerManager:
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             future.cancel()
-            raise
+            raise FutureTimeoutError(
+                f"MCP tool '{tool_name}' on server '{server_name}' timed out "
+                f"after {_format_timeout(timeout)} seconds."
+            ) from None
 
     def shutdown(self) -> None:
         if self._loop is None:
@@ -121,3 +118,11 @@ class MCPServerManager:
         assert self._loop is not None
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
+
+
+def _connect_timeout_seconds(config: dict[str, Any]) -> float:
+    return float(config.get("connect_timeout", DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS))
+
+
+def _format_timeout(timeout: float) -> str:
+    return f"{timeout:g}"

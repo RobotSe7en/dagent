@@ -10,6 +10,7 @@ import pytest
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.mcp.config import build_http_headers, build_stdio_env
+from dagent.capabilities.mcp.handlers import make_mcp_tool_handler
 from dagent.capabilities.mcp.manager import MCPServerManager
 import dagent.capabilities.mcp.manager as manager_module
 import dagent.capabilities.mcp.server_task as server_task_module
@@ -249,12 +250,32 @@ def test_mcp_manager_cancels_tool_call_future_on_timeout(monkeypatch) -> None:
 
     try:
         manager.call_tool_blocking("mock", "lookup", {}, timeout=0.01)
-    except TimeoutError:
-        pass
+    except TimeoutError as exc:
+        assert str(exc) == "MCP tool 'lookup' on server 'mock' timed out after 0.01 seconds."
     else:
         raise AssertionError("tool call timeout should be raised")
 
     assert future.cancelled is True
+
+
+def test_mcp_tool_handler_returns_timeout_error_text() -> None:
+    class TimeoutManager:
+        def call_tool_blocking(self, server_name: str, tool_name: str, arguments: dict, timeout: float):
+            raise TimeoutError("MCP tool 'lookup' on server 'mock' timed out after 1 seconds.")
+
+    handler = make_mcp_tool_handler(
+        TimeoutManager(),
+        server_name="mock",
+        tool_name="lookup",
+        timeout_seconds=1,
+    )
+    invocation = CapabilityInvocation(capability_id="mcp.mock.lookup", kind="mcp")
+
+    result = run(handler(invocation))
+
+    assert result.status == "failed"
+    assert result.stop_reason == "mcp_call_error"
+    assert result.error == "MCP tool 'lookup' on server 'mock' timed out after 1 seconds."
 
 
 def test_mcp_manager_shuts_down_server_task_after_connect_timeout(monkeypatch) -> None:
@@ -282,6 +303,7 @@ def test_mcp_manager_shuts_down_server_task_after_connect_timeout(monkeypatch) -
     try:
         manager.start()
         assert created_tasks[0].shutdown_called is True
+        assert manager.last_errors["slow"] == "timed out after 0.01 seconds."
         assert "slow" not in manager.discovered_tools()
     finally:
         manager.shutdown()

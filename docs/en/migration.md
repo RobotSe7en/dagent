@@ -9,7 +9,10 @@ The current package version is `0.6.5`.
 
 ## Unreleased
 
-- No unreleased changes.
+### Fixed
+
+- MCP connection and tool-call timeouts now report explicit timeout messages
+  instead of empty error text.
 
 ## 0.6.5
 
