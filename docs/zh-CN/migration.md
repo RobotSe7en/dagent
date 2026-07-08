@@ -8,7 +8,10 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-- 暂无未发布变更。
+### 改变
+
+- Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 请求失败或超时时按递增等待重试，
+  然后才进入原有失败路径。
 
 ## 0.6.6
 

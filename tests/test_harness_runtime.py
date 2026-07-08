@@ -274,6 +274,105 @@ def test_harness_runtime_dag_planning_does_not_import_tool_thread() -> None:
     assert "Remember that the project color is blue." not in planning_messages[1]["content"]
 
 
+def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_backoff_sequence() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailFiveTimesProvider(MockProvider):
+        async def chat(self, messages, tools=None):
+            if len(self.requests) < 5:
+                self.requests.append({"messages": messages, "tools": tools})
+                raise TimeoutError("LLM request timed out")
+            return await super().chat(messages, tools=tools)
+
+    provider = FailFiveTimesProvider([ChatResponse(content="retried answer")])
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    runtime = HarnessRuntime(
+        provider=provider,
+        tool_agent=ToolAgent(
+            loop=ToolAgentLoop(
+                provider=provider,
+                capability_executor=capability_executor,
+                tool_adapter=tool_adapter,
+                llm_retry_sleep=record_sleep,
+            ),
+            profile=_conversation_profile(),
+        ),
+        dag_agent=DAGAgent(
+            loop=DAGAgentLoop(
+                provider=provider,
+                dag_executor=DAGExecutor(capability_executor=capability_executor),
+                tool_adapter=tool_adapter,
+                llm_retry_sleep=record_sleep,
+            ),
+            profile=_dag_agent_profile(),
+        ),
+        capability_catalog=capability_executor.catalog,
+        capability_executor=capability_executor,
+    )
+
+    result = run(run_message(runtime, "hello", mode="tool"))
+
+    assert result.status == "completed"
+    assert result.output_text == "retried answer"
+    assert len(provider.requests) == 6
+    assert sleeps == [1.0, 2.0, 5.0, 10.0, 30.0]
+
+
+def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycle_exhaustion() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailOnceProvider(MockProvider):
+        async def chat(self, messages, tools=None):
+            if not self.requests:
+                self.requests.append({"messages": messages, "tools": tools})
+                raise RuntimeError("LLM temporarily unavailable")
+            return await super().chat(messages, tools=tools)
+
+    provider = FailOnceProvider([ChatResponse(content=_dag_agent_dsl())])
+    capability_executor = make_capability_executor()
+    tool_adapter = _tool_adapter(capability_executor.catalog)
+    dag_agent_loop = DAGAgentLoop(
+        provider=provider,
+        dag_executor=DAGExecutor(capability_executor=capability_executor),
+        tool_adapter=tool_adapter,
+        llm_retry_sleep=record_sleep,
+    )
+    dag_agent_loop.max_cycles = 1
+    runtime = HarnessRuntime(
+        provider=provider,
+        tool_agent=ToolAgent(
+            loop=ToolAgentLoop(
+                provider=provider,
+                capability_executor=capability_executor,
+                tool_adapter=tool_adapter,
+                llm_retry_sleep=record_sleep,
+            ),
+            profile=_conversation_profile(),
+        ),
+        dag_agent=DAGAgent(
+            loop=dag_agent_loop,
+            profile=_dag_agent_profile(),
+        ),
+        capability_catalog=capability_executor.catalog,
+        capability_executor=capability_executor,
+    )
+
+    result = run(run_message(runtime, "Create a safe DAG", mode="dag", review_level="careful"))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
+    assert len(provider.requests) == 2
+    assert sleeps == [1.0]
+
+
 def test_harness_runtime_auto_routes_to_dag() -> None:
     provider = MockProvider([
         ChatResponse(content="dag"),           # _route()

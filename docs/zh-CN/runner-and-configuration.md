@@ -59,6 +59,11 @@ provider = dagent.Provider(
 使用 `reasoning` 传递常见 reasoning controls。只有当目标 endpoint 支持对应字段时，
 才使用 `extra_request_args` 和 `extra_body` 传递 provider-specific 参数。
 
+`timeout_seconds` 控制 provider request timeout。Tool-agent 和动态 DAG 的 planning/replanning
+LLM 调用会在请求失败或超时时最多重试 5 次，重试前分别等待 `1`、`2`、`5`、`10`、`30` 秒。
+如果 streaming response 已经输出 token，dagent 不会重试这次请求，以避免重复输出部分内容。
+MCP server 的 `tool_timeout` 是单独配置，只控制 MCP 工具调用。
+
 ## 配置文件
 
 当 provider settings、MCP servers、validation 或 profile directories 应从 YAML 加载时，

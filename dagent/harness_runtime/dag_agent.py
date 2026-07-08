@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import json
 from pathlib import Path
@@ -33,6 +34,12 @@ from dagent.harness_runtime.dag_builder import (
 from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
+from dagent.harness_runtime.llm_retry import (
+    DEFAULT_LLM_RETRY_POLICY,
+    LLMRetryPolicy,
+    LLMRetrySleep,
+    run_with_llm_retries,
+)
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
@@ -244,12 +251,16 @@ class DAGAgentLoop:
         tool_adapter: CapabilityToolAdapter,
         enabled_toolsets: Sequence[str] = ("builtin",),
         max_cycles: int = 6,
+        llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+        llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
     ) -> None:
         self.provider = provider
         self.dag_executor = dag_executor
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
         self.max_cycles = max_cycles
+        self.llm_retry_policy = llm_retry_policy
+        self.llm_retry_sleep = llm_retry_sleep
 
     def available_capabilities(
         self,
@@ -281,6 +292,8 @@ class DAGAgentLoop:
             model_step=model_step,
             on_token=on_token,
             on_event=on_event,
+            retry_policy=self.llm_retry_policy,
+            retry_sleep=self.llm_retry_sleep,
         )
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -943,9 +956,15 @@ async def _chat_for_dag(
     model_step: int | None = None,
     on_token: Callable[[str], None] | None = None,
     on_event: Callable[[dict[str, Any]], None] | None = None,
+    retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+    retry_sleep: LLMRetrySleep = asyncio.sleep,
 ) -> ChatResponse:
     if on_token is None and on_event is None:
-        return await provider.chat(messages)
+        return await run_with_llm_retries(
+            lambda: provider.chat(messages),
+            policy=retry_policy,
+            sleep=retry_sleep,
+        )
 
     stream = response_token_stream(
         on_raw=on_token,
@@ -953,15 +972,23 @@ async def _chat_for_dag(
         context=ResponseStreamContext.create(run_id=run_id, model_step=model_step),
     )
     if stream is None:
-        return await provider.chat(messages)
+        return await run_with_llm_retries(
+            lambda: provider.chat(messages),
+            policy=retry_policy,
+            sleep=retry_sleep,
+        )
 
     content = ""
     response: ChatResponse | None = None
-    try:
-        stream.start()
+    emitted_tokens = False
+
+    async def attempt() -> ChatResponse:
+        nonlocal content, emitted_tokens, response
+        response = None
         if hasattr(provider, "stream_chat"):
             async for event in provider.stream_chat(messages):
                 if event.type == "token" and event.content:
+                    emitted_tokens = True
                     if getattr(event, "channel", "content") == "reasoning":
                         stream.emit_channel("reasoning", event.content)
                     else:
@@ -971,9 +998,18 @@ async def _chat_for_dag(
                     response = event.response
         else:
             response = await provider.chat(messages)
+        return response or ChatResponse(content=content)
+
+    try:
+        stream.start()
+        return await run_with_llm_retries(
+            attempt,
+            policy=retry_policy,
+            sleep=retry_sleep,
+            should_retry=lambda _exc: not emitted_tokens,
+        )
     finally:
         stream.finish()
-    return response or ChatResponse(content=content)
 
 
 # ------------------------------------------------------------------

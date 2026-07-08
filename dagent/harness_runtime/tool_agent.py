@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -32,6 +33,12 @@ from dagent.harness_runtime.runtime_events import (
     ResponseStreamContext,
     TokenHandler,
     response_token_stream,
+)
+from dagent.harness_runtime.llm_retry import (
+    DEFAULT_LLM_RETRY_POLICY,
+    LLMRetryPolicy,
+    LLMRetrySleep,
+    run_with_llm_retries,
 )
 from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.profiles import AgentProfile
@@ -312,11 +319,15 @@ class ToolAgentLoop:
         capability_executor: CapabilityExecutor,
         tool_adapter: CapabilityToolAdapter,
         enabled_toolsets: Sequence[str] = ("builtin",),
+        llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+        llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
     ) -> None:
         self.provider = provider
         self.capability_executor = capability_executor
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
+        self.llm_retry_policy = llm_retry_policy
+        self.llm_retry_sleep = llm_retry_sleep
 
     def available_capabilities(
         self,
@@ -717,7 +728,11 @@ class ToolAgentLoop:
         on_event: LoopEventHandler | None,
     ) -> ChatResponse:
         if on_token is None and on_event is None:
-            return await self.provider.chat(messages, tools=tools)
+            return await run_with_llm_retries(
+                lambda: self.provider.chat(messages, tools=tools),
+                policy=self.llm_retry_policy,
+                sleep=self.llm_retry_sleep,
+            )
 
         stream = response_token_stream(
             on_raw=on_token,
@@ -725,14 +740,22 @@ class ToolAgentLoop:
             context=ResponseStreamContext.create(run_id=run_id, model_step=step),
         )
         if stream is None:
-            return await self.provider.chat(messages, tools=tools)
+            return await run_with_llm_retries(
+                lambda: self.provider.chat(messages, tools=tools),
+                policy=self.llm_retry_policy,
+                sleep=self.llm_retry_sleep,
+            )
 
         response: ChatResponse | None = None
-        try:
-            stream.start()
+        emitted_tokens = False
+
+        async def attempt() -> ChatResponse:
+            nonlocal emitted_tokens, response
+            response = None
             if hasattr(self.provider, "stream_chat"):
                 async for event in self.provider.stream_chat(messages, tools=tools):
                     if event.type == "token" and event.content:
+                        emitted_tokens = True
                         if getattr(event, "channel", "content") == "reasoning":
                             stream.emit_channel("reasoning", event.content)
                         else:
@@ -741,9 +764,18 @@ class ToolAgentLoop:
                         response = event.response
             else:
                 response = await self.provider.chat(messages, tools=tools)
+            return response or ChatResponse()
+
+        try:
+            stream.start()
+            return await run_with_llm_retries(
+                attempt,
+                policy=self.llm_retry_policy,
+                sleep=self.llm_retry_sleep,
+                should_retry=lambda _exc: not emitted_tokens,
+            )
         finally:
             stream.finish()
-        return response or ChatResponse()
 
     def _assistant_message(self, response: ChatResponse) -> dict[str, Any]:
         message: dict[str, Any] = {

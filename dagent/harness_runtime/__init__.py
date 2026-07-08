@@ -17,6 +17,7 @@ from dagent.harness_runtime.runtime import HarnessRuntime, RuntimeMode
 from dagent.harness_runtime.capability_executor import CapabilityExecutionError, CapabilityExecutor
 from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
+from dagent.harness_runtime.llm_retry import LLMRetryPolicy
 from dagent.schemas import (
     LoopOutcome,
     ValidationIssue,
@@ -43,6 +44,7 @@ __all__ = [
     "FeedbackLearnerAgent",
     "FeedbackLearning",
     "HarnessRuntime",
+    "LLMRetryPolicy",
     "CapabilityExecutionError",
     "CapabilityExecutor",
     "RuntimeMode",

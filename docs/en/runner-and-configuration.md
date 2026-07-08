@@ -64,6 +64,13 @@ Use `reasoning` for common reasoning controls. Use `extra_request_args` and
 `extra_body` only for provider-specific parameters supported by the target
 endpoint.
 
+`timeout_seconds` controls the provider request timeout. Tool-agent and dynamic
+DAG planning/replanning calls retry failed or timed-out LLM requests up to five
+times, waiting `1`, `2`, `5`, `10`, then `30` seconds before retrying. If a
+streaming response has already emitted tokens, dagent does not retry that
+request because doing so would duplicate partial output. MCP server
+`tool_timeout` is separate and only controls MCP tool calls.
+
 ## Configuration Files
 
 Use `Runner.from_config(...)` when provider settings, MCP servers, validation,

@@ -9,7 +9,10 @@ The current package version is `0.6.6`.
 
 ## Unreleased
 
-- No unreleased changes.
+### Changed
+
+- Tool-agent and dynamic DAG LLM calls now retry failed or timed-out provider
+  requests with increasing waits before surfacing the existing failure path.
 
 ## 0.6.6
 
