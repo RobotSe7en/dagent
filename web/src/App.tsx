@@ -4172,7 +4172,9 @@ export function App() {
       });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
-        restoreDagReviewAfterAbort(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages);
+        if (!activeConversationContext) {
+          restoreDagReviewAfterAbort(previousDagReview, previousDagReviewFeedback, previousDag, previousMessages);
+        }
         return;
       }
       const message = exc instanceof Error ? exc.message : String(exc);
@@ -4252,7 +4254,9 @@ export function App() {
       });
     } catch (exc) {
       if (isAbortError(exc) || signal.aborted) {
-        restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
+        if (!activeConversationContext) {
+          restoreCapabilityReviewAfterAbort(previousCapabilityReview, previousCapabilityReviewFeedback, previousMessages);
+        }
         return;
       }
       const message = exc instanceof Error ? exc.message : String(exc);

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import threading
@@ -15,10 +16,10 @@ from api.storage import (
     SQLiteStore,
 )
 from api.workspaces import LocalWorkspaceStore
-from dagent import DAG, PendingReview, RunResult, RunState, RunStreamEvent, Runner
+from dagent import CapabilityInvocation, DAG, PendingReview, RunResult, RunState, RunStreamEvent, Runner
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.result import RunFinishedData, RunStartedData
-from dagent.schemas import RunTrace, RunTraceNode
+from dagent.schemas import PendingCapabilityCall, RunTrace, RunTraceNode
 
 
 def _echo_dag(*, status: str = "review_required") -> DAG:
@@ -3075,6 +3076,289 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
     assert resume_response.status_code == 200
     assert updated["draft_dag"]["status"] == "completed"
     assert updated["draft_dag"]["nodes"]
+
+
+def test_interrupted_dag_review_rejection_clears_pending_review_and_allows_run_delete(
+    persistence_client,
+) -> None:
+    state.runner = Runner(provider=MockProvider([]))
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Interrupted dynamic DAG", "kind": "dynamic_dag"},
+    ).json()["conversation"]
+    session = persistence_client.post(
+        "/orchestration-sessions",
+        json={
+            "conversation_id": conversation["id"],
+            "kind": "dynamic_dag",
+        },
+    ).json()["session"]
+    proposed_dag = _echo_dag(status="review_required")
+    run_state = RunState(
+        run_id="run_interrupted_dag_rejection",
+        kind="dynamic_dag",
+        status="awaiting_review",
+        dag=DAG(dag_id="dag_echo", task_id="run_interrupted_dag_rejection"),
+        pending_review=PendingReview(
+            review_id="review_interrupted_dag",
+            kind="initial_dag",
+            message="Review proposed DAG before execution.",
+            proposed_dag=proposed_dag,
+        ),
+        user_request="echo ok through a DAG",
+        review_level="careful",
+        runtime_mode="dag",
+        dynamic_adjust=True,
+    )
+    store = state.get_store()
+    workspace_path = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="dynamic_dag",
+        status="awaiting_review",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(
+        run_state.run_id,
+        run_state.model_dump_json(),
+        output_text="Review proposed DAG before execution.",
+    )
+    store.upsert_review(
+        review_id="review_interrupted_dag",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="initial_dag",
+    )
+    store.append_conversation_message(
+        message_id="msg_interrupted_dag_review",
+        conversation_id=conversation["id"],
+        project_id=None,
+        role="assistant",
+        run_id=run_state.run_id,
+        status="awaiting_review",
+        content="Review proposed DAG before execution.",
+        pending_review_json=run_state.pending_review.model_dump_json(),
+    )
+    context = api_app.PersistedMessageContext(
+        project_id=None,
+        conversation_id=conversation["id"],
+        conversation_kind="dynamic_dag",
+        workspace_uri=conversation["workspace_uri"],
+        workspace_path=workspace_path,
+        orchestration_session_id=session["id"],
+        orchestration_surface=api_app.ORCHESTRATION_WORKSPACE_SURFACE,
+    )
+    decision = api_app.ReviewDecision(
+        review_id="review_interrupted_dag",
+        approved=False,
+        feedback="Do not run that DAG.",
+    )
+
+    async def interrupted_events():
+        yield RunStreamEvent(
+            type="run.started",
+            data=RunStartedData(kind="dynamic_dag"),
+            run_id=run_state.run_id,
+        )
+        raise asyncio.CancelledError
+
+    async def consume_interrupted_resume() -> None:
+        projection = await api_app.ConversationMessageProjection.resume_for_review(
+            run_state,
+            context,
+            decision,
+        )
+        try:
+            async for _payload in api_app._persisted_run_events(
+                interrupted_events(),
+                runner=state.get_runner(),
+                context=context,
+                stream_id="stream_interrupted_dag_rejection",
+                run_kind="dynamic_dag",
+                create_run=False,
+                existing_run_id=run_state.run_id,
+                resolve_review_id=decision.review_id,
+                decision_json=api_app._review_decision_json(decision),
+                message_projection=projection,
+            ):
+                pass
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(consume_interrupted_resume())
+
+    stored_run = store.get_run(run_state.run_id)
+    stored_state = store.get_run_state(run_state.run_id)
+    stored_review = store.get_review("review_interrupted_dag")
+    messages = persistence_client.get(f"/conversations/{conversation['id']}/messages").json()["messages"]
+    delete_response = persistence_client.delete(f"/runs/{run_state.run_id}")
+
+    assert stored_run is not None
+    assert stored_run.status == "failed"
+    assert stored_state is not None
+    assert stored_state.status == "failed"
+    assert stored_state.pending_review is None
+    assert stored_review is not None
+    assert stored_review.status == "resolved"
+    assert len(messages) == 1
+    assert messages[0]["status"] == "failed"
+    assert messages[0]["pending_review"] is None
+    assert delete_response.status_code == 200
+
+
+def test_interrupted_auto_tool_review_rejection_clears_pending_review_and_allows_run_delete(
+    persistence_client,
+) -> None:
+    state.runner = Runner(provider=MockProvider([]))
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Interrupted auto tool"},
+    ).json()["conversation"]
+    invocation = CapabilityInvocation(
+        invocation_id="call_auto_tool",
+        capability_id="tool.read_file",
+        kind="tool",
+        arguments={"path": "../blocked/secret.txt"},
+        risk="medium",
+    )
+    pending_call = PendingCapabilityCall(
+        invocation_id=invocation.invocation_id,
+        capability_id=invocation.capability_id,
+        tool_name="tool_read_file",
+        arguments=invocation.arguments,
+    )
+    run_state = RunState(
+        run_id="run_interrupted_auto_tool_rejection",
+        kind="tool",
+        status="awaiting_review",
+        pending_review=PendingReview(
+            review_id="review_interrupted_auto_tool",
+            kind="capability_review",
+            message="Review capability call: tool.read_file",
+            capability_call=pending_call,
+        ),
+        pending_invocation=invocation,
+        user_request="read outside",
+        review_level="careful",
+        runtime_mode="auto",
+    )
+    store = state.get_store()
+    workspace_path = Path(unquote(urlparse(conversation["workspace_uri"]).path))
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="tool",
+        status="awaiting_review",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(
+        run_state.run_id,
+        run_state.model_dump_json(),
+        output_text="Review capability call: tool.read_file",
+    )
+    store.upsert_review(
+        review_id="review_interrupted_auto_tool",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="capability_review",
+    )
+    store.append_conversation_message(
+        message_id="msg_interrupted_auto_tool_review",
+        conversation_id=conversation["id"],
+        project_id=None,
+        role="assistant",
+        run_id=run_state.run_id,
+        status="awaiting_review",
+        content="Review capability call: tool.read_file",
+        timeline_json=json.dumps([
+            {
+                "type": "capability",
+                "status": "awaiting_review",
+                "event": {
+                    "type": "capability.call.started",
+                    "invocation_id": invocation.invocation_id,
+                    "capability_id": invocation.capability_id,
+                    "arguments": invocation.arguments,
+                },
+            }
+        ]),
+        pending_review_json=run_state.pending_review.model_dump_json(),
+    )
+    context = api_app.PersistedMessageContext(
+        project_id=None,
+        conversation_id=conversation["id"],
+        conversation_kind="chat",
+        workspace_uri=conversation["workspace_uri"],
+        workspace_path=workspace_path,
+    )
+    decision = api_app.ReviewDecision(
+        review_id="review_interrupted_auto_tool",
+        approved=False,
+        feedback="Do not read that file.",
+    )
+
+    async def interrupted_events():
+        yield RunStreamEvent(
+            type="run.started",
+            data=RunStartedData(kind="tool"),
+            run_id=run_state.run_id,
+        )
+        raise asyncio.CancelledError
+
+    async def consume_interrupted_resume() -> None:
+        projection = await api_app.ConversationMessageProjection.resume_for_review(
+            run_state,
+            context,
+            decision,
+        )
+        try:
+            async for _payload in api_app._persisted_run_events(
+                interrupted_events(),
+                runner=state.get_runner(),
+                context=context,
+                stream_id="stream_interrupted_auto_tool_rejection",
+                run_kind="tool",
+                create_run=False,
+                existing_run_id=run_state.run_id,
+                resolve_review_id=decision.review_id,
+                decision_json=api_app._review_decision_json(decision),
+                message_projection=projection,
+            ):
+                pass
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(consume_interrupted_resume())
+
+    stored_run = store.get_run(run_state.run_id)
+    stored_state = store.get_run_state(run_state.run_id)
+    stored_review = store.get_review("review_interrupted_auto_tool")
+    messages = persistence_client.get(f"/conversations/{conversation['id']}/messages").json()["messages"]
+    capability_items = [
+        item for item in messages[0]["timeline"]
+        if item["type"] == "capability"
+    ]
+    delete_response = persistence_client.delete(f"/runs/{run_state.run_id}")
+
+    assert stored_run is not None
+    assert stored_run.status == "failed"
+    assert stored_state is not None
+    assert stored_state.status == "failed"
+    assert stored_state.pending_review is None
+    assert stored_state.pending_invocation is None
+    assert stored_review is not None
+    assert stored_review.status == "resolved"
+    assert len(messages) == 1
+    assert messages[0]["status"] == "failed"
+    assert messages[0]["pending_review"] is None
+    assert capability_items[0]["status"] == "rejected"
+    assert capability_items[0]["result"]["type"] == "capability.call.failed"
+    assert delete_response.status_code == 200
 
 
 def _sse_events(text: str) -> list[dict[str, object]]:

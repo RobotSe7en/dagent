@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import codecs
@@ -722,26 +723,25 @@ class ConversationMessageProjection:
         return projection
 
     async def apply_review_decision(self, decision: ReviewDecision) -> None:
-        if decision.approved or not self.pending_review:
+        if not self.pending_review:
             return
-        capability_call = self.pending_review.get("capability_call")
-        if not isinstance(capability_call, dict):
-            return
-        invocation_id = str(capability_call.get("invocation_id") or "")
-        capability_id = str(capability_call.get("capability_id") or "")
-        if not invocation_id:
-            return
-        content = "人工审核已拒绝。"
-        if decision.feedback:
-            content = f"{content}\n\n反馈：{decision.feedback}"
-        result = {
-            "type": "capability.call.failed",
-            "invocation_id": invocation_id,
-            "capability_id": capability_id,
-            "arguments": capability_call.get("arguments") or {},
-            "content": content,
-        }
-        self._upsert_capability_result(invocation_id, result, status="rejected")
+        if not decision.approved:
+            capability_call = self.pending_review.get("capability_call")
+            if isinstance(capability_call, dict):
+                invocation_id = str(capability_call.get("invocation_id") or "")
+                capability_id = str(capability_call.get("capability_id") or "")
+                if invocation_id:
+                    content = "人工审核已拒绝。"
+                    if decision.feedback:
+                        content = f"{content}\n\n反馈：{decision.feedback}"
+                    result = {
+                        "type": "capability.call.failed",
+                        "invocation_id": invocation_id,
+                        "capability_id": capability_id,
+                        "arguments": capability_call.get("arguments") or {},
+                        "content": content,
+                    }
+                    self._upsert_capability_result(invocation_id, result, status="rejected")
         self.pending_review = None
         self.status = "running"
         await self.save()
@@ -4222,6 +4222,7 @@ async def _persisted_run_events(
     run_id = existing_run_id
     run_created = existing_run_id is not None
     stream_created = False
+    terminal_event_persisted = False
     try:
         async for event in event_source:
             payload = _chat_stream_event_payload(event, runner)
@@ -4293,6 +4294,7 @@ async def _persisted_run_events(
                         error_json=error_json,
                         completed_at=int(time.time()),
                     )
+                terminal_event_persisted = True
             if event.type == "run.finished":
                 result = getattr(event.data, "result", None)
                 if result is not None and run_id is not None:
@@ -4337,7 +4339,21 @@ async def _persisted_run_events(
                             project_id=context.project_id,
                             kind=result.pending_review.kind,
                         )
+                    terminal_event_persisted = True
             yield payload
+    except asyncio.CancelledError:
+        if not terminal_event_persisted:
+            await _persist_interrupted_run(
+                store,
+                run_id=run_id,
+                run_created=run_created,
+                stream_created=stream_created,
+                stream_id=stream_id,
+                resolve_review_id=resolve_review_id,
+                decision_json=decision_json,
+                message_projection=message_projection,
+            )
+        raise
     except Exception as exc:
         if run_id is not None and run_created:
             error_payload = {
@@ -4381,6 +4397,74 @@ async def _persisted_run_events(
             if message_projection is not None:
                 await message_projection.handle_payload(error_payload)
             yield error_payload
+
+
+async def _persist_interrupted_run(
+    store: Store,
+    *,
+    run_id: str | None,
+    run_created: bool,
+    stream_created: bool,
+    stream_id: str,
+    resolve_review_id: str | None,
+    decision_json: str | None,
+    message_projection: ConversationMessageProjection | None,
+) -> None:
+    if run_id is None or not run_created:
+        return
+    run = await run_in_threadpool(store.get_run, run_id)
+    if run is None:
+        return
+    if run.status not in {"queued", "running", "awaiting_review"}:
+        if resolve_review_id is not None:
+            await run_in_threadpool(store.resolve_review, resolve_review_id, decision_json or "{}")
+        return
+    completed_at = int(time.time())
+    error_payload = {
+        "type": "run.failed",
+        "data": {
+            "message": "Stream interrupted by client.",
+            "error_type": "ClientDisconnect",
+        },
+        "sequence": 0,
+        "run_id": run_id,
+    }
+    if message_projection is not None:
+        await message_projection.handle_payload(error_payload)
+    persisted = await run_in_threadpool(
+        store.append_run_event,
+        run_id=run_id,
+        stream_id=stream_id,
+        event_type="run.failed",
+        payload_json=json.dumps(error_payload, ensure_ascii=False),
+    )
+    error_payload["sequence"] = persisted.event_id
+    error_json = json.dumps(error_payload["data"], ensure_ascii=False)
+    stored_state = await run_in_threadpool(store.get_run_state, run_id)
+    if stored_state is not None:
+        interrupted_state = stored_state.model_copy(update={
+            "status": "failed",
+            "pending_review": None,
+            "pending_invocation": None,
+        })
+        await run_in_threadpool(
+            store.save_run_state,
+            run_id,
+            interrupted_state.model_dump_json(),
+            run.output_text,
+        )
+    await run_in_threadpool(store.save_run_error, run_id, error_json)
+    await run_in_threadpool(store.update_run_status, run_id, "failed", completed_at=completed_at)
+    if stream_created:
+        await run_in_threadpool(
+            store.finish_run_stream,
+            stream_id,
+            "failed",
+            error_json=error_json,
+            completed_at=completed_at,
+        )
+    if resolve_review_id is not None:
+        await run_in_threadpool(store.resolve_review, resolve_review_id, decision_json or "{}")
 
 
 async def _message_request_from_http(http_request: Request) -> tuple[MessageRequest, list[ArtifactUpload]]:
