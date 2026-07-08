@@ -4100,8 +4100,31 @@ async def _resume_persisted_review_stream(
         review_level=request.review_level,
         feedback=request.feedback,
     )
+    try:
+        decision_json = _review_decision_json(decision)
+        message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
+        await _persist_review_resume_checkpoint(
+            store,
+            run=run,
+            run_state=run_state,
+            review_id=review_id,
+            decision_json=decision_json,
+        )
+    except BaseException:
+        await run_in_threadpool(lock.release)
+        raise
     return StreamingResponse(
-        _persisted_review_resume_stream_events(decision, run_state, context, stream_id, lock),
+        _LockReleasingAsyncIterator(
+            _persisted_review_resume_stream_events(
+                decision,
+                run_state,
+                context,
+                stream_id,
+                message_projection=message_projection,
+                decision_json=decision_json,
+            ),
+            lock,
+        ),
         media_type="text/event-stream",
     )
 
@@ -4147,30 +4170,80 @@ async def _persisted_review_resume_stream_events(
     run_state: RunState,
     context: PersistedMessageContext,
     stream_id: str,
-    lock: Any,
+    *,
+    message_projection: ConversationMessageProjection | None = None,
+    decision_json: str | None = None,
 ):
-    try:
-        runner = state.get_runner()
-        message_projection = await ConversationMessageProjection.resume_for_review(run_state, context, decision)
-        event_source = gate_chat_display(
-            runner.resume_stream(decision, state=run_state),
-            validation_enabled=runner.enable_validation,
-        )
-        async for payload in _persisted_run_events(
-            event_source,
-            runner=runner,
-            context=context,
-            stream_id=stream_id,
-            run_kind=run_state.kind,
-            create_run=False,
-            existing_run_id=run_state.run_id,
-            resolve_review_id=decision.review_id,
-            decision_json=_review_decision_json(decision),
-            message_projection=message_projection,
-        ):
-            yield _sse(payload)
-    finally:
-        await run_in_threadpool(lock.release)
+    runner = state.get_runner()
+    event_source = gate_chat_display(
+        runner.resume_stream(decision, state=run_state),
+        validation_enabled=runner.enable_validation,
+    )
+    async for payload in _persisted_run_events(
+        event_source,
+        runner=runner,
+        context=context,
+        stream_id=stream_id,
+        run_kind=run_state.kind,
+        create_run=False,
+        existing_run_id=run_state.run_id,
+        resolve_review_id=decision.review_id,
+        decision_json=decision_json or _review_decision_json(decision),
+        message_projection=message_projection,
+    ):
+        yield _sse(payload)
+
+
+class _LockReleasingAsyncIterator:
+    def __init__(self, source: AsyncIterator[Any], lock: Any) -> None:
+        self._source = source
+        self._lock = lock
+        self._released = False
+
+    def __aiter__(self) -> "_LockReleasingAsyncIterator":
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            return await self._source.__anext__()
+        except StopAsyncIteration:
+            await self.aclose()
+            raise
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        close = getattr(self._source, "aclose", None)
+        if callable(close):
+            await close()
+        if self._released:
+            return
+        self._released = True
+        await run_in_threadpool(self._lock.release)
+
+
+async def _persist_review_resume_checkpoint(
+    store: Store,
+    *,
+    run: Run,
+    run_state: RunState,
+    review_id: str,
+    decision_json: str,
+) -> None:
+    checkpoint_state = run_state.model_copy(update={
+        "status": "failed",
+        "pending_review": None,
+        "pending_invocation": None,
+    })
+    await run_in_threadpool(
+        store.save_run_state,
+        run_state.run_id,
+        checkpoint_state.model_dump_json(),
+        run.output_text,
+    )
+    await run_in_threadpool(store.update_run_status, run.id, "failed")
+    await run_in_threadpool(store.resolve_review, review_id, decision_json)
 
 
 async def _persisted_static_dag_stream_events(

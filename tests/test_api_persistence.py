@@ -3361,6 +3361,108 @@ def test_interrupted_auto_tool_review_rejection_clears_pending_review_and_allows
     assert delete_response.status_code == 200
 
 
+def test_auto_tool_review_rejection_is_persisted_before_resume_stream_body_starts(
+    persistence_client,
+) -> None:
+    state.runner = Runner(provider=MockProvider([]))
+    conversation = persistence_client.post(
+        "/conversations",
+        json={"title": "Early aborted auto tool"},
+    ).json()["conversation"]
+    invocation = CapabilityInvocation(
+        invocation_id="call_auto_tool_early",
+        capability_id="tool.read_file",
+        kind="tool",
+        arguments={"path": "../blocked/secret.txt"},
+        risk="medium",
+    )
+    pending_call = PendingCapabilityCall(
+        invocation_id=invocation.invocation_id,
+        capability_id=invocation.capability_id,
+        tool_name="tool_read_file",
+        arguments=invocation.arguments,
+    )
+    run_state = RunState(
+        run_id="run_early_auto_tool_rejection",
+        kind="tool",
+        status="awaiting_review",
+        pending_review=PendingReview(
+            review_id="review_early_auto_tool",
+            kind="capability_review",
+            message="Review capability call: tool.read_file",
+            capability_call=pending_call,
+        ),
+        pending_invocation=invocation,
+        user_request="read outside",
+        review_level="careful",
+        runtime_mode="auto",
+    )
+    store = state.get_store()
+    store.create_run(
+        run_id=run_state.run_id,
+        project_id=None,
+        conversation_id=conversation["id"],
+        user_id="default",
+        kind="tool",
+        status="awaiting_review",
+        workspace_uri=conversation["workspace_uri"],
+    )
+    store.save_run_state(
+        run_state.run_id,
+        run_state.model_dump_json(),
+        output_text="Review capability call: tool.read_file",
+    )
+    store.upsert_review(
+        review_id="review_early_auto_tool",
+        run_id=run_state.run_id,
+        project_id=None,
+        kind="capability_review",
+    )
+    store.append_conversation_message(
+        message_id="msg_early_auto_tool_review",
+        conversation_id=conversation["id"],
+        project_id=None,
+        role="assistant",
+        run_id=run_state.run_id,
+        status="awaiting_review",
+        content="Review capability call: tool.read_file",
+        pending_review_json=run_state.pending_review.model_dump_json(),
+    )
+
+    async def open_resume_without_reading_body() -> None:
+        response = await api_app._resume_persisted_review_stream(
+            "review_early_auto_tool",
+            api_app.ProjectResumeReviewRequest(
+                approved=False,
+                feedback="Do not read that file.",
+            ),
+            project_id=None,
+        )
+        close = getattr(response.body_iterator, "aclose", None)
+        if callable(close):
+            await close()
+
+    asyncio.run(open_resume_without_reading_body())
+
+    stored_run = store.get_run(run_state.run_id)
+    stored_state = store.get_run_state(run_state.run_id)
+    stored_review = store.get_review("review_early_auto_tool")
+    messages = persistence_client.get(f"/conversations/{conversation['id']}/messages").json()["messages"]
+    lock = store.acquire_conversation_lock(conversation["id"], owner="after_early_close")
+    lock.release()
+
+    assert stored_run is not None
+    assert stored_run.status == "failed"
+    assert stored_state is not None
+    assert stored_state.status == "failed"
+    assert stored_state.pending_review is None
+    assert stored_state.pending_invocation is None
+    assert stored_review is not None
+    assert stored_review.status == "resolved"
+    assert len(messages) == 1
+    assert messages[0]["pending_review"] is None
+
+
 def _sse_events(text: str) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for block in text.strip().split("\n\n"):
