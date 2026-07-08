@@ -251,16 +251,16 @@ class DAGAgentLoop:
         tool_adapter: CapabilityToolAdapter,
         enabled_toolsets: Sequence[str] = ("builtin",),
         max_cycles: int = 6,
-        llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
-        llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
+        _llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
+        _llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
     ) -> None:
         self.provider = provider
         self.dag_executor = dag_executor
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
         self.max_cycles = max_cycles
-        self.llm_retry_policy = llm_retry_policy
-        self.llm_retry_sleep = llm_retry_sleep
+        self.llm_retry_policy = _llm_retry_policy
+        self.llm_retry_sleep = _llm_retry_sleep
 
     def available_capabilities(
         self,

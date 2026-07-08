@@ -15,7 +15,7 @@ from dagent.harness_runtime.capability_scope import CapabilityScope
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
-from dagent.providers import ChatResponse, MockProvider, ToolCall
+from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider, ToolCall
 from dagent.schemas import (
     Artifact,
     Boundary,
@@ -297,7 +297,7 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
-                llm_retry_sleep=record_sleep,
+                _llm_retry_sleep=record_sleep,
             ),
             profile=_conversation_profile(),
         ),
@@ -306,7 +306,7 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
                 provider=provider,
                 dag_executor=DAGExecutor(capability_executor=capability_executor),
                 tool_adapter=tool_adapter,
-                llm_retry_sleep=record_sleep,
+                _llm_retry_sleep=record_sleep,
             ),
             profile=_dag_agent_profile(),
         ),
@@ -322,6 +322,28 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
     assert sleeps == [1.0, 2.0, 5.0, 10.0, 30.0]
 
 
+def test_harness_runtime_tool_agent_does_not_retry_permanent_llm_error() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class PermanentFailureProvider(MockProvider):
+        async def chat(self, messages, tools=None):
+            self.requests.append({"messages": messages, "tools": tools})
+            raise ValueError("invalid LLM request")
+
+    provider = PermanentFailureProvider([])
+    runtime = _runtime(provider)
+    runtime.tool_agent.loop.llm_retry_sleep = record_sleep
+
+    with pytest.raises(ValueError, match="invalid LLM request"):
+        run(run_message(runtime, "hello", mode="tool"))
+
+    assert len(provider.requests) == 1
+    assert sleeps == []
+
+
 def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycle_exhaustion() -> None:
     sleeps: list[float] = []
 
@@ -332,7 +354,7 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
         async def chat(self, messages, tools=None):
             if not self.requests:
                 self.requests.append({"messages": messages, "tools": tools})
-                raise RuntimeError("LLM temporarily unavailable")
+                raise TimeoutError("LLM temporarily unavailable")
             return await super().chat(messages, tools=tools)
 
     provider = FailOnceProvider([ChatResponse(content=_dag_agent_dsl())])
@@ -342,7 +364,7 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
         provider=provider,
         dag_executor=DAGExecutor(capability_executor=capability_executor),
         tool_adapter=tool_adapter,
-        llm_retry_sleep=record_sleep,
+        _llm_retry_sleep=record_sleep,
     )
     dag_agent_loop.max_cycles = 1
     runtime = HarnessRuntime(
@@ -352,7 +374,7 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
                 provider=provider,
                 capability_executor=capability_executor,
                 tool_adapter=tool_adapter,
-                llm_retry_sleep=record_sleep,
+                _llm_retry_sleep=record_sleep,
             ),
             profile=_conversation_profile(),
         ),
@@ -371,6 +393,160 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
     assert result.pending_review.kind == "initial_dag"
     assert len(provider.requests) == 2
     assert sleeps == [1.0]
+
+
+def test_harness_runtime_tool_stream_retries_transient_error_before_tokens() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailBeforeTokenProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.stream_calls = 0
+
+        async def stream_chat(self, messages, tools=None):
+            self.stream_calls += 1
+            self.requests.append({"messages": list(messages), "tools": tools or []})
+            if self.stream_calls == 1:
+                raise TimeoutError("stream setup timed out")
+            yield ChatStreamEvent(type="token", content="retried answer")
+            yield ChatStreamEvent(
+                type="done",
+                response=ChatResponse(content="retried answer"),
+            )
+
+    provider = FailBeforeTokenProvider()
+    runtime = _runtime(provider)
+    runtime.tool_agent.loop.llm_retry_sleep = record_sleep
+    streamed: list[str] = []
+
+    result = run(run_message(
+        runtime,
+        "hello",
+        mode="tool",
+        on_token=streamed.append,
+    ))
+
+    assert result.status == "completed"
+    assert result.output_text == "retried answer"
+    assert "".join(streamed) == "retried answer"
+    assert provider.stream_calls == 2
+    assert sleeps == [1.0]
+
+
+def test_harness_runtime_tool_stream_does_not_retry_after_token_emitted() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailAfterTokenProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.stream_calls = 0
+
+        async def stream_chat(self, messages, tools=None):
+            self.stream_calls += 1
+            self.requests.append({"messages": list(messages), "tools": tools or []})
+            yield ChatStreamEvent(type="token", content="partial")
+            raise TimeoutError("stream failed after token")
+
+    provider = FailAfterTokenProvider()
+    runtime = _runtime(provider)
+    runtime.tool_agent.loop.llm_retry_sleep = record_sleep
+    streamed: list[str] = []
+
+    with pytest.raises(TimeoutError, match="stream failed after token"):
+        run(run_message(
+            runtime,
+            "hello",
+            mode="tool",
+            on_token=streamed.append,
+        ))
+
+    assert "".join(streamed) == "partial"
+    assert provider.stream_calls == 1
+    assert sleeps == []
+
+
+def test_harness_runtime_dag_stream_retries_transient_error_before_tokens() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailBeforeTokenProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.stream_calls = 0
+
+        async def stream_chat(self, messages, tools=None):
+            self.stream_calls += 1
+            self.requests.append({"messages": list(messages), "tools": tools or []})
+            if self.stream_calls == 1:
+                raise TimeoutError("stream setup timed out")
+            content = _dag_agent_dsl()
+            yield ChatStreamEvent(type="token", content=content)
+            yield ChatStreamEvent(type="done", response=ChatResponse(content=content))
+
+    provider = FailBeforeTokenProvider()
+    runtime = _runtime(provider)
+    runtime.dag_agent.loop.llm_retry_sleep = record_sleep
+    streamed: list[str] = []
+
+    result = run(run_message(
+        runtime,
+        "Create a safe DAG",
+        mode="dag",
+        review_level="careful",
+        on_token=streamed.append,
+    ))
+
+    assert result.status == "awaiting_review"
+    assert result.pending_review is not None
+    assert result.pending_review.kind == "initial_dag"
+    assert "".join(streamed) == _dag_agent_dsl()
+    assert provider.stream_calls == 2
+    assert sleeps == [1.0]
+
+
+def test_harness_runtime_dag_stream_does_not_retry_after_token_emitted() -> None:
+    sleeps: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class FailAfterTokenProvider(MockProvider):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.stream_calls = 0
+
+        async def stream_chat(self, messages, tools=None):
+            self.stream_calls += 1
+            self.requests.append({"messages": list(messages), "tools": tools or []})
+            yield ChatStreamEvent(type="token", content="partial")
+            raise TimeoutError("stream failed after token")
+
+    provider = FailAfterTokenProvider()
+    runtime = _runtime(provider)
+    runtime.dag_agent.loop.llm_retry_sleep = record_sleep
+    runtime.dag_agent.loop.max_cycles = 1
+    streamed: list[str] = []
+
+    result = run(run_message(
+        runtime,
+        "Create a safe DAG",
+        mode="dag",
+        review_level="careful",
+        on_token=streamed.append,
+    ))
+
+    assert result.status == "failed"
+    assert "".join(streamed) == "partial"
+    assert provider.stream_calls == 1
+    assert sleeps == []
 
 
 def test_harness_runtime_auto_routes_to_dag() -> None:

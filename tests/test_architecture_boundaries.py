@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 
@@ -12,6 +13,18 @@ def test_dag_loop_public_names_use_one_loop_with_explicit_static_and_dynamic_ent
     assert hasattr(DAGAgentLoop, "run_static")
     assert hasattr(DAGAgentLoop, "execute")
     assert "run_spec" not in DAGAgent.__dict__
+
+
+def test_llm_retry_policy_is_not_reexported_from_runtime_package_root() -> None:
+    import dagent.harness_runtime as runtime
+    from dagent.harness_runtime.llm_retry import LLMRetryPolicy
+
+    assert LLMRetryPolicy.__name__ == "LLMRetryPolicy"
+    assert not hasattr(runtime, "LLMRetryPolicy")
+    assert "llm_retry_policy" not in inspect.signature(runtime.ToolAgentLoop).parameters
+    assert "llm_retry_sleep" not in inspect.signature(runtime.ToolAgentLoop).parameters
+    assert "llm_retry_policy" not in inspect.signature(runtime.DAGAgentLoop).parameters
+    assert "llm_retry_sleep" not in inspect.signature(runtime.DAGAgentLoop).parameters
 
 
 def test_capability_boundaries_are_not_split_into_top_level_runtime_package() -> None:
