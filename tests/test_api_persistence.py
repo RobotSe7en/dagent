@@ -3448,6 +3448,11 @@ def test_auto_tool_review_rejection_is_persisted_before_resume_stream_body_start
     stored_state = store.get_run_state(run_state.run_id)
     stored_review = store.get_review("review_early_auto_tool")
     messages = persistence_client.get(f"/conversations/{conversation['id']}/messages").json()["messages"]
+    events = persistence_client.get(f"/runs/{run_state.run_id}/events").json()["events"]
+    finished_events = [
+        event for event in events
+        if event["event_type"] == "run.finished" or event["payload"]["type"] == "run.finished"
+    ]
     lock = store.acquire_conversation_lock(conversation["id"], owner="after_early_close")
     lock.release()
 
@@ -3461,6 +3466,9 @@ def test_auto_tool_review_rejection_is_persisted_before_resume_stream_body_start
     assert stored_review.status == "resolved"
     assert len(messages) == 1
     assert messages[0]["pending_review"] is None
+    assert finished_events
+    assert finished_events[-1]["payload"]["data"]["result"]["state"]["status"] == "failed"
+    assert finished_events[-1]["payload"]["data"]["result"]["state"]["pending_review"] is None
 
 
 def _sse_events(text: str) -> list[dict[str, object]]:

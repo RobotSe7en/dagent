@@ -4107,8 +4107,10 @@ async def _resume_persisted_review_stream(
             store,
             run=run,
             run_state=run_state,
+            stream_id=stream_id,
             review_id=review_id,
             decision_json=decision_json,
+            message_projection=message_projection,
         )
     except BaseException:
         await run_in_threadpool(lock.release)
@@ -4228,14 +4230,36 @@ async def _persist_review_resume_checkpoint(
     *,
     run: Run,
     run_state: RunState,
+    stream_id: str,
     review_id: str,
     decision_json: str,
+    message_projection: ConversationMessageProjection | None,
 ) -> None:
     checkpoint_state = run_state.model_copy(update={
         "status": "failed",
         "pending_review": None,
         "pending_invocation": None,
     })
+    payload = {
+        "type": "run.finished",
+        "data": {
+            "result": {
+                "state": checkpoint_state.model_dump(mode="json"),
+                "output_text": run.output_text,
+            },
+        },
+        "sequence": 0,
+        "run_id": run_state.run_id,
+    }
+    if message_projection is not None:
+        await message_projection.handle_payload(payload)
+    await run_in_threadpool(
+        store.append_run_event,
+        run_id=run_state.run_id,
+        stream_id=f"{stream_id}_checkpoint",
+        event_type="run.finished",
+        payload_json=json.dumps(payload, ensure_ascii=False),
+    )
     await run_in_threadpool(
         store.save_run_state,
         run_state.run_id,
