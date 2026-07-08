@@ -15,20 +15,25 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.6.6")
+    english_unreleased = _section(english, "## Unreleased", "## 0.6.7")
+    english_067 = _section(english, "## 0.6.7", "## 0.6.6")
     english_066 = _section(english, "## 0.6.6", "## 0.6.5")
     english_065 = _section(english, "## 0.6.5", "## 0.6.4")
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.6")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.7")
+    chinese_067 = _section(chinese, "## 0.6.7", "## 0.6.6")
     chinese_066 = _section(chinese, "## 0.6.6", "## 0.6.5")
     chinese_065 = _section(chinese, "## 0.6.5", "## 0.6.4")
     chinese_064 = _section(chinese, "## 0.6.4", "## 0.6.3")
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "Tool-agent and dynamic DAG LLM calls now retry failed or timed-out provider" in english_unreleased
+    assert "No unreleased changes." in english_unreleased
+    assert "Tool-agent and dynamic DAG LLM calls now retry transient provider failures" in english_067
+    assert "Permanent LLM provider failures" in english_067
+    assert "Streaming LLM calls no longer retry after response tokens have been emitted" in english_067
     assert "MCP connection and tool-call timeouts now report explicit timeout messages" in english_066
     assert "MCP tool calls now default to a `300` second timeout" in english_066
     assert "Dynamic and static orchestration workspaces now persist run history" in english_066
@@ -46,7 +51,10 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 请求失败或超时时按递增等待重试" in chinese_unreleased
+    assert "暂无未发布变更。" in chinese_unreleased
+    assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试" in chinese_067
+    assert "永久性 LLM provider 失败" in chinese_067
+    assert "已经输出 response token 后不再重试" in chinese_067
     assert "MCP 连接和工具调用超时现在会返回明确的 timeout 文案" in chinese_066
     assert "MCP 工具调用现在默认使用 `300` 秒超时" in chinese_066
     assert "动态和静态编排 workspace 现在会持久化 run history" in chinese_066

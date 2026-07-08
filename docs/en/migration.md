@@ -5,14 +5,51 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.6`.
+The current package version is `0.6.7`.
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.6.7
+
+### Added
+
+- None.
+
 ### Changed
 
-- Tool-agent and dynamic DAG LLM calls now retry failed or timed-out provider
-  requests with increasing waits before surfacing the existing failure path.
+- Tool-agent and dynamic DAG LLM calls now retry transient provider failures
+  and request timeouts with increasing waits before surfacing the existing
+  failure path.
+- Default LLM retry waits remain `1`, `2`, `5`, `10`, and `30` seconds.
+
+### Fixed
+
+- Permanent LLM provider failures, such as invalid request payloads or
+  non-retryable client errors, are no longer retried.
+- Streaming LLM calls no longer retry after response tokens have been emitted,
+  avoiding duplicated partial stream output.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- No SDK migration action is required.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### Known Limitations
+
+- LLM retry classification is intentionally conservative. Custom providers
+  should surface timeouts, connection errors, retryable status codes, or
+  provider-specific transient exception names for automatic retries.
 
 ## 0.6.6
 

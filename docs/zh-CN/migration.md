@@ -4,14 +4,47 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.6`。
+当前包版本是 `0.6.7`。
 
 ## Unreleased
 
+暂无未发布变更。
+
+## 0.6.7
+
+### 新增
+
+- 无。
+
 ### 改变
 
-- Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 请求失败或超时时按递增等待重试，
+- Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试，
   然后才进入原有失败路径。
+- 默认 LLM 重试等待仍为 `1`、`2`、`5`、`10` 和 `30` 秒。
+
+### 修复
+
+- 永久性 LLM provider 失败，例如无效请求参数或不可重试的客户端错误，不再被重试。
+- 流式 LLM 调用在已经输出 response token 后不再重试，避免重复输出部分 stream 内容。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- SDK 用户不需要迁移动作。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### 已知限制
+
+- LLM 重试分类会保持保守。自定义 provider 需要抛出 timeout、connection error、
+  可重试 status code，或 provider 特定的瞬态异常名，才会自动重试。
 
 ## 0.6.6
 
