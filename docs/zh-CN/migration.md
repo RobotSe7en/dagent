@@ -4,17 +4,58 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.5`。
+当前包版本是 `0.6.6`。
 
 ## Unreleased
+
+- 暂无未发布变更。
+
+## 0.6.6
+
+### 新增
+
+- 本地 WebUI 现在可以在对应编辑开关启用时，通过 ONLYOFFICE 编辑项目文件和运行 artifact
+  中的 Office 文档。
+- 动态和静态编排 workspace 现在会持久化 run history，支持查看历史运行，并可删除已存储的
+  run history 条目。
+- Chat 和动态 DAG conversation 现在会持久化可见 message timeline，API 重启后可以直接恢复
+  conversation。
+- `examples/local_test_mcp.py` 提供本地 stdio MCP server，用于 registration 和工具调用
+  timeout 诊断。
 
 ### 改变
 
 - MCP 工具调用现在默认使用 `300` 秒超时，本地 WebUI MCP 表单也支持配置工具超时。
+- 项目文件和运行 artifact 元数据现在包含文件 `version`，Office 预览可以在底层文件变化时刷新。
 
 ### 修复
 
 - MCP 连接和工具调用超时现在会返回明确的 timeout 文案，不再是空错误文本。
+- 动态、静态、独立和项目作用域流程中的编排 run history 行、hydration、run summary 和
+  workspace 隔离都进一步收紧。
+- interrupted chat 和持久化动态 DAG 历史 hydration 对已完成 trace 与可见 turn 的处理更稳定。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- SDK 用户不需要迁移动作。
+- 如果 MCP 用户依赖之前较短的隐式工具调用截止时间，可以在 MCP server config 里显式设置
+  `tool_timeout`。
+- 如果现有本地 WebUI SQLite storage 来自不兼容的预发布 schema，可能会被重建。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### 已知限制
+
+- 当前本地存储后端是 SQLite 加本地文件系统 workspace。云端或多 worker 部署仍需要后续计划中的
+  Postgres、对象存储和 worker execution 后端。
 
 ## 0.6.5
 

@@ -5,19 +5,65 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.5`.
+The current package version is `0.6.6`.
 
 ## Unreleased
+
+- No unreleased changes.
+
+## 0.6.6
+
+### Added
+
+- The local WebUI can edit Office documents through ONLYOFFICE for project
+  files and run artifacts when the corresponding edit settings are enabled.
+- Dynamic and static orchestration workspaces now persist run history, support
+  historical run inspection, and can delete stored run history entries.
+- Chat and dynamic DAG conversations now persist visible message timelines so
+  conversations can be hydrated directly after API restarts.
+- `examples/local_test_mcp.py` provides a local stdio MCP server for
+  registration and tool-call timeout diagnostics.
 
 ### Changed
 
 - MCP tool calls now default to a `300` second timeout, and the local WebUI MCP
   form exposes the tool timeout setting.
+- Project files and run artifact metadata now include file `version` values so
+  Office previews can refresh when backing files change.
 
 ### Fixed
 
 - MCP connection and tool-call timeouts now report explicit timeout messages
   instead of empty error text.
+- Orchestration run history rows, hydration, run summaries, and workspace
+  separation have been tightened across dynamic, static, standalone, and
+  project-scoped flows.
+- Interrupted chat and persisted dynamic DAG history hydration handle completed
+  traces and visible turns more consistently.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- No SDK migration action is required.
+- MCP users who rely on the previous shorter implicit tool-call cutoff can set
+  `tool_timeout` explicitly in their MCP server config.
+- Existing local WebUI SQLite storage may be recreated if it was produced by an
+  incompatible pre-release schema.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+
+### Known Limitations
+
+- The local storage backend is SQLite plus local filesystem workspaces. Cloud
+  or multi-worker deployments still need the planned Postgres, object-storage,
+  and worker execution backends.
 
 ## 0.6.5
 
