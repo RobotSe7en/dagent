@@ -51,6 +51,11 @@ control channel. Stdio is intended for local tests and simple process hosts
 where dagent owns stdout. Container stdout and stderr should be treated as logs,
 not the control protocol.
 
+Container hosts should start one `python -m dagent.runtime` process for one run
+or resume operation. The process reads one `RuntimeFrame(type="spec")`, emits
+`event`, `state_snapshot`, `log`, and `bye` frames, and exits. Long-lived
+workers, queue loops, and Docker clients belong outside the SDK.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:

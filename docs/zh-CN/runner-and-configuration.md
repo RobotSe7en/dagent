@@ -46,6 +46,11 @@ Production hosts 应优先使用 Unix sockets 或其他专用 control channel。
 和 dagent 拥有 stdout 的简单进程 host。Container stdout 和 stderr 应作为 logs 处理，
 不要作为 control protocol 解析。
 
+Container hosts 应为一次 run 或 resume operation 启动一个
+`python -m dagent.runtime` 进程。该进程读取一个 `RuntimeFrame(type="spec")`，发出
+`event`、`state_snapshot`、`log` 和 `bye` frames，然后退出。Long-lived workers、
+queue loops 和 Docker clients 属于 SDK 外部。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：
