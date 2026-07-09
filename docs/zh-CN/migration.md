@@ -4,11 +4,59 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.7`。
+当前包版本是 `0.6.8`。
 
 ## Unreleased
 
 暂无未发布变更。
+
+## 0.6.8
+
+### 新增
+
+- `dagent.capabilities.python_tools` 现在提供 SDK-owned helpers，用于从显式
+  path、managed 或 module 条目加载配置化的 `@dagent.tool` Python sources。
+- `Runner.reload_python_tool_sources(...)` 会加载配置化 Python tool sources，并返回稳定的
+  registration result，不暴露可执行 bindings。
+- `Runner.derive(...)` 可以基于显式 provider、workspace、MCP servers、Python tools、
+  agents、profiles、sandbox 和 validation overlays 创建独立 runner。
+- `Runner.mcp_server_snapshot(...)`、
+  `Runner.list_mcp_server_snapshots()`、
+  `Runner.reload_mcp_servers_with_snapshots(...)` 和
+  `Runner.catalog_view(...)` 提供 runner-owned capability 与 MCP 注册状态的只读视图，
+  不暴露 handler 或 catalog 内部对象。
+
+### 改变
+
+- 本地 API/WebUI backend 现在使用 SDK-owned Python tool loading helpers，不再维护单独的
+  loader 实现。
+- 架构约束现在明确禁止为了旧测试写兼容代码、重复实现、过宽兜底行为，以及把企业侧关注点放入
+  installable SDK。
+
+### 修复
+
+- architecture boundary 测试不再因为 persistence 测试名里的过时 `tool_review` wording 失败。
+
+### 破坏性改变
+
+- 公共 Python SDK 无破坏性改变。
+
+### 迁移步骤
+
+- 现有 SDK 用户不需要改代码。
+- 之前自行加载配置化 Python tools 或读取 MCP/catalog 内部状态的 host，应迁移到新的 `Runner`
+  方法；RBAC、redaction、persistence 和 effective-configuration composition 仍保留在 host 层。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### 已知限制
+
+- `Runner.catalog_view(...)` 是 runtime registration view，不是面向用户的授权视图。host
+  在向用户返回 catalog data 前，仍需负责 RBAC、redaction 和 policy filtering。
 
 ## 0.6.7
 

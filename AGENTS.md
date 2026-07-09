@@ -21,12 +21,24 @@ surface, make the compatibility policy explicit in the design, tests, and docs.
 Update or delete obsolete tests only when the intended released behavior has
 changed deliberately.
 
+Do not write compatibility code merely to satisfy old, deprecated, or obsolete
+tests. When tests encode behavior the project no longer intends to support,
+update or remove those tests as part of the deliberate behavior change instead
+of preserving legacy runtime paths.
+
 ## Core Engineering Rules
 
 - Keep code and logic simple. Choose direct implementations over abstractions
   unless the abstraction removes real duplication or clarifies ownership.
 - Follow existing module boundaries and local style before introducing new
   patterns.
+- Do not write duplicate or redundant implementations. When moving behavior to
+  a clearer owner, remove the old path rather than leaving parallel code behind.
+- Clean up historical leftovers that are in the edited ownership area and no
+  longer represent intended released behavior.
+- Do not add broad fallback or catch-all behavior by default. Prefer explicit
+  failures, narrow error handling, and typed contracts over defensive code that
+  hides invalid states or preserves unsupported inputs.
 - Do not preserve historical behavior unless the user explicitly asks for it.
 - Do not add compatibility aliases such as old capability ids or renamed SDK
   entrypoints.
@@ -50,6 +62,13 @@ changed deliberately.
   run traces, reviews, and runtime responses.
 - `capabilities` owns capability providers, tools, MCP adapters, skills, shell,
   file, memory, and boundary enforcement.
+- SDK additions should provide bottom-layer, generally reusable runtime
+  capabilities: capability registration, execution, MCP/tool identity,
+  read-only runtime views, data contracts, and boundary enforcement.
+- Keep product, enterprise, and host concerns out of the installable SDK unless
+  they are deliberately promoted as generic public SDK behavior. RBAC,
+  redaction, org/user/project policy, persistence strategy, UI presentation, and
+  effective-configuration composition belong in the API or enterprise host.
 - The API layer should use the public SDK where practical. If the API must reach
   internal modules, treat that as a design smell and consider whether a public
   SDK method belongs on `Runner` or another intentional surface.

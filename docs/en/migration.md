@@ -5,11 +5,66 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.7`.
+The current package version is `0.6.8`.
 
 ## Unreleased
 
 No unreleased changes.
+
+## 0.6.8
+
+### Added
+
+- `dagent.capabilities.python_tools` now provides SDK-owned helpers for loading
+  configured `@dagent.tool` Python sources from explicit path, managed, or
+  module entries.
+- `Runner.reload_python_tool_sources(...)` loads configured Python tool sources
+  and returns a stable registration result without exposing executable bindings.
+- `Runner.derive(...)` creates an independent runner with explicit provider,
+  workspace, MCP server, Python tool, agent, profile, sandbox, and validation
+  overlays.
+- `Runner.mcp_server_snapshot(...)`,
+  `Runner.list_mcp_server_snapshots()`,
+  `Runner.reload_mcp_servers_with_snapshots(...)`, and
+  `Runner.catalog_view(...)` expose read-only runner-owned capability and MCP
+  registration views without handler or catalog internals.
+
+### Changed
+
+- The local API/WebUI backend now uses SDK-owned Python tool loading helpers
+  instead of maintaining a separate loader implementation.
+- Architecture guidance now explicitly discourages legacy-test compatibility
+  code, duplicate implementations, broad fallback behavior, and enterprise
+  concerns in the installable SDK.
+
+### Fixed
+
+- The architecture boundary test no longer fails on obsolete `tool_review`
+  wording in persistence test names.
+
+### Breaking Changes
+
+- None for the public Python SDK.
+
+### Migration Steps
+
+- SDK users do not need to change existing code.
+- Hosts that previously loaded configured Python tools or inspected MCP/catalog
+  internals should migrate to the new `Runner` methods and keep RBAC,
+  redaction, persistence, and effective-configuration composition in the host
+  layer.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### Known Limitations
+
+- `Runner.catalog_view(...)` is a runtime registration view, not a user-facing
+  authorization surface. Hosts remain responsible for RBAC, redaction, and
+  policy filtering before returning catalog data to users.
 
 ## 0.6.7
 
