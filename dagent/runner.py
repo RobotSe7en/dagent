@@ -52,7 +52,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.artifacts import ArtifactUpload, validate_run_id
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -937,13 +937,18 @@ class Runner:
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if run_id is not None:
+            validate_run_id(run_id)
         if state is not None:
             _ensure_run_state_can_continue(state)
+            if run_id is not None and run_id != state.run_id:
+                raise ValueError("run_id must match state.run_id when state is supplied.")
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
         if resolved_execution == "sandbox" and resolved_workspace_path is not None:
@@ -977,6 +982,7 @@ class Runner:
                 dynamic_adjust=dynamic_adjust,
                 workspace_root=workspace_root,
                 workspace_path=resolved_workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
@@ -994,6 +1000,7 @@ class Runner:
         dynamic_adjust: bool | None = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -1012,6 +1019,7 @@ class Runner:
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1030,6 +1038,7 @@ class Runner:
                 review_level=review or target.review,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1049,6 +1058,7 @@ class Runner:
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1069,6 +1079,7 @@ class Runner:
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1086,6 +1097,7 @@ class Runner:
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1105,10 +1117,16 @@ class Runner:
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
+
+        if run_id is not None:
+            validate_run_id(run_id)
+        if state is not None and run_id is not None and run_id != state.run_id:
+            raise ValueError("run_id must match state.run_id when state is supplied.")
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -1121,6 +1139,7 @@ class Runner:
                 execution=execution,
                 workspace_root=workspace_root,
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,

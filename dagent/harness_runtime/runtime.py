@@ -34,6 +34,7 @@ from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
     materialize_workbench_uploads,
+    validate_run_id,
 )
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
@@ -246,22 +247,31 @@ class HarnessRuntime:
         dynamic_adjust: bool = True,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if run_id is not None:
+            validate_run_id(run_id)
+        if run_state is not None and run_id is not None and run_id != run_state.run_id:
+            raise ValueError("run_id must match run_state.run_id when run_state is supplied.")
         user_request = _last_user_content(messages)
         loop_messages = _messages_for_run_state(run_state, user_request) if run_state else messages
         # 1. Route
         resolved_mode = mode
         if mode == "auto":
             resolved_mode = await self._route(user_request)
-        run_id = run_state.run_id if run_state is not None else _new_run_id_for_mode(resolved_mode)
+        resolved_run_id = (
+            run_state.run_id
+            if run_state is not None
+            else run_id or _new_run_id_for_mode(resolved_mode)
+        )
         resolved_workspace_path = self._workspace_path_for_run(
             run_state,
             workspace_root,
-            run_id,
+            resolved_run_id,
             workspace_path=workspace_path,
         )
         materialized_uploads = materialize_workbench_uploads(
@@ -269,13 +279,13 @@ class HarnessRuntime:
             workspace_path=resolved_workspace_path,
         )
         loop_messages = _messages_with_workbench_upload_manifest(loop_messages, materialized_uploads)
-        _emit_run_started(on_event, run_id=run_id, kind=_state_kind_for_mode(resolved_mode))
+        _emit_run_started(on_event, run_id=resolved_run_id, kind=_state_kind_for_mode(resolved_mode))
 
         async def run_once(feedback: str | None) -> LoopOutcome:
             if feedback is None:
                 return await self._execute_loop(
                     user_request,
-                    run_id=run_id,
+                    run_id=resolved_run_id,
                     mode=resolved_mode,
                     review_level=review_level,
                     dynamic_adjust=dynamic_adjust,
@@ -287,7 +297,7 @@ class HarnessRuntime:
                 )
             return await self._execute_loop(
                 feedback,
-                run_id=run_id,
+                run_id=resolved_run_id,
                 mode=resolved_mode,
                 review_level=review_level,
                 dynamic_adjust=dynamic_adjust,
@@ -650,16 +660,19 @@ class HarnessRuntime:
         graph_input: Any = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
-        run_id = _new_run_id_for_mode("dag_spec")
+        if run_id is not None:
+            validate_run_id(run_id)
+        resolved_run_id = run_id or _new_run_id_for_mode("dag_spec")
         resolved_workspace_root = self._resolve_run_workspace_root(workspace_root)
-        _emit_run_started(on_event, run_id=run_id, kind="static_dag")
+        _emit_run_started(on_event, run_id=resolved_run_id, kind="static_dag")
         outcome = await self._execute_loop(
             spec,
-            run_id=run_id,
+            run_id=resolved_run_id,
             mode="dag_spec",
             review_level="fast",
             on_token=on_token,

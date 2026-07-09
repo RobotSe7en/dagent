@@ -28,6 +28,21 @@ result = await runner.run(agent, messages=messages, state=result.state)
 review, and static DAG metadata. `RunResult.output_text` is the canonical final
 answer.
 
+Hosts that create a run record before execution can provide the final run id:
+
+```python
+result = await runner.run(
+    agent,
+    messages=messages,
+    run_id="enterprise_run_123",
+)
+```
+
+The same `run_id` is used in `run.started`, every stream event envelope, the
+final `RunState`, and the default run workspace name. Host-provided run ids must
+be single directory names. If `state` is supplied, `run_id` must match
+`state.run_id`.
+
 ## Persisting State
 
 If you persist the full result payload, restore the current SDK shape with
