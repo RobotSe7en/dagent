@@ -738,6 +738,9 @@ class Runner:
         self,
         name: str,
         config: dict[str, Any],
+        *,
+        snapshot: MCPServerSnapshot | None = None,
+        lazy_connect: bool = False,
     ) -> list[CapabilityDefinition]:
         """Register an MCP server and expose its tools as ``mcp.*`` capabilities.
 
@@ -746,7 +749,12 @@ class Runner:
         is rolled back and the server's manager is shut down before raising.
         """
 
-        return self._add_mcp_server(name, config)
+        return self._add_mcp_server(
+            name,
+            config,
+            snapshot=snapshot,
+            lazy_connect=lazy_connect,
+        )
 
     def remove_mcp_server(self, name: str) -> None:
         """Remove a dynamically registered MCP server and its capabilities."""
@@ -810,17 +818,26 @@ class Runner:
         servers: Mapping[str, dict[str, Any]],
         *,
         replace_names: Iterable[str],
+        snapshots: Mapping[str, MCPServerSnapshot] | None = None,
+        lazy_connect: bool = False,
     ) -> tuple[set[str], dict[str, str]]:
         """Rebuild a group of MCP servers without treating it as user deletion."""
 
         self._ensure_open()
+        snapshot_map = dict(snapshots or {})
         for name in list(replace_names):
             self._remove_mcp_server_registration(name)
         registered: set[str] = set()
         errors: dict[str, str] = {}
         for name, config in servers.items():
             try:
-                self._add_mcp_server(name, config, refresh=False)
+                self._add_mcp_server(
+                    name,
+                    config,
+                    refresh=False,
+                    snapshot=snapshot_map.get(name),
+                    lazy_connect=lazy_connect,
+                )
                 registered.add(name)
             except Exception as exc:
                 errors[name] = str(exc)
@@ -833,10 +850,17 @@ class Runner:
         servers: Mapping[str, dict[str, Any]],
         *,
         replace_names: Iterable[str],
+        snapshots: Mapping[str, MCPServerSnapshot] | None = None,
+        lazy_connect: bool = False,
     ) -> MCPServerRegistrationResult:
         """Rebuild MCP servers and return registration snapshots for successes."""
 
-        registered, errors = self.reload_mcp_servers(servers, replace_names=replace_names)
+        registered, errors = self.reload_mcp_servers(
+            servers,
+            replace_names=replace_names,
+            snapshots=snapshots,
+            lazy_connect=lazy_connect,
+        )
         snapshots = [
             snapshot
             for name in sorted(registered)
@@ -891,6 +915,8 @@ class Runner:
         config: dict[str, Any],
         *,
         manager: Any | None = None,
+        snapshot: MCPServerSnapshot | None = None,
+        lazy_connect: bool = False,
         refresh: bool = True,
     ) -> list[CapabilityDefinition]:
         self._ensure_open()
@@ -906,7 +932,11 @@ class Runner:
             )
         catalog = self._runtime.capability_catalog
         before = set(catalog.ids())
-        provider = MCPCapabilityProvider({name: config}, manager=manager)
+        provider_kwargs: dict[str, Any] = {"manager": manager}
+        if snapshot is not None or lazy_connect:
+            provider_kwargs["snapshots"] = {name: snapshot} if snapshot is not None else None
+            provider_kwargs["lazy_connect"] = lazy_connect
+        provider = MCPCapabilityProvider({name: config}, **provider_kwargs)
         try:
             provider.register_into(catalog)
             new_ids = sorted(set(catalog.ids()) - before)

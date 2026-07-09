@@ -7,7 +7,7 @@ from hashlib import sha1
 from typing import Any
 
 from dagent.capabilities.catalog import CapabilityCatalog
-from dagent.schemas import CapabilityDefinition, CapabilityPolicy
+from dagent.schemas import CapabilityDefinition, CapabilityPolicy, MCPServerSnapshot
 
 from .config import DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
 from .handlers import make_mcp_tool_handler
@@ -26,9 +26,13 @@ class MCPCapabilityProvider:
         servers: dict[str, dict[str, Any]] | None = None,
         *,
         manager: Any | None = None,
+        snapshots: dict[str, MCPServerSnapshot] | None = None,
+        lazy_connect: bool = False,
     ) -> None:
         self.servers = servers or {}
         self.manager = manager
+        self.snapshots = snapshots or {}
+        self.lazy_connect = lazy_connect
         self.registration_errors: list[str] = []
 
     def register_into(self, catalog: CapabilityCatalog) -> None:
@@ -37,6 +41,12 @@ class MCPCapabilityProvider:
         manager = self.manager or MCPServerManager(self.servers)
         self.manager = manager
         if not getattr(manager, "available", True):
+            return
+        if self.lazy_connect and self.snapshots:
+            for server_name, snapshot in sorted(self.snapshots.items()):
+                self._register_snapshot_tools(catalog, server_name, snapshot)
+            if hasattr(catalog, "add_shutdown_hook") and hasattr(manager, "shutdown"):
+                catalog.add_shutdown_hook(manager.shutdown)
             return
         manager.start()
         if hasattr(catalog, "add_shutdown_hook") and hasattr(manager, "shutdown"):
@@ -96,6 +106,48 @@ class MCPCapabilityProvider:
             catalog.register(definition, handler)
         except ValueError as exc:
             self.registration_errors.append(str(exc))
+
+    def _register_snapshot_tools(
+        self,
+        catalog: CapabilityCatalog,
+        server_name: str,
+        snapshot: MCPServerSnapshot,
+    ) -> None:
+        if snapshot.name != server_name:
+            raise ValueError(
+                f"MCP snapshot name '{snapshot.name}' does not match server '{server_name}'."
+            )
+        for tool in snapshot.tools:
+            if tool.server != server_name:
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' has server '{tool.server}', "
+                    f"expected '{server_name}'."
+                )
+            definition = tool.definition.model_copy(
+                update={
+                    "config": {
+                        **tool.definition.config,
+                        "server": server_name,
+                        "tool": tool.tool,
+                    }
+                },
+                deep=True,
+            )
+            handler = make_mcp_tool_handler(
+                self.manager,
+                server_name=server_name,
+                tool_name=tool.tool,
+                timeout_seconds=float(
+                    self.servers.get(server_name, {}).get(
+                        "tool_timeout",
+                        DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+                    )
+                ),
+            )
+            try:
+                catalog.register(definition, handler)
+            except ValueError as exc:
+                self.registration_errors.append(str(exc))
 
 
 def _safe_component(value: str) -> str:

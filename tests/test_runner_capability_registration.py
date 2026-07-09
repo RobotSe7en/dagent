@@ -11,7 +11,13 @@ from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.config import UserPythonToolConfig
 from dagent.providers import ChatResponse, MockProvider, ToolCall
-from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
+from dagent.schemas import (
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityResult,
+    MCPServerSnapshot,
+    MCPToolSnapshot,
+)
 
 
 def run(coro):
@@ -144,6 +150,40 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     ))
     assert result.status == "completed"
     assert result.content == "found:x"
+    runner.close()
+
+
+def test_add_mcp_server_can_lazy_register_snapshot_without_starting_manager(tmp_path) -> None:
+    definition = CapabilityDefinition(
+        id="mcp.docs.search",
+        kind="mcp",
+        description="Search docs",
+        config={"server": "docs", "tool": "search"},
+    )
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.docs.search",
+            server="docs",
+            tool="search",
+            definition=definition,
+        )],
+    )
+    runner = _runner(tmp_path)
+    manager = FakeMCPManager()
+
+    definitions = runner._add_mcp_server(
+        "docs",
+        {"command": "fake"},
+        manager=manager,
+        snapshot=snapshot,
+        lazy_connect=True,
+    )
+
+    assert manager.started is False
+    assert [definition.id for definition in definitions] == ["mcp.docs.search"]
+    assert runner.mcp_server_snapshot("docs") == snapshot
     runner.close()
 
 

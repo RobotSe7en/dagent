@@ -16,7 +16,12 @@ import dagent.capabilities.mcp.manager as manager_module
 import dagent.capabilities.mcp.server_task as server_task_module
 from dagent.capabilities.mcp.server_task import MCPServerTask
 from dagent.harness_runtime import CapabilityExecutor
-from dagent.schemas import CapabilityDefinition, CapabilityInvocation
+from dagent.schemas import (
+    CapabilityDefinition,
+    CapabilityInvocation,
+    MCPServerSnapshot,
+    MCPToolSnapshot,
+)
 
 
 def run(coro):
@@ -218,6 +223,38 @@ def test_mcp_provider_does_not_downgrade_invalid_tool_timeout_to_registration_er
     assert catalog.list(kind="mcp") == []
 
 
+def test_mcp_provider_registers_snapshot_without_starting_manager() -> None:
+    definition = CapabilityDefinition(
+        id="mcp.docs.search",
+        kind="mcp",
+        description="Search docs",
+        config={"server": "docs", "tool": "search"},
+    )
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.docs.search",
+            server="docs",
+            tool="search",
+            definition=definition,
+        )],
+    )
+    manager = FakeMCPManager()
+    provider = MCPCapabilityProvider(
+        {"docs": {"command": "fake"}},
+        manager=manager,
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    )
+    catalog = CapabilityCatalog(workspace_root=".")
+
+    provider.register_into(catalog)
+
+    assert manager.started is False
+    assert catalog.get("mcp.docs.search") is not None
+
+
 def _short_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
 
@@ -256,6 +293,44 @@ def test_mcp_manager_cancels_tool_call_future_on_timeout(monkeypatch) -> None:
         raise AssertionError("tool call timeout should be raised")
 
     assert future.cancelled is True
+
+
+def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
+    starts: list[str] = []
+    calls: list[tuple[str, dict]] = []
+
+    class LazyFakeTask:
+        tools = []
+        last_error = None
+
+        def __init__(self, name: str, config: dict) -> None:
+            self.name = name
+            self.config = config
+
+        async def start(self) -> None:
+            starts.append(self.name)
+
+        async def call_tool(self, tool_name: str, arguments: dict):
+            calls.append((tool_name, arguments))
+            return "ok"
+
+        async def shutdown(self) -> None:
+            return None
+
+    monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
+    manager = MCPServerManager({
+        "mock": {"command": "fake"},
+        "disabled": {"command": "fake", "enabled": False},
+    })
+
+    try:
+        result = manager.call_tool_blocking("mock", "lookup", {"query": "x"}, timeout=1)
+    finally:
+        manager.shutdown()
+
+    assert result == "ok"
+    assert starts == ["mock"]
+    assert calls == [("lookup", {"query": "x"})]
 
 
 def test_mcp_tool_handler_returns_timeout_error_text() -> None:

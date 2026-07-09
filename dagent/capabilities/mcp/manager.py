@@ -57,6 +57,41 @@ class MCPServerManager:
     def discovered_tools(self) -> dict[str, list[Any]]:
         return {name: task.tools for name, task in sorted(self.tasks.items()) if not task.last_error}
 
+    def ensure_started(self, name: str) -> None:
+        if not self.available:
+            return
+        if name in self.tasks:
+            return
+        if name not in self.servers:
+            raise RuntimeError(f"MCP server '{name}' is not configured.")
+        if self.servers[name].get("enabled", True) is False:
+            raise RuntimeError(f"MCP server '{name}' is disabled.")
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(target=self._run_loop, name="dagent-mcp-manager", daemon=True)
+            self._thread.start()
+        task = MCPServerTask(name, self.servers[name])
+        self.tasks[name] = task
+        future = asyncio.run_coroutine_threadsafe(task.start(), self._loop)
+        connect_timeout = _connect_timeout_seconds(self.servers[name])
+        try:
+            future.result(timeout=connect_timeout)
+        except FutureTimeoutError:
+            self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
+            future.cancel()
+            self._discard_task(name)
+            if not self.tasks:
+                self._stop_loop()
+            raise RuntimeError(f"MCP server '{name}' failed to connect: {self.last_errors[name]}") from None
+        except Exception as exc:
+            self.last_errors[name] = str(exc)
+            future.cancel()
+            self._discard_task(name)
+            if not self.tasks:
+                self._stop_loop()
+            raise RuntimeError(f"MCP server '{name}' failed to connect: {exc}") from exc
+        self._started = True
+
     def call_tool_blocking(
         self,
         server_name: str,
@@ -64,6 +99,7 @@ class MCPServerManager:
         arguments: dict[str, Any],
         timeout: float,
     ) -> Any:
+        self.ensure_started(server_name)
         if self._loop is None:
             raise RuntimeError("MCP manager is not started.")
         task = self.tasks.get(server_name)
