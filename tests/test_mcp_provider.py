@@ -464,6 +464,7 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
+    monkeypatch.setattr(MCPServerManager, "available", True)
     manager = MCPServerManager({
         "mock": {"command": "fake"},
         "disabled": {"command": "fake", "enabled": False},
@@ -506,6 +507,7 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(monkeypatc
             return None
 
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
+    monkeypatch.setattr(MCPServerManager, "available", True)
     manager = MCPServerManager({"mock": {"command": "fake"}})
 
     try:
