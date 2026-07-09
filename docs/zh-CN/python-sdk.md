@@ -42,6 +42,10 @@ import dagent
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunState`, `RunTrace`, `ArtifactUpload`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
 
+进程边界 runtime contracts 是 schema exports，不是 package-root exports。请从
+`dagent.schemas` 导入 `RuntimeRunSpec`、`RuntimeFrame`、`RuntimeRunTarget`、
+`RuntimeReviewDecision`、`RuntimeValidationSpec` 以及相关 payload models。
+
 ## 最小 Runner
 
 ```python
