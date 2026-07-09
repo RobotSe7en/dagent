@@ -5,9 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.8`.
+The current package version is `0.6.9`.
 
 ## Unreleased
+
+- No unreleased changes.
+
+## 0.6.9
 
 ### Added
 
@@ -33,6 +37,47 @@ The current package version is `0.6.8`.
 - Runtime `bye` frames now distinguish worker process failure from failed dagent
   runs, and resume runtime specs must include the serialized `RunState` they
   continue.
+
+### Fixed
+
+- Runtime process-boundary specs now reject unsafe `run_id` values and unknown
+  nested provider or Python tool fields instead of silently accepting unsupported
+  host payloads.
+- Lazy MCP snapshot registration now rejects non-canonical
+  `mcp.<server>.<tool>` capability ids.
+- `Runner.validate_capability_refs(...)` now reports `binding_conflict` when a
+  `CapabilityBinding` collides with a different registered capability.
+- Worker transport documentation now describes the actual `hello`, `event`,
+  `state_snapshot`, and `bye` frame sequence.
+
+### Breaking Changes
+
+- None for existing public Python SDK users.
+- Hosts adopting the new worker runtime contracts must send strict
+  `RuntimeRunSpec` payloads with only documented nested provider and Python tool
+  fields.
+
+### Migration Steps
+
+- Existing SDK users do not need to change code.
+- Process hosts should construct `RuntimeRunSpec` from the documented
+  `dagent.schemas` models, treat `run_id` uniqueness across worker processes as
+  host-owned state, and expect `state_snapshot` only after `run.finished`.
+- Hosts using lazy MCP snapshots should persist snapshots returned by SDK
+  registration APIs instead of reconstructing `mcp.<server>.<tool>` ids outside
+  the SDK.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### Known Limitations
+
+- `python -m dagent.worker` handles one run or resume operation per process.
+  Long-lived pools, queue claims, leases, Docker lifecycle, persistence,
+  authorization, audit, and usage tracking remain host responsibilities.
 
 ## 0.6.8
 
