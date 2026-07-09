@@ -15,14 +15,16 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.6.7")
+    english_unreleased = _section(english, "## Unreleased", "## 0.6.8")
+    english_068 = _section(english, "## 0.6.8", "## 0.6.7")
     english_067 = _section(english, "## 0.6.7", "## 0.6.6")
     english_066 = _section(english, "## 0.6.6", "## 0.6.5")
     english_065 = _section(english, "## 0.6.5", "## 0.6.4")
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.7")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.8")
+    chinese_068 = _section(chinese, "## 0.6.8", "## 0.6.7")
     chinese_067 = _section(chinese, "## 0.6.7", "## 0.6.6")
     chinese_066 = _section(chinese, "## 0.6.6", "## 0.6.5")
     chinese_065 = _section(chinese, "## 0.6.5", "## 0.6.4")
@@ -32,6 +34,13 @@ def test_migration_notes_record_release_history() -> None:
 
     assert "inherit_local_tools=True" in english_unreleased
     assert "exclude_local_tool_ids" in english_unreleased
+    assert "RuntimeRunSpec" in english_unreleased
+    assert "python -m dagent.worker" in english_unreleased
+    assert "python -m dagent.runtime" not in english_unreleased
+    assert "host-provided `run_id`" in english_unreleased
+    assert "lazy MCP" in english_unreleased
+    assert "validate_capability_refs" in english_unreleased
+    assert "Runner.reload_python_tool_sources" in english_068
     assert "Tool-agent and dynamic DAG LLM calls now retry transient provider failures" in english_067
     assert "Permanent LLM provider failures" in english_067
     assert "Streaming LLM calls no longer retry after response tokens have been emitted" in english_067
@@ -54,6 +63,13 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     assert "inherit_local_tools=True" in chinese_unreleased
     assert "exclude_local_tool_ids" in chinese_unreleased
+    assert "RuntimeRunSpec" in chinese_unreleased
+    assert "python -m dagent.worker" in chinese_unreleased
+    assert "python -m dagent.runtime" not in chinese_unreleased
+    assert "host 提供的 `run_id`" in chinese_unreleased
+    assert "lazy MCP" in chinese_unreleased
+    assert "validate_capability_refs" in chinese_unreleased
+    assert "Runner.reload_python_tool_sources" in chinese_068
     assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试" in chinese_067
     assert "永久性 LLM provider 失败" in chinese_067
     assert "已经输出 response token 后不再重试" in chinese_067

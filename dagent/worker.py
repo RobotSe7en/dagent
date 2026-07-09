@@ -1,11 +1,13 @@
-"""Runtime process entrypoint for executing RuntimeRunSpec payloads."""
+"""Worker process entrypoint for executing RuntimeRunSpec payloads."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import socket
 import sys
 from pathlib import Path
+from typing import Protocol, TextIO
 
 from pydantic import ValidationError
 
@@ -14,8 +16,78 @@ from dagent.agent import AutoAgent, DagAgent, ToolAgent
 from dagent.config import UserPythonToolConfig
 from dagent.providers.openai_compatible import OpenAICompatibleProvider
 from dagent.runner import Runner
-from dagent.runtime_io import RuntimeFrameTransport, StdioJsonlTransport, UnixSocketJsonlTransport
 from dagent.schemas import RuntimeAgentSpec, RuntimeFrame, RuntimeRunSpec, RuntimeRunTarget
+
+
+class RuntimeFrameTransport(Protocol):
+    def read_frame(self) -> RuntimeFrame:
+        """Read one JSONL runtime frame."""
+
+    def write_frame(self, frame: RuntimeFrame) -> None:
+        """Write one JSONL runtime frame."""
+
+    def close(self) -> None:
+        """Close transport resources."""
+
+
+class StdioJsonlTransport:
+    """JSONL transport over caller-provided text streams."""
+
+    def __init__(
+        self,
+        *,
+        input_stream: TextIO | None = None,
+        output_stream: TextIO | None = None,
+    ) -> None:
+        self._input = input_stream or sys.stdin
+        self._output = output_stream or sys.stdout
+
+    def read_frame(self) -> RuntimeFrame:
+        line = self._input.readline()
+        if not line:
+            raise EOFError("worker control channel closed before a frame was received.")
+        return RuntimeFrame.model_validate_json(line)
+
+    def write_frame(self, frame: RuntimeFrame) -> None:
+        self._output.write(frame.model_dump_json() + "\n")
+        self._output.flush()
+
+    def close(self) -> None:
+        return None
+
+
+class UnixSocketJsonlTransport:
+    """JSONL transport over a connected Unix domain socket."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._socket = sock
+        self._reader = sock.makefile("r", encoding="utf-8")
+        self._writer = sock.makefile("w", encoding="utf-8")
+
+    @classmethod
+    def connect(cls, path: str | Path) -> "UnixSocketJsonlTransport":
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(str(path))
+        return cls(sock)
+
+    @classmethod
+    def from_socket(cls, sock: socket.socket) -> "UnixSocketJsonlTransport":
+        return cls(sock)
+
+    def read_frame(self) -> RuntimeFrame:
+        line = self._reader.readline()
+        if not line:
+            raise EOFError("worker control socket closed before a frame was received.")
+        return RuntimeFrame.model_validate_json(line)
+
+    def write_frame(self, frame: RuntimeFrame) -> None:
+        self._writer.write(frame.model_dump_json() + "\n")
+        self._writer.flush()
+
+    def close(self) -> None:
+        self._reader.close()
+        self._writer.close()
+        self._socket.close()
 
 
 def _transport_from_args(args: argparse.Namespace) -> RuntimeFrameTransport:
@@ -25,7 +97,7 @@ def _transport_from_args(args: argparse.Namespace) -> RuntimeFrameTransport:
         if not args.socket_path:
             raise ValueError("--socket-path is required for unix-socket transport.")
         return UnixSocketJsonlTransport.connect(args.socket_path)
-    raise ValueError(f"Unsupported runtime transport: {args.transport}")
+    raise ValueError(f"Unsupported worker transport: {args.transport}")
 
 
 def _read_spec(transport: RuntimeFrameTransport) -> RuntimeRunSpec:
@@ -134,10 +206,11 @@ def _target_from_spec(target: RuntimeRunTarget):
     raise ValueError(f"Unsupported runtime target type: {target.type}")
 
 
-async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> None:
-    runner = _runner_from_spec(spec)
+async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> int:
+    runner: Runner | None = None
     final_run_status = None
     try:
+        runner = _runner_from_spec(spec)
         transport.write_frame(RuntimeFrame(type="hello", payload={"sdk_version": __version__}))
         if spec.action == "resume":
             if spec.review_decision is None:
@@ -154,7 +227,7 @@ async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> N
                 messages=spec.target.messages,
                 graph_input=spec.target.graph_input,
                 state=spec.state,
-                workspace_root=spec.workspace.workspace_root or "runs",
+                workspace_root=spec.workspace.run_workspace_root or "runs",
                 workspace_path=spec.workspace.workspace_path,
                 run_id=spec.run_id,
             )
@@ -167,16 +240,32 @@ async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> N
                     type="state_snapshot",
                     payload=result.state.model_dump(mode="json"),
                 ))
+            elif event.type == "run.failed":
+                final_run_status = "failed"
         transport.write_frame(RuntimeFrame(
             type="bye",
             payload={"process_status": "completed", "run_status": final_run_status, "exit_code": 0},
         ))
+        return 0
+    except Exception as exc:
+        transport.write_frame(RuntimeFrame(
+            type="bye",
+            payload={
+                "process_status": "failed",
+                "run_status": final_run_status,
+                "exit_code": 1,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        ))
+        return 1
     finally:
-        runner.close()
+        if runner is not None:
+            runner.close()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run a dagent RuntimeRunSpec over a JSONL control channel.")
+    parser = argparse.ArgumentParser(description="Run a dagent worker over a JSONL control channel.")
     parser.add_argument("--transport", choices=["stdio", "unix-socket"], default="stdio")
     parser.add_argument("--socket-path")
     args = parser.parse_args(argv)
@@ -184,8 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         transport = _transport_from_args(args)
         spec = _read_spec(transport)
-        asyncio.run(_run_spec(spec, transport))
-        return 0
+    except (EOFError, ValidationError, ValueError, TypeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        return asyncio.run(_run_spec(spec, transport))
     except (EOFError, ValidationError, ValueError, TypeError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

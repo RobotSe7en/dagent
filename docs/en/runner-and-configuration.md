@@ -43,24 +43,31 @@ responsible for storing any run state outside the SDK. When continuing from a
 `RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
 `workspace_path` while also continuing a state raises an error.
 
-## Runtime Process Transports
+## Worker Process Transports
 
-`python -m dagent.runtime` supports Unix socket JSONL and stdio JSONL
+`python -m dagent.worker` supports Unix socket JSONL and stdio JSONL
 transports. Production hosts should prefer Unix sockets or another dedicated
 control channel. Stdio is intended for local tests and simple process hosts
 where dagent owns stdout. Container stdout and stderr should be treated as logs,
 not the control protocol.
 
-Container hosts should start one `python -m dagent.runtime` process for one run
+Container hosts should start one `python -m dagent.worker` process for one run
 or resume operation. The process reads one `RuntimeFrame(type="spec")`, emits
-`event`, `state_snapshot`, `log`, and `bye` frames, and exits. Long-lived
-workers, queue loops, and Docker clients belong outside the SDK.
+`event`, `state_snapshot`, and `bye` frames, and exits. `RuntimeFrame` reserves
+`log` frames for hosts or transports that explicitly forward logs; the worker
+entrypoint does not parse stdout or stderr as control frames. Long-lived worker
+pools, queue loops, and Docker clients belong outside the SDK.
 
 Runtime contracts are process-boundary contracts for hosts that already know how
 to prepare workspaces and credentials. They do not include users, organizations,
 projects, RBAC, authorization filtering, persistence, queue claims, leases,
 rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
 worker orchestration.
+
+In `RuntimeWorkspaceSpec`, `workspace_root` is the SDK runner workspace.
+`run_workspace_root` is the per-run artifact root passed to `Runner.stream(...)`
+and defaults to `runs`. `workspace_path` selects one exact run workspace path and
+does not create a `<run_id>` subdirectory.
 
 ## Provider Options
 

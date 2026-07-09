@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from dagent.config import ProviderConfig, UserPythonToolConfig
-from dagent.schemas.capability import CapabilityDefinition, MCPServerSnapshot
+from dagent.schemas.capability import MCPServerSnapshot
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.results import LoopStatus, RunState
 from dagent.schemas.sandbox import SandboxConfig
@@ -27,6 +27,7 @@ class RuntimeWorkspaceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workspace_root: str | None = None
+    run_workspace_root: str | None = None
     workspace_path: str | None = None
 
 
@@ -112,7 +113,6 @@ class RuntimeRunSpec(BaseModel):
     provider: ProviderConfig
     workspace: RuntimeWorkspaceSpec = Field(default_factory=RuntimeWorkspaceSpec)
     validation: RuntimeValidationSpec = Field(default_factory=RuntimeValidationSpec)
-    capability_definitions: list[CapabilityDefinition] = Field(default_factory=list)
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     mcp_snapshots: list[MCPServerSnapshot] = Field(default_factory=list)
     lazy_mcp: bool = False
@@ -131,6 +131,8 @@ class RuntimeRunSpec(BaseModel):
             raise ValueError("run specs require target.")
         if self.action == "resume" and self.review_decision is None:
             raise ValueError("resume specs require review_decision.")
+        if self.action == "resume" and self.state is None:
+            raise ValueError("resume specs require state.")
         if self.state is not None and self.run_id is not None and self.run_id != self.state.run_id:
             raise ValueError("run_id must match state.run_id when state is supplied.")
         if self.python_tools and self.python_tool_user_config_dir is None:
@@ -153,6 +155,17 @@ class RuntimeByePayload(BaseModel):
     exit_code: int = 0
     error_type: str | None = None
     error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_status(self) -> "RuntimeByePayload":
+        if self.process_status == "completed":
+            if self.exit_code != 0:
+                raise ValueError("completed worker processes require exit_code 0.")
+            if self.error_type is not None or self.error is not None:
+                raise ValueError("completed worker processes may not include errors.")
+        if self.process_status == "failed" and self.exit_code == 0:
+            raise ValueError("failed worker processes require a non-zero exit_code.")
+        return self
 
 
 _EVENT_ADAPTER: TypeAdapter[Any] | None = None

@@ -14,6 +14,23 @@ The current package version is `0.6.8`.
 - `Runner.derive(...)` can inherit local `CapabilityBinding` tool registrations
   from the base runner with `inherit_local_tools=True`, and can skip caller-owned
   tool ids with `exclude_local_tool_ids`.
+- `RuntimeRunSpec`, `RuntimeFrame`, and related `dagent.schemas` contracts define
+  the process-boundary payloads consumed by `python -m dagent.worker`.
+- `Runner.run(...)` and `Runner.stream(...)` accept a host-provided `run_id` for
+  new runs; duplicate explicit run ids are rejected unless the caller supplies
+  matching `RunState` to continue an existing run.
+- MCP servers can be registered from trusted snapshots with lazy MCP connection
+  by passing `snapshot=...` and `lazy_connect=True`; lazy registration requires a
+  snapshot and still applies the current server config filters and policy.
+- `Runner.validate_capability_refs(...)` validates saved capability ids without
+  registering tools or agents and returns machine-readable `ValidationResult`
+  issues.
+
+### Changed
+
+- Runtime `bye` frames now distinguish worker process failure from failed dagent
+  runs, and resume runtime specs must include the serialized `RunState` they
+  continue.
 
 ## 0.6.8
 

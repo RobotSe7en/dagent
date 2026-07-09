@@ -267,7 +267,8 @@ runner.add_mcp_server(
 
 这会先注册 snapshot 中的 capability definitions，而不会立即连接 server。SDK 会在首次
 tool call 时连接对应 MCP server。Snapshot 只用于注册和校验元数据；可执行行为仍来自配置的
-MCP server。
+MCP server。Lazy registration 必须提供 snapshot，并且当前 server configuration 仍控制
+`enabled`、`include_tools`、`exclude_tools`、`risk` 和 network policy。
 
 ## Runtime Contract 边界
 

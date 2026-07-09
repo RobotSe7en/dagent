@@ -293,7 +293,9 @@ runner.add_mcp_server(
 This registers the snapshot's capability definitions without connecting to the
 server immediately. The SDK connects that MCP server on the first tool call.
 The snapshot is metadata for registration and validation; executable behavior
-still comes from the configured MCP server.
+still comes from the configured MCP server. Lazy registration requires a
+snapshot, and the current server configuration still controls `enabled`,
+`include_tools`, `exclude_tools`, `risk`, and network policy.
 
 ## Runtime Contract Boundary
 

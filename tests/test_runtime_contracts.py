@@ -55,3 +55,22 @@ def test_runtime_bye_distinguishes_process_and_run_status() -> None:
 
     assert frame.bye_payload().process_status == "completed"
     assert frame.bye_payload().run_status == "awaiting_review"
+
+
+def test_runtime_run_spec_resume_requires_state() -> None:
+    with pytest.raises(ValidationError, match="state"):
+        RuntimeRunSpec.model_validate({
+            "schema_version": 1,
+            "run_id": "run_1",
+            "action": "resume",
+            "review_decision": {"review_id": "review_1", "approved": True},
+            "provider": {"base_url": "http://llm.test/v1", "model": "test"},
+        })
+
+
+def test_runtime_bye_rejects_contradictory_process_status() -> None:
+    with pytest.raises(ValidationError, match="exit_code"):
+        RuntimeFrame(
+            type="bye",
+            payload={"process_status": "failed", "run_status": None, "exit_code": 0},
+        )

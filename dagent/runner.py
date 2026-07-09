@@ -1001,6 +1001,14 @@ class Runner:
         if self._closed:
             raise RuntimeError("Runner is closed.")
 
+    def _ensure_new_run_id_available(self, run_id: str | None, *, state: RunState | None) -> None:
+        if run_id is None or state is not None:
+            return
+        if run_id in self._runtime.session.runs:
+            raise ValueError(
+                f"run_id '{run_id}' already exists; pass state to continue an existing run."
+            )
+
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
         catalog = self._runtime.capability_catalog
@@ -1035,6 +1043,7 @@ class Runner:
             _ensure_run_state_can_continue(state)
             if run_id is not None and run_id != state.run_id:
                 raise ValueError("run_id must match state.run_id when state is supplied.")
+        self._ensure_new_run_id_available(run_id, state=state)
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
         if resolved_execution == "sandbox" and resolved_workspace_path is not None:
@@ -1213,6 +1222,7 @@ class Runner:
             validate_run_id(run_id)
         if state is not None and run_id is not None and run_id != state.run_id:
             raise ValueError("run_id must match state.run_id when state is supplied.")
+        self._ensure_new_run_id_available(run_id, state=state)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -2001,11 +2011,11 @@ def _nullable_event_string(value: Any) -> str | None:
 def _validation_issues(value: Any) -> list[ValidationIssue]:
     issues = []
     for item in value or []:
+        if isinstance(item, ValidationIssue):
+            issues.append(item)
+            continue
         if isinstance(item, dict):
-            issues.append(ValidationIssue(
-                message=str(item.get("message", "")),
-                node_id=item.get("node_id"),
-            ))
+            issues.append(ValidationIssue.model_validate(item))
     return issues
 
 

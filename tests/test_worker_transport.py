@@ -4,7 +4,7 @@ import io
 import json
 import socket
 
-from dagent.runtime_io import StdioJsonlTransport, UnixSocketJsonlTransport
+from dagent.worker import StdioJsonlTransport, UnixSocketJsonlTransport
 from dagent.schemas import RuntimeFrame
 
 
