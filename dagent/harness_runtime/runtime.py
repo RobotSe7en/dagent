@@ -34,7 +34,6 @@ from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
     materialize_workbench_uploads,
-    validate_run_id,
 )
 from dagent.harness_runtime.validator_agent import ValidatorAgent, format_validation_feedback
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
@@ -49,6 +48,7 @@ from dagent.schemas import (
     CapabilityDefinition,
     RunState,
 )
+from dagent.schemas.run_id import validate_run_id
 from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 
 

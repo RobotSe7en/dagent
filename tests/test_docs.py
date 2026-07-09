@@ -37,7 +37,10 @@ def test_migration_notes_record_release_history() -> None:
     assert "RuntimeRunSpec" in english_unreleased
     assert "python -m dagent.worker" in english_unreleased
     assert "python -m dagent.runtime" not in english_unreleased
+    collapsed_english_unreleased = _collapsed(english_unreleased)
+    collapsed_chinese_unreleased = _collapsed(chinese_unreleased)
     assert "host-provided `run_id`" in english_unreleased
+    assert "within the same `Runner` session" in collapsed_english_unreleased
     assert "lazy MCP" in english_unreleased
     assert "validate_capability_refs" in english_unreleased
     assert "Runner.reload_python_tool_sources" in english_068
@@ -67,6 +70,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "python -m dagent.worker" in chinese_unreleased
     assert "python -m dagent.runtime" not in chinese_unreleased
     assert "host 提供的 `run_id`" in chinese_unreleased
+    assert "同一个 `Runner` session 内" in collapsed_chinese_unreleased
     assert "lazy MCP" in chinese_unreleased
     assert "validate_capability_refs" in chinese_unreleased
     assert "Runner.reload_python_tool_sources" in chinese_068
@@ -89,3 +93,40 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions 现在把稳定 id 和调用名分开" in chinese_released
     assert "Runner.add_tools 现在是原子的" in chinese_released
     assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_unreleased
+
+
+def test_runtime_process_docs_describe_actual_worker_frame_sequence() -> None:
+    english = Path("docs/en/runner-and-configuration.md").read_text(encoding="utf-8")
+    chinese = Path("docs/zh-CN/runner-and-configuration.md").read_text(encoding="utf-8")
+
+    english_transport = _section(english, "## Worker Process Transports", "## Provider Options")
+    chinese_transport = _section(chinese, "## Worker 进程传输", "## Provider 选项")
+
+    collapsed_english_transport = _collapsed(english_transport)
+    collapsed_chinese_transport = _collapsed(chinese_transport)
+
+    assert "hello" in collapsed_english_transport
+    assert "zero or more `event` frames" in collapsed_english_transport
+    assert "`state_snapshot` only after `run.finished`" in collapsed_english_transport
+    assert "hello" in collapsed_chinese_transport
+    assert "零个或多个 `event` frames" in collapsed_chinese_transport
+    assert "仅在 `run.finished` 之后发送 `state_snapshot`" in collapsed_chinese_transport
+
+
+def test_python_sdk_docs_list_runtime_contract_schema_exports() -> None:
+    english = Path("docs/en/python-sdk.md").read_text(encoding="utf-8")
+    chinese = Path("docs/zh-CN/python-sdk.md").read_text(encoding="utf-8")
+
+    for name in [
+        "RuntimeAgentSpec",
+        "RuntimeByePayload",
+        "RuntimeFrame",
+        "RuntimeLogPayload",
+        "RuntimeReviewDecision",
+        "RuntimeRunSpec",
+        "RuntimeRunTarget",
+        "RuntimeValidationSpec",
+        "RuntimeWorkspaceSpec",
+    ]:
+        assert f"`{name}`" in english
+        assert f"`{name}`" in chinese

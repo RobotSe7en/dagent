@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import socket
 import sys
+import time
 from pathlib import Path
 from typing import Protocol, TextIO
 
@@ -15,8 +17,12 @@ from dagent import __version__
 from dagent.agent import AutoAgent, DagAgent, ToolAgent
 from dagent.config import UserPythonToolConfig
 from dagent.providers.openai_compatible import OpenAICompatibleProvider
+from dagent.result import RunStreamEvent
 from dagent.runner import Runner
 from dagent.schemas import RuntimeAgentSpec, RuntimeFrame, RuntimeRunSpec, RuntimeRunTarget
+
+UNIX_SOCKET_CONNECT_ATTEMPTS = 6
+UNIX_SOCKET_CONNECT_RETRY_DELAY_SECONDS = 0.05
 
 
 class RuntimeFrameTransport(Protocol):
@@ -25,6 +31,9 @@ class RuntimeFrameTransport(Protocol):
 
     def write_frame(self, frame: RuntimeFrame) -> None:
         """Write one JSONL runtime frame."""
+
+    def write_event(self, event: RunStreamEvent) -> None:
+        """Write one typed event frame without revalidating the already-typed event."""
 
     def close(self) -> None:
         """Close transport resources."""
@@ -52,6 +61,10 @@ class StdioJsonlTransport:
         self._output.write(frame.model_dump_json() + "\n")
         self._output.flush()
 
+    def write_event(self, event: RunStreamEvent) -> None:
+        self._output.write(_event_frame_json(event) + "\n")
+        self._output.flush()
+
     def close(self) -> None:
         return None
 
@@ -66,9 +79,21 @@ class UnixSocketJsonlTransport:
 
     @classmethod
     def connect(cls, path: str | Path) -> "UnixSocketJsonlTransport":
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(str(path))
-        return cls(sock)
+        socket_path = str(path)
+        for attempt in range(UNIX_SOCKET_CONNECT_ATTEMPTS):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.connect(socket_path)
+                return cls(sock)
+            except (ConnectionRefusedError, FileNotFoundError):
+                sock.close()
+                if attempt + 1 == UNIX_SOCKET_CONNECT_ATTEMPTS:
+                    raise
+                time.sleep(UNIX_SOCKET_CONNECT_RETRY_DELAY_SECONDS)
+            except Exception:
+                sock.close()
+                raise
+        raise RuntimeError("unreachable unix socket connect retry state.")
 
     @classmethod
     def from_socket(cls, sock: socket.socket) -> "UnixSocketJsonlTransport":
@@ -82,6 +107,10 @@ class UnixSocketJsonlTransport:
 
     def write_frame(self, frame: RuntimeFrame) -> None:
         self._writer.write(frame.model_dump_json() + "\n")
+        self._writer.flush()
+
+    def write_event(self, event: RunStreamEvent) -> None:
+        self._writer.write(_event_frame_json(event) + "\n")
         self._writer.flush()
 
     def close(self) -> None:
@@ -108,6 +137,13 @@ def _read_spec(transport: RuntimeFrameTransport) -> RuntimeRunSpec:
     if frame.type != "spec":
         raise ValueError("first frame must be spec.")
     return frame.spec_payload()
+
+
+def _event_frame_json(event: RunStreamEvent) -> str:
+    return json.dumps(
+        {"type": "event", "payload": event.model_dump(mode="json")},
+        separators=(",", ":"),
+    )
 
 
 def _runner_from_spec(spec: RuntimeRunSpec) -> Runner:
@@ -209,6 +245,7 @@ def _target_from_spec(target: RuntimeRunTarget):
 async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> int:
     runner: Runner | None = None
     final_run_status = None
+    failure: Exception | None = None
     try:
         runner = _runner_from_spec(spec)
         transport.write_frame(RuntimeFrame(type="hello", payload={"sdk_version": __version__}))
@@ -232,7 +269,7 @@ async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> i
                 run_id=spec.run_id,
             )
         async for event in events:
-            transport.write_frame(RuntimeFrame(type="event", payload=event.model_dump(mode="json")))
+            transport.write_event(event)
             if event.type == "run.finished":
                 result = event.data.result
                 final_run_status = result.state.status
@@ -242,26 +279,31 @@ async def _run_spec(spec: RuntimeRunSpec, transport: RuntimeFrameTransport) -> i
                 ))
             elif event.type == "run.failed":
                 final_run_status = "failed"
+    except Exception as exc:
+        failure = exc
+    if runner is not None:
+        try:
+            runner.close()
+        except Exception as exc:
+            if failure is None:
+                failure = exc
+    if failure is None:
         transport.write_frame(RuntimeFrame(
             type="bye",
             payload={"process_status": "completed", "run_status": final_run_status, "exit_code": 0},
         ))
         return 0
-    except Exception as exc:
-        transport.write_frame(RuntimeFrame(
-            type="bye",
-            payload={
-                "process_status": "failed",
-                "run_status": final_run_status,
-                "exit_code": 1,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        ))
-        return 1
-    finally:
-        if runner is not None:
-            runner.close()
+    transport.write_frame(RuntimeFrame(
+        type="bye",
+        payload={
+            "process_status": "failed",
+            "run_status": final_run_status,
+            "exit_code": 1,
+            "error_type": type(failure).__name__,
+            "error": str(failure),
+        },
+    ))
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

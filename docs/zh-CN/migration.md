@@ -16,7 +16,9 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - `RuntimeRunSpec`、`RuntimeFrame` 以及相关 `dagent.schemas` contracts 定义了
   `python -m dagent.worker` 消费的进程边界 payloads。
 - `Runner.run(...)` 和 `Runner.stream(...)` 支持为新 run 传入 host 提供的 `run_id`；
-  除非调用方提供匹配的 `RunState` 来继续已有 run，否则重复的显式 run id 会被拒绝。
+  除非调用方提供匹配的 `RunState` 来继续已有 run，否则同一个 `Runner` session 内重复的
+  显式 run id 会被拒绝。每次 run 都创建新 worker 进程的 host 仍需自行保证全局 run id
+  唯一性。
 - MCP servers 可以通过 `snapshot=...` 和 `lazy_connect=True` 从可信 snapshot 进行
   lazy MCP 连接注册；lazy registration 必须带 snapshot，并仍会应用当前 server config
   filters 和 policy。

@@ -379,6 +379,28 @@ def test_mcp_provider_lazy_snapshot_rejects_identity_mismatch() -> None:
         provider.register_into(CapabilityCatalog(workspace_root="."))
 
 
+def test_mcp_provider_lazy_snapshot_rejects_non_canonical_capability_id() -> None:
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.not_search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.docs.not_search",
+            server="docs",
+            tool="search",
+            definition=CapabilityDefinition(id="mcp.docs.not_search", kind="mcp"),
+        )],
+    )
+    provider = MCPCapabilityProvider(
+        {"docs": {"command": "fake"}},
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        provider.register_into(CapabilityCatalog(workspace_root="."))
+
+
 def _short_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
 

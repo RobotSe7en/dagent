@@ -44,8 +44,9 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
 Process-boundary runtime contracts are schema exports, not package-root exports.
-Import `RuntimeRunSpec`, `RuntimeFrame`, `RuntimeRunTarget`,
-`RuntimeReviewDecision`, `RuntimeValidationSpec`, and related payload models from
+Import `RuntimeAgentSpec`, `RuntimeByePayload`, `RuntimeFrame`,
+`RuntimeLogPayload`, `RuntimeReviewDecision`, `RuntimeRunSpec`,
+`RuntimeRunTarget`, `RuntimeValidationSpec`, and `RuntimeWorkspaceSpec` from
 `dagent.schemas`.
 
 Runtime contracts are process-boundary contracts for hosts that already know how

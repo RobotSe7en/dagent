@@ -52,7 +52,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload, validate_run_id
+from dagent.harness_runtime.artifacts import ArtifactUpload
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -98,6 +98,7 @@ from dagent.schemas import (
     ValidationResult,
     iter_dag_invocations,
 )
+from dagent.schemas.run_id import validate_run_id
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -478,16 +479,31 @@ class Runner:
         refs_to_check = self._default_visible_capability_ids() if refs is None else refs
         for ref in refs_to_check:
             if isinstance(ref, CapabilityBinding):
-                capability_id = ref.definition.id
+                definition, handler, supports_context = _capability_parts(ref)
+                capability_id = definition.id
+                entry = self._runtime.capability_catalog.get_entry(capability_id)
+                if entry is not None and not _entry_matches_binding(
+                    entry,
+                    definition,
+                    handler,
+                    supports_context,
+                ):
+                    issues.append(ValidationIssue(
+                        message=f"Capability binding '{capability_id}' conflicts with a registered capability.",
+                        capability_id=capability_id,
+                        code="binding_conflict",
+                    ))
+                    continue
+                definition = None if entry is None else entry.definition
             elif isinstance(ref, str):
                 capability_id = ref
+                definition = self._runtime.capability_catalog.get(capability_id)
             else:
                 issues.append(ValidationIssue(
                     message="Capability refs must be capability id strings or @dagent.tool bindings.",
                     code="invalid_ref_type",
                 ))
                 continue
-            definition = self._runtime.capability_catalog.get(capability_id)
             if definition is None:
                 issues.append(ValidationIssue(
                     message=f"Capability '{capability_id}' is not registered.",

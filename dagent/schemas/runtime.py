@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from dagent.config import ProviderConfig, UserPythonToolConfig
+from dagent.config import ProviderConfig, ReasoningConfig, UserPythonToolConfig
 from dagent.schemas.capability import MCPServerSnapshot
 from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.results import LoopStatus, RunState
+from dagent.schemas.run_id import validate_run_id
 from dagent.schemas.sandbox import SandboxConfig
 
 if TYPE_CHECKING:
@@ -37,6 +38,20 @@ class RuntimeValidationSpec(BaseModel):
     enabled: bool = False
     validator: str | None = None
     max_retries: int | None = None
+
+
+class _RuntimeReasoningConfig(ReasoningConfig):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _RuntimeProviderConfig(ProviderConfig):
+    model_config = ConfigDict(extra="forbid")
+
+    reasoning: _RuntimeReasoningConfig | None = None
+
+
+class _RuntimePythonToolConfig(UserPythonToolConfig):
+    model_config = ConfigDict(extra="forbid")
 
 
 class RuntimeAgentSpec(BaseModel):
@@ -110,13 +125,13 @@ class RuntimeRunSpec(BaseModel):
     action: RuntimeAction = "run"
     target: RuntimeRunTarget | None = None
     review_decision: RuntimeReviewDecision | None = None
-    provider: ProviderConfig
+    provider: _RuntimeProviderConfig
     workspace: RuntimeWorkspaceSpec = Field(default_factory=RuntimeWorkspaceSpec)
     validation: RuntimeValidationSpec = Field(default_factory=RuntimeValidationSpec)
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     mcp_snapshots: list[MCPServerSnapshot] = Field(default_factory=list)
     lazy_mcp: bool = False
-    python_tools: list[UserPythonToolConfig] = Field(default_factory=list)
+    python_tools: list[_RuntimePythonToolConfig] = Field(default_factory=list)
     python_tool_user_config_dir: str | None = None
     python_tool_managed_root: str | None = None
     skill_roots: list[str] = Field(default_factory=list)
@@ -127,6 +142,10 @@ class RuntimeRunSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> "RuntimeRunSpec":
+        if self.run_id is not None:
+            validate_run_id(self.run_id)
+        if self.state is not None:
+            validate_run_id(self.state.run_id)
         if self.action == "run" and self.target is None:
             raise ValueError("run specs require target.")
         if self.action == "resume" and self.review_decision is None:

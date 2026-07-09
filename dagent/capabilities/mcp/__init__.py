@@ -139,6 +139,12 @@ class MCPCapabilityProvider:
                     f"MCP snapshot tool '{tool.capability_id}' definition kind "
                     f"'{tool.definition.kind}' is not 'mcp'."
                 )
+            expected_capability_id = f"mcp.{_safe_component(server_name)}.{_safe_component(tool.tool)}"
+            if tool.capability_id != expected_capability_id:
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' is not the canonical "
+                    f"capability id '{expected_capability_id}'."
+                )
             if not _tool_is_included(server_config, tool.tool):
                 continue
             definition = tool.definition.model_copy(

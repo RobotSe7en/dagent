@@ -43,8 +43,9 @@ import dagent
 | Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
 
 进程边界 runtime contracts 是 schema exports，不是 package-root exports。请从
-`dagent.schemas` 导入 `RuntimeRunSpec`、`RuntimeFrame`、`RuntimeRunTarget`、
-`RuntimeReviewDecision`、`RuntimeValidationSpec` 以及相关 payload models。
+`dagent.schemas` 导入 `RuntimeAgentSpec`、`RuntimeByePayload`、`RuntimeFrame`、
+`RuntimeLogPayload`、`RuntimeReviewDecision`、`RuntimeRunSpec`、`RuntimeRunTarget`、
+`RuntimeValidationSpec` 和 `RuntimeWorkspaceSpec`。
 
 Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
 和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、

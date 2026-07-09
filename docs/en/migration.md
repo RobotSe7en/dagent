@@ -17,8 +17,10 @@ The current package version is `0.6.8`.
 - `RuntimeRunSpec`, `RuntimeFrame`, and related `dagent.schemas` contracts define
   the process-boundary payloads consumed by `python -m dagent.worker`.
 - `Runner.run(...)` and `Runner.stream(...)` accept a host-provided `run_id` for
-  new runs; duplicate explicit run ids are rejected unless the caller supplies
-  matching `RunState` to continue an existing run.
+  new runs; duplicate explicit run ids are rejected within the same `Runner`
+  session unless the caller supplies matching `RunState` to continue an existing
+  run. Hosts that create a fresh worker process per run remain responsible for
+  global run id uniqueness.
 - MCP servers can be registered from trusted snapshots with lazy MCP connection
   by passing `snapshot=...` and `lazy_connect=True`; lazy registration requires a
   snapshot and still applies the current server config filters and policy.

@@ -49,14 +49,23 @@ responsible for storing any run state outside the SDK. When continuing from a
 transports. Production hosts should prefer Unix sockets or another dedicated
 control channel. Stdio is intended for local tests and simple process hosts
 where dagent owns stdout. Container stdout and stderr should be treated as logs,
-not the control protocol.
+not the control protocol. Do not use stdio transport for workers that may run
+user tools or subprocesses that inherit stdout; any non-protocol stdout bytes can
+corrupt the JSONL control stream.
 
 Container hosts should start one `python -m dagent.worker` process for one run
 or resume operation. The process reads one `RuntimeFrame(type="spec")`, emits
-`event`, `state_snapshot`, and `bye` frames, and exits. `RuntimeFrame` reserves
-`log` frames for hosts or transports that explicitly forward logs; the worker
-entrypoint does not parse stdout or stderr as control frames. Long-lived worker
-pools, queue loops, and Docker clients belong outside the SDK.
+one `hello` frame after accepting the spec, zero or more `event` frames, a
+`state_snapshot` only after `run.finished`, then exactly one `bye` frame before
+exiting. Setup or process failures after spec acceptance may emit `hello` and a
+failed `bye` without any `event` or `state_snapshot` frames. `RuntimeFrame`
+reserves `log` frames for hosts or transports that explicitly forward logs; the
+worker entrypoint does not parse stdout or stderr as control frames. Long-lived
+worker pools, queue loops, and Docker clients belong outside the SDK.
+
+For Unix socket transport, the host should create and listen on the socket before
+starting the worker. The worker retries briefly while connecting to absorb small
+startup races, but orchestration and listener lifecycle still belong to the host.
 
 Runtime contracts are process-boundary contracts for hosts that already know how
 to prepare workspaces and credentials. They do not include users, organizations,
