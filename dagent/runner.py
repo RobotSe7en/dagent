@@ -95,6 +95,7 @@ from dagent.schemas import (
     RunTrace,
     SandboxConfig,
     ValidationIssue,
+    ValidationResult,
     iter_dag_invocations,
 )
 
@@ -460,6 +461,61 @@ class Runner:
 
         self._ensure_open()
         self._runtime.capability_catalog.validate_registerable(definition)
+
+    def validate_capability_refs(
+        self,
+        refs: Iterable[CapabilityRef] | None,
+        *,
+        allowed_kinds: Iterable[str] | None = None,
+        allow_agents: bool = False,
+        enabled_only: bool = True,
+    ) -> ValidationResult:
+        """Validate capability references without registering tools or agents."""
+
+        self._ensure_open()
+        issues: list[ValidationIssue] = []
+        allowed_kind_set = None if allowed_kinds is None else set(allowed_kinds)
+        refs_to_check = self._default_visible_capability_ids() if refs is None else refs
+        for ref in refs_to_check:
+            if isinstance(ref, CapabilityBinding):
+                capability_id = ref.definition.id
+            elif isinstance(ref, str):
+                capability_id = ref
+            else:
+                issues.append(ValidationIssue(
+                    message="Capability refs must be capability id strings or @dagent.tool bindings.",
+                    code="invalid_ref_type",
+                ))
+                continue
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is None:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is not registered.",
+                    capability_id=capability_id,
+                    code="unknown_capability",
+                ))
+                continue
+            if enabled_only and not definition.enabled:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is disabled.",
+                    capability_id=capability_id,
+                    code="disabled_capability",
+                ))
+                continue
+            if definition.kind == "agent" and not allow_agents:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is an agent capability.",
+                    capability_id=capability_id,
+                    code="agent_not_allowed",
+                ))
+                continue
+            if allowed_kind_set is not None and definition.kind not in allowed_kind_set:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' kind '{definition.kind}' is not allowed.",
+                    capability_id=capability_id,
+                    code="unsupported_kind",
+                ))
+        return ValidationResult(passed=not issues, issues=issues)
 
     def replace_capability(
         self,

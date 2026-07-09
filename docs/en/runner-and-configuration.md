@@ -337,6 +337,11 @@ The view contains public `CapabilityDefinition` objects and MCP snapshots, not
 handler objects or catalog internals. Hosts are still responsible for RBAC,
 redaction, and policy filtering before returning the view to users.
 
+Hosts that persist user-selected tool ids can call
+`Runner.validate_capability_refs(...)` before constructing an agent or run
+target. The method never registers `@dagent.tool` bindings and returns
+`ValidationResult` issues with `capability_id` and `code` fields.
+
 The local `/capabilities` mutation API is a runtime host/debug surface for raw
 capability definitions. User-managed Python tools should be added and persisted
 through `/python-tools` or the WebUI import flow, not through template-backed

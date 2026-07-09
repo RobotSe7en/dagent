@@ -306,6 +306,11 @@ print([server.name for server in view.mcp_servers])
 这个 view 包含公开的 `CapabilityDefinition` 对象和 MCP snapshots，不暴露 handler 对象或
 catalog 内部状态。把 view 返回给用户前，host 仍负责 RBAC、redaction 和 policy filtering。
 
+持久化用户所选 tool ids 的 host 可以先调用
+`Runner.validate_capability_refs(...)`，再构造 agent 或 run target。该方法不会注册
+`@dagent.tool` bindings，并会返回带有 `capability_id` 和 `code` 字段的
+`ValidationResult` issues。
+
 本地 `/capabilities` mutation API 是 host/debug 用的 runtime raw capability surface。
 用户管理的 Python tools 应通过 `/python-tools` 或 WebUI 导入流程添加和持久化，而不是通过
 template-backed runtime capability creation。
