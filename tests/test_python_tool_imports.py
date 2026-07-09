@@ -10,10 +10,10 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import api.app as app_module
-import api.python_tools as python_tools_module
+import dagent.capabilities.python_tools as python_tools_module
 import dagent.config as config_module
 from api.app import app, state
-from api.python_tools import discover_python_tool_names, load_python_tool_sources
+from dagent.capabilities.python_tools import discover_python_tool_names, load_python_tool_sources
 from dagent.config import (
     UserDagentConfig,
     UserPythonToolConfig,

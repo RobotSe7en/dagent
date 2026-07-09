@@ -51,6 +51,10 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent, "ProviderConfig")
     assert not hasattr(dagent, "RuntimeMode")
     assert not hasattr(dagent, "run_dag")
+    assert not hasattr(dagent, "MCPServerRegistrationResult")
+    assert not hasattr(dagent, "MCPServerSnapshot")
+    assert not hasattr(dagent, "MCPToolSnapshot")
+    assert not hasattr(dagent, "RunnerCatalogView")
     assert not hasattr(dagent.schemas, "RunMessage")
 
 
@@ -125,6 +129,12 @@ def test_tool_decorator_has_tool_only_signature() -> None:
     assert hasattr(dagent.Runner, "remove_mcp_server")
     assert hasattr(dagent.Runner, "replace_mcp_server")
     assert hasattr(dagent.Runner, "reload_tools")
+    assert hasattr(dagent.Runner, "reload_python_tool_sources")
+    assert hasattr(dagent.Runner, "derive")
+    assert hasattr(dagent.Runner, "catalog_view")
+    assert hasattr(dagent.Runner, "mcp_server_snapshot")
+    assert hasattr(dagent.Runner, "list_mcp_server_snapshots")
+    assert hasattr(dagent.Runner, "reload_mcp_servers_with_snapshots")
     assert "manager" not in inspect.signature(dagent.Runner.replace_mcp_server).parameters
 
 

@@ -34,7 +34,6 @@ from api.agent_presets import (
     AgentPresetUpdateRequest,
     clean_agent_preset_name,
 )
-from api.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
 from api.storage import (
     Conversation,
     ConversationBusyError,
@@ -49,6 +48,7 @@ from api.storage import (
     Store,
 )
 from api.workspaces import LocalWorkspaceStore
+from dagent.capabilities.python_tools import discover_python_tool_names, load_python_tool_sources, read_python_tool_source
 from dagent import (
     ArtifactUpload,
     AutoAgent,
@@ -1167,39 +1167,24 @@ class ApiState:
     ) -> None:
         if self.runner is None:
             return
-        result = load_python_tool_sources(
+        replace_ids = self.custom_python_tool_capability_ids if replace_existing else set()
+        result = self.runner.reload_python_tool_sources(
             self.custom_python_tools,
             user_config_dir=self.get_user_config_path().parent,
             managed_root=self.get_managed_python_tool_root(),
+            replace_ids=replace_ids,
         )
-        groups = {
-            status.config.id: status.bindings
-            for status in result.statuses
-            if status.error is None and status.config.enabled
-        }
-        replace_ids = self.custom_python_tool_capability_ids if replace_existing else set()
-        registered, install_errors = self.runner.reload_tools(groups, replace_ids=replace_ids)
-        source_install_errors = {
-            source_id: error
-            for source_id, error in install_errors.items()
-            if source_id in groups
-        }
+        source_ids = {config.id for config in self.custom_python_tools}
         self.custom_python_tool_errors = {
             **self.custom_python_tool_config_errors,
-            **result.errors,
-            **source_install_errors,
+            **{source_id: error for source_id, error in result.errors.items() if source_id in source_ids},
         }
-        self.custom_python_tool_capabilities = {
-            status.config.id: list(status.capability_ids)
-            for status in result.statuses
-        }
+        self.custom_python_tool_capabilities = result.capability_ids_by_source
         self.custom_python_tool_capability_ids = {
             definition.id
-            for definitions in registered.values()
+            for definitions in result.registered.values()
             for definition in definitions
         }
-        for source_id in source_install_errors:
-            self.custom_python_tool_capabilities[source_id] = []
         if refresh_agent_presets:
             self._install_agent_presets()
 

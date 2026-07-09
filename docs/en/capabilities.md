@@ -111,6 +111,34 @@ errors without treating missing old ids as a user deletion. `replace_ids` may
 only name non-built-in `tool.*` capabilities; MCP tools, agent capabilities, and
 built-in tools must be managed through their own lifecycle APIs.
 
+Hosts that persist user-configured Python tool sources can load explicit
+`UserPythonToolConfig` entries through the SDK instead of importing files
+themselves:
+
+```python
+from pathlib import Path
+
+
+result = runner.reload_python_tool_sources(
+    configs,
+    user_config_dir=Path("~/.dagent").expanduser(),
+    managed_root=Path("~/.dagent/python-tools").expanduser(),
+    replace_ids=previous_python_tool_ids,
+)
+
+print(result.capability_ids_by_source)
+print(result.errors)
+```
+
+For preview and validation flows, import
+`discover_python_tool_names`, `load_python_tool_sources`, or
+`read_python_tool_source` from `dagent.capabilities.python_tools`. These helpers
+load `path`, `managed`, and `module` sources; they load only explicit `names`,
+validate that each export is a `CapabilityBinding` produced by `@dagent.tool`,
+and report per-source errors without implicitly scanning directories. Source
+reading and decorator-name discovery are file-based and do not read installed
+modules.
+
 Agents declare what they can use:
 
 ```python
@@ -239,6 +267,16 @@ pip install "dagent-ai[mcp]"
 
 See [Runner and Configuration](runner-and-configuration.md) for dynamic MCP
 registration and replacement.
+
+After registration, `runner.mcp_server_snapshot(name)` and
+`runner.list_mcp_server_snapshots()` return read-only MCP identity snapshots
+with capability ids, raw server/tool names, and public capability definitions.
+For bulk host reloads, `runner.reload_mcp_servers_with_snapshots(...)` uses the
+same batch reload semantics as `runner.reload_mcp_servers(...)` while returning
+`MCPServerRegistrationResult` with successful snapshots and per-server errors.
+Use these SDK results when
+persisting discovered tools instead of rebuilding `mcp.<server>.<tool>` ids
+outside the SDK.
 
 ## Direct Capability Tests
 

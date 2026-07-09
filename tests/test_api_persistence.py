@@ -3209,7 +3209,7 @@ def test_interrupted_dag_review_rejection_clears_pending_review_and_allows_run_d
     assert delete_response.status_code == 200
 
 
-def test_interrupted_auto_tool_review_rejection_clears_pending_review_and_allows_run_delete(
+def test_interrupted_auto_capability_review_rejection_clears_pending_review_and_allows_run_delete(
     persistence_client,
 ) -> None:
     state.runner = Runner(provider=MockProvider([]))
@@ -3268,7 +3268,7 @@ def test_interrupted_auto_tool_review_rejection_clears_pending_review_and_allows
         kind="capability_review",
     )
     store.append_conversation_message(
-        message_id="msg_interrupted_auto_tool_review",
+        message_id="msg_interrupted_auto_capability_review",
         conversation_id=conversation["id"],
         project_id=None,
         role="assistant",
@@ -3361,7 +3361,7 @@ def test_interrupted_auto_tool_review_rejection_clears_pending_review_and_allows
     assert delete_response.status_code == 200
 
 
-def test_auto_tool_review_rejection_is_persisted_before_resume_stream_body_starts(
+def test_auto_capability_review_rejection_is_persisted_before_resume_stream_body_starts(
     persistence_client,
 ) -> None:
     state.runner = Runner(provider=MockProvider([]))
@@ -3419,7 +3419,7 @@ def test_auto_tool_review_rejection_is_persisted_before_resume_stream_body_start
         kind="capability_review",
     )
     store.append_conversation_message(
-        message_id="msg_early_auto_tool_review",
+        message_id="msg_early_auto_capability_review",
         conversation_id=conversation["id"],
         project_id=None,
         role="assistant",

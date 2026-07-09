@@ -99,6 +99,58 @@ class CapabilityDefinition(BaseModel):
         return self
 
 
+class MCPToolSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capability_id: str
+    server: str
+    tool: str
+    definition: CapabilityDefinition
+
+
+class MCPServerSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    capability_ids: list[str] = Field(default_factory=list)
+    tools: list[MCPToolSnapshot] = Field(default_factory=list)
+    error: str | None = None
+
+
+class MCPServerRegistrationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registered_names: list[str] = Field(default_factory=list)
+    snapshots: list[MCPServerSnapshot] = Field(default_factory=list)
+    errors: dict[str, str] = Field(default_factory=dict)
+
+
+class RunnerCatalogView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_root: str
+    capabilities: list[CapabilityDefinition] = Field(default_factory=list)
+    mcp_servers: list[MCPServerSnapshot] = Field(default_factory=list)
+
+
+class PythonToolSourceRegistrationStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    enabled: bool = True
+    capability_ids: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class PythonToolRegistrationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    statuses: list[PythonToolSourceRegistrationStatus] = Field(default_factory=list)
+    registered: dict[str, list[CapabilityDefinition]] = Field(default_factory=dict)
+    errors: dict[str, str] = Field(default_factory=dict)
+    capability_ids_by_source: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class CapabilityInvocation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -16,6 +16,9 @@ from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
 from dagent.capabilities.providers import AgentCapabilityProvider
+from dagent.capabilities.python_tools import (
+    load_python_tool_sources,
+)
 from dagent.capabilities.sandbox import (
     SandboxExecutionError,
     SandboxSession,
@@ -29,7 +32,15 @@ from dagent.capabilities.skills import SkillStore, SkillsCapabilityProvider, vis
 from dagent.capabilities.toolsets import BUILTIN_CAPABILITY_IDS
 from dagent.capabilities.workspace import workspace_context
 from dagent.dag_builder import Dag
-from dagent.config import load_config, resolve_config_path, resolve_config_relative_path
+from dagent.config import (
+    DEFAULT_RUNS_DIR,
+    DEFAULT_WORKSPACE,
+    UserPythonToolConfig,
+    load_config,
+    resolve_config_path,
+    resolve_config_relative_path,
+    resolve_run_workspace_root,
+)
 from dagent.harness_runtime import (
     CapabilityScope,
     CapabilityExecutor,
@@ -72,7 +83,13 @@ from dagent.schemas import (
     CapabilityResult,
     DAG,
     DAGSpec,
+    MCPServerRegistrationResult,
+    MCPServerSnapshot,
+    MCPToolSnapshot,
     PendingReview,
+    PythonToolRegistrationResult,
+    PythonToolSourceRegistrationStatus,
+    RunnerCatalogView,
     RunExecution,
     RunState,
     RunTrace,
@@ -80,8 +97,6 @@ from dagent.schemas import (
     ValidationIssue,
     iter_dag_invocations,
 )
-from dagent.config import DEFAULT_RUNS_DIR, DEFAULT_WORKSPACE, resolve_run_workspace_root
-
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -179,6 +194,69 @@ class Runner:
         self._mcp_server_managers.clear()
         self._closed = True
 
+    def derive(
+        self,
+        *,
+        workspace: str | Path | None = None,
+        provider: ChatProvider | None = None,
+        capabilities: Iterable[CapabilityBinding] = (),
+        validator: str | AgentProfile | ValidatorAgent | None = None,
+        enable_validation: bool | None = None,
+        max_validation_retries: int | None = None,
+        skill_roots: list[str | Path] | None = None,
+        mcp_servers: dict[str, dict[str, Any]] | None = None,
+        profile_root: str | Path | None = None,
+        sandbox: SandboxConfig | None = None,
+        agents: Iterable[ToolAgent] = (),
+    ) -> "Runner":
+        """Create an independent runner with explicit runtime overlays."""
+
+        self._ensure_open()
+        resolved_provider = provider or self._runtime.provider
+        resolved_profile_root = (
+            Path(profile_root)
+            if profile_root is not None
+            else self.profile_root
+        )
+        resolved_skill_roots = (
+            list(skill_roots)
+            if skill_roots is not None
+            else list(self._skill_provider.store.roots)
+        )
+        resolved_validator = validator
+        if resolved_validator is None and self._runtime.enable_validation:
+            resolved_validator = (
+                self._runtime.validator
+                if resolved_provider is self._runtime.provider
+                else "validator_agent"
+            )
+        derived = Runner(
+            workspace=self._runtime.capability_catalog.workspace_root if workspace is None else workspace,
+            provider=resolved_provider,
+            capabilities=capabilities,
+            validator=resolved_validator,
+            skill_roots=resolved_skill_roots,
+            mcp_servers=mcp_servers,
+            profile_root=resolved_profile_root,
+            sandbox=sandbox if sandbox is not None else self.sandbox.model_copy(deep=True),
+        )
+        try:
+            derived.runtime.max_validation_retries = (
+                self._runtime.max_validation_retries
+                if max_validation_retries is None
+                else max_validation_retries
+            )
+            if enable_validation is not None:
+                derived.enable_validation = enable_validation
+            elif not self._runtime.enable_validation:
+                derived.enable_validation = False
+            for agent in agents:
+                derived.add_agent(agent)
+        except Exception:
+            derived.close()
+            raise
+        return derived
+
     def add_tool(self, capability: CapabilityBinding) -> CapabilityDefinition:
         """Register a single ``@dagent.tool`` binding."""
 
@@ -201,6 +279,21 @@ class Runner:
     ) -> tuple[dict[str, list[CapabilityDefinition]], dict[str, str]]:
         """Rebuild caller-managed Python tool groups without treating removals as user deletion."""
 
+        replace_id_set = self._validate_reload_tool_replace_ids(replace_ids)
+        for capability_id in replace_id_set:
+            self._runtime.capability_catalog.delete(capability_id)
+        registered: dict[str, list[CapabilityDefinition]] = {}
+        errors: dict[str, str] = {}
+        for group_id, capabilities in groups.items():
+            try:
+                registered[group_id] = self._add_tools(capabilities, refresh=False)
+            except Exception as exc:
+                errors[group_id] = str(exc)
+        self._runtime.refresh_toolsets()
+        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
+        return registered, errors
+
+    def _validate_reload_tool_replace_ids(self, replace_ids: Iterable[str]) -> set[str]:
         self._ensure_open()
         catalog = self._runtime.capability_catalog
         replace_id_set = set(replace_ids)
@@ -212,18 +305,59 @@ class Runner:
                 raise ValueError("reload_tools can only replace tool capabilities.")
             if capability_id in BUILTIN_CAPABILITY_IDS:
                 raise ValueError(f"reload_tools cannot replace built-in capability '{capability_id}'.")
-        for capability_id in replace_id_set:
-            catalog.delete(capability_id)
-        registered: dict[str, list[CapabilityDefinition]] = {}
-        errors: dict[str, str] = {}
-        for group_id, capabilities in groups.items():
-            try:
-                registered[group_id] = self._add_tools(capabilities, refresh=False)
-            except Exception as exc:
-                errors[group_id] = str(exc)
-        self._runtime.refresh_toolsets()
-        errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
-        return registered, errors
+        return replace_id_set
+
+    def reload_python_tool_sources(
+        self,
+        configs: Iterable[UserPythonToolConfig],
+        *,
+        user_config_dir: str | Path,
+        managed_root: str | Path | None = None,
+        replace_ids: Iterable[str],
+    ) -> PythonToolRegistrationResult:
+        """Load configured Python tool sources and rebuild their registered groups."""
+
+        replace_id_set = self._validate_reload_tool_replace_ids(replace_ids)
+        load_result = load_python_tool_sources(
+            configs,
+            user_config_dir=Path(user_config_dir),
+            managed_root=None if managed_root is None else Path(managed_root),
+        )
+        groups = {
+            status.config.id: status.bindings
+            for status in load_result.statuses
+            if status.error is None and status.config.enabled
+        }
+        registered, registration_errors = self.reload_tools(groups, replace_ids=replace_id_set)
+        source_registration_errors = {
+            source_id: error
+            for source_id, error in registration_errors.items()
+            if source_id in groups
+        }
+        capability_ids_by_source = {
+            status.config.id: list(status.capability_ids)
+            for status in load_result.statuses
+        }
+        for source_id in source_registration_errors:
+            capability_ids_by_source[source_id] = []
+        errors = {
+            **load_result.errors,
+            **registration_errors,
+        }
+        return PythonToolRegistrationResult(
+            statuses=[
+                PythonToolSourceRegistrationStatus(
+                    source_id=status.config.id,
+                    enabled=status.config.enabled,
+                    capability_ids=capability_ids_by_source.get(status.config.id, []),
+                    error=errors.get(status.config.id),
+                )
+                for status in load_result.statuses
+            ],
+            registered=registered,
+            errors=errors,
+            capability_ids_by_source=capability_ids_by_source,
+        )
 
     def _add_tools(
         self,
@@ -349,6 +483,24 @@ class Runner:
         """List registered capability definitions."""
 
         return self._runtime.capability_catalog.list(kind=kind, enabled_only=enabled_only)  # type: ignore[arg-type]
+
+    def catalog_view(
+        self,
+        *,
+        kind: str | None = None,
+        enabled_only: bool = False,
+    ) -> RunnerCatalogView:
+        """Return a read-only view of registered runtime capabilities."""
+
+        return RunnerCatalogView(
+            workspace_root=str(self._runtime.capability_catalog.workspace_root),
+            capabilities=self.list_capabilities(kind=kind, enabled_only=enabled_only),
+            mcp_servers=(
+                self.list_mcp_server_snapshots(enabled_only=enabled_only)
+                if kind in {None, "mcp"}
+                else []
+            ),
+        )
 
     def get_capability(self, capability_id: str) -> CapabilityDefinition | None:
         """Return a registered capability definition, or ``None``."""
@@ -582,6 +734,63 @@ class Runner:
         self._runtime.refresh_toolsets()
         errors.update(self._refresh_registered_agent_runtime_configs(collect_errors=True))
         return registered, errors
+
+    def reload_mcp_servers_with_snapshots(
+        self,
+        servers: Mapping[str, dict[str, Any]],
+        *,
+        replace_names: Iterable[str],
+    ) -> MCPServerRegistrationResult:
+        """Rebuild MCP servers and return registration snapshots for successes."""
+
+        registered, errors = self.reload_mcp_servers(servers, replace_names=replace_names)
+        snapshots = [
+            snapshot
+            for name in sorted(registered)
+            if (snapshot := self.mcp_server_snapshot(name)) is not None
+        ]
+        return MCPServerRegistrationResult(
+            registered_names=sorted(registered),
+            snapshots=snapshots,
+            errors=errors,
+        )
+
+    def mcp_server_snapshot(self, name: str, *, enabled_only: bool = False) -> MCPServerSnapshot | None:
+        """Return a read-only snapshot of one registered MCP server."""
+
+        capability_ids = self._mcp_server_capability_ids.get(name)
+        if capability_ids is None:
+            return None
+        tools: list[MCPToolSnapshot] = []
+        for capability_id in capability_ids:
+            definition = self._runtime.capability_catalog.get(capability_id)
+            if definition is None:
+                continue
+            if enabled_only and not definition.enabled:
+                continue
+            tools.append(
+                MCPToolSnapshot(
+                    capability_id=definition.id,
+                    server=str(definition.config.get("server") or ""),
+                    tool=str(definition.config.get("tool") or ""),
+                    definition=definition,
+                )
+            )
+        return MCPServerSnapshot(
+            name=name,
+            capability_ids=[tool.capability_id for tool in tools],
+            tools=tools,
+        )
+
+    def list_mcp_server_snapshots(self, *, enabled_only: bool = False) -> list[MCPServerSnapshot]:
+        """Return read-only snapshots for registered MCP servers."""
+
+        return [
+            snapshot
+            for name in sorted(self._mcp_server_capability_ids)
+            if (snapshot := self.mcp_server_snapshot(name, enabled_only=enabled_only)) is not None
+            and (snapshot.tools or not enabled_only)
+        ]
 
     def _add_mcp_server(
         self,

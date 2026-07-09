@@ -164,15 +164,17 @@ remains the default. The WebUI registers both project and user MCP servers.
 Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
 are reported instead of silently overriding project configuration.
 
-`python_tools` entries are loaded only by the local WebUI backend. They do not
-make `Runner.from_config(...)` import files implicitly. A `path` entry points to
-a `.py` file visible to the backend process and `names` lists the exported
-objects to register. Each named object must be created with `@dagent.tool`, so
-it is a `CapabilityBinding` with a `tool.<function_name>` capability id. The
-WebUI also supports uploading a `.py` file; uploads are copied to
+`python_tools` entries do not make `Runner.from_config(...)` import files
+implicitly. Hosts that persist this section should load it explicitly with
+`Runner.reload_python_tool_sources(...)` or the lower-level helpers in
+`dagent.capabilities.python_tools`. A `path` entry points to a `.py` file visible
+to the host process and `names` lists the exported objects to register. Each
+named object must be created with `@dagent.tool`, so it is a
+`CapabilityBinding` with a `tool.<function_name>` capability id. The WebUI also
+supports uploading a `.py` file; uploads are copied to
 `~/.dagent/python-tools/` and stored as `source: "managed"` entries in this
 same user config file. A `module` entry imports an installed Python module by
-name. `/python-tools/reload` invalidates import caches, but it does not reload
+name. Python tool reload invalidates import caches, but it does not reload
 modules already present in `sys.modules`; use `path` or uploaded `managed`
 sources for reload-style development.
 
@@ -298,6 +300,10 @@ MCP registration is all-or-nothing: if a server fails to connect or any
 discovered tool cannot register, the runner rolls back the capabilities from
 that registration attempt.
 
+Hosts that batch-reload MCP records can use
+`runner.reload_mcp_servers_with_snapshots(...)` to receive successful
+`MCPServerSnapshot` objects and per-server errors in one SDK result.
+
 `runner.add_agent(...)` registers a leaf `ToolAgent` as `agent.<name>`. The
 registered agent can be exposed to top-level `ToolAgent`, `AutoAgent`, and
 `DagAgent` runs through their `agents` field. Registered subagents cannot expose
@@ -317,6 +323,19 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+Use `runner.catalog_view()` when a host needs a read-only preview of the actual
+runner-owned registration state:
+
+```python
+view = runner.catalog_view()
+print([definition.id for definition in view.capabilities])
+print([server.name for server in view.mcp_servers])
+```
+
+The view contains public `CapabilityDefinition` objects and MCP snapshots, not
+handler objects or catalog internals. Hosts are still responsible for RBAC,
+redaction, and policy filtering before returning the view to users.
 
 The local `/capabilities` mutation API is a runtime host/debug surface for raw
 capability definitions. User-managed Python tools should be added and persisted
@@ -343,6 +362,24 @@ runner = dagent.Runner(
     profile_root=profile_root,
 )
 ```
+
+If the new runtime is an overlay of an existing runner, use
+`runner.derive(...)` instead of copying runtime internals:
+
+```python
+derived = runner.derive(
+    workspace=".dagent/effective",
+    provider=provider,
+    capabilities=python_tool_bindings,
+    mcp_servers=mcp_servers,
+    agents=agent_presets,
+    profile_root=profile_root,
+)
+```
+
+The derived runner has its own catalog, MCP registrations, skill roots, agent
+registrations, sandbox config, and validation settings. It reuses the base
+provider by default unless `provider=` is passed.
 
 The local WebUI model manager follows this pattern. The `config.yaml` provider
 remains the default model unless the user activates a persisted WebUI model from
