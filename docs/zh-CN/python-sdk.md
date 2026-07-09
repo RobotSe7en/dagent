@@ -33,7 +33,7 @@ import dagent
 
 | Area | Public SDK |
 | --- | --- |
-| Runner and tools | `Runner`, `tool`, `CapabilityBinding` |
+| Runner and tools | `Runner`, `tool`, `CapabilityBinding`；`dagent.capabilities.python_tools` 提供配置化 Python tool source loading helpers |
 | Agents | `AutoAgent`, `ToolAgent`, `DagAgent` |
 | Static DAGs | `Dag`, `Node`, `MapNode`, `LoopNode`, `item`, `InputRef`, `NodeOutputRef`, `ItemRef`, `CompareRef`, `ArtifactRef`, `ArtifactValueRef`, `FormatRef`, `validate_dag_spec` |
 | Profiles | `AgentProfile`, `ProfileStore`, `load_builtin_profile`, `list_builtin_profiles` |

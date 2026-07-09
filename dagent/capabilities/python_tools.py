@@ -1,4 +1,4 @@
-"""User Python tool loading for the local WebUI API."""
+"""Python source loading helpers for user-defined tool capabilities."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ class PythonToolLoadResult:
 
 def discover_python_tool_names(source: str) -> list[str]:
     """Return top-level functions decorated with @dagent.tool or @tool."""
+
     module = ast.parse(source)
     names: list[str] = []
     for node in module.body:

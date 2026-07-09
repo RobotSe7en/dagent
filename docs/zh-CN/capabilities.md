@@ -97,6 +97,31 @@ ids、按 group 独立注册当前 tools，并收集 group 或已注册 agent �
 当成用户删除单个 capability。`replace_ids` 只能指向非内置的 `tool.*` capabilities；
 MCP tools、agent capabilities 和内置 tools 必须通过各自的生命周期 API 管理。
 
+持久化用户配置 Python tool sources 的 host 可以通过 SDK 加载显式的
+`UserPythonToolConfig` 条目，而不用自己 import 文件：
+
+```python
+from pathlib import Path
+
+
+result = runner.reload_python_tool_sources(
+    configs,
+    user_config_dir=Path("~/.dagent").expanduser(),
+    managed_root=Path("~/.dagent/python-tools").expanduser(),
+    replace_ids=previous_python_tool_ids,
+)
+
+print(result.capability_ids_by_source)
+print(result.errors)
+```
+
+预览和校验流程可以从 `dagent.capabilities.python_tools` import
+`discover_python_tool_names`、`load_python_tool_sources` 或
+`read_python_tool_source`。这些 helpers 可以加载 `path`、`managed` 和 `module`
+sources；它们只加载显式列出的 `names`，校验每个导出对象都是由 `@dagent.tool`
+生成的 `CapabilityBinding`，并按 source 返回错误，不会隐式扫描目录。source 读取和
+decorator name discovery 是基于文件的，不读取已安装 module。
+
 Agents 声明自己能使用什么：
 
 ```python
@@ -220,6 +245,14 @@ pip install "dagent-ai[mcp]"
 ```
 
 动态 MCP 注册和替换见 [Runner 和配置](runner-and-configuration.md)。
+
+注册完成后，`runner.mcp_server_snapshot(name)` 和
+`runner.list_mcp_server_snapshots()` 会返回只读 MCP identity snapshots，包含
+capability ids、原始 server/tool names，以及公开 capability definitions。批量 host
+reload 可以使用 `runner.reload_mcp_servers_with_snapshots(...)`；它使用和
+`runner.reload_mcp_servers(...)` 相同的批量 reload 语义，同时返回包含成功 snapshots 和逐
+server errors 的 `MCPServerRegistrationResult`。持久化已发现工具时应使用这些 SDK 结果，
+而不是在 SDK 外部重建 `mcp.<server>.<tool>` ids。
 
 ## 直接测试 Capability
 

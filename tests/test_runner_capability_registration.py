@@ -9,6 +9,7 @@ import dagent
 import dagent.runner as runner_module
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
+from dagent.config import UserPythonToolConfig
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.schemas import CapabilityDefinition, CapabilityInvocation, CapabilityResult
 
@@ -123,6 +124,16 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     assert manager.started is True
     assert [definition.id for definition in definitions] == [capability_id]
     assert any(definition.id == capability_id for definition in runner.capabilities)
+    snapshot = runner.mcp_server_snapshot("mock-server")
+    assert snapshot is not None
+    assert snapshot.name == "mock-server"
+    assert snapshot.capability_ids == [capability_id]
+    assert len(snapshot.tools) == 1
+    assert snapshot.tools[0].capability_id == capability_id
+    assert snapshot.tools[0].server == "mock-server"
+    assert snapshot.tools[0].tool == "lookup"
+    assert snapshot.tools[0].definition.id == capability_id
+    assert [server.name for server in runner.list_mcp_server_snapshots()] == ["mock-server"]
 
     result = run(runner.run(dagent.ToolAgent(profile="conversation"), messages=user_messages("lookup x")))
     assert result.output_text == "done"
@@ -134,6 +145,134 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     assert result.status == "completed"
     assert result.content == "found:x"
     runner.close()
+
+
+def test_runner_catalog_view_is_read_only_and_includes_mcp_snapshots(tmp_path) -> None:
+    capability_id = _mock_server_capability_id()
+    runner = _runner(tmp_path)
+    manager = FakeMCPManager()
+    runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+
+    view = runner.catalog_view()
+    dumped = view.model_dump(mode="json")
+
+    assert dumped["workspace_root"] == str(tmp_path.resolve())
+    assert capability_id in {capability["id"] for capability in dumped["capabilities"]}
+    assert dumped["mcp_servers"][0]["name"] == "mock-server"
+    assert dumped["mcp_servers"][0]["tools"][0]["capability_id"] == capability_id
+    assert "handler" not in json.dumps(dumped)
+    assert "_entries" not in json.dumps(dumped)
+    runner.close()
+
+
+def test_runner_catalog_view_filters_mcp_snapshots_with_capability_filters(tmp_path) -> None:
+    capability_id = _mock_server_capability_id()
+    runner = _runner(tmp_path)
+    manager = FakeMCPManager()
+    runner._add_mcp_server("mock-server", {"command": "fake"}, manager=manager)
+
+    runner.set_capability_enabled(capability_id, False)
+
+    assert runner.catalog_view(kind="tool").mcp_servers == []
+    assert runner.catalog_view(kind="mcp", enabled_only=True).mcp_servers == []
+    assert runner.mcp_server_snapshot("mock-server", enabled_only=True).capability_ids == []
+    runner.close()
+
+
+def test_runner_derive_applies_overlays_without_mutating_base(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    @dagent.tool
+    def derived_lookup(query: str) -> str:
+        return f"found:{query}"
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    base = _runner(tmp_path / "base")
+
+    derived = base.derive(
+        workspace=tmp_path / "derived",
+        capabilities=[derived_lookup],
+        mcp_servers={"mock": {"command": "fake"}},
+        agents=[
+            dagent.ToolAgent(
+                profile="conversation",
+                name="helper",
+                capabilities=["tool.derived_lookup", "mcp.mock.lookup"],
+                skills=[],
+            )
+        ],
+    )
+
+    assert derived is not base
+    assert derived.runtime.provider is base.runtime.provider
+    assert str(derived.runtime.capability_catalog.workspace_root) == str((tmp_path / "derived").resolve())
+    assert derived.sandbox is not base.sandbox
+    assert derived.sandbox.docker is not base.sandbox.docker
+    assert derived.get_capability("tool.derived_lookup") is not None
+    assert derived.get_capability("mcp.mock.lookup") is not None
+    assert derived.get_capability("agent.helper") is not None
+    assert base.get_capability("tool.derived_lookup") is None
+    assert base.get_capability("mcp.mock.lookup") is None
+    assert base.get_capability("agent.helper") is None
+    derived.close()
+    base.close()
+
+
+def test_runner_derive_default_workspace_uses_resolved_base_workspace(monkeypatch, tmp_path) -> None:
+    original_cwd = tmp_path / "original"
+    later_cwd = tmp_path / "later"
+    original_cwd.mkdir()
+    later_cwd.mkdir()
+    monkeypatch.chdir(original_cwd)
+    base = _runner("relative-workspace")
+    expected_workspace = original_cwd / "relative-workspace"
+
+    monkeypatch.chdir(later_cwd)
+    derived = base.derive()
+
+    assert str(derived.runtime.capability_catalog.workspace_root) == str(expected_workspace.resolve())
+    derived.close()
+    base.close()
+
+
+def test_runner_derive_overlays_validation_without_mutating_base(tmp_path) -> None:
+    base = _runner(tmp_path / "base")
+    base.enable_validation = True
+    base.runtime.max_validation_retries = 3
+
+    inherited = base.derive(workspace=tmp_path / "inherited")
+    overridden = base.derive(
+        workspace=tmp_path / "overridden",
+        enable_validation=False,
+        max_validation_retries=5,
+    )
+
+    assert base.enable_validation is True
+    assert base.runtime.max_validation_retries == 3
+    assert inherited.enable_validation is True
+    assert inherited.runtime.validator is base.runtime.validator
+    assert inherited.runtime.max_validation_retries == 3
+    assert overridden.enable_validation is False
+    assert overridden.runtime.max_validation_retries == 5
+    inherited.close()
+    overridden.close()
+    base.close()
 
 
 def test_add_agent_registers_capability_and_tool_agent_can_delegate(tmp_path) -> None:
@@ -792,6 +931,42 @@ def test_reload_mcp_servers_records_dangling_subagent_dependency_without_raising
     runner.close()
 
 
+def test_reload_mcp_servers_with_snapshots_returns_typed_registration_result(monkeypatch, tmp_path) -> None:
+    class FakeMCPProvider:
+        def __init__(self, servers, *, manager=None):
+            self.servers = servers
+            self.manager = SimpleNamespace(last_errors={}, shutdown=lambda: None)
+            self.registration_errors: list[str] = []
+
+        def register_into(self, catalog):
+            for name in self.servers:
+                catalog.register(
+                    CapabilityDefinition(
+                        id=f"mcp.{name}.lookup",
+                        kind="mcp",
+                        config={"server": name, "tool": "lookup"},
+                    ),
+                    lambda invocation: CapabilityResult.completed(invocation, "found"),
+                )
+
+    monkeypatch.setattr(runner_module.MCPServerManager, "available", True)
+    monkeypatch.setattr(runner_module, "MCPCapabilityProvider", FakeMCPProvider)
+    runner = _runner(tmp_path)
+
+    result = runner.reload_mcp_servers_with_snapshots(
+        {"search": {"command": "fake"}},
+        replace_names=set(),
+    )
+
+    assert result.registered_names == ["search"]
+    assert result.errors == {}
+    assert len(result.snapshots) == 1
+    assert result.snapshots[0].name == "search"
+    assert result.snapshots[0].capability_ids == ["mcp.search.lookup"]
+    assert result.snapshots[0].tools[0].tool == "lookup"
+    runner.close()
+
+
 def test_reload_tools_replaces_managed_group_without_removing_unrelated_tools(tmp_path) -> None:
     runner = _runner(tmp_path)
 
@@ -909,6 +1084,112 @@ def test_reload_tools_rejects_builtin_replace_ids(tmp_path) -> None:
         runner.reload_tools({}, replace_ids={"tool.read_file"})
 
     assert runner.get_capability("tool.read_file") is not None
+    runner.close()
+
+
+def test_reload_python_tool_sources_loads_configs_and_registers_groups(tmp_path) -> None:
+    script = tmp_path / "sdk_tools.py"
+    script.write_text(
+        "from dagent import tool\n"
+        "@tool(description='Echo through SDK loader')\n"
+        "def sdk_echo(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    runner = _runner(tmp_path)
+
+    result = runner.reload_python_tool_sources(
+        [UserPythonToolConfig(id="sdk_source", source="path", path=str(script), names=["sdk_echo"])],
+        user_config_dir=tmp_path,
+        replace_ids=set(),
+    )
+
+    assert result.errors == {}
+    assert result.capability_ids_by_source == {"sdk_source": ["tool.sdk_echo"]}
+    assert [definition.id for definition in result.registered["sdk_source"]] == ["tool.sdk_echo"]
+    assert not hasattr(result, "load_result")
+    assert "bindings" not in result.model_dump_json()
+    assert runner.get_capability("tool.sdk_echo") is not None
+    runner.close()
+
+
+def test_reload_python_tool_sources_checks_runner_before_importing_sources(tmp_path) -> None:
+    marker = tmp_path / "imported.txt"
+    script = tmp_path / "sdk_tools.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "from dagent import tool\n"
+        "@tool\n"
+        "def sdk_echo(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    runner = _runner(tmp_path)
+    runner.close()
+
+    with pytest.raises(RuntimeError, match="Runner is closed"):
+        runner.reload_python_tool_sources(
+            [UserPythonToolConfig(id="sdk_source", source="path", path=str(script), names=["sdk_echo"])],
+            user_config_dir=tmp_path,
+            replace_ids=set(),
+        )
+
+    assert not marker.exists()
+
+
+def test_reload_python_tool_sources_validates_replace_ids_before_importing_sources(tmp_path) -> None:
+    marker = tmp_path / "imported.txt"
+    script = tmp_path / "sdk_tools.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "from dagent import tool\n"
+        "@tool\n"
+        "def sdk_echo(text: str) -> str:\n"
+        "    return text\n",
+        encoding="utf-8",
+    )
+    runner = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot replace built-in capability"):
+        runner.reload_python_tool_sources(
+            [UserPythonToolConfig(id="sdk_source", source="path", path=str(script), names=["sdk_echo"])],
+            user_config_dir=tmp_path,
+            replace_ids={"tool.read_file"},
+        )
+
+    assert not marker.exists()
+    runner.close()
+
+
+def test_reload_python_tool_sources_returns_registered_agent_errors(tmp_path) -> None:
+    runner = _runner(tmp_path)
+
+    @dagent.tool
+    def old_python_tool() -> str:
+        return "old"
+
+    runner.add_tool(old_python_tool)
+    runner.add_agent(
+        dagent.ToolAgent(
+            profile="conversation",
+            name="helper",
+            capabilities=["tool.old_python_tool"],
+            skills=[],
+        )
+    )
+
+    result = runner.reload_python_tool_sources(
+        [],
+        user_config_dir=tmp_path,
+        replace_ids={"tool.old_python_tool"},
+    )
+
+    assert "agent.helper" in result.errors
+    assert "tool.old_python_tool" in result.errors["agent.helper"]
+    assert runner.get_capability("tool.old_python_tool") is None
+    assert runner.get_capability("agent.helper") is not None
     runner.close()
 
 

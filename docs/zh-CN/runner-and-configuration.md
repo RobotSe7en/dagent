@@ -152,14 +152,16 @@ WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `
 `config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
 项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
 
-`python_tools` 条目只由本地 WebUI backend 加载。它不会让 `Runner.from_config(...)`
-隐式 import 文件。`path` 条目指向 backend 进程可访问的 `.py` 文件，`names` 列出要注册的
-导出对象。每个对象都必须由 `@dagent.tool` 创建，因此它是一个 `CapabilityBinding`，
-并使用 `tool.<function_name>` capability id。WebUI 也支持上传 `.py` 文件；上传文件会复制到
-`~/.dagent/python-tools/`，并在同一个用户配置文件中保存为 `source: "managed"` 条目。
-`module` 条目会按名称 import 已安装或可导入的 Python module。`/python-tools/reload`
-会 invalidate import caches，但不会 reload 已在 `sys.modules` 中的 module；需要类似
-reload 的开发体验时，请使用 `path` 或上传后的 `managed` source。
+`python_tools` 条目不会让 `Runner.from_config(...)` 隐式 import 文件。持久化这一段配置的
+host 应通过 `Runner.reload_python_tool_sources(...)` 或
+`dagent.capabilities.python_tools` 中的底层 helpers 显式加载。`path` 条目指向 host 进程可访问
+的 `.py` 文件，`names` 列出要注册的导出对象。每个对象都必须由 `@dagent.tool` 创建，
+因此它是一个 `CapabilityBinding`，并使用 `tool.<function_name>` capability id。WebUI
+也支持上传 `.py` 文件；上传文件会复制到 `~/.dagent/python-tools/`，并在同一个用户配置文件
+中保存为 `source: "managed"` 条目。`module` 条目会按名称 import 已安装或可导入的
+Python module。Python tool reload 会 invalidate import caches，但不会 reload 已在
+`sys.modules` 中的 module；需要类似 reload 的开发体验时，请使用 `path` 或上传后的
+`managed` source。
 
 通过 WebUI reload Python tools 时，只会重建导入的 Python-tool capabilities。它不会重启
 整个 runner，也不会重连无关 MCP servers。如果被删除或禁用的 Python tool 仍被某个 agent
@@ -270,6 +272,10 @@ pip install "dagent-ai[mcp]"
 MCP 注册是 all-or-nothing：如果 server 连接失败或任何已发现工具无法注册，runner 会回滚
 这次注册尝试产生的 capabilities。
 
+批量 reload MCP records 的 host 可以使用
+`runner.reload_mcp_servers_with_snapshots(...)`，在一个 SDK result 中拿到成功的
+`MCPServerSnapshot` 对象和逐 server errors。
+
 `runner.add_agent(...)` 会把一个叶子 `ToolAgent` 注册为 `agent.<name>`。已注册 agent
 可以通过顶层 `ToolAgent`、`AutoAgent` 和 `DagAgent` 的 `agents` 字段暴露出来。
 已注册的子 agent 不能再暴露其他子 agent。
@@ -288,6 +294,17 @@ runner.remove_capability("tool.search")
 for definition in runner.list_capabilities(kind="mcp"):
     print(definition.id)
 ```
+
+host 如果需要预览真实的 runner-owned 注册状态，应使用 `runner.catalog_view()`：
+
+```python
+view = runner.catalog_view()
+print([definition.id for definition in view.capabilities])
+print([server.name for server in view.mcp_servers])
+```
+
+这个 view 包含公开的 `CapabilityDefinition` 对象和 MCP snapshots，不暴露 handler 对象或
+catalog 内部状态。把 view 返回给用户前，host 仍负责 RBAC、redaction 和 policy filtering。
 
 本地 `/capabilities` mutation API 是 host/debug 用的 runtime raw capability surface。
 用户管理的 Python tools 应通过 `/python-tools` 或 WebUI 导入流程添加和持久化，而不是通过
@@ -313,6 +330,24 @@ runner = dagent.Runner(
     profile_root=profile_root,
 )
 ```
+
+如果新 runtime 是已有 runner 的 overlay，应使用 `runner.derive(...)`，不要复制 runtime
+内部状态：
+
+```python
+derived = runner.derive(
+    workspace=".dagent/effective",
+    provider=provider,
+    capabilities=python_tool_bindings,
+    mcp_servers=mcp_servers,
+    agents=agent_presets,
+    profile_root=profile_root,
+)
+```
+
+派生 runner 拥有自己的 catalog、MCP registrations、skill roots、agent registrations、
+sandbox config 和 validation 设置。默认复用 base provider；传入 `provider=` 时使用新的
+provider。
 
 本地 WebUI 的模型管理遵循这个模式。`config.yaml` 中的 provider 仍是默认模型。
 除非用户激活了 `~/.dagent/config.yaml` 中持久化的 WebUI 模型。
