@@ -56,6 +56,12 @@ or resume operation. The process reads one `RuntimeFrame(type="spec")`, emits
 `event`, `state_snapshot`, `log`, and `bye` frames, and exits. Long-lived
 workers, queue loops, and Docker clients belong outside the SDK.
 
+Runtime contracts are process-boundary contracts for hosts that already know how
+to prepare workspaces and credentials. They do not include users, organizations,
+projects, RBAC, authorization filtering, persistence, queue claims, leases,
+rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
+worker orchestration.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:

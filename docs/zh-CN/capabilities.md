@@ -269,6 +269,12 @@ runner.add_mcp_server(
 tool call 时连接对应 MCP server。Snapshot 只用于注册和校验元数据；可执行行为仍来自配置的
 MCP server。
 
+## Runtime Contract 边界
+
+Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
+和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
+限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
+
 ## 直接测试 Capability
 
 使用 `Runner.test_capability(...)` 单独执行一个 capability 进行检查：

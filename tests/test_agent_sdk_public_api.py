@@ -58,6 +58,17 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent.schemas, "RunMessage")
 
 
+def test_runtime_contracts_are_schema_exports_not_package_root_exports() -> None:
+    import dagent.schemas as schemas
+
+    assert hasattr(schemas, "RuntimeRunSpec")
+    assert hasattr(schemas, "RuntimeFrame")
+    assert hasattr(schemas, "RuntimeValidationSpec")
+    assert not hasattr(dagent, "RuntimeRunSpec")
+    assert not hasattr(dagent, "RuntimeFrame")
+    assert not hasattr(dagent, "RuntimeValidationSpec")
+
+
 def test_auto_agent_is_public_target_without_mode_field() -> None:
     assert "mode" not in inspect.signature(dagent.AutoAgent).parameters
 

@@ -46,6 +46,10 @@ import dagent
 `dagent.schemas` 导入 `RuntimeRunSpec`、`RuntimeFrame`、`RuntimeRunTarget`、
 `RuntimeReviewDecision`、`RuntimeValidationSpec` 以及相关 payload models。
 
+Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
+和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
+限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
+
 ## 最小 Runner
 
 ```python

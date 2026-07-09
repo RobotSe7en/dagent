@@ -295,6 +295,14 @@ server immediately. The SDK connects that MCP server on the first tool call.
 The snapshot is metadata for registration and validation; executable behavior
 still comes from the configured MCP server.
 
+## Runtime Contract Boundary
+
+Runtime contracts are process-boundary contracts for hosts that already know how
+to prepare workspaces and credentials. They do not include users, organizations,
+projects, RBAC, authorization filtering, persistence, queue claims, leases,
+rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
+worker orchestration.
+
 ## Direct Capability Tests
 
 Use `Runner.test_capability(...)` to execute one capability for inspection:

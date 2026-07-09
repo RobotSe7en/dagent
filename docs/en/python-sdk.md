@@ -48,6 +48,12 @@ Import `RuntimeRunSpec`, `RuntimeFrame`, `RuntimeRunTarget`,
 `RuntimeReviewDecision`, `RuntimeValidationSpec`, and related payload models from
 `dagent.schemas`.
 
+Runtime contracts are process-boundary contracts for hosts that already know how
+to prepare workspaces and credentials. They do not include users, organizations,
+projects, RBAC, authorization filtering, persistence, queue claims, leases,
+rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
+worker orchestration.
+
 ## Minimal Runner
 
 ```python

@@ -51,6 +51,10 @@ Container hosts 应为一次 run 或 resume operation 启动一个
 `event`、`state_snapshot`、`log` 和 `bye` frames，然后退出。Long-lived workers、
 queue loops 和 Docker clients 属于 SDK 外部。
 
+Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
+和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
+限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：
