@@ -53,6 +53,7 @@ class PendingReview(BaseModel):
 class RunState(BaseModel):
     """Serializable run state for display and cross-request resume."""
 
+    schema_version: Literal[1] = 1
     run_id: str
     kind: RunStateKind
     status: LoopStatus
@@ -84,6 +85,8 @@ class LoopOutcome(BaseModel):
 class ValidationIssue(BaseModel):
     message: str
     node_id: str | None = None
+    capability_id: str | None = None
+    code: str | None = None
 
 
 class ValidationResult(BaseModel):

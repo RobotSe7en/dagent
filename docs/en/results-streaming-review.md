@@ -64,6 +64,10 @@ awaiting review, continue that checkpoint with `resume(..., state=...)`;
 `run(..., state=...)` rejects awaiting-review states so review gates cannot be
 accidentally bypassed.
 
+Persisted `RunState` payloads include `schema_version: 1`. Payloads without the
+field are read as version 1. Hosts should reject unsupported explicit versions
+instead of silently migrating them.
+
 ## Static DAG Result Helpers
 
 Static DAGs expose DAG-oriented helpers on the same result object:

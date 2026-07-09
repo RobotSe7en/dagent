@@ -60,6 +60,9 @@ else:
 `resume(..., state=...)` 继续该 checkpoint；`run(..., state=...)` 会拒绝 awaiting-review
 states，避免绕过 review gates。
 
+持久化的 `RunState` payload 包含 `schema_version: 1`。不含该字段的 payload
+会按 version 1 读取。宿主遇到显式声明的不支持版本时应拒绝，而不是静默迁移。
+
 ## 静态 DAG Result Helpers
 
 静态 DAG 在同一个 result object 上暴露 DAG-oriented helpers：
