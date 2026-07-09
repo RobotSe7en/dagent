@@ -126,13 +126,19 @@ class Runner:
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
         self._mcp_server_managers: dict[str, Any] = {}
+        initial_capabilities = list(capabilities)
+        self._local_tool_binding_ids: set[str] = set()
         self._runtime = _create_runtime(
             workspace=self.workspace,
             provider=provider,
-            capabilities=capabilities,
+            capabilities=initial_capabilities,
             validator=validator,
             skills_provider=self._skill_provider,
             profile_root=self.profile_root,
+        )
+        self._local_tool_binding_ids.update(
+            _capability_parts(capability)[0].id
+            for capability in initial_capabilities
         )
         try:
             for name, config in dict(mcp_servers or {}).items():
@@ -208,10 +214,18 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         agents: Iterable[ToolAgent] = (),
+        inherit_local_tools: bool = False,
+        exclude_local_tool_ids: Iterable[str] = (),
     ) -> "Runner":
         """Create an independent runner with explicit runtime overlays."""
 
         self._ensure_open()
+        overlay_capabilities = list(capabilities)
+        if inherit_local_tools:
+            overlay_capabilities = [
+                *self._local_tool_bindings(exclude_ids=exclude_local_tool_ids),
+                *overlay_capabilities,
+            ]
         resolved_provider = provider or self._runtime.provider
         resolved_profile_root = (
             Path(profile_root)
@@ -233,7 +247,7 @@ class Runner:
         derived = Runner(
             workspace=self._runtime.capability_catalog.workspace_root if workspace is None else workspace,
             provider=resolved_provider,
-            capabilities=capabilities,
+            capabilities=overlay_capabilities,
             validator=resolved_validator,
             skill_roots=resolved_skill_roots,
             mcp_servers=mcp_servers,
@@ -262,6 +276,7 @@ class Runner:
 
         self._ensure_open()
         definition = _register_capability(self._runtime, capability)
+        self._local_tool_binding_ids.add(definition.id)
         self._refresh_registered_agent_runtime_configs()
         return definition
 
@@ -269,7 +284,9 @@ class Runner:
         """Register ``@dagent.tool`` bindings as one atomic batch."""
 
         self._ensure_open()
-        return self._add_tools(capabilities, refresh=True)
+        definitions = self._add_tools(capabilities, refresh=True)
+        self._local_tool_binding_ids.update(definition.id for definition in definitions)
+        return definitions
 
     def reload_tools(
         self,
@@ -282,11 +299,14 @@ class Runner:
         replace_id_set = self._validate_reload_tool_replace_ids(replace_ids)
         for capability_id in replace_id_set:
             self._runtime.capability_catalog.delete(capability_id)
+            self._local_tool_binding_ids.discard(capability_id)
         registered: dict[str, list[CapabilityDefinition]] = {}
         errors: dict[str, str] = {}
         for group_id, capabilities in groups.items():
             try:
-                registered[group_id] = self._add_tools(capabilities, refresh=False)
+                definitions = self._add_tools(capabilities, refresh=False)
+                registered[group_id] = definitions
+                self._local_tool_binding_ids.update(definition.id for definition in definitions)
             except Exception as exc:
                 errors[group_id] = str(exc)
         self._runtime.refresh_toolsets()
@@ -454,6 +474,7 @@ class Runner:
         replaced = self._runtime.replace_capability(
             definition, handler, supports_context=supports_context
         )
+        self._local_tool_binding_ids.discard(definition.id)
         self._refresh_registered_agent_runtime_configs()
         return replaced
 
@@ -465,6 +486,7 @@ class Runner:
         if definition is not None and definition.kind != "agent":
             self._ensure_no_registered_agent_dependencies((capability_id,), f"remove capability '{capability_id}'")
         self._runtime.capability_catalog.delete(capability_id)
+        self._local_tool_binding_ids.discard(capability_id)
         if definition is not None and definition.kind == "agent":
             name = capability_id.removeprefix("agent.")
             self._registered_agent_configs.pop(name, None)
@@ -483,6 +505,21 @@ class Runner:
         """List registered capability definitions."""
 
         return self._runtime.capability_catalog.list(kind=kind, enabled_only=enabled_only)  # type: ignore[arg-type]
+
+    def _local_tool_bindings(self, *, exclude_ids: Iterable[str] = ()) -> list[CapabilityBinding]:
+        catalog = self._runtime.capability_catalog
+        excluded = set(exclude_ids)
+        bindings: list[CapabilityBinding] = []
+        for capability_id in sorted(self._local_tool_binding_ids - excluded):
+            entry = catalog.get_entry(capability_id)
+            if entry is None or entry.definition.kind != "tool":
+                continue
+            bindings.append(CapabilityBinding(
+                definition=entry.definition,
+                handler=entry.handler,
+                supports_context=entry.supports_context,
+            ))
+        return bindings
 
     def catalog_view(
         self,

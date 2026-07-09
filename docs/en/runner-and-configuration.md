@@ -371,6 +371,8 @@ derived = runner.derive(
     workspace=".dagent/effective",
     provider=provider,
     capabilities=python_tool_bindings,
+    inherit_local_tools=True,
+    exclude_local_tool_ids=config_managed_python_tool_ids,
     mcp_servers=mcp_servers,
     agents=agent_presets,
     profile_root=profile_root,
@@ -379,7 +381,11 @@ derived = runner.derive(
 
 The derived runner has its own catalog, MCP registrations, skill roots, agent
 registrations, sandbox config, and validation settings. It reuses the base
-provider by default unless `provider=` is passed.
+provider by default unless `provider=` is passed. `inherit_local_tools=True`
+copies local tools that were registered from `CapabilityBinding` objects, such
+as `@dagent.tool` functions, without copying raw `register_capability(...)`
+entries. Use `exclude_local_tool_ids` for tool ids that the derived runner will
+install through another explicit path.
 
 The local WebUI model manager follows this pattern. The `config.yaml` provider
 remains the default model unless the user activates a persisted WebUI model from

@@ -234,6 +234,57 @@ def test_runner_derive_applies_overlays_without_mutating_base(monkeypatch, tmp_p
     base.close()
 
 
+def test_runner_derive_can_inherit_local_tools_with_exclusions(tmp_path) -> None:
+    @dagent.tool
+    def base_lookup(query: str) -> str:
+        return f"base:{query}"
+
+    @dagent.tool
+    def managed_lookup(query: str) -> str:
+        return f"managed:{query}"
+
+    base = _runner(tmp_path / "base")
+    base.add_tools([base_lookup, managed_lookup])
+
+    derived = base.derive(
+        workspace=tmp_path / "derived",
+        inherit_local_tools=True,
+        exclude_local_tool_ids={"tool.managed_lookup"},
+    )
+
+    assert derived.get_capability("tool.base_lookup") is not None
+    assert derived.get_capability("tool.managed_lookup") is None
+
+    result = run(derived.runtime.capability_executor.execute(
+        CapabilityInvocation(
+            capability_id="tool.base_lookup",
+            kind="tool",
+            arguments={"query": "x"},
+        )
+    ))
+    assert result.status == "completed"
+    assert result.content == "base:x"
+    derived.close()
+    base.close()
+
+
+def test_runner_derive_local_tool_inheritance_skips_raw_capabilities(tmp_path) -> None:
+    base = _runner(tmp_path / "base")
+    base.register_capability(
+        CapabilityDefinition(id="tool.raw_custom", kind="tool"),
+        lambda invocation: CapabilityResult.completed(invocation, "raw"),
+    )
+
+    derived = base.derive(
+        workspace=tmp_path / "derived",
+        inherit_local_tools=True,
+    )
+
+    assert derived.get_capability("tool.raw_custom") is None
+    derived.close()
+    base.close()
+
+
 def test_runner_derive_default_workspace_uses_resolved_base_workspace(monkeypatch, tmp_path) -> None:
     original_cwd = tmp_path / "original"
     later_cwd = tmp_path / "later"

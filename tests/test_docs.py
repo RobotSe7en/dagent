@@ -30,7 +30,8 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "No unreleased changes." in english_unreleased
+    assert "inherit_local_tools=True" in english_unreleased
+    assert "exclude_local_tool_ids" in english_unreleased
     assert "Tool-agent and dynamic DAG LLM calls now retry transient provider failures" in english_067
     assert "Permanent LLM provider failures" in english_067
     assert "Streaming LLM calls no longer retry after response tokens have been emitted" in english_067
@@ -51,7 +52,8 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "暂无未发布变更。" in chinese_unreleased
+    assert "inherit_local_tools=True" in chinese_unreleased
+    assert "exclude_local_tool_ids" in chinese_unreleased
     assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试" in chinese_067
     assert "永久性 LLM provider 失败" in chinese_067
     assert "已经输出 response token 后不再重试" in chinese_067

@@ -8,7 +8,11 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-暂无未发布变更。
+### 新增
+
+- `Runner.derive(...)` 可以通过 `inherit_local_tools=True` 从 base runner 继承本地
+  `CapabilityBinding` tool registrations，并可用 `exclude_local_tool_ids`
+  跳过调用方管理的 tool ids。
 
 ## 0.6.8
 

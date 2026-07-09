@@ -339,6 +339,8 @@ derived = runner.derive(
     workspace=".dagent/effective",
     provider=provider,
     capabilities=python_tool_bindings,
+    inherit_local_tools=True,
+    exclude_local_tool_ids=config_managed_python_tool_ids,
     mcp_servers=mcp_servers,
     agents=agent_presets,
     profile_root=profile_root,
@@ -347,7 +349,10 @@ derived = runner.derive(
 
 派生 runner 拥有自己的 catalog、MCP registrations、skill roots、agent registrations、
 sandbox config 和 validation 设置。默认复用 base provider；传入 `provider=` 时使用新的
-provider。
+provider。`inherit_local_tools=True` 会复制通过 `CapabilityBinding` 注册的本地 tools，
+例如 `@dagent.tool` 函数，但不会复制 raw `register_capability(...)` entries。
+如果某些 tool ids 会通过另一个显式路径安装到派生 runner，请用
+`exclude_local_tool_ids` 跳过它们。
 
 本地 WebUI 的模型管理遵循这个模式。`config.yaml` 中的 provider 仍是默认模型。
 除非用户激活了 `~/.dagent/config.yaml` 中持久化的 WebUI 模型。

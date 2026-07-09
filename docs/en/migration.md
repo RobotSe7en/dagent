@@ -9,7 +9,11 @@ The current package version is `0.6.8`.
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+- `Runner.derive(...)` can inherit local `CapabilityBinding` tool registrations
+  from the base runner with `inherit_local_tools=True`, and can skip caller-owned
+  tool ids with `exclude_local_tool_ids`.
 
 ## 0.6.8
 
