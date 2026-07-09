@@ -39,6 +39,13 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
 state 的同时传入了不一致的 `workspace_path`，调用会报错。
 
+## Runtime 进程传输
+
+`python -m dagent.runtime` 支持 Unix socket JSONL 和 stdio JSONL transports。
+Production hosts 应优先使用 Unix sockets 或其他专用 control channel。Stdio 适合本地测试
+和 dagent 拥有 stdout 的简单进程 host。Container stdout 和 stderr 应作为 logs 处理，
+不要作为 control protocol 解析。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：

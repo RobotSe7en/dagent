@@ -43,6 +43,14 @@ responsible for storing any run state outside the SDK. When continuing from a
 `RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
 `workspace_path` while also continuing a state raises an error.
 
+## Runtime Process Transports
+
+`python -m dagent.runtime` supports Unix socket JSONL and stdio JSONL
+transports. Production hosts should prefer Unix sockets or another dedicated
+control channel. Stdio is intended for local tests and simple process hosts
+where dagent owns stdout. Container stdout and stderr should be treated as logs,
+not the control protocol.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:
