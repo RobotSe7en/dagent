@@ -95,8 +95,10 @@ from dagent.schemas import (
     RunTrace,
     SandboxConfig,
     ValidationIssue,
+    ValidationResult,
     iter_dag_invocations,
 )
+from dagent.schemas.run_id import validate_run_id
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -461,6 +463,76 @@ class Runner:
         self._ensure_open()
         self._runtime.capability_catalog.validate_registerable(definition)
 
+    def validate_capability_refs(
+        self,
+        refs: Iterable[CapabilityRef] | None,
+        *,
+        allowed_kinds: Iterable[str] | None = None,
+        allow_agents: bool = False,
+        enabled_only: bool = True,
+    ) -> ValidationResult:
+        """Validate capability references without registering tools or agents."""
+
+        self._ensure_open()
+        issues: list[ValidationIssue] = []
+        allowed_kind_set = None if allowed_kinds is None else set(allowed_kinds)
+        refs_to_check = self._default_visible_capability_ids() if refs is None else refs
+        for ref in refs_to_check:
+            if isinstance(ref, CapabilityBinding):
+                definition, handler, supports_context = _capability_parts(ref)
+                capability_id = definition.id
+                entry = self._runtime.capability_catalog.get_entry(capability_id)
+                if entry is not None and not _entry_matches_binding(
+                    entry,
+                    definition,
+                    handler,
+                    supports_context,
+                ):
+                    issues.append(ValidationIssue(
+                        message=f"Capability binding '{capability_id}' conflicts with a registered capability.",
+                        capability_id=capability_id,
+                        code="binding_conflict",
+                    ))
+                    continue
+                definition = None if entry is None else entry.definition
+            elif isinstance(ref, str):
+                capability_id = ref
+                definition = self._runtime.capability_catalog.get(capability_id)
+            else:
+                issues.append(ValidationIssue(
+                    message="Capability refs must be capability id strings or @dagent.tool bindings.",
+                    code="invalid_ref_type",
+                ))
+                continue
+            if definition is None:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is not registered.",
+                    capability_id=capability_id,
+                    code="unknown_capability",
+                ))
+                continue
+            if enabled_only and not definition.enabled:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is disabled.",
+                    capability_id=capability_id,
+                    code="disabled_capability",
+                ))
+                continue
+            if definition.kind == "agent" and not allow_agents:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' is an agent capability.",
+                    capability_id=capability_id,
+                    code="agent_not_allowed",
+                ))
+                continue
+            if allowed_kind_set is not None and definition.kind not in allowed_kind_set:
+                issues.append(ValidationIssue(
+                    message=f"Capability '{capability_id}' kind '{definition.kind}' is not allowed.",
+                    capability_id=capability_id,
+                    code="unsupported_kind",
+                ))
+        return ValidationResult(passed=not issues, issues=issues)
+
     def replace_capability(
         self,
         definition: CapabilityDefinition,
@@ -682,6 +754,9 @@ class Runner:
         self,
         name: str,
         config: dict[str, Any],
+        *,
+        snapshot: MCPServerSnapshot | None = None,
+        lazy_connect: bool = False,
     ) -> list[CapabilityDefinition]:
         """Register an MCP server and expose its tools as ``mcp.*`` capabilities.
 
@@ -690,7 +765,12 @@ class Runner:
         is rolled back and the server's manager is shut down before raising.
         """
 
-        return self._add_mcp_server(name, config)
+        return self._add_mcp_server(
+            name,
+            config,
+            snapshot=snapshot,
+            lazy_connect=lazy_connect,
+        )
 
     def remove_mcp_server(self, name: str) -> None:
         """Remove a dynamically registered MCP server and its capabilities."""
@@ -754,17 +834,26 @@ class Runner:
         servers: Mapping[str, dict[str, Any]],
         *,
         replace_names: Iterable[str],
+        snapshots: Mapping[str, MCPServerSnapshot] | None = None,
+        lazy_connect: bool = False,
     ) -> tuple[set[str], dict[str, str]]:
         """Rebuild a group of MCP servers without treating it as user deletion."""
 
         self._ensure_open()
+        snapshot_map = dict(snapshots or {})
         for name in list(replace_names):
             self._remove_mcp_server_registration(name)
         registered: set[str] = set()
         errors: dict[str, str] = {}
         for name, config in servers.items():
             try:
-                self._add_mcp_server(name, config, refresh=False)
+                self._add_mcp_server(
+                    name,
+                    config,
+                    refresh=False,
+                    snapshot=snapshot_map.get(name),
+                    lazy_connect=lazy_connect,
+                )
                 registered.add(name)
             except Exception as exc:
                 errors[name] = str(exc)
@@ -777,10 +866,17 @@ class Runner:
         servers: Mapping[str, dict[str, Any]],
         *,
         replace_names: Iterable[str],
+        snapshots: Mapping[str, MCPServerSnapshot] | None = None,
+        lazy_connect: bool = False,
     ) -> MCPServerRegistrationResult:
         """Rebuild MCP servers and return registration snapshots for successes."""
 
-        registered, errors = self.reload_mcp_servers(servers, replace_names=replace_names)
+        registered, errors = self.reload_mcp_servers(
+            servers,
+            replace_names=replace_names,
+            snapshots=snapshots,
+            lazy_connect=lazy_connect,
+        )
         snapshots = [
             snapshot
             for name in sorted(registered)
@@ -835,6 +931,8 @@ class Runner:
         config: dict[str, Any],
         *,
         manager: Any | None = None,
+        snapshot: MCPServerSnapshot | None = None,
+        lazy_connect: bool = False,
         refresh: bool = True,
     ) -> list[CapabilityDefinition]:
         self._ensure_open()
@@ -850,7 +948,11 @@ class Runner:
             )
         catalog = self._runtime.capability_catalog
         before = set(catalog.ids())
-        provider = MCPCapabilityProvider({name: config}, manager=manager)
+        provider_kwargs: dict[str, Any] = {"manager": manager}
+        if snapshot is not None or lazy_connect:
+            provider_kwargs["snapshots"] = {name: snapshot} if snapshot is not None else None
+            provider_kwargs["lazy_connect"] = lazy_connect
+        provider = MCPCapabilityProvider({name: config}, **provider_kwargs)
         try:
             provider.register_into(catalog)
             new_ids = sorted(set(catalog.ids()) - before)
@@ -915,6 +1017,14 @@ class Runner:
         if self._closed:
             raise RuntimeError("Runner is closed.")
 
+    def _ensure_new_run_id_available(self, run_id: str | None, *, state: RunState | None) -> None:
+        if run_id is None or state is not None:
+            return
+        if run_id in self._runtime.session.runs:
+            raise ValueError(
+                f"run_id '{run_id}' already exists; pass state to continue an existing run."
+            )
+
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
         catalog = self._runtime.capability_catalog
@@ -937,13 +1047,19 @@ class Runner:
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if run_id is not None:
+            validate_run_id(run_id)
         if state is not None:
             _ensure_run_state_can_continue(state)
+            if run_id is not None and run_id != state.run_id:
+                raise ValueError("run_id must match state.run_id when state is supplied.")
+        self._ensure_new_run_id_available(run_id, state=state)
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
         if resolved_execution == "sandbox" and resolved_workspace_path is not None:
@@ -977,6 +1093,7 @@ class Runner:
                 dynamic_adjust=dynamic_adjust,
                 workspace_root=workspace_root,
                 workspace_path=resolved_workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
@@ -994,6 +1111,7 @@ class Runner:
         dynamic_adjust: bool | None = None,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
         on_token: TokenHandler | None = None,
@@ -1012,6 +1130,7 @@ class Runner:
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1030,6 +1149,7 @@ class Runner:
                 review_level=review or target.review,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1049,6 +1169,7 @@ class Runner:
                 dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 capability_scope=CapabilityScope(skills=_agent_skills(target)),
                 on_token=on_token,
@@ -1069,6 +1190,7 @@ class Runner:
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1086,6 +1208,7 @@ class Runner:
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
+                run_id=run_id,
                 artifact_uploads=artifact_uploads,
                 on_token=on_token,
                 on_event=on_event,
@@ -1105,10 +1228,17 @@ class Runner:
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
+        run_id: str | None = None,
         input_uploads: list[ArtifactUpload] | None = None,
         artifact_uploads: dict[str, list[ArtifactUpload]] | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
+
+        if run_id is not None:
+            validate_run_id(run_id)
+        if state is not None and run_id is not None and run_id != state.run_id:
+            raise ValueError("run_id must match state.run_id when state is supplied.")
+        self._ensure_new_run_id_available(run_id, state=state)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -1121,6 +1251,7 @@ class Runner:
                 execution=execution,
                 workspace_root=workspace_root,
                 workspace_path=workspace_path,
+                run_id=run_id,
                 input_uploads=input_uploads,
                 artifact_uploads=artifact_uploads,
                 on_event=on_event,
@@ -1896,11 +2027,11 @@ def _nullable_event_string(value: Any) -> str | None:
 def _validation_issues(value: Any) -> list[ValidationIssue]:
     issues = []
     for item in value or []:
+        if isinstance(item, ValidationIssue):
+            issues.append(item)
+            continue
         if isinstance(item, dict):
-            issues.append(ValidationIssue(
-                message=str(item.get("message", "")),
-                node_id=item.get("node_id"),
-            ))
+            issues.append(ValidationIssue.model_validate(item))
     return issues
 
 

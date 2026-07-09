@@ -27,6 +27,20 @@ result = await runner.run(agent, messages=messages, state=result.state)
 `result.state` 包含 dagent 可恢复的 internal thread、DAG、trace、pending review 和
 static DAG metadata。`RunResult.output_text` 是规范的最终答案。
 
+如果宿主在执行前已经创建了 run record，可以传入最终 run id：
+
+```python
+result = await runner.run(
+    agent,
+    messages=messages,
+    run_id="enterprise_run_123",
+)
+```
+
+同一个 `run_id` 会用于 `run.started`、每个 stream event envelope、最终 `RunState`
+以及默认 run workspace 名称。宿主传入的 run id 必须是单个目录名。如果同时传入
+`state`，`run_id` 必须匹配 `state.run_id`。
+
 ## 持久化 State
 
 如果持久化完整 result payload，可以用 `RunResult.model_validate(...)` 恢复当前 SDK shape：
@@ -45,6 +59,9 @@ else:
 普通 continuation 使用 `run(..., state=...)`。如果保存的 state 正在等待 review，请用
 `resume(..., state=...)` 继续该 checkpoint；`run(..., state=...)` 会拒绝 awaiting-review
 states，避免绕过 review gates。
+
+持久化的 `RunState` payload 包含 `schema_version: 1`。不含该字段的 payload
+会按 version 1 读取。宿主遇到显式声明的不支持版本时应拒绝，而不是静默迁移。
 
 ## 静态 DAG Result Helpers
 

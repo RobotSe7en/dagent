@@ -13,6 +13,22 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - `Runner.derive(...)` 可以通过 `inherit_local_tools=True` 从 base runner 继承本地
   `CapabilityBinding` tool registrations，并可用 `exclude_local_tool_ids`
   跳过调用方管理的 tool ids。
+- `RuntimeRunSpec`、`RuntimeFrame` 以及相关 `dagent.schemas` contracts 定义了
+  `python -m dagent.worker` 消费的进程边界 payloads。
+- `Runner.run(...)` 和 `Runner.stream(...)` 支持为新 run 传入 host 提供的 `run_id`；
+  除非调用方提供匹配的 `RunState` 来继续已有 run，否则同一个 `Runner` session 内重复的
+  显式 run id 会被拒绝。每次 run 都创建新 worker 进程的 host 仍需自行保证全局 run id
+  唯一性。
+- MCP servers 可以通过 `snapshot=...` 和 `lazy_connect=True` 从可信 snapshot 进行
+  lazy MCP 连接注册；lazy registration 必须带 snapshot，并仍会应用当前 server config
+  filters 和 policy。
+- `Runner.validate_capability_refs(...)` 可以在不注册 tools 或 agents 的情况下校验保存的
+  capability ids，并返回带机器可读 `ValidationResult` issues。
+
+### 改变
+
+- Runtime `bye` frames 现在区分 worker process failure 和失败的 dagent run；resume
+  runtime specs 必须包含要继续的序列化 `RunState`。
 
 ## 0.6.8
 

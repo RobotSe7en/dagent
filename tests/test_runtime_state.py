@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from dagent import RunResult
 from dagent.harness_runtime.runtime_session import HarnessRuntimeSession
-from dagent.schemas import DAG, PendingReview, RunState, RunTrace, RunTraceNode
+from dagent.schemas import DAG, PendingReview, RunState, RunTrace, RunTraceNode, ValidationIssue
 
 
 def test_session_saves_run_state_directly() -> None:
@@ -103,3 +103,35 @@ def test_pending_capability_review_requires_tool_name() -> None:
         RunState.model_validate(payload)
     with pytest.raises(ValidationError):
         RunResult.model_validate({"state": payload, "output_text": ""})
+
+
+def test_run_state_defaults_missing_schema_version_to_v1() -> None:
+    state = RunState.model_validate({
+        "run_id": "run_1",
+        "kind": "tool",
+        "status": "completed",
+    })
+
+    assert state.schema_version == 1
+    assert state.model_dump(mode="json")["schema_version"] == 1
+
+
+def test_run_state_rejects_unsupported_schema_version() -> None:
+    with pytest.raises(ValidationError, match="schema_version"):
+        RunState.model_validate({
+            "schema_version": 2,
+            "run_id": "run_1",
+            "kind": "tool",
+            "status": "completed",
+        })
+
+
+def test_validation_issue_has_machine_readable_fields() -> None:
+    issue = ValidationIssue(
+        message="Capability is not registered.",
+        capability_id="tool.missing",
+        code="unknown_capability",
+    )
+
+    assert issue.capability_id == "tool.missing"
+    assert issue.code == "unknown_capability"

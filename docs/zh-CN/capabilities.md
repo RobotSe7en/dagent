@@ -254,6 +254,28 @@ reload 可以使用 `runner.reload_mcp_servers_with_snapshots(...)`；它使用�
 server errors 的 `MCPServerRegistrationResult`。持久化已发现工具时应使用这些 SDK 结果，
 而不是在 SDK 外部重建 `mcp.<server>.<tool>` ids。
 
+已经信任保存下来的 `MCPServerSnapshot` 的 host，可以用 `lazy_connect=True` 传回：
+
+```python
+runner.add_mcp_server(
+    "remote_docs",
+    config,
+    snapshot=snapshot,
+    lazy_connect=True,
+)
+```
+
+这会先注册 snapshot 中的 capability definitions，而不会立即连接 server。SDK 会在首次
+tool call 时连接对应 MCP server。Snapshot 只用于注册和校验元数据；可执行行为仍来自配置的
+MCP server。Lazy registration 必须提供 snapshot，并且当前 server configuration 仍控制
+`enabled`、`include_tools`、`exclude_tools`、`risk` 和 network policy。
+
+## Runtime Contract 边界
+
+Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
+和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
+限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
+
 ## 直接测试 Capability
 
 使用 `Runner.test_capability(...)` 单独执行一个 capability 进行检查：

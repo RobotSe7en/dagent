@@ -43,6 +43,41 @@ responsible for storing any run state outside the SDK. When continuing from a
 `RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
 `workspace_path` while also continuing a state raises an error.
 
+## Worker Process Transports
+
+`python -m dagent.worker` supports Unix socket JSONL and stdio JSONL
+transports. Production hosts should prefer Unix sockets or another dedicated
+control channel. Stdio is intended for local tests and simple process hosts
+where dagent owns stdout. Container stdout and stderr should be treated as logs,
+not the control protocol. Do not use stdio transport for workers that may run
+user tools or subprocesses that inherit stdout; any non-protocol stdout bytes can
+corrupt the JSONL control stream.
+
+Container hosts should start one `python -m dagent.worker` process for one run
+or resume operation. The process reads one `RuntimeFrame(type="spec")`, emits
+one `hello` frame after accepting the spec, zero or more `event` frames, a
+`state_snapshot` only after `run.finished`, then exactly one `bye` frame before
+exiting. Setup or process failures after spec acceptance may emit `hello` and a
+failed `bye` without any `event` or `state_snapshot` frames. `RuntimeFrame`
+reserves `log` frames for hosts or transports that explicitly forward logs; the
+worker entrypoint does not parse stdout or stderr as control frames. Long-lived
+worker pools, queue loops, and Docker clients belong outside the SDK.
+
+For Unix socket transport, the host should create and listen on the socket before
+starting the worker. The worker retries briefly while connecting to absorb small
+startup races, but orchestration and listener lifecycle still belong to the host.
+
+Runtime contracts are process-boundary contracts for hosts that already know how
+to prepare workspaces and credentials. They do not include users, organizations,
+projects, RBAC, authorization filtering, persistence, queue claims, leases,
+rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
+worker orchestration.
+
+In `RuntimeWorkspaceSpec`, `workspace_root` is the SDK runner workspace.
+`run_workspace_root` is the per-run artifact root passed to `Runner.stream(...)`
+and defaults to `runs`. `workspace_path` selects one exact run workspace path and
+does not create a `<run_id>` subdirectory.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:
@@ -336,6 +371,11 @@ print([server.name for server in view.mcp_servers])
 The view contains public `CapabilityDefinition` objects and MCP snapshots, not
 handler objects or catalog internals. Hosts are still responsible for RBAC,
 redaction, and policy filtering before returning the view to users.
+
+Hosts that persist user-selected tool ids can call
+`Runner.validate_capability_refs(...)` before constructing an agent or run
+target. The method never registers `@dagent.tool` bindings and returns
+`ValidationResult` issues with `capability_id` and `code` fields.
 
 The local `/capabilities` mutation API is a runtime host/debug surface for raw
 capability definitions. User-managed Python tools should be added and persisted

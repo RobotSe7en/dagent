@@ -278,6 +278,33 @@ Use these SDK results when
 persisting discovered tools instead of rebuilding `mcp.<server>.<tool>` ids
 outside the SDK.
 
+Hosts that already trust a saved `MCPServerSnapshot` can pass it back with
+`lazy_connect=True`:
+
+```python
+runner.add_mcp_server(
+    "remote_docs",
+    config,
+    snapshot=snapshot,
+    lazy_connect=True,
+)
+```
+
+This registers the snapshot's capability definitions without connecting to the
+server immediately. The SDK connects that MCP server on the first tool call.
+The snapshot is metadata for registration and validation; executable behavior
+still comes from the configured MCP server. Lazy registration requires a
+snapshot, and the current server configuration still controls `enabled`,
+`include_tools`, `exclude_tools`, `risk`, and network policy.
+
+## Runtime Contract Boundary
+
+Runtime contracts are process-boundary contracts for hosts that already know how
+to prepare workspaces and credentials. They do not include users, organizations,
+projects, RBAC, authorization filtering, persistence, queue claims, leases,
+rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
+worker orchestration.
+
 ## Direct Capability Tests
 
 Use `Runner.test_capability(...)` to execute one capability for inspection:
