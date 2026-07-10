@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import json
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
@@ -603,6 +602,20 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
     monkeypatch.setattr(MCPServerManager, "available", True)
     manager = MCPServerManager({"mock": {"command": "fake"}})
+    ensure_call_lock = threading.Lock()
+    ensure_call_count = 0
+    second_ensure_entered = threading.Event()
+    original_ensure_started = manager.ensure_started
+
+    def observed_ensure_started(name: str) -> None:
+        nonlocal ensure_call_count
+        with ensure_call_lock:
+            ensure_call_count += 1
+            if ensure_call_count == 2:
+                second_ensure_entered.set()
+        original_ensure_started(name)
+
+    monkeypatch.setattr(manager, "ensure_started", observed_ensure_started)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -621,7 +634,7 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(
                 {},
                 1,
             )
-            time.sleep(0.05)
+            assert second_ensure_entered.wait(timeout=1)
             release_start.set()
 
             assert first.result(timeout=1) == "ok"
