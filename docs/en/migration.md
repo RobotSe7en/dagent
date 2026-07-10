@@ -9,11 +9,74 @@ The current package version is `0.6.8`.
 
 ## Unreleased
 
+- No unreleased changes.
+
+## 0.7.0
+
 ### Added
 
-- `Runner.derive(...)` can inherit local `CapabilityBinding` tool registrations
-  from the base runner with `inherit_local_tools=True`, and can skip caller-owned
-  tool ids with `exclude_local_tool_ids`.
+- `Runner.derive(...)` can inherit local `CapabilityBinding` registrations with
+  `inherit_local_tools=True` and exclude caller-owned tool IDs with
+  `exclude_local_tool_ids`.
+- `Runner.run(...)` and `Runner.stream(...)` accept caller-supplied Run IDs;
+  duplicate new-Run IDs on one `Runner` are rejected.
+- Versioned `RunState` schema v1 supports JSON round trips and explicit
+  same-Runner or caller-restored resume with `Runner.resume_stream(...)`.
+- Capability references are validated without mutating caller-owned agents,
+  DAGs, profiles, or bindings; validation issues remain typed after hydration.
+- SDK-produced MCP snapshots support fail-closed lazy connection while
+  preserving canonical capability identity, current filters, and current
+  policy.
+
+### Changed
+
+- dagent is again an in-process SDK library. Process lifetime, command
+  protocols, health checks, persistence, credentials, scheduling, and
+  container lifecycle belong to the calling host.
+- Caller-supplied Run IDs, versioned `RunState`, capability-reference validation,
+  MCP snapshots, lazy MCP connection, and `Runner` cleanup remain supported
+  public library behavior.
+
+### Fixed
+
+- Lazy MCP registration now fails when an enabled server has no snapshot,
+  rejects non-canonical snapshot identity, and reapplies current filters and
+  policy.
+- Concurrent first MCP calls now share one serialized server startup.
+- Distinct new Runs on one `Runner` cannot reuse a caller-supplied Run ID.
+- `CapabilityBinding` conflicts and hydrated `ValidationIssue` objects retain
+  machine-readable issue data.
+- Stream cancellation waits for the SDK-owned execution task to finish
+  cleanup.
+
+### Breaking Changes
+
+- Removed `RuntimeRunSpec`, `RuntimeFrame`, the runtime transport schemas, and
+  `python -m dagent.worker`. The historical v0.6.9 tag remains unchanged.
+- This is an intentional pre-1.0 removal. The project knows of no v0.6.9
+  process-API adopters, but callers using that API must migrate.
+
+### Migration Steps
+
+- Construct `Runner` in the host process and call `Runner.stream(...)` for a
+  new execution.
+- Continue a pending review with `Runner.resume_stream(...)` and explicit
+  `RunState` when caller-managed recovery requires it.
+- Keep process commands, credentials, persistence, retries, health, and
+  container lifecycle in the host.
+- Persist SDK-produced MCP snapshots if the host wants fail-closed lazy MCP
+  registration; do not reconstruct MCP capability IDs outside the SDK.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### Known Limitations
+
+- dagent does not provide a process host, service loop, durable store, or
+  transparent active-Run recovery.
 
 ## 0.6.8
 

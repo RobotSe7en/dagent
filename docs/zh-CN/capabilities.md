@@ -256,6 +256,9 @@ server errors 的 `MCPServerRegistrationResult`。持久化已发现工具时应
 
 已经信任保存下来的 `MCPServerSnapshot` 的 host，可以用 `lazy_connect=True` 传回：
 
+使用 `lazy_connect=True` 时，每个启用的 server 都必须提供 SDK 生成的 snapshot；
+缺失或非 canonical snapshot 会在 catalog registration 前失败。
+
 ```python
 runner.add_mcp_server(
     "remote_docs",

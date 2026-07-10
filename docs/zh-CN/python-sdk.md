@@ -56,6 +56,9 @@ provider = dagent.Provider(
 runner = dagent.Runner(provider=provider, workspace=".dagent")
 ```
 
+dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
+凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
+
 ## 最小 Tool
 
 ```python

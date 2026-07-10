@@ -281,6 +281,9 @@ outside the SDK.
 Hosts that already trust a saved `MCPServerSnapshot` can pass it back with
 `lazy_connect=True`:
 
+With `lazy_connect=True`, every enabled server requires an SDK-produced
+snapshot; missing or non-canonical snapshots fail before catalog registration.
+
 ```python
 runner.add_mcp_server(
     "remote_docs",

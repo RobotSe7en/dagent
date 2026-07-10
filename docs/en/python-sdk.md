@@ -57,6 +57,11 @@ provider = dagent.Provider(
 runner = dagent.Runner(provider=provider, workspace=".dagent")
 ```
 
+dagent is an in-process SDK. Construct and close `Runner` in the process you
+control. Process commands, health, credentials, persistence, scheduling, and
+container lifecycle are host responsibilities; the SDK intentionally exposes
+no worker or service loop.
+
 ## Minimal Tool
 
 ```python

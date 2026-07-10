@@ -25,6 +25,9 @@ runner = dagent.Runner(
 )
 ```
 
+dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
+凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
+
 `Runner(...)` 不会隐式读取 `config.yaml`。
 
 runner workspace 默认是 `.dagent`，每次运行都会在 `.dagent/runs/<run_id>`

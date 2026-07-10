@@ -26,6 +26,11 @@ runner = dagent.Runner(
 )
 ```
 
+dagent is an in-process SDK. Construct and close `Runner` in the process you
+control. Process commands, health, credentials, persistence, scheduling, and
+container lifecycle are host responsibilities; the SDK intentionally exposes
+no worker or service loop.
+
 `Runner(...)` does not read `config.yaml` implicitly.
 
 The runner workspace defaults to `.dagent`, and each run records its own

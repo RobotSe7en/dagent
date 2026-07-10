@@ -156,3 +156,21 @@ def test_runtime_code_has_no_runnable_or_tool_execution_history_names() -> None:
         text = path.read_text(encoding="utf-8")
         for name in forbidden:
             assert name not in text, f"{name!r} remains in {path}"
+
+
+def test_installable_sdk_has_no_process_hosting_surface() -> None:
+    import dagent
+    import dagent.schemas as schemas
+
+    root = Path(__file__).resolve().parents[1]
+
+    assert not (root / "dagent" / "worker.py").exists()
+    assert not (root / "dagent" / "schemas" / "runtime.py").exists()
+    for name in [
+        "RuntimeFrame",
+        "RuntimeRunSpec",
+        "RuntimeRunTarget",
+        "RuntimeWorkspaceSpec",
+    ]:
+        assert not hasattr(dagent, name)
+        assert not hasattr(schemas, name)

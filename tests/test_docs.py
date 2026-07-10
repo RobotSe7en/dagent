@@ -15,14 +15,18 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.6.7")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.0")
+    english_070 = _section(english, "## 0.7.0", "## 0.6.8")
+    english_068 = _section(english, "## 0.6.8", "## 0.6.7")
     english_067 = _section(english, "## 0.6.7", "## 0.6.6")
     english_066 = _section(english, "## 0.6.6", "## 0.6.5")
     english_065 = _section(english, "## 0.6.5", "## 0.6.4")
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.7")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.0")
+    chinese_070 = _section(chinese, "## 0.7.0", "## 0.6.8")
+    chinese_068 = _section(chinese, "## 0.6.8", "## 0.6.7")
     chinese_067 = _section(chinese, "## 0.6.7", "## 0.6.6")
     chinese_066 = _section(chinese, "## 0.6.6", "## 0.6.5")
     chinese_065 = _section(chinese, "## 0.6.5", "## 0.6.4")
@@ -30,8 +34,15 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "inherit_local_tools=True" in english_unreleased
-    assert "exclude_local_tool_ids" in english_unreleased
+    assert "No unreleased changes" in english_unreleased
+    assert "inherit_local_tools=True" not in english_unreleased
+    assert "inherit_local_tools=True" in english_070
+    assert "exclude_local_tool_ids" in english_070
+    assert "caller-supplied Run IDs" in english_070
+    assert "RunState" in english_070
+    assert "capability-reference validation" in english_070
+    assert "MCP snapshots" in english_070
+    assert "dagent.capabilities.python_tools" in english_068
     assert "Tool-agent and dynamic DAG LLM calls now retry transient provider failures" in english_067
     assert "Permanent LLM provider failures" in english_067
     assert "Streaming LLM calls no longer retry after response tokens have been emitted" in english_067
@@ -52,8 +63,15 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "inherit_local_tools=True" in chinese_unreleased
-    assert "exclude_local_tool_ids" in chinese_unreleased
+    assert "没有尚未发布的变更" in chinese_unreleased
+    assert "inherit_local_tools=True" not in chinese_unreleased
+    assert "inherit_local_tools=True" in chinese_070
+    assert "exclude_local_tool_ids" in chinese_070
+    assert "调用方提供的 Run ID" in chinese_070
+    assert "RunState" in chinese_070
+    assert "capability reference 校验" in chinese_070
+    assert "MCP snapshots" in chinese_070
+    assert "dagent.capabilities.python_tools" in chinese_068
     assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试" in chinese_067
     assert "永久性 LLM provider 失败" in chinese_067
     assert "已经输出 response token 后不再重试" in chinese_067
@@ -73,3 +91,35 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions 现在把稳定 id 和调用名分开" in chinese_released
     assert "Runner.add_tools 现在是原子的" in chinese_released
     assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_unreleased
+
+
+def test_070_docs_describe_library_boundary_and_removed_process_api() -> None:
+    english_migration = Path("docs/en/migration.md").read_text(
+        encoding="utf-8"
+    )
+    chinese_migration = Path("docs/zh-CN/migration.md").read_text(
+        encoding="utf-8"
+    )
+
+    for value in [
+        "0.7.0",
+        "RuntimeRunSpec",
+        "RuntimeFrame",
+        "dagent.worker",
+        "Runner.stream",
+        "Runner.resume_stream",
+    ]:
+        assert value in english_migration
+        assert value in chinese_migration
+
+    for path in [
+        Path("docs/en/python-sdk.md"),
+        Path("docs/zh-CN/python-sdk.md"),
+        Path("docs/en/runner-and-configuration.md"),
+        Path("docs/zh-CN/runner-and-configuration.md"),
+    ]:
+        text = path.read_text(encoding="utf-8")
+        assert "RuntimeRunSpec" not in text
+        assert "RuntimeFrame" not in text
+        assert "python -m dagent.worker" not in text
+        assert "serve loop" not in text
