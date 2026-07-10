@@ -52,7 +52,7 @@ from dagent.harness_runtime import (
     ToolAgentLoop,
     ValidatorAgent,
 )
-from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.artifacts import ArtifactUpload, validate_run_id
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -98,7 +98,6 @@ from dagent.schemas import (
     ValidationResult,
     iter_dag_invocations,
 )
-from dagent.schemas.run_id import validate_run_id
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
@@ -479,31 +478,16 @@ class Runner:
         refs_to_check = self._default_visible_capability_ids() if refs is None else refs
         for ref in refs_to_check:
             if isinstance(ref, CapabilityBinding):
-                definition, handler, supports_context = _capability_parts(ref)
-                capability_id = definition.id
-                entry = self._runtime.capability_catalog.get_entry(capability_id)
-                if entry is not None and not _entry_matches_binding(
-                    entry,
-                    definition,
-                    handler,
-                    supports_context,
-                ):
-                    issues.append(ValidationIssue(
-                        message=f"Capability binding '{capability_id}' conflicts with a registered capability.",
-                        capability_id=capability_id,
-                        code="binding_conflict",
-                    ))
-                    continue
-                definition = None if entry is None else entry.definition
+                capability_id = ref.definition.id
             elif isinstance(ref, str):
                 capability_id = ref
-                definition = self._runtime.capability_catalog.get(capability_id)
             else:
                 issues.append(ValidationIssue(
                     message="Capability refs must be capability id strings or @dagent.tool bindings.",
                     code="invalid_ref_type",
                 ))
                 continue
+            definition = self._runtime.capability_catalog.get(capability_id)
             if definition is None:
                 issues.append(ValidationIssue(
                     message=f"Capability '{capability_id}' is not registered.",
@@ -1017,14 +1001,6 @@ class Runner:
         if self._closed:
             raise RuntimeError("Runner is closed.")
 
-    def _ensure_new_run_id_available(self, run_id: str | None, *, state: RunState | None) -> None:
-        if run_id is None or state is not None:
-            return
-        if run_id in self._runtime.session.runs:
-            raise ValueError(
-                f"run_id '{run_id}' already exists; pass state to continue an existing run."
-            )
-
     def _sync_skill_root_metadata(self) -> None:
         roots = [str(root) for root in self._skill_provider.store.roots]
         catalog = self._runtime.capability_catalog
@@ -1059,7 +1035,6 @@ class Runner:
             _ensure_run_state_can_continue(state)
             if run_id is not None and run_id != state.run_id:
                 raise ValueError("run_id must match state.run_id when state is supplied.")
-        self._ensure_new_run_id_available(run_id, state=state)
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
         if resolved_execution == "sandbox" and resolved_workspace_path is not None:
@@ -1238,7 +1213,6 @@ class Runner:
             validate_run_id(run_id)
         if state is not None and run_id is not None and run_id != state.run_id:
             raise ValueError("run_id must match state.run_id when state is supplied.")
-        self._ensure_new_run_id_available(run_id, state=state)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
@@ -2027,11 +2001,11 @@ def _nullable_event_string(value: Any) -> str | None:
 def _validation_issues(value: Any) -> list[ValidationIssue]:
     issues = []
     for item in value or []:
-        if isinstance(item, ValidationIssue):
-            issues.append(item)
-            continue
         if isinstance(item, dict):
-            issues.append(ValidationIssue.model_validate(item))
+            issues.append(ValidationIssue(
+                message=str(item.get("message", "")),
+                node_id=item.get("node_id"),
+            ))
     return issues
 
 

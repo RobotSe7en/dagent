@@ -58,17 +58,6 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert not hasattr(dagent.schemas, "RunMessage")
 
 
-def test_runtime_contracts_are_schema_exports_not_package_root_exports() -> None:
-    import dagent.schemas as schemas
-
-    assert hasattr(schemas, "RuntimeRunSpec")
-    assert hasattr(schemas, "RuntimeFrame")
-    assert hasattr(schemas, "RuntimeValidationSpec")
-    assert not hasattr(dagent, "RuntimeRunSpec")
-    assert not hasattr(dagent, "RuntimeFrame")
-    assert not hasattr(dagent, "RuntimeValidationSpec")
-
-
 def test_auto_agent_is_public_target_without_mode_field() -> None:
     assert "mode" not in inspect.signature(dagent.AutoAgent).parameters
 
@@ -794,29 +783,6 @@ def test_capability_error_stream_event_does_not_accept_message_alias() -> None:
     })
 
     assert event.data.content == ""
-
-
-def test_validation_retry_stream_event_preserves_machine_readable_issue_fields() -> None:
-    from dagent.runner import _stream_event_from_runtime
-
-    event = _stream_event_from_runtime({
-        "type": "retry",
-        "summary": "needs work",
-        "reason": "fix tool",
-        "issues": [
-            {
-                "message": "Capability is not registered.",
-                "node_id": "search",
-                "capability_id": "tool.missing",
-                "code": "unknown_capability",
-            }
-        ],
-    })
-
-    issue = event.data.issues[0]
-    assert issue.node_id == "search"
-    assert issue.capability_id == "tool.missing"
-    assert issue.code == "unknown_capability"
 
 
 def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) -> None:

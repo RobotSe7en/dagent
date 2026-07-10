@@ -4,73 +4,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.9`。
+当前包版本是 `0.6.8`。
 
 ## Unreleased
-
-- 暂无未发布变更。
-
-## 0.6.9
 
 ### 新增
 
 - `Runner.derive(...)` 可以通过 `inherit_local_tools=True` 从 base runner 继承本地
   `CapabilityBinding` tool registrations，并可用 `exclude_local_tool_ids`
   跳过调用方管理的 tool ids。
-- `RuntimeRunSpec`、`RuntimeFrame` 以及相关 `dagent.schemas` contracts 定义了
-  `python -m dagent.worker` 消费的进程边界 payloads。
-- `Runner.run(...)` 和 `Runner.stream(...)` 支持为新 run 传入 host 提供的 `run_id`；
-  除非调用方提供匹配的 `RunState` 来继续已有 run，否则同一个 `Runner` session 内重复的
-  显式 run id 会被拒绝。每次 run 都创建新 worker 进程的 host 仍需自行保证全局 run id
-  唯一性。
-- MCP servers 可以通过 `snapshot=...` 和 `lazy_connect=True` 从可信 snapshot 进行
-  lazy MCP 连接注册；lazy registration 必须带 snapshot，并仍会应用当前 server config
-  filters 和 policy。
-- `Runner.validate_capability_refs(...)` 可以在不注册 tools 或 agents 的情况下校验保存的
-  capability ids，并返回带机器可读 `ValidationResult` issues。
-
-### 改变
-
-- Runtime `bye` frames 现在区分 worker process failure 和失败的 dagent run；resume
-  runtime specs 必须包含要继续的序列化 `RunState`。
-
-### 修复
-
-- Runtime 进程边界 specs 现在会拒绝不安全的 `run_id`，以及 provider 或 Python tool
-  嵌套 payload 中的未知字段，不再静默接受 unsupported host payloads。
-- Lazy MCP snapshot registration 现在会拒绝非 canonical 的 `mcp.<server>.<tool>`
-  capability ids。
-- 当 `CapabilityBinding` 与不同的已注册 capability 冲突时，
-  `Runner.validate_capability_refs(...)` 现在会返回 `binding_conflict`。
-- Worker transport 文档现在准确描述 `hello`、`event`、`state_snapshot` 和 `bye`
-  frame sequence。
-
-### 破坏性改变
-
-- 对现有公共 Python SDK 用户无破坏性改变。
-- 采用新的 worker runtime contracts 的 host 必须发送严格的 `RuntimeRunSpec` payloads，
-  provider 和 Python tool 嵌套字段只能使用文档化字段。
-
-### 迁移步骤
-
-- 现有 SDK 用户不需要改代码。
-- 进程 host 应使用文档化的 `dagent.schemas` models 构造 `RuntimeRunSpec`，把跨 worker
-  process 的 `run_id` 全局唯一性作为 host-owned state，并且只在 `run.finished` 后期待
-  `state_snapshot`。
-- 使用 lazy MCP snapshots 的 host 应持久化 SDK registration APIs 返回的 snapshots，不要在
-  SDK 外部重建 `mcp.<server>.<tool>` ids。
-
-### 验证
-
-- `uv run --extra dev pytest`
-- `uv build`
-- `git diff --check`
-
-### 已知限制
-
-- `python -m dagent.worker` 每个进程只处理一次 run 或 resume operation。Long-lived pools、
-  queue claims、leases、Docker lifecycle、persistence、authorization、audit 和 usage
-  tracking 仍由 host 负责。
 
 ## 0.6.8
 

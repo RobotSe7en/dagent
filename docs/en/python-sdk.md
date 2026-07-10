@@ -43,18 +43,6 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunState`, `RunTrace`, `ArtifactUpload`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
-Process-boundary runtime contracts are schema exports, not package-root exports.
-Import `RuntimeAgentSpec`, `RuntimeByePayload`, `RuntimeFrame`,
-`RuntimeLogPayload`, `RuntimeReviewDecision`, `RuntimeRunSpec`,
-`RuntimeRunTarget`, `RuntimeValidationSpec`, and `RuntimeWorkspaceSpec` from
-`dagent.schemas`.
-
-Runtime contracts are process-boundary contracts for hosts that already know how
-to prepare workspaces and credentials. They do not include users, organizations,
-projects, RBAC, authorization filtering, persistence, queue claims, leases,
-rate limits, audit, usage, billing, provider key brokering, Docker lifecycle, or
-worker orchestration.
-
 ## Minimal Runner
 
 ```python

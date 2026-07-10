@@ -107,32 +107,3 @@ async def test_runner_stream_rejects_unsafe_host_run_id_even_with_explicit_works
             pass
 
     runner.close()
-
-
-@pytest.mark.asyncio
-async def test_runner_rejects_reused_host_run_id_for_new_run_with_explicit_workspace_path(tmp_path) -> None:
-    runner = dagent.Runner(
-        workspace=tmp_path,
-        provider=MockProvider([
-            ChatResponse(content="first"),
-            ChatResponse(content="second"),
-        ]),
-    )
-    agent = dagent.ToolAgent(profile="conversation")
-
-    await runner.run(
-        agent,
-        messages=[{"role": "user", "content": "first"}],
-        run_id="duplicate_run",
-        workspace_path=tmp_path / "workspace-one",
-    )
-
-    with pytest.raises(ValueError, match="already exists"):
-        await runner.run(
-            agent,
-            messages=[{"role": "user", "content": "second"}],
-            run_id="duplicate_run",
-            workspace_path=tmp_path / "workspace-two",
-        )
-
-    runner.close()

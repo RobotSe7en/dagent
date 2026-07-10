@@ -39,35 +39,6 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
 state 的同时传入了不一致的 `workspace_path`，调用会报错。
 
-## Worker 进程传输
-
-`python -m dagent.worker` 支持 Unix socket JSONL 和 stdio JSONL transports。
-Production hosts 应优先使用 Unix sockets 或其他专用 control channel。Stdio 适合本地测试
-和 dagent 拥有 stdout 的简单进程 host。Container stdout 和 stderr 应作为 logs 处理，
-不要作为 control protocol 解析。不要给可能运行继承 stdout 的用户 tools 或子进程的
-worker 使用 stdio transport；任何非协议 stdout 字节都会污染 JSONL control stream。
-
-Container hosts 应为一次 run 或 resume operation 启动一个
-`python -m dagent.worker` 进程。该进程读取一个 `RuntimeFrame(type="spec")`，发出
-一个 `hello` frame，零个或多个 `event` frames，仅在 `run.finished` 之后发送
-`state_snapshot`，然后在退出前发送且只发送一个 `bye` frame。Spec 被接受后的 setup 或
-process failure 可能只发送 `hello` 和 failed `bye`，没有 `event` 或 `state_snapshot`
-frames。`RuntimeFrame` 保留 `log` frames 给显式转发日志的 hosts 或 transports；worker
-entrypoint 不会把 stdout 或 stderr 解析成 control frames。Long-lived worker pools、queue
-loops 和 Docker clients 属于 SDK 外部。
-
-使用 Unix socket transport 时，host 应先创建 socket 并进入 listen，再启动 worker。
-worker 会在连接时做短暂重试以吸收小的启动竞争，但 orchestration 和 listener 生命周期
-仍由 host 负责。
-
-Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
-和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
-限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
-
-在 `RuntimeWorkspaceSpec` 中，`workspace_root` 是 SDK runner workspace。
-`run_workspace_root` 是传给 `Runner.stream(...)` 的 per-run artifact root，默认是
-`runs`。`workspace_path` 会选择一个精确 run workspace path，不再创建 `<run_id>` 子目录。
-
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：

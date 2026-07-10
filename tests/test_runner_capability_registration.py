@@ -183,12 +183,7 @@ def test_add_mcp_server_can_lazy_register_snapshot_without_starting_manager(tmp_
 
     assert manager.started is False
     assert [definition.id for definition in definitions] == ["mcp.docs.search"]
-    registered_snapshot = runner.mcp_server_snapshot("docs")
-    assert registered_snapshot is not None
-    assert registered_snapshot.name == "docs"
-    assert registered_snapshot.capability_ids == ["mcp.docs.search"]
-    assert registered_snapshot.tools[0].definition.policy.risk == "medium"
-    assert registered_snapshot.tools[0].definition.policy.sandbox_required is True
+    assert runner.mcp_server_snapshot("docs") == snapshot
     runner.close()
 
 
