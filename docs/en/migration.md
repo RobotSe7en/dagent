@@ -5,7 +5,7 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.8`.
+The current package version is `0.7.0`.
 
 ## Unreleased
 
