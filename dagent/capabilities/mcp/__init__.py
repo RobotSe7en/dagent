@@ -43,6 +43,7 @@ class MCPCapabilityProvider:
         if not getattr(manager, "available", True):
             return
         if self.lazy_connect:
+            enabled_snapshots: list[tuple[str, MCPServerSnapshot]] = []
             for server_name, config in sorted(self.servers.items()):
                 if config.get("enabled", True) is False:
                     continue
@@ -52,6 +53,9 @@ class MCPCapabilityProvider:
                         f"MCP server '{server_name}' requires a snapshot "
                         "when lazy_connect=True."
                     )
+                self._validate_snapshot(server_name, snapshot)
+                enabled_snapshots.append((server_name, snapshot))
+            for server_name, snapshot in enabled_snapshots:
                 self._register_snapshot_tools(catalog, server_name, snapshot)
             if hasattr(catalog, "add_shutdown_hook") and hasattr(manager, "shutdown"):
                 catalog.add_shutdown_hook(manager.shutdown)
@@ -114,42 +118,9 @@ class MCPCapabilityProvider:
         server_name: str,
         snapshot: MCPServerSnapshot,
     ) -> None:
-        if snapshot.name != server_name:
-            raise ValueError(
-                f"MCP snapshot name '{snapshot.name}' does not match server '{server_name}'."
-            )
-        snapshot_tool_ids = [tool.capability_id for tool in snapshot.tools]
-        if snapshot.capability_ids != snapshot_tool_ids:
-            raise ValueError(
-                f"MCP snapshot '{server_name}' capability_ids "
-                "do not match snapshot tools."
-            )
+        self._validate_snapshot(server_name, snapshot)
         server_config = self.servers.get(server_name, {})
         for tool in snapshot.tools:
-            if tool.server != server_name:
-                raise ValueError(
-                    f"MCP snapshot tool '{tool.capability_id}' has server '{tool.server}', "
-                    f"expected '{server_name}'."
-                )
-            if tool.capability_id != tool.definition.id:
-                raise ValueError(
-                    f"MCP snapshot tool '{tool.capability_id}' definition id "
-                    f"'{tool.definition.id}' does not match."
-                )
-            if tool.definition.kind != "mcp":
-                raise ValueError(
-                    f"MCP snapshot tool '{tool.capability_id}' definition kind "
-                    f"'{tool.definition.kind}' is not 'mcp'."
-                )
-            expected_capability_id = (
-                f"mcp.{_safe_component(server_name)}."
-                f"{_safe_component(tool.tool)}"
-            )
-            if tool.capability_id != expected_capability_id:
-                raise ValueError(
-                    f"MCP snapshot tool '{tool.capability_id}' is not the "
-                    f"canonical capability id '{expected_capability_id}'."
-                )
             if not _tool_is_included(server_config, tool.tool):
                 continue
             definition = tool.definition.model_copy(
@@ -178,6 +149,47 @@ class MCPCapabilityProvider:
                 catalog.register(definition, handler)
             except ValueError as exc:
                 self.registration_errors.append(str(exc))
+
+    def _validate_snapshot(
+        self,
+        server_name: str,
+        snapshot: MCPServerSnapshot,
+    ) -> None:
+        if snapshot.name != server_name:
+            raise ValueError(
+                f"MCP snapshot name '{snapshot.name}' does not match server '{server_name}'."
+            )
+        snapshot_tool_ids = [tool.capability_id for tool in snapshot.tools]
+        if snapshot.capability_ids != snapshot_tool_ids:
+            raise ValueError(
+                f"MCP snapshot '{server_name}' capability_ids "
+                "do not match snapshot tools."
+            )
+        for tool in snapshot.tools:
+            if tool.server != server_name:
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' has server '{tool.server}', "
+                    f"expected '{server_name}'."
+                )
+            if tool.capability_id != tool.definition.id:
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' definition id "
+                    f"'{tool.definition.id}' does not match."
+                )
+            if tool.definition.kind != "mcp":
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' definition kind "
+                    f"'{tool.definition.kind}' is not 'mcp'."
+                )
+            expected_capability_id = (
+                f"mcp.{_safe_component(server_name)}."
+                f"{_safe_component(tool.tool)}"
+            )
+            if tool.capability_id != expected_capability_id:
+                raise ValueError(
+                    f"MCP snapshot tool '{tool.capability_id}' is not the "
+                    f"canonical capability id '{expected_capability_id}'."
+                )
 
 
 def _safe_component(value: str) -> str:
