@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import json
-from concurrent.futures import TimeoutError
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 
@@ -501,6 +503,7 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
+    monkeypatch.setattr(MCPServerManager, "available", True)
     manager = MCPServerManager({
         "mock": {"command": "fake"},
         "disabled": {"command": "fake", "enabled": False},
@@ -514,6 +517,107 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
     assert result == "ok"
     assert starts == ["mock"]
     assert calls == [("lookup", {"query": "x"})]
+
+
+def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(
+    monkeypatch,
+) -> None:
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    starts: list[str] = []
+
+    class LazyFakeTask:
+        tools = []
+        last_error = None
+
+        def __init__(self, name: str, config: dict) -> None:
+            self.name = name
+            self.config = config
+            self.started = False
+
+        async def start(self) -> None:
+            start_entered.set()
+            await asyncio.to_thread(release_start.wait)
+            self.started = True
+            starts.append(self.name)
+
+        async def call_tool(
+            self,
+            tool_name: str,
+            arguments: dict,
+        ) -> str:
+            return "ok" if self.started else "called-before-start"
+
+        async def shutdown(self) -> None:
+            return None
+
+    monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
+    monkeypatch.setattr(MCPServerManager, "available", True)
+    manager = MCPServerManager({"mock": {"command": "fake"}})
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                manager.call_tool_blocking,
+                "mock",
+                "lookup",
+                {},
+                1,
+            )
+            assert start_entered.wait(timeout=1)
+            second = executor.submit(
+                manager.call_tool_blocking,
+                "mock",
+                "lookup",
+                {},
+                1,
+            )
+            time.sleep(0.05)
+            release_start.set()
+
+            assert first.result(timeout=1) == "ok"
+            assert second.result(timeout=1) == "ok"
+    finally:
+        release_start.set()
+        manager.shutdown()
+
+    assert starts == ["mock"]
+
+
+def test_mcp_manager_reports_thread_that_does_not_stop() -> None:
+    class FakeLoop:
+        closed = False
+        stop_requested = False
+
+        def stop(self) -> None:
+            return None
+
+        def call_soon_threadsafe(self, callback) -> None:
+            self.stop_requested = True
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        def close(self) -> None:
+            self.closed = True
+
+    class StuckThread:
+        def join(self, timeout: float) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    manager = MCPServerManager({})
+    loop = FakeLoop()
+    manager._loop = loop
+    manager._thread = StuckThread()
+
+    with pytest.raises(RuntimeError, match="did not stop"):
+        manager._stop_loop()
+
+    assert loop.stop_requested is True
+    assert loop.closed is False
 
 
 def test_mcp_tool_handler_returns_timeout_error_text() -> None:

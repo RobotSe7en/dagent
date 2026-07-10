@@ -23,12 +23,21 @@ class MCPServerManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
+        self._start_lock = threading.RLock()
 
     def start(self) -> None:
+        with self._start_lock:
+            self._start_all_locked()
+
+    def _start_all_locked(self) -> None:
         if self._started or not self.available:
             return
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run_loop, name="dagent-mcp-manager", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="dagent-mcp-manager",
+            daemon=True,
+        )
         self._thread.start()
         futures = []
         for name, config in sorted(self.servers.items()):
@@ -60,6 +69,10 @@ class MCPServerManager:
     def ensure_started(self, name: str) -> None:
         if not self.available:
             return
+        with self._start_lock:
+            self._ensure_started_locked(name)
+
+    def _ensure_started_locked(self, name: str) -> None:
         if name in self.tasks:
             return
         if name not in self.servers:
@@ -68,7 +81,11 @@ class MCPServerManager:
             raise RuntimeError(f"MCP server '{name}' is disabled.")
         if self._loop is None:
             self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(target=self._run_loop, name="dagent-mcp-manager", daemon=True)
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="dagent-mcp-manager",
+                daemon=True,
+            )
             self._thread.start()
         task = MCPServerTask(name, self.servers[name])
         self.tasks[name] = task
@@ -140,12 +157,18 @@ class MCPServerManager:
             self.last_errors[name] = f"{self.last_errors.get(name, '')}; shutdown failed: {exc}".strip("; ")
 
     def _stop_loop(self) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread is not None:
-            self._thread.join(timeout=10)
-        if self._loop is not None and not self._loop.is_closed():
-            self._loop.close()
+        loop = self._loop
+        thread = self._thread
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                raise RuntimeError(
+                    "MCP manager thread did not stop within 10 seconds."
+                )
+        if loop is not None and not loop.is_closed():
+            loop.close()
         self._loop = None
         self._thread = None
         self._started = False
