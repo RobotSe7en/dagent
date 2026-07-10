@@ -479,16 +479,34 @@ class Runner:
         refs_to_check = self._default_visible_capability_ids() if refs is None else refs
         for ref in refs_to_check:
             if isinstance(ref, CapabilityBinding):
-                capability_id = ref.definition.id
+                definition, handler, supports_context = _capability_parts(ref)
+                capability_id = definition.id
+                entry = self._runtime.capability_catalog.get_entry(capability_id)
+                if entry is not None and not _entry_matches_binding(
+                    entry,
+                    definition,
+                    handler,
+                    supports_context,
+                ):
+                    issues.append(ValidationIssue(
+                        message=(
+                            f"Capability binding '{capability_id}' conflicts "
+                            "with a registered capability."
+                        ),
+                        capability_id=capability_id,
+                        code="binding_conflict",
+                    ))
+                    continue
+                definition = None if entry is None else entry.definition
             elif isinstance(ref, str):
                 capability_id = ref
+                definition = self._runtime.capability_catalog.get(capability_id)
             else:
                 issues.append(ValidationIssue(
                     message="Capability refs must be capability id strings or @dagent.tool bindings.",
                     code="invalid_ref_type",
                 ))
                 continue
-            definition = self._runtime.capability_catalog.get(capability_id)
             if definition is None:
                 issues.append(ValidationIssue(
                     message=f"Capability '{capability_id}' is not registered.",
@@ -2016,13 +2034,13 @@ def _nullable_event_string(value: Any) -> str | None:
 
 
 def _validation_issues(value: Any) -> list[ValidationIssue]:
-    issues = []
+    issues: list[ValidationIssue] = []
     for item in value or []:
+        if isinstance(item, ValidationIssue):
+            issues.append(item)
+            continue
         if isinstance(item, dict):
-            issues.append(ValidationIssue(
-                message=str(item.get("message", "")),
-                node_id=item.get("node_id"),
-            ))
+            issues.append(ValidationIssue.model_validate(item))
     return issues
 
 

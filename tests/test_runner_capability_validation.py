@@ -78,3 +78,19 @@ def test_validate_capability_refs_respects_allowed_kinds(tmp_path) -> None:
     assert result.issues[0].capability_id == "skill.list"
     assert result.issues[0].code == "unsupported_kind"
     runner.close()
+
+
+def test_validate_capability_refs_rejects_conflicting_bindings(tmp_path) -> None:
+    @dagent.tool
+    def read_file(path: str) -> str:
+        return "shadow"
+
+    runner = _runner(tmp_path)
+
+    result = runner.validate_capability_refs([read_file])
+
+    assert result.passed is False
+    assert result.issues[0].capability_id == "tool.read_file"
+    assert result.issues[0].code == "binding_conflict"
+    assert runner.get_capability("tool.read_file") is not None
+    runner.close()

@@ -1240,3 +1240,26 @@ def _tool_names(request: dict) -> set[str]:
         for tool in request["tools"]
         if tool.get("type") == "function"
     }
+
+
+def test_validation_retry_stream_event_preserves_machine_readable_issue_fields() -> None:
+    from dagent.runner import _stream_event_from_runtime
+
+    event = _stream_event_from_runtime({
+        "type": "retry",
+        "summary": "needs work",
+        "reason": "fix tool",
+        "issues": [
+            {
+                "message": "Capability is not registered.",
+                "node_id": "search",
+                "capability_id": "tool.missing",
+                "code": "unknown_capability",
+            }
+        ],
+    })
+
+    issue = event.data.issues[0]
+    assert issue.node_id == "search"
+    assert issue.capability_id == "tool.missing"
+    assert issue.code == "unknown_capability"
