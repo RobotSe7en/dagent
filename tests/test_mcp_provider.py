@@ -255,6 +255,189 @@ def test_mcp_provider_registers_snapshot_without_starting_manager() -> None:
     assert catalog.get("mcp.docs.search") is not None
 
 
+def test_mcp_provider_lazy_connect_requires_snapshots() -> None:
+    manager = FakeMCPManager()
+    provider = MCPCapabilityProvider(
+        {"docs": {"command": "fake"}},
+        manager=manager,
+        lazy_connect=True,
+    )
+
+    with pytest.raises(ValueError, match="snapshot"):
+        provider.register_into(CapabilityCatalog(workspace_root="."))
+
+    assert manager.started is False
+
+
+def test_mcp_provider_lazy_snapshot_skips_disabled_server() -> None:
+    definition = CapabilityDefinition(
+        id="mcp.docs.search",
+        kind="mcp",
+        config={"server": "docs", "tool": "search"},
+    )
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.docs.search",
+            server="docs",
+            tool="search",
+            definition=definition,
+        )],
+    )
+    catalog = CapabilityCatalog(workspace_root=".")
+
+    MCPCapabilityProvider(
+        {"docs": {"command": "fake", "enabled": False}},
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    ).register_into(catalog)
+
+    assert catalog.list(kind="mcp") == []
+
+
+def test_mcp_provider_lazy_snapshot_applies_config_filters_and_policy() -> None:
+    search = CapabilityDefinition(
+        id="mcp.docs.search",
+        kind="mcp",
+        description="Search docs",
+        policy={"risk": "low", "network": False},
+        config={"server": "docs", "tool": "search"},
+    )
+    write = CapabilityDefinition(
+        id="mcp.docs.write",
+        kind="mcp",
+        description="Write docs",
+        policy={"risk": "low", "network": False},
+        config={"server": "docs", "tool": "write"},
+    )
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.search", "mcp.docs.write"],
+        tools=[
+            MCPToolSnapshot(
+                capability_id="mcp.docs.search",
+                server="docs",
+                tool="search",
+                definition=search,
+            ),
+            MCPToolSnapshot(
+                capability_id="mcp.docs.write",
+                server="docs",
+                tool="write",
+                definition=write,
+            ),
+        ],
+    )
+    catalog = CapabilityCatalog(workspace_root=".")
+
+    MCPCapabilityProvider(
+        {
+            "docs": {
+                "command": "fake",
+                "url": "https://mcp.example.test",
+                "risk": "high",
+                "include_tools": ["search"],
+                "exclude_tools": ["write"],
+            }
+        },
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    ).register_into(catalog)
+
+    assert catalog.get("mcp.docs.write") is None
+    registered = catalog.get("mcp.docs.search")
+    assert registered is not None
+    assert registered.policy.risk == "high"
+    assert registered.policy.network is True
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        (
+            MCPServerSnapshot(
+                name="other",
+                capability_ids=["mcp.docs.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.docs.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "name",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.docs.other"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.docs.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "capability_ids",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.docs.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="tool.search",
+                        kind="tool",
+                    ),
+                )],
+            ),
+            "definition",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.custom.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.custom.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.custom.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "canonical",
+        ),
+    ],
+)
+def test_mcp_provider_rejects_noncanonical_snapshot(
+    snapshot: MCPServerSnapshot,
+    message: str,
+) -> None:
+    provider = MCPCapabilityProvider(
+        {"docs": {"command": "fake"}},
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        provider.register_into(CapabilityCatalog(workspace_root="."))
+
+
 def _short_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:8]
 
