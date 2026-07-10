@@ -8,9 +8,9 @@ from pathlib import Path, PureWindowsPath
 from posixpath import normpath
 from uuid import uuid4
 
-from dagent.config import DEFAULT_RUNS_DIR
 from dagent.schemas import Artifact, ArtifactState, DAGNode
 from dagent.schemas.run_id import validate_run_id
+from dagent.config import DEFAULT_RUNS_DIR
 
 
 class ArtifactPathError(ValueError):

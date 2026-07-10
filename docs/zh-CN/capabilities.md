@@ -256,6 +256,9 @@ server errors 的 `MCPServerRegistrationResult`。持久化已发现工具时应
 
 已经信任保存下来的 `MCPServerSnapshot` 的 host，可以用 `lazy_connect=True` 传回：
 
+使用 `lazy_connect=True` 时，每个启用的 server 都必须提供 SDK 生成的 snapshot；
+缺失或非 canonical snapshot 会在 catalog registration 前失败。
+
 ```python
 runner.add_mcp_server(
     "remote_docs",
@@ -267,14 +270,7 @@ runner.add_mcp_server(
 
 这会先注册 snapshot 中的 capability definitions，而不会立即连接 server。SDK 会在首次
 tool call 时连接对应 MCP server。Snapshot 只用于注册和校验元数据；可执行行为仍来自配置的
-MCP server。Lazy registration 必须提供 snapshot，并且当前 server configuration 仍控制
-`enabled`、`include_tools`、`exclude_tools`、`risk` 和 network policy。
-
-## Runtime Contract 边界
-
-Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
-和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
-限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
+MCP server。
 
 ## 直接测试 Capability
 

@@ -4,61 +4,59 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.6.9`。
+当前包版本是 `0.7.0`。
 
 ## Unreleased
 
-- 暂无未发布变更。
+- 没有尚未发布的变更。
 
-## 0.6.9
+## 0.7.0
 
 ### 新增
 
-- `Runner.derive(...)` 可以通过 `inherit_local_tools=True` 从 base runner 继承本地
-  `CapabilityBinding` tool registrations，并可用 `exclude_local_tool_ids`
-  跳过调用方管理的 tool ids。
-- `RuntimeRunSpec`、`RuntimeFrame` 以及相关 `dagent.schemas` contracts 定义了
-  `python -m dagent.worker` 消费的进程边界 payloads。
-- `Runner.run(...)` 和 `Runner.stream(...)` 支持为新 run 传入 host 提供的 `run_id`；
-  除非调用方提供匹配的 `RunState` 来继续已有 run，否则同一个 `Runner` session 内重复的
-  显式 run id 会被拒绝。每次 run 都创建新 worker 进程的 host 仍需自行保证全局 run id
-  唯一性。
-- MCP servers 可以通过 `snapshot=...` 和 `lazy_connect=True` 从可信 snapshot 进行
-  lazy MCP 连接注册；lazy registration 必须带 snapshot，并仍会应用当前 server config
-  filters 和 policy。
-- `Runner.validate_capability_refs(...)` 可以在不注册 tools 或 agents 的情况下校验保存的
-  capability ids，并返回带机器可读 `ValidationResult` issues。
+- `Runner.derive(...)` 可以通过 `inherit_local_tools=True` 继承本地
+  `CapabilityBinding` registrations，并通过 `exclude_local_tool_ids` 排除调用方管理的
+  tool IDs。
+- `Runner.run(...)` 和 `Runner.stream(...)` 接受调用方提供的 Run ID；同一个
+  `Runner` 上重复的新 Run ID 会被拒绝。
+- 带版本的 `RunState` schema v1 支持 JSON round trip，以及通过
+  `Runner.resume_stream(...)` 在同一个 `Runner` 或调用方恢复状态后显式继续。
+- Capability reference 校验不会修改调用方拥有的 agents、DAGs、profiles 或
+  bindings；validation issues 在 hydration 后仍保留类型字段。
+- SDK 生成的 MCP snapshots 支持 fail-closed lazy connection，同时保留
+  canonical capability identity、当前 filters 和当前 policy。
 
 ### 改变
 
-- Runtime `bye` frames 现在区分 worker process failure 和失败的 dagent run；resume
-  runtime specs 必须包含要继续的序列化 `RunState`。
+- dagent 重新保持为进程内 SDK library。进程生命周期、命令协议、健康检查、持久化、
+  凭证、调度和容器生命周期由调用方 host 负责。
+- 调用方提供的 Run ID、带版本的 `RunState`、capability reference 校验、MCP
+  snapshots、lazy MCP 连接和 `Runner` 清理继续作为公共 library 行为保留。
 
 ### 修复
 
-- Runtime 进程边界 specs 现在会拒绝不安全的 `run_id`，以及 provider 或 Python tool
-  嵌套 payload 中的未知字段，不再静默接受 unsupported host payloads。
-- Lazy MCP snapshot registration 现在会拒绝非 canonical 的 `mcp.<server>.<tool>`
-  capability ids。
-- 当 `CapabilityBinding` 与不同的已注册 capability 冲突时，
-  `Runner.validate_capability_refs(...)` 现在会返回 `binding_conflict`。
-- Worker transport 文档现在准确描述 `hello`、`event`、`state_snapshot` 和 `bye`
-  frame sequence。
+- Lazy MCP registration 现在会在启用的 server 缺少 snapshot 时失败，拒绝非
+  canonical snapshot identity，并重新应用当前 filters 和 policy。
+- 并发的首次 MCP 调用现在只会进行一次串行化 server startup。
+- 同一个 `Runner` 上不同的新 Run 不能重复使用调用方提供的 Run ID。
+- `CapabilityBinding` 冲突和 hydration 后的 `ValidationIssue` 会保留机器可读字段。
+- Stream cancellation 会等待 SDK-owned execution task 完成清理。
 
 ### 破坏性改变
 
-- 对现有公共 Python SDK 用户无破坏性改变。
-- 采用新的 worker runtime contracts 的 host 必须发送严格的 `RuntimeRunSpec` payloads，
-  provider 和 Python tool 嵌套字段只能使用文档化字段。
+- 删除 `RuntimeRunSpec`、`RuntimeFrame`、runtime transport schemas 和
+  `python -m dagent.worker`。历史 v0.6.9 tag 保持不变。
+- 这是一次有意的 pre-1.0 删除。项目目前不知道有 v0.6.9 process API 使用者，
+  但使用该 API 的调用方必须迁移。
 
 ### 迁移步骤
 
-- 现有 SDK 用户不需要改代码。
-- 进程 host 应使用文档化的 `dagent.schemas` models 构造 `RuntimeRunSpec`，把跨 worker
-  process 的 `run_id` 全局唯一性作为 host-owned state，并且只在 `run.finished` 后期待
-  `state_snapshot`。
-- 使用 lazy MCP snapshots 的 host 应持久化 SDK registration APIs 返回的 snapshots，不要在
-  SDK 外部重建 `mcp.<server>.<tool>` ids。
+- 在 host 进程内构造 `Runner`，并用 `Runner.stream(...)` 启动新执行。
+- 使用 `Runner.resume_stream(...)` 继续待审核 Run；调用方管理恢复时传入显式
+  `RunState`。
+- 进程命令、凭证、持久化、重试、健康检查和容器生命周期留在 host。
+- 需要 fail-closed lazy MCP registration 的 host 应持久化 SDK 生成的 MCP
+  snapshots，不要在 SDK 外部重建 MCP capability IDs。
 
 ### 验证
 
@@ -68,9 +66,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ### 已知限制
 
-- `python -m dagent.worker` 每个进程只处理一次 run 或 resume operation。Long-lived pools、
-  queue claims、leases、Docker lifecycle、persistence、authorization、audit 和 usage
-  tracking 仍由 host 负责。
+- dagent 不提供 process host、service loop、durable store 或活跃 Run 的透明恢复。
 
 ## 0.6.8
 

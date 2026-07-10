@@ -15,8 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.6.9")
-    english_069 = _section(english, "## 0.6.9", "## 0.6.8")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.0")
+    english_070 = _section(english, "## 0.7.0", "## 0.6.8")
     english_068 = _section(english, "## 0.6.8", "## 0.6.7")
     english_067 = _section(english, "## 0.6.7", "## 0.6.6")
     english_066 = _section(english, "## 0.6.6", "## 0.6.5")
@@ -24,8 +24,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.6.9")
-    chinese_069 = _section(chinese, "## 0.6.9", "## 0.6.8")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.0")
+    chinese_070 = _section(chinese, "## 0.7.0", "## 0.6.8")
     chinese_068 = _section(chinese, "## 0.6.8", "## 0.6.7")
     chinese_067 = _section(chinese, "## 0.6.7", "## 0.6.6")
     chinese_066 = _section(chinese, "## 0.6.6", "## 0.6.5")
@@ -35,21 +35,14 @@ def test_migration_notes_record_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     assert "No unreleased changes" in english_unreleased
-    assert "暂无未发布变更" in chinese_unreleased
-    assert "inherit_local_tools=True" in english_069
-    assert "exclude_local_tool_ids" in english_069
-    assert "RuntimeRunSpec" in english_069
-    assert "python -m dagent.worker" in english_069
-    assert "python -m dagent.runtime" not in english_069
-    collapsed_english_069 = _collapsed(english_069)
-    collapsed_chinese_069 = _collapsed(chinese_069)
-    assert "host-provided `run_id`" in english_069
-    assert "within the same `Runner` session" in collapsed_english_069
-    assert "lazy MCP" in english_069
-    assert "validate_capability_refs" in english_069
-    assert "strict `RuntimeRunSpec` payloads" in collapsed_english_069
-    assert "uv build" in english_069
-    assert "Runner.reload_python_tool_sources" in english_068
+    assert "inherit_local_tools=True" not in english_unreleased
+    assert "inherit_local_tools=True" in english_070
+    assert "exclude_local_tool_ids" in english_070
+    assert "caller-supplied Run IDs" in english_070
+    assert "RunState" in english_070
+    assert "capability-reference validation" in english_070
+    assert "MCP snapshots" in english_070
+    assert "dagent.capabilities.python_tools" in english_068
     assert "Tool-agent and dynamic DAG LLM calls now retry transient provider failures" in english_067
     assert "Permanent LLM provider failures" in english_067
     assert "Streaming LLM calls no longer retry after response tokens have been emitted" in english_067
@@ -70,18 +63,15 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "inherit_local_tools=True" in chinese_069
-    assert "exclude_local_tool_ids" in chinese_069
-    assert "RuntimeRunSpec" in chinese_069
-    assert "python -m dagent.worker" in chinese_069
-    assert "python -m dagent.runtime" not in chinese_069
-    assert "host 提供的 `run_id`" in chinese_069
-    assert "同一个 `Runner` session 内" in collapsed_chinese_069
-    assert "lazy MCP" in chinese_069
-    assert "validate_capability_refs" in chinese_069
-    assert "严格的 `RuntimeRunSpec` payloads" in collapsed_chinese_069
-    assert "uv build" in chinese_069
-    assert "Runner.reload_python_tool_sources" in chinese_068
+    assert "没有尚未发布的变更" in chinese_unreleased
+    assert "inherit_local_tools=True" not in chinese_unreleased
+    assert "inherit_local_tools=True" in chinese_070
+    assert "exclude_local_tool_ids" in chinese_070
+    assert "调用方提供的 Run ID" in chinese_070
+    assert "RunState" in chinese_070
+    assert "capability reference 校验" in chinese_070
+    assert "MCP snapshots" in chinese_070
+    assert "dagent.capabilities.python_tools" in chinese_068
     assert "Tool-agent 和动态 DAG 的 LLM 调用现在会在 provider 瞬态失败或请求超时时按递增等待重试" in chinese_067
     assert "永久性 LLM provider 失败" in chinese_067
     assert "已经输出 response token 后不再重试" in chinese_067
@@ -103,38 +93,33 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions 现在把稳定 id 和调用名分开" not in chinese_unreleased
 
 
-def test_runtime_process_docs_describe_actual_worker_frame_sequence() -> None:
-    english = Path("docs/en/runner-and-configuration.md").read_text(encoding="utf-8")
-    chinese = Path("docs/zh-CN/runner-and-configuration.md").read_text(encoding="utf-8")
+def test_070_docs_describe_library_boundary_and_removed_process_api() -> None:
+    english_migration = Path("docs/en/migration.md").read_text(
+        encoding="utf-8"
+    )
+    chinese_migration = Path("docs/zh-CN/migration.md").read_text(
+        encoding="utf-8"
+    )
 
-    english_transport = _section(english, "## Worker Process Transports", "## Provider Options")
-    chinese_transport = _section(chinese, "## Worker 进程传输", "## Provider 选项")
-
-    collapsed_english_transport = _collapsed(english_transport)
-    collapsed_chinese_transport = _collapsed(chinese_transport)
-
-    assert "hello" in collapsed_english_transport
-    assert "zero or more `event` frames" in collapsed_english_transport
-    assert "`state_snapshot` only after `run.finished`" in collapsed_english_transport
-    assert "hello" in collapsed_chinese_transport
-    assert "零个或多个 `event` frames" in collapsed_chinese_transport
-    assert "仅在 `run.finished` 之后发送 `state_snapshot`" in collapsed_chinese_transport
-
-
-def test_python_sdk_docs_list_runtime_contract_schema_exports() -> None:
-    english = Path("docs/en/python-sdk.md").read_text(encoding="utf-8")
-    chinese = Path("docs/zh-CN/python-sdk.md").read_text(encoding="utf-8")
-
-    for name in [
-        "RuntimeAgentSpec",
-        "RuntimeByePayload",
-        "RuntimeFrame",
-        "RuntimeLogPayload",
-        "RuntimeReviewDecision",
+    for value in [
+        "0.7.0",
         "RuntimeRunSpec",
-        "RuntimeRunTarget",
-        "RuntimeValidationSpec",
-        "RuntimeWorkspaceSpec",
+        "RuntimeFrame",
+        "dagent.worker",
+        "Runner.stream",
+        "Runner.resume_stream",
     ]:
-        assert f"`{name}`" in english
-        assert f"`{name}`" in chinese
+        assert value in english_migration
+        assert value in chinese_migration
+
+    for path in [
+        Path("docs/en/python-sdk.md"),
+        Path("docs/zh-CN/python-sdk.md"),
+        Path("docs/en/runner-and-configuration.md"),
+        Path("docs/zh-CN/runner-and-configuration.md"),
+    ]:
+        text = path.read_text(encoding="utf-8")
+        assert "RuntimeRunSpec" not in text
+        assert "RuntimeFrame" not in text
+        assert "python -m dagent.worker" not in text
+        assert "serve loop" not in text

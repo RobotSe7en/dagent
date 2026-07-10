@@ -42,15 +42,6 @@ import dagent
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunState`, `RunTrace`, `ArtifactUpload`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
 | Providers | `Provider`；`dagent.providers` 也导出 `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, `ToolCall`，用于 custom providers 和 tests |
 
-进程边界 runtime contracts 是 schema exports，不是 package-root exports。请从
-`dagent.schemas` 导入 `RuntimeAgentSpec`、`RuntimeByePayload`、`RuntimeFrame`、
-`RuntimeLogPayload`、`RuntimeReviewDecision`、`RuntimeRunSpec`、`RuntimeRunTarget`、
-`RuntimeValidationSpec` 和 `RuntimeWorkspaceSpec`。
-
-Runtime contracts 是给宿主进程使用的进程边界契约，前提是宿主已经准备好 workspace
-和凭证。它们不包含用户、组织、项目、RBAC、授权过滤、持久化、队列领取、租约、
-限流、审计、用量、计费、provider key 代理、Docker 生命周期或 worker 编排。
-
 ## 最小 Runner
 
 ```python
@@ -64,6 +55,9 @@ provider = dagent.Provider(
 )
 runner = dagent.Runner(provider=provider, workspace=".dagent")
 ```
+
+dagent 是进程内 SDK。请在你控制的进程中构造并关闭 `Runner`。进程命令、健康检查、
+凭证、持久化、调度和容器生命周期由 host 负责；SDK 不提供 worker 或 service loop。
 
 ## 最小 Tool
 

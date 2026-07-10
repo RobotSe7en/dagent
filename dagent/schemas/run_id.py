@@ -1,4 +1,4 @@
-"""Run id validation shared by runtime contracts and workspace creation."""
+"""Run ID validation shared by SDK execution and workspace creation."""
 
 from __future__ import annotations
 

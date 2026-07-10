@@ -5,67 +5,67 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.6.9`.
+The current package version is `0.7.0`.
 
 ## Unreleased
 
 - No unreleased changes.
 
-## 0.6.9
+## 0.7.0
 
 ### Added
 
-- `Runner.derive(...)` can inherit local `CapabilityBinding` tool registrations
-  from the base runner with `inherit_local_tools=True`, and can skip caller-owned
-  tool ids with `exclude_local_tool_ids`.
-- `RuntimeRunSpec`, `RuntimeFrame`, and related `dagent.schemas` contracts define
-  the process-boundary payloads consumed by `python -m dagent.worker`.
-- `Runner.run(...)` and `Runner.stream(...)` accept a host-provided `run_id` for
-  new runs; duplicate explicit run ids are rejected within the same `Runner`
-  session unless the caller supplies matching `RunState` to continue an existing
-  run. Hosts that create a fresh worker process per run remain responsible for
-  global run id uniqueness.
-- MCP servers can be registered from trusted snapshots with lazy MCP connection
-  by passing `snapshot=...` and `lazy_connect=True`; lazy registration requires a
-  snapshot and still applies the current server config filters and policy.
-- `Runner.validate_capability_refs(...)` validates saved capability ids without
-  registering tools or agents and returns machine-readable `ValidationResult`
-  issues.
+- `Runner.derive(...)` can inherit local `CapabilityBinding` registrations with
+  `inherit_local_tools=True` and exclude caller-owned tool IDs with
+  `exclude_local_tool_ids`.
+- `Runner.run(...)` and `Runner.stream(...)` accept caller-supplied Run IDs;
+  duplicate new-Run IDs on one `Runner` are rejected.
+- Versioned `RunState` schema v1 supports JSON round trips and explicit
+  same-Runner or caller-restored resume with `Runner.resume_stream(...)`.
+- Capability references are validated without mutating caller-owned agents,
+  DAGs, profiles, or bindings; validation issues remain typed after hydration.
+- SDK-produced MCP snapshots support fail-closed lazy connection while
+  preserving canonical capability identity, current filters, and current
+  policy.
 
 ### Changed
 
-- Runtime `bye` frames now distinguish worker process failure from failed dagent
-  runs, and resume runtime specs must include the serialized `RunState` they
-  continue.
+- dagent is again an in-process SDK library. Process lifetime, command
+  protocols, health checks, persistence, credentials, scheduling, and
+  container lifecycle belong to the calling host.
+- Caller-supplied Run IDs, versioned `RunState`, capability-reference validation,
+  MCP snapshots, lazy MCP connection, and `Runner` cleanup remain supported
+  public library behavior.
 
 ### Fixed
 
-- Runtime process-boundary specs now reject unsafe `run_id` values and unknown
-  nested provider or Python tool fields instead of silently accepting unsupported
-  host payloads.
-- Lazy MCP snapshot registration now rejects non-canonical
-  `mcp.<server>.<tool>` capability ids.
-- `Runner.validate_capability_refs(...)` now reports `binding_conflict` when a
-  `CapabilityBinding` collides with a different registered capability.
-- Worker transport documentation now describes the actual `hello`, `event`,
-  `state_snapshot`, and `bye` frame sequence.
+- Lazy MCP registration now fails when an enabled server has no snapshot,
+  rejects non-canonical snapshot identity, and reapplies current filters and
+  policy.
+- Concurrent first MCP calls now share one serialized server startup.
+- Distinct new Runs on one `Runner` cannot reuse a caller-supplied Run ID.
+- `CapabilityBinding` conflicts and hydrated `ValidationIssue` objects retain
+  machine-readable issue data.
+- Stream cancellation waits for the SDK-owned execution task to finish
+  cleanup.
 
 ### Breaking Changes
 
-- None for existing public Python SDK users.
-- Hosts adopting the new worker runtime contracts must send strict
-  `RuntimeRunSpec` payloads with only documented nested provider and Python tool
-  fields.
+- Removed `RuntimeRunSpec`, `RuntimeFrame`, the runtime transport schemas, and
+  `python -m dagent.worker`. The historical v0.6.9 tag remains unchanged.
+- This is an intentional pre-1.0 removal. The project knows of no v0.6.9
+  process-API adopters, but callers using that API must migrate.
 
 ### Migration Steps
 
-- Existing SDK users do not need to change code.
-- Process hosts should construct `RuntimeRunSpec` from the documented
-  `dagent.schemas` models, treat `run_id` uniqueness across worker processes as
-  host-owned state, and expect `state_snapshot` only after `run.finished`.
-- Hosts using lazy MCP snapshots should persist snapshots returned by SDK
-  registration APIs instead of reconstructing `mcp.<server>.<tool>` ids outside
-  the SDK.
+- Construct `Runner` in the host process and call `Runner.stream(...)` for a
+  new execution.
+- Continue a pending review with `Runner.resume_stream(...)` and explicit
+  `RunState` when caller-managed recovery requires it.
+- Keep process commands, credentials, persistence, retries, health, and
+  container lifecycle in the host.
+- Persist SDK-produced MCP snapshots if the host wants fail-closed lazy MCP
+  registration; do not reconstruct MCP capability IDs outside the SDK.
 
 ### Verification
 
@@ -75,9 +75,8 @@ The current package version is `0.6.9`.
 
 ### Known Limitations
 
-- `python -m dagent.worker` handles one run or resume operation per process.
-  Long-lived pools, queue claims, leases, Docker lifecycle, persistence,
-  authorization, audit, and usage tracking remain host responsibilities.
+- dagent does not provide a process host, service loop, durable store, or
+  transparent active-Run recovery.
 
 ## 0.6.8
 

@@ -1,10 +1,9 @@
 import asyncio
 import hashlib
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
-import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -258,17 +257,64 @@ def test_mcp_provider_registers_snapshot_without_starting_manager() -> None:
 
 
 def test_mcp_provider_lazy_connect_requires_snapshots() -> None:
+    snapshot = MCPServerSnapshot(
+        name="alpha",
+        capability_ids=["mcp.alpha.search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.alpha.search",
+            server="alpha",
+            tool="search",
+            definition=CapabilityDefinition(
+                id="mcp.alpha.search",
+                kind="mcp",
+            ),
+        )],
+    )
     manager = FakeMCPManager()
     provider = MCPCapabilityProvider(
-        {"docs": {"command": "fake"}},
+        {
+            "alpha": {"command": "fake"},
+            "docs": {"command": "fake"},
+        },
         manager=manager,
+        snapshots={"alpha": snapshot},
         lazy_connect=True,
     )
+    catalog = CapabilityCatalog(workspace_root=".")
 
     with pytest.raises(ValueError, match="snapshot"):
-        provider.register_into(CapabilityCatalog(workspace_root="."))
+        provider.register_into(catalog)
 
     assert manager.started is False
+    assert catalog.list(kind="mcp") == []
+
+
+def test_mcp_provider_lazy_snapshot_skips_disabled_server() -> None:
+    definition = CapabilityDefinition(
+        id="mcp.docs.search",
+        kind="mcp",
+        config={"server": "docs", "tool": "search"},
+    )
+    snapshot = MCPServerSnapshot(
+        name="docs",
+        capability_ids=["mcp.docs.search"],
+        tools=[MCPToolSnapshot(
+            capability_id="mcp.docs.search",
+            server="docs",
+            tool="search",
+            definition=definition,
+        )],
+    )
+    catalog = CapabilityCatalog(workspace_root=".")
+
+    MCPCapabilityProvider(
+        {"docs": {"command": "fake", "enabled": False}},
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
+    ).register_into(catalog)
+
+    assert catalog.list(kind="mcp") == []
 
 
 def test_mcp_provider_lazy_snapshot_applies_config_filters_and_policy() -> None:
@@ -304,7 +350,6 @@ def test_mcp_provider_lazy_snapshot_applies_config_filters_and_policy() -> None:
             ),
         ],
     )
-    manager = FakeMCPManager()
     catalog = CapabilityCatalog(workspace_root=".")
 
     MCPCapabilityProvider(
@@ -317,7 +362,7 @@ def test_mcp_provider_lazy_snapshot_applies_config_filters_and_policy() -> None:
                 "exclude_tools": ["write"],
             }
         },
-        manager=manager,
+        manager=FakeMCPManager(),
         snapshots={"docs": snapshot},
         lazy_connect=True,
     ).register_into(catalog)
@@ -329,76 +374,118 @@ def test_mcp_provider_lazy_snapshot_applies_config_filters_and_policy() -> None:
     assert registered.policy.network is True
 
 
-def test_mcp_provider_lazy_snapshot_skips_disabled_server() -> None:
-    definition = CapabilityDefinition(
-        id="mcp.docs.search",
-        kind="mcp",
-        config={"server": "docs", "tool": "search"},
-    )
-    snapshot = MCPServerSnapshot(
-        name="docs",
-        capability_ids=["mcp.docs.search"],
-        tools=[MCPToolSnapshot(
-            capability_id="mcp.docs.search",
-            server="docs",
-            tool="search",
-            definition=definition,
-        )],
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        (
+            MCPServerSnapshot(
+                name="other",
+                capability_ids=["mcp.docs.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.docs.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "name",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.docs.other"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.docs.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "capability_ids",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.docs.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.docs.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="tool.search",
+                        kind="tool",
+                    ),
+                )],
+            ),
+            "definition",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.custom.search"],
+                tools=[MCPToolSnapshot(
+                    capability_id="mcp.custom.search",
+                    server="docs",
+                    tool="search",
+                    definition=CapabilityDefinition(
+                        id="mcp.custom.search",
+                        kind="mcp",
+                    ),
+                )],
+            ),
+            "canonical",
+        ),
+        (
+            MCPServerSnapshot(
+                name="docs",
+                capability_ids=["mcp.docs.search", "mcp.custom.write"],
+                tools=[
+                    MCPToolSnapshot(
+                        capability_id="mcp.docs.search",
+                        server="docs",
+                        tool="search",
+                        definition=CapabilityDefinition(
+                            id="mcp.docs.search",
+                            kind="mcp",
+                        ),
+                    ),
+                    MCPToolSnapshot(
+                        capability_id="mcp.custom.write",
+                        server="docs",
+                        tool="write",
+                        definition=CapabilityDefinition(
+                            id="mcp.custom.write",
+                            kind="mcp",
+                        ),
+                    ),
+                ],
+            ),
+            "canonical",
+        ),
+    ],
+)
+def test_mcp_provider_rejects_noncanonical_snapshot(
+    snapshot: MCPServerSnapshot,
+    message: str,
+) -> None:
+    provider = MCPCapabilityProvider(
+        {"docs": {"command": "fake"}},
+        manager=FakeMCPManager(),
+        snapshots={"docs": snapshot},
+        lazy_connect=True,
     )
     catalog = CapabilityCatalog(workspace_root=".")
 
-    MCPCapabilityProvider(
-        {"docs": {"command": "fake", "enabled": False}},
-        manager=FakeMCPManager(),
-        snapshots={"docs": snapshot},
-        lazy_connect=True,
-    ).register_into(catalog)
+    with pytest.raises(ValueError, match=message):
+        provider.register_into(catalog)
 
     assert catalog.list(kind="mcp") == []
-
-
-def test_mcp_provider_lazy_snapshot_rejects_identity_mismatch() -> None:
-    snapshot = MCPServerSnapshot(
-        name="docs",
-        capability_ids=["mcp.docs.search"],
-        tools=[MCPToolSnapshot(
-            capability_id="mcp.docs.search",
-            server="docs",
-            tool="search",
-            definition=CapabilityDefinition(id="tool.docs_search", kind="tool"),
-        )],
-    )
-    provider = MCPCapabilityProvider(
-        {"docs": {"command": "fake"}},
-        manager=FakeMCPManager(),
-        snapshots={"docs": snapshot},
-        lazy_connect=True,
-    )
-
-    with pytest.raises(ValueError, match="definition"):
-        provider.register_into(CapabilityCatalog(workspace_root="."))
-
-
-def test_mcp_provider_lazy_snapshot_rejects_non_canonical_capability_id() -> None:
-    snapshot = MCPServerSnapshot(
-        name="docs",
-        capability_ids=["mcp.docs.not_search"],
-        tools=[MCPToolSnapshot(
-            capability_id="mcp.docs.not_search",
-            server="docs",
-            tool="search",
-            definition=CapabilityDefinition(id="mcp.docs.not_search", kind="mcp"),
-        )],
-    )
-    provider = MCPCapabilityProvider(
-        {"docs": {"command": "fake"}},
-        manager=FakeMCPManager(),
-        snapshots={"docs": snapshot},
-        lazy_connect=True,
-    )
-
-    with pytest.raises(ValueError, match="canonical"):
-        provider.register_into(CapabilityCatalog(workspace_root="."))
 
 
 def _short_hash(value: str) -> str:
@@ -480,7 +567,9 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
     assert calls == [("lookup", {"query": "x"})]
 
 
-def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(monkeypatch) -> None:
+def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(
+    monkeypatch,
+) -> None:
     start_entered = threading.Event()
     release_start = threading.Event()
     starts: list[str] = []
@@ -500,7 +589,11 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(monkeypatc
             self.started = True
             starts.append(self.name)
 
-        async def call_tool(self, tool_name: str, arguments: dict):
+        async def call_tool(
+            self,
+            tool_name: str,
+            arguments: dict,
+        ) -> str:
             return "ok" if self.started else "called-before-start"
 
         async def shutdown(self) -> None:
@@ -509,13 +602,39 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(monkeypatc
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
     monkeypatch.setattr(MCPServerManager, "available", True)
     manager = MCPServerManager({"mock": {"command": "fake"}})
+    ensure_call_lock = threading.Lock()
+    ensure_call_count = 0
+    second_ensure_entered = threading.Event()
+    original_ensure_started = manager.ensure_started
+
+    def observed_ensure_started(name: str) -> None:
+        nonlocal ensure_call_count
+        with ensure_call_lock:
+            ensure_call_count += 1
+            if ensure_call_count == 2:
+                second_ensure_entered.set()
+        original_ensure_started(name)
+
+    monkeypatch.setattr(manager, "ensure_started", observed_ensure_started)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            first = executor.submit(manager.call_tool_blocking, "mock", "lookup", {}, 1)
+            first = executor.submit(
+                manager.call_tool_blocking,
+                "mock",
+                "lookup",
+                {},
+                1,
+            )
             assert start_entered.wait(timeout=1)
-            second = executor.submit(manager.call_tool_blocking, "mock", "lookup", {}, 1)
-            time.sleep(0.05)
+            second = executor.submit(
+                manager.call_tool_blocking,
+                "mock",
+                "lookup",
+                {},
+                1,
+            )
+            assert second_ensure_entered.wait(timeout=1)
             release_start.set()
 
             assert first.result(timeout=1) == "ok"
@@ -525,6 +644,42 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(monkeypatc
         manager.shutdown()
 
     assert starts == ["mock"]
+
+
+def test_mcp_manager_reports_thread_that_does_not_stop() -> None:
+    class FakeLoop:
+        closed = False
+        stop_requested = False
+
+        def stop(self) -> None:
+            return None
+
+        def call_soon_threadsafe(self, callback) -> None:
+            self.stop_requested = True
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+        def close(self) -> None:
+            self.closed = True
+
+    class StuckThread:
+        def join(self, timeout: float) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    manager = MCPServerManager({})
+    loop = FakeLoop()
+    manager._loop = loop
+    manager._thread = StuckThread()
+
+    with pytest.raises(RuntimeError, match="did not stop"):
+        manager._stop_loop()
+
+    assert loop.stop_requested is True
+    assert loop.closed is False
 
 
 def test_mcp_tool_handler_returns_timeout_error_text() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -489,7 +489,10 @@ class Runner:
                     supports_context,
                 ):
                     issues.append(ValidationIssue(
-                        message=f"Capability binding '{capability_id}' conflicts with a registered capability.",
+                        message=(
+                            f"Capability binding '{capability_id}' conflicts "
+                            "with a registered capability."
+                        ),
                         capability_id=capability_id,
                         code="binding_conflict",
                     ))
@@ -1017,12 +1020,18 @@ class Runner:
         if self._closed:
             raise RuntimeError("Runner is closed.")
 
-    def _ensure_new_run_id_available(self, run_id: str | None, *, state: RunState | None) -> None:
+    def _ensure_new_run_id_available(
+        self,
+        run_id: str | None,
+        *,
+        state: RunState | None,
+    ) -> None:
         if run_id is None or state is not None:
             return
         if run_id in self._runtime.session.runs:
             raise ValueError(
-                f"run_id '{run_id}' already exists; pass state to continue an existing run."
+                f"run_id '{run_id}' already exists; "
+                "pass state to continue an existing run."
             )
 
     def _sync_skill_root_metadata(self) -> None:
@@ -1337,6 +1346,8 @@ class Runner:
         finally:
             if not task.done():
                 task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     async def resume(
         self,
@@ -2025,7 +2036,7 @@ def _nullable_event_string(value: Any) -> str | None:
 
 
 def _validation_issues(value: Any) -> list[ValidationIssue]:
-    issues = []
+    issues: list[ValidationIssue] = []
     for item in value or []:
         if isinstance(item, ValidationIssue):
             issues.append(item)

@@ -27,34 +27,41 @@ class MCPServerManager:
 
     def start(self) -> None:
         with self._start_lock:
-            if self._started or not self.available:
-                return
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(target=self._run_loop, name="dagent-mcp-manager", daemon=True)
-            self._thread.start()
-            futures = []
-            for name, config in sorted(self.servers.items()):
-                if config.get("enabled", True) is False:
-                    continue
-                task = MCPServerTask(name, config)
-                self.tasks[name] = task
-                futures.append((name, asyncio.run_coroutine_threadsafe(task.start(), self._loop)))
-            for name, future in futures:
-                connect_timeout = _connect_timeout_seconds(self.servers[name])
-                try:
-                    future.result(timeout=connect_timeout)
-                except FutureTimeoutError:
-                    self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
-                    future.cancel()
-                    self._discard_task(name)
-                except Exception as exc:
-                    self.last_errors[name] = str(exc)
-                    future.cancel()
-                    self._discard_task(name)
-            if self.tasks:
-                self._started = True
-            else:
-                self._stop_loop()
+            self._start_all_locked()
+
+    def _start_all_locked(self) -> None:
+        if self._started or not self.available:
+            return
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="dagent-mcp-manager",
+            daemon=True,
+        )
+        self._thread.start()
+        futures = []
+        for name, config in sorted(self.servers.items()):
+            if config.get("enabled", True) is False:
+                continue
+            task = MCPServerTask(name, config)
+            self.tasks[name] = task
+            futures.append((name, asyncio.run_coroutine_threadsafe(task.start(), self._loop)))
+        for name, future in futures:
+            connect_timeout = _connect_timeout_seconds(self.servers[name])
+            try:
+                future.result(timeout=connect_timeout)
+            except FutureTimeoutError:
+                self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
+                future.cancel()
+                self._discard_task(name)
+            except Exception as exc:
+                self.last_errors[name] = str(exc)
+                future.cancel()
+                self._discard_task(name)
+        if self.tasks:
+            self._started = True
+        else:
+            self._stop_loop()
 
     def discovered_tools(self) -> dict[str, list[Any]]:
         return {name: task.tools for name, task in sorted(self.tasks.items()) if not task.last_error}
@@ -63,37 +70,44 @@ class MCPServerManager:
         if not self.available:
             return
         with self._start_lock:
-            if name in self.tasks:
-                return
-            if name not in self.servers:
-                raise RuntimeError(f"MCP server '{name}' is not configured.")
-            if self.servers[name].get("enabled", True) is False:
-                raise RuntimeError(f"MCP server '{name}' is disabled.")
-            if self._loop is None:
-                self._loop = asyncio.new_event_loop()
-                self._thread = threading.Thread(target=self._run_loop, name="dagent-mcp-manager", daemon=True)
-                self._thread.start()
-            task = MCPServerTask(name, self.servers[name])
-            self.tasks[name] = task
-            future = asyncio.run_coroutine_threadsafe(task.start(), self._loop)
-            connect_timeout = _connect_timeout_seconds(self.servers[name])
-            try:
-                future.result(timeout=connect_timeout)
-            except FutureTimeoutError:
-                self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
-                future.cancel()
-                self._discard_task(name)
-                if not self.tasks:
-                    self._stop_loop()
-                raise RuntimeError(f"MCP server '{name}' failed to connect: {self.last_errors[name]}") from None
-            except Exception as exc:
-                self.last_errors[name] = str(exc)
-                future.cancel()
-                self._discard_task(name)
-                if not self.tasks:
-                    self._stop_loop()
-                raise RuntimeError(f"MCP server '{name}' failed to connect: {exc}") from exc
-            self._started = True
+            self._ensure_started_locked(name)
+
+    def _ensure_started_locked(self, name: str) -> None:
+        if name in self.tasks:
+            return
+        if name not in self.servers:
+            raise RuntimeError(f"MCP server '{name}' is not configured.")
+        if self.servers[name].get("enabled", True) is False:
+            raise RuntimeError(f"MCP server '{name}' is disabled.")
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._run_loop,
+                name="dagent-mcp-manager",
+                daemon=True,
+            )
+            self._thread.start()
+        task = MCPServerTask(name, self.servers[name])
+        self.tasks[name] = task
+        future = asyncio.run_coroutine_threadsafe(task.start(), self._loop)
+        connect_timeout = _connect_timeout_seconds(self.servers[name])
+        try:
+            future.result(timeout=connect_timeout)
+        except FutureTimeoutError:
+            self.last_errors[name] = f"timed out after {_format_timeout(connect_timeout)} seconds."
+            future.cancel()
+            self._discard_task(name)
+            if not self.tasks:
+                self._stop_loop()
+            raise RuntimeError(f"MCP server '{name}' failed to connect: {self.last_errors[name]}") from None
+        except Exception as exc:
+            self.last_errors[name] = str(exc)
+            future.cancel()
+            self._discard_task(name)
+            if not self.tasks:
+                self._stop_loop()
+            raise RuntimeError(f"MCP server '{name}' failed to connect: {exc}") from exc
+        self._started = True
 
     def call_tool_blocking(
         self,
@@ -143,12 +157,18 @@ class MCPServerManager:
             self.last_errors[name] = f"{self.last_errors.get(name, '')}; shutdown failed: {exc}".strip("; ")
 
     def _stop_loop(self) -> None:
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread is not None:
-            self._thread.join(timeout=10)
-        if self._loop is not None and not self._loop.is_closed():
-            self._loop.close()
+        loop = self._loop
+        thread = self._thread
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                raise RuntimeError(
+                    "MCP manager thread did not stop within 10 seconds."
+                )
+        if loop is not None and not loop.is_closed():
+            loop.close()
         self._loop = None
         self._thread = None
         self._started = False
