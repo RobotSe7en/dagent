@@ -43,30 +43,100 @@ final `RunState`, and the default run workspace name. Host-provided run ids must
 be single directory names. If `state` is supplied, `run_id` must match
 `state.run_id`.
 
-## Persisting State
+## Persisting Checkpoints
 
-If you persist the full result payload, restore the current SDK shape with
-`RunResult.model_validate(...)`:
+`RunState` remains the mutable execution state used for normal conversation
+continuation. A portable review continuation uses `RunCheckpoint`, which also
+contains the SDK-resolved execution plan and cumulative usage:
 
 ```python
-saved_payload = result.model_dump(mode="json")
-restored = dagent.RunResult.model_validate(saved_payload)
+checkpoint = result.checkpoint
+if checkpoint is None:
+    raise RuntimeError("SDK result did not contain a checkpoint")
 
-if restored.requires_review and restored.review is not None:
-    result = await runner.resume(restored.review.approve(), state=restored.state)
+saved_json = checkpoint.model_dump_json()
+
+# In a later process, after constructing a compatible Runner:
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
+if pending is not None:
+    decision = dagent.ReviewHandle(pending).approve()
+    result = await new_runner.resume(decision, checkpoint=restored)
 else:
     messages.append({"role": "user", "content": "Continue."})
-    result = await runner.run(agent, messages=messages, state=restored.state)
+    result = await new_runner.run(agent, messages=messages, checkpoint=restored)
 ```
 
-Use `run(..., state=...)` for normal continuation. If the saved state is
-awaiting review, continue that checkpoint with `resume(..., state=...)`;
-`run(..., state=...)` rejects awaiting-review states so review gates cannot be
-accidentally bypassed.
+The host chooses how and where to store the JSON. The SDK defines checkpoint
+validation and resume semantics; it does not own a database, tenant lifecycle,
+RBAC, or retention policy.
+
+On checkpoint resume, `Runner` validates that the exact capability, agent, and
+skill IDs are available, rebuilds the target-specific runtime from the resolved
+profiles and local loop limits, restores cumulative usage, and only then applies
+the review decision. Missing or disabled capabilities and missing skills fail
+closed. The current runner still supports `resume(decision)` from its in-memory
+checkpoint cache.
+
+The resolved plan uses frozen profile snapshots and an SDK-defined canonical
+SHA-256 fingerprint. The fingerprint detects accidental payload changes; it is
+not a signature or an authentication boundary.
+
+Use `run(..., state=...)` for ordinary continuation on the same `Runner`; the
+latest matching in-memory checkpoint restores usage and the original limits.
+For cross-process continuation, pass `checkpoint=...` to `run(...)`. A stale
+state is rejected, and restored limits cannot be replaced or enlarged.
+`resume(..., state=...)` is deprecated because a standalone `RunState` cannot
+restore target-specific profiles, limits, or exact execution semantics. It is
+temporarily retained as an explicit legacy path; new persistence code should
+store `result.checkpoint`.
+
+Checkpoint review decisions are one-shot within a `Runner`. If continuation
+fails, `Runner.run_checkpoint(run_id)` returns the terminal checkpoint. For an
+`ExecutionLimitExceeded` raised during resume, the same checkpoint and updated
+usage are also available as `error.checkpoint` and `error.usage`. A durable host
+must atomically claim the review ID before execution to prevent replay across
+different processes; exactly-once side effects cannot be provided by a
+stateless SDK alone.
+
+`RunResult.model_dump(...)` keeps its existing `state` and `output_text` shape.
+Persist `result.checkpoint` separately when cross-process review resume is
+required.
 
 Persisted `RunState` payloads include `schema_version: 1`. Payloads without the
 field are read as version 1. Hosts should reject unsupported explicit versions
 instead of silently migrating them.
+
+## Run-Wide Execution Budgets
+
+Use `ExecutionLimits` when the host needs one ceiling shared by the root agent,
+DAG nodes, map/loop/subgraph work, validation, and subagents:
+
+```python
+result = await runner.run(
+    agent,
+    messages=messages,
+    limits=dagent.ExecutionLimits(
+        max_total_operations=40,
+        max_model_turns=24,
+        max_capability_calls=20,
+    ),
+)
+
+print(result.usage.model_turns)
+print(result.usage.capability_calls)
+```
+
+Every model request, including routing, planning, validation, retries, and
+subagent turns, reserves one model turn. Every tool, MCP, memory, or agent
+capability execution reserves one capability call. Both increment total
+operations. Concurrent work reserves atomically before starting. Exceeding a
+limit raises `ExecutionLimitExceeded` before the disallowed external operation.
+
+`ToolAgent.max_steps` and `DagAgent.max_cycles` remain local loop limits; the
+run-wide budget does not change their meaning. Limits and usage are stored in
+the checkpoint. Review resume and normal checkpoint continuation cannot reset
+or enlarge them.
 
 ## Static DAG Result Helpers
 
@@ -186,15 +256,16 @@ if first.requires_review and first.review is not None:
             print(event.data.result.output_text)
 ```
 
-For a pending review restored after a restart, pass the saved state:
+For a pending review restored after a restart, pass the saved checkpoint:
 
 ```python
-restored = dagent.RunResult.model_validate(saved_payload)
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
 
-if restored.requires_review and restored.review is not None:
+if pending is not None:
     async for event in runner.resume_stream(
-        restored.review.approve(),
-        state=restored.state,
+        dagent.ReviewHandle(pending).approve(),
+        checkpoint=restored,
     ):
         ...
 ```

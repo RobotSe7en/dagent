@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,11 @@ from dagent.harness_runtime import (
     ValidatorAgent,
 )
 from dagent.harness_runtime.artifacts import ArtifactUpload
+from dagent.harness_runtime.execution_budget import (
+    ExecutionBudget,
+    ExecutionLimitExceeded,
+    execution_budget_scope,
+)
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -83,6 +89,8 @@ from dagent.schemas import (
     CapabilityResult,
     DAG,
     DAGSpec,
+    ExecutionLimits,
+    ExecutionUsage,
     MCPServerRegistrationResult,
     MCPServerSnapshot,
     MCPToolSnapshot,
@@ -91,6 +99,9 @@ from dagent.schemas import (
     PythonToolSourceRegistrationStatus,
     RunnerCatalogView,
     RunExecution,
+    ResolvedRunPlan,
+    RunCapabilityScope,
+    RunCheckpoint,
     RunState,
     RunTrace,
     SandboxConfig,
@@ -102,6 +113,13 @@ from dagent.schemas.run_id import validate_run_id
 
 RunTarget = AutoAgent | ToolAgent | DagAgent | Dag | DAGSpec
 SKILL_ACCESSOR_CAPABILITY_IDS = ("skill.list", "skill.view")
+
+
+@dataclass(frozen=True)
+class _ResolvedRuntime:
+    runtime: HarnessRuntime
+    capability_ids: tuple[str, ...]
+    skill_ids: tuple[str, ...]
 
 
 class Runner:
@@ -126,6 +144,8 @@ class Runner:
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
+        self._run_checkpoints: dict[str, RunCheckpoint] = {}
+        self._consumed_review_ids: set[str] = set()
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
         self._mcp_server_managers: dict[str, Any] = {}
         initial_capabilities = list(capabilities)
@@ -198,6 +218,8 @@ class Runner:
         if self._closed:
             return
         self._runtime.capability_catalog.shutdown()
+        self._run_checkpoints.clear()
+        self._consumed_review_ids.clear()
         self._mcp_server_capability_ids.clear()
         self._mcp_server_managers.clear()
         self._closed = True
@@ -733,6 +755,12 @@ class Runner:
         state = self._runtime.runs.get(run_id)
         return None if state is None else state.model_copy(deep=True)
 
+    def run_checkpoint(self, run_id: str) -> RunCheckpoint | None:
+        """Return the latest checkpoint, including terminal resume failures."""
+
+        checkpoint = self._run_checkpoints.get(run_id)
+        return None if checkpoint is None else checkpoint.model_copy(deep=True)
+
     @property
     def skill_store(self) -> SkillStore:
         """The filesystem-backed store powering skill discovery and installation."""
@@ -1050,9 +1078,11 @@ class Runner:
         *,
         messages: list[dict[str, Any]] | None = None,
         state: RunState | None = None,
+        checkpoint: RunCheckpoint | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
+        limits: ExecutionLimits | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
@@ -1062,12 +1092,30 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if checkpoint is not None and state is not None:
+            raise TypeError("checkpoint and state cannot be supplied together.")
+        continuation_checkpoint = checkpoint
+        if checkpoint is not None:
+            checkpoint = RunCheckpoint.model_validate(
+                checkpoint.model_dump(mode="python")
+            )
+            continuation_checkpoint = checkpoint
+            self._validate_checkpoint_runtime(checkpoint)
+            state = checkpoint.state
         if run_id is not None:
             validate_run_id(run_id)
         if state is not None:
             _ensure_run_state_can_continue(state)
             if run_id is not None and run_id != state.run_id:
                 raise ValueError("run_id must match state.run_id when state is supplied.")
+            if continuation_checkpoint is None:
+                cached = self._run_checkpoints.get(state.run_id)
+                if cached is not None:
+                    if cached.state != state:
+                        raise ValueError(
+                            "state is stale; continue from the latest checkpoint."
+                        )
+                    continuation_checkpoint = cached
         self._ensure_new_run_id_available(run_id, state=state)
         resolved_workspace_path = _validated_workspace_path_for_state(state, workspace_path)
         resolved_execution = _resolve_run_execution(execution, state)
@@ -1089,9 +1137,23 @@ class Runner:
             if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
             else None
         )
-        with self._run_scope(
-            resolved_execution,
-            skill_names=skill_names,
+        if continuation_checkpoint is not None:
+            if limits is not None and limits != continuation_checkpoint.plan.limits:
+                raise ValueError(
+                    "limits cannot replace or expand limits restored from a checkpoint."
+                )
+            resolved_limits = continuation_checkpoint.plan.limits
+            initial_usage = continuation_checkpoint.usage
+        else:
+            resolved_limits = limits or ExecutionLimits()
+            initial_usage = ExecutionUsage()
+        budget = ExecutionBudget(resolved_limits, initial_usage)
+        with (
+            self._run_scope(
+                resolved_execution,
+                skill_names=skill_names,
+            ),
+            execution_budget_scope(budget),
         ):
             return await self._run_dispatch(
                 target,
@@ -1100,6 +1162,8 @@ class Runner:
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
+                limits=resolved_limits,
+                budget=budget,
                 workspace_root=workspace_root,
                 workspace_path=resolved_workspace_path,
                 run_id=run_id,
@@ -1115,9 +1179,12 @@ class Runner:
         *,
         messages: list[dict[str, Any]] | None = None,
         state: RunState | None = None,
+        checkpoint: RunCheckpoint | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
+        limits: ExecutionLimits,
+        budget: ExecutionBudget,
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
         run_id: str | None = None,
@@ -1130,59 +1197,107 @@ class Runner:
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
             run_messages = _require_messages(messages, "AutoAgent")
-            runtime = self._runtime_for_auto_agent(target)
-            return await runtime.handle_messages(
+            resolved = self._runtime_for_auto_agent(target)
+            review_level = review or target.review
+            resolved_dynamic_adjust = (
+                target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
+            )
+            result = await resolved.runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="auto",
-                review_level=review or target.review,
-                dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
+                review_level=review_level,
+                dynamic_adjust=resolved_dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
                 run_id=run_id,
                 input_uploads=input_uploads,
-                capability_scope=CapabilityScope(skills=_agent_skills(target)),
+                capability_scope=CapabilityScope(
+                    capability_ids=resolved.capability_ids,
+                    skills=resolved.skill_ids,
+                ),
                 on_token=on_token,
                 on_event=on_event,
+            )
+            return self._finalize_run_result(
+                result,
+                runtime=resolved.runtime,
+                capability_ids=resolved.capability_ids,
+                skill_ids=resolved.skill_ids,
+                review_level=review_level,
+                dynamic_adjust=resolved_dynamic_adjust,
+                limits=limits,
+                usage=budget.snapshot(),
             )
 
         if isinstance(target, ToolAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for ToolAgent targets.")
             run_messages = _require_messages(messages, "ToolAgent")
-            runtime = self._runtime_for_tool_agent(target)
-            return await runtime.handle_messages(
+            resolved = self._runtime_for_tool_agent(target)
+            review_level = review or target.review
+            result = await resolved.runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="tool",
-                review_level=review or target.review,
+                review_level=review_level,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
                 run_id=run_id,
                 input_uploads=input_uploads,
-                capability_scope=CapabilityScope(skills=_agent_skills(target)),
+                capability_scope=CapabilityScope(
+                    capability_ids=resolved.capability_ids,
+                    skills=resolved.skill_ids,
+                ),
                 on_token=on_token,
                 on_event=on_event,
+            )
+            return self._finalize_run_result(
+                result,
+                runtime=resolved.runtime,
+                capability_ids=resolved.capability_ids,
+                skill_ids=resolved.skill_ids,
+                review_level=review_level,
+                dynamic_adjust=True,
+                limits=limits,
+                usage=budget.snapshot(),
             )
 
         if isinstance(target, DagAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for DagAgent targets.")
             run_messages = _require_messages(messages, "DagAgent")
-            runtime = self._runtime_for_dag_agent(target)
-            return await runtime.handle_messages(
+            resolved = self._runtime_for_dag_agent(target)
+            review_level = review or target.review
+            resolved_dynamic_adjust = (
+                target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
+            )
+            result = await resolved.runtime.handle_messages(
                 run_messages,
                 run_state=state,
                 mode="dag",
-                review_level=review or target.review,
-                dynamic_adjust=target.dynamic_adjust if dynamic_adjust is None else dynamic_adjust,
+                review_level=review_level,
+                dynamic_adjust=resolved_dynamic_adjust,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
                 run_id=run_id,
                 input_uploads=input_uploads,
-                capability_scope=CapabilityScope(skills=_agent_skills(target)),
+                capability_scope=CapabilityScope(
+                    capability_ids=resolved.capability_ids,
+                    skills=resolved.skill_ids,
+                ),
                 on_token=on_token,
                 on_event=on_event,
+            )
+            return self._finalize_run_result(
+                result,
+                runtime=resolved.runtime,
+                capability_ids=resolved.capability_ids,
+                skill_ids=resolved.skill_ids,
+                review_level=review_level,
+                dynamic_adjust=resolved_dynamic_adjust,
+                limits=limits,
+                usage=budget.snapshot(),
             )
 
         if isinstance(target, Dag):
@@ -1194,7 +1309,7 @@ class Runner:
                 raise TypeError("state is not accepted for Dag targets.")
             self._ensure_dag_capabilities(target)
             spec = self._resolve_spec_capability_metadata(target.to_dag_spec())
-            return await self._runtime.run_dag_spec(
+            result = await self._runtime.run_dag_spec(
                 spec,
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
@@ -1204,6 +1319,12 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
+            return self._finalize_static_result(
+                result,
+                spec=spec,
+                limits=limits,
+                usage=budget.snapshot(),
+            )
 
         if isinstance(target, DAGSpec):
             if review is not None:
@@ -1212,8 +1333,9 @@ class Runner:
                 raise TypeError("messages is not accepted for DAGSpec targets.")
             if state is not None:
                 raise TypeError("state is not accepted for DAGSpec targets.")
-            return await self._runtime.run_dag_spec(
-                self._resolve_spec_capability_metadata(target),
+            spec = self._resolve_spec_capability_metadata(target)
+            result = await self._runtime.run_dag_spec(
+                spec,
                 graph_input=graph_input,
                 workspace_root=self._resolve_run_workspace_root(workspace_root),
                 workspace_path=workspace_path,
@@ -1222,8 +1344,99 @@ class Runner:
                 on_token=on_token,
                 on_event=on_event,
             )
+            return self._finalize_static_result(
+                result,
+                spec=spec,
+                limits=limits,
+                usage=budget.snapshot(),
+            )
 
         raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
+
+    def _finalize_static_result(
+        self,
+        result: RunResult,
+        *,
+        spec: DAGSpec,
+        limits: ExecutionLimits,
+        usage: ExecutionUsage,
+    ) -> RunResult:
+        capability_ids = tuple(sorted({
+            invocation.capability_id
+            for invocation in iter_dag_invocations(spec.nodes)
+        }))
+        skill_ids = self._resolve_skill_ids(None)
+        return self._finalize_run_result(
+            result,
+            runtime=self._runtime,
+            capability_ids=capability_ids,
+            skill_ids=skill_ids,
+            review_level="fast",
+            dynamic_adjust=True,
+            limits=limits,
+            usage=usage,
+        )
+
+    def _finalize_run_result(
+        self,
+        result: RunResult,
+        *,
+        runtime: HarnessRuntime,
+        capability_ids: tuple[str, ...],
+        skill_ids: tuple[str, ...],
+        review_level: ReviewLevel,
+        dynamic_adjust: bool,
+        limits: ExecutionLimits,
+        usage: ExecutionUsage,
+    ) -> RunResult:
+        capability_ids = tuple(sorted(capability_ids))
+        skill_ids = tuple(sorted(skill_ids))
+        state = result.state.model_copy(update={
+            "review_level": review_level,
+            "dynamic_adjust": dynamic_adjust,
+            "capability_scope": RunCapabilityScope(
+                capability_ids=capability_ids,
+                skills=skill_ids,
+            ),
+        })
+        state = self._runtime.session.save_run_state(state)
+        validator_profile = (
+            runtime.validator.agent.profile.model_copy(deep=True)
+            if runtime.validator is not None
+            else None
+        )
+        plan = ResolvedRunPlan(
+            runtime_kind=state.kind,
+            tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
+            planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
+            max_tool_steps=runtime.tool_agent.max_steps,
+            max_dag_cycles=runtime.dag_agent.loop.max_cycles,
+            review_level=review_level,
+            dynamic_adjust=dynamic_adjust,
+            capability_ids=capability_ids,
+            skill_ids=skill_ids,
+            agent_ids=tuple(
+                capability_id
+                for capability_id in capability_ids
+                if capability_id.startswith("agent.")
+            ),
+            validation_enabled=runtime.enable_validation,
+            validator_profile=validator_profile,
+            max_validation_retries=runtime.max_validation_retries,
+            limits=limits,
+        )
+        finalized = replace(result, state=state, plan=plan, usage=usage)
+        checkpoint = finalized.checkpoint
+        if checkpoint is None:
+            raise RuntimeError("SDK run result did not produce a checkpoint.")
+        self._run_checkpoints[state.run_id] = checkpoint.model_copy(deep=True)
+        return finalized
+
+    def _resolve_skill_ids(self, names: tuple[str, ...] | None) -> tuple[str, ...]:
+        return tuple(sorted(
+            entry.qualified_name
+            for entry in visible_skills(self._skill_provider.store.list(), names)
+        ))
 
     async def stream(
         self,
@@ -1231,9 +1444,11 @@ class Runner:
         *,
         messages: list[dict[str, Any]] | None = None,
         state: RunState | None = None,
+        checkpoint: RunCheckpoint | None = None,
         graph_input: Any = None,
         review: ReviewLevel | None = None,
         dynamic_adjust: bool | None = None,
+        limits: ExecutionLimits | None = None,
         execution: RunExecution = "local",
         workspace_root: str | Path = DEFAULT_RUNS_DIR,
         workspace_path: str | Path | None = None,
@@ -1243,20 +1458,25 @@ class Runner:
     ) -> AsyncIterator[RunStreamEvent]:
         """Run a target and yield typed stream events."""
 
+        if checkpoint is not None and state is not None:
+            raise TypeError("checkpoint and state cannot be supplied together.")
+        continuation_state = checkpoint.state if checkpoint is not None else state
         if run_id is not None:
             validate_run_id(run_id)
-        if state is not None and run_id is not None and run_id != state.run_id:
+        if continuation_state is not None and run_id is not None and run_id != continuation_state.run_id:
             raise ValueError("run_id must match state.run_id when state is supplied.")
-        self._ensure_new_run_id_available(run_id, state=state)
+        self._ensure_new_run_id_available(run_id, state=continuation_state)
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
             return await self.run(
                 target,
                 messages=messages,
                 state=state,
+                checkpoint=checkpoint,
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
+                limits=limits,
                 execution=execution,
                 workspace_root=workspace_root,
                 workspace_path=workspace_path,
@@ -1273,13 +1493,20 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
+        checkpoint: RunCheckpoint | None = None,
         state: RunState | None = None,
         execution: RunExecution = "local",
     ) -> AsyncIterator[RunStreamEvent]:
         """Resume a pending review and yield typed stream events."""
 
         async def run_target(on_event: LoopEventHandler) -> RunResult:
-            result = await self.resume(decision, state=state, execution=execution, on_event=on_event)
+            result = await self.resume(
+                decision,
+                checkpoint=checkpoint,
+                state=state,
+                execution=execution,
+                on_event=on_event,
+            )
             if result is None:
                 raise LookupError("Review session not found.")
             return result
@@ -1353,14 +1580,41 @@ class Runner:
         self,
         decision: ReviewDecision,
         *,
+        checkpoint: RunCheckpoint | None = None,
         state: RunState | None = None,
         execution: RunExecution = "local",
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult | None:
-        if state is not None:
-            decision = _decision_for_resume_state(decision, state)
+        if checkpoint is not None and state is not None:
+            raise TypeError("checkpoint and state cannot be supplied together.")
+
         session_state = self._runtime.session.get_review_state(decision.review_id)
+        selected_checkpoint = checkpoint
+        if selected_checkpoint is None and state is not None:
+            cached = self._run_checkpoints.get(state.run_id)
+            if cached is not None and cached.state == state:
+                selected_checkpoint = cached
+        if selected_checkpoint is None and state is None and session_state is not None:
+            selected_checkpoint = self._run_checkpoints.get(session_state.run_id)
+
+        if selected_checkpoint is not None:
+            return await self._resume_checkpoint(
+                decision,
+                selected_checkpoint,
+                execution=execution,
+                on_token=on_token,
+                on_event=on_event,
+            )
+
+        if state is not None:
+            warnings.warn(
+                "Runner.resume(..., state=...) cannot restore target-specific runtime "
+                "configuration; persist result.checkpoint and pass checkpoint=... instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            decision = _decision_for_resume_state(decision, state)
         resolved_execution = _resolve_run_execution(execution, state or session_state)
         resume_state = state or session_state
         with self._run_scope(
@@ -1378,12 +1632,164 @@ class Runner:
                 on_event=on_event,
             )
 
-    def _runtime_for_auto_agent(self, agent: AutoAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(
-            agent.capabilities,
-            agent.skills,
-            agents=agent.agents,
+    async def _resume_checkpoint(
+        self,
+        decision: ReviewDecision,
+        checkpoint: RunCheckpoint,
+        *,
+        execution: RunExecution,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> RunResult | None:
+        checkpoint = RunCheckpoint.model_validate(
+            checkpoint.model_dump(mode="python")
         )
+        self._validate_checkpoint_runtime(checkpoint)
+        decision = _decision_for_resume_state(decision, checkpoint.state)
+        if decision.review_id in self._consumed_review_ids:
+            raise ValueError(
+                f"Checkpoint review '{decision.review_id}' has already been consumed."
+            )
+        review_level = decision.review_level or checkpoint.plan.review_level
+        plan_payload = checkpoint.plan.model_dump(
+            mode="python",
+            exclude={"fingerprint"},
+        )
+        plan_payload["review_level"] = review_level
+        plan = ResolvedRunPlan.model_validate(plan_payload)
+        resume_state = checkpoint.state.model_copy(
+            update={"review_level": review_level}
+        )
+        restored = RunCheckpoint(
+            state=resume_state,
+            plan=plan,
+            usage=checkpoint.usage,
+        )
+        runtime = self._runtime_for_resolved_plan(plan)
+        budget = ExecutionBudget(plan.limits, restored.usage)
+        resolved_execution = _resolve_run_execution(execution, resume_state)
+        self._consumed_review_ids.add(decision.review_id)
+        try:
+            with (
+                self._run_scope(
+                    resolved_execution,
+                    skill_names=plan.skill_ids,
+                ),
+                execution_budget_scope(budget),
+            ):
+                result = await runtime.resume_review(
+                    decision.review_id,
+                    run_state=resume_state,
+                    dag=decision.dag,
+                    approved=decision.approved,
+                    review_level=decision.review_level,
+                    feedback=decision.feedback,
+                    on_token=on_token,
+                    on_event=on_event,
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"Checkpoint review '{decision.review_id}' could not be restored."
+                    )
+                return self._finalize_run_result(
+                    result,
+                    runtime=runtime,
+                    capability_ids=plan.capability_ids,
+                    skill_ids=plan.skill_ids,
+                    review_level=review_level,
+                    dynamic_adjust=plan.dynamic_adjust,
+                    limits=plan.limits,
+                    usage=budget.snapshot(),
+                )
+        except BaseException as exc:
+            usage = budget.snapshot()
+            failed_update: dict[str, Any] = {
+                "status": "failed",
+                "pending_review": None,
+                "pending_invocation": None,
+            }
+            if (
+                resume_state.pending_review is not None
+                and resume_state.pending_review.kind == "capability_review"
+                and runtime.tool_agent.messages
+            ):
+                failed_update["internal_messages"] = [
+                    dict(message) for message in runtime.tool_agent.messages
+                ]
+                failed_update["trace"] = runtime.tool_agent.trace
+            failed_state = resume_state.model_copy(update=failed_update)
+            failed_state = self._runtime.session.save_run_state(failed_state)
+            failed_checkpoint = RunCheckpoint(
+                state=failed_state,
+                plan=plan,
+                usage=usage,
+            )
+            self._run_checkpoints[failed_state.run_id] = failed_checkpoint.model_copy(
+                deep=True
+            )
+            if isinstance(exc, ExecutionLimitExceeded):
+                exc.attach_checkpoint(failed_checkpoint, usage)
+            raise
+
+    def _validate_checkpoint_runtime(self, checkpoint: RunCheckpoint) -> None:
+        if checkpoint.plan.runtime_kind == "static_dag":
+            raise ValueError("Static DAG checkpoints do not support review resume.")
+        catalog = self._runtime.capability_catalog
+        for capability_id in checkpoint.plan.capability_ids:
+            definition = catalog.get(capability_id)
+            if definition is None:
+                raise ValueError(
+                    f"Checkpoint capability is not registered: {capability_id}"
+                )
+            if not definition.enabled:
+                raise ValueError(
+                    f"Checkpoint capability is disabled: {capability_id}"
+                )
+            if capability_id in checkpoint.plan.agent_ids and definition.kind != "agent":
+                raise ValueError(
+                    f"Checkpoint agent capability has incompatible kind: {capability_id}"
+                )
+        available_skills = {
+            entry.qualified_name for entry in self._skill_provider.store.list()
+        }
+        missing_skills = sorted(set(checkpoint.plan.skill_ids) - available_skills)
+        if missing_skills:
+            raise ValueError(
+                "Checkpoint skills are not available: " + ", ".join(missing_skills)
+            )
+
+    def _runtime_for_resolved_plan(self, plan: ResolvedRunPlan) -> HarnessRuntime:
+        validator = (
+            ValidatorAgent(
+                provider=self._runtime.provider,
+                profile=plan.validator_profile.model_copy(deep=True),
+            )
+            if plan.validator_profile is not None
+            else None
+        )
+        runtime = _assemble_runtime(
+            provider=self._runtime.provider,
+            capability_executor=self._runtime.capability_executor,
+            catalog=self._runtime.capability_catalog,
+            tool_adapter=_tool_adapter(
+                self._runtime.capability_catalog,
+                plan.capability_ids,
+            ),
+            tool_profile=plan.tool_profile,
+            tool_max_steps=plan.max_tool_steps,
+            dag_profile=plan.planner_profile,
+            dag_max_cycles=plan.max_dag_cycles,
+            validator=validator,
+            enable_validation=plan.validation_enabled,
+            max_validation_retries=plan.max_validation_retries,
+            profile_root=None,
+        )
+        runtime.session = self._runtime.session
+        runtime.runs = self._runtime.runs
+        return runtime
+
+    def _runtime_for_auto_agent(self, agent: AutoAgent) -> _ResolvedRuntime:
+        capability_ids, skill_ids = self._resolve_agent_scope(agent)
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
@@ -1393,14 +1799,10 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
         )
-        return runtime
+        return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
-    def _runtime_for_tool_agent(self, agent: ToolAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(
-            agent.capabilities,
-            agent.skills,
-            agents=agent.agents,
-        )
+    def _runtime_for_tool_agent(self, agent: ToolAgent) -> _ResolvedRuntime:
+        capability_ids, skill_ids = self._resolve_agent_scope(agent)
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile=agent.profile,
@@ -1410,14 +1812,10 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
         )
-        return runtime
+        return _ResolvedRuntime(runtime, capability_ids, skill_ids)
 
-    def _runtime_for_dag_agent(self, agent: DagAgent) -> HarnessRuntime:
-        capability_ids = self._resolve_agent_capability_refs(
-            agent.capabilities,
-            agent.skills,
-            agents=agent.agents,
-        )
+    def _runtime_for_dag_agent(self, agent: DagAgent) -> _ResolvedRuntime:
+        capability_ids, skill_ids = self._resolve_agent_scope(agent)
         runtime = _runtime_from_existing(
             self._runtime,
             tool_profile="conversation",
@@ -1427,7 +1825,29 @@ class Runner:
             visible_capability_ids=capability_ids,
             profile_root=self.profile_root,
         )
-        return runtime
+        return _ResolvedRuntime(runtime, capability_ids, skill_ids)
+
+    def _resolve_agent_scope(
+        self,
+        agent: AutoAgent | ToolAgent | DagAgent,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        requested_skills = _agent_skills(agent)
+        skill_ids = self._resolve_skill_ids(requested_skills)
+        capability_ids = self._resolve_agent_capability_refs(
+            agent.capabilities,
+            skill_ids,
+            agents=agent.agents,
+        )
+        enabled_ids = tuple(
+            capability_id
+            for capability_id in capability_ids
+            if (
+                (definition := self._runtime.capability_catalog.get(capability_id))
+                is not None
+                and definition.enabled
+            )
+        )
+        return enabled_ids, skill_ids
 
     def _resolve_agent_capability_refs(
         self,
@@ -1773,8 +2193,8 @@ def _require_messages(
 def _ensure_run_state_can_continue(state: RunState) -> None:
     if state.status == "awaiting_review" or state.pending_review is not None:
         raise ValueError(
-            "Run state is awaiting review; use Runner.resume(..., state=...) "
-            "to continue the pending review."
+            "Run state is awaiting review; use Runner.resume(..., checkpoint=...) "
+            "with the SDK-produced RunCheckpoint."
         )
 
 

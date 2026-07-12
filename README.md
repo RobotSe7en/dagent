@@ -74,6 +74,11 @@ The DAG planner proposes work, but capability handlers enforce boundaries before
 side effects. Medium/high-risk work can require review; disabled or unknown
 capabilities fail closed; file boundaries reject path escape.
 
+**7. Portable continuation has an explicit contract.**
+`RunCheckpoint` keeps mutable `RunState`, immutable resolved execution semantics,
+and shared operation usage separate. Hosts persist the checkpoint and rebuild
+providers and capability implementations; the SDK validates and resumes it.
+
 ## Quick Start
 
 Install the PyPI package as `dagent-ai`; import it in Python as `dagent`:
@@ -153,6 +158,7 @@ flowchart TD
   RT --> OBS["DAG Observation"]
   OBS --> DAL
   HR --> RR["RunResult"]
+  RR --> CP["RunCheckpoint: state + plan + usage"]
 ```
 
 `Runner` is the public SDK entrypoint and owns the configured runtime, session,

@@ -5,11 +5,91 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.0`.
+The current package version is `0.8.0`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.8.0
+
+### Added
+
+- `ResolvedRunPlan` records the target-specific profiles, local loop limits,
+  exact capability/agent/skill scope, validation settings, and run-wide limits
+  resolved by the SDK. It contains no handlers, provider secrets, connections,
+  or host policy.
+- `RunCheckpoint` combines `RunState`, `ResolvedRunPlan`, and cumulative
+  `ExecutionUsage`. SDK-produced results expose it as `result.checkpoint`, and
+  `Runner.run_checkpoint(run_id)` returns the latest in-memory or terminal
+  checkpoint.
+- `ExecutionLimits` provides independent total-operation, model-turn, and
+  capability-call ceilings. Reservations are shared by root agents, DAG work,
+  validation, retries, concurrent branches, and subagents.
+- `ExecutionLimitExceeded` fails before an operation that would cross a limit.
+
+### Changed
+
+- Cross-process review continuation now uses
+  `Runner.resume(..., checkpoint=...)` or
+  `Runner.resume_stream(..., checkpoint=...)`. Resume validates exact scope,
+  reconstructs a target-specific derived runtime, and restores usage before
+  applying the review decision.
+- `Runner.run(..., checkpoint=...)` restores usage and original limits for a
+  normal cross-process continuation. Same-Runner `state=...` continuation uses
+  the matching checkpoint cache and rejects stale state.
+- Resolved profile snapshots are deeply frozen. Every plan carries a canonical
+  SHA-256 fingerprint, and checkpoint hydration rejects inconsistent pending
+  capability reviews or invocations outside the resolved scope.
+- Checkpoint review decisions are one-shot within a `Runner`. A resume failure
+  records a terminal checkpoint; budget exceptions expose it with updated
+  usage on `error.checkpoint` and `error.usage`.
+- SDK-produced `RunState.capability_scope` now records resolved canonical skill
+  IDs and exact capability IDs rather than an unresolved declaration.
+- `RunResult.model_dump(...)` retains its previous `state` and `output_text`
+  payload shape. Persist `result.checkpoint` separately for portable review
+  continuation.
+
+### Breaking Changes
+
+- `Runner.resume(..., state=...)` and `resume_stream(..., state=...)` are
+  deprecated and emit `DeprecationWarning` when no matching in-memory
+  checkpoint exists. They remain as an explicit v0.8 legacy path, but cannot
+  restore target-specific execution semantics.
+- Checkpoint resume does not fall back to the base runtime when a required
+  capability or skill is unavailable; it fails closed.
+- Restored limits cannot be replaced or enlarged. Durable multi-process hosts
+  must atomically claim review IDs before execution to prevent stale-checkpoint
+  replay across processes.
+
+### Migration Steps
+
+- Persist `result.checkpoint.model_dump_json()` for Runs awaiting review.
+- Restore with `RunCheckpoint.model_validate_json(...)`, construct a compatible
+  `Runner`, and pass the checkpoint to `Runner.resume(...)`.
+- For an ordinary bounded continuation after a restart, pass the restored
+  checkpoint to `Runner.run(...)`, not only its state.
+- Map a host-wide step policy to `ExecutionLimits.max_total_operations` when
+  desired. Do not rewrite `ToolAgent.max_steps` or `DagAgent.max_cycles`; those
+  remain local loop controls.
+- Keep checkpoint storage, tenant authorization, retention, and compatible
+  capability/provider construction in the host.
+
+### Verification
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### Known Limitations
+
+- A checkpoint describes execution semantics, not executable handlers or
+  provider connections. The restoring host must construct a compatible
+  `Runner`.
+- The plan fingerprint detects accidental mutation but is not a signature;
+  checkpoint authenticity remains a host responsibility.
+- Static DAG results carry checkpoints and usage for inspection, but static DAG
+  review/crash continuation is not supported.
 
 ## 0.7.0
 

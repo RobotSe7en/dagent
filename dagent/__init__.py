@@ -27,7 +27,12 @@ from dagent.dag_builder import (
     NodeOutputRef,
     item,
 )
-from dagent.harness_runtime import ArtifactUpload, CapabilityScope, validate_dag_spec
+from dagent.harness_runtime import (
+    ArtifactUpload,
+    CapabilityScope,
+    ExecutionLimitExceeded,
+    validate_dag_spec,
+)
 from dagent.profiles import AgentProfile, ProfileStore, list_builtin_profiles, load_builtin_profile
 from dagent.providers import Provider
 from dagent.result import RunResult, RunStreamEvent
@@ -43,8 +48,12 @@ from dagent.schemas import (
     DAGRun,
     DAGSpec,
     DockerSandboxConfig,
+    ExecutionLimits,
+    ExecutionUsage,
     PendingReview,
+    ResolvedRunPlan,
     RiskLevel,
+    RunCheckpoint,
     RunExecution,
     RunState,
     RunTrace,
@@ -52,7 +61,7 @@ from dagent.schemas import (
     SandboxConfig,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "__version__",
@@ -74,6 +83,9 @@ __all__ = [
     "DAGSpec",
     "DagAgent",
     "Dag",
+    "ExecutionLimits",
+    "ExecutionLimitExceeded",
+    "ExecutionUsage",
     "FormatRef",
     "InputRef",
     "ItemRef",
@@ -87,10 +99,12 @@ __all__ = [
     "PendingReview",
     "ProfileStore",
     "Provider",
+    "ResolvedRunPlan",
     "ReviewLevel",
     "ReviewDecision",
     "ReviewHandle",
     "RiskLevel",
+    "RunCheckpoint",
     "RunExecution",
     "RunResult",
     "RunState",

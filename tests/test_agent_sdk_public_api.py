@@ -32,6 +32,11 @@ def test_package_exposes_tool_and_separate_agent_entrypoints() -> None:
     assert hasattr(dagent, "Provider")
     assert hasattr(dagent, "ReviewLevel")
     assert hasattr(dagent, "RunStreamEvent")
+    assert hasattr(dagent, "RunCheckpoint")
+    assert hasattr(dagent, "ResolvedRunPlan")
+    assert hasattr(dagent, "ExecutionLimits")
+    assert hasattr(dagent, "ExecutionUsage")
+    assert hasattr(dagent, "ExecutionLimitExceeded")
     assert hasattr(dagent, "SkillStore")
     assert hasattr(dagent, "load_builtin_profile")
     assert hasattr(dagent, "list_builtin_profiles")
@@ -979,7 +984,8 @@ def test_runner_resume_can_restore_pending_capability_gate_from_state(tmp_path) 
     first_runner.close()
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[write])
-    resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
+    with pytest.warns(DeprecationWarning, match="checkpoint"):
+        resumed = run(second_runner.resume(first.review.approve(), state=saved_state))
 
     assert resumed is not None
     assert resumed.output_text == "done"
@@ -1040,7 +1046,8 @@ def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> No
 
     second_runner = dagent.Runner(workspace=tmp_path, provider=provider, capabilities=[search])
     decision = dagent.ReviewDecision(review_id=first.review.review_id, approved=True)
-    resumed = run(second_runner.resume(decision, state=saved_state))
+    with pytest.warns(DeprecationWarning, match="checkpoint"):
+        resumed = run(second_runner.resume(decision, state=saved_state))
 
     assert resumed is not None
     assert resumed.output_text == "Report: found:X"

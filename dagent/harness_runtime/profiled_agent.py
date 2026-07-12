@@ -8,6 +8,7 @@ from typing import Any
 
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider
+from dagent.harness_runtime.execution_budget import reserve_model_turn
 from dagent.state import PromptBuilder, PromptRequest
 
 
@@ -26,6 +27,7 @@ class ProfiledAgent:
         self.prompt_builder = prompt_builder or PromptBuilder()
 
     async def run_text(self, *, task_content: str, **prompt_values: Any) -> str:
+        reserve_model_turn()
         response = await self.provider.chat(
             self.prompt_builder.build(
                 PromptRequest(

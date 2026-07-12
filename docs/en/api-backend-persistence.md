@@ -98,6 +98,11 @@ The backend reads `runs.state_json`, reconstructs `RunState`, and calls
 `Runner.resume_stream(decision, state=run_state)`. The client does not send
 state in hosted/project mode.
 
+This is the bundled API's v0.7 persistence format and uses the SDK's deprecated
+state-only compatibility path. New hosts should persist `RunCheckpoint` and use
+`checkpoint=...`; migrating the local SQLite schema is separate from the SDK
+checkpoint contract.
+
 Trace and artifact endpoints read the stored `RunState` first and fall back to
 the in-memory runner only when no database state exists. This lets completed and
 awaiting-review project runs remain inspectable after an API process restart,

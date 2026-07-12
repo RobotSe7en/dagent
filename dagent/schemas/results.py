@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from dagent.profiles import AgentProfile
 from dagent.schemas.dag import DAG
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
@@ -17,6 +20,125 @@ LoopStatus = Literal["completed", "awaiting_review", "failed"]
 RunStateKind = Literal["tool", "dynamic_dag", "static_dag"]
 ReviewLevelValue = Literal["fast", "careful"]
 RuntimeModeValue = Literal["auto", "tool", "dag", "dag_spec"]
+
+
+class ExecutionLimits(BaseModel):
+    """Run-wide operation limits shared by every nested execution path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_total_operations: int | None = Field(default=None, ge=0)
+    max_model_turns: int | None = Field(default=None, ge=0)
+    max_capability_calls: int | None = Field(default=None, ge=0)
+
+
+class ExecutionUsage(BaseModel):
+    """Serializable operation counters consumed by a run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total_operations: int = Field(default=0, ge=0)
+    model_turns: int = Field(default=0, ge=0)
+    capability_calls: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_total_operations(self) -> "ExecutionUsage":
+        expected = self.model_turns + self.capability_calls
+        if self.total_operations != expected:
+            raise ValueError(
+                "total_operations must equal model_turns + capability_calls."
+            )
+        return self
+
+
+class _FrozenAgentProfile(AgentProfile):
+    """Deeply immutable profile payload stored inside a resolved plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ResolvedRunPlan(BaseModel):
+    """Immutable, serializable execution semantics resolved by ``Runner``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    runtime_kind: RunStateKind
+    tool_profile: AgentProfile
+    planner_profile: AgentProfile
+    max_tool_steps: int = Field(ge=1)
+    max_dag_cycles: int = Field(ge=1)
+    review_level: ReviewLevelValue = "fast"
+    dynamic_adjust: bool = True
+    capability_ids: tuple[str, ...] = ()
+    skill_ids: tuple[str, ...] = ()
+    agent_ids: tuple[str, ...] = ()
+    validation_enabled: bool = False
+    validator_profile: AgentProfile | None = None
+    max_validation_retries: int = Field(default=1, ge=0)
+    limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    fingerprint: str = ""
+
+    @field_validator(
+        "tool_profile",
+        "planner_profile",
+        "validator_profile",
+        mode="before",
+    )
+    @classmethod
+    def freeze_profiles(cls, value: Any) -> _FrozenAgentProfile | None:
+        if value is None:
+            return None
+        payload = value.model_dump() if isinstance(value, AgentProfile) else value
+        return _FrozenAgentProfile.model_validate(payload)
+
+    @field_validator("capability_ids", "skill_ids", "agent_ids", mode="before")
+    @classmethod
+    def canonicalize_ids(cls, value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            raise ValueError("Resolved run plan ids must be a collection of strings.")
+        ids = tuple(str(item).strip() for item in (value or ()))
+        if any(not item for item in ids):
+            raise ValueError("Resolved run plan ids must not be empty.")
+        return tuple(sorted(set(ids)))
+
+    @model_validator(mode="after")
+    def validate_resolved_configuration(self) -> "ResolvedRunPlan":
+        if self.validation_enabled and self.validator_profile is None:
+            raise ValueError(
+                "validator_profile is required when validation_enabled is true."
+            )
+        expected_agent_ids = tuple(
+            capability_id
+            for capability_id in self.capability_ids
+            if capability_id.startswith("agent.")
+        )
+        if self.agent_ids != expected_agent_ids:
+            raise ValueError(
+                "agent_ids must exactly match agent.* entries in capability_ids."
+            )
+        expected_fingerprint = self.canonical_fingerprint()
+        if self.fingerprint and self.fingerprint != expected_fingerprint:
+            raise ValueError("Resolved run plan fingerprint does not match its payload.")
+        if not self.fingerprint:
+            object.__setattr__(self, "fingerprint", expected_fingerprint)
+        return self
+
+    def canonical_fingerprint(self) -> str:
+        """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
+
+        payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    def validate_fingerprint(self) -> None:
+        if self.fingerprint != self.canonical_fingerprint():
+            raise ValueError("Resolved run plan fingerprint does not match its payload.")
 
 
 class RunCapabilityScope(BaseModel):
@@ -72,6 +194,91 @@ class RunState(BaseModel):
     spec_id: str | None = None
     workspace_path: str | None = None
     dag_boundary_approved_version: int | None = None
+
+
+class RunCheckpoint(BaseModel):
+    """Portable continuation snapshot generated by the SDK."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    state: RunState
+    plan: ResolvedRunPlan
+    usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
+
+    @model_validator(mode="after")
+    def validate_checkpoint_consistency(self) -> "RunCheckpoint":
+        self.plan.validate_fingerprint()
+        if self.state.kind != self.plan.runtime_kind:
+            raise ValueError("Checkpoint state kind does not match the resolved run plan.")
+        expected_runtime_mode = {
+            "tool": "tool",
+            "dynamic_dag": "dag",
+            "static_dag": "dag_spec",
+        }[self.state.kind]
+        if self.state.runtime_mode != expected_runtime_mode:
+            raise ValueError(
+                "Checkpoint runtime mode does not match the run state kind."
+            )
+        if self.state.review_level != self.plan.review_level:
+            raise ValueError(
+                "Checkpoint review level does not match the resolved run plan."
+            )
+        if self.state.dynamic_adjust != self.plan.dynamic_adjust:
+            raise ValueError(
+                "Checkpoint dynamic_adjust does not match the resolved run plan."
+            )
+        if self.state.capability_scope.capability_ids != self.plan.capability_ids:
+            raise ValueError(
+                "Checkpoint capability scope does not match the resolved run plan."
+            )
+        if self.state.capability_scope.skills != self.plan.skill_ids:
+            raise ValueError("Checkpoint skill scope does not match the resolved run plan.")
+        pending_review = self.state.pending_review
+        pending_invocation = self.state.pending_invocation
+        if (self.state.status == "awaiting_review") != (pending_review is not None):
+            raise ValueError(
+                "Checkpoint awaiting_review status and pending review must agree."
+            )
+        if pending_review is not None and pending_review.kind == "capability_review":
+            pending_call = pending_review.capability_call
+            if pending_call is None or pending_invocation is None:
+                raise ValueError(
+                    "Capability review checkpoints require a pending invocation."
+                )
+            if (
+                pending_call.invocation_id != pending_invocation.invocation_id
+                or pending_call.capability_id != pending_invocation.capability_id
+                or pending_call.arguments != pending_invocation.arguments
+            ):
+                raise ValueError(
+                    "Checkpoint pending capability call and invocation do not match."
+                )
+            if pending_invocation.capability_id not in self.plan.capability_ids:
+                raise ValueError(
+                    "Checkpoint pending capability is outside the resolved scope."
+                )
+        elif pending_invocation is not None:
+            raise ValueError(
+                "Checkpoint pending invocation requires a capability review."
+            )
+        limits = self.plan.limits
+        if (
+            limits.max_total_operations is not None
+            and self.usage.total_operations > limits.max_total_operations
+        ):
+            raise ValueError("Checkpoint usage exceeds max_total_operations.")
+        if (
+            limits.max_model_turns is not None
+            and self.usage.model_turns > limits.max_model_turns
+        ):
+            raise ValueError("Checkpoint usage exceeds max_model_turns.")
+        if (
+            limits.max_capability_calls is not None
+            and self.usage.capability_calls > limits.max_capability_calls
+        ):
+            raise ValueError("Checkpoint usage exceeds max_capability_calls.")
+        return self
 
 
 class LoopOutcome(BaseModel):
