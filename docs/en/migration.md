@@ -5,13 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.8.0`.
+The current package version is `0.7.1`.
 
 ## Unreleased
 
 - No unreleased changes.
 
-## 0.8.0
+## 0.7.1
 
 ### Added
 
@@ -54,7 +54,7 @@ The current package version is `0.8.0`.
 
 - `Runner.resume(..., state=...)` and `resume_stream(..., state=...)` are
   deprecated and emit `DeprecationWarning` when no matching in-memory
-  checkpoint exists. They remain as an explicit v0.8 legacy path, but cannot
+  checkpoint exists. They remain as an explicit v0.7.1 legacy path, but cannot
   restore target-specific execution semantics.
 - Checkpoint resume does not fall back to the base runtime when a required
   capability or skill is unavailable; it fails closed.

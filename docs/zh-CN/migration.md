@@ -4,13 +4,13 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.8.0`。
+当前包版本是 `0.7.1`。
 
 ## Unreleased
 
 - 没有尚未发布的变更。
 
-## 0.8.0
+## 0.7.1
 
 ### 新增
 
@@ -47,7 +47,7 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 ### 破坏性改变
 
 - 当不存在匹配的内存 checkpoint 时，`Runner.resume(..., state=...)` 和
-  `resume_stream(..., state=...)` 已弃用并会产生 `DeprecationWarning`。它们在 v0.8 中
+  `resume_stream(..., state=...)` 已弃用并会产生 `DeprecationWarning`。它们在 v0.7.1 中
   仍作为显式 legacy path 保留，但无法恢复目标专属执行语义。
 - 当所需 capability 或 skill 不可用时，checkpoint resume 不会回退到 base runtime，
   而是 fail closed。
