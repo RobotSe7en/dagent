@@ -85,6 +85,10 @@ POST /projects/{project_id}/reviews/{review_id}/resume
 `Runner.resume_stream(decision, state=run_state)`。hosted/project 模式下客户端不发送
 state。
 
+这是内置 API 的 v0.7 persistence format，会使用 SDK 已弃用的 state-only 兼容路径。
+新的 host 应持久化 `RunCheckpoint` 并使用 `checkpoint=...`；本地 SQLite schema 的迁移
+独立于 SDK checkpoint contract。
+
 Trace 和 artifact endpoint 会先读取数据库里的 `RunState`，没有数据库 state 时才回退到
 进程内 runner。只要 workspace 文件仍可访问，API 进程重启后，completed 和
 awaiting-review 的项目 run 仍然可以查看 trace 和 artifact。

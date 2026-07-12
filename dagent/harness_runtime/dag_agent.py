@@ -40,6 +40,10 @@ from dagent.harness_runtime.llm_retry import (
     LLMRetrySleep,
     run_with_llm_retries,
 )
+from dagent.harness_runtime.execution_budget import (
+    ExecutionLimitExceeded,
+    reserve_model_turn,
+)
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatProvider, ChatResponse
 from dagent.schemas import (
@@ -629,6 +633,8 @@ class DAGAgentLoop:
                         on_token=on_token,
                         on_event=on_event,
                     )
+                except ExecutionLimitExceeded:
+                    raise
                 except Exception as exc:
                     layer_failed = True
                     trace = self._absorb_partial_results(
@@ -694,6 +700,8 @@ class DAGAgentLoop:
                     on_event=on_event,
                     capability_scope=capability_scope_from_state(record.capability_scope),
                 )
+            except ExecutionLimitExceeded:
+                raise
             except Exception as exc:
                 pending_observation = _format_dag_observation(
                     kind="validation_error",
@@ -959,9 +967,13 @@ async def _chat_for_dag(
     retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
     retry_sleep: LLMRetrySleep = asyncio.sleep,
 ) -> ChatResponse:
+    async def chat_attempt() -> ChatResponse:
+        reserve_model_turn()
+        return await provider.chat(messages)
+
     if on_token is None and on_event is None:
         return await run_with_llm_retries(
-            lambda: provider.chat(messages),
+            chat_attempt,
             policy=retry_policy,
             sleep=retry_sleep,
         )
@@ -973,7 +985,7 @@ async def _chat_for_dag(
     )
     if stream is None:
         return await run_with_llm_retries(
-            lambda: provider.chat(messages),
+            chat_attempt,
             policy=retry_policy,
             sleep=retry_sleep,
         )
@@ -985,6 +997,7 @@ async def _chat_for_dag(
     async def attempt() -> ChatResponse:
         nonlocal content, emitted_tokens, response
         response = None
+        reserve_model_turn()
         if hasattr(provider, "stream_chat"):
             async for event in provider.stream_chat(messages):
                 if event.type == "token" and event.content:

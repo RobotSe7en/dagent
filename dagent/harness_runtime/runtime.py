@@ -30,6 +30,10 @@ from dagent.harness_runtime.capability_scope import (
 )
 from dagent.harness_runtime.dag_agent import DAGAgent
 from dagent.harness_runtime.dag_executor import DAGExecutor
+from dagent.harness_runtime.execution_budget import (
+    ExecutionLimitExceeded,
+    reserve_model_turn,
+)
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -497,10 +501,13 @@ class HarnessRuntime:
             {"role": "user", "content": message},
         ]
         try:
+            reserve_model_turn()
             response = await self.provider.chat(messages)
             decision = response.content.strip().lower()
             if decision in {"dag", "tool"}:
                 return decision  # type: ignore[return-value]
+        except ExecutionLimitExceeded:
+            raise
         except Exception:
             pass
         return "tool"

@@ -73,4 +73,8 @@ an agent conversation. `RunResult.state` contains dagent's resumable internal
 state, including trace data and pending review checkpoints.
 
 When work requires review, approve or reject with `Runner.resume(...)` or
-`Runner.resume_stream(...)`.
+`Runner.resume_stream(...)`. For cross-process continuation, persist
+`RunResult.checkpoint`; it keeps mutable state, resolved target semantics, and
+cumulative operation usage separate. Optional `ExecutionLimits` apply one
+shared budget across root, DAG, validation, concurrent, and subagent work. See
+[Results, Streaming, and Review](results-streaming-review.md).

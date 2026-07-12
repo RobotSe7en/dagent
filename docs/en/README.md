@@ -28,7 +28,8 @@ Simplified Chinese documentation is available at
 - [Skills](skills.md): skill roots, managed installs, `SkillStore`, linked
   files, and agent-level skill visibility.
 - [Results, Streaming, and Review](results-streaming-review.md): `RunResult`,
-  `RunState`, streaming events, review checkpoints, resume, and persistence.
+  `RunCheckpoint`, streaming events, shared execution budgets, resume, and
+  persistence.
 - [API Backend Persistence](api-backend-persistence.md): projects,
   conversations, stored run state, review resume, and enterprise storage paths.
 

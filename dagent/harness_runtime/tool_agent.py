@@ -28,6 +28,10 @@ from dagent.harness_runtime.capability_scope import (
     capability_scope_from_state,
     capability_scope_to_state,
 )
+from dagent.harness_runtime.execution_budget import (
+    ExecutionLimitExceeded,
+    reserve_model_turn,
+)
 from dagent.harness_runtime.runtime_events import (
     LoopEventHandler,
     ResponseStreamContext,
@@ -188,6 +192,24 @@ class ToolAgent:
         if pending_review is None or pending_review.kind != "capability_review" or invocation is None:
             return None
         capability_scope = capability_scope_from_state(state.capability_scope)
+        capability_call = pending_review.capability_call
+        if capability_call is None or (
+            capability_call.invocation_id != invocation.invocation_id
+            or capability_call.capability_id != invocation.capability_id
+            or capability_call.arguments != invocation.arguments
+        ):
+            raise ValueError(
+                "Pending capability review does not match its invocation."
+            )
+        definition = self.loop.tool_adapter.ensure_allowed(
+            invocation.capability_id,
+            enabled_toolsets=self.loop.enabled_toolsets,
+            capability_ids=capability_scope.capability_ids,
+        )
+        if capability_call.tool_name != self.loop.tool_adapter.function_name(definition):
+            raise ValueError(
+                "Pending capability review tool name does not match its invocation."
+            )
 
         feed_content = "[DENIED] Human reviewer denied this tool call. Continue without executing it."
         result: CapabilityResult | None = None
@@ -215,6 +237,8 @@ class ToolAgent:
                     run_id=state.run_id,
                     content=feed_content,
                 )
+            except ExecutionLimitExceeded:
+                raise
             except Exception as exc:
                 feed_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                 self.loop._emit_capability_event(
@@ -233,8 +257,6 @@ class ToolAgent:
             result=result,
             content=feed_content,
         )
-        capability_call = pending_review.capability_call
-        assert capability_call is not None
         _replace_tool_result(
             self.messages,
             tool_call_id=invocation.invocation_id,
@@ -397,6 +419,8 @@ class ToolAgentLoop:
                         context=context,
                         callbacks=callbacks,
                     )
+                except ExecutionLimitExceeded:
+                    raise
                 except Exception as exc:
                     return ControlToolResult(
                         content=f"[TOOL_ERROR] {type(exc).__name__}: {exc}",
@@ -640,6 +664,8 @@ class ToolAgentLoop:
                         callbacks=capability_callbacks,
                     )
                     tool_result = _tool_content(capability_result)
+                except ExecutionLimitExceeded:
+                    raise
                 except Exception as exc:
                     error_content = f"[TOOL_ERROR] {type(exc).__name__}: {exc}"
                     self._emit_capability_event(
@@ -727,9 +753,13 @@ class ToolAgentLoop:
         on_token: TokenHandler | None,
         on_event: LoopEventHandler | None,
     ) -> ChatResponse:
+        async def chat_attempt() -> ChatResponse:
+            reserve_model_turn()
+            return await self.provider.chat(messages, tools=tools)
+
         if on_token is None and on_event is None:
             return await run_with_llm_retries(
-                lambda: self.provider.chat(messages, tools=tools),
+                chat_attempt,
                 policy=self.llm_retry_policy,
                 sleep=self.llm_retry_sleep,
             )
@@ -741,7 +771,7 @@ class ToolAgentLoop:
         )
         if stream is None:
             return await run_with_llm_retries(
-                lambda: self.provider.chat(messages, tools=tools),
+                chat_attempt,
                 policy=self.llm_retry_policy,
                 sleep=self.llm_retry_sleep,
             )
@@ -752,6 +782,7 @@ class ToolAgentLoop:
         async def attempt() -> ChatResponse:
             nonlocal emitted_tokens, response
             response = None
+            reserve_model_turn()
             if hasattr(self.provider, "stream_chat"):
                 async for event in self.provider.stream_chat(messages, tools=tools):
                     if event.type == "token" and event.content:

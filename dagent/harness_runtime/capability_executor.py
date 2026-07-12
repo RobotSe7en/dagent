@@ -12,6 +12,7 @@ from typing import Any
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.sandbox_context import current_run_execution
 from dagent.capabilities.workspace import workspace_context
+from dagent.harness_runtime.execution_budget import reserve_capability_call
 from dagent.schemas import ArtifactState, CapabilityInvocation, CapabilityResult, DAGNode
 
 
@@ -92,6 +93,7 @@ class CapabilityExecutor:
             else:
                 args = (invocation,)
                 kwargs = {}
+            reserve_capability_call()
             if inspect.iscoroutinefunction(entry.handler):
                 result = entry.handler(*args, **kwargs)
             else:

@@ -15,7 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.0")
+    english_unreleased = _section(english, "## Unreleased", "## 0.8.0")
+    english_080 = _section(english, "## 0.8.0", "## 0.7.0")
     english_070 = _section(english, "## 0.7.0", "## 0.6.8")
     english_068 = _section(english, "## 0.6.8", "## 0.6.7")
     english_067 = _section(english, "## 0.6.7", "## 0.6.6")
@@ -24,7 +25,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.0")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.8.0")
+    chinese_080 = _section(chinese, "## 0.8.0", "## 0.7.0")
     chinese_070 = _section(chinese, "## 0.7.0", "## 0.6.8")
     chinese_068 = _section(chinese, "## 0.6.8", "## 0.6.7")
     chinese_067 = _section(chinese, "## 0.6.7", "## 0.6.6")
@@ -35,6 +37,10 @@ def test_migration_notes_record_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     assert "No unreleased changes" in english_unreleased
+    assert "RunCheckpoint" in english_080
+    assert "ResolvedRunPlan" in english_080
+    assert "ExecutionLimits" in english_080
+    assert "checkpoint=..." in english_080
     assert "inherit_local_tools=True" not in english_unreleased
     assert "inherit_local_tools=True" in english_070
     assert "exclude_local_tool_ids" in english_070
@@ -64,6 +70,10 @@ def test_migration_notes_record_release_history() -> None:
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     assert "没有尚未发布的变更" in chinese_unreleased
+    assert "RunCheckpoint" in chinese_080
+    assert "ResolvedRunPlan" in chinese_080
+    assert "ExecutionLimits" in chinese_080
+    assert "checkpoint=..." in chinese_080
     assert "inherit_local_tools=True" not in chinese_unreleased
     assert "inherit_local_tools=True" in chinese_070
     assert "exclude_local_tool_ids" in chinese_070

@@ -26,6 +26,7 @@ from dagent.harness_runtime.capability_executor import (
     CapabilityExecutionError,
     CapabilityExecutor,
 )
+from dagent.harness_runtime.execution_budget import ExecutionLimitExceeded
 from dagent.harness_runtime.runtime_events import ResponseStreamContext, response_token_stream
 from dagent.harness_runtime.dag_builder import compile_dag_spec, validate_dag
 from dagent.schemas import (
@@ -484,6 +485,8 @@ class DAGExecutor:
         values: list[Any] = []
         failure: str | None = None
         for outcome in outcomes:
+            if isinstance(outcome, ExecutionLimitExceeded):
+                raise outcome
             if isinstance(outcome, BaseException):
                 failure = failure or str(outcome)
                 continue

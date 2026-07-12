@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import field
 from typing import Any, Literal
 
-from pydantic import ConfigDict, TypeAdapter
+from pydantic import ConfigDict, Field as PydanticField, TypeAdapter
 from pydantic.dataclasses import dataclass
 
 from dagent.review import ReviewHandle
@@ -14,7 +14,10 @@ from dagent.schemas import (
     DAG,
     DAGRun,
     PendingReview,
+    ExecutionUsage,
+    ResolvedRunPlan,
     ReviewKind,
+    RunCheckpoint,
     RunState,
     RunTrace,
     RunTraceNode,
@@ -51,10 +54,15 @@ class RunResult:
 
     state: RunState
     output_text: str = ""
+    plan: ResolvedRunPlan | None = PydanticField(default=None, exclude=True)
+    usage: ExecutionUsage = PydanticField(
+        default_factory=ExecutionUsage,
+        exclude=True,
+    )
 
     @classmethod
     def model_validate(cls, value: Any) -> "RunResult":
-        """Restore a ``RunResult`` from its current ``model_dump`` payload."""
+        """Restore the serialized result projection; checkpoints are separate."""
         if isinstance(value, cls):
             return value
         return _RESULT_ADAPTER.validate_python(value)
@@ -92,6 +100,14 @@ class RunResult:
     @property
     def pending_review(self) -> PendingReview | None:
         return self.state.pending_review
+
+    @property
+    def checkpoint(self) -> RunCheckpoint | None:
+        """Portable checkpoint for SDK-produced results."""
+
+        if self.plan is None:
+            return None
+        return RunCheckpoint(state=self.state, plan=self.plan, usage=self.usage)
 
     @property
     def dag_run(self) -> DAGRun | None:

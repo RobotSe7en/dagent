@@ -41,27 +41,87 @@ result = await runner.run(
 以及默认 run workspace 名称。宿主传入的 run id 必须是单个目录名。如果同时传入
 `state`，`run_id` 必须匹配 `state.run_id`。
 
-## 持久化 State
+## 持久化 Checkpoint
 
-如果持久化完整 result payload，可以用 `RunResult.model_validate(...)` 恢复当前 SDK shape：
+`RunState` 继续表示普通 conversation continuation 使用的可变执行状态。跨进程 review
+continuation 应使用 `RunCheckpoint`；它还包含 SDK 已解析的执行 plan 和累计 usage：
 
 ```python
-saved_payload = result.model_dump(mode="json")
-restored = dagent.RunResult.model_validate(saved_payload)
+checkpoint = result.checkpoint
+if checkpoint is None:
+    raise RuntimeError("SDK result did not contain a checkpoint")
 
-if restored.requires_review and restored.review is not None:
-    result = await runner.resume(restored.review.approve(), state=restored.state)
+saved_json = checkpoint.model_dump_json()
+
+# 在之后的进程中，先构造兼容的 Runner：
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
+if pending is not None:
+    decision = dagent.ReviewHandle(pending).approve()
+    result = await new_runner.resume(decision, checkpoint=restored)
 else:
     messages.append({"role": "user", "content": "Continue."})
-    result = await runner.run(agent, messages=messages, state=restored.state)
+    result = await new_runner.run(agent, messages=messages, checkpoint=restored)
 ```
 
-普通 continuation 使用 `run(..., state=...)`。如果保存的 state 正在等待 review，请用
-`resume(..., state=...)` 继续该 checkpoint；`run(..., state=...)` 会拒绝 awaiting-review
-states，避免绕过 review gates。
+JSON 保存位置和方式由 host 决定。SDK 定义 checkpoint 的校验与 resume 语义，但不负责
+数据库、租户生命周期、RBAC 或 retention policy。
+
+Checkpoint resume 时，`Runner` 会验证精确的 capability、agent 和 skill IDs 是否可用，
+根据已解析的 profiles 和局部 loop limits 重建目标专属 runtime，恢复累计 usage，然后才应用
+review decision。缺失或禁用的 capabilities、缺失的 skills 都会 fail closed。同一个 runner
+仍可通过内存中的 checkpoint cache 使用 `resume(decision)`。
+
+Resolved plan 使用冻结的 profile snapshots 和 SDK 定义的 canonical SHA-256 fingerprint。
+Fingerprint 用于发现意外 payload 修改，不是签名或 authentication boundary。
+
+同一个 `Runner` 上的普通 continuation 可以使用 `run(..., state=...)`；最新匹配的内存
+checkpoint 会恢复 usage 和原 limits。跨进程 continuation 应向 `run(...)` 传入
+`checkpoint=...`。过期 state 会被拒绝，恢复出的 limits 不能替换或扩大。
+`resume(..., state=...)` 已弃用，因为单独的 `RunState` 无法恢复目标专属 profiles、limits
+和精确执行语义。它暂时作为显式 legacy path 保留；新的持久化代码应保存
+`result.checkpoint`。
+
+Checkpoint review decision 在同一个 `Runner` 中只能消费一次。如果 continuation 失败，
+`Runner.run_checkpoint(run_id)` 会返回 terminal checkpoint。如果 resume 期间抛出
+`ExecutionLimitExceeded`，同一 checkpoint 和更新后的 usage 也可通过
+`error.checkpoint`、`error.usage` 获取。Durable host 必须在执行前原子认领 review ID，
+以避免不同进程间重放；无持久化 SDK 无法单独保证 exactly-once side effects。
+
+`RunResult.model_dump(...)` 继续保持原有的 `state` 和 `output_text` shape。需要跨进程
+review resume 时，请单独持久化 `result.checkpoint`。
 
 持久化的 `RunState` payload 包含 `schema_version: 1`。不含该字段的 payload
 会按 version 1 读取。宿主遇到显式声明的不支持版本时应拒绝，而不是静默迁移。
+
+## Run-Wide Execution Budget
+
+当 host 需要 root agent、DAG nodes、map/loop/subgraph、validation 和 subagents 共享同一个
+上限时，使用 `ExecutionLimits`：
+
+```python
+result = await runner.run(
+    agent,
+    messages=messages,
+    limits=dagent.ExecutionLimits(
+        max_total_operations=40,
+        max_model_turns=24,
+        max_capability_calls=20,
+    ),
+)
+
+print(result.usage.model_turns)
+print(result.usage.capability_calls)
+```
+
+每次模型请求都会原子预留一个 model turn，包括 route、planning、validation、retry 和
+subagent turns。每次 tool、MCP、memory 或 agent capability 执行都会预留一个 capability
+call；两者都会增加 total operations。并发工作会在开始前原子预留。超过限制时，SDK 会在
+不允许的外部操作开始前抛出 `ExecutionLimitExceeded`。
+
+`ToolAgent.max_steps` 和 `DagAgent.max_cycles` 仍是局部 loop limits，run-wide budget 不会
+改变其含义。Limits 和 usage 会写入 checkpoint；review resume 和普通 checkpoint
+continuation 都不能重置或扩大它们。
 
 ## 静态 DAG Result Helpers
 
@@ -174,15 +234,16 @@ if first.requires_review and first.review is not None:
             print(event.data.result.output_text)
 ```
 
-如果 pending review 是重启后恢复出来的，传入保存的 state：
+如果 pending review 是重启后恢复出来的，传入保存的 checkpoint：
 
 ```python
-restored = dagent.RunResult.model_validate(saved_payload)
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
 
-if restored.requires_review and restored.review is not None:
+if pending is not None:
     async for event in runner.resume_stream(
-        restored.review.approve(),
-        state=restored.state,
+        dagent.ReviewHandle(pending).approve(),
+        checkpoint=restored,
     ):
         ...
 ```

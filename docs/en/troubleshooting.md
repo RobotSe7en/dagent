@@ -122,16 +122,25 @@ expressions, unsafe artifact boundaries, and invalid control-flow references.
 
 ## Review Resume Fails
 
-If persisted state is awaiting review, continue with `resume(..., state=...)`,
-not `run(..., state=...)`:
+If persisted work is awaiting review, restore the SDK checkpoint and continue
+with `resume(..., checkpoint=...)`, not `run(..., state=...)`:
 
 ```python
-restored = dagent.RunResult.model_validate(saved_payload)
-result = await runner.resume(restored.review.approve(), state=restored.state)
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
+if pending is None:
+    raise RuntimeError("Checkpoint is not awaiting review")
+result = await runner.resume(
+    dagent.ReviewHandle(pending).approve(),
+    checkpoint=restored,
+)
 ```
 
 `run(..., state=...)` rejects awaiting-review states so review gates cannot be
-accidentally bypassed.
+accidentally bypassed. `resume(..., state=...)` is a deprecated legacy path and
+cannot reconstruct target-specific profiles or limits. If checkpoint resume
+reports missing or disabled capability IDs or missing skills, construct a
+compatible `Runner`; the SDK does not silently widen the saved scope.
 
 ## Streaming Text Is Interleaved
 

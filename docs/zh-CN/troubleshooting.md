@@ -118,15 +118,24 @@ unsafe artifact boundaries 和 invalid control-flow references，validation 会 
 
 ## Review Resume 失败
 
-如果持久化 state 正在等待 review，请使用 `resume(..., state=...)`，不要使用
-`run(..., state=...)`：
+如果持久化任务正在等待 review，请恢复 SDK checkpoint，并使用
+`resume(..., checkpoint=...)`，不要使用 `run(..., state=...)`：
 
 ```python
-restored = dagent.RunResult.model_validate(saved_payload)
-result = await runner.resume(restored.review.approve(), state=restored.state)
+restored = dagent.RunCheckpoint.model_validate_json(saved_json)
+pending = restored.state.pending_review
+if pending is None:
+    raise RuntimeError("Checkpoint is not awaiting review")
+result = await runner.resume(
+    dagent.ReviewHandle(pending).approve(),
+    checkpoint=restored,
+)
 ```
 
 `run(..., state=...)` 会拒绝 awaiting-review states，避免意外绕过 review gates。
+`resume(..., state=...)` 是已弃用的 legacy path，无法重建目标专属 profiles 或 limits。
+如果 checkpoint resume 报告 capability ID 缺失或被禁用，或 skill 缺失，请构造兼容的
+`Runner`；SDK 不会静默扩大保存的 scope。
 
 ## Streaming 文本交错
 

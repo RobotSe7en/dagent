@@ -4,11 +4,82 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.0`。
+当前包版本是 `0.8.0`。
 
 ## Unreleased
 
 - 没有尚未发布的变更。
+
+## 0.8.0
+
+### 新增
+
+- `ResolvedRunPlan` 记录 SDK 已解析的目标专属 profiles、局部 loop limits、精确的
+  capability/agent/skill scope、validation settings 和 run-wide limits。它不包含
+  handlers、provider secrets、connections 或 host policy。
+- `RunCheckpoint` 组合 `RunState`、`ResolvedRunPlan` 和累计 `ExecutionUsage`。
+  SDK 生成的 result 通过 `result.checkpoint` 暴露它；
+  `Runner.run_checkpoint(run_id)` 返回最新的内存或 terminal checkpoint。
+- `ExecutionLimits` 提供互相独立的 total-operation、model-turn 和
+  capability-call 上限。Root agents、DAG work、validation、retries、并发 branches 和
+  subagents 共享同一个预留对象。
+- `ExecutionLimitExceeded` 会在某次操作越过限制之前失败。
+
+### 改变
+
+- 跨进程 review continuation 现在使用 `Runner.resume(..., checkpoint=...)` 或
+  `Runner.resume_stream(..., checkpoint=...)`。Resume 会校验精确 scope，重建目标专属
+  derived runtime，并在应用 review decision 前恢复 usage。
+- `Runner.run(..., checkpoint=...)` 会为普通跨进程 continuation 恢复 usage 和原始
+  limits。同一个 Runner 上的 `state=...` continuation 使用匹配的 checkpoint cache，
+  并拒绝过期 state。
+- Resolved profile snapshots 现在深层冻结。每个 plan 都携带 canonical SHA-256
+  fingerprint；checkpoint hydration 会拒绝不一致的 pending capability review，以及
+  resolved scope 外的 invocation。
+- Checkpoint review decision 在一个 `Runner` 内只能消费一次。Resume 失败会记录 terminal
+  checkpoint；budget exception 通过 `error.checkpoint` 和 `error.usage` 暴露它和更新后的
+  usage。
+- SDK 生成的 `RunState.capability_scope` 现在记录已解析的 canonical skill IDs 和精确
+  capability IDs，而不是未解析声明。
+- `RunResult.model_dump(...)` 保持原有 `state` 和 `output_text` payload shape。
+  Portable review continuation 应单独持久化 `result.checkpoint`。
+
+### 破坏性改变
+
+- 当不存在匹配的内存 checkpoint 时，`Runner.resume(..., state=...)` 和
+  `resume_stream(..., state=...)` 已弃用并会产生 `DeprecationWarning`。它们在 v0.8 中
+  仍作为显式 legacy path 保留，但无法恢复目标专属执行语义。
+- 当所需 capability 或 skill 不可用时，checkpoint resume 不会回退到 base runtime，
+  而是 fail closed。
+- 恢复的 limits 不能替换或扩大。Durable multi-process host 必须在执行前原子认领
+  review ID，避免跨进程 stale-checkpoint replay。
+
+### 迁移步骤
+
+- 对等待 review 的 Run 持久化 `result.checkpoint.model_dump_json()`。
+- 使用 `RunCheckpoint.model_validate_json(...)` 恢复，构造兼容的 `Runner`，并把
+  checkpoint 传给 `Runner.resume(...)`。
+- 后端重启后的普通 bounded continuation 应把恢复的 checkpoint 传给
+  `Runner.run(...)`，而不只是传 state。
+- 如有需要，可把 host 级 step policy 映射到
+  `ExecutionLimits.max_total_operations`。不要改写 `ToolAgent.max_steps` 或
+  `DagAgent.max_cycles`；它们仍是局部 loop controls。
+- Checkpoint storage、tenant authorization、retention，以及兼容 capability/provider 的
+  构造继续由 host 负责。
+
+### 验证
+
+- `uv run --extra dev pytest`
+- `uv build`
+- `git diff --check`
+
+### 已知限制
+
+- Checkpoint 描述执行语义，不包含可执行 handlers 或 provider connections。恢复它的
+  host 必须构造兼容的 `Runner`。
+- Plan fingerprint 用于发现意外修改，不是签名；checkpoint authenticity 仍由 host 负责。
+- 静态 DAG result 会携带用于检查的 checkpoint 和 usage，但暂不支持静态 DAG review
+  或 crash continuation。
 
 ## 0.7.0
 
