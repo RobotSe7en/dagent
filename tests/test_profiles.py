@@ -56,9 +56,20 @@ def test_dag_agent_prompt_does_not_ask_for_reserved_dag_start() -> None:
     assert "dag_start" not in prompt
 
 
+def test_conversation_prompt_prefers_relevant_available_tools() -> None:
+    prompt = load_builtin_profile("conversation").content
+
+    assert "General-Purpose Agent" in prompt
+    assert "When an available tool directly fulfills the user's request" in prompt
+    assert "Do not call a tool merely because it is available" in prompt
+    assert "single\n  tool calls" not in prompt
+    assert "Prefer direct tool use or a direct answer over `dag_agent`" in prompt
+    assert "Prefer direct answers unless DAG" not in prompt
+
+
 def test_builtin_profiles_load_from_package_resources() -> None:
     profile = load_builtin_profile("conversation")
 
     assert profile.name == "conversation"
-    assert "Conversation Agent" in profile.content
+    assert "General-Purpose Agent" in profile.content
     assert "conversation" in {profile.name for profile in list_builtin_profiles()}

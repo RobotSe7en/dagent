@@ -76,7 +76,7 @@ def test_builtin_profiles_are_available_from_package_root() -> None:
     profile = dagent.load_builtin_profile("conversation")
 
     assert profile.name == "conversation"
-    assert "Conversation Agent" in profile.content
+    assert "General-Purpose Agent" in profile.content
     assert "conversation" in {item.name for item in dagent.list_builtin_profiles()}
 
 
@@ -208,7 +208,7 @@ def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
 
     assert result.output_text == "hello"
     system_message = provider.requests[0]["messages"][0]["content"]
-    assert "Conversation Agent" in system_message
+    assert "General-Purpose Agent" in system_message
 
 
 def test_runner_stream_yields_unified_event_protocol(tmp_path) -> None:
