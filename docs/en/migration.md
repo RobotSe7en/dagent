@@ -5,11 +5,48 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.1`.
+The current package version is `0.7.2`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.7.2
+
+### Changed
+
+- The built-in `conversation` profile is now presented as the General-Purpose
+  Agent and more clearly prefers a directly relevant available tool for simple
+  tasks while reserving `dag_agent` for complex orchestration.
+
+### Fixed
+
+- `tool.shell` now starts commands in a dedicated process group and terminates
+  the entire group on timeout, including children in pipelines. Timeout cleanup
+  is bounded even when an escaped process retains an inherited output pipe, and
+  captured output remains available in the terminal timeout error.
+
+### Breaking Changes
+
+- None.
+
+### Migration Steps
+
+- No migration action is required for this patch release. Workflows that must
+  invoke a specific tool should continue to use a dedicated custom profile;
+  built-in profile tool selection remains model-directed.
+
+### Verification
+
+- `uv run --extra dev --frozen pytest`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
+
+### Known Limitations
+
+- The General-Purpose Agent's direct-tool preference is prompt guidance, not a
+  forced invocation guarantee.
 
 ## 0.7.1
 

@@ -15,7 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.1")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.2")
+    english_072 = _section(english, "## 0.7.2", "## 0.7.1")
     english_071 = _section(english, "## 0.7.1", "## 0.7.0")
     english_070 = _section(english, "## 0.7.0", "## 0.6.8")
     english_068 = _section(english, "## 0.6.8", "## 0.6.7")
@@ -25,7 +26,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.1")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.2")
+    chinese_072 = _section(chinese, "## 0.7.2", "## 0.7.1")
     chinese_071 = _section(chinese, "## 0.7.1", "## 0.7.0")
     chinese_070 = _section(chinese, "## 0.7.0", "## 0.6.8")
     chinese_068 = _section(chinese, "## 0.6.8", "## 0.6.7")
@@ -37,6 +39,8 @@ def test_migration_notes_record_release_history() -> None:
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
     assert "No unreleased changes" in english_unreleased
+    assert "General-Purpose Agent" in english_072
+    assert "dedicated process group" in english_072
     assert "RunCheckpoint" in english_071
     assert "ResolvedRunPlan" in english_071
     assert "ExecutionLimits" in english_071
@@ -70,6 +74,8 @@ def test_migration_notes_record_release_history() -> None:
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
     assert "没有尚未发布的变更" in chinese_unreleased
+    assert "通用智能体" in chinese_072
+    assert "专用进程组" in chinese_072
     assert "RunCheckpoint" in chinese_071
     assert "ResolvedRunPlan" in chinese_071
     assert "ExecutionLimits" in chinese_071
