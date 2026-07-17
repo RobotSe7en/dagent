@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from dagent.capabilities.tools.registry import ToolRegistry
 SHELL_OUTPUT_MAX_LINES = 200
 SHELL_OUTPUT_MAX_BYTES = 100_000
 SHELL_TRUNCATION_HEADER = "[TRUNCATED] output exceeded limits; showing tail\n"
+SHELL_TERMINATION_GRACE_SECONDS = 0.5
 
 
 class ShellExecutionError(RuntimeError):
@@ -25,29 +28,131 @@ def shell(
     cwd_path = Path(cwd)
     if not cwd_path.is_dir():
         raise ShellExecutionError(f"Working directory does not exist: {cwd_path}")
-    result = subprocess.run(
+
+    platform_options: dict[str, object]
+    if os.name == "nt":
+        platform_options = {
+            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+        }
+    else:
+        platform_options = {"start_new_session": True}
+
+    process = subprocess.Popen(
         command,
         cwd=cwd_path,
         shell=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         errors="replace",
-        timeout=timeout_seconds,
+        **platform_options,
     )
-    output = "\n".join(
-        part
-        for part in [result.stdout.strip(), result.stderr.strip()]
-        if part
-    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        stdout, stderr = _stop_timed_out_process_group(process)
+        output = _format_output(stdout, stderr)
+        message = f"timed out after {timeout_seconds} seconds"
+        if output:
+            message = f"{message}\n{_tail_truncate(output)}"
+        raise ShellExecutionError(message) from None
+
+    output = _format_output(stdout, stderr)
     output = _tail_truncate(output)
     formatted = (
-        f"exit_code={result.returncode}\n{output}"
+        f"exit_code={process.returncode}\n{output}"
         if output
-        else f"exit_code={result.returncode}"
+        else f"exit_code={process.returncode}"
     )
-    if result.returncode != 0:
+    if process.returncode != 0:
         raise ShellExecutionError(formatted)
     return formatted
+
+
+def _stop_timed_out_process_group(
+    process: subprocess.Popen[str],
+) -> tuple[str, str]:
+    """Stop a timed-out shell and every child that still owns its pipes."""
+    if os.name == "nt":
+        _kill_windows_process_tree(process)
+    else:
+        _signal_posix_process_group(process, signal.SIGTERM)
+        try:
+            return process.communicate(timeout=SHELL_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _signal_posix_process_group(process, signal.SIGKILL)
+
+    try:
+        return process.communicate(timeout=SHELL_TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        # A command can deliberately escape its process group while retaining an
+        # inherited pipe. Close our pipe readers so such a process cannot keep
+        # the SDK call alive beyond the bounded cleanup period.
+        stdout = _timeout_output(exc.stdout)
+        stderr = _timeout_output(exc.stderr)
+        _close_process_pipes(process)
+        if process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=SHELL_TERMINATION_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        return stdout, stderr
+
+
+def _signal_posix_process_group(
+    process: subprocess.Popen[str],
+    sig: signal.Signals,
+) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        if process.poll() is None:
+            process.send_signal(sig)
+
+
+def _kill_windows_process_tree(process: subprocess.Popen[str]) -> None:
+    """Force-stop the Windows process tree rooted at the shell process."""
+    taskkill: subprocess.Popen[str] | None = None
+    try:
+        taskkill = subprocess.Popen(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        taskkill.communicate(timeout=SHELL_TERMINATION_GRACE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        if taskkill is not None and taskkill.poll() is None:
+            taskkill.kill()
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None:
+            pipe.close()
+
+
+def _timeout_output(output: str | bytes | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output
+
+
+def _format_output(stdout: str, stderr: str) -> str:
+    output = "\n".join(
+        part
+        for part in [stdout.strip(), stderr.strip()]
+        if part
+    )
+    return output
 
 
 def _tail_truncate(output: str) -> str:

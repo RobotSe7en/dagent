@@ -210,6 +210,41 @@ def test_shell_raises_when_process_exits_nonzero(tmp_path: Path) -> None:
         shell(command, cwd=tmp_path)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="regression command uses a POSIX pipeline")
+def test_shell_timeout_terminates_pipeline_process_group(tmp_path: Path) -> None:
+    executor = make_executor(tmp_path)
+    script = tmp_path / "sleeper.py"
+    terminated = tmp_path / "terminated"
+    script.write_text(
+        "import pathlib\n"
+        "import signal\n"
+        "import sys\n"
+        "import time\n"
+        "def stop(*_args):\n"
+        "    pathlib.Path('terminated').write_text('yes', encoding='utf-8')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "pathlib.Path('ready').write_text('yes', encoding='utf-8')\n"
+        "print('started', flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    command = f'"{sys.executable}" "{script}" | cat'
+    started = time.monotonic()
+
+    result = execute(
+        executor,
+        "shell",
+        {"command": command, "cwd": ".", "timeout_seconds": 1},
+        boundary=Boundary(allowed_paths=["."]),
+    )
+
+    assert time.monotonic() - started < 3
+    assert result.status == "failed"
+    assert result.error == "timed out after 1 seconds\nstarted"
+    assert terminated.read_text(encoding="utf-8") == "yes"
+
+
 def test_shell_blocks_blacklisted_command(tmp_path: Path) -> None:
     executor = make_executor(tmp_path)
 
