@@ -46,10 +46,10 @@ boundaries and fail closed on boundary violations.
 
 Each capability has three names. `id` is the stable execution identity used in
 scopes, traces, reviews, and DAG invocation payloads. `name` is the LLM-visible
-function name used by provider tool calls and PlanSpec DSL. `display_name` is
-UI-only text. When `name` is omitted, dagent defaults it to the capability id
-with dots replaced by underscores; when `display_name` is omitted, it defaults
-to `name`.
+function name used by provider tool calls. Typed dynamic DAG plans reference
+the stable `id` directly. `display_name` is UI-only text. When `name` is
+omitted, dagent defaults it to the capability id with dots replaced by
+underscores; when `display_name` is omitted, it defaults to `name`.
 
 `tool_read_file` output carries no line-number prefixes, so text copied from a
 read result can be passed to `tool_edit_file` as `old_string` unchanged. The
@@ -77,7 +77,7 @@ present under `Runner(workspace=...)` are visible to supported built-in tools.
 Decorate Python functions with `@dagent.tool`. Parameter annotations produce
 tool input JSON schema; return annotations produce output schema. The Python
 function name still determines the capability id: `search` registers
-`tool.search`. Pass `name=` to choose the LLM/PlanSpec function name, and
+`tool.search`. Pass `name=` to choose the provider tool-call function name, and
 `display_name=` to choose UI text. The decorator does not accept `id=`.
 
 ```python

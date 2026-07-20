@@ -1,11 +1,19 @@
 # Dynamic DAG Generation Plan
 
-This page records the staged technical direction for dynamic DAG generation. It
-is a development plan, not a description of released SDK behavior. The
-implementation must continue to preserve documented public APIs, capability
-ids, configuration semantics, and review contracts. Any public behavior change
-must update the relevant guides, examples, and migration notes in the same
-change.
+This page records the staged technical direction for dynamic DAG generation.
+Phase one is implemented on the unreleased development line; phase two remains
+planned. Released-version behavior is documented in the task guides. Public
+APIs, capability ids, configuration semantics, and review contracts remain
+intentional contracts.
+
+## Status
+
+- Phase one: implemented with an internal strict planner schema, full-plan
+  initial generation, and full-plan replanning.
+- Phase two: planned; no restricted SDK-code frontend exists yet.
+- Canonical representation: `DAGSpec`, stored in dynamic `RunState` and pending
+  DAG reviews alongside the executable DAG projection.
+- Legacy free-form PlanSpec DSL: removed without a fallback parser.
 
 ## Target Architecture
 
@@ -79,7 +87,7 @@ also cannot choose risk, widen boundaries, or override host policy.
 Process planner output in this order:
 
 1. Parse and validate the planner-facing Pydantic contract.
-2. Resolve planner-visible capability names to stable capability ids.
+2. Resolve stable planner capability ids against the scoped catalog.
 3. Fill kind, risk, boundaries, default arguments, and other host-owned
    metadata from the catalog.
 4. Produce canonical `DAGSpec`.
@@ -96,11 +104,11 @@ answer.
 
 Stabilize complete initial-plan generation before expanding dynamic replanning:
 
-1. The first milestone only needs to generate, validate, review, and execute a
-   complete typed spec.
-2. Once initial planning is stable, allow replanning with a complete typed
-   spec.
-3. Eventually introduce typed patches with `base_version` that atomically add,
+1. Generate, validate, review, and execute a complete typed spec.
+2. Replan with another complete typed spec while preserving unchanged
+   invocation identity and requiring explicit reruns for changed completed
+   nodes.
+3. In a later milestone, introduce typed patches with `base_version` that atomically add,
    replace, or remove nodes, edges, and arguments.
 4. Reject unintended changes to completed nodes by default. A required rerun
    must be explicit.
@@ -221,13 +229,17 @@ persistence, and execution use only canonical `DAGSpec` from that point on.
 - Do not preserve the current DSL through silent conversion, legacy capability
   aliases, or an ambiguous fallback parser.
 
-## Open Decisions
+## Recorded Decisions and Remaining Work
 
-- Whether the planner-facing typed contract is a public schema or an internal
-  runtime type.
-- When to move from complete-spec replanning to typed patches, and which patch
-  operations to support.
-- Whether phase two uses a pure AST interpreter or an isolated builder process
-  with an AST allowlist.
-- Passing thresholds for the phase-one quality metrics.
-- The versioned deprecation and migration window for the current PlanSpec DSL.
+- The planner-facing typed contract is internal. `DAGSpec` remains the shared
+  public/canonical contract.
+- Phase one uses full-spec replanning. Typed patch operations are deferred.
+- Planner capability references use stable capability ids.
+- Planner values use a recursive typed AST; the host converts it to native
+  literals and `$expr` bindings.
+- Existing runtime execution and cycle bounds remain authoritative; phase one
+  adds no separate graph-size policy.
+- The free-form PlanSpec DSL was removed directly. Persisted deterministic
+  planner fixtures and custom providers must migrate to structured output.
+- Remaining decisions cover phase-two AST execution design and measurable A/B
+  acceptance thresholds for the optional builder frontend.

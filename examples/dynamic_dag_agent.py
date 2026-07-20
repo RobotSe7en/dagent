@@ -8,6 +8,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import asyncio
+import json
 
 import dagent
 from dagent.providers import ChatResponse, MockProvider
@@ -23,8 +24,36 @@ def search(q: str) -> str:
 async def main() -> None:
     provider = MockProvider(
         [
-            ChatResponse(content='task: research\nlookup = tool_search(q="dagent")'),
-            ChatResponse(content="Report: found:dagent"),
+            ChatResponse(content=json.dumps({
+                "action": "propose_plan",
+                "plan": {
+                    "name": "research",
+                    "description": "Search for dagent.",
+                    "artifacts": [],
+                    "nodes": [{
+                        "type": "capability",
+                        "id": "lookup",
+                        "title": "Search",
+                        "inputs": [],
+                        "outputs": [],
+                        "capability_id": "tool.search",
+                        "arguments": [{
+                            "name": "q",
+                            "value": {"type": "literal", "value": "dagent"},
+                        }],
+                    }],
+                    "edges": [],
+                    "output": None,
+                },
+                "answer": None,
+                "rerun_nodes": [],
+            })),
+            ChatResponse(content=json.dumps({
+                "action": "final_answer",
+                "plan": None,
+                "answer": "Report: found:dagent",
+                "rerun_nodes": [],
+            })),
         ]
     )
     runner = dagent.Runner(

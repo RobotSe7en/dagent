@@ -1,6 +1,12 @@
 """Chat provider interfaces and test providers."""
 
-from dagent.providers.base import ChatProvider, ChatResponse, ChatStreamEvent, ToolCall
+from dagent.providers.base import (
+    ChatProvider,
+    ChatResponse,
+    ChatStreamEvent,
+    StructuredOutputFormat,
+    ToolCall,
+)
 from dagent.providers.mock import MockProvider
 from dagent.providers.openai_compatible import OpenAICompatibleProvider, Provider
 
@@ -11,5 +17,6 @@ __all__ = [
     "MockProvider",
     "OpenAICompatibleProvider",
     "Provider",
+    "StructuredOutputFormat",
     "ToolCall",
 ]

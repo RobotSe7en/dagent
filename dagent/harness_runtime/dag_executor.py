@@ -114,6 +114,27 @@ class DAGExecutor:
         self.spec_id = spec_id
         self.graph_input = _normalize_graph_input(graph_input)
 
+    def configure_spec(
+        self,
+        spec: DAGSpec,
+        *,
+        graph_input: Any,
+        artifact_states: dict[str, ArtifactState] | None = None,
+    ) -> None:
+        """Configure canonical spec data for a dynamic DAG projection."""
+        self.spec_id = spec.id
+        self.graph_input = _normalize_graph_input(graph_input)
+        self.artifacts = {
+            artifact_id: artifact.model_copy(deep=True)
+            for artifact_id, artifact in spec.artifacts.items()
+        }
+        previous = artifact_states if artifact_states is not None else self.artifact_states
+        initialized = init_artifact_states(self.artifacts)
+        for artifact_id, state in previous.items():
+            if artifact_id in initialized:
+                initialized[artifact_id] = state.model_copy(deep=True)
+        self.artifact_states = initialized
+
     async def execute_next_ready_layer(
         self,
         dag: DAG,
@@ -199,6 +220,7 @@ class DAGExecutor:
                 node_id = result.ref.get("node_id")
                 if node_id:
                     node_traces[node_id] = result
+                    self.partial_node_traces[node_id] = result
 
         for node_id, partial in self.partial_node_traces.items():
             if node_id not in node_traces:

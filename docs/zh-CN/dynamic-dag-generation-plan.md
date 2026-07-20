@@ -1,8 +1,16 @@
 # 动态 DAG 生成计划
 
-本文记录动态 DAG 生成的分阶段技术路线。它是开发计划，不描述当前已经发布的 SDK
-行为。实现过程中仍应遵守公开 API、capability id、配置语义和 review contract；任何公开
-行为变化都需要同步更新功能文档、示例和迁移说明。
+本文记录动态 DAG 生成的分阶段技术路线。第一阶段已在未发布开发线实现；第二阶段仍是计划。
+已发布版本行为以各任务指南为准。公开 API、capability id、配置语义和 review contract
+仍是明确 contract。
+
+## 状态
+
+- 第一阶段：已实现 internal strict planner schema、完整初始 plan 和完整 plan replan。
+- 第二阶段：计划中；当前没有受限 SDK code frontend。
+- Canonical representation：`DAGSpec`，dynamic `RunState` 和 pending DAG review 会同时
+  保存它与 executable DAG projection。
+- 旧 free-form PlanSpec DSL：已直接移除，没有 fallback parser。
 
 ## 目标架构
 
@@ -68,7 +76,7 @@ boundary，或覆盖 host policy。
 Planner 输出按以下顺序处理：
 
 1. 解析并校验 planner-facing Pydantic contract。
-2. 将 planner-visible capability name 解析为稳定 capability id。
+2. 使用稳定 capability id 在 scope-filtered catalog 中解析 capability。
 3. 从 catalog 补齐 kind、risk、boundary、default arguments 和其他 host-owned metadata。
 4. 生成 canonical `DAGSpec`。
 5. 调用 `validate_dag_spec(...)`，递归检查依赖、value expressions、artifacts、subgraphs
@@ -82,9 +90,10 @@ Validation 失败时，应把结构化字段路径和具体错误返回 planner 
 
 先把初始完整 DAG 生成做稳定，再扩展动态 replan：
 
-1. 首个里程碑只要求生成、校验、review 和执行完整 typed spec。
-2. 初始规划质量稳定后，允许以完整 typed spec 进行 replan。
-3. 最终引入带 `base_version` 的 typed patch，原子地添加、替换或删除节点、边和参数。
+1. 生成、校验、review 和执行完整 typed spec。
+2. 使用另一个完整 typed spec 做 replan；未改变的 invocation identity 保持稳定，修改已完成
+   node 时必须显式请求 rerun。
+3. 后续 milestone 引入带 `base_version` 的 typed patch，原子地添加、替换或删除节点、边和参数。
 4. 默认禁止无意修改已完成节点；确实需要重新执行时必须显式声明。
 5. 结果失效应基于实际修改及其下游，不应因为任意 edge 变化就让所有节点失效。
 
@@ -184,10 +193,14 @@ Builder 得到 `Dag` 后立即调用 `to_dag_spec()`；之后的 normalization�
 - 不为两个 frontend 维护两套 DAG 语义、validation 或 execution code path。
 - 不为了兼容当前 DSL 而引入静默转换、旧 capability alias 或模糊的 fallback parser。
 
-## 待确定事项
+## 已确定决策与剩余工作
 
-- Planner-facing typed contract 是否作为公开 schema，或保持 runtime 内部类型。
-- 完整 spec replan 到 typed patch 的切换时机和 patch 操作集合。
-- 阶段二采用纯 AST interpreter，还是带 AST allowlist 的隔离构建进程。
-- 第一阶段各项质量指标的通过阈值。
-- 当前 PlanSpec DSL 的版本化弃用和迁移窗口。
+- Planner-facing typed contract 保持 internal；`DAGSpec` 是共享 public/canonical contract。
+- 第一阶段使用 full-spec replan；typed patch 操作延后。
+- Planner capability reference 使用稳定 capability id。
+- Planner value 使用递归 typed AST；host 将其转换为 native literal 和 `$expr` binding。
+- 沿用现有 runtime execution/cycle bounds；第一阶段不增加独立 graph-size policy。
+- Free-form PlanSpec DSL 已直接移除。持久化的 deterministic planner fixtures 和 custom
+  providers 必须迁移到 structured output。
+- 剩余决策是阶段二 AST execution 设计，以及 optional builder frontend 的可量化 A/B
+  acceptance thresholds。

@@ -9,7 +9,12 @@ from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
 
 from dagent.config import ProviderConfig
-from dagent.providers.base import ChatResponse, ChatStreamEvent, ToolCall
+from dagent.providers.base import (
+    ChatResponse,
+    ChatStreamEvent,
+    StructuredOutputFormat,
+    ToolCall,
+)
 
 
 class OpenAICompatibleProvider:
@@ -32,8 +37,14 @@ class OpenAICompatibleProvider:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: StructuredOutputFormat | None = None,
     ) -> ChatResponse:
-        kwargs = self._completion_kwargs(messages, tools=tools)
+        kwargs = self._completion_kwargs(
+            messages,
+            tools=tools,
+            response_format=response_format,
+        )
 
         response = await self.client.chat.completions.create(**kwargs)
         message = response.choices[0].message
@@ -48,6 +59,7 @@ class OpenAICompatibleProvider:
         return ChatResponse(
             content=content,
             reasoning_content=reasoning_content,
+            refusal=str(getattr(message, "refusal", None) or ""),
             tool_calls=tool_calls,
         )
 
@@ -55,12 +67,20 @@ class OpenAICompatibleProvider:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: StructuredOutputFormat | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        kwargs = self._completion_kwargs(messages, tools=tools, stream=True)
+        kwargs = self._completion_kwargs(
+            messages,
+            tools=tools,
+            response_format=response_format,
+            stream=True,
+        )
 
         stream = await self.client.chat.completions.create(**kwargs)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        refusal_parts: list[str] = []
         tool_call_parts: dict[int, dict[str, Any]] = {}
         async for chunk in stream:
             if not chunk.choices:
@@ -82,6 +102,9 @@ class OpenAICompatibleProvider:
                     channel="content",
                     content=content,
                 )
+            refusal = getattr(delta, "refusal", None) or ""
+            if refusal:
+                refusal_parts.append(str(refusal))
             for tool_call in getattr(delta, "tool_calls", None) or []:
                 index = int(getattr(tool_call, "index", 0) or 0)
                 part = tool_call_parts.setdefault(
@@ -105,6 +128,7 @@ class OpenAICompatibleProvider:
             response=ChatResponse(
                 content=content,
                 reasoning_content="".join(reasoning_parts),
+                refusal="".join(refusal_parts),
                 tool_calls=[
                     _convert_streamed_tool_call(part)
                     for _, part in sorted(tool_call_parts.items())
@@ -118,6 +142,7 @@ class OpenAICompatibleProvider:
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
+        response_format: StructuredOutputFormat | None = None,
         stream: bool = False,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
@@ -145,6 +170,16 @@ class OpenAICompatibleProvider:
         if extra_body:
             kwargs["extra_body"] = extra_body
         kwargs.update(self.config.extra_request_args)
+        if response_format is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_format.name,
+                    "description": response_format.description,
+                    "schema": response_format.schema,
+                    "strict": response_format.strict,
+                },
+            }
         return kwargs
 
 

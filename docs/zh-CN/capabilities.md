@@ -39,9 +39,10 @@ review resume 流程；静态 DAG 和 fast no-review 的 DAG revision 仍会执�
 | `tool.shell` | high | 在受限工作目录内执行 shell 命令，默认 30s 超时。危险模式被硬性拦截，工作目录必须存在，显式 shell 路径参数会经过 boundary 检查，超长输出保留尾部（200 行 / 100 KB）并加 `[TRUNCATED]` 头。超时会终止命令的整个进程组（包括管道中的子进程）、回收输出，并返回终态 `timed out after ... seconds` 错误。 |
 
 每个 capability 有三个名字。`id` 是稳定执行身份，用于 scopes、traces、reviews 和
-DAG invocation payloads。`name` 是 LLM 可见函数名，用于 provider tool calls 和
-PlanSpec DSL。`display_name` 只用于 UI 展示。省略 `name` 时，dagent 默认把 capability
-id 中的点替换为下划线；省略 `display_name` 时，默认等于 `name`。
+DAG invocation payloads。`name` 是 LLM 可见函数名，用于 provider tool calls；
+类型化 dynamic DAG plan 直接引用稳定 `id`。`display_name` 只用于
+UI 展示。省略 `name` 时，dagent 默认把 capability id 中的点替换为下划线；省略
+`display_name` 时，默认等于 `name`。
 
 `tool_read_file` 的输出不带行号前缀，从读取结果中复制的文本可以原样作为
 `tool_edit_file` 的 `old_string`。推荐的编辑流程：先读文件，复制要修改的原文，
@@ -65,7 +66,7 @@ workspace。默认 runner workspace 是 `.dagent`；`Runner(workspace=...)` 下�
 
 用 `@dagent.tool` 装饰 Python 函数。参数注解会生成 tool input JSON schema；返回注解会
 生成 output schema。Python 函数名仍决定 capability id：`search` 会注册
-`tool.search`。传入 `name=` 可以选择 LLM/PlanSpec 函数名，传入 `display_name=` 可以选择
+`tool.search`。传入 `name=` 可以选择 provider tool-call 函数名，传入 `display_name=` 可以选择
 UI 文案。decorator 不接收 `id=`。
 
 ```python

@@ -41,7 +41,7 @@ Most applications start with `Runner`, `@dagent.tool`, `ToolAgent`,
 | Skills | `SkillStore`, `SkillEntry`, `SkillView`, `SkillAmbiguousError`, `SkillNotFoundError`, `SkillPermissionError`, `SkillStoreError`, `default_skill_roots`, `default_managed_skill_root` |
 | Reviews and results | `RunResult`, `RunState`, `RunCheckpoint`, `ResolvedRunPlan`, `RunStreamEvent`, `ReviewHandle`, `ReviewDecision`, `ReviewLevel` |
 | Runtime schemas | `Boundary`, `CapabilityDefinition`, `CapabilityInvocation`, `CapabilityPolicy`, `CapabilityResult`, `CapabilityScope`, `DAG`, `DAGRun`, `DAGSpec`, `ExecutionLimits`, `ExecutionUsage`, `ExecutionLimitExceeded`, `PendingReview`, `RiskLevel`, `RunExecution`, `RunState`, `RunTrace`, `ArtifactUpload`, `DockerSandboxConfig`, `SandboxBackend`, `SandboxConfig` |
-| Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
+| Providers | `Provider`; `dagent.providers` also exports `ChatProvider`, `ChatResponse`, `ChatStreamEvent`, `StructuredOutputFormat`, `MockProvider`, `OpenAICompatibleProvider`, and `ToolCall` for custom providers and tests |
 
 ## Minimal Runner
 

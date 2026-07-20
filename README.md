@@ -60,9 +60,10 @@ output must explicitly depend on it.
 
 **4. Re-planning stays local.**
 After each executable DAG layer, the planner receives a DAG observation and can
-return `NO_CHANGE`, a revised `PlanSpec`, or a final answer. Completed node
-results stay as structured execution records instead of being rediscovered from
-chat history.
+return a schema-validated `no_change`, a complete typed graph revision, or a
+`final_answer`. The host normalizes proposals to canonical `DAGSpec`; completed
+node results stay as structured execution records instead of being rediscovered
+from chat history.
 
 **5. Runner owns runtime state.**
 Public `AutoAgent`, `ToolAgent`, `DagAgent`, and `Dag` objects are declarative
@@ -148,7 +149,7 @@ flowchart TD
   TAL -->|"capability call"| CE["CapabilityExecutor"]
 
   DA --> DAL["DAGAgentLoop"]
-  DAL -->|"PlanSpec DSL"| DAG["DAG"]
+  DAL -->|"typed planner response"| DS
   DS -->|"compile"| DAG
   DAG --> RG["Review Gate"]
   RG --> DE["DAGExecutor"]

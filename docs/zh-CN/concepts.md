@@ -29,8 +29,9 @@ provider clients、sessions 或 capability handlers。
 
 `ToolAgent` 执行有边界的 tool-loop 工作。它适合每一步都依赖最新 observation 的任务。
 
-`DagAgent` 会让模型规划一个可 review 的 capability-node DAG，执行 ready layers，
-观察结果，并在需要时进行局部 replan。
+`DagAgent` 会让模型生成 strict typed plan，将其规范化为 `DAGSpec`，执行 ready layers，
+观察结果，并在需要时进行局部 replan。Dynamic plan 可以使用与 static spec 相同的
+conditional、map、subgraph、loop、artifact 和 value-expression 语义。
 
 `AutoAgent` 让 runtime 针对每个请求在直接 tool use 和 dynamic DAG planning 之间选择。
 

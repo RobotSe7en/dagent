@@ -32,9 +32,11 @@ def run(coro):
 
 
 class StrictToolMessageProvider(MockProvider):
-    async def chat(self, messages, tools=None):
+    async def chat(self, messages, tools=None, *, response_format=None):
         _assert_complete_tool_call_messages(messages)
-        return await super().chat(messages, tools=tools)
+        return await super().chat(
+            messages, tools=tools, response_format=response_format
+        )
 
 
 def _assert_complete_tool_call_messages(messages: list[dict]) -> None:

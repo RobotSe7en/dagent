@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Iterator, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 from dagent.schemas.artifact import Artifact
 from dagent.schemas.capability import CapabilityInvocation
@@ -37,23 +37,6 @@ class DAG(BaseModel):
     status: DAGStatus = "draft"
     nodes: list[DAGNode] = Field(default_factory=list)
     edges: list[DAGEdge] = Field(default_factory=list)
-
-
-class PlanNodeSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    title: str = ""
-    tool: str | None = None
-    args: dict = Field(default_factory=dict)
-    depends_on: list[str] = Field(default_factory=list)
-    inputs: list[str] = Field(default_factory=list)
-    outputs: list[str] = Field(default_factory=list)
-
-
-class PlanSpec(BaseModel):
-    task: str = ""
-    nodes: list[PlanNodeSpec] = Field(default_factory=list)
 
 
 DAGRunStatus = Literal[
