@@ -38,6 +38,9 @@ Simplified Chinese documentation is available at
 - [Troubleshooting](troubleshooting.md): common setup, provider, MCP,
   capability, DAG validation, and review issues.
 - [Migration Notes](migration.md): released-surface changes and upgrade notes.
+- [Dynamic DAG Generation Plan](dynamic-dag-generation-plan.md): staged
+  development of a typed planner spec and restricted SDK builder; this page
+  does not describe released behavior.
 - [Examples](../../examples/README.md): runnable scripts mapped to the docs page
   they demonstrate.
 

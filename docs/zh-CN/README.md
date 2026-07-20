@@ -34,6 +34,8 @@
 - [故障排查](troubleshooting.md)：常见安装、provider、MCP、capability、DAG
   validation 和 review 问题。
 - [迁移说明](migration.md)：已发布接口变化和升级说明。
+- [动态 DAG 生成计划](dynamic-dag-generation-plan.md)：类型化 planner spec 和受限
+  SDK builder 的分阶段开发路线；该页面不描述已发布行为。
 - [示例](../../examples/README.md)：可运行脚本以及对应的文档页面。
 
 ## 文档原则
