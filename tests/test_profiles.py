@@ -43,11 +43,14 @@ def test_profile_store_rejects_path_like_profile_names(tmp_path: Path) -> None:
             store.load(name)
 
 
-def test_dag_agent_prompt_requires_internal_task_decomposition() -> None:
+def test_dag_agent_prompt_requires_typed_planning_actions() -> None:
     prompt = load_builtin_profile("dag_agent").content
 
-    assert "internally decompose" in prompt
-    assert "Only write the resulting DSL" in prompt
+    assert "propose_plan" in prompt
+    assert "no_change" in prompt
+    assert "final_answer" in prompt
+    assert "stable capability `id`" in prompt
+    assert "Value AST" in prompt
 
 
 def test_dag_agent_prompt_does_not_ask_for_reserved_dag_start() -> None:

@@ -9,7 +9,55 @@ The current package version is `0.7.2`.
 
 ## Unreleased
 
-- No unreleased changes.
+### Added
+
+- Dynamic DAG planning now uses a strict internal JSON Schema contract with
+  explicit `propose_plan`, `no_change`, and `final_answer` actions.
+- Typed dynamic plans support capability/agent, map, subgraph, and bounded loop
+  nodes; conditional edges; artifacts; graph output; and recursive value
+  expressions. They normalize to canonical `DAGSpec` before review/execution.
+- `RunState.dag_spec` and `PendingReview.proposed_dag_spec` retain canonical
+  dynamic specs in SDK checkpoints and review continuations.
+- `dagent.providers.StructuredOutputFormat` is the provider-neutral structured
+  response contract. `ChatResponse.refusal` carries provider refusals.
+
+### Changed
+
+- Dynamic planners reference stable capability ids directly. The host fills
+  capability kind, defaults, risk, boundaries, and invocation identity.
+- Full-spec replanning preserves unchanged invocation ids, requires
+  `rerun_nodes` for changed completed nodes, and invalidates changed downstream
+  results. Pending DAG reviews persist `rerun_nodes`, and artifact definition
+  changes participate in review and invalidation decisions.
+- `OpenAICompatibleProvider` maps planner schemas to Chat Completions
+  `response_format.type="json_schema"` for streaming and non-streaming calls.
+
+### Breaking Changes
+
+- The free-form PlanSpec DSL and its parser/compiler types have been removed.
+  Dynamic planner responses are JSON only; there is no legacy fallback.
+- Custom `ChatProvider` implementations must accept the keyword-only
+  `response_format` argument on both `chat(...)` and `stream_chat(...)`, and
+  must honor it for dynamic DAG planning.
+- Review checkpoints created from the removed PlanSpec path do not contain a
+  canonical proposed spec and cannot resume as typed DAG reviews.
+
+### Migration Steps
+
+- Update deterministic providers and test fixtures to return schema-valid
+  planner JSON instead of PlanSpec text or bare `NO_CHANGE`/final text.
+- Update custom providers to pass through `StructuredOutputFormat`, return JSON
+  matching its schema, and surface structured-output refusals in
+  `ChatResponse.refusal`.
+- Recreate pending dynamic DAG reviews using this version before persisting new
+  checkpoints; do not attempt to convert old PlanSpec review state implicitly.
+
+### Known Limitations
+
+- Phase one replans with a complete typed graph; atomic typed patches are
+  deferred.
+- The optional restricted SDK-builder/code-generation frontend remains a phase
+  two plan.
 
 ## 0.7.2
 

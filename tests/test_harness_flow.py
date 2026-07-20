@@ -12,9 +12,13 @@ from dagent.harness_runtime import (
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.providers import ChatResponse, MockProvider
-from dagent.harness_runtime.dag_builder import parse_plan_spec_dsl
+from dagent.harness_runtime.dag_builder import compile_dag_spec
+from dagent.harness_runtime.dag_agent import _PlannerProposal
+from dagent.harness_runtime.dynamic_planner import normalize_planner_graph
+from dagent.harness_runtime.planner_schema import parse_planner_response
 from dagent.profiles import AgentProfile
 from dagent.schemas import (
+    Artifact,
     Boundary,
     CapabilityNodePayload,
     CapabilityDefinition,
@@ -22,12 +26,19 @@ from dagent.schemas import (
     DAG,
     DAGEdge,
     DAGNode,
+    DAGSpec,
     RunTrace,
     RunTraceNode,
     RunState,
     StartNodePayload,
 )
 from dagent.capabilities.tools.registry import ToolRegistry
+from tests.planner_helpers import (
+    final_answer_response,
+    no_change_response,
+    planner_response_from_dag as typed_response_from_dag,
+    planner_value,
+)
 
 
 def run(coro):
@@ -125,28 +136,33 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
     )
 
 
-def dag_dsl_from_dag(
+def dag_response_from_dag(
     dag: DAG,
     *,
     tool_adapter: CapabilityToolAdapter,
     enabled_toolsets: tuple[str, ...] = ("builtin",),
 ) -> str:
-    lines = []
-    for node in dag.nodes:
-        if isinstance(node.payload, StartNodePayload):
-            continue
-        assert isinstance(node.payload, CapabilityNodePayload)
-        deps = [e.source for e in dag.edges if e.target == node.id and e.source != "start"]
-        deps_str = f" after {', '.join(deps)}" if deps else ""
-        invocation = node.payload.invocation
-        args = ", ".join(f'{k}={repr(v)}' for k, v in invocation.arguments.items())
-        tool_name = _tool_name_from_capability(
-            invocation.capability_id,
-            tool_adapter=tool_adapter,
-            enabled_toolsets=enabled_toolsets,
-        )
-        lines.append(f'{node.id} = {tool_name}({args}){deps_str}')
-    return "\n".join(lines)
+    del tool_adapter, enabled_toolsets
+    return typed_response_from_dag(dag)
+
+
+def planner_proposal_for_dag(
+    loop: DAGAgentLoop,
+    dag: DAG,
+    *,
+    rerun_nodes: tuple[str, ...] = (),
+) -> _PlannerProposal:
+    parsed = parse_planner_response(typed_response_from_dag(dag, rerun_nodes=rerun_nodes))
+    assert parsed.plan is not None
+    return _PlannerProposal(
+        spec=normalize_planner_graph(
+            parsed.plan,
+            spec_id=dag.task_id,
+            version=1,
+            capabilities=loop.available_capabilities(),
+        ),
+        rerun_nodes=rerun_nodes,
+    )
 
 
 def make_capability_executor() -> CapabilityExecutor:
@@ -253,7 +269,9 @@ def _tool_node(node_id: str, tool: str, args: dict) -> DAGNode:
                 capability_id=_tool_capability_id(tool),
                 kind="tool",
                 arguments=args,
-                boundary=Boundary(),
+                boundary=Boundary(allowed_paths=[str(
+                    args.get("path") or args.get("cwd") or "."
+                )]),
             ),
         ),
     )
@@ -270,19 +288,7 @@ def _start_node() -> DAGNode:
     )
 
 
-def _tool_name_from_capability(
-    capability_id: str,
-    *,
-    tool_adapter: CapabilityToolAdapter,
-    enabled_toolsets: tuple[str, ...] = ("builtin",),
-) -> str:
-    return tool_adapter.function_name_for_capability(
-        capability_id,
-        enabled_toolsets=enabled_toolsets,
-    )
-
-
-def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None:
+def test_typed_planner_response_uses_stable_capability_ids() -> None:
     catalog = CapabilityCatalog()
     catalog.register(
         CapabilityDefinition(
@@ -314,26 +320,30 @@ def test_dag_dsl_from_dag_uses_adapter_names_for_selected_capabilities() -> None
         ],
     )
 
-    dsl = dag_dsl_from_dag(
+    response = dag_response_from_dag(
         dag,
         tool_adapter=tool_adapter,
         enabled_toolsets=("selected",),
     )
 
-    assert dsl == "search = tool_remote_search(query='status')"
+    assert '"capability_id": "tool.remote_search"' in response
+    assert "tool_remote_search" not in response
 
 
 
 
-def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
+def test_llm_dag_agent_normalizes_typed_plan_into_dag() -> None:
+    planned = DAG(
+        dag_id="fixture",
+        task_id="fixture",
+        nodes=[
+            _tool_node("list_files", "shell", {"command": "dir", "cwd": "."}),
+            _tool_node("show_result", "echo", {"text": "done"}),
+        ],
+        edges=[DAGEdge(source="list_files", target="show_result")],
+    )
     provider = MockProvider([
-        ChatResponse(
-            content=(
-                "task: inspect project\n"
-                "list_files = tool_shell(command=\"dir\", cwd=\".\")\n"
-                "show_result = tool_echo(text=\"done\") after list_files\n"
-            )
-        )
+        ChatResponse(content=typed_response_from_dag(planned, name="inspect project"))
     ])
     dag_loop = dag_loop_for(provider)
 
@@ -347,7 +357,11 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
             task_id="task_real",
         ),
     ))
-    dag = dag_loop.prepare_for_review(requested)
+    dag = dag_loop.prepare_for_review(compile_dag_spec(
+        requested.spec,
+        task_id="task_real",
+        capabilities=dag_loop.available_capabilities(),
+    ))
 
     assert dag.task_id == "task_real"
     assert [node.id for node in dag.nodes] == ["start", "list_files", "show_result"]
@@ -359,22 +373,7 @@ def test_llm_dag_agent_compiles_plan_spec_dsl_into_dag() -> None:
     }
 
 
-def test_parse_plan_spec_dsl_accepts_wrapped_output_and_dict_args() -> None:
-    plan = parse_plan_spec_dsl(
-        """
-        PLAN_SPEC
-        task: inspect project
-        inspect = tool_shell({"command": "dir", "cwd": "."})
-        END_PLAN_SPEC
-        """
-    )
-
-    assert plan.task == "inspect project"
-    assert plan.nodes[0].id == "inspect"
-    assert plan.nodes[0].args == {"command": "dir", "cwd": "."}
-
-
-def test_parse_plan_spec_dsl_accepts_value_expr_args() -> None:
+def test_planner_value_encodes_nested_value_expr_args() -> None:
     args = {
         "text": {
             "$expr": {
@@ -385,36 +384,29 @@ def test_parse_plan_spec_dsl_accepts_value_expr_args() -> None:
             }
         }
     }
-    plan = parse_plan_spec_dsl(
-        "\n".join([
-            "task: summarize",
-            'inspect = tool_read_file(path="README.md")',
-            f"summarize = tool_echo({args!r}) after inspect",
-        ])
-    )
-
-    assert plan.nodes[1].args == args
-
-
-def test_parse_plan_spec_dsl_ignores_thinking_blocks_and_preamble() -> None:
-    plan = parse_plan_spec_dsl(
-        """
-        <think>The user wants repository inspection.</think>
-        Here is the requested plan.
-        task: inspect project
-        inspect = tool_shell(command="dir", cwd=".")
-        """
-    )
-
-    assert plan.task == "inspect project"
-    assert plan.nodes[0].id == "inspect"
-    assert plan.nodes[0].args == {"command": "dir", "cwd": "."}
+    assert planner_value(args) == {
+        "type": "object",
+        "entries": [{
+            "name": "text",
+            "value": {
+                "type": "node_output",
+                "node_id": "inspect",
+                "field": "content",
+                "path": [],
+            },
+        }],
+    }
 
 
 def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
+    planned = DAG(
+        dag_id="fixture",
+        task_id="fixture",
+        nodes=[_tool_node("inspect", "echo", {"text": "ok"})],
+    )
     provider = MockProvider([
-        ChatResponse(content='inspect = tool_echo(text="ok")'),
-        ChatResponse(content="NO_CHANGE"),
+        ChatResponse(content=typed_response_from_dag(planned)),
+        ChatResponse(content=no_change_response()),
     ])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(capability_executor=make_capability_executor())
@@ -432,7 +424,12 @@ def test_harness_runtime_auto_approves_low_risk_dag_and_executes() -> None:
 
 
 def test_harness_runtime_careful_reviews_initial_dag() -> None:
-    provider = MockProvider([ChatResponse(content='inspect = tool_echo(text="ok")')])
+    planned = DAG(
+        dag_id="fixture",
+        task_id="fixture",
+        nodes=[_tool_node("inspect", "echo", {"text": "ok"})],
+    )
+    provider = MockProvider([ChatResponse(content=typed_response_from_dag(planned))])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_agent, executor=executor)
@@ -448,7 +445,9 @@ def test_harness_runtime_careful_reviews_initial_dag() -> None:
 
 
 def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> None:
-    provider = MockProvider([ChatResponse(content="Boundary-approved DAG completed.")])
+    provider = MockProvider([ChatResponse(content=final_answer_response(
+        "Boundary-approved DAG completed."
+    ))])
     executor = DAGExecutor(capability_executor=make_capability_executor())
     runtime = runtime_for(dag_agent_loop=dag_loop_for(provider, executor), executor=executor)
     record = dag_state(
@@ -466,13 +465,14 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
     proposed_node.payload.invocation.boundary = Boundary(allowed_paths=["allowed"])
     proposed_node.payload.invocation.risk = "medium"
 
+    proposed = DAG(
+        dag_id="dag_boundary_review",
+        task_id="task_boundary_review",
+        nodes=[proposed_node],
+    )
     runtime.dag_agent.loop._apply_replan(
         record,
-        DAG(
-            dag_id="dag_boundary_review",
-            task_id="task_boundary_review",
-            nodes=[proposed_node],
-        ),
+        planner_proposal_for_dag(runtime.dag_agent.loop, proposed),
     )
 
     assert record.pending_review is not None
@@ -489,7 +489,7 @@ def test_harness_runtime_dag_review_approval_authorizes_node_boundaries() -> Non
     assert dag_node_trace(result.state.trace, "write_reviewed").output.endswith("blocked/notes.md:hi")
 
 
-def test_harness_runtime_fast_replan_does_not_authorize_node_boundaries() -> None:
+def test_harness_runtime_fast_replan_uses_host_inferred_node_boundaries() -> None:
     provider = MockProvider([])
     executor = DAGExecutor(capability_executor=make_capability_executor())
     dag_loop = dag_loop_for(provider, executor)
@@ -507,25 +507,23 @@ def test_harness_runtime_fast_replan_does_not_authorize_node_boundaries() -> Non
     proposed_node.payload.invocation.boundary = Boundary(allowed_paths=["allowed"])
     proposed_node.payload.invocation.risk = "medium"
 
-    dag_loop._apply_replan(
-        record,
-        DAG(
-            dag_id="dag_fast_boundary",
-            task_id="task_fast_boundary",
-            nodes=[proposed_node],
-        ),
+    proposed = DAG(
+        dag_id="dag_fast_boundary",
+        task_id="task_fast_boundary",
+        nodes=[proposed_node],
     )
+    dag_loop._apply_replan(record, planner_proposal_for_dag(dag_loop, proposed))
 
     assert record.pending_review is None
     result = run(dag_loop.execute(record, replan=False))
 
     assert result is not None
-    assert result.status == "failed"
-    assert dag_node_trace(result, "write_unreviewed").status == "failed"
+    assert result.status == "completed"
+    assert dag_node_trace(result, "write_unreviewed").status == "completed"
 
 
 def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
-    """When replan returns NO_CHANGE, layers execute with original args."""
+    """When replan returns no_change, layers execute with original args."""
     initial = DAG(
         dag_id="dag_replan",
         task_id="task_replan",
@@ -538,8 +536,8 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([
-            ChatResponse(content="NO_CHANGE"),
-            ChatResponse(content="Both nodes completed."),
+            ChatResponse(content=no_change_response()),
+            ChatResponse(content=final_answer_response("Both nodes completed.")),
         ])),
         executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
@@ -560,7 +558,7 @@ def test_harness_runtime_executes_layers_with_no_change_replan() -> None:
 
 
 def test_harness_runtime_replan_adjusts_params_after_success() -> None:
-    """When replan returns adjusted PlanSpec DSL, pending node args are updated."""
+    """When replan returns an adjusted typed plan, pending node args are updated."""
     initial = DAG(
         dag_id="dag_l2",
         task_id="task_l2",
@@ -571,16 +569,20 @@ def test_harness_runtime_replan_adjusts_params_after_success() -> None:
         ],
         edges=[DAGEdge(source="inspect", target="answer")],
     )
-    adjusted_dsl = (
-        'task: adjusted\n'
-        'inspect = tool_echo(text="discovered_path")\n'
-        'answer = tool_echo(text="adjusted_value") after inspect\n'
+    adjusted = DAG(
+        dag_id="adjusted",
+        task_id="task_l2",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "discovered_path"}),
+            _tool_node("answer", "echo", {"text": "adjusted_value"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(MockProvider([
-            ChatResponse(content=adjusted_dsl),
-            ChatResponse(content="NO_CHANGE"),
-            ChatResponse(content="Adjusted and completed."),
+            ChatResponse(content=typed_response_from_dag(adjusted)),
+            ChatResponse(content=no_change_response()),
+            ChatResponse(content=final_answer_response("Adjusted and completed.")),
         ])),
         executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
@@ -618,13 +620,19 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
         ],
         edges=[DAGEdge(source="inspect", target="answer")],
     )
-    adjusted_dsl = (
-        'task: adjusted\n'
-        'inspect = tool_echo(text="discovered_path")\n'
-        'answer = tool_echo(text="adjusted_value") after inspect\n'
+    adjusted = DAG(
+        dag_id="adjusted",
+        task_id="task_l2_review",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "discovered_path"}),
+            _tool_node("answer", "echo", {"text": "adjusted_value"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
     )
     runtime = runtime_for(
-        dag_agent_loop=dag_loop_for(MockProvider([ChatResponse(content=adjusted_dsl)])),
+        dag_agent_loop=dag_loop_for(MockProvider([
+            ChatResponse(content=typed_response_from_dag(adjusted))
+        ])),
         executor=DAGExecutor(capability_executor=make_capability_executor()),
     )
     prepared = runtime.dag_agent.loop.prepare_for_review(initial)
@@ -643,6 +651,115 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     assert record.pending_review is not None
     assert record.pending_review.kind == "dag_replan"
     assert record.pending_review.proposed_dag.nodes[-1].payload.invocation.arguments == {"text": "adjusted_value"}
+
+
+def test_harness_runtime_careful_reviews_artifact_definition_changes() -> None:
+    loop = dag_loop_for(MockProvider([]))
+    producer = _tool_node("produce", "echo", {"text": "report"})
+    producer.outputs = ["report"]
+    consumer = _tool_node(
+        "consume",
+        "echo",
+        {"text": {"$expr": {
+            "type": "artifact",
+            "artifact_id": "report",
+            "field": "path",
+        }}},
+    )
+    consumer.inputs = ["report"]
+    current_spec = DAGSpec(
+        id="task_artifact_review",
+        name="Artifact review",
+        artifacts={
+            "report": Artifact(id="report", paths=["old/report.md"]),
+        },
+        nodes=[producer, consumer],
+        edges=[DAGEdge(source="produce", target="consume")],
+    )
+    current_dag = loop.prepare_for_review(
+        compile_dag_spec(
+            current_spec,
+            task_id="task_artifact_review",
+            capabilities=loop.available_capabilities(),
+        )
+    )
+    record = dag_state(
+        task_id="task_artifact_review",
+        user_request="Move the report",
+        dag=current_dag,
+        review_level="careful",
+    )
+    record.dag_spec = current_spec
+    record.dag_boundary_approved_version = current_dag.version
+    proposed_spec = current_spec.model_copy(deep=True)
+    proposed_spec.version += 1
+    proposed_spec.artifacts["report"] = Artifact(
+        id="report",
+        paths=["new/report.md"],
+    )
+
+    loop._apply_replan(record, _PlannerProposal(spec=proposed_spec))
+
+    assert record.pending_review is not None
+    assert record.pending_review.kind == "dag_replan"
+    assert record.pending_review.proposed_dag_spec is not None
+    assert record.pending_review.proposed_dag_spec.artifacts["report"].paths == [
+        "new/report.md"
+    ]
+    assert record.dag_spec.artifacts["report"].paths == ["old/report.md"]
+
+
+def test_harness_runtime_preserves_rerun_nodes_through_review_checkpoint() -> None:
+    provider = MockProvider([
+        ChatResponse(content=no_change_response()),
+        ChatResponse(content=final_answer_response("Rerun completed.")),
+    ])
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    loop = dag_loop_for(provider, executor)
+    runtime = runtime_for(dag_agent_loop=loop, executor=executor)
+    initial = DAG(
+        dag_id="dag_rerun_review",
+        task_id="task_rerun_review",
+        status="approved",
+        nodes=[_tool_node("work", "echo", {"text": "same"})],
+    )
+    proposal = planner_proposal_for_dag(loop, initial, rerun_nodes=("work",))
+    prepared = loop.prepare_for_review(initial)
+    record = dag_state(
+        task_id="task_rerun_review",
+        user_request="Run the same work again",
+        dag=prepared,
+        review_level="careful",
+    )
+    record.internal_messages = [{"role": "user", "content": record.user_request}]
+    record.dag_spec = proposal.spec.model_copy(deep=True)
+    record.trace = trace_with_completed_nodes(
+        "task_rerun_review",
+        {"work": "echo:same"},
+    )
+    previous_trace_id = dag_node_trace(record.trace, "work").id
+
+    loop._apply_replan(record, proposal)
+
+    assert record.pending_review is not None
+    assert record.pending_review.rerun_nodes == ("work",)
+    restored = RunState.model_validate(record.model_dump(mode="json"))
+    assert restored.pending_review is not None
+    assert restored.pending_review.rerun_nodes == ("work",)
+
+    outcome = run(
+        runtime.dag_agent.resume_review(
+            restored,
+            dag=restored.pending_review.proposed_dag,
+            approved=True,
+            dag_executor=executor,
+        )
+    )
+
+    assert outcome is not None
+    assert outcome.state.trace is not None
+    assert dag_node_trace(outcome.state.trace, "work").id != previous_trace_id
+    assert dag_node_trace(outcome.state.trace, "work").output == "echo:same"
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:
@@ -669,8 +786,8 @@ def test_harness_runtime_replans_after_tool_failure() -> None:
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(
             MockProvider([
-                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
-                ChatResponse(content="Recovery complete."),
+                ChatResponse(content=dag_response_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content=final_answer_response("Recovery complete.")),
             ]),
             executor=executor,
         ),
@@ -724,8 +841,8 @@ def test_harness_runtime_dynamic_adjust_false_does_not_replan_after_tool_failure
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(
             MockProvider([
-                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
-                ChatResponse(content="Recovery complete."),
+                ChatResponse(content=dag_response_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content=final_answer_response("Recovery complete.")),
             ]),
             executor=executor,
         ),
@@ -751,21 +868,30 @@ def test_harness_runtime_dynamic_adjust_false_does_not_replan_after_tool_failure
 
 def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
     """Replan LLM call includes the initial planning exchange in the agent thread."""
-    initial_dsl = (
-        'task: initial\n'
-        'inspect = tool_echo(text="hello")\n'
-        'answer = tool_echo(text="placeholder") after inspect\n'
+    initial = DAG(
+        dag_id="initial",
+        task_id="task_dm",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "hello"}),
+            _tool_node("answer", "echo", {"text": "placeholder"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
     )
-    adjusted_dsl = (
-        'task: adjusted\n'
-        'inspect = tool_echo(text="hello")\n'
-        'answer = tool_echo(text="fixed") after inspect\n'
+    adjusted = DAG(
+        dag_id="adjusted",
+        task_id="task_dm",
+        nodes=[
+            _tool_node("inspect", "echo", {"text": "hello"}),
+            _tool_node("answer", "echo", {"text": "fixed"}),
+        ],
+        edges=[DAGEdge(source="inspect", target="answer")],
     )
+    initial_response = typed_response_from_dag(initial)
     provider = MockProvider([
-        ChatResponse(content=initial_dsl),
-        ChatResponse(content=adjusted_dsl),
-        ChatResponse(content="NO_CHANGE"),
-        ChatResponse(content="All steps completed."),
+        ChatResponse(content=initial_response),
+        ChatResponse(content=typed_response_from_dag(adjusted)),
+        ChatResponse(content=no_change_response()),
+        ChatResponse(content=final_answer_response("All steps completed.")),
     ])
     dag_agent = dag_loop_for(provider)
     executor = DAGExecutor(capability_executor=make_capability_executor())
@@ -779,7 +905,7 @@ def test_replan_sees_prior_planning_output_in_agent_thread() -> None:
         "assistant",
         "user",
     ]
-    assert initial_dsl in replan_messages[2]["content"]
+    assert initial_response in replan_messages[2]["content"]
     assert "DAG observation" in replan_messages[3]["content"]
     assert result.state.trace is not None
     assert result.state.trace.status == "completed"
@@ -942,7 +1068,7 @@ def test_harness_runtime_ignores_stale_failed_trace_nodes_after_replan() -> None
     )
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(
-            MockProvider([ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter))]),
+            MockProvider([ChatResponse(content=dag_response_from_dag(replacement, tool_adapter=tool_adapter))]),
             executor=executor,
         ),
         executor=executor,
@@ -989,8 +1115,8 @@ def test_harness_runtime_patches_failed_node_and_retries() -> None:
     runtime = runtime_for(
         dag_agent_loop=dag_loop_for(
             MockProvider([
-                ChatResponse(content=dag_dsl_from_dag(replacement, tool_adapter=tool_adapter)),
-                ChatResponse(content="Patched and completed."),
+                ChatResponse(content=dag_response_from_dag(replacement, tool_adapter=tool_adapter)),
+                ChatResponse(content=final_answer_response("Patched and completed.")),
             ]),
             executor=executor,
         ),
@@ -1048,7 +1174,10 @@ def test_harness_runtime_edge_only_replan_invalidates_downstream_results() -> No
         {"source": "echo:source", "sink": "echo:same"},
     )
 
-    loop._apply_replan(record, replacement)
+    loop._apply_replan(
+        record,
+        planner_proposal_for_dag(loop, replacement, rerun_nodes=("sink",)),
+    )
 
     assert record.trace is not None
     assert "sink" not in {

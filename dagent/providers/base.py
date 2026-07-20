@@ -14,9 +14,20 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class StructuredOutputFormat:
+    """Provider-neutral JSON Schema response contract."""
+
+    name: str
+    schema: dict[str, Any]
+    description: str = ""
+    strict: bool = True
+
+
+@dataclass(frozen=True)
 class ChatResponse:
     content: str = ""
     reasoning_content: str = ""
+    refusal: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
 
 
@@ -33,6 +44,8 @@ class ChatProvider(Protocol):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: StructuredOutputFormat | None = None,
     ) -> ChatResponse:
         """Return the next assistant response."""
 
@@ -40,5 +53,7 @@ class ChatProvider(Protocol):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        *,
+        response_format: StructuredOutputFormat | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream assistant response tokens and finish with a ChatResponse."""

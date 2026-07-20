@@ -26,6 +26,11 @@ from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.runner import Runner
 from dagent.schemas import CapabilityDefinition, CapabilityPolicy, CapabilityResult
+from tests.planner_helpers import (
+    capability_plan_response,
+    final_answer_response,
+    no_change_response,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1005,8 +1010,8 @@ def test_api_fast_dag_streams_planning_think_and_live_trace() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                          # _route()
-            ChatResponse(content="<think>planning dag</think>\n" + _dag_agent_dsl()),  # DAG agent
-            ChatResponse(content="Final answer: echo:ok"),                        # execute observation
+            ChatResponse(content=_dag_agent_dsl(), reasoning_content="planning dag"),
+            ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
     )
     client = TestClient(app)
@@ -1039,9 +1044,13 @@ def test_api_fast_dag_streams_failed_and_replanned_dag_versions() -> None:
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # replan
-            ChatResponse(content="Recovered after replanning."),                       # execute observation
+            ChatResponse(content=capability_plan_response(
+                "tool.fail_tool", {"text": "boom"}, node_id="bad"
+            )),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "ok"}, node_id="answer"
+            )),
+            ChatResponse(content=final_answer_response("Recovered after replanning.")),
         ])
     )
     client = TestClient(app)
@@ -1063,9 +1072,13 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
     state.runner = _runner(
         MockProvider([
             ChatResponse(content="dag"),                                              # _route()
-            ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),  # DAG agent initial
-            ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),        # would replan if enabled
-            ChatResponse(content="Recovered after replanning."),
+            ChatResponse(content=capability_plan_response(
+                "tool.fail_tool", {"text": "boom"}, node_id="bad"
+            )),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "ok"}, node_id="answer"
+            )),
+            ChatResponse(content=final_answer_response("Recovered after replanning.")),
         ])
     )
     client = TestClient(app)
@@ -1093,9 +1106,13 @@ def test_api_dynamic_adjust_false_keeps_generated_dag_fixed_after_failure() -> N
 def test_api_dag_mode_returns_failed_fast_dag_answer() -> None:
     state.runner = _runner(
         MockProvider([
-            ChatResponse(content='task: fail\nbad = tool_fail_tool(text="boom")\n'),
-            ChatResponse(content="NO_CHANGE"),
-            ChatResponse(content="The DAG failed after retrying the failing node."),
+            ChatResponse(content=capability_plan_response(
+                "tool.fail_tool", {"text": "boom"}, node_id="bad"
+            )),
+            ChatResponse(content=no_change_response()),
+            ChatResponse(content=final_answer_response(
+                "The DAG failed after retrying the failing node."
+            )),
         ])
     )
     client = TestClient(app)
@@ -1117,7 +1134,7 @@ def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
-            ChatResponse(content="Final answer: echo:ok"),  # execute observation
+            ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
     )
     client = TestClient(app)
@@ -1131,7 +1148,8 @@ def test_api_resume_executes_reviewed_dag_and_run_trace_endpoint_reads_run_trace
     run_id = _result_run_id(stream_result)
     review_id = _result_review(stream_result)["review_id"]
     dag = _result_dag(stream_result)
-    dag["nodes"][0]["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
+    answer_node = next(node for node in dag["nodes"] if node["id"] == "answer")
+    answer_node["payload"]["invocation"]["arguments"] = {"text": "reviewed"}
 
     resume_response = client.post(
         "/messages/resume",
@@ -1170,7 +1188,10 @@ def test_api_resume_review_delivers_dag_answer_only_in_run_finished() -> None:
         MockProvider([
             ChatResponse(content="dag"),            # _route()
             ChatResponse(content=_dag_agent_dsl()),  # DAG agent
-            ChatResponse(content="<think>observe</think>DAG agent final answer"),
+            ChatResponse(
+                content=final_answer_response("DAG agent final answer"),
+                reasoning_content="observe",
+            ),
         ])
     )
     client = TestClient(app)
@@ -4408,7 +4429,9 @@ def _runner(provider: MockProvider, *, skill_roots: list[Path] | None = None) ->
 
 
 def _dag_agent_dsl() -> str:
-    return 'task: mock\nanswer = tool_echo(text="ok")\n'
+    return capability_plan_response(
+        "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+    )
 
 
 def _message_request(message: str, **fields) -> dict:

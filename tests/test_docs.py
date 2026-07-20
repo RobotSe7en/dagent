@@ -38,7 +38,8 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "No unreleased changes" in english_unreleased
+    assert "strict internal JSON Schema" in english_unreleased
+    assert "free-form PlanSpec DSL" in english_unreleased
     assert "General-Purpose Agent" in english_072
     assert "dedicated process group" in english_072
     assert "RunCheckpoint" in english_071
@@ -73,7 +74,8 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "没有尚未发布的变更" in chinese_unreleased
+    assert "internal strict JSON Schema" in chinese_unreleased
+    assert "Free-form PlanSpec DSL" in chinese_unreleased
     assert "通用智能体" in chinese_072
     assert "专用进程组" in chinese_072
     assert "RunCheckpoint" in chinese_071

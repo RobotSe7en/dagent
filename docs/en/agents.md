@@ -121,7 +121,15 @@ uv run python -m examples.auto_agent
 ## DagAgent
 
 `DagAgent` is for dynamic DAG planning. It can pause for human review before
-executing proposed work.
+executing proposed work. Planner calls use a strict JSON Schema response: the
+model chooses `propose_plan`, `no_change`, or `final_answer`, and complete typed
+plans are normalized into canonical `DAGSpec` before validation, review, and
+execution. Capability nodes reference stable ids such as `tool.search`; the
+host supplies kind, risk, boundaries, defaults, and invocation identity.
+
+Typed dynamic plans can contain capability/agent, map, subgraph, and bounded
+loop nodes, explicit conditional edges, artifacts, graph output, and structured
+value references. They use the same validator and executor as static DAGs.
 
 ```python
 agent = dagent.DagAgent(
@@ -146,6 +154,11 @@ Set `dynamic_adjust=False` when you want the planner to generate the initial DAG
 but keep that DAG fixed during execution. Review behavior is still controlled by
 `review`; disabling dynamic adjustment only prevents later replanning after
 execution observations or failures.
+
+Custom providers used with `DagAgent` must implement the `response_format`
+keyword on `chat(...)` and `stream_chat(...)` and honor strict JSON Schema
+structured output. The built-in `Provider` maps this contract to OpenAI-compatible
+Chat Completions `json_schema` response formatting.
 
 Run the offline dynamic DAG example:
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from dagent.config import ProviderConfig
-from dagent.providers import OpenAICompatibleProvider
+from dagent.providers import OpenAICompatibleProvider, StructuredOutputFormat
 
 
 class FakeCompletions:
@@ -217,6 +217,52 @@ async def test_openai_compatible_provider_reads_reasoning_content_from_chat_resp
 
     assert response.content == "final answer"
     assert response.reasoning_content == "deepseek reasoning"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_maps_strict_schema_and_refusal() -> None:
+    client = FakeClient(
+        message=SimpleNamespace(
+            content="",
+            refusal="cannot comply",
+            tool_calls=[],
+        )
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderConfig(
+            base_url="http://localhost:8000/v1",
+            model="structured",
+            api_key="local-key",
+            extra_request_args={"response_format": {"type": "text"}},
+        ),
+        client=client,
+    )
+    response_format = StructuredOutputFormat(
+        name="result",
+        description="Structured result.",
+        schema={
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        },
+    )
+
+    response = await provider.chat(
+        [{"role": "user", "content": "hello"}],
+        response_format=response_format,
+    )
+
+    assert client.completions.kwargs["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "result",
+            "description": "Structured result.",
+            "schema": response_format.schema,
+            "strict": True,
+        },
+    }
+    assert response.refusal == "cannot comply"
 
 
 @pytest.mark.asyncio

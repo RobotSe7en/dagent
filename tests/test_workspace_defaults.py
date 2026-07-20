@@ -8,6 +8,7 @@ import dagent.runner as runner_module
 from dagent.capabilities.tools.registry import ToolOutput
 from dagent.harness_runtime.artifacts import create_run_workspace
 from dagent.providers import ChatResponse, MockProvider, ToolCall
+from tests.planner_helpers import capability_plan_response, final_answer_response
 
 
 def run(coro):
@@ -105,13 +106,12 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     provider = MockProvider([
-        ChatResponse(
-            content=(
-                "task: write a DAG note\n"
-                "write = tool_write_file(path=\"shared/dag.txt\", content=\"hi\")\n"
-            )
-        ),
-        ChatResponse(content="done"),
+        ChatResponse(content=capability_plan_response(
+            "tool.write_file",
+            {"path": "shared/dag.txt", "content": "hi"},
+            node_id="write",
+        )),
+        ChatResponse(content=final_answer_response("done")),
     ])
     runner = dagent.Runner(provider=provider)
 
@@ -255,20 +255,18 @@ def test_dag_agent_continuation_reuses_run_id_and_workspace(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     provider = MockProvider([
-        ChatResponse(
-            content=(
-                "task: write first DAG note\n"
-                "write = tool_write_file(path=\"shared/dag_first.txt\", content=\"one\")\n"
-            )
-        ),
-        ChatResponse(content="first done"),
-        ChatResponse(
-            content=(
-                "task: write second DAG note\n"
-                "write = tool_write_file(path=\"shared/dag_second.txt\", content=\"two\")\n"
-            )
-        ),
-        ChatResponse(content="second done"),
+        ChatResponse(content=capability_plan_response(
+            "tool.write_file",
+            {"path": "shared/dag_first.txt", "content": "one"},
+            node_id="write",
+        )),
+        ChatResponse(content=final_answer_response("first done")),
+        ChatResponse(content=capability_plan_response(
+            "tool.write_file",
+            {"path": "shared/dag_second.txt", "content": "two"},
+            node_id="write",
+        )),
+        ChatResponse(content=final_answer_response("second done")),
     ])
     runner = dagent.Runner(provider=provider)
     agent = dagent.DagAgent()

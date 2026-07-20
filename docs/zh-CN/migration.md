@@ -8,7 +8,50 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-- 没有尚未发布的变更。
+### 新增
+
+- Dynamic DAG planning 现在使用 internal strict JSON Schema contract，并显式区分
+  `propose_plan`、`no_change` 和 `final_answer`。
+- 类型化 dynamic plan 支持 capability/agent、map、subgraph、bounded loop、条件边、
+  artifacts、graph output 和递归 value expressions；review/执行前统一规范化为 canonical
+  `DAGSpec`。
+- `RunState.dag_spec` 和 `PendingReview.proposed_dag_spec` 会在 SDK checkpoint 和 review
+  continuation 中保留 canonical dynamic spec。
+- `dagent.providers.StructuredOutputFormat` 是 provider-neutral structured response
+  contract；`ChatResponse.refusal` 用于携带 provider refusal。
+
+### 改变
+
+- Dynamic planner 直接引用稳定 capability id；kind、defaults、risk、boundaries 和
+  invocation identity 由 host 补齐。
+- Full-spec replan 会保留未变 invocation id，修改已完成 node 时要求 `rerun_nodes`，并按
+  实际变化让下游结果失效。待审核 DAG 会持久化 `rerun_nodes`，artifact 定义变化也会参与
+  review 和结果失效判断。
+- `OpenAICompatibleProvider` 会在 stream 和 non-stream 调用中把 planner schema 映射为
+  Chat Completions `response_format.type="json_schema"`。
+
+### 破坏性改变
+
+- Free-form PlanSpec DSL 及其 parser/compiler types 已移除。Dynamic planner 只接受 JSON，
+  没有 legacy fallback。
+- Custom `ChatProvider` 的 `chat(...)` 和 `stream_chat(...)` 必须接受 keyword-only
+  `response_format`，并在 dynamic DAG planning 中遵守该 contract。
+- 旧 PlanSpec path 创建的 review checkpoint 不含 canonical proposed spec，不能作为 typed
+  DAG review 恢复。
+
+### 迁移步骤
+
+- 把 deterministic provider 和 test fixture 从 PlanSpec 文本或裸 `NO_CHANGE`/final text
+  改为 schema-valid planner JSON。
+- Custom provider 应传递 `StructuredOutputFormat`、返回符合 schema 的 JSON，并用
+  `ChatResponse.refusal` 暴露 structured-output refusal。
+- 在持久化新 checkpoint 前，用当前版本重新创建 pending dynamic DAG review；不要隐式转换
+  旧 PlanSpec review state。
+
+### 已知限制
+
+- 第一阶段使用完整 typed graph replan；atomic typed patch 延后。
+- Optional restricted SDK-builder/code-generation frontend 仍属于第二阶段计划。
 
 ## 0.7.2
 

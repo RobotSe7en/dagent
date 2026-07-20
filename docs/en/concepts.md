@@ -31,8 +31,10 @@ They do not own provider clients, sessions, or capability handlers.
 `ToolAgent` performs bounded tool-loop work. It is a good fit when each next
 action depends on the latest observation.
 
-`DagAgent` asks the model to plan a reviewable capability-node DAG, executes
-ready layers, observes results, and replans locally when needed.
+`DagAgent` asks the model for a strict typed plan, normalizes it to `DAGSpec`,
+executes ready layers, observes results, and replans locally when needed.
+Dynamic plans can use the same conditional, map, subgraph, loop, artifact, and
+value-expression semantics as static specs.
 
 `AutoAgent` lets the runtime choose direct tool use or dynamic DAG planning for
 each request.

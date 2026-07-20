@@ -7,17 +7,18 @@ from dagent.harness_runtime import CapabilityExecutor
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
     DAGValidationError,
-    compile_plan_spec,
-    parse_plan_spec_dsl,
+    compile_dag_spec,
     validate_dag,
 )
+from dagent.harness_runtime.dynamic_planner import normalize_planner_graph
+from dagent.harness_runtime.planner_schema import PlannerGraph, parse_planner_response
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
 from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation, RunState
-from dagent.schemas.dag import PlanSpec
 from dagent.capabilities.tools.registry import ToolRegistry
+from tests.planner_helpers import planner_response_from_dag
 
 
 def make_node(node_id: str) -> DAGNode:
@@ -142,13 +143,15 @@ def test_multi_node_dag_without_edges_is_rejected() -> None:
 
 
 def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: parallel\n'
-        'a = tool_echo(text="a")\n'
-        'b = tool_echo(text="b")\n'
-    )
+    spec = _normalize_graph({
+        "name": "parallel",
+        "nodes": [
+            _planner_capability_node("a", "tool.echo", text="a"),
+            _planner_capability_node("b", "tool.echo", text="b"),
+        ],
+    })
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
+    dag = compile_dag_spec(spec, task_id="task_1", capabilities=[_capability("tool.echo")])
 
     start = dag.nodes[0]
     assert start.id == "start"
@@ -163,72 +166,65 @@ def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
 
 
 def test_explicit_dag_start_is_rejected_as_reserved_internal_node() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: explicit start\n'
-        'start = dag_start()\n'
-        'a = tool_echo(text="a") after start\n'
-    )
+    graph = _planner_graph({
+        "name": "explicit start",
+        "nodes": [_planner_capability_node("start", "tool.echo", text="a")],
+    })
 
-    with pytest.raises(DAGCreationError, match="reserved"):
-        compile_plan_spec(plan, task_id="task_1")
+    with pytest.raises(ValueError, match="reserved"):
+        PlannerGraph.model_validate(graph)
 
 
-def test_compile_rejects_unknown_capability_function_name() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: unknown\n'
-        'missing = missing_tool(text="a")\n'
-    )
-
+def test_normalizer_rejects_unknown_capability_id() -> None:
     with pytest.raises(
         DAGCreationError,
-        match="Unknown capability function 'missing_tool'. Available functions: tool_echo.",
+        match="Unknown capability 'tool.missing'. Available capabilities: tool.echo.",
     ):
-        compile_plan_spec(plan, task_id="task_1", tools=[_capability("tool.echo")])
+        _normalize_graph({
+            "name": "unknown",
+            "nodes": [_planner_capability_node("missing", "tool.missing", text="a")],
+        })
 
 
-def test_compile_uses_registered_non_tool_capability_mapping() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: memory read\n'
-        'read = memory_read(key="notes")\n'
+def test_normalizer_uses_registered_non_tool_capability() -> None:
+    spec = _normalize_graph(
+        {
+            "name": "memory read",
+            "nodes": [_planner_capability_node("read", "memory.read", key="notes")],
+        },
+        capabilities=[_capability("memory.read", kind="memory")],
     )
 
-    dag = compile_plan_spec(
-        plan,
-        task_id="task_1",
-        tools=[_capability("memory.read", kind="memory")],
-    )
-
-    node = dag.nodes[0]
+    node = spec.nodes[1]
     assert node.payload.invocation.capability_id == "memory.read"
     assert node.payload.invocation.kind == "memory"
 
 
-def test_compile_uses_capability_definition_name_mapping() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: named tool\n'
-        'lookup = search(query="dagent")\n'
+def test_normalizer_uses_stable_capability_id_not_function_name() -> None:
+    spec = _normalize_graph(
+        {
+            "name": "named tool",
+            "nodes": [_planner_capability_node("lookup", "tool.lookup", query="dagent")],
+        },
+        capabilities=[CapabilityDefinition(id="tool.lookup", kind="tool", name="search")],
     )
 
-    dag = compile_plan_spec(
-        plan,
-        task_id="task_1",
-        tools=[CapabilityDefinition(id="tool.lookup", kind="tool", name="search")],
-    )
-
-    node = dag.nodes[0]
+    node = spec.nodes[1]
     assert node.payload.invocation.capability_id == "tool.lookup"
 
 
-def test_compile_infers_boundary_for_command_capability() -> None:
-    plan = parse_plan_spec_dsl(
-        'task: run command\n'
-        'run = tool_shell(command="node -e \\"console.log(1);\\"", cwd=".")\n'
-    )
-
-    dag = compile_plan_spec(
-        plan,
-        task_id="task_1",
-        tools=[
+def test_normalizer_infers_boundary_for_command_capability() -> None:
+    spec = _normalize_graph(
+        {
+            "name": "run command",
+            "nodes": [_planner_capability_node(
+                "run",
+                "tool.shell",
+                command='node -e "console.log(1);"',
+                cwd=".",
+            )],
+        },
+        capabilities=[
             CapabilityDefinition(
                 id="tool.shell",
                 kind="tool",
@@ -242,41 +238,41 @@ def test_compile_infers_boundary_for_command_capability() -> None:
         ],
     )
 
-    boundary = dag.nodes[0].payload.invocation.boundary
+    boundary = spec.nodes[1].payload.invocation.boundary
     assert boundary.allowed_paths == ["."]
 
 
-def test_plan_spec_rejects_node_goal_and_instructions() -> None:
-    with pytest.raises(ValueError):
-        PlanSpec.model_validate({
-            "task": "requirements",
-            "nodes": [
-                {
-                    "id": "write_requirements",
-                    "tool": "echo",
-                    "args": {"text": "ok"},
-                    "goal": "Write a requirement specification.",
-                    "instructions": "Use acceptance criteria.",
-                }
-            ],
-        })
-
-
-def test_compile_plan_spec_preserves_agent_prompt_argument() -> None:
-    plan = PlanSpec.model_validate({
-        "task": "requirements",
-        "nodes": [
-            {
-                "id": "write_requirements",
-                    "tool": "agent_helper",
-                "args": {"prompt": "Write a requirement specification. Use acceptance criteria."},
-            }
-        ],
+def test_planner_schema_rejects_node_goal_and_instructions() -> None:
+    graph = _planner_graph({
+        "name": "requirements",
+        "nodes": [{
+            **_planner_capability_node(
+                "write_requirements",
+                "agent.helper",
+                prompt="Write a requirement specification.",
+            ),
+            "goal": "Write a requirement specification.",
+            "instructions": "Use acceptance criteria.",
+        }],
     })
+    with pytest.raises(ValueError):
+        PlannerGraph.model_validate(graph)
 
-    dag = compile_plan_spec(plan, task_id="task_1", tools=[_capability("agent.helper", kind="agent")])
 
-    assert dag.nodes[0].payload.invocation.arguments == {
+def test_normalizer_preserves_agent_prompt_argument() -> None:
+    spec = _normalize_graph(
+        {
+            "name": "requirements",
+            "nodes": [_planner_capability_node(
+                "write_requirements",
+                "agent.helper",
+                prompt="Write a requirement specification. Use acceptance criteria.",
+            )],
+        },
+        capabilities=[_capability("agent.helper", kind="agent")],
+    )
+
+    assert spec.nodes[1].payload.invocation.arguments == {
         "prompt": "Write a requirement specification. Use acceptance criteria."
     }
 
@@ -298,11 +294,24 @@ def test_dag_must_be_acyclic() -> None:
 
 
 def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
+    planned = DAG(
+        dag_id="fixture",
+        task_id="fixture",
+        nodes=[DAGNode(
+            id="inspect",
+            payload=dict(
+                type="capability",
+                invocation=CapabilityInvocation(
+                    capability_id="tool.shell",
+                    kind="tool",
+                    arguments={"command": "dir", "cwd": "."},
+                ),
+            ),
+        )],
+    )
     provider = MockProvider(
         [
-            ChatResponse(
-                content='inspect = tool_shell(command="dir", cwd=".")'
-            )
+            ChatResponse(content=planner_response_from_dag(planned))
         ]
     )
     registry = ToolRegistry()
@@ -339,12 +348,21 @@ def test_llm_dag_agent_with_mock_provider_returns_valid_dag() -> None:
         ),
         allow_no_change=False,
     ))
-    dag = loop.prepare_for_review(requested)
+    dag = compile_dag_spec(
+        requested.spec,
+        task_id="task_1",
+        capabilities=loop.available_capabilities(),
+    )
 
     validate_dag(dag)
     assert dag.task_id == "task_1"
-    assert [node.payload.invocation.capability_id for node in dag.nodes] == ["tool.shell"]
-    assert [node.payload.invocation.risk for node in dag.nodes] == ["low"]
+    invocations = [
+        node.payload.invocation
+        for node in dag.nodes
+        if hasattr(node.payload, "invocation")
+    ]
+    assert [invocation.capability_id for invocation in invocations] == ["tool.shell"]
+    assert [invocation.risk for invocation in invocations] == ["low"]
 
 
 def test_dag_agent_rejects_capability_outside_enabled_toolset() -> None:
@@ -482,3 +500,43 @@ def _dag_agent_profile() -> AgentProfile:
 
 def _capability(capability_id: str, *, kind: str = "tool") -> CapabilityDefinition:
     return CapabilityDefinition(id=capability_id, kind=kind)
+
+
+def _planner_capability_node(node_id: str, capability_id: str, **arguments):
+    return {
+        "type": "capability",
+        "id": node_id,
+        "title": "",
+        "inputs": [],
+        "outputs": [],
+        "capability_id": capability_id,
+        "arguments": [
+            {"name": name, "value": {"type": "literal", "value": value}}
+            for name, value in arguments.items()
+        ],
+    }
+
+
+def _planner_graph(overrides: dict) -> dict:
+    return {
+        "name": "test",
+        "description": "",
+        "artifacts": [],
+        "nodes": [],
+        "edges": [],
+        "output": None,
+        **overrides,
+    }
+
+
+def _normalize_graph(
+    graph: dict,
+    *,
+    capabilities: list[CapabilityDefinition] | None = None,
+):
+    return normalize_planner_graph(
+        PlannerGraph.model_validate(_planner_graph(graph)),
+        spec_id="task_1",
+        version=1,
+        capabilities=capabilities or [_capability("tool.echo")],
+    )

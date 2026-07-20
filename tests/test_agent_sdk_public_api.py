@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 import dagent
 from dagent.providers import ChatResponse, ChatStreamEvent, MockProvider, ToolCall
+from tests.planner_helpers import capability_plan_response, final_answer_response
 
 
 def run(coro):
@@ -308,10 +309,10 @@ def test_runner_stream_content_deltas_match_output_text(tmp_path) -> None:
 
 def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
     class ReasoningStreamProvider:
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             return ChatResponse(content="hello", reasoning_content="checking")
 
-        async def stream_chat(self, messages, tools=None):
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
             yield ChatStreamEvent(
                 type="token",
                 channel="reasoning",
@@ -357,7 +358,7 @@ def test_runner_stream_maps_provider_reasoning_channel(tmp_path) -> None:
 
 def test_runner_stream_brackets_chat_only_provider_response(tmp_path) -> None:
     class ChatOnlyProvider:
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             return ChatResponse(content="hello")
 
     runner = dagent.Runner(workspace=tmp_path, provider=ChatOnlyProvider())
@@ -553,8 +554,10 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
 
     provider = MockProvider([
         ChatResponse(content="dag"),
-        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
-        ChatResponse(content="Report: found:X"),
+        ChatResponse(content=capability_plan_response(
+            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+        )),
+        ChatResponse(content=final_answer_response("Report: found:X")),
     ])
     agent = dagent.AutoAgent(capabilities=[search], skills=[])
     runner = dagent.Runner(workspace=tmp_path, provider=provider)
@@ -564,14 +567,16 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     assert result.kind == "dynamic_dag"
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
+    assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
 
 
 def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     provider = MockProvider([
-        ChatResponse(content='task: delegate\nask_helper = agent_helper(prompt="summarize this")\n'),
+        ChatResponse(content=capability_plan_response(
+            "agent.helper", {"prompt": "summarize this"}, node_id="ask_helper"
+        )),
         ChatResponse(content="helper answer"),
-        ChatResponse(content="final answer"),
+        ChatResponse(content=final_answer_response("final answer")),
     ])
     helper = dagent.ToolAgent(profile="conversation", name="helper", max_steps=1, capabilities=[], skills=[])
     agent = dagent.DagAgent(capabilities=[], skills=[], agents=[helper])
@@ -582,7 +587,7 @@ def test_runner_dag_agent_can_plan_registered_agent_node(tmp_path) -> None:
     assert result.kind == "dynamic_dag"
     assert result.output_text == "final answer"
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "agent.helper"
+    assert result.dag.nodes[-1].payload.invocation.capability_id == "agent.helper"
 
 
 def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path) -> None:
@@ -596,9 +601,13 @@ def test_runner_dag_agent_dynamic_adjust_false_keeps_initial_dag_fixed(tmp_path)
 
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: fail first\nbad = tool_fail_tool(text="boom")\n'),
-        ChatResponse(content='task: repaired\nanswer = tool_echo(text="ok")\n'),
-        ChatResponse(content="Recovered after replanning."),
+        ChatResponse(content=capability_plan_response(
+            "tool.fail_tool", {"text": "boom"}, node_id="bad"
+        )),
+        ChatResponse(content=capability_plan_response(
+            "tool.echo", {"text": "ok"}, node_id="answer"
+        )),
+        ChatResponse(content=final_answer_response("Recovered after replanning.")),
     ])
     agent = dagent.DagAgent(
         planner_profile="planner",
@@ -799,8 +808,10 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
         dagent.DagAgent(profile="conversation")
 
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
-        ChatResponse(content="Report: found:X"),
+        ChatResponse(content=capability_plan_response(
+            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+        )),
+        ChatResponse(content=final_answer_response("Report: found:X")),
     ])
     agent = dagent.DagAgent(
         capabilities=["tool.search"],
@@ -815,7 +826,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
 
     assert result.output_text == "Report: found:X"
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.search"
+    assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.search"
 
 
 def test_runner_auto_registers_agent_capability_bindings(tmp_path) -> None:
@@ -1027,8 +1038,10 @@ def test_runner_run_rejects_awaiting_review_state(tmp_path) -> None:
 def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
-        ChatResponse(content="Report: found:X"),
+        ChatResponse(content=capability_plan_response(
+            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+        )),
+        ChatResponse(content=final_answer_response("Report: found:X")),
     ])
 
     @dagent.tool
@@ -1105,8 +1118,10 @@ def test_runner_run_continues_from_serialized_state_with_derived_messages(tmp_pa
 def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> None:
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
-        ChatResponse(content='task: research\nlookup = tool_search(q="X")'),
-        ChatResponse(content="Report: found:X"),
+        ChatResponse(content=capability_plan_response(
+            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+        )),
+        ChatResponse(content=final_answer_response("Report: found:X")),
     ])
 
     @dagent.tool

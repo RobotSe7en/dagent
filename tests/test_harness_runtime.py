@@ -22,6 +22,8 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityResult,
+    DAG,
+    DAGEdge,
     DAGNode,
     DAGSpec,
     RunTrace,
@@ -30,6 +32,12 @@ from dagent.schemas import (
     ValidationResult,
 )
 from dagent.capabilities.tools.registry import ToolRegistry
+from tests.planner_helpers import (
+    capability_plan_response,
+    final_answer_response,
+    no_change_response,
+    planner_response_from_dag,
+)
 
 
 def run(coro):
@@ -281,11 +289,13 @@ def test_harness_runtime_tool_agent_retries_failed_llm_request_with_default_back
         sleeps.append(delay)
 
     class FailFiveTimesProvider(MockProvider):
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             if len(self.requests) < 5:
                 self.requests.append({"messages": messages, "tools": tools})
                 raise TimeoutError("LLM request timed out")
-            return await super().chat(messages, tools=tools)
+            return await super().chat(
+                messages, tools=tools, response_format=response_format
+            )
 
     provider = FailFiveTimesProvider([ChatResponse(content="retried answer")])
     capability_executor = make_capability_executor()
@@ -329,7 +339,7 @@ def test_harness_runtime_tool_agent_does_not_retry_permanent_llm_error() -> None
         sleeps.append(delay)
 
     class PermanentFailureProvider(MockProvider):
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             self.requests.append({"messages": messages, "tools": tools})
             raise ValueError("invalid LLM request")
 
@@ -351,11 +361,13 @@ def test_harness_runtime_dynamic_dag_loop_retries_failed_llm_request_before_cycl
         sleeps.append(delay)
 
     class FailOnceProvider(MockProvider):
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             if not self.requests:
                 self.requests.append({"messages": messages, "tools": tools})
                 raise TimeoutError("LLM temporarily unavailable")
-            return await super().chat(messages, tools=tools)
+            return await super().chat(
+                messages, tools=tools, response_format=response_format
+            )
 
     provider = FailOnceProvider([ChatResponse(content=_dag_agent_dsl())])
     capability_executor = make_capability_executor()
@@ -406,7 +418,7 @@ def test_harness_runtime_tool_stream_retries_transient_error_before_tokens() -> 
             super().__init__([])
             self.stream_calls = 0
 
-        async def stream_chat(self, messages, tools=None):
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
             self.stream_calls += 1
             self.requests.append({"messages": list(messages), "tools": tools or []})
             if self.stream_calls == 1:
@@ -447,7 +459,7 @@ def test_harness_runtime_tool_stream_does_not_retry_after_token_emitted() -> Non
             super().__init__([])
             self.stream_calls = 0
 
-        async def stream_chat(self, messages, tools=None):
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
             self.stream_calls += 1
             self.requests.append({"messages": list(messages), "tools": tools or []})
             yield ChatStreamEvent(type="token", content="partial")
@@ -482,7 +494,7 @@ def test_harness_runtime_dag_stream_retries_transient_error_before_tokens() -> N
             super().__init__([])
             self.stream_calls = 0
 
-        async def stream_chat(self, messages, tools=None):
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
             self.stream_calls += 1
             self.requests.append({"messages": list(messages), "tools": tools or []})
             if self.stream_calls == 1:
@@ -523,7 +535,7 @@ def test_harness_runtime_dag_stream_does_not_retry_after_token_emitted() -> None
             super().__init__([])
             self.stream_calls = 0
 
-        async def stream_chat(self, messages, tools=None):
+        async def stream_chat(self, messages, tools=None, *, response_format=None):
             self.stream_calls += 1
             self.requests.append({"messages": list(messages), "tools": tools or []})
             yield ChatStreamEvent(type="token", content="partial")
@@ -582,13 +594,13 @@ def test_harness_runtime_dag_agent_creates_reviewable_dag() -> None:
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
     assert result.dag.status == "review_required"
-    assert result.dag.nodes[0].payload.invocation.risk == "medium"
+    assert result.dag.nodes[-1].payload.invocation.risk == "medium"
     assert result.run_id in runtime.runs
     assert runtime.runs[result.run_id].runtime_mode == "dag"
 
 
 def test_harness_runtime_dag_mode_direct_answer_does_not_expose_seed_dag() -> None:
-    provider = MockProvider([ChatResponse(content="A direct answer.")])
+    provider = MockProvider([ChatResponse(content=final_answer_response("A direct answer."))])
     runtime = _runtime(provider)
 
     result = run(run_message(runtime, "Answer directly if no DAG is needed.", mode="dag"))
@@ -635,20 +647,20 @@ def test_harness_runtime_dag_scope_filters_prompt_and_retry_feedback() -> None:
     assert result.status == "awaiting_review"
     assert result.pending_review is not None
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.echo"
+    assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.echo"
     system_content = provider.requests[0]["messages"][0]["content"]
     assert "echo" in system_content
     assert "write_file" not in system_content
     retry_content = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown capability function 'tool_write_file'" in retry_content
-    assert "Available functions:" in retry_content
+    assert "Unknown capability 'tool.write_file'" in retry_content
+    assert "Available capabilities:" in retry_content
     assert "echo" in retry_content
 
 
 def test_harness_runtime_resume_review_for_dag_returns_final_answer() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode, no routing)
-        ChatResponse(content="Here is the final answer."),  # execute loop observation
+        ChatResponse(content=final_answer_response("Here is the final answer.")),
     ])
     runtime = _runtime(provider)
 
@@ -681,7 +693,7 @@ def test_harness_runtime_resume_review_rejects_out_of_scope_dag_edit() -> None:
         )
     )
     edited = result.dag.model_copy(deep=True)
-    invocation = edited.nodes[0].payload.invocation
+    invocation = edited.nodes[-1].payload.invocation
     invocation.capability_id = "tool.write_file"
     invocation.arguments = {"path": "notes.md", "content": "hi"}
 
@@ -692,7 +704,9 @@ def test_harness_runtime_resume_review_rejects_out_of_scope_dag_edit() -> None:
 def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="I will stop instead of applying that DAG."),
+        ChatResponse(content=final_answer_response(
+            "I will stop instead of applying that DAG."
+        )),
     ])
     runtime = _runtime(provider)
 
@@ -716,7 +730,9 @@ def test_harness_runtime_rejects_dag_review_without_submitted_dag() -> None:
 def test_harness_runtime_rejected_dag_review_includes_reviewer_feedback() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="I will replan with the reviewer feedback."),
+        ChatResponse(content=final_answer_response(
+            "I will replan with the reviewer feedback."
+        )),
     ])
     runtime = _runtime(provider)
 
@@ -739,7 +755,7 @@ def test_harness_runtime_rejected_dag_review_includes_reviewer_feedback() -> Non
 def test_harness_runtime_approves_pending_dag_review_without_resubmitting_dag() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="Here is the final answer."),
+        ChatResponse(content=final_answer_response("Here is the final answer.")),
     ])
     runtime = _runtime(provider)
 
@@ -756,8 +772,10 @@ def test_harness_runtime_approves_pending_dag_review_without_resubmitting_dag() 
 def test_harness_runtime_retries_denied_dag_review_state_with_validation_feedback() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="inspect = missing_tool()"),
-        ChatResponse(content="I will stop instead of applying that DAG."),
+        ChatResponse(content=capability_plan_response("tool.missing", {})),
+        ChatResponse(content=final_answer_response(
+            "I will stop instead of applying that DAG."
+        )),
     ])
     runtime = _runtime(provider)
 
@@ -770,13 +788,13 @@ def test_harness_runtime_retries_denied_dag_review_state_with_validation_feedbac
     assert len(provider.requests) == 3
     retry_content = provider.requests[2]["messages"][-1]["content"]
     assert "DAG observation: validation_error" in retry_content
-    assert "Unknown capability function 'missing_tool'" in retry_content
+    assert "Unknown capability 'tool.missing'" in retry_content
 
 
 def test_harness_runtime_dag_agent_keeps_its_own_thread_on_followup() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),     # DAG agent (dag mode)
-        ChatResponse(content="The result was echo:ok."),  # execute loop observation
+        ChatResponse(content=final_answer_response("The result was echo:ok.")),
         ChatResponse(content="dag"),                 # _route() for second message
         ChatResponse(content=_dag_agent_dsl()),      # DAG agent for follow-up
     ])
@@ -829,7 +847,7 @@ def test_harness_runtime_dag_mode_forces_reviewable_dag_without_top_tool_call() 
 def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="final dag-mode answer"),
+        ChatResponse(content=final_answer_response("final dag-mode answer")),
     ])
     runtime = _runtime(provider)
 
@@ -845,7 +863,7 @@ def test_harness_runtime_dag_mode_answers_after_dag_observation() -> None:
 def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="final dag-mode answer"),
+        ChatResponse(content=final_answer_response("final dag-mode answer")),
     ])
     runtime = _runtime(provider)
 
@@ -861,8 +879,10 @@ def test_harness_runtime_review_id_cannot_be_reused_after_resume() -> None:
 def test_harness_runtime_dag_mode_fails_without_review() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl(tools=["tool_fail_tool"], text="boom")),
-        ChatResponse(content="NO_CHANGE"),
-        ChatResponse(content="The DAG failed after exhausting repair attempts."),
+        ChatResponse(content=no_change_response()),
+        ChatResponse(content=final_answer_response(
+            "The DAG failed after exhausting repair attempts."
+        )),
     ])
     runtime = _runtime(provider)
 
@@ -882,7 +902,7 @@ def test_harness_runtime_dag_mode_fails_without_review() -> None:
 def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),
-        ChatResponse(content="all done"),
+        ChatResponse(content=final_answer_response("all done")),
     ])
     runtime = _runtime(provider)
 
@@ -899,12 +919,8 @@ def test_harness_runtime_dag_mode_can_create_continuation_dag_after_observation(
 
 def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None:
     provider = MockProvider([
-        ChatResponse(
-            content='a = tool_echo(text="a")\nb = tool_echo(text="b") after nonexistent'
-        ),
-        ChatResponse(
-            content='a = tool_echo(text="a")\nb = tool_echo(text="b") after a'
-        ),
+        ChatResponse(content=_two_node_plan("nonexistent")),
+        ChatResponse(content=_two_node_plan("a")),
     ])
     runtime = _runtime(provider)
 
@@ -923,18 +939,10 @@ def test_harness_runtime_retries_dag_creation_with_validation_feedback() -> None
 
 def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> None:
     provider = MockProvider([
-        ChatResponse(
-            content=(
-                "task: inspect current directory\n"
-                "get_current_dir = get_current_dir()\n"
-            )
-        ),
-        ChatResponse(
-            content=(
-                "task: inspect current directory\n"
-                "inspect = tool_echo(text=\"use available tools\")\n"
-            )
-        ),
+        ChatResponse(content=capability_plan_response("tool.get_current_dir", {})),
+        ChatResponse(content=capability_plan_response(
+            "tool.echo", {"text": "use available tools"}, node_id="inspect"
+        )),
     ])
     runtime = _runtime(provider)
 
@@ -944,30 +952,22 @@ def test_harness_runtime_retries_dag_creation_with_unknown_tool_feedback() -> No
     assert result.pending_review is not None
     assert result.pending_review.kind == "initial_dag"
     assert result.dag is not None
-    assert result.dag.nodes[0].payload.invocation.capability_id == "tool.echo"
+    assert result.dag.nodes[-1].payload.invocation.capability_id == "tool.echo"
     assert len(provider.requests) == 2
     feedback = provider.requests[1]["messages"][-1]["content"]
-    assert "Unknown capability function 'get_current_dir'" in feedback
-    assert "Available functions:" in feedback
+    assert "Unknown capability 'tool.get_current_dir'" in feedback
+    assert "Available capabilities:" in feedback
     assert "echo" in feedback
     assert "User request:" not in feedback
 
 
 def test_harness_runtime_planning_retry_does_not_stop_after_start_only() -> None:
     provider = MockProvider([
-        ChatResponse(
-            content=(
-                "task: inspect current directory\n"
-                "get_current_dir = get_current_dir()\n"
-            )
-        ),
-        ChatResponse(
-            content=(
-                "task: inspect current directory\n"
-                "inspect = tool_echo(text=\"ok\")\n"
-            )
-        ),
-        ChatResponse(content="The DAG completed after inspection."),
+        ChatResponse(content=capability_plan_response("tool.get_current_dir", {})),
+        ChatResponse(content=capability_plan_response(
+            "tool.echo", {"text": "ok"}, node_id="inspect"
+        )),
+        ChatResponse(content=final_answer_response("The DAG completed after inspection.")),
     ])
     runtime = _runtime(provider)
     runtime.dag_agent.loop.max_cycles = 3
@@ -989,11 +989,13 @@ def test_harness_runtime_auto_route_defaults_to_tool_on_error() -> None:
     ]
 
     class FailFirstProvider(MockProvider):
-        async def chat(self, messages, tools=None):
+        async def chat(self, messages, tools=None, *, response_format=None):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise RuntimeError("LLM down")
-            return await super().chat(messages, tools=tools)
+            return await super().chat(
+                messages, tools=tools, response_format=response_format
+            )
 
     provider = FailFirstProvider(original_responses)
     runtime = _runtime(provider)
@@ -1262,9 +1264,9 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
     capability_executor = make_capability_executor()
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),        # initial DAG review
-        ChatResponse(content="bad answer"),            # approved DAG execution
+        ChatResponse(content=final_answer_response("bad answer")),
         ChatResponse(content=_dag_agent_dsl(text="retry")),  # validation retry DAG
-        ChatResponse(content="good answer"),           # retry DAG execution
+        ChatResponse(content=final_answer_response("good answer")),
     ])
     tool_adapter = _tool_adapter(capability_executor.catalog)
     runtime = HarnessRuntime(
@@ -1309,7 +1311,7 @@ def test_resume_review_dag_validation_retry_preserves_task_identity() -> None:
 def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
     provider = MockProvider([
         ChatResponse(content=_dag_agent_dsl()),       # DAG agent
-        ChatResponse(content="NO_CHANGE"),            # execute observation
+        ChatResponse(content=no_change_response()),            # execute observation
         ChatResponse(content="looks fine to me"),     # validator agent, invalid JSON
     ])
     capability_executor = make_capability_executor()
@@ -1513,5 +1515,47 @@ def _dag_agent_dsl(
     text: str = "ok",
 ) -> str:
     tool = (tools or ["tool_echo"])[0]
-    args = 'path="notes.md", content="hi"' if tool == "tool_write_file" else f'text="{text}"'
-    return f"task: mock\n{node_id} = {tool}({args})\n"
+    capability_id = "tool." + tool.removeprefix("tool_")
+    arguments = (
+        {"path": "notes.md", "content": "hi"}
+        if tool == "tool_write_file"
+        else {"text": text}
+    )
+    return capability_plan_response(
+        capability_id,
+        arguments,
+        node_id=node_id,
+        name="mock",
+    )
+
+
+def _two_node_plan(edge_source: str) -> str:
+    return planner_response_from_dag(DAG(
+        dag_id="fixture",
+        task_id="fixture",
+        nodes=[
+            DAGNode(
+                id="a",
+                payload={
+                    "type": "capability",
+                    "invocation": CapabilityInvocation(
+                        capability_id="tool.echo",
+                        kind="tool",
+                        arguments={"text": "a"},
+                    ),
+                },
+            ),
+            DAGNode(
+                id="b",
+                payload={
+                    "type": "capability",
+                    "invocation": CapabilityInvocation(
+                        capability_id="tool.echo",
+                        kind="tool",
+                        arguments={"text": "b"},
+                    ),
+                },
+            ),
+        ],
+        edges=[DAGEdge(source=edge_source, target="b")],
+    ))

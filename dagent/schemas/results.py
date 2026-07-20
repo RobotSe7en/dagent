@@ -9,7 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dagent.profiles import AgentProfile
-from dagent.schemas.dag import DAG
+from dagent.schemas.dag import DAG, DAGSpec
 from dagent.schemas.capability import CapabilityInvocation
 from dagent.schemas.run_trace import RunTrace
 from dagent.schemas.sandbox import RunExecution
@@ -162,6 +162,8 @@ class PendingReview(BaseModel):
     kind: ReviewKind
     message: str
     proposed_dag: DAG | None = None
+    proposed_dag_spec: DAGSpec | None = None
+    rerun_nodes: tuple[str, ...] = ()
     capability_call: PendingCapabilityCall | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -169,6 +171,10 @@ class PendingReview(BaseModel):
     def validate_review_payload(self) -> "PendingReview":
         if self.kind == "capability_review" and self.capability_call is None:
             raise ValueError("Capability reviews require capability_call.")
+        if self.kind == "capability_review" and self.rerun_nodes:
+            raise ValueError("Capability reviews cannot request DAG node reruns.")
+        if len(set(self.rerun_nodes)) != len(self.rerun_nodes):
+            raise ValueError("Pending review rerun_nodes must be unique.")
         return self
 
 
@@ -182,6 +188,7 @@ class RunState(BaseModel):
     internal_messages: list[dict[str, Any]] = Field(default_factory=list)
     input_message_count: int = 0
     dag: DAG | None = None
+    dag_spec: DAGSpec | None = None
     trace: RunTrace | None = None
     pending_review: PendingReview | None = None
     pending_invocation: CapabilityInvocation | None = None

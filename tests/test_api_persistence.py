@@ -19,7 +19,8 @@ from api.workspaces import LocalWorkspaceStore
 from dagent import CapabilityInvocation, DAG, PendingReview, RunResult, RunState, RunStreamEvent, Runner
 from dagent.providers import ChatResponse, MockProvider, ToolCall
 from dagent.result import RunFinishedData, RunStartedData
-from dagent.schemas import PendingCapabilityCall, RunTrace, RunTraceNode
+from dagent.schemas import DAGSpec, PendingCapabilityCall, RunTrace, RunTraceNode
+from tests.planner_helpers import capability_plan_response, final_answer_response
 
 
 def _echo_dag(*, status: str = "review_required") -> DAG:
@@ -2741,8 +2742,10 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
 ) -> None:
     state.runner = Runner(
         provider=MockProvider([
-            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
-            ChatResponse(content="Final answer: echo:ok"),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+            )),
+            ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
     )
     project = persistence_client.post(
@@ -2794,8 +2797,10 @@ def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
 ) -> None:
     state.runner = Runner(
         provider=MockProvider([
-            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
-            ChatResponse(content="Final answer: echo:ok"),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+            )),
+            ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
     )
     conversation = persistence_client.post(
@@ -2841,8 +2846,10 @@ def test_api_orchestration_workspace_dynamic_dag_stream_persists_visible_message
 ) -> None:
     state.runner = Runner(
         provider=MockProvider([
-            ChatResponse(content='task: mock\nanswer = tool_echo(text="ok")\n'),
-            ChatResponse(content="Final answer: echo:ok"),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+            )),
+            ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
     )
     conversation = persistence_client.post(
@@ -2892,10 +2899,14 @@ def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_his
 ) -> None:
     state.runner = Runner(
         provider=MockProvider([
-            ChatResponse(content='task: first\nanswer = tool_echo(text="one")\n'),
-            ChatResponse(content="first final"),
-            ChatResponse(content='task: second\nanswer = tool_echo(text="two")\n'),
-            ChatResponse(content="second final"),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "one"}, node_id="answer", name="first"
+            )),
+            ChatResponse(content=final_answer_response("first final")),
+            ChatResponse(content=capability_plan_response(
+                "tool.echo", {"text": "two"}, node_id="answer", name="second"
+            )),
+            ChatResponse(content=final_answer_response("second final")),
         ])
     )
     conversation = persistence_client.post(
@@ -3029,6 +3040,12 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
         },
     ).json()["session"]
     proposed_dag = _echo_dag(status="review_required")
+    proposed_spec = DAGSpec(
+        id="run_pending_dag_review",
+        name="pending review",
+        nodes=[node.model_copy(deep=True) for node in proposed_dag.nodes],
+        edges=[edge.model_copy(deep=True) for edge in proposed_dag.edges],
+    )
     run_state = RunState(
         run_id="run_pending_dag_review",
         kind="dynamic_dag",
@@ -3039,6 +3056,7 @@ def test_api_dynamic_dag_review_resume_updates_orchestration_session_draft(
             kind="initial_dag",
             message="Review proposed DAG before execution.",
             proposed_dag=proposed_dag,
+            proposed_dag_spec=proposed_spec,
         ),
         user_request="echo ok through a DAG",
         review_level="careful",

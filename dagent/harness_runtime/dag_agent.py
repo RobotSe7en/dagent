@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -28,8 +29,16 @@ from dagent.harness_runtime.dag_builder import (
     MAX_EXECUTION_CONTEXT_CHARS,
     compile_dag_spec,
     context_excerpt,
-    dag_from_model_output,
     validate_dag,
+)
+from dagent.harness_runtime.dynamic_planner import (
+    DYNAMIC_GRAPH_INPUT_SCHEMA,
+    normalize_planner_graph,
+    resolve_dag_spec_capabilities,
+)
+from dagent.harness_runtime.planner_schema import (
+    parse_planner_response,
+    planner_response_format,
 )
 from dagent.review import ReviewLevel, _append_reviewer_feedback, _review_policy
 from dagent.harness_runtime.capability_scope import capability_scope_from_state, capability_scope_to_state
@@ -45,7 +54,7 @@ from dagent.harness_runtime.execution_budget import (
     reserve_model_turn,
 )
 from dagent.profiles import AgentProfile
-from dagent.providers import ChatProvider, ChatResponse
+from dagent.providers import ChatProvider, ChatResponse, StructuredOutputFormat
 from dagent.schemas import (
     Artifact,
     ArtifactState,
@@ -57,21 +66,41 @@ from dagent.schemas import (
     PendingReview,
     CapabilityDefinition,
     CapabilityNodePayload,
+    LoopNodePayload,
+    MapNodePayload,
     RunTrace,
     RunTraceError,
     RunTraceNode,
     RunTraceStatus,
     RunState,
     StartNodePayload,
+    SubgraphNodePayload,
     iter_dag_invocations,
 )
 from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 from dagent.schemas.node import NodeStatus
+from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 
 
 MAX_NODE_RESULT_CONTEXT_CHARS = 4000
 MAX_CAPABILITY_ARGS_CONTEXT_CHARS = 2000
+
+
+@dataclass(frozen=True)
+class _PlannerProposal:
+    spec: DAGSpec
+    rerun_nodes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ReplanChanges:
+    node_ids: frozenset[str]
+    artifact_ids: frozenset[str]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.node_ids or self.artifact_ids)
 
 
 class DAGAgent:
@@ -98,6 +127,7 @@ class DAGAgent:
                 profile=self.profile,
                 task_content="",
                 tools=tools,
+                context=_planner_capability_context(tools),
             )
         )
 
@@ -286,7 +316,8 @@ class DAGAgentLoop:
         on_token: Callable[[str], None] | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         capability_scope: CapabilityScope = DEFAULT_CAPABILITY_SCOPE,
-    ) -> DAG | str | None:
+        current_spec: DAGSpec | None = None,
+    ) -> _PlannerProposal | str | None:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         messages.append(dict(user_message))
         response = await _chat_for_dag(
@@ -298,6 +329,7 @@ class DAGAgentLoop:
             on_event=on_event,
             retry_policy=self.llm_retry_policy,
             retry_sleep=self.llm_retry_sleep,
+            response_format=planner_response_format(),
         )
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -306,19 +338,36 @@ class DAGAgentLoop:
         if response.reasoning_content:
             assistant_message["reasoning_content"] = response.reasoning_content
         messages.append(assistant_message)
-        result = dag_from_model_output(
-            response.content,
-            task_id=resolved_task_id,
-            tools=self.tool_adapter.capabilities(
-                self.enabled_toolsets,
-                capability_ids=capability_scope.capability_ids,
-            ),
-        )
-        if result is None:
+        if response.refusal:
+            raise DAGCreationError(f"DAG planner refused the request: {response.refusal}")
+        try:
+            planner_response = parse_planner_response(response.content)
+        except ValueError as exc:
+            raise DAGCreationError(str(exc)) from exc
+        if planner_response.action == "no_change":
             if not allow_no_change:
-                raise DAGCreationError("DAG agent returned NO_CHANGE for initial planning.")
+                raise DAGCreationError("DAG agent returned no_change for initial planning.")
             return None
-        return result
+        if planner_response.action == "final_answer":
+            return str(planner_response.answer or "").strip()
+        if planner_response.plan is None:
+            raise DAGCreationError("propose_plan response is missing plan.")
+        capabilities = self.tool_adapter.capabilities(
+            self.enabled_toolsets,
+            capability_ids=capability_scope.capability_ids,
+        )
+        spec = normalize_planner_graph(
+            planner_response.plan,
+            spec_id=resolved_task_id,
+            version=1 if current_spec is None else current_spec.version + 1,
+            capabilities=capabilities,
+            current=current_spec,
+            input_schema=DYNAMIC_GRAPH_INPUT_SCHEMA,
+        )
+        return _PlannerProposal(
+            spec=spec,
+            rerun_nodes=tuple(planner_response.rerun_nodes),
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -552,26 +601,57 @@ class DAGAgentLoop:
         if dag is None:
             raise ValueError("Approved DAG review requires a submitted DAG.")
 
-        submitted = dag.model_copy(deep=True)
-        submitted.task_id = task_id
-        submitted.dag_id = record.dag.dag_id
-        submitted.version = record.dag.version + 1
-        prepared = self.prepare_for_review(submitted, record.capability_scope.capability_ids)
+        proposed_spec = pending_review.proposed_dag_spec
+        if proposed_spec is None:
+            raise ValueError(
+                "Typed DAG review requires pending_review.proposed_dag_spec; "
+                "legacy PlanSpec review checkpoints are not supported."
+            )
+        capabilities = self.available_capabilities(record.capability_scope.capability_ids)
+        reviewed_spec = _spec_from_review_projection(proposed_spec, dag)
+        reviewed_spec = resolve_dag_spec_capabilities(reviewed_spec, capabilities)
+        prepared = compile_dag_spec(
+            reviewed_spec,
+            task_id=task_id,
+            capabilities=capabilities,
+        )
+        prepared.dag_id = record.dag.dag_id
+        prepared.version = record.dag.version + 1
+        prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
-        existing_node_ids = {node.id for node in record.dag.nodes}
-        changed_node_ids = _changed_node_ids(record.dag, prepared)
-        for node_id in changed_node_ids:
-            if node_id in existing_node_ids:
-                _invalidate_node_results(record, node_id)
+        rerun_nodes = set(pending_review.rerun_nodes)
+        completed = set(_completed_node_traces(record))
+        unknown_reruns = rerun_nodes - completed
+        if unknown_reruns:
+            raise DAGValidationError(
+                "rerun_nodes must reference completed nodes: "
+                f"{', '.join(sorted(unknown_reruns))}."
+            )
+        changes = _replan_changes(
+            current_dag=record.dag,
+            current_spec=record.dag_spec,
+            proposed_dag=prepared,
+            proposed_spec=reviewed_spec,
+            rerun_nodes=rerun_nodes,
+        )
+        _invalidate_changed_results(record, prepared, set(changes.node_ids))
         record.dag = prepared
+        record.dag_spec = reviewed_spec
         record.dag.status = "approved"
         record.dag_boundary_approved_version = record.dag.version
         record.pending_review = None
         _emit_dag(on_dag, record.dag)
 
+        active_executor = dag_executor or self.dag_executor
+        active_executor.configure_spec(
+            reviewed_spec,
+            graph_input={"request": record.user_request},
+            artifact_states={} if record.trace is None else record.trace.artifacts,
+        )
+
         result = await self.execute(
             record,
-            dag_executor=dag_executor,
+            dag_executor=active_executor,
             messages=messages,
             build_user_message=build_user_message,
             on_token=on_token,
@@ -612,6 +692,12 @@ class DAGAgentLoop:
         pending_observation: str | None = entry_observation
         trace = record.trace
         active_executor = dag_executor or self.dag_executor
+        if record.dag_spec is not None:
+            active_executor.configure_spec(
+                record.dag_spec,
+                graph_input={"request": record.user_request},
+                artifact_states={} if trace is None else trace.artifacts,
+            )
 
         while cycle < cycle_limit:
             cycle += 1
@@ -664,12 +750,39 @@ class DAGAgentLoop:
                         continue
                     layer_error = ""
 
+                if (
+                    not layer_failed
+                    and layer.status == "completed"
+                    and record.dag_spec is not None
+                    and _has_required_artifact_failure(
+                        record.dag_spec.artifacts,
+                        active_executor.artifact_states,
+                    )
+                ):
+                    layer_failed = True
+                    layer_error = "One or more required DAG artifacts were not created."
+                    layer.root.status = "failed"
+                    record.dag.status = "failed"
+                    record.trace = layer
+                resolved_output: Any = None
+                if (
+                    not layer_failed
+                    and layer.status == "completed"
+                    and record.dag_spec is not None
+                    and record.dag_spec.output is not None
+                ):
+                    resolved_output = active_executor.resolve_spec_output(
+                        record.dag_spec.output,
+                        layer,
+                    )
+                    layer.root.value = resolved_output
                 pending_observation = _format_dag_observation(
                     kind="layer_failed" if layer_failed else ("dag_executed" if layer.status == "completed" else "layer_completed"),
                     task_id=record.run_id,
                     record=record,
                     last_error=layer_error if layer_failed else "",
                     failed_node_id=failed_node_id if layer_failed else None,
+                    resolved_output=resolved_output,
                 )
 
             can_replan = replan and (record.dynamic_adjust or not _has_real_nodes(record.dag))
@@ -699,6 +812,7 @@ class DAGAgentLoop:
                     on_token=on_token,
                     on_event=on_event,
                     capability_scope=capability_scope_from_state(record.capability_scope),
+                    current_spec=record.dag_spec,
                 )
             except ExecutionLimitExceeded:
                 raise
@@ -716,6 +830,17 @@ class DAGAgentLoop:
                 break
 
             if response is None:
+                if record.dag.status == "failed":
+                    pending_observation = _format_dag_observation(
+                        kind="validation_error",
+                        task_id=record.run_id,
+                        record=record,
+                        validation_error=(
+                            "no_change is not allowed after a failed DAG layer; "
+                            "return propose_plan with a repair or final_answer."
+                        ),
+                    )
+                    continue
                 if _dag_completed(record):
                     break
                 pending_observation = None
@@ -732,6 +857,13 @@ class DAGAgentLoop:
                     validation_error=str(exc),
                 )
                 continue
+            if record.pending_review is None and record.dag_spec is not None:
+                active_executor.configure_spec(
+                    record.dag_spec,
+                    graph_input={"request": record.user_request},
+                    artifact_states={} if trace is None else trace.artifacts,
+                )
+                failed_node_id = None
             _emit_dag(on_dag, record.dag)
             pending_observation = None
 
@@ -824,36 +956,52 @@ class DAGAgentLoop:
     def _apply_replan(
         self,
         record: RunState,
-        next_dag: DAG,
+        proposal: _PlannerProposal,
     ) -> None:
         is_initial = not _has_real_nodes(record.dag)
-        prepared = next_dag.model_copy(deep=True)
+        next_spec = proposal.spec.model_copy(deep=True)
+        prepared = compile_dag_spec(
+            next_spec,
+            task_id=record.run_id,
+            capabilities=self.available_capabilities(record.capability_scope.capability_ids),
+        )
         prepared.task_id = record.run_id
         prepared.dag_id = record.dag.dag_id
         prepared.version = record.dag.version + 1
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
-        changed = _changed_node_ids(record.dag, prepared)
+        completed = set(_completed_node_traces(record))
+        rerun_nodes = set(proposal.rerun_nodes)
+        unknown_reruns = rerun_nodes - completed
+        if unknown_reruns:
+            raise DAGValidationError(
+                "rerun_nodes must reference completed nodes: "
+                f"{', '.join(sorted(unknown_reruns))}."
+            )
+        changes = _replan_changes(
+            current_dag=record.dag,
+            current_spec=record.dag_spec,
+            proposed_dag=prepared,
+            proposed_spec=next_spec,
+            rerun_nodes=rerun_nodes,
+        )
+        changed = set(changes.node_ids)
+        protected_changes = changed.intersection(completed) - rerun_nodes
+        if protected_changes:
+            raise DAGValidationError(
+                "Completed nodes cannot change without explicit rerun_nodes: "
+                f"{', '.join(sorted(protected_changes))}."
+            )
         previous_boundary_approved_version = record.dag_boundary_approved_version
-        needs_review = bool(changed) and _review_policy(record.review_level).reviews_dag_changes()
+        needs_review = (
+            changes.has_changes
+            and _review_policy(record.review_level).reviews_dag_changes()
+        )
         if needs_review:
             prepared.status = "review_required"
         else:
             prepared.status = "approved"
 
-        # Remove stale results for changed/deleted nodes and their downstream.
-        # This must use the old DAG before replacement so downstream invalidation
-        # follows the graph that produced the cached results.
-        old_node_ids = {node.id for node in record.dag.nodes}
-        for node_id in changed:
-            if node_id in old_node_ids:
-                _invalidate_node_results(record, node_id)
-
-        record.dag = prepared
-        if changed:
-            record.dag_boundary_approved_version = None
-        elif previous_boundary_approved_version == record.dag.version - 1:
-            record.dag_boundary_approved_version = record.dag.version
         if needs_review:
             record.pending_review = PendingReview(
                 review_id=f"review_{uuid4().hex}",
@@ -864,9 +1012,18 @@ class DAGAgentLoop:
                     else "Review proposed DAG revision from replanning."
                 ),
                 proposed_dag=prepared,
+                proposed_dag_spec=next_spec,
+                rerun_nodes=tuple(sorted(rerun_nodes)),
                 payload={},
             )
         else:
+            _invalidate_changed_results(record, prepared, changed)
+            record.dag = prepared
+            record.dag_spec = next_spec
+            if changes.has_changes:
+                record.dag_boundary_approved_version = None
+            elif previous_boundary_approved_version == record.dag.version - 1:
+                record.dag_boundary_approved_version = record.dag.version
             record.pending_review = None
 
     def _finalize(
@@ -966,10 +1123,11 @@ async def _chat_for_dag(
     on_event: Callable[[dict[str, Any]], None] | None = None,
     retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
     retry_sleep: LLMRetrySleep = asyncio.sleep,
+    response_format: StructuredOutputFormat | None = None,
 ) -> ChatResponse:
     async def chat_attempt() -> ChatResponse:
         reserve_model_turn()
-        return await provider.chat(messages)
+        return await provider.chat(messages, response_format=response_format)
 
     if on_token is None and on_event is None:
         return await run_with_llm_retries(
@@ -999,7 +1157,10 @@ async def _chat_for_dag(
         response = None
         reserve_model_turn()
         if hasattr(provider, "stream_chat"):
-            async for event in provider.stream_chat(messages):
+            async for event in provider.stream_chat(
+                messages,
+                response_format=response_format,
+            ):
                 if event.type == "token" and event.content:
                     emitted_tokens = True
                     if getattr(event, "channel", "content") == "reasoning":
@@ -1010,7 +1171,7 @@ async def _chat_for_dag(
                 elif event.type == "done":
                     response = event.response
         else:
-            response = await provider.chat(messages)
+            response = await provider.chat(messages, response_format=response_format)
         return response or ChatResponse(content=content)
 
     try:
@@ -1038,6 +1199,7 @@ def _format_dag_observation(
     failed_node_id: str | None = None,
     validation_error: str = "",
     review_message: str = "",
+    resolved_output: Any = None,
 ) -> str:
     sections = [
         f"DAG observation: {kind}",
@@ -1060,6 +1222,16 @@ def _format_dag_observation(
         sections.append(f"Failed node: {failed_node_id}")
     if last_error:
         sections.append(f"Error:\n{last_error}")
+    if resolved_output is not None:
+        sections.append(
+            "Resolved DAG output:\n"
+            + context_excerpt(
+                json.dumps(resolved_output, ensure_ascii=False)
+                if not isinstance(resolved_output, str)
+                else resolved_output,
+                limit=MAX_NODE_RESULT_CONTEXT_CHARS,
+            )
+        )
 
     executions = _format_recent_capability_executions(record.trace, limit=6)
     if executions:
@@ -1412,19 +1584,25 @@ def _indent_block(text: str, *, prefix: str) -> list[str]:
     return [f"{prefix}{line}" if line else prefix.rstrip() for line in text.splitlines()]
 
 
-def _invalidate_node_results(record: RunState, node_id: str) -> None:
+def _invalidate_changed_results(record: RunState, proposed: DAG, changed: set[str]) -> None:
+    affected: set[str] = set()
+    current_ids = _dag_node_ids(record.dag)
+    proposed_ids = _dag_node_ids(proposed)
+    for node_id in changed:
+        if node_id in current_ids:
+            affected.update(_downstream_node_ids(record.dag, node_id))
+        if node_id in proposed_ids:
+            affected.update(_downstream_node_ids(proposed, node_id))
     trace = record.trace
-    for affected_id in _downstream_node_ids(record.dag, node_id):
-        if trace is not None:
-            trace.root.children = [
-                child
-                for child in trace.root.children
-                if child.kind != "dag_node" or child.ref.get("node_id") != affected_id
-            ]
-        try:
-            _node_by_id(record.dag, affected_id).status = "ready"
-        except KeyError:
-            continue
+    if trace is not None:
+        trace.root.children = [
+            child
+            for child in trace.root.children
+            if child.kind != "dag_node" or child.ref.get("node_id") not in affected
+        ]
+    for node in proposed.nodes:
+        if node.id in affected:
+            node.status = "ready"
 
 
 def _downstream_node_ids(dag: DAG, node_id: str) -> set[str]:
@@ -1452,12 +1630,154 @@ def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:
             continue
         if _node_semantic_dump(current_node) != _node_semantic_dump(proposed_node):
             changed.add(node_id)
-    if current.edges != proposed.edges:
-        changed.update(proposed_nodes)
+    current_edges = {
+        json.dumps(edge.model_dump(mode="json"), sort_keys=True)
+        for edge in current.edges
+        if edge.source != "start" and edge.target != "start"
+    }
+    proposed_edges = {
+        json.dumps(edge.model_dump(mode="json"), sort_keys=True)
+        for edge in proposed.edges
+        if edge.source != "start" and edge.target != "start"
+    }
+    for serialized in current_edges.symmetric_difference(proposed_edges):
+        target = json.loads(serialized).get("target")
+        if isinstance(target, str):
+            changed.add(target)
     return changed
+
+
+def _replan_changes(
+    *,
+    current_dag: DAG,
+    current_spec: DAGSpec | None,
+    proposed_dag: DAG,
+    proposed_spec: DAGSpec,
+    rerun_nodes: set[str] | None = None,
+) -> _ReplanChanges:
+    changed_nodes = _changed_node_ids(current_dag, proposed_dag)
+    changed_artifacts = _changed_artifact_ids(current_spec, proposed_spec)
+    if changed_artifacts:
+        changed_nodes.update(
+            _nodes_affected_by_artifacts(current_dag, current_spec, changed_artifacts)
+        )
+        changed_nodes.update(
+            _nodes_affected_by_artifacts(proposed_dag, proposed_spec, changed_artifacts)
+        )
+    changed_nodes.update(rerun_nodes or ())
+    return _ReplanChanges(
+        node_ids=frozenset(changed_nodes),
+        artifact_ids=frozenset(changed_artifacts),
+    )
+
+
+def _changed_artifact_ids(
+    current: DAGSpec | None,
+    proposed: DAGSpec,
+) -> set[str]:
+    current_artifacts = {} if current is None else current.artifacts
+    artifact_ids = set(current_artifacts).union(proposed.artifacts)
+    return {
+        artifact_id
+        for artifact_id in artifact_ids
+        if current_artifacts.get(artifact_id) != proposed.artifacts.get(artifact_id)
+    }
+
+
+def _nodes_affected_by_artifacts(
+    dag: DAG,
+    spec: DAGSpec | None,
+    artifact_ids: set[str],
+) -> set[str]:
+    affected = {
+        node.id
+        for node in dag.nodes
+        if artifact_ids.intersection(_node_artifact_ids(node))
+    }
+    if spec is None:
+        return affected
+    for edge in spec.edges:
+        if edge.when is None:
+            continue
+        if artifact_ids.intersection(
+            expression.artifact_id for expression in iter_artifact_exprs(edge.when)
+        ):
+            affected.add(edge.target)
+    return affected
+
+
+def _node_artifact_ids(node: DAGNode) -> set[str]:
+    artifact_ids = set(node.inputs).union(node.outputs)
+    payload = node.payload
+    values: list[Any] = []
+    if isinstance(payload, CapabilityNodePayload):
+        values.extend([
+            payload.invocation.arguments,
+            payload.invocation.boundary.allowed_paths,
+        ])
+    elif isinstance(payload, MapNodePayload):
+        values.extend([
+            payload.items,
+            payload.invocation.arguments,
+            payload.invocation.boundary.allowed_paths,
+        ])
+    elif isinstance(payload, SubgraphNodePayload):
+        values.append(payload.input)
+    elif isinstance(payload, LoopNodePayload):
+        values.extend([payload.input, payload.until])
+    for value in values:
+        artifact_ids.update(
+            expression.artifact_id
+            for expression in iter_artifact_exprs(value)
+        )
+    return artifact_ids
 
 
 def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
+    _drop_key_recursive(dumped, "invocation_id")
     return dumped
+
+
+def _drop_key_recursive(value: Any, key: str) -> None:
+    if isinstance(value, dict):
+        value.pop(key, None)
+        for item in value.values():
+            _drop_key_recursive(item, key)
+    elif isinstance(value, list):
+        for item in value:
+            _drop_key_recursive(item, key)
+
+
+def _spec_from_review_projection(base: DAGSpec, submitted: DAG) -> DAGSpec:
+    nodes = []
+    for node in submitted.nodes:
+        copied = node.model_copy(deep=True)
+        copied.status = "planned"
+        nodes.append(copied)
+    edges = [edge.model_copy(deep=True) for edge in submitted.edges]
+    return base.model_copy(
+        deep=True,
+        update={"nodes": nodes, "edges": edges},
+    )
+
+
+def _planner_capability_context(capabilities: list[CapabilityDefinition]) -> str:
+    payload = [
+        {
+            "id": definition.id,
+            "name": definition.name,
+            "kind": definition.kind,
+            "description": definition.description,
+            "input_schema": definition.parameters,
+            "output_schema": definition.output_schema,
+        }
+        for definition in capabilities
+    ]
+    return "## Capability Catalog\n" + json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
