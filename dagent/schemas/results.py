@@ -163,6 +163,7 @@ class PendingReview(BaseModel):
     message: str
     proposed_dag: DAG | None = None
     proposed_dag_spec: DAGSpec | None = None
+    rerun_nodes: tuple[str, ...] = ()
     capability_call: PendingCapabilityCall | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -170,6 +171,10 @@ class PendingReview(BaseModel):
     def validate_review_payload(self) -> "PendingReview":
         if self.kind == "capability_review" and self.capability_call is None:
             raise ValueError("Capability reviews require capability_call.")
+        if self.kind == "capability_review" and self.rerun_nodes:
+            raise ValueError("Capability reviews cannot request DAG node reruns.")
+        if len(set(self.rerun_nodes)) != len(self.rerun_nodes):
+            raise ValueError("Pending review rerun_nodes must be unique.")
         return self
 
 

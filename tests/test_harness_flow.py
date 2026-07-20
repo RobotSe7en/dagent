@@ -18,6 +18,7 @@ from dagent.harness_runtime.dynamic_planner import normalize_planner_graph
 from dagent.harness_runtime.planner_schema import parse_planner_response
 from dagent.profiles import AgentProfile
 from dagent.schemas import (
+    Artifact,
     Boundary,
     CapabilityNodePayload,
     CapabilityDefinition,
@@ -25,6 +26,7 @@ from dagent.schemas import (
     DAG,
     DAGEdge,
     DAGNode,
+    DAGSpec,
     RunTrace,
     RunTraceNode,
     RunState,
@@ -649,6 +651,115 @@ def test_harness_runtime_careful_reviews_replan_changes() -> None:
     assert record.pending_review is not None
     assert record.pending_review.kind == "dag_replan"
     assert record.pending_review.proposed_dag.nodes[-1].payload.invocation.arguments == {"text": "adjusted_value"}
+
+
+def test_harness_runtime_careful_reviews_artifact_definition_changes() -> None:
+    loop = dag_loop_for(MockProvider([]))
+    producer = _tool_node("produce", "echo", {"text": "report"})
+    producer.outputs = ["report"]
+    consumer = _tool_node(
+        "consume",
+        "echo",
+        {"text": {"$expr": {
+            "type": "artifact",
+            "artifact_id": "report",
+            "field": "path",
+        }}},
+    )
+    consumer.inputs = ["report"]
+    current_spec = DAGSpec(
+        id="task_artifact_review",
+        name="Artifact review",
+        artifacts={
+            "report": Artifact(id="report", paths=["old/report.md"]),
+        },
+        nodes=[producer, consumer],
+        edges=[DAGEdge(source="produce", target="consume")],
+    )
+    current_dag = loop.prepare_for_review(
+        compile_dag_spec(
+            current_spec,
+            task_id="task_artifact_review",
+            capabilities=loop.available_capabilities(),
+        )
+    )
+    record = dag_state(
+        task_id="task_artifact_review",
+        user_request="Move the report",
+        dag=current_dag,
+        review_level="careful",
+    )
+    record.dag_spec = current_spec
+    record.dag_boundary_approved_version = current_dag.version
+    proposed_spec = current_spec.model_copy(deep=True)
+    proposed_spec.version += 1
+    proposed_spec.artifacts["report"] = Artifact(
+        id="report",
+        paths=["new/report.md"],
+    )
+
+    loop._apply_replan(record, _PlannerProposal(spec=proposed_spec))
+
+    assert record.pending_review is not None
+    assert record.pending_review.kind == "dag_replan"
+    assert record.pending_review.proposed_dag_spec is not None
+    assert record.pending_review.proposed_dag_spec.artifacts["report"].paths == [
+        "new/report.md"
+    ]
+    assert record.dag_spec.artifacts["report"].paths == ["old/report.md"]
+
+
+def test_harness_runtime_preserves_rerun_nodes_through_review_checkpoint() -> None:
+    provider = MockProvider([
+        ChatResponse(content=no_change_response()),
+        ChatResponse(content=final_answer_response("Rerun completed.")),
+    ])
+    executor = DAGExecutor(capability_executor=make_capability_executor())
+    loop = dag_loop_for(provider, executor)
+    runtime = runtime_for(dag_agent_loop=loop, executor=executor)
+    initial = DAG(
+        dag_id="dag_rerun_review",
+        task_id="task_rerun_review",
+        status="approved",
+        nodes=[_tool_node("work", "echo", {"text": "same"})],
+    )
+    proposal = planner_proposal_for_dag(loop, initial, rerun_nodes=("work",))
+    prepared = loop.prepare_for_review(initial)
+    record = dag_state(
+        task_id="task_rerun_review",
+        user_request="Run the same work again",
+        dag=prepared,
+        review_level="careful",
+    )
+    record.internal_messages = [{"role": "user", "content": record.user_request}]
+    record.dag_spec = proposal.spec.model_copy(deep=True)
+    record.trace = trace_with_completed_nodes(
+        "task_rerun_review",
+        {"work": "echo:same"},
+    )
+    previous_trace_id = dag_node_trace(record.trace, "work").id
+
+    loop._apply_replan(record, proposal)
+
+    assert record.pending_review is not None
+    assert record.pending_review.rerun_nodes == ("work",)
+    restored = RunState.model_validate(record.model_dump(mode="json"))
+    assert restored.pending_review is not None
+    assert restored.pending_review.rerun_nodes == ("work",)
+
+    outcome = run(
+        runtime.dag_agent.resume_review(
+            restored,
+            dag=restored.pending_review.proposed_dag,
+            approved=True,
+            dag_executor=executor,
+        )
+    )
+
+    assert outcome is not None
+    assert outcome.state.trace is not None
+    assert dag_node_trace(outcome.state.trace, "work").id != previous_trace_id
+    assert dag_node_trace(outcome.state.trace, "work").output == "echo:same"
 
 
 def test_harness_runtime_replans_after_tool_failure() -> None:

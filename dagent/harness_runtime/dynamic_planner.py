@@ -484,7 +484,7 @@ def _validate_output_paths(
     for owner, value in sources:
         for expression in iter_value_exprs(value):
             if isinstance(expression, GraphInputExpr):
-                if expression.path and spec.input_schema:
+                if expression.path:
                     _resolve_schema_path(spec.input_schema, expression.path, owner)
             elif isinstance(expression, NodeOutputExpr) and expression.path:
                 node = nodes.get(expression.node_id)

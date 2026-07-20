@@ -131,7 +131,10 @@ class DAGExecutor:
         previous = artifact_states if artifact_states is not None else self.artifact_states
         initialized = init_artifact_states(self.artifacts)
         for artifact_id, state in previous.items():
-            if artifact_id in initialized:
+            if (
+                artifact_id in initialized
+                and state.paths == initialized[artifact_id].paths
+            ):
                 initialized[artifact_id] = state.model_copy(deep=True)
         self.artifact_states = initialized
 

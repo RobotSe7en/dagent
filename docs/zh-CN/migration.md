@@ -25,7 +25,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - Dynamic planner 直接引用稳定 capability id；kind、defaults、risk、boundaries 和
   invocation identity 由 host 补齐。
 - Full-spec replan 会保留未变 invocation id，修改已完成 node 时要求 `rerun_nodes`，并按
-  实际变化让下游结果失效。
+  实际变化让下游结果失效。待审核 DAG 会持久化 `rerun_nodes`，artifact 定义变化也会参与
+  review 和结果失效判断。
 - `OpenAICompatibleProvider` 会在 stream 和 non-stream 调用中把 planner schema 映射为
   Chat Completions `response_format.type="json_schema"`。
 

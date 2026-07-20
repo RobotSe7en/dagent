@@ -363,6 +363,37 @@ def test_artifact_states_mark_created_and_missing_outputs(tmp_path: Path) -> Non
     assert states["missing_package"].producer_node_id == "write_outputs"
 
 
+def test_executor_resets_artifact_state_when_paths_change(tmp_path: Path) -> None:
+    executor = DAGExecutor(
+        capability_executor=_write_capability_executor(tmp_path),
+        workspace_path=tmp_path,
+        artifacts={"report": Artifact(id="report", paths=["old/report.md"])},
+        artifact_states={
+            "report": ArtifactState(
+                id="report",
+                paths=["old/report.md"],
+                status="created",
+                producer_node_id="write_report",
+            )
+        },
+    )
+
+    executor.configure_spec(
+        DAGSpec(
+            id="replanned",
+            name="Replanned artifacts",
+            artifacts={"report": Artifact(id="report", paths=["new/report.md"])},
+        ),
+        graph_input=None,
+    )
+
+    assert executor.artifact_states["report"] == ArtifactState(
+        id="report",
+        paths=["new/report.md"],
+        status="planned",
+    )
+
+
 def test_executor_updates_artifact_states_after_node_outputs(tmp_path: Path) -> None:
     executor = DAGExecutor(
         capability_executor=_write_capability_executor(tmp_path),

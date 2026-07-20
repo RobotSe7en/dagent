@@ -232,11 +232,17 @@ def _strict_json_schema(value: Any) -> Any:
         return [_strict_json_schema(item) for item in value]
     if not isinstance(value, dict):
         return value
-    output = {
-        key: _strict_json_schema(item)
-        for key, item in value.items()
-        if key not in {"default", "title"}
-    }
+    output: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"properties", "$defs"}:
+            output[key] = {
+                name: _strict_json_schema(schema)
+                for name, schema in item.items()
+            }
+        elif key == "oneOf":
+            output["anyOf"] = _strict_json_schema(item)
+        elif key not in {"default", "discriminator", "title"}:
+            output[key] = _strict_json_schema(item)
     properties = output.get("properties")
     if isinstance(properties, dict):
         output["required"] = list(properties)

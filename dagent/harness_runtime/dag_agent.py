@@ -66,16 +66,20 @@ from dagent.schemas import (
     PendingReview,
     CapabilityDefinition,
     CapabilityNodePayload,
+    LoopNodePayload,
+    MapNodePayload,
     RunTrace,
     RunTraceError,
     RunTraceNode,
     RunTraceStatus,
     RunState,
     StartNodePayload,
+    SubgraphNodePayload,
     iter_dag_invocations,
 )
 from dagent.config import DEFAULT_RUNS_DIR, resolve_run_workspace_root
 from dagent.schemas.node import NodeStatus
+from dagent.schemas.value import iter_artifact_exprs
 from dagent.state import PromptBuilder, PromptRequest
 
 
@@ -87,6 +91,16 @@ MAX_CAPABILITY_ARGS_CONTEXT_CHARS = 2000
 class _PlannerProposal:
     spec: DAGSpec
     rerun_nodes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ReplanChanges:
+    node_ids: frozenset[str]
+    artifact_ids: frozenset[str]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.node_ids or self.artifact_ids)
 
 
 class DAGAgent:
@@ -605,8 +619,22 @@ class DAGAgentLoop:
         prepared.version = record.dag.version + 1
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
-        changed_node_ids = _changed_node_ids(record.dag, prepared)
-        _invalidate_changed_results(record, prepared, changed_node_ids)
+        rerun_nodes = set(pending_review.rerun_nodes)
+        completed = set(_completed_node_traces(record))
+        unknown_reruns = rerun_nodes - completed
+        if unknown_reruns:
+            raise DAGValidationError(
+                "rerun_nodes must reference completed nodes: "
+                f"{', '.join(sorted(unknown_reruns))}."
+            )
+        changes = _replan_changes(
+            current_dag=record.dag,
+            current_spec=record.dag_spec,
+            proposed_dag=prepared,
+            proposed_spec=reviewed_spec,
+            rerun_nodes=rerun_nodes,
+        )
+        _invalidate_changed_results(record, prepared, set(changes.node_ids))
         record.dag = prepared
         record.dag_spec = reviewed_spec
         record.dag.status = "approved"
@@ -942,7 +970,6 @@ class DAGAgentLoop:
         prepared.version = record.dag.version + 1
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
-        changed = _changed_node_ids(record.dag, prepared)
         completed = set(_completed_node_traces(record))
         rerun_nodes = set(proposal.rerun_nodes)
         unknown_reruns = rerun_nodes - completed
@@ -951,15 +978,25 @@ class DAGAgentLoop:
                 "rerun_nodes must reference completed nodes: "
                 f"{', '.join(sorted(unknown_reruns))}."
             )
+        changes = _replan_changes(
+            current_dag=record.dag,
+            current_spec=record.dag_spec,
+            proposed_dag=prepared,
+            proposed_spec=next_spec,
+            rerun_nodes=rerun_nodes,
+        )
+        changed = set(changes.node_ids)
         protected_changes = changed.intersection(completed) - rerun_nodes
         if protected_changes:
             raise DAGValidationError(
                 "Completed nodes cannot change without explicit rerun_nodes: "
                 f"{', '.join(sorted(protected_changes))}."
             )
-        changed.update(rerun_nodes)
         previous_boundary_approved_version = record.dag_boundary_approved_version
-        needs_review = bool(changed) and _review_policy(record.review_level).reviews_dag_changes()
+        needs_review = (
+            changes.has_changes
+            and _review_policy(record.review_level).reviews_dag_changes()
+        )
         if needs_review:
             prepared.status = "review_required"
         else:
@@ -976,13 +1013,14 @@ class DAGAgentLoop:
                 ),
                 proposed_dag=prepared,
                 proposed_dag_spec=next_spec,
+                rerun_nodes=tuple(sorted(rerun_nodes)),
                 payload={},
             )
         else:
             _invalidate_changed_results(record, prepared, changed)
             record.dag = prepared
             record.dag_spec = next_spec
-            if changed:
+            if changes.has_changes:
                 record.dag_boundary_approved_version = None
             elif previous_boundary_approved_version == record.dag.version - 1:
                 record.dag_boundary_approved_version = record.dag.version
@@ -1607,6 +1645,92 @@ def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:
         if isinstance(target, str):
             changed.add(target)
     return changed
+
+
+def _replan_changes(
+    *,
+    current_dag: DAG,
+    current_spec: DAGSpec | None,
+    proposed_dag: DAG,
+    proposed_spec: DAGSpec,
+    rerun_nodes: set[str] | None = None,
+) -> _ReplanChanges:
+    changed_nodes = _changed_node_ids(current_dag, proposed_dag)
+    changed_artifacts = _changed_artifact_ids(current_spec, proposed_spec)
+    if changed_artifacts:
+        changed_nodes.update(
+            _nodes_affected_by_artifacts(current_dag, current_spec, changed_artifacts)
+        )
+        changed_nodes.update(
+            _nodes_affected_by_artifacts(proposed_dag, proposed_spec, changed_artifacts)
+        )
+    changed_nodes.update(rerun_nodes or ())
+    return _ReplanChanges(
+        node_ids=frozenset(changed_nodes),
+        artifact_ids=frozenset(changed_artifacts),
+    )
+
+
+def _changed_artifact_ids(
+    current: DAGSpec | None,
+    proposed: DAGSpec,
+) -> set[str]:
+    current_artifacts = {} if current is None else current.artifacts
+    artifact_ids = set(current_artifacts).union(proposed.artifacts)
+    return {
+        artifact_id
+        for artifact_id in artifact_ids
+        if current_artifacts.get(artifact_id) != proposed.artifacts.get(artifact_id)
+    }
+
+
+def _nodes_affected_by_artifacts(
+    dag: DAG,
+    spec: DAGSpec | None,
+    artifact_ids: set[str],
+) -> set[str]:
+    affected = {
+        node.id
+        for node in dag.nodes
+        if artifact_ids.intersection(_node_artifact_ids(node))
+    }
+    if spec is None:
+        return affected
+    for edge in spec.edges:
+        if edge.when is None:
+            continue
+        if artifact_ids.intersection(
+            expression.artifact_id for expression in iter_artifact_exprs(edge.when)
+        ):
+            affected.add(edge.target)
+    return affected
+
+
+def _node_artifact_ids(node: DAGNode) -> set[str]:
+    artifact_ids = set(node.inputs).union(node.outputs)
+    payload = node.payload
+    values: list[Any] = []
+    if isinstance(payload, CapabilityNodePayload):
+        values.extend([
+            payload.invocation.arguments,
+            payload.invocation.boundary.allowed_paths,
+        ])
+    elif isinstance(payload, MapNodePayload):
+        values.extend([
+            payload.items,
+            payload.invocation.arguments,
+            payload.invocation.boundary.allowed_paths,
+        ])
+    elif isinstance(payload, SubgraphNodePayload):
+        values.append(payload.input)
+    elif isinstance(payload, LoopNodePayload):
+        values.extend([payload.input, payload.until])
+    for value in values:
+        artifact_ids.update(
+            expression.artifact_id
+            for expression in iter_artifact_exprs(value)
+        )
+    return artifact_ids
 
 
 def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:

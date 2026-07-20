@@ -27,7 +27,8 @@ The current package version is `0.7.2`.
   capability kind, defaults, risk, boundaries, and invocation identity.
 - Full-spec replanning preserves unchanged invocation ids, requires
   `rerun_nodes` for changed completed nodes, and invalidates changed downstream
-  results.
+  results. Pending DAG reviews persist `rerun_nodes`, and artifact definition
+  changes participate in review and invalidation decisions.
 - `OpenAICompatibleProvider` maps planner schemas to Chat Completions
   `response_format.type="json_schema"` for streaming and non-streaming calls.
 

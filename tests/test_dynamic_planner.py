@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from dagent.harness_runtime.dag_builder import DAGCreationError, compile_dag_spec
 from dagent.harness_runtime.dynamic_planner import normalize_planner_graph
@@ -26,6 +27,27 @@ def test_planner_response_format_is_strict_recursively() -> None:
     assert response_format.strict is True
     assert response_format.name == "dagent_dynamic_dag_response"
     _assert_strict_objects(response_format.schema)
+
+
+def test_planner_response_format_preserves_fields_and_normalizes_unions() -> None:
+    response_format = planner_response_format()
+    schema = response_format.schema
+
+    Draft202012Validator.check_schema(schema)
+    Draft202012Validator(schema).validate(_response(_control_flow_graph()))
+
+    node_definitions = [
+        definition
+        for definition in schema["$defs"].values()
+        if {"id", "title", "inputs", "outputs"}.issubset(
+            definition.get("properties", {})
+        )
+    ]
+    assert node_definitions
+    assert all("title" in definition["required"] for definition in node_definitions)
+    assert not _schema_contains_key(schema, "oneOf")
+    assert not _schema_contains_key(schema, "discriminator")
+    assert _schema_contains_key(schema, "anyOf")
 
 
 def test_planner_response_rejects_unknown_fields_and_inconsistent_actions() -> None:
@@ -210,6 +232,34 @@ def test_nested_graph_input_paths_are_validated_from_subgraph_input() -> None:
     }
 
     with pytest.raises(DAGCreationError, match="unknown output path 'missing'"):
+        normalize_planner_graph(
+            PlannerGraph.model_validate(graph),
+            spec_id="nested",
+            version=1,
+            capabilities=_capabilities(),
+        )
+
+
+def test_nested_graph_input_path_requires_an_input_schema() -> None:
+    nested = _single_node_graph(arguments=[{
+        "name": "text",
+        "value": {"type": "graph_input", "path": ["missing"]},
+    }])
+    graph = {
+        "name": "missing nested input",
+        "description": "",
+        "artifacts": [],
+        "nodes": [{
+            **_node_base("nested"),
+            "type": "subgraph",
+            "graph": nested,
+            "input": None,
+        }],
+        "edges": [],
+        "output": None,
+    }
+
+    with pytest.raises(DAGCreationError, match="source has no output schema"):
         normalize_planner_graph(
             PlannerGraph.model_validate(graph),
             spec_id="nested",
@@ -409,3 +459,14 @@ def _assert_strict_objects(value) -> None:
         assert set(value.get("required", [])) == set(value.get("properties", {}))
     for item in value.values():
         _assert_strict_objects(item)
+
+
+def _schema_contains_key(value, key: str) -> bool:
+    if isinstance(value, list):
+        return any(_schema_contains_key(item, key) for item in value)
+    if not isinstance(value, dict):
+        return False
+    return key in value or any(
+        _schema_contains_key(item, key)
+        for item in value.values()
+    )
