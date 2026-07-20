@@ -126,6 +126,40 @@ const {
   artifactPreviewMode,
   shouldFetchTextArtifactPreview,
 } = await importTypeScript('../src/artifactPreview.ts');
+const {
+  CHAT_MESSAGE_PAGE_SIZE,
+  INITIAL_VISIBLE_CHAT_MESSAGES,
+  chatMessageWindow,
+} = await importTypeScript('../src/chatWindow.ts');
+
+test('chat message window bounds initial and progressively expanded history rendering', () => {
+  assert.equal(INITIAL_VISIBLE_CHAT_MESSAGES, 60);
+  assert.equal(CHAT_MESSAGE_PAGE_SIZE, 60);
+  assert.deepEqual(chatMessageWindow(240, INITIAL_VISIBLE_CHAT_MESSAGES), {
+    startIndex: 180,
+    hiddenCount: 180,
+  });
+  assert.deepEqual(chatMessageWindow(240, INITIAL_VISIBLE_CHAT_MESSAGES + CHAT_MESSAGE_PAGE_SIZE), {
+    startIndex: 120,
+    hiddenCount: 120,
+  });
+  assert.deepEqual(chatMessageWindow(12, INITIAL_VISIBLE_CHAT_MESSAGES), {
+    startIndex: 0,
+    hiddenCount: 0,
+  });
+});
+
+test('chat history rendering isolates completed rows and bounds mounted messages', async () => {
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(appSource, /const ChatMessageRow = memo\(function ChatMessageRow/);
+  assert.match(appSource, /const StandaloneConversationHistory = memo\(function StandaloneConversationHistory/);
+  assert.match(appSource, /chatMessageWindow\(messages\.length, visibleMessageLimit\)/);
+  assert.match(appSource, /messages\.slice\(messageWindow\.startIndex\)/);
+  assert.match(appSource, /显示更早的 \{Math\.min\(CHAT_MESSAGE_PAGE_SIZE, messageWindow\.hiddenCount\)\} 条消息/);
+  assert.match(css, /\.chat-row\s*\{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 180px;/s);
+});
 
 function runEvent(eventId, type, data) {
   return runEventInStream(eventId, 'stream_1', eventId, type, data);
@@ -1802,7 +1836,7 @@ test('workspace sidebar shares search controls across lower-left resource lists'
   assert.match(sidebarSource, /const \[modelQuery, setModelQuery\] = useState\(''\);/);
   assert.match(sidebarSource, /const \[agentQuery, setAgentQuery\] = useState\(''\);/);
 
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleConversations = useMemo\(\(\) => conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)[\s\S]*&& !conversation\.project_id[\s\S]*&& matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleHistory = history\.filter/);
   assert.match(sidebarSource, /const visibleSavedDags = savedDags\.filter\(\(dag\) => matchesSearchQuery/);
   assert.doesNotMatch(sidebarSource, /const visibleArtifacts = artifacts\.filter\(\(artifact\) => matchesSearchQuery/);
@@ -2393,8 +2427,9 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.match(sidebarSource, /onDeleteConversation: \(id: string\) => void;/);
   assert.match(sidebarSource, /className=\{conversation\.id === selectedConversationId \? 'sidebar-conversation-row active' : 'sidebar-conversation-row'\}/);
   assert.doesNotMatch(sidebarSource, /className=\{conversation\.id === selectedConversationId \? 'active' : ''\}/);
-  const standaloneConversationRowsSource = sidebarSource.match(/visibleConversations\.length \? visibleConversations\.map\(\(conversation\) => \([\s\S]*?\)\) : \(/)?.[0] ?? '';
+  const standaloneConversationRowsSource = appSource.match(/const StandaloneConversationHistory = memo\(function StandaloneConversationHistory[\s\S]*?\n\}\);/)?.[0] ?? '';
   assert.ok(standaloneConversationRowsSource, 'standalone conversation rows should exist');
+  assert.match(sidebarSource, /<StandaloneConversationHistory[\s\S]*conversations=\{visibleConversations\}/);
   assert.match(standaloneConversationRowsSource, /<MessageSquare size=\{12\} \/>/);
   assert.match(standaloneConversationRowsSource, /<strong>\{conversation\.title\}<\/strong>/);
   assert.doesNotMatch(standaloneConversationRowsSource, /<em>\{conversation\.status\}<\/em>/);
@@ -2881,7 +2916,7 @@ test('chat history only treats smart workbench dynamic DAG conversations as chat
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(appSource, /function isChatSurfaceConversation\([\s\S]*sessionsByConversationId: OrchestrationSessionsByConversationId[\s\S]*conversation\.kind === 'chat'[\s\S]*orchestrationSessionSurface\(session\) === SMART_WORKBENCH_SURFACE/);
   assert.match(sidebarSource, /const standaloneConversationCount = conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id/);
-  assert.match(sidebarSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(sidebarSource, /const visibleConversations = useMemo\(\(\) => conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)[\s\S]*&& !conversation\.project_id[\s\S]*&& matchesSearchQuery/);
   assert.match(sidebarSource, /if \(!isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)\) return;/);
   assert.match(appSource, /const selectedChatSurfaceConversation = \(\s*selectedConversation && isChatSurfaceConversation\(selectedConversation, orchestrationSessionsByConversationId\)/);
   assert.match(appSource, /activeWorkspace === 'chat' && reviewOpen && dag\.nodes\.length/);
@@ -2903,7 +2938,7 @@ test('project search matches child conversation titles', async () => {
 
   assert.ok(sidebarSource, 'WorkspaceSidebar function should exist');
   assert.match(sidebarSource, /function projectConversationMatchesSearch\(conversation: ApiConversation, query: string\)/);
-  assert.match(sidebarSource, /const visibleProjects = projects\.filter\(\(project\) => \{[\s\S]*projectConversationsByProjectId\.get\(project\.id\) \?\? \[\][\s\S]*projectConversationMatchesSearch\(conversation, normalizedHistoryQuery\)/);
+  assert.match(sidebarSource, /const visibleProjects = useMemo\(\(\) => projects\.filter\(\(project\) => \{[\s\S]*projectConversationsByProjectId\.get\(project\.id\) \?\? \[\][\s\S]*projectConversationMatchesSearch\(conversation, normalizedHistoryQuery\)/);
   assert.match(sidebarSource, /const displayedProjectConversations = normalizedHistoryQuery[\s\S]*projectConversations\.filter\(\(conversation\) => projectConversationMatchesSearch\(conversation, normalizedHistoryQuery\)\)[\s\S]*: projectConversations;/);
 });
 
@@ -2965,7 +3000,7 @@ test('project management uses custom dialogs and standalone conversation list', 
   assert.match(appSource, /function ProjectEditDialog/);
   assert.match(appSource, /function ProjectDeleteDialog/);
   assert.match(appSource, /projectDeleteOpen && projectDeleteTarget/);
-  assert.match(appSource, /const visibleConversations = conversations\.filter\(\(conversation\) => isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\) && !conversation\.project_id && matchesSearchQuery/);
+  assert.match(appSource, /const visibleConversations = useMemo\(\(\) => conversations\.filter\(\(conversation\) => \([\s\S]*isChatSurfaceConversation\(conversation, orchestrationSessionsByConversationId\)[\s\S]*&& !conversation\.project_id[\s\S]*&& matchesSearchQuery/);
 });
 
 test('conversation deletion is not blocked by local streaming state', async () => {

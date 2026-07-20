@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -266,6 +266,11 @@ import {
   type MessageTimelineItem,
   type ProcessTimelineSummary,
 } from './chatTimeline';
+import {
+  CHAT_MESSAGE_PAGE_SIZE,
+  INITIAL_VISIBLE_CHAT_MESSAGES,
+  chatMessageWindow,
+} from './chatWindow';
 import {
   chatMessagesFromPersistedRunEvents,
   finishedRunResultFromEvents,
@@ -2336,6 +2341,12 @@ export function App() {
       setSelectedId(nextDag.nodes[0]?.id ?? '');
     }
   }, [selectedId]);
+
+  const openChatDag = useCallback((snapshot: Dag, snapshotTrace?: TraceLogEvent[]) => {
+    syncDag(snapshot);
+    if (snapshotTrace) setTrace(snapshotTrace);
+    setReviewOpen(true);
+  }, [syncDag]);
 
   const syncEditorDag = useCallback((nextDag: Dag, layoutPositions?: Record<string, XYPosition>) => {
     setEditorDag(nextDag);
@@ -4601,6 +4612,7 @@ export function App() {
     artifactPreviewLoading: selectedArtifactPreviewLoading,
     artifacts: chatArtifacts,
     chatScopeLabel,
+    conversationKey: selectedChatSurfaceConversation?.id ?? '',
     currentDag: dag,
     draft,
     error,
@@ -4621,11 +4633,7 @@ export function App() {
     onArtifactCopy: copySelectedArtifact,
     onArtifactRefresh: refreshRunArtifacts,
     onDraftChange: setDraft,
-    onOpenDag: (snapshot, snapshotTrace) => {
-      syncDag(snapshot);
-      if (snapshotTrace) setTrace(snapshotTrace);
-      setReviewOpen(true);
-    },
+    onOpenDag: openChatDag,
     onOpenScope: () => setCapabilityScopeOpen(true),
     onReviewLevelChange: setReviewLevel,
     onRemoveUpload: removePendingChatUploads,
@@ -5324,26 +5332,41 @@ function WorkspaceSidebar({
   const [collapsedResourceTreeKeys, setCollapsedResourceTreeKeys] = useState<Set<string>>(() => new Set());
   // 手风琴式子菜单：同一时间最多展开一个，展开新的会收起其它。
   const [expandedMenu, setExpandedMenu] = useState<WorkspaceKey | null>(activeWorkspace);
+  const selectConversationHandlerRef = useRef(onSelectConversation);
+  const deleteConversationHandlerRef = useRef(onDeleteConversation);
+  selectConversationHandlerRef.current = onSelectConversation;
+  deleteConversationHandlerRef.current = onDeleteConversation;
+  const handleSelectConversation = useCallback(
+    (conversationId: string) => selectConversationHandlerRef.current(conversationId),
+    [],
+  );
+  const handleDeleteConversation = useCallback(
+    (conversationId: string) => deleteConversationHandlerRef.current(conversationId),
+    [],
+  );
   const normalizedHistoryQuery = normalizeSearchQuery(historyQuery);
   const normalizedDagListQuery = normalizeSearchQuery(dagListQuery);
   const normalizedModelQuery = normalizeSearchQuery(modelQuery);
   const normalizedAgentQuery = normalizeSearchQuery(agentQuery);
-  const visibleConversations = conversations.filter((conversation) => isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId) && !conversation.project_id && matchesSearchQuery(
-    [
-      conversation.id,
-      conversation.title,
-      conversation.status,
-    ],
-    normalizedHistoryQuery,
-  ));
-  const projectConversationsByProjectId = new Map<string, ApiConversation[]>();
-  conversations.forEach((conversation) => {
-    if (!isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId)) return;
-    if (!conversation.project_id) return;
-    const items = projectConversationsByProjectId.get(conversation.project_id) ?? [];
-    items.push(conversation);
-    projectConversationsByProjectId.set(conversation.project_id, items);
-  });
+  const visibleConversations = useMemo(() => conversations.filter((conversation) => (
+    isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId)
+    && !conversation.project_id
+    && matchesSearchQuery(
+      [conversation.id, conversation.title, conversation.status],
+      normalizedHistoryQuery,
+    )
+  )), [conversations, normalizedHistoryQuery, orchestrationSessionsByConversationId]);
+  const projectConversationsByProjectId = useMemo(() => {
+    const grouped = new Map<string, ApiConversation[]>();
+    conversations.forEach((conversation) => {
+      if (!isChatSurfaceConversation(conversation, orchestrationSessionsByConversationId)) return;
+      if (!conversation.project_id) return;
+      const items = grouped.get(conversation.project_id) ?? [];
+      items.push(conversation);
+      grouped.set(conversation.project_id, items);
+    });
+    return grouped;
+  }, [conversations, orchestrationSessionsByConversationId]);
   function projectConversationMatchesSearch(conversation: ApiConversation, query: string) {
     return matchesSearchQuery(
       [conversation.id, conversation.title, conversation.status],
@@ -5356,12 +5379,12 @@ function WorkspaceSidebar({
       query,
     );
   }
-  const visibleProjects = projects.filter((project) => {
+  const visibleProjects = useMemo(() => projects.filter((project) => {
     const projectConversations = projectConversationsByProjectId.get(project.id) ?? [];
     return projectMatchesSearch(project, normalizedHistoryQuery) || projectConversations.some((conversation) =>
       projectConversationMatchesSearch(conversation, normalizedHistoryQuery)
     );
-  });
+  }), [normalizedHistoryQuery, projectConversationsByProjectId, projects]);
   const visibleSavedDags = savedDags.filter((dag) => matchesSearchQuery(
     [
       dag.savedDagId,
@@ -5920,34 +5943,13 @@ function WorkspaceSidebar({
           />
           {projectError ? <div className="sidebar-error-row">{projectError}</div> : null}
           <div className="sidebar-history-list">
-            {visibleConversations.length ? visibleConversations.map((conversation) => (
-              <div
-                className={conversation.id === selectedConversationId ? 'sidebar-conversation-row active' : 'sidebar-conversation-row'}
-                key={conversation.id}
-              >
-                <button
-                  onClick={() => onSelectConversation(conversation.id)}
-                  type="button"
-                >
-                  <span>
-                    <MessageSquare size={12} />
-                    <strong>{conversation.title}</strong>
-                  </span>
-                </button>
-                <button
-                  className="sidebar-conversation-delete"
-                  onClick={() => onDeleteConversation(conversation.id)}
-                  title="删除会话"
-                  type="button"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            )) : (
-              <div className="sidebar-empty-row">
-                {normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话'}
-              </div>
-            )}
+            <StandaloneConversationHistory
+              conversations={visibleConversations}
+              emptyLabel={normalizedHistoryQuery ? '没有匹配的会话' : '暂无会话'}
+              selectedConversationId={selectedConversationId}
+              onDelete={handleDeleteConversation}
+              onSelect={handleSelectConversation}
+            />
           </div>
         </section>
       ) : null}
@@ -6386,6 +6388,43 @@ function DesignWorkspacePlaceholder({
   );
 }
 
+const StandaloneConversationHistory = memo(function StandaloneConversationHistory({
+  conversations,
+  emptyLabel,
+  selectedConversationId,
+  onDelete,
+  onSelect,
+}: {
+  conversations: ApiConversation[];
+  emptyLabel: string;
+  selectedConversationId: string;
+  onDelete: (conversationId: string) => void;
+  onSelect: (conversationId: string) => void;
+}) {
+  if (!conversations.length) return <div className="sidebar-empty-row">{emptyLabel}</div>;
+  return conversations.map((conversation) => (
+    <div
+      className={conversation.id === selectedConversationId ? 'sidebar-conversation-row active' : 'sidebar-conversation-row'}
+      key={conversation.id}
+    >
+      <button onClick={() => onSelect(conversation.id)} type="button">
+        <span>
+          <MessageSquare size={12} />
+          <strong>{conversation.title}</strong>
+        </span>
+      </button>
+      <button
+        className="sidebar-conversation-delete"
+        onClick={() => onDelete(conversation.id)}
+        title="删除会话"
+        type="button"
+      >
+        <Trash2 size={12} />
+      </button>
+    </div>
+  ));
+});
+
 function ChatWorkspace({
   artifactListError,
   artifactListLoading,
@@ -6396,6 +6435,7 @@ function ChatWorkspace({
   artifacts,
   artifactsEnabled = true,
   chatScopeLabel,
+  conversationKey,
   currentDag,
   draft,
   error,
@@ -6436,6 +6476,7 @@ function ChatWorkspace({
   artifacts: WorkbenchArtifactItem[];
   artifactsEnabled?: boolean;
   chatScopeLabel: string;
+  conversationKey: string;
   currentDag: Dag;
   draft: string;
   error: string | null;
@@ -6474,12 +6515,21 @@ function ChatWorkspace({
       ? conversationTitle
       : 'local session';
   const [pendingUploadsExpanded, setPendingUploadsExpanded] = useState(false);
+  const [visibleMessageLimit, setVisibleMessageLimit] = useState(INITIAL_VISIBLE_CHAT_MESSAGES);
   const pendingUploadGroups = useMemo(() => buildPendingUploadGroups(pendingUploads), [pendingUploads]);
   const visiblePendingUploads = useMemo(
     () => visiblePendingUploadGroups(pendingUploadGroups, pendingUploadsExpanded, 4),
     [pendingUploadGroups, pendingUploadsExpanded],
   );
   const reviewLevelLabels: Record<ReviewLevel, string> = { fast: '快速审核', careful: '谨慎审核' };
+  const messageWindow = useMemo(
+    () => chatMessageWindow(messages.length, visibleMessageLimit),
+    [messages.length, visibleMessageLimit],
+  );
+  const visibleMessages = useMemo(
+    () => messages.slice(messageWindow.startIndex),
+    [messageWindow.startIndex, messages],
+  );
   const targetOptions: Array<{ value: ChatTarget; label: string; shortLabel: string; icon: React.ReactNode }> = [
     { value: 'auto', label: '自动模式', shortLabel: '自动', icon: <Sparkles size={13} /> },
     { value: 'dag', label: 'DAG 模式', shortLabel: 'DAG', icon: <GitBranch size={13} /> },
@@ -6489,6 +6539,10 @@ function ChatWorkspace({
   useEffect(() => {
     if (!pendingUploads.length) setPendingUploadsExpanded(false);
   }, [pendingUploads.length]);
+
+  useEffect(() => {
+    setVisibleMessageLimit(INITIAL_VISIBLE_CHAT_MESSAGES);
+  }, [conversationKey]);
 
   return (
     <section className={`chat-workspace ${artifactPanelOpen ? 'with-artifacts' : 'without-artifacts'}`}>
@@ -6503,14 +6557,31 @@ function ChatWorkspace({
             {error ? <div className="error-banner">{error}</div> : null}
             {messages.length === 0 ? (
               <DesignEmptyConversation />
-            ) : messages.map((message, index) => (
-                <ChatMessageRow
-                  key={`${message.role}-${index}`}
-                  loading={loading && index === messages.length - 1}
-                  message={message}
-                  onOpenDag={onOpenDag}
-                />
-              ))}
+            ) : (
+              <>
+                {messageWindow.hiddenCount ? (
+                  <button
+                    className="load-earlier-messages"
+                    onClick={() => setVisibleMessageLimit((count) => count + CHAT_MESSAGE_PAGE_SIZE)}
+                    type="button"
+                  >
+                    显示更早的 {Math.min(CHAT_MESSAGE_PAGE_SIZE, messageWindow.hiddenCount)} 条消息
+                    <span>尚有 {messageWindow.hiddenCount} 条未渲染</span>
+                  </button>
+                ) : null}
+                {visibleMessages.map((message, index) => {
+                  const messageIndex = messageWindow.startIndex + index;
+                  return (
+                    <ChatMessageRow
+                      key={`${message.role}-${messageIndex}`}
+                      loading={loading && messageIndex === messages.length - 1}
+                      message={message}
+                      onOpenDag={onOpenDag}
+                    />
+                  );
+                })}
+              </>
+            )}
           </div>
         </div>
 
@@ -7866,7 +7937,7 @@ function DesignEmptyConversation() {
   );
 }
 
-function ChatMessageRow({
+const ChatMessageRow = memo(function ChatMessageRow({
   loading,
   message,
   onOpenDag,
@@ -7899,7 +7970,7 @@ function ChatMessageRow({
       </div>
     </div>
   );
-}
+});
 
 // 可复用的面板宽度：localStorage 持久化 + 夹取，供右侧可拖拽面板使用。
 function usePanelWidth(storageKey: string, fallback: number, min: number, max: number) {
