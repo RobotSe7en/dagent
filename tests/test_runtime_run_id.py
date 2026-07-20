@@ -1,11 +1,43 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import dagent
 from dagent.providers.base import ChatResponse
 from dagent.providers.mock import MockProvider
 from dagent.schemas import DAGNode, DAGSpec, RunState, StartNodePayload
+
+
+@pytest.mark.asyncio
+async def test_runner_cancel_stops_an_active_streamed_run(tmp_path) -> None:
+    class BlockingProvider:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def chat(self, messages, tools=None, *, response_format=None):
+            self.started.set()
+            await asyncio.Event().wait()
+
+    provider = BlockingProvider()
+    runner = dagent.Runner(workspace=tmp_path, provider=provider)
+    events = runner.stream(
+        dagent.ToolAgent(profile="conversation"),
+        messages=[{"role": "user", "content": "wait"}],
+        run_id="cancelled_run",
+    )
+
+    started_event = await anext(events)
+    await provider.started.wait()
+
+    assert started_event.type == "run.started"
+    assert await runner.cancel("cancelled_run") is True
+    with pytest.raises(asyncio.CancelledError):
+        while True:
+            await anext(events)
+    assert await runner.cancel("cancelled_run") is False
+    runner.close()
 
 
 @pytest.mark.asyncio

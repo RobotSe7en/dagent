@@ -1,10 +1,12 @@
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from dagent.capabilities import CapabilityCatalog, CapabilityToolAdapter, CapabilityToolset
+from dagent.capabilities.cancellation import run_cancellation_context
 from dagent.capabilities.mcp import MCPCapabilityProvider
 from dagent.capabilities.providers import (
     AgentCapabilityProvider,
@@ -77,6 +79,35 @@ def test_tool_provider_exposes_and_executes_existing_tools() -> None:
     assert result.content == "echo:ok"
     assert result.kind == "tool"
     assert result.policy_decision == {"allowed_paths": ["."]}
+
+
+def test_tool_provider_passes_run_cancellation_event_to_cooperative_tool() -> None:
+    received_events: list[threading.Event | None] = []
+
+    def cooperative_tool(*, _dagent_cancel_event=None):
+        received_events.append(_dagent_cancel_event)
+        return "done"
+
+    tools = ToolRegistry()
+    tools.register(
+        name="cooperative",
+        handler=cooperative_tool,
+        action="read",
+        parameters={"type": "object", "properties": {}},
+    )
+    registry = CapabilityCatalog()
+    executor = CapabilityExecutor(registry)
+    ToolCapabilityProvider(tools).register_into(registry)
+    cancellation_event = threading.Event()
+
+    with run_cancellation_context(cancellation_event):
+        result = run(executor.execute(CapabilityInvocation(
+            capability_id="tool.cooperative",
+            kind="tool",
+        )))
+
+    assert result.status == "completed"
+    assert received_events == [cancellation_event]
 
 
 def test_capability_executor_runs_tools_in_context_workspace(tmp_path) -> None:

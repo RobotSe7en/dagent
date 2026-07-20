@@ -21,13 +21,24 @@ def make_mcp_tool_handler(
 ):
     async def execute(invocation: CapabilityInvocation) -> CapabilityResult:
         try:
-            result = await asyncio.to_thread(
-                manager.call_tool_blocking,
-                server_name,
-                tool_name,
-                dict(invocation.arguments),
-                timeout_seconds,
-            )
+            call_tool = getattr(manager, "call_tool", None)
+            if callable(call_tool):
+                result = await call_tool(
+                    server_name,
+                    tool_name,
+                    dict(invocation.arguments),
+                    timeout_seconds,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    manager.call_tool_blocking,
+                    server_name,
+                    tool_name,
+                    dict(invocation.arguments),
+                    timeout_seconds,
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             return _failed(invocation, sanitize_error(exc), "mcp_call_error")
         if bool(getattr(result, "isError", False)):

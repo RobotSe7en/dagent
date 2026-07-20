@@ -171,6 +171,18 @@ async for event in runner.stream(agent, messages=messages):
         print(event.data.result.output_text)
 ```
 
+如果需要从另一个 task 停止 streamed run，请保存 `run.started` envelope 中的
+`run_id`，并传给 `Runner.cancel(...)`：
+
+```python
+cancelled = await runner.cancel(run_id)
+```
+
+活动 run 接受取消时返回 `True`；run 已不再活动时返回 `False`。取消信号会从 runtime
+继续传递到 async capability call、MCP call 和内置 shell 的进程组。Python 无法强制终止
+线程中正在执行的任意同步用户代码，因此长时间运行的自定义 function tool 仍应设置明确
+边界，并在它自己的外部操作被取消后及时返回。
+
 运行离线 streaming 示例：
 
 ```bash

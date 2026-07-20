@@ -2,6 +2,7 @@ export type RunKind = 'tool' | 'dynamic_dag' | 'static_dag';
 
 export interface RunStartedStreamEvent {
   kind: RunKind;
+  run_id: string | null;
 }
 
 export interface ResponseDeltaStreamEvent {
@@ -14,8 +15,11 @@ export interface ResponseDeltaStreamEvent {
   parent_capability_id: string | null;
 }
 
-export function runStartedPayload(data: Record<string, unknown>): RunStartedStreamEvent {
-  return { kind: runKind(data.kind) };
+export function runStartedPayload(
+  data: Record<string, unknown>,
+  runId?: string | null,
+): RunStartedStreamEvent {
+  return { kind: runKind(data.kind), run_id: nullableString(runId) };
 }
 
 export function responseDeltaPayload(data: Record<string, unknown>): ResponseDeltaStreamEvent {

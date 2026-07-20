@@ -109,6 +109,31 @@ def test_api_skills_use_file_scanner(monkeypatch, tmp_path) -> None:
     assert viewed.json()["skill_dir"] == str(skill_dir.resolve())
 
 
+def test_api_cancels_active_run_by_run_id(monkeypatch, tmp_path) -> None:
+    state.close_runner()
+    runner = Runner(workspace=tmp_path, provider=MockProvider([]))
+    cancelled_run_ids: list[str] = []
+
+    async def cancel(run_id: str) -> bool:
+        cancelled_run_ids.append(run_id)
+        return True
+
+    monkeypatch.setattr(runner, "cancel", cancel)
+    state.runner = runner
+    try:
+        response = TestClient(app).post("/runs/run_to_cancel/cancel")
+    finally:
+        state.close_runner()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "run_to_cancel",
+        "cancelled": True,
+        "status": "cancelling",
+    }
+    assert cancelled_run_ids == ["run_to_cancel"]
+
+
 def test_api_installs_markdown_skill_and_serves_through_capability(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_root = tmp_path / "managed-skills"

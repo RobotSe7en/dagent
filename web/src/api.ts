@@ -1054,6 +1054,15 @@ export async function streamTask(
   await readStream(response, handlers);
 }
 
+export async function cancelRun(runId: string): Promise<boolean> {
+  const response = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+  const payload = await response.json() as { cancelled?: boolean };
+  return Boolean(payload.cancelled);
+}
+
 export async function listRunEvents(runId: string, afterEventId = 0): Promise<ApiRunEvent[]> {
   const params = afterEventId > 0 ? `?${new URLSearchParams({ after_event_id: String(afterEventId) }).toString()}` : '';
   const res = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/events${params}`);
@@ -1196,7 +1205,9 @@ export function dispatchStreamEnvelope(
   seenTraceIds: Set<string> = new Set(),
 ): void {
   const data = isRecord(event.data) ? event.data : {};
-  if (event.type === 'run.started') handlers.onStarted?.(runStartedPayload(data));
+  if (event.type === 'run.started') {
+    handlers.onStarted?.(runStartedPayload(data, event.run_id));
+  }
   if (event.type === 'dag.updated' && data.dag) handlers.onDag?.(data.dag as Dag);
   if (event.type === 'trace.updated') emitTraceSnapshot(data.trace as RunTrace | undefined, handlers.onTrace, seenTraceIds);
   if (event.type === 'capability.call.started') {

@@ -76,6 +76,7 @@ import {
   createProjectFolder,
   createProjectConversation,
   createPythonTool,
+  cancelRun,
   deleteAgent,
   deleteCapability,
   deleteConversation,
@@ -271,6 +272,7 @@ import {
   INITIAL_VISIBLE_CHAT_MESSAGES,
   chatMessageWindow,
 } from './chatWindow';
+import { latestPendingReviewFromApiConversationMessages } from './conversationReviews';
 import {
   chatMessagesFromPersistedRunEvents,
   finishedRunResultFromEvents,
@@ -1170,14 +1172,6 @@ function chatMessagesFromApiConversationMessages(items: ApiConversationMessage[]
   });
 }
 
-function latestPendingReviewFromApiConversationMessages(items: ApiConversationMessage[]): ReviewEventPayload | null {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const review = items[index].pending_review;
-    if (review) return review;
-  }
-  return null;
-}
-
 function messagesFromApiConversationMessages(
   items: ApiConversationMessage[],
   nextOrder: () => number,
@@ -1320,6 +1314,7 @@ export function App() {
   const tokenDrainResolversRef = useRef<Array<() => void>>([]);
   const contentStreamedRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const activeStreamRunIdRef = useRef<string | null>(null);
   const runArtifactRequestRef = useRef(0);
   const conversationHydrationRequestRef = useRef(0);
   const orchestrationHydrationRequestRef = useRef(0);
@@ -2490,6 +2485,7 @@ export function App() {
 
   function beginStreamRequest(): AbortSignal {
     streamAbortRef.current?.abort();
+    activeStreamRunIdRef.current = null;
     const controller = new AbortController();
     streamAbortRef.current = controller;
     return controller.signal;
@@ -2498,6 +2494,7 @@ export function App() {
   function clearStreamRequest(signal: AbortSignal) {
     if (streamAbortRef.current?.signal === signal) {
       streamAbortRef.current = null;
+      activeStreamRunIdRef.current = null;
     }
   }
 
@@ -2638,10 +2635,16 @@ export function App() {
     result: ApiRunResult,
     events: ApiRunEvent[] = [],
     restoredMessages: ChatMessage[] = [],
+    pendingReviewOverride?: ReviewEventPayload | null,
   ) => {
-    const nextState = result.state ?? null;
+    const resultState = result.state ?? null;
+    const nextReview = pendingReviewOverride === undefined
+      ? resultState?.pending_review ?? null
+      : pendingReviewOverride;
+    const nextState = resultState && pendingReviewOverride !== undefined
+      ? { ...resultState, pending_review: nextReview }
+      : resultState;
     const nextDag = nextState?.dag ?? null;
-    const nextReview = nextState?.pending_review ?? null;
     const nextTrace = nextState?.trace ? mapRunTrace(nextState.trace) : [];
     const nextMessages = restoredMessages.length
       ? restoredMessages
@@ -2656,7 +2659,11 @@ export function App() {
     setCapabilityReviewFeedback('');
     if (nextDag) {
       syncDag(nextDag);
-      setReviewOpen(shouldOpenDagReview(nextDag, nextReview));
+      setReviewOpen(
+        pendingReviewOverride === undefined
+          ? shouldOpenDagReview(nextDag, nextReview)
+          : Boolean(nextReview),
+      );
     } else {
       syncDag(emptyDag);
       setReviewOpen(false);
@@ -2702,7 +2709,7 @@ export function App() {
         return;
       }
       if (!result) return;
-      applyPersistedRunResult(result, events, restoredMessages);
+      applyPersistedRunResult(result, events, restoredMessages, pendingReview);
     } catch (exc) {
       if (conversationHydrationRequestRef.current !== requestId) return;
       setError(exc instanceof Error ? exc.message : String(exc));
@@ -4022,7 +4029,8 @@ export function App() {
     try {
       const streamOptions = { signal, uploads: uploadsForRequest, conversation: conversationContext };
       await streamTask(prompt, target, reviewLevel, {
-        onStarted: () => {
+        onStarted: (event) => {
+          activeStreamRunIdRef.current = event.run_id;
           if (uploadsForRequest.length) {
             setPendingChatUploads((current) => current.slice(uploadsForRequest.length));
           }
@@ -4095,7 +4103,12 @@ export function App() {
   };
 
   const stopStream = () => {
+    const runId = activeStreamRunIdRef.current;
     streamAbortRef.current?.abort();
+    activeStreamRunIdRef.current = null;
+    if (runId) {
+      void cancelRun(runId).catch(() => undefined);
+    }
     tokenQueueRef.current = [];
     contentStreamedRef.current = false;
     stopTokenTimer();
@@ -4135,6 +4148,9 @@ export function App() {
     const signal = beginStreamRequest();
     try {
       await resumeDagReview(reviewId, approved ? dag : null, reviewLevel, approved, {
+        onStarted: (event) => {
+          activeStreamRunIdRef.current = event.run_id;
+        },
         onDag: (nextDag) => {
           flushQueuedTokensNow();
           closeAssistantReasoning();
@@ -4237,6 +4253,9 @@ export function App() {
     const signal = beginStreamRequest();
     try {
       await resumeCapabilityReview(capabilityReview.review_id, approved, {
+        onStarted: (event) => {
+          activeStreamRunIdRef.current = event.run_id;
+        },
         onTrace: appendRuntimeTrace,
         onCapability: appendCapabilityMessage,
         onReasoning: (event) => enqueueReasoningToken(event.delta),

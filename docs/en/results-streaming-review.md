@@ -192,6 +192,20 @@ async for event in runner.stream(agent, messages=messages):
         print(event.data.result.output_text)
 ```
 
+To stop a streamed run from another task, keep the `run_id` from the
+`run.started` envelope and pass it to `Runner.cancel(...)`:
+
+```python
+cancelled = await runner.cancel(run_id)
+```
+
+The method returns `True` when an active run accepted cancellation and `False`
+when that run is no longer active. Cancellation propagates through the runtime
+to async capability calls, MCP calls, and the built-in shell process group.
+Python cannot forcibly terminate arbitrary synchronous user code running in a
+thread, so long-running custom function tools should remain bounded and return
+promptly when their own external operation is cancelled.
+
 Run the offline streaming example:
 
 ```bash

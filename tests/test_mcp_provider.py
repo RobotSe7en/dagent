@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
 from types import SimpleNamespace
 
@@ -565,6 +565,35 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
     assert result == "ok"
     assert starts == ["mock"]
     assert calls == [("lookup", {"query": "x"})]
+
+
+def test_mcp_manager_async_call_cancels_underlying_future(monkeypatch) -> None:
+    underlying: Future = Future()
+
+    class FakeTask:
+        async def call_tool(self, tool_name: str, arguments: dict):
+            return None
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return underlying
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    manager = MCPServerManager({"mock": {"command": "fake"}})
+    manager._loop = object()
+    manager.tasks["mock"] = FakeTask()
+    monkeypatch.setattr(manager, "ensure_started", lambda server_name: None)
+
+    async def cancel_call() -> None:
+        task = asyncio.create_task(manager.call_tool("mock", "lookup", {}, timeout=30))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    run(cancel_call())
+
+    assert underlying.cancelled()
 
 
 def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(

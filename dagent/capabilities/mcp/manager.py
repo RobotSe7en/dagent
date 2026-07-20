@@ -132,6 +132,40 @@ class MCPServerManager:
                 f"after {_format_timeout(timeout)} seconds."
             ) from None
 
+    async def call_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        timeout: float,
+    ) -> Any:
+        """Call an MCP tool while propagating caller cancellation to its event loop."""
+
+        await asyncio.to_thread(self.ensure_started, server_name)
+        if self._loop is None:
+            raise RuntimeError("MCP manager is not started.")
+        task = self.tasks.get(server_name)
+        if task is None:
+            raise RuntimeError(f"MCP server '{server_name}' is not connected.")
+        future = asyncio.run_coroutine_threadsafe(
+            task.call_tool(tool_name, arguments),
+            self._loop,
+        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            future.cancel()
+            raise FutureTimeoutError(
+                f"MCP tool '{tool_name}' on server '{server_name}' timed out "
+                f"after {_format_timeout(timeout)} seconds."
+            ) from None
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
+
     def shutdown(self) -> None:
         if self._loop is None:
             return

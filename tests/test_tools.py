@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import threading
 import time
 
 import pytest
@@ -920,6 +921,26 @@ def test_shell_keeps_tail_of_oversized_output(tmp_path: Path) -> None:
     assert "[TRUNCATED] output exceeded limits; showing tail" in output
     assert f"line{total - 1}" in output
     assert "line0" not in output
+
+
+def test_shell_cancellation_stops_a_running_process(tmp_path: Path) -> None:
+    cancellation_event = threading.Event()
+    command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+
+    async def cancel_running_shell() -> None:
+        task = asyncio.create_task(asyncio.to_thread(
+            shell,
+            command,
+            cwd=tmp_path,
+            timeout_seconds=30,
+            _dagent_cancel_event=cancellation_event,
+        ))
+        await asyncio.sleep(0.1)
+        cancellation_event.set()
+        with pytest.raises(ShellExecutionError, match="cancelled by caller"):
+            await asyncio.wait_for(task, timeout=2)
+
+    run(cancel_running_shell())
 
 
 def test_shell_byte_truncation_stays_under_limit_and_preserves_utf8() -> None:

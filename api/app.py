@@ -1769,6 +1769,16 @@ async def get_run(run_id: str) -> dict[str, Any]:
     return {"run": _run_summary_payload(run)}
 
 
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> dict[str, Any]:
+    cancelled = await state.get_runner().cancel(run_id)
+    return {
+        "run_id": run_id,
+        "cancelled": cancelled,
+        "status": "cancelling" if cancelled else "not_running",
+    }
+
+
 @app.delete("/runs/{run_id}")
 async def delete_run(run_id: str) -> dict[str, str]:
     store = state.get_store()

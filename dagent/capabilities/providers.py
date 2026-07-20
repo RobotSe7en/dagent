@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+import inspect
 import json
 from pathlib import Path
 from typing import Any, Literal
 
+from dagent.capabilities.cancellation import current_run_cancellation_event
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.sandbox import SandboxToolExecutionError
 from dagent.capabilities.sandbox_context import current_run_execution, current_sandbox_session
@@ -510,8 +512,21 @@ def _execute_tool(
             )
         result = session.run_tool(tool_name, checked_args)
     else:
+        cancellation_event = current_run_cancellation_event()
+        if (
+            cancellation_event is not None
+            and _accepts_cancellation_event(tool.handler)
+        ):
+            checked_args["_dagent_cancel_event"] = cancellation_event
         result = tool.handler(**checked_args)
     return content_and_value_from_result(result)
+
+
+def _accepts_cancellation_event(handler: Callable[..., Any]) -> bool:
+    try:
+        return "_dagent_cancel_event" in inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def check_tool_boundary(

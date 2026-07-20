@@ -118,6 +118,9 @@ const {
   runStartedPayload,
 } = await importTypeScript('../src/streamProtocol.ts');
 const {
+  latestPendingReviewFromApiConversationMessages,
+} = await importTypeScript('../src/conversationReviews.ts');
+const {
   shouldApplyPythonToolDiscoveryResult,
   pythonToolDiscoverySourceKey,
 } = await importTypeScript('../src/pythonToolDiscovery.ts');
@@ -2488,6 +2491,7 @@ test('persisted conversation selection hydrates backend message timelines first'
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const persistedChatSource = await readFile(new URL('../src/persistedChat.ts', import.meta.url), 'utf8');
+  const conversationReviewsSource = await readFile(new URL('../src/conversationReviews.ts', import.meta.url), 'utf8');
 
   assert.match(apiSource, /export interface ApiRunEvent/);
   assert.match(apiSource, /export interface ApiConversationMessage/);
@@ -2499,10 +2503,10 @@ test('persisted conversation selection hydrates backend message timelines first'
   assert.match(persistedChatSource, /export function finishedRunResultFromEvents\(events: ApiRunEvent\[\]\): ApiRunResult \| null/);
   assert.match(persistedChatSource, /export function messagesFromPersistedRunResult\(/);
   assert.match(appSource, /function chatMessagesFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ChatMessage\[\]/);
-  assert.match(appSource, /function latestPendingReviewFromApiConversationMessages\(items: ApiConversationMessage\[\]\): ReviewEventPayload \| null/);
+  assert.match(conversationReviewsSource, /export function latestPendingReviewFromApiConversationMessages\(/);
   assert.match(appSource, /const conversationHydrationRequestRef = useRef\(0\);/);
   assert.match(appSource, /const applyPersistedRunResult = useCallback\(\([\s\S]*restoredMessages: ChatMessage\[\] = \[\],[\s\S]*const nextMessages = restoredMessages\.length[\s\S]*messagesFromPersistedRunResult\(result, nextTrace, events\);[\s\S]*setMessages\(nextMessages\);/);
-  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*const pendingReview = latestPendingReviewFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages\);/);
+  assert.match(appSource, /const hydrateConversationSnapshot = useCallback\(async \(conversation: ApiConversation\) => \{[\s\S]*listConversationMessages\(conversation\.id, conversation\.project_id\),[\s\S]*conversation\.last_run_id \? listRunEvents\(conversation\.last_run_id\) : Promise\.resolve\(\[\]\),[\s\S]*const restoredMessages = chatMessagesFromApiConversationMessages\(conversationMessages\);[\s\S]*const pendingReview = latestPendingReviewFromApiConversationMessages\(conversationMessages\);[\s\S]*applyPersistedRunResult\(result, events, restoredMessages, pendingReview\);/);
   assert.match(appSource, /const partialMessages = restoredMessages\.length[\s\S]*\? restoredMessages[\s\S]*: chatMessagesFromPersistedRunEvents\(events, result\);[\s\S]*if \(!result && partialMessages\.length\) \{[\s\S]*setMessages\(partialMessages\);[\s\S]*handlePendingReview\(pendingReview\);/);
   assert.match(appSource, /if \(!selectedChatSurfaceConversation \|\| streaming \|\| messages\.length \|\| runState\) return;[\s\S]*void hydrateConversationSnapshot\(selectedChatSurfaceConversation\);/);
 });
@@ -3209,7 +3213,7 @@ test('project chat mode keeps project files beside the conversation', async () =
   assert.doesNotMatch(projectFileManagerSource, /project-file-path/);
 });
 
-test('chat stop button aborts the active stream request', async () => {
+test('chat stop button cancels the backend run and aborts the stream request', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
   const runStreamSource = appSource.match(/const runStream = async[\s\S]*?\n  const stopStream/)?.[0] ?? '';
@@ -3222,7 +3226,9 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(apiSource, /streamTask\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
   assert.match(apiSource, /resumeDagReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
   assert.match(apiSource, /resumeCapabilityReview\([\s\S]*options: StreamRequestOptions = \{\}[\s\S]*signal: options\.signal/);
+  assert.match(apiSource, /export async function cancelRun\(runId: string\): Promise<boolean>/);
   assert.match(appSource, /const streamAbortRef = useRef<AbortController \| null>\(null\);/);
+  assert.match(appSource, /const activeStreamRunIdRef = useRef<string \| null>\(null\);/);
   assert.match(appSource, /function beginStreamRequest\(\): AbortSignal/);
   assert.match(appSource, /function clearStreamRequest\(signal: AbortSignal\)/);
   assert.match(appSource, /function isAbortError\(value: unknown\)/);
@@ -3232,6 +3238,7 @@ test('chat stop button aborts the active stream request', async () => {
   assert.match(runStreamSource, /if \(isAbortError\(exc\) \|\| signal\.aborted\) return;/);
   assert.match(runStreamSource, /clearStreamRequest\(signal\);/);
   assert.match(stopStreamSource, /streamAbortRef\.current\?\.abort\(\);/);
+  assert.match(stopStreamSource, /cancelRun\(runId\)/);
   assert.match(resumeDagSource, /const signal = beginStreamRequest\(\);/);
   assert.match(resumeDagSource, /resumeDagReview\([\s\S]*signal,[\s\S]*conversation: activeConversationContext/);
   assert.match(resumeDagSource, /const previousDagReview = dagReview;/);
@@ -4585,6 +4592,23 @@ test('responseDeltaPayload preserves native response identity fields', () => {
 });
 
 test('runStartedPayload validates the resolved run kind', () => {
-  assert.deepEqual(runStartedPayload({ kind: 'dynamic_dag' }), { kind: 'dynamic_dag' });
+  assert.deepEqual(runStartedPayload({ kind: 'dynamic_dag' }, 'run_1'), {
+    kind: 'dynamic_dag',
+    run_id: 'run_1',
+  });
   assert.throws(() => runStartedPayload({ kind: 'legacy' }), /Unsupported run kind/);
+});
+
+test('conversation review hydration only restores the latest pending assistant review', () => {
+  const review = { review_id: 'review_1', kind: 'dag_review' };
+  assert.deepEqual(latestPendingReviewFromApiConversationMessages([
+    { role: 'assistant', status: 'awaiting_review', pending_review: review },
+  ]), review);
+  assert.equal(latestPendingReviewFromApiConversationMessages([
+    { role: 'assistant', status: 'awaiting_review', pending_review: review },
+    { role: 'assistant', status: 'rejected', pending_review: null },
+  ]), null);
+  assert.equal(latestPendingReviewFromApiConversationMessages([
+    { role: 'assistant', status: 'completed', pending_review: review },
+  ]), null);
 });

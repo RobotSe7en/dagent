@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 from dagent.capabilities.tools.registry import ToolRegistry
@@ -24,6 +26,8 @@ def shell(
     command: str,
     cwd: str | Path = ".",
     timeout_seconds: int = 30,
+    *,
+    _dagent_cancel_event: threading.Event | None = None,
 ) -> str:
     cwd_path = Path(cwd)
     if not cwd_path.is_dir():
@@ -48,7 +52,18 @@ def shell(
         **platform_options,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        stdout, stderr = _communicate(
+            process,
+            timeout_seconds=timeout_seconds,
+            cancellation_event=_dagent_cancel_event,
+        )
+    except _ShellCancelled:
+        stdout, stderr = _stop_timed_out_process_group(process)
+        output = _format_output(stdout, stderr)
+        message = "cancelled by caller"
+        if output:
+            message = f"{message}\n{_tail_truncate(output)}"
+        raise ShellExecutionError(message) from None
     except subprocess.TimeoutExpired:
         stdout, stderr = _stop_timed_out_process_group(process)
         output = _format_output(stdout, stderr)
@@ -67,6 +82,31 @@ def shell(
     if process.returncode != 0:
         raise ShellExecutionError(formatted)
     return formatted
+
+
+class _ShellCancelled(Exception):
+    pass
+
+
+def _communicate(
+    process: subprocess.Popen[str],
+    *,
+    timeout_seconds: int,
+    cancellation_event: threading.Event | None,
+) -> tuple[str, str]:
+    if cancellation_event is None:
+        return process.communicate(timeout=timeout_seconds)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if cancellation_event.is_set():
+            raise _ShellCancelled
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout_seconds)
+        try:
+            return process.communicate(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _stop_timed_out_process_group(

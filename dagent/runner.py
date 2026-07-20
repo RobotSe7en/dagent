@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import warnings
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -13,6 +14,7 @@ from typing import Any
 from dagent.agent import AutoAgent, CapabilityRef, DagAgent, ToolAgent, validate_agent_name
 from dagent.capabilities import CapabilityToolAdapter, CapabilityToolset, create_default_capability_catalog
 from dagent.capabilities.boundaries import infer_capability_boundary
+from dagent.capabilities.cancellation import run_cancellation_context
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
@@ -145,6 +147,8 @@ class Runner:
         self._registered_agent_configs: dict[str, ToolAgent] = {}
         self._registered_agent_runtime_configs: dict[str, dict[str, Any]] = {}
         self._run_checkpoints: dict[str, RunCheckpoint] = {}
+        self._active_run_tasks: dict[str, asyncio.Task[RunResult]] = {}
+        self._active_run_cancellation_events: dict[str, threading.Event] = {}
         self._consumed_review_ids: set[str] = set()
         self._mcp_server_capability_ids: dict[str, tuple[str, ...]] = {}
         self._mcp_server_managers: dict[str, Any] = {}
@@ -217,6 +221,12 @@ class Runner:
     def close(self) -> None:
         if self._closed:
             return
+        for event in self._active_run_cancellation_events.values():
+            event.set()
+        for task in self._active_run_tasks.values():
+            task.cancel()
+        self._active_run_tasks.clear()
+        self._active_run_cancellation_events.clear()
         self._runtime.capability_catalog.shutdown()
         self._run_checkpoints.clear()
         self._consumed_review_ids.clear()
@@ -1489,6 +1499,21 @@ class Runner:
         async for event in self._stream_run(run_target):
             yield event
 
+    async def cancel(self, run_id: str) -> bool:
+        """Cancel an active streamed run and signal blocking capabilities to stop."""
+
+        self._ensure_open()
+        validate_run_id(run_id)
+        task = self._active_run_tasks.get(run_id)
+        event = self._active_run_cancellation_events.get(run_id)
+        if task is None or event is None or task.done():
+            return False
+        event.set()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        return True
+
     async def resume_stream(
         self,
         decision: ReviewDecision,
@@ -1522,6 +1547,7 @@ class Runner:
         queue: asyncio.Queue[RunStreamEvent | object] = asyncio.Queue()
         sequence = 0
         run_id: str | None = None
+        cancellation_event = threading.Event()
 
         def with_sequence(event: RunStreamEvent) -> RunStreamEvent:
             nonlocal sequence
@@ -1533,11 +1559,14 @@ class Runner:
             stream_event = _stream_event_from_runtime(event)
             if stream_event.type == "run.started" and stream_event.run_id is not None:
                 run_id = stream_event.run_id
+                self._active_run_tasks[run_id] = task
+                self._active_run_cancellation_events[run_id] = cancellation_event
             queue.put_nowait(with_sequence(stream_event))
 
         async def guarded() -> RunResult:
             try:
-                return await run_target(emit_event)
+                with run_cancellation_context(cancellation_event):
+                    return await run_target(emit_event)
             finally:
                 queue.put_nowait(stream_done)
 
@@ -1572,9 +1601,13 @@ class Runner:
             return
         finally:
             if not task.done():
+                cancellation_event.set()
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+            if run_id is not None:
+                self._active_run_tasks.pop(run_id, None)
+                self._active_run_cancellation_events.pop(run_id, None)
 
     async def resume(
         self,
