@@ -602,6 +602,8 @@ button:focus-visible {
   border-radius: 9px;
   background: #fff;
   overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 34px;
 }
 
 .sidebar-conversation-row > button:first-child {
@@ -1446,6 +1448,32 @@ button:focus-visible {
   padding: 28px var(--chat-user-avatar-safe-space, 0px) 36px 0;
 }
 
+.load-earlier-messages {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e1e3e8;
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #555bd1;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.load-earlier-messages:hover {
+  border-color: #c9cbe9;
+  background: #fff;
+}
+
+.load-earlier-messages span {
+  color: #9a9faa;
+  font-size: 10px;
+  font-weight: 600;
+}
+
 .conversation-meta {
   display: flex;
   align-items: center;
@@ -1613,6 +1641,8 @@ button:focus-visible {
 .chat-row {
   display: flex;
   min-width: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
 }
 
 .user-row {
