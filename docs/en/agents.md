@@ -210,7 +210,8 @@ capability id when the top-level run should delegate.
 
 Dynamic DAG planners see exposed agents in the Available Tools section and call
 them like any other function, usually with `prompt="..."` and optionally
-`max_steps=...`.
+`reference_content="..."` or `max_steps=...`. Non-empty reference content is
+supplied to the agent as task data in a separate user-message section.
 
 ## Shared Agent Fields
 

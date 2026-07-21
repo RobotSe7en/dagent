@@ -28,7 +28,8 @@ explicit nulls.
 - Node ids must be descriptive snake_case identifiers. Never emit `start`; the
   host inserts its internal start node.
 - Use `capability` nodes for ordinary tool, MCP, memory, or registered-agent
-  calls. Agent arguments normally contain `prompt` and optionally `max_steps`.
+  calls. Agent arguments normally contain `prompt`, optionally
+  `reference_content` for retrieved task data, and optionally `max_steps`.
 - Use `map` only for bounded fan-out over a runtime list. Choose explicit
   positive `max_items` and `max_concurrency` values.
 - Use `subgraph` for a genuinely reusable nested sequence, not to wrap one

@@ -588,6 +588,41 @@ def test_agent_node_prompt_accepts_value_expr_from_previous_node(tmp_path: Path)
     assert "Draft from found:dagent" in provider.requests[0]["messages"][1]["content"]
 
 
+def test_agent_node_reference_content_accepts_previous_node_output(tmp_path: Path) -> None:
+    @dagent.tool
+    def retrieve(q: str) -> str:
+        return f"source-1: retrieved evidence for {q}"
+
+    provider = MockProvider([ChatResponse(content="answer with source-1")])
+    writer = dagent.ToolAgent(profile=_profile_root(tmp_path, "writer"))
+
+    dag = dagent.Dag("rag_flow", input=str)
+    retrieve_node = dagent.Node("retrieve", target=retrieve, inputs={"q": dag.input})
+    answer_node = dagent.Node(
+        "answer",
+        target=writer,
+        inputs={
+            "prompt": dag.input,
+            "reference_content": retrieve_node.output,
+        },
+    )
+    dag.add_node(retrieve_node)
+    dag.add_node(answer_node)
+    dag.add_edge(retrieve_node, answer_node)
+
+    spec = dag.to_dag_spec()
+    reference_argument = spec.nodes[1].payload.invocation.arguments["reference_content"]
+    assert reference_argument == retrieve_node.output.as_expr()
+
+    runner = dagent.Runner(workspace=tmp_path, provider=provider, profile_root=tmp_path / "profiles")
+    result = run(runner.run(dag, graph_input="What is dagent?", workspace_root=tmp_path / "runs"))
+
+    assert result.status == "completed"
+    user_message = provider.requests[0]["messages"][1]["content"]
+    assert "Prompt:\nWhat is dagent?" in user_message
+    assert "Reference content:\nsource-1: retrieved evidence for What is dagent?" in user_message
+
+
 def test_agent_node_keeps_tool_agent_config_out_of_node_inputs(tmp_path: Path) -> None:
     writer = dagent.ToolAgent(
         profile=_profile_root(tmp_path, "writer"),

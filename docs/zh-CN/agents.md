@@ -193,7 +193,9 @@ agent = dagent.DagAgent(
 capability id 时，顶层 run 才能委派。
 
 Dynamic DAG planner 会在 Available Tools section 中看到已暴露的 agent，并像调用其他
-function 一样调用它们，通常只需要传 `prompt="..."`，必要时再传 `max_steps=...`。
+function 一样调用它们，通常只需要传 `prompt="..."`，必要时再传
+`reference_content="..."` 或 `max_steps=...`。非空参考内容会作为 task data 放入独立的
+user-message 区块。
 
 ## 共享 Agent 字段
 
