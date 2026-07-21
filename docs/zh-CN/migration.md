@@ -4,9 +4,13 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.2`。
+当前包版本是 `0.7.3`。
 
 ## Unreleased
+
+- 暂无未发布变更。
+
+## 0.7.3
 
 ### 新增
 
@@ -36,6 +40,21 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   Chat Completions `response_format.type="json_schema"`。
 - 本地 API 把 `planner_frontend` 作为 service-wide Runner setting；request payload 和
   WebUI 不提供 per-request frontend selector。
+- WebUI 对长会话只渲染最近一段消息，并支持逐步加载更早消息；会话历史区域也会复用稳定
+  结果，减少无关状态更新引起的重复渲染。
+
+### 修复
+
+- `Runner.cancel(run_id)` 现在会把取消信号传递到 active runtime work、async
+  capability、MCP call 和内置 shell process group。WebUI 停止按钮会调用后端取消接口，
+  不再只是关闭本地 event stream。
+- 已拒绝或已经结束的 review request 在重新打开历史会话时不会再次恢复为 pending review
+  对话框。
+- Typed planner schema 现在会保留 required planner fields，并使用 provider 支持的 strict
+  structured-output union。Replan 会正确处理 artifact revision、review checkpoint 中的
+  explicit rerun、变更后的 artifact state，以及没有 schema 的 nested input。
+- Builder replan 会保留与 host field 同名的用户 argument key，支持校验 composite
+  subgraph output path，并始终把完整 canonical DAGSpec 作为权威 replan context。
 
 ### 破坏性改变
 
@@ -56,6 +75,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   旧 PlanSpec review state。
 - 现有 V1 checkpoint 无需迁移；它们继续可读并使用 `typed_spec`。持久化新 V2 checkpoint
   时，不要删除 frontend 或冻结的 planner-skill fields。
+
+### 验证
+
+- `uv run --extra dev --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ### 已知限制
 

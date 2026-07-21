@@ -5,9 +5,13 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.2`.
+The current package version is `0.7.3`.
 
 ## Unreleased
+
+- No unreleased changes.
+
+## 0.7.3
 
 ### Added
 
@@ -38,6 +42,25 @@ The current package version is `0.7.2`.
   `response_format.type="json_schema"` for streaming and non-streaming calls.
 - The local API applies `planner_frontend` as a service-wide Runner setting.
   Request payloads and the WebUI have no per-request frontend selector.
+- The WebUI renders a bounded recent-message window for long conversations and
+  loads older messages incrementally, while memoizing conversation-history
+  sections to reduce unrelated rerenders.
+
+### Fixed
+
+- `Runner.cancel(run_id)` now propagates cancellation through active runtime
+  work to async capabilities, MCP calls, and the built-in shell process group.
+  The WebUI stop control calls the backend cancellation endpoint instead of
+  only closing its local event stream.
+- Rejected or otherwise settled review requests are no longer restored as
+  pending review dialogs when a historical conversation is reopened.
+- Typed planner schemas now preserve required planner fields and use strict
+  structured-output unions supported by the provider. Replanning correctly handles
+  artifact revisions, explicit reruns across review checkpoints, changed
+  artifact state, and schema-less nested inputs.
+- Builder replanning preserves user-owned argument keys that match host field
+  names, validates paths through composite subgraph outputs, and always sends a
+  complete canonical DAGSpec as authoritative replan context.
 
 ### Breaking Changes
 
@@ -61,6 +84,15 @@ The current package version is `0.7.2`.
 - No action is required for existing V1 checkpoints; they remain readable and
   use `typed_spec`. Persist newly emitted V2 checkpoints without dropping their
   frontend or frozen planner-skill fields.
+
+### Verification
+
+- `uv run --extra dev --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ### Known Limitations
 

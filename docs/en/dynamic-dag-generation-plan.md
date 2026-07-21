@@ -1,8 +1,8 @@
 # Dynamic DAG Generation Plan
 
 This page records the staged technical direction for dynamic DAG generation.
-Both phases are implemented on the unreleased development line. Released-version
-behavior is documented in the task guides. Public
+Both phases are available in 0.7.3. Released-version behavior is documented in
+the task guides. Public
 APIs, capability ids, configuration semantics, and review contracts remain
 intentional contracts.
 

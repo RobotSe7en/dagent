@@ -15,7 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.2")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.3")
+    english_073 = _section(english, "## 0.7.3", "## 0.7.2")
     english_072 = _section(english, "## 0.7.2", "## 0.7.1")
     english_071 = _section(english, "## 0.7.1", "## 0.7.0")
     english_070 = _section(english, "## 0.7.0", "## 0.6.8")
@@ -26,7 +27,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.2")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.3")
+    chinese_073 = _section(chinese, "## 0.7.3", "## 0.7.2")
     chinese_072 = _section(chinese, "## 0.7.2", "## 0.7.1")
     chinese_071 = _section(chinese, "## 0.7.1", "## 0.7.0")
     chinese_070 = _section(chinese, "## 0.7.0", "## 0.6.8")
@@ -38,8 +40,11 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "strict internal JSON Schema" in english_unreleased
-    assert "free-form PlanSpec DSL" in english_unreleased
+    assert "No unreleased changes" in english_unreleased
+    assert "strict internal JSON Schema" in english_073
+    assert "free-form PlanSpec DSL" in english_073
+    assert "Runner.cancel(run_id)" in english_073
+    assert 'planner_frontend="sdk_builder"' in english_073
     assert "General-Purpose Agent" in english_072
     assert "dedicated process group" in english_072
     assert "RunCheckpoint" in english_071
@@ -74,8 +79,11 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "internal strict JSON Schema" in chinese_unreleased
-    assert "Free-form PlanSpec DSL" in chinese_unreleased
+    assert "暂无未发布变更" in chinese_unreleased
+    assert "internal strict JSON Schema" in chinese_073
+    assert "Free-form PlanSpec DSL" in chinese_073
+    assert "Runner.cancel(run_id)" in chinese_073
+    assert 'planner_frontend="sdk_builder"' in chinese_073
     assert "通用智能体" in chinese_072
     assert "专用进程组" in chinese_072
     assert "RunCheckpoint" in chinese_071
