@@ -20,6 +20,7 @@ LoopStatus = Literal["completed", "awaiting_review", "failed"]
 RunStateKind = Literal["tool", "dynamic_dag", "static_dag"]
 ReviewLevelValue = Literal["fast", "careful"]
 RuntimeModeValue = Literal["auto", "tool", "dag", "dag_spec"]
+PlannerFrontend = Literal["typed_spec", "sdk_builder"]
 
 
 class ExecutionLimits(BaseModel):
@@ -57,12 +58,30 @@ class _FrozenAgentProfile(AgentProfile):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class PlannerSkillSnapshot(BaseModel):
+    """Frozen built-in planner skill included in resumable V2 plans."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Literal["generate-dag"]
+    version: Literal[1]
+    content: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_digest(self) -> "PlannerSkillSnapshot":
+        digest = hashlib.sha256(self.content.encode("utf-8")).hexdigest()
+        if self.sha256 != digest:
+            raise ValueError("Planner skill SHA-256 does not match its content.")
+        return self
+
+
 class ResolvedRunPlan(BaseModel):
     """Immutable, serializable execution semantics resolved by ``Runner``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     runtime_kind: RunStateKind
     tool_profile: AgentProfile
     planner_profile: AgentProfile
@@ -77,6 +96,8 @@ class ResolvedRunPlan(BaseModel):
     validator_profile: AgentProfile | None = None
     max_validation_retries: int = Field(default=1, ge=0)
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
+    planner_frontend: PlannerFrontend = "typed_spec"
+    planner_skill: PlannerSkillSnapshot | None = None
     fingerprint: str = ""
 
     @field_validator(
@@ -104,6 +125,13 @@ class ResolvedRunPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_resolved_configuration(self) -> "ResolvedRunPlan":
+        if self.schema_version == 1:
+            if self.planner_frontend != "typed_spec" or self.planner_skill is not None:
+                raise ValueError("Resolved run plan V1 only supports typed_spec planning.")
+        elif self.planner_frontend == "sdk_builder" and self.planner_skill is None:
+            raise ValueError("sdk_builder plans require a frozen planner skill.")
+        elif self.planner_frontend == "typed_spec" and self.planner_skill is not None:
+            raise ValueError("typed_spec plans cannot include a builder planner skill.")
         if self.validation_enabled and self.validator_profile is None:
             raise ValueError(
                 "validator_profile is required when validation_enabled is true."
@@ -127,7 +155,10 @@ class ResolvedRunPlan(BaseModel):
     def canonical_fingerprint(self) -> str:
         """Return the SDK-defined SHA-256 fingerprint for this plan payload."""
 
-        payload = self.model_dump(mode="json", exclude={"fingerprint"})
+        excluded = {"fingerprint"}
+        if self.schema_version == 1:
+            excluded.update({"planner_frontend", "planner_skill"})
+        payload = self.model_dump(mode="json", exclude=excluded)
         canonical = json.dumps(
             payload,
             ensure_ascii=False,
@@ -181,7 +212,7 @@ class PendingReview(BaseModel):
 class RunState(BaseModel):
     """Serializable run state for display and cross-request resume."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     run_id: str
     kind: RunStateKind
     status: LoopStatus
@@ -197,6 +228,7 @@ class RunState(BaseModel):
     runtime_mode: RuntimeModeValue = "auto"
     execution: RunExecution = "local"
     dynamic_adjust: bool = True
+    planner_frontend: PlannerFrontend = "typed_spec"
     capability_scope: RunCapabilityScope = Field(default_factory=RunCapabilityScope)
     spec_id: str | None = None
     workspace_path: str | None = None
@@ -208,7 +240,7 @@ class RunCheckpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     state: RunState
     plan: ResolvedRunPlan
     usage: ExecutionUsage = Field(default_factory=ExecutionUsage)
@@ -216,6 +248,12 @@ class RunCheckpoint(BaseModel):
     @model_validator(mode="after")
     def validate_checkpoint_consistency(self) -> "RunCheckpoint":
         self.plan.validate_fingerprint()
+        if self.schema_version != self.plan.schema_version:
+            raise ValueError("Checkpoint schema version does not match the resolved run plan.")
+        if self.schema_version == 2 and self.state.schema_version != 2:
+            raise ValueError("Checkpoint V2 requires RunState V2.")
+        if self.state.planner_frontend != self.plan.planner_frontend:
+            raise ValueError("Checkpoint planner frontend does not match the resolved run plan.")
         if self.state.kind != self.plan.runtime_kind:
             raise ValueError("Checkpoint state kind does not match the resolved run plan.")
         expected_runtime_mode = {

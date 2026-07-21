@@ -122,14 +122,23 @@ uv run python -m examples.auto_agent
 
 `DagAgent` is for dynamic DAG planning. It can pause for human review before
 executing proposed work. Planner calls use a strict JSON Schema response: the
-model chooses `propose_plan`, `no_change`, or `final_answer`, and complete typed
-plans are normalized into canonical `DAGSpec` before validation, review, and
-execution. Capability nodes reference stable ids such as `tool.search`; the
-host supplies kind, risk, boundaries, defaults, and invocation identity.
+model chooses `propose_plan`, `no_change`, or `final_answer`. The Runner-wide
+planner frontend determines whether a proposal contains a typed plan or
+restricted Builder source; both normalize to canonical `DAGSpec` before
+validation, review, and execution. Capability nodes reference stable ids such
+as `tool.search`; the host supplies kind, risk, boundaries, defaults, and
+invocation identity.
 
 Typed dynamic plans can contain capability/agent, map, subgraph, and bounded
 loop nodes, explicit conditional edges, artifacts, graph output, and structured
 value references. They use the same validator and executor as static DAGs.
+
+`typed_spec` remains the default. To opt into code-oriented authoring, construct
+the runner with `planner_frontend="sdk_builder"`. The generated source uses a
+straight-line allowlisted Builder subset and is never passed to `exec` or
+`eval`. It may express the same maps, subgraphs, bounded loops, artifacts,
+references, outputs, and conditional edges; canonical `DAGSpec`, not source,
+is the review and persistence object.
 
 ```python
 agent = dagent.DagAgent(
@@ -164,6 +173,7 @@ Run the offline dynamic DAG example:
 
 ```bash
 uv run python -m examples.dynamic_dag_agent
+uv run python -m examples.dynamic_dag_builder_agent
 ```
 
 ## Subagent Delegation

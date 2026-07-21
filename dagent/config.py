@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from dagent.schemas.capability import validate_capability_id_segment
+from dagent.schemas.results import PlannerFrontend
 from dagent.schemas.sandbox import SandboxConfig
 
 
@@ -65,6 +66,7 @@ class DagentConfig(BaseModel):
     enable_result_validation: bool = False
     mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    planner_frontend: PlannerFrontend = "typed_spec"
 
 
 class UserModelProviderConfig(ProviderConfig):

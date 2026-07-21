@@ -3625,6 +3625,7 @@ def _runner_from_model_provider(model: ModelProviderRequest, *, skill_roots: lis
         mcp_servers=dict(config.mcp_servers),
         profile_root=profile_root,
         sandbox=config.sandbox,
+        planner_frontend=config.planner_frontend,
     )
 
 

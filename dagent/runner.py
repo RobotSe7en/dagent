@@ -61,6 +61,7 @@ from dagent.harness_runtime.execution_budget import (
     ExecutionLimitExceeded,
     execution_budget_scope,
 )
+from dagent.harness_runtime.planner_skill import load_dag_generation_skill
 from dagent.harness_runtime.tool_agent import LoopEventHandler, TokenHandler
 from dagent.profiles import AgentProfile, ProfileStore, load_builtin_profile
 from dagent.providers import ChatProvider, OpenAICompatibleProvider
@@ -97,6 +98,8 @@ from dagent.schemas import (
     MCPServerSnapshot,
     MCPToolSnapshot,
     PendingReview,
+    PlannerFrontend,
+    PlannerSkillSnapshot,
     PythonToolRegistrationResult,
     PythonToolSourceRegistrationStatus,
     RunnerCatalogView,
@@ -138,10 +141,20 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
+        planner_frontend: PlannerFrontend = "typed_spec",
     ) -> None:
         self.workspace = Path(workspace)
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self.sandbox = sandbox or SandboxConfig()
+        if planner_frontend not in {"typed_spec", "sdk_builder"}:
+            raise ValueError(
+                "planner_frontend must be 'typed_spec' or 'sdk_builder'."
+            )
+        planner_skill = (
+            load_dag_generation_skill()
+            if planner_frontend == "sdk_builder"
+            else None
+        )
         self._closed = False
         self._skill_provider = SkillsCapabilityProvider(skill_roots)
         self._registered_agent_configs: dict[str, ToolAgent] = {}
@@ -161,6 +174,8 @@ class Runner:
             validator=validator,
             skills_provider=self._skill_provider,
             profile_root=self.profile_root,
+            planner_frontend=planner_frontend,
+            planner_skill=planner_skill,
         )
         self._local_tool_binding_ids.update(
             _capability_parts(capability)[0].id
@@ -185,6 +200,7 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
+        planner_frontend: PlannerFrontend | None = None,
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -208,6 +224,7 @@ class Runner:
             mcp_servers=resolved_mcp_servers,
             profile_root=resolved_profile_root,
             sandbox=sandbox or config.sandbox,
+            planner_frontend=planner_frontend or config.planner_frontend,
         )
 
     @property
@@ -247,6 +264,7 @@ class Runner:
         mcp_servers: dict[str, dict[str, Any]] | None = None,
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
+        planner_frontend: PlannerFrontend | None = None,
         agents: Iterable[ToolAgent] = (),
         inherit_local_tools: bool = False,
         exclude_local_tool_ids: Iterable[str] = (),
@@ -287,6 +305,11 @@ class Runner:
             mcp_servers=mcp_servers,
             profile_root=resolved_profile_root,
             sandbox=sandbox if sandbox is not None else self.sandbox.model_copy(deep=True),
+            planner_frontend=(
+                planner_frontend
+                if planner_frontend is not None
+                else self._runtime.dag_agent.loop.planner_frontend
+            ),
         )
         try:
             derived.runtime.max_validation_retries = (
@@ -1143,9 +1166,13 @@ class Runner:
                 f"({type(target).__name__}); use a tool agent or execution='local'."
             )
         skill_names = (
-            _agent_skills(target)
-            if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
-            else None
+            continuation_checkpoint.plan.skill_ids
+            if continuation_checkpoint is not None
+            else (
+                _agent_skills(target)
+                if isinstance(target, (AutoAgent, ToolAgent, DagAgent))
+                else None
+            )
         )
         if continuation_checkpoint is not None:
             if limits is not None and limits != continuation_checkpoint.plan.limits:
@@ -1169,6 +1196,7 @@ class Runner:
                 target,
                 messages=messages,
                 state=state,
+                checkpoint=continuation_checkpoint,
                 graph_input=graph_input,
                 review=review,
                 dynamic_adjust=dynamic_adjust,
@@ -1203,6 +1231,23 @@ class Runner:
         on_token: TokenHandler | None = None,
         on_event: LoopEventHandler | None = None,
     ) -> RunResult:
+        if checkpoint is not None:
+            return await self._run_checkpoint_continuation(
+                target,
+                checkpoint=checkpoint,
+                messages=messages,
+                graph_input=graph_input,
+                review=review,
+                dynamic_adjust=dynamic_adjust,
+                limits=limits,
+                budget=budget,
+                workspace_root=workspace_root,
+                workspace_path=workspace_path,
+                run_id=run_id,
+                input_uploads=input_uploads,
+                on_token=on_token,
+                on_event=on_event,
+            )
         if isinstance(target, AutoAgent):
             if graph_input is not None:
                 raise TypeError("graph_input is not accepted for AutoAgent targets.")
@@ -1363,6 +1408,77 @@ class Runner:
 
         raise TypeError("Runner.run expects an AutoAgent, ToolAgent, DagAgent, Dag, or DAGSpec target.")
 
+    async def _run_checkpoint_continuation(
+        self,
+        target: RunTarget,
+        *,
+        checkpoint: RunCheckpoint,
+        messages: list[dict[str, Any]] | None,
+        graph_input: Any,
+        review: ReviewLevel | None,
+        dynamic_adjust: bool | None,
+        limits: ExecutionLimits,
+        budget: ExecutionBudget,
+        workspace_root: str | Path,
+        workspace_path: str | Path | None,
+        run_id: str | None,
+        input_uploads: list[ArtifactUpload] | None,
+        on_token: TokenHandler | None,
+        on_event: LoopEventHandler | None,
+    ) -> RunResult:
+        plan = checkpoint.plan
+        expected_kinds = {
+            AutoAgent: {"tool", "dynamic_dag"},
+            ToolAgent: {"tool"},
+            DagAgent: {"dynamic_dag"},
+        }
+        matching_type = next(
+            (agent_type for agent_type in expected_kinds if isinstance(target, agent_type)),
+            None,
+        )
+        if matching_type is None:
+            raise TypeError("Checkpoints can only continue agent targets.")
+        if plan.runtime_kind not in expected_kinds[matching_type]:
+            raise ValueError(
+                f"Checkpoint runtime kind '{plan.runtime_kind}' is incompatible "
+                f"with {matching_type.__name__}."
+            )
+        if graph_input is not None:
+            raise TypeError("graph_input is not accepted for agent checkpoint continuation.")
+        run_messages = _require_messages(messages, matching_type.__name__)
+        runtime = self._runtime_for_resolved_plan(plan)
+        review_level = review or plan.review_level
+        resolved_dynamic_adjust = (
+            plan.dynamic_adjust if dynamic_adjust is None else dynamic_adjust
+        )
+        result = await runtime.handle_messages(
+            run_messages,
+            run_state=checkpoint.state,
+            mode="tool" if plan.runtime_kind == "tool" else "dag",
+            review_level=review_level,
+            dynamic_adjust=resolved_dynamic_adjust,
+            workspace_root=self._resolve_run_workspace_root(workspace_root),
+            workspace_path=workspace_path,
+            run_id=run_id,
+            input_uploads=input_uploads,
+            capability_scope=CapabilityScope(
+                capability_ids=plan.capability_ids,
+                skills=plan.skill_ids,
+            ),
+            on_token=on_token,
+            on_event=on_event,
+        )
+        return self._finalize_run_result(
+            result,
+            runtime=runtime,
+            capability_ids=plan.capability_ids,
+            skill_ids=plan.skill_ids,
+            review_level=review_level,
+            dynamic_adjust=resolved_dynamic_adjust,
+            limits=limits,
+            usage=budget.snapshot(),
+        )
+
     def _finalize_static_result(
         self,
         result: RunResult,
@@ -1402,8 +1518,10 @@ class Runner:
         capability_ids = tuple(sorted(capability_ids))
         skill_ids = tuple(sorted(skill_ids))
         state = result.state.model_copy(update={
+            "schema_version": 2,
             "review_level": review_level,
             "dynamic_adjust": dynamic_adjust,
+            "planner_frontend": runtime.dag_agent.loop.planner_frontend,
             "capability_scope": RunCapabilityScope(
                 capability_ids=capability_ids,
                 skills=skill_ids,
@@ -1416,6 +1534,7 @@ class Runner:
             else None
         )
         plan = ResolvedRunPlan(
+            schema_version=2,
             runtime_kind=state.kind,
             tool_profile=runtime.tool_agent.profile.model_copy(deep=True),
             planner_profile=runtime.dag_agent.profile.model_copy(deep=True),
@@ -1434,6 +1553,8 @@ class Runner:
             validator_profile=validator_profile,
             max_validation_retries=runtime.max_validation_retries,
             limits=limits,
+            planner_frontend=runtime.dag_agent.loop.planner_frontend,
+            planner_skill=runtime.dag_agent.loop.planner_skill,
         )
         finalized = replace(result, state=state, plan=plan, usage=usage)
         checkpoint = finalized.checkpoint
@@ -1694,6 +1815,7 @@ class Runner:
             update={"review_level": review_level}
         )
         restored = RunCheckpoint(
+            schema_version=plan.schema_version,
             state=resume_state,
             plan=plan,
             usage=checkpoint.usage,
@@ -1753,6 +1875,7 @@ class Runner:
             failed_state = resume_state.model_copy(update=failed_update)
             failed_state = self._runtime.session.save_run_state(failed_state)
             failed_checkpoint = RunCheckpoint(
+                schema_version=plan.schema_version,
                 state=failed_state,
                 plan=plan,
                 usage=usage,
@@ -1816,6 +1939,8 @@ class Runner:
             enable_validation=plan.validation_enabled,
             max_validation_retries=plan.max_validation_retries,
             profile_root=None,
+            planner_frontend=plan.planner_frontend,
+            planner_skill=plan.planner_skill,
         )
         runtime.session = self._runtime.session
         runtime.runs = self._runtime.runs
@@ -2101,6 +2226,8 @@ def _assemble_runtime(
     enable_validation: bool,
     max_validation_retries: int,
     profile_root: str | Path | None,
+    planner_frontend: PlannerFrontend = "typed_spec",
+    planner_skill: PlannerSkillSnapshot | None = None,
 ) -> HarnessRuntime:
     runtime_tool_agent = RuntimeToolAgent(
         loop=ToolAgentLoop(
@@ -2120,6 +2247,8 @@ def _assemble_runtime(
             ),
             tool_adapter=tool_adapter,
             max_cycles=dag_max_cycles,
+            planner_frontend=planner_frontend,
+            planner_skill=planner_skill,
         ),
         profile=_resolve_profile(dag_profile, profile_root=profile_root),
     )
@@ -2147,6 +2276,8 @@ def _create_runtime(
     dag_max_cycles: int = 6,
     skills_provider: SkillsCapabilityProvider | None = None,
     profile_root: str | Path | None = None,
+    planner_frontend: PlannerFrontend = "typed_spec",
+    planner_skill: PlannerSkillSnapshot | None = None,
 ) -> HarnessRuntime:
     workspace_path = Path(workspace)
     if provider is None:
@@ -2173,6 +2304,8 @@ def _create_runtime(
         enable_validation=resolved_validator is not None,
         max_validation_retries=1,
         profile_root=profile_root,
+        planner_frontend=planner_frontend,
+        planner_skill=planner_skill,
     )
 
 
@@ -2199,6 +2332,8 @@ def _runtime_from_existing(
         enable_validation=base.enable_validation,
         max_validation_retries=base.max_validation_retries,
         profile_root=profile_root,
+        planner_frontend=base.dag_agent.loop.planner_frontend,
+        planner_skill=base.dag_agent.loop.planner_skill,
     )
     runtime.session = base.session
     runtime.runs = base.runs

@@ -23,6 +23,7 @@ runner = dagent.Runner(
     capabilities=[],
     skill_roots=["team-skills"],
     profile_root="profiles",
+    planner_frontend="typed_spec",
 )
 ```
 
@@ -112,11 +113,25 @@ mcp_servers:
     url: "https://mcp.example.com/mcp"
     headers:
       Authorization: "Bearer ${MCP_TOKEN}"
+planner_frontend: typed_spec
 ```
 
 If no path is passed, `Runner.from_config(...)` resolves `DAGENT_CONFIG` or
 `./config.yaml`. Relative `profiles.directory` values resolve from the config
 file directory.
+
+`planner_frontend` selects the global dynamic-DAG authoring frontend. The
+default `typed_spec` asks the provider for a typed planner graph.
+`sdk_builder` asks for constrained public Builder source, parses it without
+executing Python, and immediately normalizes it to canonical `DAGSpec`:
+
+```python
+runner = dagent.Runner(provider=provider, planner_frontend="sdk_builder")
+```
+
+The Builder frontend packages and explicitly injects a version-locked
+`generate-dag` skill. It supports initial planning and full-spec replanning.
+Both frontends share capability resolution, validation, review, and execution.
 
 ## User WebUI Configuration
 
@@ -168,6 +183,9 @@ the runner with that provider; otherwise the project `config.yaml` provider
 remains the default. The WebUI registers both project and user MCP servers.
 Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
 are reported instead of silently overriding project configuration.
+The backend also applies the project-level `planner_frontend` when rebuilding a
+runner for a user-selected model. It is a service-wide setting; message requests
+and the WebUI do not expose a per-request override.
 
 `python_tools` entries do not make `Runner.from_config(...)` import files
 implicitly. Hosts that persist this section should load it explicitly with

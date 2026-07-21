@@ -22,6 +22,7 @@ runner = dagent.Runner(
     capabilities=[],
     skill_roots=["team-skills"],
     profile_root="profiles",
+    planner_frontend="typed_spec",
 )
 ```
 
@@ -103,10 +104,22 @@ mcp_servers:
     url: "https://mcp.example.com/mcp"
     headers:
       Authorization: "Bearer ${MCP_TOKEN}"
+planner_frontend: typed_spec
 ```
 
 如果没有传入 path，`Runner.from_config(...)` 会解析 `DAGENT_CONFIG` 或
 `./config.yaml`。相对的 `profiles.directory` 会从配置文件所在目录解析。
+
+`planner_frontend` 用于全局选择 dynamic DAG authoring frontend。默认的 `typed_spec`
+要求 provider 返回类型化 planner graph；`sdk_builder` 要求返回受限的公开 Builder source，
+host 不执行 Python，而是解析后立即规范化为 canonical `DAGSpec`：
+
+```python
+runner = dagent.Runner(provider=provider, planner_frontend="sdk_builder")
+```
+
+Builder frontend 会打包并显式注入 version-locked `generate-dag` skill，支持初始规划和
+full-spec replan。两个 frontend 共用 capability resolution、validation、review 和 execution。
 
 ## WebUI 用户配置
 
@@ -154,6 +167,8 @@ WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `
 如果 `active_model` 指向一个用户模型，backend 会用该 provider 重建 runner；否则项目
 `config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
 项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
+Backend 使用用户选择的 model 重建 runner 时，也会应用项目级 `planner_frontend`。这是
+service-wide setting；message request 和 WebUI 不提供 per-request override。
 
 `python_tools` 条目不会让 `Runner.from_config(...)` 隐式 import 文件。持久化这一段配置的
 host 应通过 `Runner.reload_python_tool_sources(...)` 或

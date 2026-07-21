@@ -75,6 +75,11 @@ review decision。缺失或禁用的 capabilities、缺失的 skills 都会 fail
 Resolved plan 使用冻结的 profile snapshots 和 SDK 定义的 canonical SHA-256 fingerprint。
 Fingerprint 用于发现意外 payload 修改，不是签名或 authentication boundary。
 
+SDK 新生成的 checkpoint 使用 schema V2，并记录 `planner_frontend`。当 frontend 为
+`sdk_builder` 时，resolved plan 还会冻结 mandatory、versioned `generate-dag` skill 的完整
+内容和 SHA-256 digest。即使新 Runner 的全局 frontend 不同，resume 也会重建 checkpoint
+中记录的 frontend 和 skill。Schema V1 checkpoint 继续可读，并始终表示 `typed_spec`。
+
 同一个 `Runner` 上的普通 continuation 可以使用 `run(..., state=...)`；最新匹配的内存
 checkpoint 会恢复 usage 和原 limits。跨进程 continuation 应向 `run(...)` 传入
 `checkpoint=...`。过期 state 会被拒绝，恢复出的 limits 不能替换或扩大。
@@ -91,8 +96,9 @@ Checkpoint review decision 在同一个 `Runner` 中只能消费一次。如果 
 `RunResult.model_dump(...)` 继续保持原有的 `state` 和 `output_text` shape。需要跨进程
 review resume 时，请单独持久化 `result.checkpoint`。
 
-持久化的 `RunState` payload 包含 `schema_version: 1`。不含该字段的 payload
-会按 version 1 读取。宿主遇到显式声明的不支持版本时应拒绝，而不是静默迁移。
+新持久化的 `RunState` payload 包含 `schema_version: 2`。不含该字段的 payload 会按
+version 1 读取，V1 使用 `typed_spec` 语义。宿主遇到显式声明的不支持版本时应拒绝，
+而不是静默迁移。
 
 ## Run-Wide Execution Budget
 

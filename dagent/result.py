@@ -107,7 +107,12 @@ class RunResult:
 
         if self.plan is None:
             return None
-        return RunCheckpoint(state=self.state, plan=self.plan, usage=self.usage)
+        return RunCheckpoint(
+            schema_version=self.plan.schema_version,
+            state=self.state,
+            plan=self.plan,
+            usage=self.usage,
+        )
 
     @property
     def dag_run(self) -> DAGRun | None:
