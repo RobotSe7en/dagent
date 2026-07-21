@@ -7,7 +7,11 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import threading
 from typing import Any
 
-from .config import DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS
+from .config import (
+    DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
+    MCPStdioStderr,
+    validate_mcp_stdio_stderr,
+)
 from .server_task import MCPServerTask, MCP_SDK_AVAILABLE
 
 
@@ -16,8 +20,14 @@ class MCPServerManager:
 
     available = MCP_SDK_AVAILABLE
 
-    def __init__(self, servers: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        servers: dict[str, dict[str, Any]],
+        *,
+        mcp_stdio_stderr: MCPStdioStderr = "discard",
+    ) -> None:
         self.servers = servers
+        self.mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.tasks: dict[str, MCPServerTask] = {}
         self.last_errors: dict[str, str] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -43,7 +53,11 @@ class MCPServerManager:
         for name, config in sorted(self.servers.items()):
             if config.get("enabled", True) is False:
                 continue
-            task = MCPServerTask(name, config)
+            task = MCPServerTask(
+                name,
+                config,
+                mcp_stdio_stderr=self.mcp_stdio_stderr,
+            )
             self.tasks[name] = task
             futures.append((name, asyncio.run_coroutine_threadsafe(task.start(), self._loop)))
         for name, future in futures:
@@ -87,7 +101,11 @@ class MCPServerManager:
                 daemon=True,
             )
             self._thread.start()
-        task = MCPServerTask(name, self.servers[name])
+        task = MCPServerTask(
+            name,
+            self.servers[name],
+            mcp_stdio_stderr=self.mcp_stdio_stderr,
+        )
         self.tasks[name] = task
         future = asyncio.run_coroutine_threadsafe(task.start(), self._loop)
         connect_timeout = _connect_timeout_seconds(self.servers[name])

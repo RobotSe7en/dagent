@@ -18,6 +18,10 @@ from dagent.capabilities.cancellation import run_cancellation_context
 from dagent.capabilities.catalog import CapabilityHandler
 from dagent.capabilities.decorator import CapabilityBinding
 from dagent.capabilities.mcp import MCPCapabilityProvider, MCPServerManager
+from dagent.capabilities.mcp.config import (
+    MCPStdioStderr,
+    validate_mcp_stdio_stderr,
+)
 from dagent.capabilities.providers import AgentCapabilityProvider
 from dagent.capabilities.python_tools import (
     load_python_tool_sources,
@@ -142,10 +146,12 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend = "typed_spec",
+        mcp_stdio_stderr: MCPStdioStderr = "discard",
     ) -> None:
         self.workspace = Path(workspace)
         self.profile_root = Path(profile_root) if profile_root is not None else None
         self.sandbox = sandbox or SandboxConfig()
+        self._mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         if planner_frontend not in {"typed_spec", "sdk_builder"}:
             raise ValueError(
                 "planner_frontend must be 'typed_spec' or 'sdk_builder'."
@@ -201,6 +207,7 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
+        mcp_stdio_stderr: MCPStdioStderr = "discard",
     ) -> "Runner":
         config_path = resolve_config_path(path)
         config = load_config(config_path)
@@ -225,6 +232,7 @@ class Runner:
             profile_root=resolved_profile_root,
             sandbox=sandbox or config.sandbox,
             planner_frontend=planner_frontend or config.planner_frontend,
+            mcp_stdio_stderr=mcp_stdio_stderr,
         )
 
     @property
@@ -265,6 +273,7 @@ class Runner:
         profile_root: str | Path | None = None,
         sandbox: SandboxConfig | None = None,
         planner_frontend: PlannerFrontend | None = None,
+        mcp_stdio_stderr: MCPStdioStderr | None = None,
         agents: Iterable[ToolAgent] = (),
         inherit_local_tools: bool = False,
         exclude_local_tool_ids: Iterable[str] = (),
@@ -309,6 +318,11 @@ class Runner:
                 planner_frontend
                 if planner_frontend is not None
                 else self._runtime.dag_agent.loop.planner_frontend
+            ),
+            mcp_stdio_stderr=(
+                mcp_stdio_stderr
+                if mcp_stdio_stderr is not None
+                else self._mcp_stdio_stderr
             ),
         )
         try:
@@ -1009,6 +1023,11 @@ class Runner:
         if not available:
             raise RuntimeError(
                 "MCP SDK is not installed. Install dagent[mcp] to register MCP servers."
+            )
+        if manager is None:
+            manager = MCPServerManager(
+                {name: config},
+                mcp_stdio_stderr=self._mcp_stdio_stderr,
             )
         catalog = self._runtime.capability_catalog
         before = set(catalog.ids())

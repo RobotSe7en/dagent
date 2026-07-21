@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from contextlib import AsyncExitStack
-from pathlib import Path
 from typing import Any
 
 from .config import (
     DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+    MCPStdioStderr,
     build_http_headers,
     build_stdio_env,
+    validate_mcp_stdio_stderr,
 )
 
 try:  # pragma: no cover - optional dependency is installed by dev and mcp extras
@@ -38,9 +41,16 @@ except Exception:  # pragma: no cover - import depends on optional extra
 class MCPServerTask:
     """Owns one MCP server connection and serializes JSON-RPC requests."""
 
-    def __init__(self, name: str, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        name: str,
+        config: dict[str, Any],
+        *,
+        mcp_stdio_stderr: MCPStdioStderr = "discard",
+    ) -> None:
         self.name = name
         self.config = config
+        self.mcp_stdio_stderr = validate_mcp_stdio_stderr(mcp_stdio_stderr)
         self.tools: list[Any] = []
         self.initialize_result: Any = None
         self.last_error: str | None = None
@@ -91,8 +101,10 @@ class MCPServerTask:
     async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
         transport = self._transport()
         if transport == "stdio":
-            stderr_file = _stderr_log_path().open("a", encoding="utf-8")
-            stack.callback(stderr_file.close)
+            stderr_file = sys.stderr
+            if self.mcp_stdio_stderr == "discard":
+                stderr_file = open(os.devnull, "w", encoding="utf-8")
+                stack.callback(stderr_file.close)
             return await stack.enter_async_context(
                 stdio_client(self._stdio_params(), errlog=stderr_file)
             )
@@ -147,9 +159,3 @@ class MCPServerTask:
         )
         params["timeout"] = httpx.Timeout(connect, read=read)
         return params
-
-
-def _stderr_log_path() -> Path:
-    path = Path.home() / ".dagent" / "logs" / "mcp-stderr.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path

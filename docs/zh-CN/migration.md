@@ -4,11 +4,35 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.3`。
+当前包版本是 `0.7.4`。
 
 ## Unreleased
 
 - 暂无未发布变更。
+
+## 0.7.4
+
+### 新增
+
+- `Runner(..., mcp_stdio_stderr="inherit")` 允许负责进程监管的 host 显式把
+  stdio MCP server stderr 转发到 host 进程。`Runner.from_config(...)` 接受同一个
+  显式 host-policy 参数；派生 runner 默认继承父 runner 的设置，除非调用方覆盖。
+
+### 改变
+
+- stdio MCP server stderr 现在默认丢弃。SDK 不再创建或追加
+  `~/.dagent/logs/mcp-stderr.log`，因为 server stderr 可能包含凭据或其他敏感值。
+
+### 迁移
+
+- 以前读取 SDK MCP stderr 文件的 host，必须改为显式设置
+  `mcp_stdio_stderr="inherit"`，并在自己的进程监管边界进行有界、脱敏的 stderr
+  捕获。不需要 MCP stderr 的 host 无需改动。
+
+### 验证
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `git diff --check`
 
 ## 0.7.3
 

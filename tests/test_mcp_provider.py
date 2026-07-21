@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
 import json
+import os
+import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -531,14 +533,22 @@ def test_mcp_manager_cancels_tool_call_future_on_timeout(monkeypatch) -> None:
 def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
     starts: list[str] = []
     calls: list[tuple[str, dict]] = []
+    stderr_routes: list[str] = []
 
     class LazyFakeTask:
         tools = []
         last_error = None
 
-        def __init__(self, name: str, config: dict) -> None:
+        def __init__(
+            self,
+            name: str,
+            config: dict,
+            *,
+            mcp_stdio_stderr: str,
+        ) -> None:
             self.name = name
             self.config = config
+            stderr_routes.append(mcp_stdio_stderr)
 
         async def start(self) -> None:
             starts.append(self.name)
@@ -552,10 +562,13 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
 
     monkeypatch.setattr(manager_module, "MCPServerTask", LazyFakeTask)
     monkeypatch.setattr(MCPServerManager, "available", True)
-    manager = MCPServerManager({
-        "mock": {"command": "fake"},
-        "disabled": {"command": "fake", "enabled": False},
-    })
+    manager = MCPServerManager(
+        {
+            "mock": {"command": "fake"},
+            "disabled": {"command": "fake", "enabled": False},
+        },
+        mcp_stdio_stderr="inherit",
+    )
 
     try:
         result = manager.call_tool_blocking("mock", "lookup", {"query": "x"}, timeout=1)
@@ -565,6 +578,7 @@ def test_mcp_manager_starts_server_on_first_tool_call(monkeypatch) -> None:
     assert result == "ok"
     assert starts == ["mock"]
     assert calls == [("lookup", {"query": "x"})]
+    assert stderr_routes == ["inherit"]
 
 
 def test_mcp_manager_async_call_cancels_underlying_future(monkeypatch) -> None:
@@ -607,9 +621,16 @@ def test_mcp_manager_waits_for_concurrent_lazy_start_before_tool_call(
         tools = []
         last_error = None
 
-        def __init__(self, name: str, config: dict) -> None:
+        def __init__(
+            self,
+            name: str,
+            config: dict,
+            *,
+            mcp_stdio_stderr: str,
+        ) -> None:
             self.name = name
             self.config = config
+            assert mcp_stdio_stderr == "discard"
             self.started = False
 
         async def start(self) -> None:
@@ -735,9 +756,16 @@ def test_mcp_manager_shuts_down_server_task_after_connect_timeout(monkeypatch) -
     created_tasks = []
 
     class HangingTask:
-        def __init__(self, name: str, config: dict) -> None:
+        def __init__(
+            self,
+            name: str,
+            config: dict,
+            *,
+            mcp_stdio_stderr: str,
+        ) -> None:
             self.name = name
             self.config = config
+            assert mcp_stdio_stderr == "discard"
             self.tools = []
             self.last_error = None
             self.shutdown_called = False
@@ -774,7 +802,14 @@ def test_mcp_manager_uses_default_connect_timeout(monkeypatch) -> None:
             return None
 
     class FakeTask:
-        def __init__(self, name: str, config: dict) -> None:
+        def __init__(
+            self,
+            name: str,
+            config: dict,
+            *,
+            mcp_stdio_stderr: str,
+        ) -> None:
+            assert mcp_stdio_stderr == "discard"
             self.tools = []
             self.last_error = None
 
@@ -824,6 +859,70 @@ def test_http_headers_expand_environment_references(monkeypatch) -> None:
         "Authorization": "Bearer visible-token",
         "X-Static": "value",
     }
+
+
+def test_mcp_server_task_discards_stdio_stderr_by_default(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_stdio_client(params, *, errlog):
+        captured["params"] = params
+        captured["errlog"] = errlog
+        assert errlog.name == os.devnull
+        assert errlog.closed is False
+        yield "read", "write"
+
+    monkeypatch.setattr(server_task_module, "StdioServerParameters", lambda **values: values)
+    monkeypatch.setattr(server_task_module, "stdio_client", fake_stdio_client)
+    task = MCPServerTask("local", {"command": "fake"})
+
+    async def open_streams() -> tuple[object, object]:
+        async with AsyncExitStack() as stack:
+            return await task._open_streams(stack)
+
+    assert run(open_streams()) == ("read", "write")
+    assert captured["params"] == {
+        "command": "fake",
+        "args": [],
+        "env": build_stdio_env({}),
+        "cwd": None,
+    }
+    assert captured["errlog"].closed is True
+
+
+def test_mcp_server_task_can_inherit_host_stderr(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def fake_stdio_client(params, *, errlog):
+        captured["errlog"] = errlog
+        yield "read", "write"
+
+    monkeypatch.setattr(server_task_module, "StdioServerParameters", lambda **values: values)
+    monkeypatch.setattr(server_task_module, "stdio_client", fake_stdio_client)
+    task = MCPServerTask(
+        "local",
+        {"command": "fake"},
+        mcp_stdio_stderr="inherit",
+    )
+
+    async def open_streams() -> tuple[object, object]:
+        async with AsyncExitStack() as stack:
+            return await task._open_streams(stack)
+
+    assert run(open_streams()) == ("read", "write")
+    assert captured["errlog"] is sys.stderr
+
+
+@pytest.mark.parametrize("factory", [MCPServerManager, MCPServerTask])
+def test_mcp_stdio_stderr_rejects_unknown_modes(factory) -> None:
+    arguments = ({},) if factory is MCPServerManager else ("local", {"command": "fake"})
+
+    with pytest.raises(
+        ValueError,
+        match="mcp_stdio_stderr must be 'discard' or 'inherit'",
+    ):
+        factory(*arguments, mcp_stdio_stderr="persistent")
 
 
 def test_mcp_server_task_uses_streamable_http_transport(monkeypatch) -> None:

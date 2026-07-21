@@ -23,6 +23,7 @@ runner = dagent.Runner(
     skill_roots=["team-skills"],
     profile_root="profiles",
     planner_frontend="typed_spec",
+    mcp_stdio_stderr="discard",
 )
 ```
 
@@ -280,6 +281,13 @@ HTTP `headers` 的值会展开 host 环境中的 `${ENV_NAME}` 引用。两种 t
 都支持 `connect_timeout` 控制注册启动等待时间，默认 `60` 秒；也支持
 `tool_timeout` 控制工具调用时间，默认 `300` 秒。HTTP server 还会把这两个值用于
 HTTP client 的 connect 和 read timeout。
+
+`Runner` 默认丢弃 stdio MCP server 的 stderr，且不会创建 SDK 日志文件。已经在进程
+边界监管 stderr 的 host 可以显式使用
+`Runner(..., mcp_stdio_stderr="inherit")` 转发 stderr；
+`Runner.from_config(...)` 也接受这个显式参数。转发的 stderr 可能包含凭据或其他敏感
+server 输出，因此 host 必须对其限流、脱敏或丢弃。该设置属于显式 host policy，
+不会从 `config.yaml` 加载。
 
 MCP 需要可选依赖：
 
