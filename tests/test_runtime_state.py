@@ -119,7 +119,7 @@ def test_run_state_defaults_missing_schema_version_to_v1() -> None:
 def test_run_state_rejects_unsupported_schema_version() -> None:
     with pytest.raises(ValidationError, match="schema_version"):
         RunState.model_validate({
-            "schema_version": 2,
+            "schema_version": 3,
             "run_id": "run_1",
             "kind": "tool",
             "status": "completed",

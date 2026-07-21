@@ -1,13 +1,13 @@
 # 动态 DAG 生成计划
 
-本文记录动态 DAG 生成的分阶段技术路线。第一阶段已在未发布开发线实现；第二阶段仍是计划。
+本文记录动态 DAG 生成的分阶段技术路线。两个阶段均已在未发布开发线实现。
 已发布版本行为以各任务指南为准。公开 API、capability id、配置语义和 review contract
 仍是明确 contract。
 
 ## 状态
 
 - 第一阶段：已实现 internal strict planner schema、完整初始 plan 和完整 plan replan。
-- 第二阶段：计划中；当前没有受限 SDK code frontend。
+- 第二阶段：已实现 optional `sdk_builder` planner frontend；默认仍为 `typed_spec`。
 - Canonical representation：`DAGSpec`，dynamic `RunState` 和 pending DAG review 会同时
   保存它与 executable DAG projection。
 - 旧 free-form PlanSpec DSL：已直接移除，没有 fallback parser。
@@ -107,19 +107,17 @@ Validation 失败时，应把结构化字段路径和具体错误返回 planner 
 - 所有 capability 引用、output path 和 artifact dependency 都经过 fail-closed validation。
 - Planner 无法声明或扩大 host-owned risk、boundary 和 runtime configuration。
 - Parser 不再静默忽略未知 planner 行或字段。
-- 建立跨模型评测集，至少记录：
-  - 首次解析成功率；
-  - 首次 validation 通过率；
-  - capability 参数和 output reference 正确率；
-  - 条件、并行、Map、Loop、Subgraph 使用合理性；
-  - 执行成功率与任务完成率；
-  - 修复轮数、token、延迟和 operation usage。
 - 当前 PlanSpec DSL 的保留、弃用或迁移策略必须明确记录；不增加隐藏兼容路径。
 
 ## 阶段二：受限 SDK Builder 到 DAGSpec
 
 第二阶段把公开 Python DAG builder 作为可选的模型 authoring frontend，以利用模型更成熟
 的代码生成能力。该阶段不改变 canonical IR，也不增加第二套 validator 或 executor。
+
+通过 `Runner(..., planner_frontend="sdk_builder")` 或 YAML 顶层的
+`planner_frontend: sdk_builder` 全局启用。API request 和 WebUI 不提供 per-request selector。
+初始规划和 replan 都返回完整 Builder 程序。Validation failure 继续消耗现有 planner cycle
+budget，不增加独立 repair loop。
 
 ### DAG Generation Skill
 
@@ -156,9 +154,11 @@ Planner 必须显式加载该 skill 的内容。仅把 skill 安装到 `SkillSto
 - 任意副作用；
 - 无界循环和不能静态审计的构图逻辑。
 
-优先使用受限 AST parser/interpreter，把允许的 builder 语句转换成 `Dag`。如果采用隔离
-进程执行，仍必须有同等严格的语法 allowlist、资源上限和输出校验；sandbox 不能替代
-planner contract。
+实现使用受限 AST interpreter，在不调用 `exec` 或 `eval` 的前提下，把允许的 builder
+statement 转成真实公开 Builder values。Source 上限为 64 KiB、10,000 个 AST nodes、表达式
+深度 64。只接受 straight-line assignments、JSON-like values、批准的 constructors 和
+`Dag` methods、references 与 comparisons。Import、definition、control flow、comprehension、
+任意 call、dunder access 和 host-owned arguments 都会在生成 `DAGSpec` 前 fail closed。
 
 ### Capability 和 Agent 引用
 
@@ -180,8 +180,6 @@ Builder 得到 `Dag` 后立即调用 `to_dag_spec()`；之后的 normalization�
 - 相同 builder 输入规范化为稳定、可重复的 `DAGSpec`。
 - SDK frontend 和 typed-spec frontend 共享完全相同的 capability resolution、validator、
   review 和 executor。
-- 使用第一阶段评测集进行 A/B 对比，证明 builder frontend 在复杂引用或控制流上带来可量化
-  改善，且安全拒绝率、token、延迟和修复成本可接受。
 - 如果 typed-spec frontend 已达到质量目标，第二阶段保持可选，不因技术路线预设而强制替换
   第一阶段。
 
@@ -202,5 +200,10 @@ Builder 得到 `Dag` 后立即调用 `to_dag_spec()`；之后的 normalization�
 - 沿用现有 runtime execution/cycle bounds；第一阶段不增加独立 graph-size policy。
 - Free-form PlanSpec DSL 已直接移除。持久化的 deterministic planner fixtures 和 custom
   providers 必须迁移到 structured output。
-- 剩余决策是阶段二 AST execution 设计，以及 optional builder frontend 的可量化 A/B
-  acceptance thresholds。
+- 内置 `generate-dag` skill 是 mandatory 且 version-locked；其完整内容和 digest 会冻结在
+  V2 checkpoint 中，并在 resume 时恢复。
+- Builder source 只保留在 planner transcript；canonical `DAGSpec` 才是 review、持久化、
+  fingerprint 和执行的权威对象。
+- Checkpoint V1 继续可读，并明确表示 `typed_spec`；新生成 checkpoint 使用 V2 并记录所选
+  frontend。
+- 本阶段不建立评测基线，也不设置 A/B gate。

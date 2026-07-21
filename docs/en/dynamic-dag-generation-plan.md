@@ -1,8 +1,8 @@
 # Dynamic DAG Generation Plan
 
 This page records the staged technical direction for dynamic DAG generation.
-Phase one is implemented on the unreleased development line; phase two remains
-planned. Released-version behavior is documented in the task guides. Public
+Both phases are implemented on the unreleased development line. Released-version
+behavior is documented in the task guides. Public
 APIs, capability ids, configuration semantics, and review contracts remain
 intentional contracts.
 
@@ -10,7 +10,8 @@ intentional contracts.
 
 - Phase one: implemented with an internal strict planner schema, full-plan
   initial generation, and full-plan replanning.
-- Phase two: planned; no restricted SDK-code frontend exists yet.
+- Phase two: implemented as the optional `sdk_builder` planner frontend; the
+  default remains `typed_spec`.
 - Canonical representation: `DAGSpec`, stored in dynamic `RunState` and pending
   DAG reviews alongside the executable DAG projection.
 - Legacy free-form PlanSpec DSL: removed without a fallback parser.
@@ -130,13 +131,6 @@ repair can be evaluated independently.
 - The planner cannot declare or widen host-owned risk, boundaries, or runtime
   configuration.
 - The parser no longer silently ignores unknown planner lines or fields.
-- A cross-model evaluation set records at least:
-  - first-attempt parse success;
-  - first-attempt validation success;
-  - capability-argument and output-reference accuracy;
-  - appropriate use of conditions, parallelism, maps, loops, and subgraphs;
-  - execution success and task completion;
-  - repair turns, tokens, latency, and operation usage.
 - The current PlanSpec DSL receives an explicit preservation, deprecation, or
   migration policy. Do not add a hidden compatibility path.
 
@@ -145,6 +139,12 @@ repair can be evaluated independently.
 Phase two adds the public Python DAG builder as an optional model-facing
 authoring frontend, taking advantage of stronger code-generation behavior. It
 does not change the canonical IR or introduce a second validator or executor.
+
+Select it globally with `Runner(..., planner_frontend="sdk_builder")` or the
+top-level `planner_frontend: sdk_builder` YAML setting. There is deliberately no
+per-request API or WebUI selector. Initial plans and replans both return a full
+Builder program. Validation failures consume the existing planner cycle budget;
+there is no separate repair loop.
 
 ### DAG Generation Skill
 
@@ -185,10 +185,13 @@ Reject:
 - unbounded loops and graph-construction logic that cannot be statically
   audited.
 
-Prefer a restricted AST parser or interpreter that converts approved builder
-statements into a `Dag`. If an isolated process is used instead, it still needs
-an equally strict syntax allowlist, resource limits, and output validation. A
-sandbox does not replace the planner contract.
+The implementation uses a restricted AST interpreter that converts approved
+builder statements into real public Builder values without `exec` or `eval`.
+Source is limited to 64 KiB, 10,000 AST nodes, and expression depth 64. It
+accepts straight-line assignments, JSON-like values, approved constructors and
+`Dag` methods, references, and comparisons. Imports, definitions, control flow,
+comprehensions, arbitrary calls, dunder access, and host-owned arguments fail
+closed before a `DAGSpec` is produced.
 
 ### Capability and Agent References
 
@@ -211,9 +214,6 @@ persistence, and execution use only canonical `DAGSpec` from that point on.
 - Normalize identical builder input into stable, repeatable `DAGSpec` output.
 - The SDK and typed-spec frontends share exactly the same capability
   resolution, validator, review, and executor.
-- Run an A/B comparison on the phase-one evaluation set and demonstrate a
-  measurable improvement for complex references or control flow while keeping
-  security rejection rate, tokens, latency, and repair cost acceptable.
 - If the typed-spec frontend already meets the quality target, phase two stays
   optional rather than replacing phase one by assumption.
 
@@ -241,5 +241,10 @@ persistence, and execution use only canonical `DAGSpec` from that point on.
   adds no separate graph-size policy.
 - The free-form PlanSpec DSL was removed directly. Persisted deterministic
   planner fixtures and custom providers must migrate to structured output.
-- Remaining decisions cover phase-two AST execution design and measurable A/B
-  acceptance thresholds for the optional builder frontend.
+- The packaged `generate-dag` skill is mandatory and version-locked. Its exact
+  content and digest are frozen into V2 checkpoints and restored on resume.
+- Builder source remains planner transcript data. Canonical `DAGSpec` is the
+  authoritative review, persistence, fingerprint, and execution object.
+- Checkpoint V1 remains readable and means `typed_spec`; newly produced
+  checkpoints use V2 and record the selected frontend.
+- No evaluation baseline or A/B gate is part of this implementation phase.

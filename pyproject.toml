@@ -47,4 +47,4 @@ pythonpath = ["."]
 include = ["dagent*"]
 
 [tool.setuptools.package-data]
-dagent = ["resources/profiles/*.md"]
+dagent = ["resources/profiles/*.md", "resources/skills/*/SKILL.md"]

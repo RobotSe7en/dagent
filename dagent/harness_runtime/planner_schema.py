@@ -207,12 +207,48 @@ class PlannerResponse(_PlannerModel):
         return self
 
 
+class BuilderPlannerResponse(_PlannerModel):
+    """Strict response contract for the SDK-builder planner frontend."""
+
+    action: PlannerAction
+    builder_code: str | None
+    answer: str | None
+    rerun_nodes: list[str]
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> "BuilderPlannerResponse":
+        if self.action == "propose_plan":
+            if not str(self.builder_code or "").strip() or self.answer is not None:
+                raise ValueError("propose_plan requires builder_code and forbids answer.")
+            _ensure_unique(self.rerun_nodes, "rerun_nodes")
+            return self
+        if self.action == "no_change":
+            if self.builder_code is not None or self.answer is not None or self.rerun_nodes:
+                raise ValueError("no_change forbids builder_code, answer, and rerun_nodes.")
+            return self
+        if self.builder_code is not None or self.rerun_nodes:
+            raise ValueError("final_answer forbids builder_code and rerun_nodes.")
+        if not str(self.answer or "").strip():
+            raise ValueError("final_answer requires a non-empty answer.")
+        return self
+
+
 def planner_response_format() -> StructuredOutputFormat:
     """Return the strict provider response contract for a planner turn."""
     return StructuredOutputFormat(
         name="dagent_dynamic_dag_response",
         description="A typed dynamic DAG proposal, no-change decision, or final answer.",
         schema=_strict_json_schema(PlannerResponse.model_json_schema()),
+        strict=True,
+    )
+
+
+def builder_planner_response_format() -> StructuredOutputFormat:
+    """Return the strict response contract for SDK-builder planning."""
+    return StructuredOutputFormat(
+        name="dagent_dynamic_dag_builder_response",
+        description="A DAG Builder proposal, no-change decision, or final answer.",
+        schema=_strict_json_schema(BuilderPlannerResponse.model_json_schema()),
         strict=True,
     )
 
@@ -224,6 +260,15 @@ def parse_planner_response(content: str) -> PlannerResponse:
     except json.JSONDecodeError as exc:
         raise ValueError(f"Planner response is not valid JSON: {exc.msg}.") from exc
     return PlannerResponse.model_validate(payload)
+
+
+def parse_builder_planner_response(content: str) -> BuilderPlannerResponse:
+    """Parse provider JSON into the SDK-builder response model."""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Builder planner response is not valid JSON: {exc.msg}.") from exc
+    return BuilderPlannerResponse.model_validate(payload)
 
 
 def _strict_json_schema(value: Any) -> Any:

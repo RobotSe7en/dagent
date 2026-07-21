@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from jsonschema import Draft202012Validator, validators
 
 from dagent.capabilities.boundaries import infer_capability_boundary
+from dagent.dag_builder import Dag
 from dagent.harness_runtime.dag_builder import (
     DAGCreationError,
     DAGValidationError,
@@ -45,7 +46,11 @@ from dagent.schemas import (
     SubgraphNodePayload,
 )
 from dagent.schemas.value import (
+    ArtifactExpr,
+    CompareExpr,
+    FormatExpr,
     GraphInputExpr,
+    ItemExpr,
     NodeOutputExpr,
     bind_value_expr,
     iter_value_exprs,
@@ -86,6 +91,37 @@ def normalize_planner_graph(
     except DAGCreationError:
         raise
     except (DAGValidationError, ValueError) as exc:
+        raise DAGCreationError(str(exc)) from exc
+    return spec
+
+
+def normalize_builder_dag(
+    dag: Dag,
+    *,
+    spec_id: str,
+    version: int,
+    capabilities: Iterable[CapabilityDefinition],
+    current: DAGSpec | None = None,
+    input_schema: dict[str, Any] | None = None,
+) -> DAGSpec:
+    """Normalize an AST-translated public Builder graph into a dynamic DAGSpec."""
+    definitions = {definition.id: definition for definition in capabilities}
+    try:
+        spec = _normalize_builder_spec(
+            dag.to_dag_spec(),
+            spec_id=spec_id,
+            version=version,
+            definitions=definitions,
+            current=current,
+            input_schema=input_schema or DYNAMIC_GRAPH_INPUT_SCHEMA,
+        )
+        _resolve_spec_invocations(spec, definitions)
+        _preserve_invocation_ids(spec, current)
+        validate_dag_spec(spec)
+        _validate_output_paths(spec, definitions)
+    except DAGCreationError:
+        raise
+    except (DAGValidationError, TypeError, ValueError) as exc:
         raise DAGCreationError(str(exc)) from exc
     return spec
 
@@ -283,6 +319,76 @@ def _normalize_graph(
     )
 
 
+def _normalize_builder_spec(
+    source: DAGSpec,
+    *,
+    spec_id: str,
+    version: int,
+    definitions: dict[str, CapabilityDefinition],
+    current: DAGSpec | None,
+    input_schema: dict[str, Any],
+) -> DAGSpec:
+    if not source.nodes:
+        raise DAGCreationError("propose_plan requires at least one node.")
+    spec = source.model_copy(deep=True)
+    spec.id = spec_id
+    spec.version = version
+    spec.input_schema = deepcopy(input_schema)
+    spec.metadata = {}
+    for artifact in spec.artifacts.values():
+        artifact.metadata = {}
+
+    if any(node.id == "start" for node in spec.nodes):
+        raise DAGCreationError("Node id 'start' is reserved for runtime bookkeeping.")
+    current_nodes = {node.id: node for node in current.nodes} if current is not None else {}
+    for node in spec.nodes:
+        node.status = "planned"
+        payload = node.payload
+        current_node = current_nodes.get(node.id)
+        if isinstance(payload, SubgraphNodePayload):
+            current_spec = (
+                current_node.payload.spec
+                if current_node is not None
+                and isinstance(current_node.payload, SubgraphNodePayload)
+                else None
+            )
+            payload.spec = _normalize_builder_spec(
+                payload.spec,
+                spec_id=f"{spec_id}.{node.id}.subgraph",
+                version=version,
+                definitions=definitions,
+                current=current_spec,
+                input_schema=_native_value_schema(
+                    payload.input,
+                    nodes=spec.nodes,
+                    definitions=definitions,
+                    input_schema=input_schema,
+                ),
+            )
+        elif isinstance(payload, LoopNodePayload):
+            current_spec = (
+                current_node.payload.body
+                if current_node is not None
+                and isinstance(current_node.payload, LoopNodePayload)
+                else None
+            )
+            payload.body = _normalize_builder_spec(
+                payload.body,
+                spec_id=f"{spec_id}.{node.id}.loop",
+                version=version,
+                definitions=definitions,
+                current=current_spec,
+                input_schema=_native_value_schema(
+                    payload.input,
+                    nodes=spec.nodes,
+                    definitions=definitions,
+                    input_schema=input_schema,
+                ),
+            )
+    _add_internal_start(spec.nodes, spec.edges)
+    return spec
+
+
 def _add_internal_start(nodes: list[DAGNode], edges: list[DAGEdge]) -> None:
     incoming = {edge.target for edge in edges}
     roots = [node.id for node in nodes if node.id not in incoming]
@@ -344,6 +450,35 @@ def _resolve_spec_invocations(
             _resolve_spec_invocations(payload.body, definitions)
 
 
+def _preserve_invocation_ids(proposed: DAGSpec, current: DAGSpec | None) -> None:
+    if current is None:
+        return
+    current_nodes = {node.id: node for node in current.nodes}
+    for node in proposed.nodes:
+        current_node = current_nodes.get(node.id)
+        if current_node is None:
+            continue
+        payload = node.payload
+        current_payload = current_node.payload
+        if isinstance(payload, (CapabilityNodePayload, MapNodePayload)) and isinstance(
+            current_payload,
+            type(payload),
+        ):
+            proposed_invocation = payload.invocation
+            current_invocation = current_payload.invocation
+            _reuse_invocation_id(proposed_invocation, current_invocation)
+        elif isinstance(payload, SubgraphNodePayload) and isinstance(
+            current_payload,
+            SubgraphNodePayload,
+        ):
+            _preserve_invocation_ids(payload.spec, current_payload.spec)
+        elif isinstance(payload, LoopNodePayload) and isinstance(
+            current_payload,
+            LoopNodePayload,
+        ):
+            _preserve_invocation_ids(payload.body, current_payload.body)
+
+
 def _normalized_arguments(
     values: list[PlannerNamedValue],
     definition: CapabilityDefinition,
@@ -396,14 +531,21 @@ def _invocation(
     )
     if current_invocation is None:
         return invocation
-    if (
-        current_invocation.capability_id == invocation.capability_id
-        and current_invocation.arguments == invocation.arguments
-        and current_invocation.boundary == invocation.boundary
-        and current_invocation.risk == invocation.risk
-    ):
-        invocation.invocation_id = current_invocation.invocation_id
+    _reuse_invocation_id(invocation, current_invocation)
     return invocation
+
+
+def _reuse_invocation_id(
+    proposed: CapabilityInvocation,
+    current: CapabilityInvocation,
+) -> None:
+    if (
+        proposed.capability_id == current.capability_id
+        and proposed.arguments == current.arguments
+        and proposed.boundary == current.boundary
+        and proposed.risk == current.risk
+    ):
+        proposed.invocation_id = current.invocation_id
 
 
 def _named_values_to_dict(values: list[PlannerNamedValue]) -> dict[str, Any]:
@@ -608,6 +750,63 @@ def _literal_schema(value: Any) -> dict[str, Any]:
             "properties": {key: _literal_schema(item) for key, item in value.items()},
         }
     return {}
+
+
+def _native_value_schema(
+    value: Any,
+    *,
+    nodes: list[DAGNode],
+    definitions: dict[str, CapabilityDefinition],
+    input_schema: dict[str, Any],
+) -> dict[str, Any]:
+    expression = parse_value_binding(value)
+    if isinstance(expression, GraphInputExpr):
+        return _schema_at_path(input_schema, expression.path) or {}
+    if isinstance(expression, NodeOutputExpr):
+        source = next((node for node in nodes if node.id == expression.node_id), None)
+        if source is None:
+            return {}
+        schema = _node_field_schema(source, expression.field, definitions)
+        return _schema_at_path(schema, expression.path) or {}
+    if isinstance(expression, ArtifactExpr):
+        if expression.field in {"paths", "absolute_paths"}:
+            return {"type": "array", "items": {"type": "string"}}
+        return {"type": "string"}
+    if isinstance(expression, FormatExpr):
+        return {"type": "string"}
+    if isinstance(expression, CompareExpr):
+        return {"type": "boolean"}
+    if isinstance(expression, ItemExpr):
+        return {}
+    if isinstance(value, list):
+        return {
+            "type": "array",
+            "items": (
+                _native_value_schema(
+                    value[0],
+                    nodes=nodes,
+                    definitions=definitions,
+                    input_schema=input_schema,
+                )
+                if value
+                else {}
+            ),
+        }
+    if isinstance(value, dict):
+        return {
+            "type": "object",
+            "properties": {
+                key: _native_value_schema(
+                    item,
+                    nodes=nodes,
+                    definitions=definitions,
+                    input_schema=input_schema,
+                )
+                for key, item in value.items()
+            },
+            "required": list(value),
+        }
+    return _literal_schema(value)
 
 
 def _planner_value_schema(

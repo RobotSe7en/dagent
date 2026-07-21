@@ -1,6 +1,11 @@
 import asyncio
 
-from examples import agent_delegation, runtime_registration_and_skills, tool_agent
+from examples import (
+    agent_delegation,
+    dynamic_dag_builder_agent,
+    runtime_registration_and_skills,
+    tool_agent,
+)
 
 
 def test_tool_agent_example_uses_derived_tool_function_name(capsys) -> None:
@@ -29,3 +34,11 @@ def test_runtime_registration_example_uses_derived_tool_function_name(capsys) ->
     lines = capsys.readouterr().out.strip().splitlines()
 
     assert lines == ["One sentence", "terse", "writing/drafting"]
+
+
+def test_dynamic_dag_builder_example_runs_restricted_frontend(capsys) -> None:
+    asyncio.run(dynamic_dag_builder_agent.main())
+
+    lines = capsys.readouterr().out.strip().splitlines()
+
+    assert lines == ["completed", "Report: found:Research dagent.", "sdk_builder"]

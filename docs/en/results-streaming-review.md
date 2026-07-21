@@ -82,6 +82,13 @@ The resolved plan uses frozen profile snapshots and an SDK-defined canonical
 SHA-256 fingerprint. The fingerprint detects accidental payload changes; it is
 not a signature or an authentication boundary.
 
+New SDK checkpoints use schema V2 and record `planner_frontend`. When the
+frontend is `sdk_builder`, the resolved plan also freezes the mandatory
+versioned `generate-dag` skill content and SHA-256 digest. Resume reconstructs
+the recorded frontend and skill even if the new Runner's global frontend is
+different. Schema V1 checkpoints remain readable and always mean
+`typed_spec`.
+
 Use `run(..., state=...)` for ordinary continuation on the same `Runner`; the
 latest matching in-memory checkpoint restores usage and the original limits.
 For cross-process continuation, pass `checkpoint=...` to `run(...)`. A stale
@@ -103,9 +110,9 @@ stateless SDK alone.
 Persist `result.checkpoint` separately when cross-process review resume is
 required.
 
-Persisted `RunState` payloads include `schema_version: 1`. Payloads without the
-field are read as version 1. Hosts should reject unsupported explicit versions
-instead of silently migrating them.
+New persisted `RunState` payloads include `schema_version: 2`. Payloads without
+the field are read as version 1, and V1 has `typed_spec` semantics. Hosts should
+reject unsupported explicit versions instead of silently migrating them.
 
 ## Run-Wide Execution Budgets
 

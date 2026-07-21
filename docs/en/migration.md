@@ -20,6 +20,11 @@ The current package version is `0.7.2`.
   dynamic specs in SDK checkpoints and review continuations.
 - `dagent.providers.StructuredOutputFormat` is the provider-neutral structured
   response contract. `ChatResponse.refusal` carries provider refusals.
+- `Runner(..., planner_frontend="sdk_builder")` and the matching top-level YAML
+  setting enable an optional restricted SDK Builder planner. It covers initial
+  planning and full-spec replanning without executing model-generated Python.
+- New V2 checkpoints record `planner_frontend`; Builder plans freeze the
+  versioned `generate-dag` skill content and digest for deterministic resume.
 
 ### Changed
 
@@ -31,6 +36,8 @@ The current package version is `0.7.2`.
   changes participate in review and invalidation decisions.
 - `OpenAICompatibleProvider` maps planner schemas to Chat Completions
   `response_format.type="json_schema"` for streaming and non-streaming calls.
+- The local API applies `planner_frontend` as a service-wide Runner setting.
+  Request payloads and the WebUI have no per-request frontend selector.
 
 ### Breaking Changes
 
@@ -51,13 +58,18 @@ The current package version is `0.7.2`.
   `ChatResponse.refusal`.
 - Recreate pending dynamic DAG reviews using this version before persisting new
   checkpoints; do not attempt to convert old PlanSpec review state implicitly.
+- No action is required for existing V1 checkpoints; they remain readable and
+  use `typed_spec`. Persist newly emitted V2 checkpoints without dropping their
+  frontend or frozen planner-skill fields.
 
 ### Known Limitations
 
 - Phase one replans with a complete typed graph; atomic typed patches are
   deferred.
-- The optional restricted SDK-builder/code-generation frontend remains a phase
-  two plan.
+- `typed_spec` remains the default. `sdk_builder` accepts only the documented
+  straight-line AST subset; it is not a general Python authoring environment.
+- Atomic typed or Builder patch operations remain deferred; both frontends
+  replan with a complete graph.
 
 ## 0.7.2
 

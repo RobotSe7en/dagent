@@ -19,6 +19,11 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   continuation 中保留 canonical dynamic spec。
 - `dagent.providers.StructuredOutputFormat` 是 provider-neutral structured response
   contract；`ChatResponse.refusal` 用于携带 provider refusal。
+- `Runner(..., planner_frontend="sdk_builder")` 及对应 YAML 顶层设置新增 optional
+  restricted SDK Builder planner。它支持初始规划和 full-spec replan，且不会执行模型生成的
+  Python。
+- 新 V2 checkpoint 会记录 `planner_frontend`；Builder plan 会冻结 versioned
+  `generate-dag` skill 内容和 digest，以便确定性 resume。
 
 ### 改变
 
@@ -29,6 +34,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   review 和结果失效判断。
 - `OpenAICompatibleProvider` 会在 stream 和 non-stream 调用中把 planner schema 映射为
   Chat Completions `response_format.type="json_schema"`。
+- 本地 API 把 `planner_frontend` 作为 service-wide Runner setting；request payload 和
+  WebUI 不提供 per-request frontend selector。
 
 ### 破坏性改变
 
@@ -47,11 +54,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   `ChatResponse.refusal` 暴露 structured-output refusal。
 - 在持久化新 checkpoint 前，用当前版本重新创建 pending dynamic DAG review；不要隐式转换
   旧 PlanSpec review state。
+- 现有 V1 checkpoint 无需迁移；它们继续可读并使用 `typed_spec`。持久化新 V2 checkpoint
+  时，不要删除 frontend 或冻结的 planner-skill fields。
 
 ### 已知限制
 
 - 第一阶段使用完整 typed graph replan；atomic typed patch 延后。
-- Optional restricted SDK-builder/code-generation frontend 仍属于第二阶段计划。
+- `typed_spec` 仍是默认值。`sdk_builder` 只接受文档定义的 straight-line AST subset，
+  不是通用 Python authoring environment。
+- Atomic typed/Builder patch operation 仍延后；两个 frontend 都使用完整 graph replan。
 
 ## 0.7.2
 

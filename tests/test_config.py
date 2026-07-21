@@ -3,6 +3,7 @@ from pathlib import Path
 
 import yaml
 
+import dagent
 from dagent.config import load_config, resolve_config_relative_path
 
 
@@ -32,6 +33,31 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.extra_request_args == {}
     assert config.provider.extra_body == {}
     assert config.profiles.directory is None
+    assert config.planner_frontend == "typed_spec"
+
+
+def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join([
+            "provider:",
+            '  base_url: "http://localhost:8000/v1"',
+            '  model: "qwen3"',
+            "planner_frontend: sdk_builder",
+        ]),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.planner_frontend == "sdk_builder"
+
+    runner = dagent.Runner.from_config(config_path, workspace=tmp_path / "workspace")
+    try:
+        assert runner.runtime.dag_agent.loop.planner_frontend == "sdk_builder"
+        assert runner.runtime.dag_agent.loop.planner_skill is not None
+    finally:
+        runner.close()
 
 
 def test_resolve_config_relative_path_uses_config_directory(tmp_path: Path) -> None:

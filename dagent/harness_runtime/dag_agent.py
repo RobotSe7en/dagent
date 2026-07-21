@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from dagent.capabilities.toolsets import CapabilityToolAdapter
 from dagent.harness_runtime.capability_scope import CapabilityScope, DEFAULT_CAPABILITY_SCOPE
+from dagent.harness_runtime.builder_translator import translate_builder_source
 from dagent.harness_runtime.artifacts import (
     ArtifactUpload,
     create_run_workspace,
@@ -33,10 +34,13 @@ from dagent.harness_runtime.dag_builder import (
 )
 from dagent.harness_runtime.dynamic_planner import (
     DYNAMIC_GRAPH_INPUT_SCHEMA,
+    normalize_builder_dag,
     normalize_planner_graph,
     resolve_dag_spec_capabilities,
 )
 from dagent.harness_runtime.planner_schema import (
+    builder_planner_response_format,
+    parse_builder_planner_response,
     parse_planner_response,
     planner_response_format,
 )
@@ -64,6 +68,8 @@ from dagent.schemas import (
     LoopOutcome,
     LoopStatus,
     PendingReview,
+    PlannerFrontend,
+    PlannerSkillSnapshot,
     CapabilityDefinition,
     CapabilityNodePayload,
     LoopNodePayload,
@@ -122,12 +128,25 @@ class DAGAgent:
 
     def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
+        context = _planner_capability_context(tools)
+        if self.loop.planner_frontend == "sdk_builder":
+            planner_skill = self.loop.planner_skill
+            if planner_skill is None:
+                raise RuntimeError("sdk_builder planner frontend requires a frozen planner skill.")
+            context = (
+                _builder_frontend_context()
+                + "\n\n## Mandatory Planner Skill "
+                f"(version {planner_skill.version}, sha256 {planner_skill.sha256})\n"
+                + planner_skill.content
+                + "\n\n"
+                + context
+            )
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
                 tools=tools,
-                context=_planner_capability_context(tools),
+                context=context,
             )
         )
 
@@ -285,6 +304,8 @@ class DAGAgentLoop:
         tool_adapter: CapabilityToolAdapter,
         enabled_toolsets: Sequence[str] = ("builtin",),
         max_cycles: int = 6,
+        planner_frontend: PlannerFrontend = "typed_spec",
+        planner_skill: PlannerSkillSnapshot | None = None,
         _llm_retry_policy: LLMRetryPolicy = DEFAULT_LLM_RETRY_POLICY,
         _llm_retry_sleep: LLMRetrySleep = asyncio.sleep,
     ) -> None:
@@ -293,6 +314,14 @@ class DAGAgentLoop:
         self.tool_adapter = tool_adapter
         self.enabled_toolsets = tuple(enabled_toolsets)
         self.max_cycles = max_cycles
+        if planner_frontend not in {"typed_spec", "sdk_builder"}:
+            raise ValueError("Unknown planner frontend.")
+        if planner_frontend == "sdk_builder" and planner_skill is None:
+            raise ValueError("sdk_builder planner frontend requires a frozen planner skill.")
+        if planner_frontend == "typed_spec" and planner_skill is not None:
+            raise ValueError("typed_spec planner frontend cannot use a builder planner skill.")
+        self.planner_frontend = planner_frontend
+        self.planner_skill = planner_skill
         self.llm_retry_policy = _llm_retry_policy
         self.llm_retry_sleep = _llm_retry_sleep
 
@@ -329,7 +358,11 @@ class DAGAgentLoop:
             on_event=on_event,
             retry_policy=self.llm_retry_policy,
             retry_sleep=self.llm_retry_sleep,
-            response_format=planner_response_format(),
+            response_format=(
+                builder_planner_response_format()
+                if self.planner_frontend == "sdk_builder"
+                else planner_response_format()
+            ),
         )
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -341,7 +374,11 @@ class DAGAgentLoop:
         if response.refusal:
             raise DAGCreationError(f"DAG planner refused the request: {response.refusal}")
         try:
-            planner_response = parse_planner_response(response.content)
+            planner_response = (
+                parse_builder_planner_response(response.content)
+                if self.planner_frontend == "sdk_builder"
+                else parse_planner_response(response.content)
+            )
         except ValueError as exc:
             raise DAGCreationError(str(exc)) from exc
         if planner_response.action == "no_change":
@@ -350,20 +387,39 @@ class DAGAgentLoop:
             return None
         if planner_response.action == "final_answer":
             return str(planner_response.answer or "").strip()
-        if planner_response.plan is None:
-            raise DAGCreationError("propose_plan response is missing plan.")
         capabilities = self.tool_adapter.capabilities(
             self.enabled_toolsets,
             capability_ids=capability_scope.capability_ids,
         )
-        spec = normalize_planner_graph(
-            planner_response.plan,
-            spec_id=resolved_task_id,
-            version=1 if current_spec is None else current_spec.version + 1,
-            capabilities=capabilities,
-            current=current_spec,
-            input_schema=DYNAMIC_GRAPH_INPUT_SCHEMA,
-        )
+        version = 1 if current_spec is None else current_spec.version + 1
+        if self.planner_frontend == "sdk_builder":
+            builder_code = getattr(planner_response, "builder_code", None)
+            if builder_code is None:
+                raise DAGCreationError("propose_plan response is missing builder_code.")
+            dag = translate_builder_source(
+                builder_code,
+                capability_ids=(definition.id for definition in capabilities),
+            )
+            spec = normalize_builder_dag(
+                dag,
+                spec_id=resolved_task_id,
+                version=version,
+                capabilities=capabilities,
+                current=current_spec,
+                input_schema=DYNAMIC_GRAPH_INPUT_SCHEMA,
+            )
+        else:
+            plan = getattr(planner_response, "plan", None)
+            if plan is None:
+                raise DAGCreationError("propose_plan response is missing plan.")
+            spec = normalize_planner_graph(
+                plan,
+                spec_id=resolved_task_id,
+                version=version,
+                capabilities=capabilities,
+                current=current_spec,
+                input_schema=DYNAMIC_GRAPH_INPUT_SCHEMA,
+            )
         return _PlannerProposal(
             spec=spec,
             rerun_nodes=tuple(planner_response.rerun_nodes),
@@ -392,6 +448,7 @@ class DAGAgentLoop:
     ) -> LoopOutcome:
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         record = RunState(
+            schema_version=2,
             run_id=resolved_task_id,
             kind="dynamic_dag",
             status="completed",
@@ -400,6 +457,7 @@ class DAGAgentLoop:
             review_level=review_level,
             runtime_mode=runtime_mode,  # type: ignore[arg-type]
             dynamic_adjust=dynamic_adjust,
+            planner_frontend=self.planner_frontend,
             workspace_path=None if workspace_path is None else str(workspace_path),
             capability_scope=capability_scope_to_state(capability_scope),
         )
@@ -680,6 +738,13 @@ class DAGAgentLoop:
     ) -> RunTrace | None:
         if record.pending_review is not None:
             raise DAGExecutionError("DAG is awaiting review and is not approved.")
+        if (
+            record.kind == "dynamic_dag"
+            and record.planner_frontend != self.planner_frontend
+        ):
+            raise DAGExecutionError(
+                "Run state planner frontend does not match the active DAG runtime."
+            )
         if entry_observation is not None and not replan:
             raise TypeError("entry_observation requires replan=True.")
         self._validate_dag_tools(record.dag, record.capability_scope.capability_ids)
@@ -1236,6 +1301,11 @@ def _format_dag_observation(
     executions = _format_recent_capability_executions(record.trace, limit=6)
     if executions:
         sections.append("Node executions:\n" + "\n".join(executions))
+    if record.dag_spec is not None:
+        sections.append(
+            "Current canonical DAGSpec (authoritative for replanning):\n"
+            + _replan_spec_context(record.dag_spec)
+        )
 
     return context_excerpt(
         "\n\n".join(sections),
@@ -1740,6 +1810,16 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     return dumped
 
 
+def _replan_spec_context(spec: DAGSpec) -> str:
+    dumped = spec.model_dump(mode="json")
+    for key in ("invocation_id", "boundary", "risk", "status", "metadata"):
+        _drop_key_recursive(dumped, key)
+    return context_excerpt(
+        json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        limit=6000,
+    )
+
+
 def _drop_key_recursive(value: Any, key: str) -> None:
     if isinstance(value, dict):
         value.pop(key, None)
@@ -1781,3 +1861,13 @@ def _planner_capability_context(capabilities: list[CapabilityDefinition]) -> str
         sort_keys=True,
         indent=2,
     )
+
+
+def _builder_frontend_context() -> str:
+    return """## Active Planner Frontend: SDK Builder
+The provider response schema for this run uses `builder_code`, not `plan`.
+For `propose_plan`, return one complete canonical Builder program in
+`builder_code`, set `answer` to null, and include `rerun_nodes`. For
+`no_change`, set `builder_code` and `answer` to null. For `final_answer`, set
+`builder_code` to null and provide `answer`. Follow the mandatory planner skill
+below; its Builder source is parsed by the host and is never executed."""

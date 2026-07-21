@@ -112,13 +112,20 @@ uv run python -m examples.auto_agent
 
 `DagAgent` 用于 dynamic DAG planning。它可以在执行 proposed work 前暂停等待 human review。
 Planner 调用使用严格 JSON Schema 响应：模型显式选择 `propose_plan`、`no_change` 或
-`final_answer`，完整类型化 plan 会先规范化为 canonical `DAGSpec`，再进入校验、review
-和执行。Capability node 使用 `tool.search` 这类稳定 id；kind、risk、boundary、defaults
-和 invocation identity 由 host 补齐。
+`final_answer`。Runner-wide planner frontend 决定 proposal 是类型化 plan 还是受限 Builder
+source；两者都会先规范化为 canonical `DAGSpec`，再进入校验、review 和执行。Capability
+node 使用 `tool.search` 这类稳定 id；kind、risk、boundary、defaults 和 invocation identity
+由 host 补齐。
 
 类型化动态 plan 支持 capability/agent、map、subgraph 和 bounded loop nodes、显式条件边、
 artifacts、graph output 和 structured value references，并与静态 DAG 共用 validator 和
 executor。
+
+`typed_spec` 仍是默认值。需要 code-oriented authoring 时，可用
+`planner_frontend="sdk_builder"` 构造 runner。模型源码只允许 straight-line、allowlisted
+Builder subset，绝不会传给 `exec` 或 `eval`。它可以表达相同的 Map、Subgraph、bounded
+Loop、artifact、reference、output 和条件边；review 和持久化的对象始终是 canonical
+`DAGSpec`，而不是 source。
 
 ```python
 agent = dagent.DagAgent(
@@ -152,6 +159,7 @@ format。
 
 ```bash
 uv run python -m examples.dynamic_dag_agent
+uv run python -m examples.dynamic_dag_builder_agent
 ```
 
 ## 子 Agent 委派
