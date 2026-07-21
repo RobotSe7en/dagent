@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 import dagent
 import dagent.runner as runner_module
+import dagent.capabilities.mcp.server_task as server_task_module
 from dagent.capabilities.catalog import CapabilityCatalog
 from dagent.capabilities.toolsets import CapabilityToolAdapter, CapabilityToolset
 from dagent.config import UserPythonToolConfig
@@ -151,6 +153,121 @@ def test_add_mcp_server_registers_tools_and_makes_them_visible(tmp_path) -> None
     assert result.status == "completed"
     assert result.content == "found:x"
     runner.close()
+
+
+def test_runner_passes_stdio_stderr_policy_to_mcp_manager(monkeypatch, tmp_path) -> None:
+    observed: list[tuple[dict, str]] = []
+
+    class RecordingManager(FakeMCPManager):
+        def __init__(self, servers, *, mcp_stdio_stderr):
+            super().__init__()
+            observed.append((servers, mcp_stdio_stderr))
+
+    monkeypatch.setattr(runner_module, "MCPServerManager", RecordingManager)
+    runner = dagent.Runner(
+        workspace=tmp_path,
+        provider=MockProvider([]),
+        mcp_servers={"mock-server": {"command": "fake"}},
+        mcp_stdio_stderr="inherit",
+    )
+
+    assert observed == [({"mock-server": {"command": "fake"}}, "inherit")]
+    runner.close()
+
+
+def test_runner_derive_inherits_and_can_override_stdio_stderr_policy(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    observed: list[str] = []
+
+    class RecordingManager(FakeMCPManager):
+        def __init__(self, servers, *, mcp_stdio_stderr):
+            super().__init__()
+            observed.append(mcp_stdio_stderr)
+
+    monkeypatch.setattr(runner_module, "MCPServerManager", RecordingManager)
+    base = dagent.Runner(
+        workspace=tmp_path / "base",
+        provider=MockProvider([]),
+        mcp_stdio_stderr="inherit",
+    )
+    inherited = base.derive(
+        workspace=tmp_path / "inherited",
+        mcp_servers={"mock-server": {"command": "fake"}},
+    )
+    overridden = base.derive(
+        workspace=tmp_path / "overridden",
+        mcp_servers={"mock-server": {"command": "fake"}},
+        mcp_stdio_stderr="discard",
+    )
+
+    assert observed == ["inherit", "discard"]
+    overridden.close()
+    inherited.close()
+    base.close()
+
+
+@pytest.mark.skipif(
+    not server_task_module.MCP_SDK_AVAILABLE,
+    reason="MCP SDK is not installed",
+)
+def test_runner_default_does_not_persist_mcp_child_stderr_credentials(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    credential = "DAGENT_MCP_STDERR_CREDENTIAL_SENTINEL"
+    server_code = """
+import os
+import sys
+from mcp.server.fastmcp import FastMCP
+
+sys.stderr.write(os.environ["MCP_TEST_CREDENTIAL"] + "\\n")
+sys.stderr.flush()
+server = FastMCP("stderr-fixture")
+
+@server.tool()
+def echo(value: str) -> str:
+    return value
+
+server.run(transport="stdio")
+"""
+    runner = dagent.Runner(
+        workspace=tmp_path / "workspace",
+        provider=MockProvider([]),
+        mcp_servers={
+            "fixture": {
+                "command": sys.executable,
+                "args": ["-c", server_code],
+                "env": {"MCP_TEST_CREDENTIAL": credential},
+                "connect_timeout": 10,
+            }
+        },
+    )
+    runner.close()
+
+    log_path = home / ".dagent" / "logs" / "mcp-stderr.log"
+    assert not log_path.exists()
+    assert all(
+        credential not in path.read_text(encoding="utf-8", errors="replace")
+        for path in home.rglob("*")
+        if path.is_file()
+    )
+
+
+def test_runner_rejects_unknown_stdio_stderr_mode(tmp_path) -> None:
+    with pytest.raises(
+        ValueError,
+        match="mcp_stdio_stderr must be 'discard' or 'inherit'",
+    ):
+        dagent.Runner(
+            workspace=tmp_path,
+            provider=MockProvider([]),
+            mcp_stdio_stderr="persistent",
+        )
 
 
 def test_add_mcp_server_can_lazy_register_snapshot_without_starting_manager(tmp_path) -> None:

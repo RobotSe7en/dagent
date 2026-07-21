@@ -5,11 +5,38 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.3`.
+The current package version is `0.7.4`.
 
 ## Unreleased
 
 - No unreleased changes.
+
+## 0.7.4
+
+### Added
+
+- `Runner(..., mcp_stdio_stderr="inherit")` lets a supervising host explicitly
+  forward stdio MCP server stderr to the host process. `Runner.from_config(...)`
+  accepts the same explicit host-policy argument, and derived runners inherit
+  their parent's setting unless it is overridden.
+
+### Changed
+
+- stdio MCP server stderr is discarded by default. The SDK no longer creates
+  or appends to `~/.dagent/logs/mcp-stderr.log`, because server stderr may
+  contain credentials or other sensitive values.
+
+### Migration
+
+- Hosts that previously inspected the SDK-created MCP stderr file must instead
+  opt into `mcp_stdio_stderr="inherit"` and capture process stderr at their own
+  bounded, sanitized supervision boundary. Hosts that do not need MCP stderr
+  require no changes.
+
+### Verification
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `git diff --check`
 
 ## 0.7.3
 

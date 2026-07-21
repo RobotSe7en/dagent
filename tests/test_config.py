@@ -52,10 +52,15 @@ def test_load_config_parses_sdk_builder_planner_frontend(tmp_path: Path) -> None
 
     assert config.planner_frontend == "sdk_builder"
 
-    runner = dagent.Runner.from_config(config_path, workspace=tmp_path / "workspace")
+    runner = dagent.Runner.from_config(
+        config_path,
+        workspace=tmp_path / "workspace",
+        mcp_stdio_stderr="inherit",
+    )
     try:
         assert runner.runtime.dag_agent.loop.planner_frontend == "sdk_builder"
         assert runner.runtime.dag_agent.loop.planner_skill is not None
+        assert runner._mcp_stdio_stderr == "inherit"
     finally:
         runner.close()
 

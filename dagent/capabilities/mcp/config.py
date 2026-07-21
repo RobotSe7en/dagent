@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Mapping
+from typing import Literal, Mapping, cast
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS = 60
 DEFAULT_MCP_TOOL_TIMEOUT_SECONDS = 300
+MCPStdioStderr = Literal["discard", "inherit"]
 _SAFE_ENV_KEYS = {
     "ALLUSERSPROFILE",
     "APPDATA",
@@ -33,6 +34,14 @@ _SAFE_ENV_KEYS = {
     "USERPROFILE",
     "WINDIR",
 }
+
+
+def validate_mcp_stdio_stderr(value: str) -> MCPStdioStderr:
+    """Validate the host-owned routing policy for MCP stdio stderr."""
+
+    if not isinstance(value, str) or value not in {"discard", "inherit"}:
+        raise ValueError("mcp_stdio_stderr must be 'discard' or 'inherit'.")
+    return cast(MCPStdioStderr, value)
 
 
 def build_stdio_env(explicit_env: Mapping[str, str] | None = None) -> dict[str, str]:

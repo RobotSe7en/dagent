@@ -38,7 +38,7 @@ jobs:
         run: uv python install 3.11
 
       - name: Run tests
-        run: uv run --extra dev --frozen pytest
+        run: uv run --extra dev --extra mcp --frozen pytest
 
   build:
     name: Build distributions

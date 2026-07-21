@@ -24,6 +24,7 @@ runner = dagent.Runner(
     skill_roots=["team-skills"],
     profile_root="profiles",
     planner_frontend="typed_spec",
+    mcp_stdio_stderr="discard",
 )
 ```
 
@@ -312,6 +313,13 @@ host environment. Both transports support `connect_timeout` for registration
 startup, defaulting to `60` seconds, and `tool_timeout` for tool calls,
 defaulting to `300` seconds. HTTP servers also use those values for the HTTP
 client connect and read timeouts.
+
+`Runner` discards stdio MCP server stderr by default and does not create an SDK
+log file. A host that already supervises process stderr can opt into forwarding
+with `Runner(..., mcp_stdio_stderr="inherit")`, including when using
+`Runner.from_config(...)`. Inherited stderr may contain credentials or other
+sensitive server output, so the host must bound, sanitize, or discard it. This
+setting is an explicit host policy and is not loaded from `config.yaml`.
 
 MCP requires the optional extra:
 
