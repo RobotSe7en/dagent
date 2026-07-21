@@ -8,7 +8,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
-- 暂无未发布变更。
+### 新增
+
+- 静态和动态 DAG 的 agent capability 调用新增可选参数 `reference_content`。非空内容
+  会作为 task data 放入独立的 user-message 区块；内容为空时不改变组装后的 prompt。
+  schema 驱动的 WebUI 会展示该参数，并支持绑定 graph input、artifacts 或上游节点输出。
+
+### 迁移
+
+- 现有 agent 节点无需修改，因为 `reference_content` 默认是空字符串。
 
 ## 0.7.4
 

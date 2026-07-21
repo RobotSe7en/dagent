@@ -9,7 +9,18 @@ The current package version is `0.7.4`.
 
 ## Unreleased
 
-- No unreleased changes.
+### Added
+
+- Static and dynamic DAG agent capability calls accept optional
+  `reference_content`. Non-empty content is supplied in a separate user-message
+  section as task data; empty content does not alter the assembled prompt. The
+  schema-driven WebUI exposes the argument and supports binding it to graph
+  input, artifacts, or upstream node output.
+
+### Migration
+
+- Existing agent nodes require no changes because `reference_content` defaults
+  to an empty string.
 
 ## 0.7.4
 

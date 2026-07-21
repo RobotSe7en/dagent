@@ -42,7 +42,9 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    assert "No unreleased changes" in english_unreleased
+    collapsed_english_unreleased = _collapsed(english_unreleased)
+    assert "`reference_content`" in collapsed_english_unreleased
+    assert "separate user-message section" in collapsed_english_unreleased
     assert 'mcp_stdio_stderr="inherit"' in english_074
     assert "mcp-stderr.log" in english_074
     assert "strict internal JSON Schema" in english_073
@@ -83,7 +85,9 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    assert "暂无未发布变更" in chinese_unreleased
+    collapsed_chinese_unreleased = _collapsed(chinese_unreleased)
+    assert "`reference_content`" in collapsed_chinese_unreleased
+    assert "独立的 user-message 区块" in collapsed_chinese_unreleased
     assert 'mcp_stdio_stderr="inherit"' in chinese_074
     assert "mcp-stderr.log" in chinese_074
     assert "internal strict JSON Schema" in chinese_073

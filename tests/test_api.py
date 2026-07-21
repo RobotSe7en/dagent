@@ -1690,6 +1690,7 @@ def test_api_managed_profiles_surface_agent_capabilities(monkeypatch, tmp_path) 
     assert capabilities["agent.analyst"]["kind"] == "agent"
     assert capabilities["agent.analyst"]["config"] == {"profile": "analyst", "source": "managed"}
     assert capabilities["agent.analyst"]["parameters"]["properties"]["prompt"]["default"] == ""
+    assert capabilities["agent.analyst"]["parameters"]["properties"]["reference_content"]["default"] == ""
     assert capabilities["agent.analyst"]["parameters"]["properties"]["max_steps"]["default"] == 8
 
 

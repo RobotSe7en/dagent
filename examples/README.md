@@ -16,6 +16,7 @@ credentials.
 | `dynamic_dag_agent.py` | Run a `DagAgent` that plans, executes a tool node, and returns a final answer. | [Agents](../docs/en/agents.md), [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `dynamic_dag_builder_agent.py` | Use the restricted SDK Builder planner frontend without executing generated Python. | [Agents](../docs/en/agents.md), [Runner and Configuration](../docs/en/runner-and-configuration.md) |
 | `static_dag.py` | Build and execute a static DAG with artifacts and a context-aware tool. | [Static DAGs](../docs/en/static-dag.md), [Capabilities](../docs/en/capabilities.md) |
+| `static_rag.py` | Feed retrieval output into an agent node through optional reference content. | [Static DAGs](../docs/en/static-dag.md) |
 | `control_flow.py` | Use conditional edges, map fan-out, an embedded subgraph, and a bounded loop in one static DAG. | [Static DAGs](../docs/en/static-dag.md) |
 | `streaming.py` | Consume `Runner.stream(...)` typed events and read the final `RunResult`. | [Results, Streaming, and Review](../docs/en/results-streaming-review.md) |
 | `runtime_registration_and_skills.py` | Add tools and skill roots at runtime, then use `SkillStore` directly. | [Runner and Configuration](../docs/en/runner-and-configuration.md), [Skills](../docs/en/skills.md) |
@@ -31,6 +32,7 @@ uv run python -m examples.auto_agent
 uv run python -m examples.dynamic_dag_agent
 uv run python -m examples.dynamic_dag_builder_agent
 uv run python -m examples.static_dag
+uv run python -m examples.static_rag
 uv run python -m examples.control_flow
 uv run python -m examples.streaming
 uv run python -m examples.runtime_registration_and_skills
