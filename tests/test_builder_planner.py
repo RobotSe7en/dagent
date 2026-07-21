@@ -9,13 +9,24 @@ from dagent.harness_runtime.builder_translator import (
     BuilderTranslationError,
     translate_builder_source,
 )
+from dagent.harness_runtime.dag_agent import (
+    _budget_dag_observation,
+    _node_semantic_dump,
+    _replan_spec_context,
+)
 from dagent.harness_runtime.dynamic_planner import normalize_builder_dag
 from dagent.harness_runtime.planner_schema import (
     builder_planner_response_format,
     parse_builder_planner_response,
 )
 from dagent.providers import ChatResponse, MockProvider
-from dagent.schemas import CapabilityDefinition
+from dagent.schemas import (
+    CapabilityDefinition,
+    CapabilityInvocation,
+    CapabilityNodePayload,
+    DAGNode,
+    DAGSpec,
+)
 from dagent.schemas.node import LoopNodePayload, MapNodePayload, SubgraphNodePayload
 
 
@@ -200,6 +211,165 @@ dag.output = work.output
         second.nodes[-1].payload.invocation.invocation_id
     )
     assert second.version == 2
+
+
+def test_builder_validates_paths_through_composite_subgraph_output() -> None:
+    capabilities = [
+        CapabilityDefinition(
+            id="tool.make",
+            kind="tool",
+            parameters={"type": "object", "additionalProperties": False},
+            output_schema={
+                "type": "object",
+                "properties": {"inner": {"type": "string"}},
+                "required": ["inner"],
+                "additionalProperties": False,
+            },
+        ),
+        *_capabilities(),
+    ]
+    source = '''
+dag = dagent.Dag("generated")
+child = dagent.Dag("child")
+make = dagent.Node("make", target="tool.make", inputs={})
+child.add_node(make)
+child.output = {"data": make.output}
+subgraph = dagent.Node("subgraph", target=child, inputs={})
+consume = dagent.Node(
+    "consume",
+    target="tool.echo",
+    inputs={"text": subgraph.output.data.inner},
+)
+dag.add_node(subgraph)
+dag.add_node(consume)
+dag.add_edge(subgraph, consume)
+dag.output = consume.output
+'''
+
+    spec = normalize_builder_dag(
+        translate_builder_source(
+            source,
+            capability_ids=[definition.id for definition in capabilities],
+        ),
+        spec_id="task",
+        version=1,
+        capabilities=capabilities,
+    )
+
+    assert isinstance(spec.nodes[1].payload, SubgraphNodePayload)
+    assert spec.nodes[2].payload.invocation.arguments["text"]["$expr"]["path"] == [
+        "data",
+        "inner",
+    ]
+
+
+def test_replan_context_only_removes_host_fields_at_structural_paths() -> None:
+    arguments = {
+        "status": "user-status",
+        "nested": {
+            "metadata": {"source": "user"},
+            "risk": "user-risk",
+            "boundary": "user-boundary",
+            "invocation_id": "user-invocation",
+        },
+    }
+    spec = DAGSpec(
+        id="task",
+        name="task",
+        metadata={"host": True},
+        nodes=[
+            DAGNode(
+                id="work",
+                status="completed",
+                payload=CapabilityNodePayload(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        invocation_id="host-invocation",
+                        capability_id="tool.echo",
+                        kind="tool",
+                        arguments=arguments,
+                        risk="high",
+                    ),
+                ),
+            )
+        ],
+        output={"metadata": "user-output", "status": "complete"},
+    )
+
+    dumped = json.loads(_replan_spec_context(spec))
+
+    assert "metadata" not in dumped
+    assert "status" not in dumped["nodes"][0]
+    invocation = dumped["nodes"][0]["payload"]["invocation"]
+    assert "invocation_id" not in invocation
+    assert "boundary" not in invocation
+    assert "risk" not in invocation
+    assert invocation["arguments"] == arguments
+    assert dumped["output"] == {
+        "metadata": "user-output",
+        "status": "complete",
+    }
+
+
+def test_node_semantic_dump_ignores_only_structural_invocation_id() -> None:
+    first = DAGNode(
+        id="work",
+        payload=CapabilityNodePayload(
+            type="capability",
+            invocation=CapabilityInvocation(
+                invocation_id="host-one",
+                capability_id="tool.echo",
+                kind="tool",
+                arguments={"invocation_id": "user-one"},
+            ),
+        ),
+    )
+    second = first.model_copy(deep=True)
+    second.payload.invocation.invocation_id = "host-two"
+
+    assert _node_semantic_dump(first) == _node_semantic_dump(second)
+
+    second.payload.invocation.arguments["invocation_id"] = "user-two"
+    assert _node_semantic_dump(first) != _node_semantic_dump(second)
+
+
+def test_replan_observation_keeps_large_authoritative_spec_complete() -> None:
+    large_argument = "x" * 20_000
+    spec = DAGSpec(
+        id="task",
+        name="task",
+        nodes=[
+            DAGNode(
+                id="work",
+                payload=CapabilityNodePayload(
+                    type="capability",
+                    invocation=CapabilityInvocation(
+                        capability_id="tool.echo",
+                        kind="tool",
+                        arguments={"text": large_argument},
+                    ),
+                ),
+            )
+        ],
+    )
+    spec_context = _replan_spec_context(spec)
+    marker = "Current canonical DAGSpec (authoritative for replanning):\n"
+
+    observation = _budget_dag_observation(
+        [
+            "DAG observation: layer_completed",
+            "Task id: task",
+            "Completed node outputs:\n" + ("y" * 20_000),
+        ],
+        marker + spec_context,
+    )
+
+    assert "[TRUNCATED" not in spec_context
+    assert observation.startswith("DAG observation: layer_completed\n\nTask id: task")
+    parsed = json.loads(observation.split(marker, 1)[1])
+    assert parsed["nodes"][0]["payload"]["invocation"]["arguments"]["text"] == (
+        large_argument
+    )
 
 
 @pytest.mark.parametrize(

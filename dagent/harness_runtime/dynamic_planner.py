@@ -665,14 +665,12 @@ def _spec_output_schema(
     spec: DAGSpec,
     definitions: dict[str, CapabilityDefinition],
 ) -> dict[str, Any]:
-    expression = parse_value_binding(spec.output)
-    if isinstance(expression, NodeOutputExpr):
-        node = next((item for item in spec.nodes if item.id == expression.node_id), None)
-        if node is None:
-            return {}
-        schema = _node_field_schema(node, expression.field, definitions)
-        return _schema_at_path(schema, expression.path) or {}
-    return _literal_schema(spec.output)
+    return _native_value_schema(
+        spec.output,
+        nodes=spec.nodes,
+        definitions=definitions,
+        input_schema=spec.input_schema,
+    )
 
 
 def _resolve_schema_path(schema: dict[str, Any], path: list[str | int], owner: str) -> None:

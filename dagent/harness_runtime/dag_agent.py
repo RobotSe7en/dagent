@@ -1301,16 +1301,38 @@ def _format_dag_observation(
     executions = _format_recent_capability_executions(record.trace, limit=6)
     if executions:
         sections.append("Node executions:\n" + "\n".join(executions))
-    if record.dag_spec is not None:
-        sections.append(
+    authoritative_spec = (
+        None
+        if record.dag_spec is None
+        else (
             "Current canonical DAGSpec (authoritative for replanning):\n"
             + _replan_spec_context(record.dag_spec)
         )
-
-    return context_excerpt(
-        "\n\n".join(sections),
-        limit=MAX_EXECUTION_CONTEXT_CHARS,
     )
+    return _budget_dag_observation(sections, authoritative_spec)
+
+
+def _budget_dag_observation(
+    sections: list[str],
+    authoritative_spec: str | None,
+) -> str:
+    if authoritative_spec is None:
+        return context_excerpt(
+            "\n\n".join(sections),
+            limit=MAX_EXECUTION_CONTEXT_CHARS,
+        )
+
+    heading = "\n\n".join(sections[:2])
+    required = "\n\n".join([heading, authoritative_spec])
+    details = "\n\n".join(sections[2:])
+    if not details:
+        return required
+
+    remaining = MAX_EXECUTION_CONTEXT_CHARS - len(required) - 2
+    if remaining <= 64:
+        return required
+    budgeted_details = context_excerpt(details, limit=remaining - 64)
+    return "\n\n".join([heading, budgeted_details, authoritative_spec])
 
 
 def format_dag_execution_context(dag: DAG | None, trace: RunTrace | None) -> str:
@@ -1806,28 +1828,91 @@ def _node_artifact_ids(node: DAGNode) -> set[str]:
 def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
     dumped.pop("status", None)
-    _drop_key_recursive(dumped, "invocation_id")
+    _strip_node_host_fields(
+        dumped,
+        invocation_fields={"invocation_id"},
+        strip_node_statuses=False,
+        strip_metadata=False,
+    )
     return dumped
 
 
 def _replan_spec_context(spec: DAGSpec) -> str:
     dumped = spec.model_dump(mode="json")
-    for key in ("invocation_id", "boundary", "risk", "status", "metadata"):
-        _drop_key_recursive(dumped, key)
-    return context_excerpt(
-        json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        limit=6000,
+    _strip_spec_host_fields(
+        dumped,
+        invocation_fields={"invocation_id", "boundary", "risk"},
+        strip_node_statuses=True,
+        strip_metadata=True,
+    )
+    return json.dumps(
+        dumped,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
-def _drop_key_recursive(value: Any, key: str) -> None:
-    if isinstance(value, dict):
-        value.pop(key, None)
-        for item in value.values():
-            _drop_key_recursive(item, key)
-    elif isinstance(value, list):
-        for item in value:
-            _drop_key_recursive(item, key)
+def _strip_spec_host_fields(
+    dumped: dict[str, Any],
+    *,
+    invocation_fields: set[str],
+    strip_node_statuses: bool,
+    strip_metadata: bool,
+) -> None:
+    if strip_metadata:
+        dumped.pop("metadata", None)
+        artifacts = dumped.get("artifacts")
+        if isinstance(artifacts, dict):
+            for artifact in artifacts.values():
+                if isinstance(artifact, dict):
+                    artifact.pop("metadata", None)
+
+    nodes = dumped.get("nodes")
+    if not isinstance(nodes, list):
+        return
+    for node in nodes:
+        if isinstance(node, dict):
+            _strip_node_host_fields(
+                node,
+                invocation_fields=invocation_fields,
+                strip_node_statuses=strip_node_statuses,
+                strip_metadata=strip_metadata,
+            )
+
+
+def _strip_node_host_fields(
+    dumped: dict[str, Any],
+    *,
+    invocation_fields: set[str],
+    strip_node_statuses: bool,
+    strip_metadata: bool,
+) -> None:
+    if strip_node_statuses:
+        dumped.pop("status", None)
+    payload = dumped.get("payload")
+    if not isinstance(payload, dict):
+        return
+
+    payload_type = payload.get("type")
+    if payload_type in {"capability", "map"}:
+        invocation = payload.get("invocation")
+        if isinstance(invocation, dict):
+            for field in invocation_fields:
+                invocation.pop(field, None)
+        return
+    nested_spec = (
+        payload.get("spec")
+        if payload_type == "subgraph"
+        else payload.get("body") if payload_type == "loop" else None
+    )
+    if isinstance(nested_spec, dict):
+        _strip_spec_host_fields(
+            nested_spec,
+            invocation_fields=invocation_fields,
+            strip_node_statuses=strip_node_statuses,
+            strip_metadata=strip_metadata,
+        )
 
 
 def _spec_from_review_projection(base: DAGSpec, submitted: DAG) -> DAGSpec:
