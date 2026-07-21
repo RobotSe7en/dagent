@@ -111,7 +111,25 @@ tool result such as `{"title": "...", "url": "..."}` can be selected as
 `search.output.title` or `search.output.url`. Capabilities without an output
 schema still expose the whole `node.output` value.
 
-References do not create edges. Add dependencies explicitly:
+String arguments in the Web UI also accept double-brace templates. After a
+complete placeholder is entered and the field loses focus, it switches to
+template mode:
+
+```text
+Question: {{ query }}
+Evidence: {{ search_output }}
+```
+
+The editor compiles that text to the existing structured `format` expression.
+It automatically binds a placeholder when exactly one graph input, upstream
+node output, or artifact alias matches. Ambiguous or unknown placeholders stay
+visible with a variable selector and block save/run until they are bound.
+Selecting an upstream output also adds the explicit dependency edge. Ordinary
+single braces remain literal, so JSON can be pasted without escaping; prefix a
+double-brace token with `\` when the literal `{{ token }}` text is required.
+
+SDK value references do not create edges. The Web template editor adds an edge
+as an editing convenience; in Python, add dependencies explicitly:
 
 ```python
 dag.add_node(found)

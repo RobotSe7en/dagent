@@ -84,9 +84,15 @@ const {
 const {
   bindingLabel,
   buildVariableCatalog,
+  collectUnboundFormatPlaceholders,
+  compileTemplateSyntax,
   collectNodeOutputRefs,
+  formatBindingDisplayTemplate,
+  formatBindingPlaceholders,
+  isFormatBinding,
   isValueBinding,
   makeArtifactBinding,
+  makeFormatBinding,
   makeGraphInputBinding,
   makeNodeOutputBinding,
   removeNodeOutputRefs,
@@ -99,7 +105,10 @@ const {
   appendRunTranscriptToken,
   buildRunDialogSummary,
   runTranscriptFromTraceEvents,
-} = await importTypeScript('../src/orchestrationRun.ts');
+} = await importTypeScriptModule('../src/orchestrationRun.ts', [
+  '../src/valueBindings.ts',
+  '../src/orchestrationRun.ts',
+]);
 const {
   appendCapabilityReviewDecisionTimeline,
   appendValidatingTimeline,
@@ -1267,6 +1276,109 @@ test('variable catalog expands tool and mcp output schema properties', () => {
   );
 });
 
+test('double-brace templates compile literals and auto-bind unique variables', () => {
+  const catalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [
+        { id: 'answer', payload: { type: 'start' } },
+      ],
+      edges: [],
+    },
+    'answer',
+    { properties: { query: { type: 'string' } } },
+  );
+  const source = '问题：{{ query }}\nJSON: {"enabled": true}\nLiteral: \\{{ raw }}';
+  const binding = makeFormatBinding(source, catalog);
+
+  assert.equal(isFormatBinding(binding), true);
+  assert.deepEqual(compileTemplateSyntax(source), {
+    template: '问题：{query}\nJSON: {{"enabled": true}}\nLiteral: {{{{ raw }}}}',
+    placeholders: ['query'],
+  });
+  assert.deepEqual(binding.$expr.values, {
+    query: makeGraphInputBinding(['query']),
+  });
+  assert.equal(formatBindingDisplayTemplate(binding), source);
+  assert.deepEqual(formatBindingPlaceholders(binding), ['query']);
+  assert.deepEqual(collectUnboundFormatPlaceholders({ prompt: binding }), []);
+
+  const wholeInputCatalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [{ id: 'answer', payload: { type: 'start' } }],
+      edges: [],
+    },
+    'answer',
+  );
+  assert.deepEqual(makeFormatBinding('Input: {{ input }}', wholeInputCatalog).$expr.values, {
+    input: makeGraphInputBinding(),
+  });
+});
+
+test('ambiguous template variables remain unbound until a selection is preserved', () => {
+  const catalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [
+        {
+          id: 'search',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.search', kind: 'tool', arguments: {} },
+          },
+        },
+        { id: 'answer', payload: { type: 'start' } },
+      ],
+      edges: [],
+    },
+    'answer',
+    { properties: { query: { type: 'string' } } },
+    {},
+    [{
+      id: 'tool.search',
+      kind: 'tool',
+      output_schema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+      },
+    }],
+  );
+  const unbound = makeFormatBinding('Question: {{ query }}', catalog);
+
+  assert.deepEqual(unbound.$expr.values, {});
+  assert.deepEqual(collectUnboundFormatPlaceholders(unbound), ['query']);
+
+  const automaticNodeOutput = makeFormatBinding('Evidence: {{ search_output }}', catalog);
+  assert.deepEqual(automaticNodeOutput.$expr.values, {
+    search_output: makeNodeOutputBinding('search'),
+  });
+  assert.deepEqual(collectNodeOutputRefs(automaticNodeOutput), [
+    { nodeId: 'search', field: 'value', path: [] },
+  ]);
+
+  const selected = makeFormatBinding(
+    'Question: {{ query }}',
+    catalog,
+    { query: makeNodeOutputBinding('search', 'value', ['query']) },
+  );
+  assert.deepEqual(selected.$expr.values, {
+    query: makeNodeOutputBinding('search', 'value', ['query']),
+  });
+  assert.deepEqual(collectNodeOutputRefs(selected), [
+    { nodeId: 'search', field: 'value', path: ['query'] },
+  ]);
+});
+
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
@@ -1396,6 +1508,10 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(orchestrationSource, /Raw/);
   assert.match(orchestrationSource, /固定值/);
   assert.match(orchestrationSource, /变量/);
+  assert.match(orchestrationSource, /模板/);
+  assert.match(orchestrationSource, /使用 \{\{ variable \}\} 插入变量/);
+  assert.match(orchestrationSource, /className="template-binding-list"/);
+  assert.match(css, /\.template-binding-editor\s*\{/);
   assert.match(appSource, /function ValueBindingEditor/);
   assert.match(appSource, /function CanvasViewportControls/);
   assert.match(appSource, /const flowInstance = useReactFlow\(\);/);
@@ -4154,7 +4270,15 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
       {
         id: 'agent_1',
         target: 'agent.capability',
-        inputs: {},
+        inputs: {
+          prompt: {
+            $expr: {
+              type: 'format',
+              template: 'Question: {query}',
+              values: {},
+            },
+          },
+        },
         artifact_inputs: ['upload_source'],
         artifact_outputs: ['report', 'missing_output'],
       },
@@ -4195,6 +4319,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
   ]);
   assert.equal(summary.canRun, false);
   assert.deepEqual(summary.issues.map((issue) => issue.message), [
+    "Node 'agent_1' has unbound template variables: query.",
     "Node 'agent_1' references unknown output artifact 'missing_output'.",
     "Node 'broken' is missing a target.",
     "Node 'broken' references unknown input artifact 'missing_input'.",

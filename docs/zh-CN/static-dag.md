@@ -109,7 +109,22 @@ capability 的顶层 `output_schema.properties`。例如结构化工具结果
 `search.output.url`。没有 output schema 的 capability 仍只暴露整体
 `node.output`。
 
-References 不会创建 edges。需要显式添加 dependencies：
+Web UI 的字符串参数也支持双花括号模板。输入完整占位符并离开输入框后，字段会自动切换到
+模板模式：
+
+```text
+问题：{{ query }}
+参考：{{ search_output }}
+```
+
+编辑器会把这段文本编译为现有的结构化 `format` expression。当且仅当一个 graph input、
+上游节点输出或 artifact alias 匹配时，占位符会自动绑定；有歧义或未知的占位符会显示变量
+选择器，并在完成绑定前阻止保存和运行。选择上游输出时也会添加显式 dependency edge。
+普通单花括号保持字面量，因此可以直接粘贴 JSON；需要原样输出 `{{ token }}` 时，在双花括号
+前加 `\`。
+
+SDK value references 不会创建 edges。Web 模板编辑器会为了编辑便利自动添加 edge；
+在 Python 中仍需显式添加 dependencies：
 
 ```python
 dag.add_node(found)

@@ -297,8 +297,14 @@ import { createUiId } from './uiIds';
 import {
   bindingLabel,
   buildVariableCatalog,
+  compileTemplateSyntax,
   collectNodeOutputRefs,
+  collectUnboundFormatPlaceholders,
+  formatBindingDisplayTemplate,
+  formatBindingPlaceholders,
+  isFormatBinding,
   isValueBinding,
+  makeFormatBinding,
   removeNodeOutputRefs,
   wouldCreateCycle,
   type VariableCatalog,
@@ -807,6 +813,10 @@ function validateUserDagDraft(spec: UserDag): string | null {
     if (!target) return `Node '${node.id}' needs a target.`;
     if (kind === 'skill') return `Node '${node.id}' cannot target a skill directly; use an agent target.`;
     if (node.agent && !isAgentTarget(target)) return `Node '${node.id}' has agent settings but does not target an agent.`;
+    const unboundTemplateVariables = collectUnboundFormatPlaceholders(node.inputs ?? {});
+    if (unboundTemplateVariables.length) {
+      return `Node '${node.id}' has unbound template variables: ${unboundTemplateVariables.join(', ')}.`;
+    }
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -11045,36 +11055,79 @@ function ValueBindingEditor({
   onLiteralChange: (rawValue: string) => void;
   onChange: (value: unknown) => void;
 }) {
+  const formatBinding = isFormatBinding(value) ? value : null;
+  const formatDisplayTemplate = formatBinding ? formatBindingDisplayTemplate(formatBinding) : null;
   const isBinding = isValueBinding(value);
-  const [mode, setMode] = useState<'literal' | 'binding'>(isBinding ? 'binding' : 'literal');
+  const editableFormat = Boolean(formatBinding && formatDisplayTemplate !== null);
+  const initialMode = editableFormat ? 'template' : isBinding ? 'binding' : 'literal';
+  const [mode, setMode] = useState<'literal' | 'binding' | 'template'>(initialMode);
   const optionGroups = buildVariableOptionGroups(catalog);
   const options = optionGroups.flatMap((group) => group.items);
-  const selectedValue = isBinding ? bindingOptionValue(value) : '';
+  const selectedValue = isBinding && !formatBinding ? bindingOptionValue(value) : '';
   const hasSelectedOption = Boolean(selectedValue && options.some((option) => bindingOptionValue(option.binding) === selectedValue));
+  const supportsTemplate = valueType === 'string' || Boolean(formatBinding);
+  const templatePlaceholders = formatBinding ? formatBindingPlaceholders(formatBinding) : [];
+  const templateValues = formatBinding?.$expr.values ?? {};
 
   useEffect(() => {
-    setMode(isValueBinding(value) ? 'binding' : 'literal');
+    const nextFormat = isFormatBinding(value) ? value : null;
+    if (nextFormat && formatBindingDisplayTemplate(nextFormat) !== null) {
+      setMode('template');
+    } else {
+      setMode(isValueBinding(value) ? 'binding' : 'literal');
+    }
   }, [value]);
 
   const setBindingMode = () => {
     setMode('binding');
-    if (!isBinding && options[0]) {
+    if ((!isBinding || formatBinding) && options[0]) {
       onChange(options[0].binding);
     }
   };
   const setLiteralMode = () => {
     setMode('literal');
-    if (isBinding) {
-      onChange('');
-    }
+    if (isBinding) onChange('');
+  };
+  const setTemplateMode = () => {
+    setMode('template');
+    if (formatBinding && formatDisplayTemplate !== null) return;
+    const source = typeof value === 'string' ? value : '';
+    onChange(makeFormatBinding(source, catalog));
   };
   const selectBinding = (optionValue: string) => {
     const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
     if (selected) onChange(selected.binding);
   };
+  const updateLiteral = (rawValue: string) => {
+    onLiteralChange(rawValue);
+  };
+  const commitLiteralTemplate = (rawValue: string) => {
+    if (valueType === 'string' && compileTemplateSyntax(rawValue).placeholders.length) {
+      onChange(makeFormatBinding(rawValue, catalog));
+    }
+  };
+  const updateTemplate = (source: string) => {
+    onChange(makeFormatBinding(source, catalog, templateValues));
+  };
+  const selectTemplateValue = (name: string, optionValue: string) => {
+    if (!formatBinding) return;
+    const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
+    const values = { ...templateValues };
+    if (selected) {
+      values[name] = selected.binding;
+    } else {
+      delete values[name];
+    }
+    onChange({
+      $expr: {
+        ...formatBinding.$expr,
+        values,
+      },
+    });
+  };
 
   return (
-    <div className="value-binding-editor">
+    <div className={`value-binding-editor ${mode === 'template' ? 'template-mode' : ''}`}>
       <div className="value-binding-toggle" role="group" aria-label="参数值类型">
         <button className={mode === 'literal' ? 'active' : ''} onClick={setLiteralMode} type="button">
           固定值
@@ -11082,6 +11135,11 @@ function ValueBindingEditor({
         <button className={mode === 'binding' ? 'active' : ''} onClick={setBindingMode} type="button">
           变量
         </button>
+        {supportsTemplate ? (
+          <button className={mode === 'template' ? 'active' : ''} onClick={setTemplateMode} type="button">
+            模板
+          </button>
+        ) : null}
       </div>
       {mode === 'binding' ? (
         <select
@@ -11105,10 +11163,54 @@ function ValueBindingEditor({
             </optgroup>
           ))}
         </select>
+      ) : mode === 'template' && formatBinding && formatDisplayTemplate !== null ? (
+        <div className="template-binding-editor">
+          <textarea
+            value={formatDisplayTemplate}
+            onChange={(event) => updateTemplate(event.target.value)}
+            placeholder="使用 {{ variable }} 插入变量"
+            aria-label="模板值"
+            title={title}
+            rows={3}
+            spellCheck={false}
+          />
+          {templatePlaceholders.length ? (
+            <div className="template-binding-list">
+              {templatePlaceholders.map((name) => {
+                const boundValue = templateValues[name];
+                const boundOption = isValueBinding(boundValue) ? bindingOptionValue(boundValue) : '';
+                return (
+                  <label className={!boundOption ? 'unbound' : ''} key={name}>
+                    <code>{`{{ ${name} }}`}</code>
+                    <select
+                      value={boundOption}
+                      onChange={(event) => selectTemplateValue(name, event.target.value)}
+                      aria-label={`模板变量 ${name}`}
+                    >
+                      <option value="">选择变量...</option>
+                      {optionGroups.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.items.map((item) => (
+                            <option key={item.id} value={bindingOptionValue(item.binding)}>
+                              {item.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="template-binding-help">输入完整的 {`{{ variable }}`} 后自动绑定。</span>
+          )}
+        </div>
       ) : (
         <input
           value={isBinding ? '' : formatArgumentValue(value)}
-          onChange={(event) => onLiteralChange(event.target.value)}
+          onChange={(event) => updateLiteral(event.target.value)}
+          onBlur={(event) => commitLiteralTemplate(event.target.value)}
           placeholder="value"
           aria-label="参数值"
           title={title}
@@ -11395,6 +11497,8 @@ function runIssueText(issue: RunDialogSummary['issues'][number]): string {
   if (issue.message === 'Add at least one node before running.') return '请先添加至少一个节点。';
   const missingTarget = issue.message.match(/^Node '([^']+)' is missing a target\.$/);
   if (missingTarget) return '节点缺少目标能力。';
+  const unboundTemplate = issue.message.match(/^Node '([^']+)' has unbound template variables: (.+)\.$/);
+  if (unboundTemplate) return `存在未绑定的模板变量：${unboundTemplate[2]}。`;
   const unknownArtifact = issue.message.match(/^Node '([^']+)' references unknown (input|output) artifact '([^']+)'\.$/);
   if (unknownArtifact) return `引用了未知 ${unknownArtifact[2] === 'input' ? '输入' : '输出'}产物 ${unknownArtifact[3]}。`;
   return issue.message;

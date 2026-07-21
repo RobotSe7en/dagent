@@ -16,6 +16,10 @@ The current package version is `0.7.4`.
   section as task data; empty content does not alter the assembled prompt. The
   schema-driven WebUI exposes the argument and supports binding it to graph
   input, artifacts, or upstream node output.
+- Web static-DAG string arguments recognize `{{ variable }}` templates. Unique
+  variables bind automatically; ambiguous variables require an explicit picker
+  selection. The editor persists the existing structured `format` expression,
+  so SDK and API request shapes do not change.
 
 ### Migration
 

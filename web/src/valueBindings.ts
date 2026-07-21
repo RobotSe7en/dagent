@@ -35,6 +35,17 @@ export interface VariableCatalogItem {
   binding: ValueBinding;
 }
 
+export type FormatValueBinding = ValueBinding & {
+  $expr: Extract<ValueExpr, { type: 'format' }>;
+};
+
+export interface TemplateCompilation {
+  template: string;
+  placeholders: string[];
+}
+
+const templateVariablePattern = /^[\p{L}_][\p{L}\p{N}_]*$/u;
+
 export function makeGraphInputBinding(path: ValuePathItem[] = []): ValueBinding {
   return {
     $expr: {
@@ -67,6 +78,95 @@ export function makeArtifactBinding(artifactId: string, field: ArtifactField = '
       field,
     },
   };
+}
+
+export function compileTemplateSyntax(source: string): TemplateCompilation {
+  const placeholders: string[] = [];
+  let template = '';
+  let index = 0;
+  while (index < source.length) {
+    if (source[index] === '\\' && source.slice(index + 1, index + 3) === '{{') {
+      const close = source.indexOf('}}', index + 3);
+      const end = close === -1 ? source.length : close + 2;
+      template += escapeFormatLiteral(source.slice(index + 1, end));
+      index = end;
+      continue;
+    }
+    if (source.slice(index, index + 2) === '{{') {
+      const close = source.indexOf('}}', index + 2);
+      if (close !== -1) {
+        const name = source.slice(index + 2, close).trim();
+        if (templateVariablePattern.test(name)) {
+          template += `{${name}}`;
+          if (!placeholders.includes(name)) placeholders.push(name);
+          index = close + 2;
+          continue;
+        }
+        template += escapeFormatLiteral(source.slice(index, close + 2));
+        index = close + 2;
+        continue;
+      }
+    }
+    if (source[index] === '{') {
+      template += '{{';
+    } else if (source[index] === '}') {
+      template += '}}';
+    } else {
+      template += source[index];
+    }
+    index += 1;
+  }
+  return { template, placeholders };
+}
+
+export function makeFormatBinding(
+  source: string,
+  catalog: VariableCatalog | null,
+  previousValues: Record<string, unknown> = {},
+): FormatValueBinding {
+  const compilation = compileTemplateSyntax(source);
+  const values: Record<string, unknown> = {};
+  for (const name of compilation.placeholders) {
+    if (Object.prototype.hasOwnProperty.call(previousValues, name)) {
+      values[name] = previousValues[name];
+      continue;
+    }
+    const matches = templateVariableMatches(name, catalog);
+    if (matches.length === 1) values[name] = matches[0].binding;
+  }
+  return {
+    $expr: {
+      type: 'format',
+      template: compilation.template,
+      values,
+    },
+  };
+}
+
+export function isFormatBinding(value: unknown): value is FormatValueBinding {
+  return isValueBinding(value) && value.$expr.type === 'format';
+}
+
+export function formatBindingDisplayTemplate(value: FormatValueBinding): string | null {
+  return parseRuntimeFormat(value.$expr.template).display;
+}
+
+export function formatBindingPlaceholders(value: FormatValueBinding): string[] {
+  return parseRuntimeFormat(value.$expr.template).placeholders;
+}
+
+export function collectUnboundFormatPlaceholders(value: unknown): string[] {
+  const unbound: string[] = [];
+  visitValues(value, (item) => {
+    if (!isFormatBinding(item)) return;
+    const values = item.$expr.values ?? {};
+    for (const name of formatBindingPlaceholders(item)) {
+      if (!Object.prototype.hasOwnProperty.call(values, name) && !unbound.includes(name)) {
+        unbound.push(name);
+      }
+    }
+  });
+  return unbound;
 }
 
 export function isValueBinding(value: unknown): value is ValueBinding {
@@ -273,6 +373,104 @@ function artifactCatalogItems(artifact: Artifact): VariableCatalogItem[] {
     label: `artifact.${artifact.id}.${field}`,
     binding: makeArtifactBinding(artifact.id, field),
   }));
+}
+
+function templateVariableMatches(name: string, catalog: VariableCatalog | null): VariableCatalogItem[] {
+  if (!catalog) return [];
+  const normalizedName = normalizeTemplateAlias(name);
+  const matches = new Map<string, VariableCatalogItem>();
+  for (const item of [...catalog.graphInputs, ...catalog.nodeOutputs, ...catalog.artifacts]) {
+    if (templateVariableAliases(item).includes(normalizedName)) matches.set(item.id, item);
+  }
+  return [...matches.values()];
+}
+
+function templateVariableAliases(item: VariableCatalogItem): string[] {
+  const aliases = new Set<string>([
+    normalizeTemplateAlias(item.id),
+    normalizeTemplateAlias(item.label),
+  ]);
+  const parts = item.id.split('.');
+  if (parts[0] === 'graph_input') {
+    const path = parts.slice(1);
+    aliases.add(normalizeTemplateAlias(`dag_input_${path.join('_') || 'value'}`));
+    if (path.length) {
+      aliases.add(normalizeTemplateAlias(path[path.length - 1]));
+    } else {
+      aliases.add('input');
+    }
+  } else if (parts[0] === 'node' && parts.length >= 3) {
+    const nodeId = parts[1];
+    const field = parts[2] === 'value' ? 'output' : parts[2];
+    const path = parts.slice(3);
+    aliases.add(normalizeTemplateAlias([nodeId, field, ...path].join('_')));
+    if (parts[2] === 'value' && !path.length) aliases.add(normalizeTemplateAlias(nodeId));
+    if (path.length) aliases.add(normalizeTemplateAlias(path[path.length - 1]));
+  } else if (parts[0] === 'artifact' && parts.length >= 3) {
+    aliases.add(normalizeTemplateAlias(`${parts[1]}_${parts[2]}`));
+  }
+  return [...aliases].filter(Boolean);
+}
+
+function normalizeTemplateAlias(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}_]+/gu, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function escapeFormatLiteral(value: string): string {
+  return value.replace(/\{/g, '{{').replace(/\}/g, '}}');
+}
+
+function parseRuntimeFormat(template: string): { display: string | null; placeholders: string[] } {
+  const segments: Array<{ kind: 'literal' | 'variable'; value: string }> = [];
+  const placeholders: string[] = [];
+  const appendLiteral = (value: string) => {
+    const last = segments[segments.length - 1];
+    if (last?.kind === 'literal') {
+      last.value += value;
+    } else {
+      segments.push({ kind: 'literal', value });
+    }
+  };
+  let index = 0;
+  while (index < template.length) {
+    if (template.slice(index, index + 2) === '{{') {
+      appendLiteral('{');
+      index += 2;
+      continue;
+    }
+    if (template.slice(index, index + 2) === '}}') {
+      appendLiteral('}');
+      index += 2;
+      continue;
+    }
+    if (template[index] === '{') {
+      const close = template.indexOf('}', index + 1);
+      if (close === -1) return { display: null, placeholders };
+      const name = template.slice(index + 1, close);
+      if (!templateVariablePattern.test(name)) return { display: null, placeholders };
+      segments.push({ kind: 'variable', value: name });
+      if (!placeholders.includes(name)) placeholders.push(name);
+      index = close + 1;
+      continue;
+    }
+    if (template[index] === '}') return { display: null, placeholders };
+    appendLiteral(template[index]);
+    index += 1;
+  }
+  const display = segments.map((segment) => (
+    segment.kind === 'variable'
+      ? `{{ ${segment.value} }}`
+      : escapeLiteralTemplateTokens(segment.value)
+  )).join('');
+  return { display, placeholders };
+}
+
+function escapeLiteralTemplateTokens(value: string): string {
+  return value.replace(/(\{\{\s*[\p{L}_][\p{L}\p{N}_]*\s*\}\})/gu, '\\$1');
 }
 
 function upstreamNodeIds(edges: DagEdge[], targetNodeId: string): Set<string> {

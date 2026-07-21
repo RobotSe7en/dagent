@@ -4662,6 +4662,10 @@ details[open] > summary .card-chevron {
   align-items: center;
 }
 
+.value-binding-editor.template-mode {
+  align-items: start;
+}
+
 .value-binding-toggle {
   display: inline-flex;
   align-items: center;
@@ -4706,9 +4710,63 @@ details[open] > summary .card-chevron {
 }
 
 .value-binding-editor select:focus,
-.value-binding-editor input:focus {
+.value-binding-editor input:focus,
+.value-binding-editor textarea:focus {
   border-color: #5b5bd6;
   box-shadow: 0 0 0 2px rgba(91, 91, 214, 0.1);
+}
+
+.template-binding-editor {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.template-binding-editor textarea {
+  width: 100%;
+  min-height: 66px;
+  resize: vertical;
+  border: 1px solid #e2e4ea;
+  border-radius: 7px;
+  background: #fff;
+  color: #3b414b;
+  padding: 7px 8px;
+  outline: none;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.template-binding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.template-binding-list label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(86px, auto) minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+}
+
+.template-binding-list code {
+  overflow: hidden;
+  color: #555cc7;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-binding-list label.unbound code {
+  color: #c2413b;
+}
+
+.template-binding-help {
+  color: #9298a2;
+  font-size: 10.5px;
 }
 
 .inspector-argument-add {
