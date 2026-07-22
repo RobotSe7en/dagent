@@ -15,7 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.4")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.5")
+    english_075 = _section(english, "## 0.7.5", "## 0.7.4")
     english_074 = _section(english, "## 0.7.4", "## 0.7.3")
     english_073 = _section(english, "## 0.7.3", "## 0.7.2")
     english_072 = _section(english, "## 0.7.2", "## 0.7.1")
@@ -28,7 +29,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.4")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.5")
+    chinese_075 = _section(chinese, "## 0.7.5", "## 0.7.4")
     chinese_074 = _section(chinese, "## 0.7.4", "## 0.7.3")
     chinese_073 = _section(chinese, "## 0.7.3", "## 0.7.2")
     chinese_072 = _section(chinese, "## 0.7.2", "## 0.7.1")
@@ -42,11 +44,11 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
-    collapsed_english_unreleased = _collapsed(english_unreleased)
-    assert "`reference_content`" in collapsed_english_unreleased
-    assert "separate user-message section" in collapsed_english_unreleased
-    assert "`{{ variable }}` templates" in collapsed_english_unreleased
-    assert "manually typed placeholders require an explicit picker selection" in collapsed_english_unreleased
+    collapsed_english_075 = _collapsed(english_075)
+    assert "`reference_content`" in collapsed_english_075
+    assert "separate user-message section" in collapsed_english_075
+    assert "`{{ variable }}` templates" in collapsed_english_075
+    assert "manually typed placeholders require an explicit picker selection" in collapsed_english_075
     assert 'mcp_stdio_stderr="inherit"' in english_074
     assert "mcp-stderr.log" in english_074
     assert "strict internal JSON Schema" in english_073
@@ -87,11 +89,11 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
-    collapsed_chinese_unreleased = _collapsed(chinese_unreleased)
-    assert "`reference_content`" in collapsed_chinese_unreleased
-    assert "独立的 user-message 区块" in collapsed_chinese_unreleased
-    assert "`{{ variable }}` 模板" in collapsed_chinese_unreleased
-    assert "手动输入的占位符必须通过选择器显式绑定" in collapsed_chinese_unreleased
+    collapsed_chinese_075 = _collapsed(chinese_075)
+    assert "`reference_content`" in collapsed_chinese_075
+    assert "独立的 user-message 区块" in collapsed_chinese_075
+    assert "`{{ variable }}` 模板" in collapsed_chinese_075
+    assert "手动输入的占位符必须通过选择器显式绑定" in collapsed_chinese_075
     assert 'mcp_stdio_stderr="inherit"' in chinese_074
     assert "mcp-stderr.log" in chinese_074
     assert "internal strict JSON Schema" in chinese_073

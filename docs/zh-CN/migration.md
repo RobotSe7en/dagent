@@ -4,9 +4,11 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.4`。
+当前包版本是 `0.7.5`。
 
 ## Unreleased
+
+## 0.7.5
 
 ### 新增
 
@@ -39,6 +41,15 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   Map、Subgraph 或 Loop proposal 需要改写为 capability-node graph；如果模型必须生成复杂
   控制流，请改用 `sdk_builder`。Canonical `DAGSpec` 和公开 static-DAG SDK shape 保持不变。
 - 从 Provider 构造、配置文件和模型管理 payload 中删除 `structured_output_mode`。
+
+### 验证
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ## 0.7.4
 

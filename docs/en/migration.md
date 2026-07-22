@@ -5,9 +5,11 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.4`.
+The current package version is `0.7.5`.
 
 ## Unreleased
+
+## 0.7.5
 
 ### Added
 
@@ -53,6 +55,15 @@ The current package version is `0.7.4`.
   are unchanged.
 - Remove `structured_output_mode` from Provider construction, configuration
   files, and model-management payloads.
+
+### Verification
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `npm --prefix web test`
+- `npm --prefix web run build`
+- `uv build`
+- `uv run --with twine python -m twine check dist/*`
+- `git diff --check`
 
 ## 0.7.4
 
