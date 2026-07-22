@@ -214,6 +214,16 @@ dag.add_edge(score_node, revise_node, when=score_node.output["score"] < 0.8)
 cascade。读取 skipped node 的 output 会解析为 `None`；`node.status` 会解析为
 `"skipped"`。
 
+在 WebUI 静态 DAG 编辑器中，选择一条连线即可打开边检查器。连线可以设为无条件依赖、
+变量真值判断，或者与字面量/另一个可用变量进行比较。变量选择器只提供 graph input、
+artifacts 及目标节点的上游节点，因此条件不会读取到边求值时尚不可用的输出。
+条件边会使用不同颜色，并在静态、动态和审核画布上显示简短的 `IF ...` 标签。超出当前
+可视化编辑器支持范围的表达式仍会显示，并以只读 JSON 原样保留。
+
+条件控制的是单条入边，而不是全局控制目标节点。目标节点会等待所有入边完成判断，只要
+至少一条入边仍然成立就会执行。因此，如果目标节点同时存在无条件入边，另一条条件入边
+可能不会起到阻断作用；边检查器会对此给出提示。
+
 ## Map Fan-Out
 
 `MapNode` 会把一次 capability call fan out 到 runtime 解析出的列表上。`over` 必须解析为

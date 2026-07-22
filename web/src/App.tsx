@@ -159,6 +159,7 @@ import type {
   CapabilityDefinition,
   CapabilityInvocation,
   CapabilityKind,
+  CompareOperator,
   CapabilityNodePayload,
   CapabilityResult,
   Dag,
@@ -220,6 +221,7 @@ import {
 } from './sidebarState';
 import {
   buildSchemaArgumentFields,
+  argumentValueType,
   coerceArgumentValue,
   ensureSchemaArguments,
   formatArgumentValue,
@@ -229,6 +231,21 @@ import {
   type ArgumentValueType,
 } from './schemaArguments';
 import { pruneEdgesToNodeIds } from './dagEdges';
+import {
+  buildConditionVariableCatalog,
+  compareOperatorOptions,
+  conditionLabel,
+  conditionVariableKey,
+  dagEdgesFromFlowEdges,
+  hasUnconditionalSiblingEdge,
+  isConditionVariableBinding,
+  isCompareBinding,
+  makeCompareBinding,
+  removeDagEdgesForNode,
+  parseConditionLiteralDraft,
+  replaceIncomingEdgeSources,
+  rewriteDagEdgeNodeReferences,
+} from './dagConditions';
 import {
   artifactPathExpr,
   buildPendingUploadGroups,
@@ -308,6 +325,7 @@ import {
   isValueBinding,
   makeFormatBinding,
   removeNodeOutputRefs,
+  rewriteNodeOutputRefs,
   wouldCreateCycle,
   type VariableCatalog,
   type VariableCatalogItem,
@@ -982,16 +1000,30 @@ function graphFromDag(dag: Dag, layoutPositions: Record<string, XYPosition> = {}
       ],
     };
   });
-  const edges = dag.edges.map((edge) => ({
-    id: `${edge.source}-${edge.target}`,
-    source: edge.source,
-    sourceHandle: 'out',
-    target: edge.target,
-    targetHandle: 'in',
-    label: edge.reason,
-    animated: dag.status === 'running',
-    style: { stroke: '#94a3b8', strokeWidth: 1.5 },
-  }));
+  const edges = dag.edges.map((edge, edgeIndex) => {
+    const conditional = Boolean(edge.when);
+    const fullConditionLabel = conditionLabel(edge.when);
+    const label = clipText(fullConditionLabel || edge.reason, 88);
+    return {
+      id: `dag-edge-${edgeIndex}`,
+      source: edge.source,
+      sourceHandle: 'out',
+      target: edge.target,
+      targetHandle: 'in',
+      label,
+      className: conditional ? 'condition-edge' : 'dependency-edge',
+      data: { dagEdge: edge, dagEdgeIndex: edgeIndex, conditionLabel: fullConditionLabel },
+      animated: dag.status === 'running',
+      style: {
+        stroke: conditional ? '#5b5bd6' : '#94a3b8',
+        strokeWidth: conditional ? 1.8 : 1.5,
+      },
+      labelStyle: conditional ? { fill: '#3730a3', fontSize: 11, fontWeight: 650 } : undefined,
+      labelBgStyle: conditional ? { fill: '#eef2ff', fillOpacity: 0.96 } : undefined,
+      labelBgPadding: conditional ? [6, 4] as [number, number] : undefined,
+      labelBgBorderRadius: conditional ? 6 : undefined,
+    };
+  });
   return { nodes, edges };
 }
 
@@ -2804,13 +2836,11 @@ export function App() {
   const onEditorEdgesChange = useCallback((changes: EdgeChange[]) => {
     setEditorEdges((eds) => {
       const next = applyEdgeChanges(changes, eds);
-      const nextDagEdges = next
-        .filter((edge) => edge.source && edge.target)
-        .map((edge) => ({
-          source: edge.source,
-          target: edge.target,
-          reason: 'User dependency.',
-        }));
+      if (changes.every((change) => change.type === 'select')) return next;
+      const nextDagEdges = dagEdgesFromFlowEdges(
+        next.filter((edge) => edge.source && edge.target),
+        editorDag.edges,
+      );
       setEditorDag((current) => ({ ...current, edges: nextDagEdges }));
       setEditorUserDag((current) => userDagFromRuntimeDag(current, { ...editorDag, edges: nextDagEdges }));
       return next;
@@ -2822,6 +2852,7 @@ export function App() {
       source: connection.source,
       target: connection.target,
       reason: 'User dependency.',
+      when: null,
     };
     setEditorEdges((eds) => addEdge({ ...connection, id: `${connection.source}-${connection.target}` }, eds));
     updateEditorDag((current) => ({
@@ -3034,13 +3065,10 @@ export function App() {
 
   const onDynamicEdgesChange = useCallback((changes: EdgeChange[]) => {
     const next = applyEdgeChanges(changes, dynamicGraph.edges);
-    const nextDagEdges = next
-      .filter((edge) => edge.source && edge.target)
-      .map((edge) => ({
-        source: edge.source,
-        target: edge.target,
-        reason: 'User dependency.',
-      }));
+    const nextDagEdges = dagEdgesFromFlowEdges(
+      next.filter((edge) => edge.source && edge.target),
+      dynamicDagRef.current.edges,
+    );
     updateDynamicDag((current) => ({ ...current, status: 'draft', edges: nextDagEdges }));
   }, [dynamicGraph.edges]);
 
@@ -3050,6 +3078,7 @@ export function App() {
       source: connection.source,
       target: connection.target,
       reason: 'User dependency.',
+      when: null,
     };
     updateDynamicDag((current) => ({
       ...current,
@@ -3111,11 +3140,7 @@ export function App() {
         return merged;
       });
       const edgesForRename = patch.id && patch.id !== nodeId
-        ? current.edges.map((edge) => ({
-            ...edge,
-            source: edge.source === nodeId ? patch.id as string : edge.source,
-            target: edge.target === nodeId ? patch.id as string : edge.target,
-          }))
+        ? rewriteDagEdgeNodeReferences(current.edges, nodeId, patch.id)
         : current.edges;
       return {
         ...current,
@@ -3132,7 +3157,7 @@ export function App() {
       ...current,
       status: 'draft',
       nodes: current.nodes.filter((node) => node.id !== nodeId),
-      edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+      edges: removeDagEdgesForNode(current.edges, nodeId),
     }));
     setDynamicSelectedId('');
   };
@@ -3191,7 +3216,7 @@ export function App() {
       ...current,
       status: 'draft',
       nodes: current.nodes.filter((node) => node.id !== selectedNode.id),
-      edges: current.edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
+      edges: removeDagEdgesForNode(current.edges, selectedNode.id),
     }));
   };
 
@@ -3345,13 +3370,44 @@ export function App() {
   };
 
   const patchEditorNode = (nodeId: string, patch: Partial<DagNode>, nextEdges?: DagEdge[]) => {
+    const nextNodeId = patch.id && patch.id !== nodeId ? patch.id : null;
+    if (nextNodeId) setEditorSelectedId(nextNodeId);
+    updateEditorDag((current) => {
+      const nodes = current.nodes.map((node) => {
+        const merged = node.id === nodeId ? normalizeNode({ ...node, ...patch }) : node;
+        if (!nextNodeId || !isCapabilityNode(merged)) return merged;
+        return {
+          ...merged,
+          payload: {
+            type: 'capability' as const,
+            invocation: {
+              ...merged.payload.invocation,
+              arguments: rewriteNodeOutputRefs(
+                merged.payload.invocation.arguments ?? {},
+                nodeId,
+                nextNodeId,
+              ) as Record<string, unknown>,
+            },
+          },
+        };
+      });
+      const baseEdges = nextEdges ?? current.edges;
+      return {
+        ...current,
+        status: 'draft',
+        nodes,
+        edges: nextNodeId
+          ? rewriteDagEdgeNodeReferences(baseEdges, nodeId, nextNodeId)
+          : baseEdges,
+      };
+    });
+  };
+
+  const patchEditorEdges = (nextEdges: DagEdge[]) => {
     updateEditorDag((current) => ({
       ...current,
       status: 'draft',
-      nodes: current.nodes.map((node) =>
-        node.id === nodeId ? normalizeNode({ ...node, ...patch }) : node,
-      ),
-      edges: nextEdges ?? current.edges,
+      edges: nextEdges,
     }));
   };
 
@@ -3376,7 +3432,7 @@ export function App() {
             },
           };
         }),
-      edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+      edges: removeDagEdgesForNode(current.edges, nodeId),
     }));
   };
 
@@ -4907,6 +4963,7 @@ export function App() {
             onRunInputTextChange={setEditorRunInputText}
             onAddNode={addEditorNode}
             onPatchNode={patchEditorNode}
+            onPatchEdges={patchEditorEdges}
             onDeleteNode={deleteEditorNode}
             onSave={() => void persistEditorUserDag()}
             onRun={() => void runEditorSpec()}
@@ -10332,6 +10389,7 @@ function OrchestrationWorkspace({
   onRunInputTextChange,
   onAddNode,
   onPatchNode,
+  onPatchEdges,
   onDeleteNode,
   onSave,
   onRun,
@@ -10363,6 +10421,7 @@ function OrchestrationWorkspace({
   onRunInputTextChange: (value: string) => void;
   onAddNode: (capability?: CapabilityDefinition, position?: XYPosition) => void;
   onPatchNode: (nodeId: string, patch: Partial<DagNode>, edges?: DagEdge[]) => void;
+  onPatchEdges: (edges: DagEdge[]) => void;
   onDeleteNode: (nodeId?: string) => void;
   onSave: () => void;
   onRun: () => void;
@@ -10375,7 +10434,10 @@ function OrchestrationWorkspace({
   const [contextCapabilityId, setContextCapabilityId] = useState('');
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [selectedEdgeIndex, setSelectedEdgeIndex] = useState<number | null>(null);
   const selectedNode = dag.nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedEdge = selectedEdgeIndex === null ? null : dag.edges[selectedEdgeIndex] ?? null;
+  useEffect(() => setSelectedEdgeIndex(null), [spec.id]);
   const selectedUserNode = selectedNode
     ? spec.nodes.find((node) => node.id === selectedNode.id) ?? null
     : null;
@@ -10420,12 +10482,14 @@ function OrchestrationWorkspace({
   const openNodeMenu = (event: React.MouseEvent, nodeId: string) => {
     event.preventDefault();
     event.stopPropagation();
+    setSelectedEdgeIndex(null);
     onSelectNode(nodeId);
     setContextMenu({ x: event.clientX, y: event.clientY, flowPosition: flowPositionFromEvent(event), nodeId });
     setContextCapabilityId((current) => current || enabledCapabilities[0]?.id || '');
   };
   const handlePaneClick = () => {
     setContextMenu(null);
+    setSelectedEdgeIndex(null);
     onSelectNode('');
   };
   const addFromContext = () => {
@@ -10544,7 +10608,15 @@ function OrchestrationWorkspace({
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onNodeClick={(_, node) => onSelectNode(node.id)}
+            onNodeClick={(_, node) => {
+              setSelectedEdgeIndex(null);
+              onSelectNode(node.id);
+            }}
+            onEdgeClick={(_, edge) => {
+              const edgeIndex = edge.data?.dagEdgeIndex;
+              setSelectedEdgeIndex(typeof edgeIndex === 'number' ? edgeIndex : null);
+              onSelectNode('');
+            }}
             onNodeContextMenu={(event, node) => openNodeMenu(event, node.id)}
             onPaneClick={handlePaneClick}
             onPaneContextMenu={openCanvasMenu}
@@ -10608,6 +10680,22 @@ function OrchestrationWorkspace({
 
       {inspectorMode === 'artifacts' ? (
         <RunArtifactsInspector {...artifactPanel} />
+      ) : selectedEdge && selectedEdgeIndex !== null ? (
+        <EdgeConditionEditor
+          edge={selectedEdge}
+          edgeIndex={selectedEdgeIndex}
+          dag={dag}
+          inputSchema={spec.input_schema ?? {}}
+          artifacts={spec.artifacts ?? {}}
+          capabilities={capabilities}
+          onChange={(nextEdge) => onPatchEdges(dag.edges.map((edge, edgeIndex) => (
+            edgeIndex === selectedEdgeIndex ? nextEdge : edge
+          )))}
+          onDelete={() => {
+            onPatchEdges(dag.edges.filter((_, edgeIndex) => edgeIndex !== selectedEdgeIndex));
+            setSelectedEdgeIndex(null);
+          }}
+        />
       ) : selectedNormalized ? (
         <aside className="node-inspector static-node-inspector" aria-label="节点检查器">
           <div className="node-inspector-body">
@@ -10758,6 +10846,364 @@ function OrchestrationWorkspace({
         />
       ) : null}
     </section>
+  );
+}
+
+function ConditionLiteralInput({
+  value,
+  type,
+  onChange,
+}: {
+  value: unknown;
+  type: Exclude<ArgumentValueType, 'boolean'>;
+  onChange: (value: unknown) => void;
+}) {
+  const formatted = formatArgumentValue(value);
+  const [draft, setDraft] = useState(formatted);
+  const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    setDraft(formatted);
+    setInvalid(false);
+  }, [formatted, type]);
+
+  const updateDraft = (nextDraft: string) => {
+    setDraft(nextDraft);
+    const parsed = parseConditionLiteralDraft(nextDraft, type);
+    setInvalid(!parsed.valid);
+    if (parsed.valid) onChange(parsed.value);
+  };
+
+  return (
+    <input
+      className={invalid ? 'invalid' : undefined}
+      value={draft}
+      aria-invalid={invalid}
+      onChange={(event) => updateDraft(event.target.value)}
+      onBlur={() => {
+        if (!invalid) return;
+        setDraft(formatted);
+        setInvalid(false);
+      }}
+    />
+  );
+}
+
+function EdgeConditionEditor({
+  edge,
+  edgeIndex,
+  dag,
+  inputSchema,
+  artifacts,
+  capabilities,
+  onChange,
+  onDelete,
+}: {
+  edge: DagEdge;
+  edgeIndex: number;
+  dag: Dag;
+  inputSchema: Record<string, unknown>;
+  artifacts: Record<string, Artifact>;
+  capabilities: CapabilityDefinition[];
+  onChange: (edge: DagEdge) => void;
+  onDelete: () => void;
+}) {
+  const catalog = buildConditionVariableCatalog(
+    dag,
+    edge,
+    inputSchema,
+    artifacts,
+    capabilities,
+  );
+  const optionGroups = buildVariableOptionGroups(catalog);
+  const variables = optionGroups.flatMap((group) => group.items);
+  const compare = isCompareBinding(edge.when) ? edge.when : null;
+  const directBinding = edge.when && !compare && isConditionVariableBinding(edge.when) ? edge.when : null;
+  const availableBindingValues = new Set(variables.map((item) => conditionVariableKey(item.binding)));
+  const editableDirectBinding = directBinding && availableBindingValues.has(conditionVariableKey(directBinding))
+    ? directBinding
+    : null;
+  const leftCandidate = compare && isConditionVariableBinding(compare.$expr.left) ? compare.$expr.left : null;
+  const leftBinding = leftCandidate && availableBindingValues.has(conditionVariableKey(leftCandidate))
+    ? leftCandidate
+    : null;
+  const rightCandidate = compare && isConditionVariableBinding(compare.$expr.right) ? compare.$expr.right : null;
+  const rightBinding = rightCandidate && availableBindingValues.has(conditionVariableKey(rightCandidate))
+    ? rightCandidate
+    : null;
+  const unsupportedRightBinding = Boolean(compare && isValueBinding(compare.$expr.right) && !rightBinding);
+  const visualCondition = !edge.when || editableDirectBinding || Boolean(compare && leftBinding && !unsupportedRightBinding);
+  const mode = !edge.when ? 'always' : compare && leftBinding && !unsupportedRightBinding
+    ? 'compare'
+    : editableDirectBinding
+      ? 'truthy'
+      : 'advanced';
+  const rightType = compare && !rightBinding ? argumentValueType(compare.$expr.right) : 'string';
+  const bypassed = hasUnconditionalSiblingEdge(dag.edges, edgeIndex);
+  const bindingForValue = (value: string): ValueBinding | null => (
+    variables.find((item) => conditionVariableKey(item.binding) === value)?.binding ?? null
+  );
+  const patchWhen = (when: DagEdge['when']) => onChange({ ...edge, when });
+  const firstBinding = variables[0]?.binding ?? null;
+
+  return (
+    <aside className="node-inspector static-node-inspector edge-inspector" aria-label="边检查器">
+      <div className="node-inspector-body">
+        <div className="node-inspector-title">
+          <span>边检查器</span>
+          <strong>{edge.source} → {edge.target}</strong>
+        </div>
+        <div className="inspector-split">
+          <div className="inspector-field">
+            <label>来源</label>
+            <input value={edge.source} disabled />
+          </div>
+          <div className="inspector-field">
+            <label>目标</label>
+            <input value={edge.target} disabled />
+          </div>
+        </div>
+        <div className="inspector-field">
+          <label>依赖类型</label>
+          <select
+            value={mode}
+            disabled={!visualCondition}
+            onChange={(event) => {
+              if (event.target.value === 'always') patchWhen(null);
+              if (event.target.value === 'truthy' && firstBinding) patchWhen(firstBinding);
+              if (event.target.value === 'compare' && firstBinding) {
+                patchWhen(makeCompareBinding(firstBinding, 'eq', true));
+              }
+            }}
+          >
+            <option value="always">普通依赖</option>
+            <option value="truthy" disabled={!firstBinding}>变量为真</option>
+            <option value="compare" disabled={!firstBinding}>比较条件</option>
+            {mode === 'advanced' ? <option value="advanced">高级条件（只读）</option> : null}
+          </select>
+        </div>
+
+        {mode === 'truthy' && editableDirectBinding ? (
+          <div className="inspector-field">
+            <label>条件变量</label>
+            <select
+              value={conditionVariableKey(editableDirectBinding)}
+              onChange={(event) => {
+                const binding = bindingForValue(event.target.value);
+                if (binding) patchWhen(binding);
+              }}
+            >
+              {optionGroups.map((group) => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.items.map((item) => (
+                    <option key={item.id} value={conditionVariableKey(item.binding)}>{item.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        ) : null}
+
+        {mode === 'compare' && compare && leftBinding ? (
+          <div className="condition-editor-grid">
+            <label>
+              左值
+              <select
+                value={conditionVariableKey(leftBinding)}
+                onChange={(event) => {
+                  const binding = bindingForValue(event.target.value);
+                  if (binding) patchWhen(makeCompareBinding(binding, compare.$expr.op, compare.$expr.right));
+                }}
+              >
+                {optionGroups.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.items.map((item) => (
+                      <option key={item.id} value={conditionVariableKey(item.binding)}>{item.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <label>
+              运算符
+              <select
+                value={compare.$expr.op}
+                onChange={(event) => patchWhen(makeCompareBinding(
+                  compare.$expr.left,
+                  event.target.value as CompareOperator,
+                  compare.$expr.right,
+                ))}
+              >
+                {compareOperatorOptions.map((operator) => (
+                  <option key={operator.value} value={operator.value}>{operator.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              右值来源
+              <select
+                value={rightBinding ? 'variable' : 'literal'}
+                onChange={(event) => {
+                  const right = event.target.value === 'variable' ? firstBinding : true;
+                  if (right !== null) patchWhen(makeCompareBinding(compare.$expr.left, compare.$expr.op, right));
+                }}
+              >
+                <option value="literal">字面量</option>
+                <option value="variable" disabled={!firstBinding}>变量</option>
+              </select>
+            </label>
+            {rightBinding ? (
+              <label>
+                右值
+                <select
+                  value={conditionVariableKey(rightBinding)}
+                  onChange={(event) => {
+                    const binding = bindingForValue(event.target.value);
+                    if (binding) patchWhen(makeCompareBinding(compare.$expr.left, compare.$expr.op, binding));
+                  }}
+                >
+                  {optionGroups.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.items.map((item) => (
+                        <option key={item.id} value={conditionVariableKey(item.binding)}>{item.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <>
+                <label>
+                  字面量类型
+                  <select
+                    value={rightType}
+                    onChange={(event) => patchWhen(makeCompareBinding(
+                      compare.$expr.left,
+                      compare.$expr.op,
+                      coerceArgumentValue(compare.$expr.right, event.target.value as ArgumentValueType),
+                    ))}
+                  >
+                    <option value="string">字符串</option>
+                    <option value="number">数字</option>
+                    <option value="boolean">布尔值</option>
+                    <option value="json">JSON / null</option>
+                  </select>
+                </label>
+                <label className="condition-literal-field">
+                  右值
+                  {rightType === 'boolean' ? (
+                    <select
+                      value={String(compare.$expr.right)}
+                      onChange={(event) => patchWhen(makeCompareBinding(
+                        compare.$expr.left,
+                        compare.$expr.op,
+                        event.target.value === 'true',
+                      ))}
+                    >
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  ) : (
+                    <ConditionLiteralInput
+                      key={`condition-literal-${edgeIndex}-${rightType}`}
+                      value={compare.$expr.right}
+                      type={rightType}
+                      onChange={(right) => patchWhen(makeCompareBinding(
+                        compare.$expr.left,
+                        compare.$expr.op,
+                        right,
+                      ))}
+                    />
+                  )}
+                </label>
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {mode === 'advanced' ? (
+          <div className="template-binding-unsupported" role="note">
+            <strong>高级条件（只读）</strong>
+            <code>{JSON.stringify(edge.when)}</code>
+            <span>该表达式无法在当前可视化编辑器中无损编辑，但保存时会保持原值。</span>
+          </div>
+        ) : null}
+
+        {edge.when ? (
+          <div className="condition-preview" title={conditionLabel(edge.when)}>
+            <span>条件预览</span>
+            <code>{conditionLabel(edge.when)}</code>
+          </div>
+        ) : null}
+        {bypassed ? (
+          <div className="condition-warning" role="alert">
+            <AlertTriangle size={15} />
+            <span>目标节点还有无条件入口；任一入口成立都会执行目标节点。</span>
+          </div>
+        ) : null}
+        <p className="condition-semantics-note">
+          条件只控制当前连线。目标节点会等待所有入口结束，并在至少一条入口成立时执行。
+        </p>
+        <button className="danger-line-button" onClick={onDelete} type="button">
+          <Trash2 size={14} />
+          删除连线
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function ReviewEdgeInspector({ edge, edgeIndex, dag }: { edge: DagEdge; edgeIndex: number; dag: Dag }) {
+  const label = conditionLabel(edge.when);
+  const bypassed = hasUnconditionalSiblingEdge(dag.edges, edgeIndex);
+  return (
+    <div className="node-inspector-body edge-review-inspector" aria-label="边检查器">
+      <div className="node-inspector-title">
+        <span>边检查器</span>
+        <strong>{edge.source} → {edge.target}</strong>
+      </div>
+      <div className="inspector-split">
+        <div className="inspector-field">
+          <label>来源</label>
+          <input value={edge.source} disabled />
+        </div>
+        <div className="inspector-field">
+          <label>目标</label>
+          <input value={edge.target} disabled />
+        </div>
+      </div>
+      <div className="inspector-field">
+        <label>依赖类型</label>
+        <input value={edge.when ? '条件依赖' : '普通依赖'} disabled />
+      </div>
+      {edge.reason ? (
+        <div className="inspector-field">
+          <label>说明</label>
+          <input value={edge.reason} disabled />
+        </div>
+      ) : null}
+      {edge.when ? (
+        <>
+          <div className="condition-preview" title={label}>
+            <span>条件</span>
+            <code>{label}</code>
+          </div>
+          <details className="node-policy-details">
+            <summary>条件 JSON</summary>
+            <pre className="condition-json-preview">{JSON.stringify(edge.when, null, 2)}</pre>
+          </details>
+        </>
+      ) : null}
+      {bypassed ? (
+        <div className="condition-warning" role="alert">
+          <AlertTriangle size={15} />
+          <span>目标节点还有无条件入口；任一入口成立都会执行目标节点。</span>
+        </div>
+      ) : null}
+      <p className="condition-semantics-note">
+        条件只控制当前连线。目标节点会等待所有入口结束，并在至少一条入口成立时执行。
+      </p>
+    </div>
   );
 }
 
@@ -11758,10 +12204,7 @@ function OrchestrationNodeEditor({
           value={dependsOn.join(', ')}
           onChange={(event) => {
             const sources = splitCsv(event.target.value).filter((source) => source !== node.id);
-            const nextEdges = [
-              ...dag.edges.filter((edge) => edge.target !== node.id),
-              ...sources.map((source) => ({ source, target: node.id, reason: 'User dependency.' })),
-            ];
+            const nextEdges = replaceIncomingEdgeSources(dag.edges, node.id, sources);
             onPatch({}, nextEdges);
           }}
         />
@@ -14149,8 +14592,11 @@ function DagReviewDialog({
   onEdgesChange: (changes: EdgeChange[]) => void;
   onSelectNode: (id: string) => void;
 }) {
+  const [selectedEdgeIndex, setSelectedEdgeIndex] = useState<number | null>(null);
   const canConfirm = dag.nodes.length > 0 && isDagConfirmable(dag);
   const riskyNodes = dag.nodes.filter((node) => nodeReviewInfo(node).reviewAttention).length;
+  const selectedEdge = selectedEdgeIndex === null ? null : dag.edges[selectedEdgeIndex] ?? null;
+  useEffect(() => setSelectedEdgeIndex(null), [dag.dag_id]);
   const selectedNodeLogs = selectedNode
     ? trace.filter((event) => event.node_id === selectedNode.id && (!event.dag_id || event.dag_id === dag.dag_id))
     : [];
@@ -14211,7 +14657,19 @@ function DagReviewDialog({
               nodeTypes={designNodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onNodeClick={(_, node) => onSelectNode(node.id)}
+              onNodeClick={(_, node) => {
+                setSelectedEdgeIndex(null);
+                onSelectNode(node.id);
+              }}
+              onEdgeClick={(_, edge) => {
+                const edgeIndex = edge.data?.dagEdgeIndex;
+                setSelectedEdgeIndex(typeof edgeIndex === 'number' ? edgeIndex : null);
+                onSelectNode('');
+              }}
+              onPaneClick={() => {
+                setSelectedEdgeIndex(null);
+                onSelectNode('');
+              }}
               fitView
               fitViewOptions={{ padding: 0.2 }}
               proOptions={{ hideAttribution: true }}
@@ -14222,20 +14680,24 @@ function DagReviewDialog({
             </ReactFlow>
           </section>
           <aside className="modal-side">
-            <div className="node-inspector-title">
-              <span>节点检查器</span>
-              <strong>{selectedNode?.title || selectedNode?.id || '未选择节点'}</strong>
-            </div>
-            {selectedNode ? (
-              <NodeEditor
-                node={normalizeNode(selectedNode)}
-                dag={dag}
-                logs={selectedNodeLogs}
-                onPatch={onPatchNode}
-                onDelete={() => onDeleteNode(selectedNode.id)}
-              />
+            {selectedEdge && selectedEdgeIndex !== null ? (
+              <ReviewEdgeInspector edge={selectedEdge} edgeIndex={selectedEdgeIndex} dag={dag} />
+            ) : selectedNode ? (
+              <>
+                <div className="node-inspector-title">
+                  <span>节点检查器</span>
+                  <strong>{selectedNode.title || selectedNode.id}</strong>
+                </div>
+                <NodeEditor
+                  node={normalizeNode(selectedNode)}
+                  dag={dag}
+                  logs={selectedNodeLogs}
+                  onPatch={onPatchNode}
+                  onDelete={() => onDeleteNode(selectedNode.id)}
+                />
+              </>
             ) : (
-              <div className="empty-state compact">Select a DAG node to inspect details.</div>
+              <div className="empty-state compact">选择节点或连线以查看详情。</div>
             )}
           </aside>
         </div>
@@ -14349,10 +14811,7 @@ function NodeEditor({
           value={dependsOn.join(', ')}
           onChange={(event) => {
             const sources = splitCsv(event.target.value).filter((source) => source !== node.id);
-            const nextEdges = [
-              ...dag.edges.filter((edge) => edge.target !== node.id),
-              ...sources.map((source) => ({ source, target: node.id, reason: 'User dependency.' })),
-            ];
+            const nextEdges = replaceIncomingEdgeSources(dag.edges, node.id, sources);
             onPatch({}, nextEdges);
           }}
         />

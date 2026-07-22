@@ -228,6 +228,20 @@ A node whose live incoming edges all fail is marked `skipped`, and skips cascade
 downstream. Reading a skipped node's output resolves to `None`; `node.status`
 resolves to `"skipped"`.
 
+In the WebUI static-DAG editor, select an edge to open the edge inspector. An
+edge can be changed between an unconditional dependency, a truthiness check,
+and a comparison against a literal or another available variable. The picker
+only offers graph input, artifacts, and nodes upstream of the target, so a
+condition cannot read output that is unavailable when the edge is evaluated.
+Conditional edges use a distinct color and carry a compact `IF ...`
+label on static, dynamic, and review canvases. Expressions outside the visual
+editor's supported subset remain visible and are preserved as read-only JSON.
+
+Conditions gate individual incoming edges, not the target node globally. A
+target waits for all incoming edges to settle and runs when at least one remains
+live. In particular, an unconditional incoming edge can make another conditional
+incoming edge irrelevant; the inspector warns about this arrangement.
+
 ## Map Fan-Out
 
 `MapNode` fans one capability call out over a list resolved at runtime. `over`

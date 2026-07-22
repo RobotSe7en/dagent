@@ -2429,6 +2429,72 @@ def test_validate_static_dag_reports_node_output_dependency_errors() -> None:
     assert "missing_binding_edge" not in state.dags
 
 
+def test_static_dag_api_preserves_edge_conditions_during_validation_and_run() -> None:
+    state.dags.clear()
+    state.runner = _runner(MockProvider([ChatResponse(content="unused")]))
+    client = TestClient(app)
+    spec = {
+        "id": "conditional_static_dag",
+        "name": "Conditional static DAG",
+        "nodes": [
+            {
+                "id": "prepare",
+                "target": "tool.echo",
+                "inputs": {"text": "prepared"},
+            },
+            {
+                "id": "publish",
+                "target": "tool.echo",
+                "inputs": {"text": "published"},
+            },
+        ],
+        "edges": [
+            {
+                "source": "prepare",
+                "target": "publish",
+                "reason": "Publish when enabled.",
+                "when": {"$expr": {"type": "graph_input", "path": ["publish"]}},
+            }
+        ],
+    }
+
+    validate_response = client.post("/dags/validate", json=spec)
+    invalid_condition_spec = {
+        **spec,
+        "id": "invalid_conditional_static_dag",
+        "edges": [
+            {
+                **spec["edges"][0],
+                "when": {
+                    "$expr": {
+                        "type": "node_output",
+                        "node_id": "publish",
+                        "field": "value",
+                    }
+                },
+            }
+        ],
+    }
+    invalid_validate_response = client.post("/dags/validate", json=invalid_condition_spec)
+    create_response = client.post("/dags", json=spec)
+    run_response = client.post(
+        "/dags/conditional_static_dag/run",
+        json={"graph_input": {"publish": False}},
+    )
+
+    assert validate_response.status_code == 200
+    assert validate_response.json() == {"valid": True, "issues": []}
+    assert invalid_validate_response.status_code == 200
+    assert invalid_validate_response.json()["valid"] is False
+    assert "condition reads output" in invalid_validate_response.json()["issues"][0]["message"]
+    assert create_response.status_code == 200
+    assert create_response.json()["dag"]["edges"][0]["when"] == spec["edges"][0]["when"]
+    assert run_response.status_code == 200
+    run_payload = _result_dag_run(run_response.json()["result"])
+    node_statuses = {node["id"]: node["status"] for node in run_payload["dag"]["nodes"]}
+    assert node_statuses == {"prepare": "completed", "publish": "skipped"}
+
+
 def test_static_dag_runs_managed_profile_agent_node(monkeypatch, tmp_path) -> None:
     state.close_runner()
     managed_dir = tmp_path / "managed-profiles"

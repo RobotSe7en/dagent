@@ -725,7 +725,8 @@ button:focus-visible {
   padding-block: 7px;
 }
 
-.sidebar-project-conversation-row > button:first-child svg {
+.sidebar-history-list button span > svg,
+.sidebar-context-list button span > svg {
   flex: 0 0 auto;
 }
 
@@ -768,6 +769,7 @@ button:focus-visible {
 
 .sidebar-history-list strong {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   color: #2b2f37;
   font-size: 12.5px;
@@ -855,6 +857,7 @@ button:focus-visible {
 
 .sidebar-context-list strong {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   color: #2b2f37;
   font-size: 12.5px;
@@ -4513,6 +4516,116 @@ details[open] > summary .card-chevron {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.edge-inspector .condition-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.condition-editor-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: #aab0b9;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.condition-editor-grid input,
+.condition-editor-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #e2e4ea;
+  border-radius: 9px;
+  padding: 0 10px;
+  background: #fff;
+  color: #16181d;
+  font-size: 12px;
+  font-weight: 650;
+  outline: none;
+}
+
+.condition-editor-grid input:focus,
+.condition-editor-grid select:focus {
+  border-color: #5b5bd6;
+  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
+}
+
+.condition-editor-grid input.invalid {
+  border-color: #d37a73;
+  box-shadow: 0 0 0 3px rgba(190, 65, 54, 0.1);
+}
+
+.condition-preview {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  border: 1px solid #dfe3ff;
+  border-radius: 9px;
+  padding: 10px 11px;
+  background: #f7f8ff;
+}
+
+.condition-preview span {
+  color: #8a91a1;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.condition-preview code {
+  overflow: hidden;
+  color: #3730a3;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.condition-warning {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  border: 1px solid #f0d9a5;
+  border-radius: 9px;
+  padding: 9px 10px;
+  background: #fffbeb;
+  color: #8a6411;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.condition-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.condition-semantics-note {
+  margin: 0;
+  color: #8d939d;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.condition-json-preview {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #e1e4ea;
+  border-radius: 8px;
+  background: #f7f8fa;
+  color: #3f4654;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .inspector-section-head,
@@ -9155,6 +9268,20 @@ pre.readonly-field {
 }
 
 /* ── ReactFlow overrides ── */
+.react-flow__edge.condition-edge .react-flow__edge-path {
+  stroke: #5b5bd6;
+}
+
+.react-flow__edge.condition-edge.selected .react-flow__edge-path {
+  stroke: #3730a3;
+  stroke-width: 2.4;
+}
+
+.react-flow__edge.condition-edge .react-flow__edge-textbg {
+  stroke: #dfe3ff;
+  stroke-width: 1;
+}
+
 .react-flow__node-default {
   border: 1px solid var(--border);
   border-radius: 12px;
