@@ -17,6 +17,7 @@ from dagent.capabilities.providers import ToolCapabilityProvider
 from dagent.profiles import AgentProfile
 from dagent.providers import ChatResponse, MockProvider
 from dagent.schemas import DAG, DAGEdge, DAGNode, CapabilityDefinition, CapabilityInvocation, RunState
+from dagent.schemas.value import ValueExpressionError, parse_value_binding
 from dagent.capabilities.tools.registry import ToolRegistry
 from tests.planner_helpers import planner_response_from_dag
 
@@ -55,6 +56,52 @@ def test_valid_dag_passes_validation() -> None:
     )
 
     validate_dag(dag)
+
+
+def test_format_value_expression_rejects_unbound_template_fields() -> None:
+    with pytest.raises(ValueExpressionError, match="missing values: query"):
+        parse_value_binding({
+            "$expr": {
+                "type": "format",
+                "template": "Question: {query}",
+                "values": {},
+            }
+        })
+
+
+def test_format_value_expression_allows_literal_braces() -> None:
+    expression = parse_value_binding({
+        "$expr": {
+            "type": "format",
+            "template": 'Question: {query}; JSON: {{"enabled": true}}',
+            "values": {"query": "dagent"},
+        }
+    })
+
+    assert expression is not None
+
+
+@pytest.mark.parametrize(
+    ("template", "values"),
+    [
+        ("{amount:.2f}", {"amount": 1.5}),
+        ("{user[name]}", {"user": {"name": "Ada"}}),
+        ("{{{value}}}", {"value": "wrapped"}),
+    ],
+)
+def test_format_value_expression_allows_advanced_python_formats(
+    template: str,
+    values: dict[str, object],
+) -> None:
+    expression = parse_value_binding({
+        "$expr": {
+            "type": "format",
+            "template": template,
+            "values": values,
+        }
+    })
+
+    assert expression is not None
 
 
 def test_dag_must_have_at_least_one_node() -> None:

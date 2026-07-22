@@ -4,4 +4,5 @@ provider:
   api_key_env: "API_KEY"
   timeout_seconds: 60
   strip_thinking: false
+  structured_output_mode: json_object
 enable_result_validation: false

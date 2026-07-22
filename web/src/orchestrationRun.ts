@@ -1,4 +1,5 @@
 import type { Artifact, CapabilityStreamEvent, RiskLevel, TraceLogEvent, UserDag, UserDagNode } from './types';
+import { collectUnboundFormatPlaceholders } from './valueBindings';
 
 export interface RunArtifactSummary {
   id: string;
@@ -51,6 +52,13 @@ export function buildRunDialogSummary(spec: UserDag): RunDialogSummary {
         id: node.id,
         capabilityId: target,
         risk,
+      });
+    }
+    const unboundTemplateVariables = collectUnboundFormatPlaceholders(node.inputs ?? {});
+    if (unboundTemplateVariables.length) {
+      issues.push({
+        nodeId: node.id,
+        message: `Node '${node.id}' has unbound template variables: ${unboundTemplateVariables.join(', ')}.`,
       });
     }
     collectArtifactReferences(node, 'artifact_inputs', 'input', artifacts, inputIds, issues);

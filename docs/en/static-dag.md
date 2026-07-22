@@ -111,7 +111,32 @@ tool result such as `{"title": "...", "url": "..."}` can be selected as
 `search.output.title` or `search.output.url`. Capabilities without an output
 schema still expose the whole `node.output` value.
 
-References do not create edges. Add dependencies explicitly:
+String arguments in the Web UI also support double-brace templates. Switch to
+template mode and use **Insert variable** to choose a graph input, node output,
+or artifact. The editor inserts a placeholder at the cursor and binds the
+selected source directly:
+
+```text
+Question: {{ query }}
+Evidence: {{ search_output }}
+```
+
+The editor compiles that text to the existing structured `format` expression.
+You can also type `{{ variable }}` manually, but the editor does not infer its
+source from the name: manually entered placeholders stay visible with a variable
+selector and block save/run until they are bound. Selecting an upstream output
+also adds the explicit dependency edge. Repeated generated names receive a
+numeric suffix such as `query_2`.
+
+Ordinary single braces remain literal, so JSON can be pasted without escaping.
+Prefix a double-brace token with `\` when the literal `{{ token }}` text is
+required; the escape is consumed even when the template has no variables.
+Existing Python format expressions that use format specs, indexed fields, or
+another form that cannot round-trip through the visual syntax are preserved and
+shown read-only. Edit those expressions in Raw mode.
+
+SDK value references do not create edges. The Web template editor adds an edge
+as an editing convenience; in Python, add dependencies explicitly:
 
 ```python
 dag.add_node(found)

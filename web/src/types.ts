@@ -583,6 +583,8 @@ export interface PythonToolEntry extends PythonToolConfig {
   error?: string | null;
 }
 
+export type StructuredOutputMode = 'json_schema' | 'json_object';
+
 export interface ModelProvider {
   id: string;
   name: string;
@@ -595,6 +597,7 @@ export interface ModelProvider {
   api_key_saved: boolean;
   timeout_seconds: number;
   strip_thinking: boolean;
+  structured_output_mode: StructuredOutputMode;
   reasoning?: Record<string, unknown> | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;
@@ -612,6 +615,7 @@ export interface ModelProviderInput {
   api_key_env?: string | null;
   timeout_seconds: number;
   strip_thinking: boolean;
+  structured_output_mode: StructuredOutputMode;
   reasoning?: Record<string, unknown> | null;
   extra_request_args: Record<string, unknown>;
   extra_body: Record<string, unknown>;

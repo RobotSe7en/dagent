@@ -4013,6 +4013,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key": "session-secret",
                 "timeout_seconds": 42,
                 "strip_thinking": True,
+                "structured_output_mode": "json_object",
                 "extra_request_args": {"headers": {"Authorization": "Bearer nested-secret"}, "timeout": 7},
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "nested-body-secret"}},
             },
@@ -4033,6 +4034,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert created_model["id"] == "local-qwen"
         assert created_model["source"] == "user"
         assert created_model["api_key_configured"] is True
+        assert created_model["structured_output_mode"] == "json_object"
         assert "api_key" not in created_model
         assert created_model["extra_request_args"]["headers"]["Authorization"] == "[redacted]"
         assert created_model["extra_body"]["metadata"]["api_key"] == "[redacted]"
@@ -4044,6 +4046,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
         assert state.get_runner().runtime.provider.config.model == "qwen3-coder"
         assert state.get_runner().runtime.provider.config.timeout_seconds == 42
         assert state.get_runner().runtime.provider.config.strip_thinking is True
+        assert state.get_runner().runtime.provider.config.structured_output_mode == "json_object"
         assert state.get_runner().runtime.provider.config.extra_request_args == {
             "headers": {"Authorization": "Bearer nested-secret"},
             "timeout": 7,
@@ -4063,6 +4066,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "preserve",
                 "timeout_seconds": 42,
                 "strip_thinking": True,
+                "structured_output_mode": "json_object",
                 "extra_body": {"temperature": 0.2, "metadata": {"api_key": "[redacted]"}},
             },
         )
@@ -4083,6 +4087,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "preserve",
                 "timeout_seconds": 30,
                 "strip_thinking": True,
+                "structured_output_mode": "json_object",
                 "extra_body": {"temperature": 0.4},
             },
         )
@@ -4102,6 +4107,7 @@ def test_api_model_management_adds_user_model_and_activates_with_redacted_secret
                 "api_key_action": "clear",
                 "timeout_seconds": 30,
                 "strip_thinking": True,
+                "structured_output_mode": "json_object",
             },
         )
 
@@ -4187,6 +4193,7 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
                 "base_url": "http://localhost:8000/v1",
                 "model": "qwen3-coder",
                 "api_key_env": "LOCAL_QWEN_API_KEY",
+                "structured_output_mode": "json_object",
             },
         )
         activated = client.post("/models/local-qwen/activate")
@@ -4206,11 +4213,13 @@ def test_api_model_management_persists_user_models_to_user_config(monkeypatch, t
             "api_key_env": "LOCAL_QWEN_API_KEY",
             "timeout_seconds": 60,
             "strip_thinking": False,
+            "structured_output_mode": "json_object",
         }
         assert listed.status_code == 200
         assert listed.json()["active_model_id"] == "local-qwen"
         assert [model["id"] for model in listed.json()["models"]] == ["config", "local-qwen"]
         assert listed.json()["models"][1]["source"] == "user"
+        assert listed.json()["models"][1]["structured_output_mode"] == "json_object"
     finally:
         state.close_runner()
         state.custom_model_providers.clear()

@@ -229,9 +229,8 @@ export function upsertDagTimeline(
   dag: Dag,
 ): MessageTimelineItem[] {
   const items = [...(timeline ?? [])];
-  const dagKey = dag.task_id || dag.dag_id;
   const existingIndex = items.findIndex(
-    (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey,
+    (item) => item.type === 'dag' && isSameDagRevision(item.dag, dag),
   );
   if (existingIndex !== -1) {
     const existing = items[existingIndex];
@@ -241,26 +240,22 @@ export function upsertDagTimeline(
     items[existingIndex] = { type: 'dag', dag };
     return items;
   }
-  const last = items[items.length - 1];
-  if (last?.type === 'dag' && last.dag.status === 'rejected' && dag.status === 'running') {
-    return items;
-  }
-  if (last?.type === 'dag' && (last.dag.task_id || last.dag.dag_id) === dagKey && last.dag.version === dag.version) {
-    items[items.length - 1] = { type: 'dag', dag };
-  } else {
-    items.push({ type: 'dag', dag });
-  }
+  items.push({ type: 'dag', dag });
   return items;
+}
+
+export function isSameDagRevision(left: Dag, right: Dag): boolean {
+  return (left.task_id || left.dag_id) === (right.task_id || right.dag_id)
+    && left.version === right.version;
 }
 
 export function upsertDagMessageTimeline(
   messages: ChatMessage[],
   dag: Dag,
 ): ChatMessage[] {
-  const dagKey = dag.task_id || dag.dag_id;
   const existingMessageIndex = messages.findIndex((message) =>
     message.role === 'assistant'
-    && message.timeline?.some((item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === dagKey),
+    && message.timeline?.some((item) => item.type === 'dag' && isSameDagRevision(item.dag, dag)),
   );
 
   if (existingMessageIndex !== -1) {

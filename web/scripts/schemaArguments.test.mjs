@@ -84,9 +84,16 @@ const {
 const {
   bindingLabel,
   buildVariableCatalog,
+  collectUnboundFormatPlaceholders,
+  compileTemplateSyntax,
   collectNodeOutputRefs,
+  formatBindingDisplayTemplate,
+  formatBindingPlaceholders,
+  insertTemplateVariable,
+  isFormatBinding,
   isValueBinding,
   makeArtifactBinding,
+  makeFormatBinding,
   makeGraphInputBinding,
   makeNodeOutputBinding,
   removeNodeOutputRefs,
@@ -99,7 +106,10 @@ const {
   appendRunTranscriptToken,
   buildRunDialogSummary,
   runTranscriptFromTraceEvents,
-} = await importTypeScript('../src/orchestrationRun.ts');
+} = await importTypeScriptModule('../src/orchestrationRun.ts', [
+  '../src/valueBindings.ts',
+  '../src/orchestrationRun.ts',
+]);
 const {
   appendCapabilityReviewDecisionTimeline,
   appendValidatingTimeline,
@@ -1267,6 +1277,146 @@ test('variable catalog expands tool and mcp output schema properties', () => {
   );
 });
 
+test('double-brace templates compile literals without guessing variable bindings', () => {
+  const source = '问题：{{ query }}\nJSON: {"enabled": true}\nLiteral: \\{{ raw }}';
+  const binding = makeFormatBinding(source);
+
+  assert.equal(isFormatBinding(binding), true);
+  assert.deepEqual(compileTemplateSyntax(source), {
+    template: '问题：{query}\nJSON: {{"enabled": true}}\nLiteral: {{{{ raw }}}}',
+    placeholders: ['query'],
+    hasEscapedLiteral: true,
+  });
+  assert.deepEqual(binding.$expr.values, {});
+  assert.equal(formatBindingDisplayTemplate(binding), source);
+  assert.deepEqual(formatBindingPlaceholders(binding), ['query']);
+  assert.deepEqual(collectUnboundFormatPlaceholders({ prompt: binding }), ['query']);
+
+  const escapedOnly = makeFormatBinding('\\{{ raw }}');
+  assert.deepEqual(compileTemplateSyntax('\\{{ raw }}'), {
+    template: '{{{{ raw }}}}',
+    placeholders: [],
+    hasEscapedLiteral: true,
+  });
+  assert.deepEqual(escapedOnly.$expr.values, {});
+  assert.equal(formatBindingDisplayTemplate(escapedOnly), '\\{{ raw }}');
+  assert.deepEqual(compileTemplateSyntax('{"enabled": true}'), {
+    template: '{{"enabled": true}}',
+    placeholders: [],
+    hasEscapedLiteral: false,
+  });
+});
+
+test('insert variable binds the selected source and creates collision-safe placeholders', () => {
+  const catalog = buildVariableCatalog(
+    {
+      dag_id: 'dag',
+      task_id: 'dag',
+      version: 1,
+      status: 'draft',
+      nodes: [
+        {
+          id: 'search',
+          payload: {
+            type: 'capability',
+            invocation: { capability_id: 'tool.search', kind: 'tool', arguments: {} },
+          },
+        },
+        { id: 'answer', payload: { type: 'start' } },
+      ],
+      edges: [],
+    },
+    'answer',
+    { properties: { query: { type: 'string' } } },
+    {},
+    [{
+      id: 'tool.search',
+      kind: 'tool',
+      output_schema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+      },
+    }],
+  );
+  const graphQuery = catalog.graphInputs.find((item) => item.id === 'graph_input.query');
+  const searchOutput = catalog.nodeOutputs.find((item) => item.id === 'node.search.value');
+  assert.ok(graphQuery);
+  assert.ok(searchOutput);
+
+  const queryInsertion = insertTemplateVariable('Question: ', 10, 10, graphQuery);
+  assert.equal(queryInsertion.source, 'Question: {{ query }}');
+  assert.equal(queryInsertion.placeholder, 'query');
+  assert.equal(queryInsertion.cursor, queryInsertion.source.length);
+  assert.deepEqual(queryInsertion.binding.$expr.values, {
+    query: makeGraphInputBinding(['query']),
+  });
+  assert.deepEqual(collectUnboundFormatPlaceholders(queryInsertion.binding), []);
+
+  const nodeInsertion = insertTemplateVariable('Evidence: ', 10, 10, searchOutput);
+  assert.equal(nodeInsertion.source, 'Evidence: {{ search_output }}');
+  assert.deepEqual(nodeInsertion.binding.$expr.values, {
+    search_output: makeNodeOutputBinding('search'),
+  });
+  assert.deepEqual(collectNodeOutputRefs(nodeInsertion.binding), [
+    { nodeId: 'search', field: 'value', path: [] },
+  ]);
+
+  const collision = insertTemplateVariable(
+    '{{ search_output }} ',
+    20,
+    20,
+    searchOutput,
+    { search_output: makeGraphInputBinding(['query']) },
+  );
+  assert.equal(collision.placeholder, 'search_output_2');
+  assert.equal(collision.source, '{{ search_output }} {{ search_output_2 }}');
+  assert.deepEqual(collision.binding.$expr.values, {
+    search_output: makeGraphInputBinding(['query']),
+    search_output_2: makeNodeOutputBinding('search'),
+  });
+
+  const selected = makeFormatBinding(
+    'Question: {{ query }}',
+    { query: makeNodeOutputBinding('search', 'value', ['query']) },
+  );
+  assert.deepEqual(selected.$expr.values, {
+    query: makeNodeOutputBinding('search', 'value', ['query']),
+  });
+  assert.deepEqual(collectNodeOutputRefs(selected), [
+    { nodeId: 'search', field: 'value', path: ['query'] },
+  ]);
+});
+
+test('runtime formats only enter visual template mode when they round-trip exactly', () => {
+  const advanced = {
+    $expr: {
+      type: 'format',
+      template: '{amount:.2f}',
+      values: { amount: 1.5 },
+    },
+  };
+  const indexed = {
+    $expr: {
+      type: 'format',
+      template: '{user[name]}',
+      values: { user: { name: 'Ada' } },
+    },
+  };
+  const ambiguousBraces = {
+    $expr: {
+      type: 'format',
+      template: '{{{value}}}',
+      values: { value: makeGraphInputBinding(['value']) },
+    },
+  };
+
+  assert.equal(formatBindingDisplayTemplate(advanced), null);
+  assert.equal(formatBindingDisplayTemplate(indexed), null);
+  assert.equal(formatBindingDisplayTemplate(ambiguousBraces), null);
+  assert.deepEqual(formatBindingPlaceholders(ambiguousBraces), ['value']);
+  assert.equal(ambiguousBraces.$expr.template, '{{{value}}}');
+});
+
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
   const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const apiSource = await readFile(new URL('../src/api.ts', import.meta.url), 'utf8');
@@ -1395,7 +1545,18 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(orchestrationSource, /键值/);
   assert.match(orchestrationSource, /Raw/);
   assert.match(orchestrationSource, /固定值/);
-  assert.match(orchestrationSource, /变量/);
+  assert.match(orchestrationSource, /引用变量/);
+  assert.match(orchestrationSource, /模板/);
+  assert.match(orchestrationSource, /插入变量/);
+  assert.match(orchestrationSource, /使用 \{\{ variable \}\} 插入变量/);
+  assert.match(orchestrationSource, /insertTemplateVariable\(/);
+  assert.match(orchestrationSource, /compilation\.placeholders\.length \|\| compilation\.hasEscapedLiteral/);
+  assert.match(orchestrationSource, /该 format 无法在可视化模板编辑器中无损编辑/);
+  assert.match(orchestrationSource, /className="template-binding-list"/);
+  assert.match(orchestrationSource, /className="template-binding-unsupported"/);
+  assert.match(css, /\.template-binding-editor\s*\{/);
+  assert.match(css, /\.template-insert-variable-button\s*\{/);
+  assert.match(css, /\.template-variable-picker\s*\{/);
   assert.match(appSource, /function ValueBindingEditor/);
   assert.match(appSource, /function CanvasViewportControls/);
   assert.match(appSource, /const flowInstance = useReactFlow\(\);/);
@@ -2052,6 +2213,12 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
+  assert.match(typesSource, /export type StructuredOutputMode = 'json_schema' \| 'json_object';/);
+  assert.match(typesSource, /structured_output_mode: StructuredOutputMode;/);
+  assert.match(modelSource, /结构化输出模式/);
+  assert.match(modelSource, /<option value="json_schema">JSON Schema（严格）<\/option>/);
+  assert.match(modelSource, /<option value="json_object">JSON Object<\/option>/);
+  assert.match(modelSource, /structured_output_mode: event\.target\.value/);
   assert.match(onlyOfficeSource, /文档配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
@@ -2229,7 +2396,58 @@ test('upsertDagMessageTimeline keeps a rejected DAG card from reverting to runni
   const readyForReview = upsertDagMessageTimeline(stillRejected, reviewDag);
 
   assert.equal(stillRejected[0].timeline[0].dag.status, 'rejected');
-  assert.equal(readyForReview[0].timeline[0].dag.status, 'review_required');
+  assert.equal(readyForReview[0].timeline.filter((item) => item.type === 'dag').length, 2);
+  assert.equal(readyForReview[0].timeline[0].dag.status, 'rejected');
+  assert.equal(readyForReview[0].timeline[1].dag.status, 'review_required');
+});
+
+test('upsertDagMessageTimeline keeps later conversation DAG revisions in their own assistant turn', () => {
+  const firstDag = {
+    dag_id: 'dag_conversation',
+    task_id: 'task_conversation',
+    version: 1,
+    status: 'completed',
+    nodes: [],
+    edges: [],
+  };
+  const secondReviewDag = {
+    ...firstDag,
+    version: 2,
+    status: 'review_required',
+  };
+  const messages = [
+    { role: 'user', content: 'first request' },
+    {
+      role: 'assistant',
+      content: 'first answer',
+      timeline: [
+        { type: 'dag', dag: firstDag },
+        { type: 'text', content: 'first answer' },
+      ],
+      dagSnapshot: firstDag,
+    },
+    { role: 'user', content: 'second request' },
+    {
+      role: 'assistant',
+      content: '',
+      timeline: [{ type: 'reasoning', content: 'planning again', closed: true }],
+    },
+  ];
+
+  const reviewed = upsertDagMessageTimeline(messages, secondReviewDag);
+  const completed = upsertDagMessageTimeline(reviewed, {
+    ...secondReviewDag,
+    status: 'completed',
+  });
+
+  assert.deepEqual(
+    completed[1].timeline.filter((item) => item.type === 'dag').map((item) => item.dag.version),
+    [1],
+  );
+  const secondDagItems = completed[3].timeline.filter((item) => item.type === 'dag');
+  assert.equal(secondDagItems.length, 1);
+  assert.equal(secondDagItems[0].dag.version, 2);
+  assert.equal(secondDagItems[0].dag.status, 'completed');
 });
 
 test('capability review rejection settles the running tool card', () => {
@@ -2806,7 +3024,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
   };
   const completedDag = {
     ...reviewDag,
-    version: 2,
     status: 'completed',
   };
   const reviewState = {
@@ -4154,7 +4371,15 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
       {
         id: 'agent_1',
         target: 'agent.capability',
-        inputs: {},
+        inputs: {
+          prompt: {
+            $expr: {
+              type: 'format',
+              template: 'Question: {query}',
+              values: {},
+            },
+          },
+        },
         artifact_inputs: ['upload_source'],
         artifact_outputs: ['report', 'missing_output'],
       },
@@ -4195,6 +4420,7 @@ test('buildRunDialogSummary surfaces files, outputs, risk, and blocking issues',
   ]);
   assert.equal(summary.canRun, false);
   assert.deepEqual(summary.issues.map((issue) => issue.message), [
+    "Node 'agent_1' has unbound template variables: query.",
     "Node 'agent_1' references unknown output artifact 'missing_output'.",
     "Node 'broken' is missing a target.",
     "Node 'broken' references unknown input artifact 'missing_input'.",

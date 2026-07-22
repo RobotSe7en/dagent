@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from string import Formatter
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 ValuePathItem: TypeAlias = str | int
@@ -45,6 +46,19 @@ class FormatExpr(BaseModel):
     template: str
     values: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_template_values(self) -> "FormatExpr":
+        try:
+            fields = _format_field_roots(self.template)
+        except ValueError as exc:
+            raise ValueError(f"Invalid format template: {exc}") from exc
+        missing = sorted(field for field in fields if field not in self.values)
+        if missing:
+            raise ValueError(
+                "Format template references missing values: " + ", ".join(missing)
+            )
+        return self
+
 
 CompareOp = Literal["eq", "ne", "gt", "ge", "lt", "le"]
 
@@ -73,6 +87,23 @@ ValueExpr = Annotated[
     GraphInputExpr | NodeOutputExpr | ArtifactExpr | FormatExpr | CompareExpr | ItemExpr,
     Field(discriminator="type"),
 ]
+
+
+def _format_field_roots(template: str) -> set[str]:
+    fields: set[str] = set()
+    for _, field_name, format_spec, _ in Formatter().parse(template):
+        if field_name is not None:
+            root = field_name
+            for marker in (".", "["):
+                marker_index = root.find(marker)
+                if marker_index != -1:
+                    root = root[:marker_index]
+            if not root or root.isdecimal():
+                raise ValueError("format fields must use named values")
+            fields.add(root)
+        if format_spec:
+            fields.update(_format_field_roots(format_spec))
+    return fields
 
 
 class ValueBinding(BaseModel):

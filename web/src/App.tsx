@@ -258,6 +258,7 @@ import {
   appendValidationTimeline,
   collapsedProcessTimelineParts,
   closeReasoningTimeline,
+  isSameDagRevision,
   isProcessTimelineItem,
   processTimelineSummary,
   shouldCollapseProcessTimeline,
@@ -297,8 +298,15 @@ import { createUiId } from './uiIds';
 import {
   bindingLabel,
   buildVariableCatalog,
+  compileTemplateSyntax,
   collectNodeOutputRefs,
+  collectUnboundFormatPlaceholders,
+  formatBindingDisplayTemplate,
+  formatBindingPlaceholders,
+  insertTemplateVariable,
+  isFormatBinding,
   isValueBinding,
+  makeFormatBinding,
   removeNodeOutputRefs,
   wouldCreateCycle,
   type VariableCatalog,
@@ -358,6 +366,7 @@ const defaultModelDraft: ModelProviderInput = {
   api_key_env: '',
   timeout_seconds: 60,
   strip_thinking: false,
+  structured_output_mode: 'json_schema',
   reasoning: null,
   extra_request_args: {},
   extra_body: {},
@@ -807,6 +816,10 @@ function validateUserDagDraft(spec: UserDag): string | null {
     if (!target) return `Node '${node.id}' needs a target.`;
     if (kind === 'skill') return `Node '${node.id}' cannot target a skill directly; use an agent target.`;
     if (node.agent && !isAgentTarget(target)) return `Node '${node.id}' has agent settings but does not target an agent.`;
+    const unboundTemplateVariables = collectUnboundFormatPlaceholders(node.inputs ?? {});
+    if (unboundTemplateVariables.length) {
+      return `Node '${node.id}' has unbound template variables: ${unboundTemplateVariables.join(', ')}.`;
+    }
   }
   for (const edge of spec.edges) {
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
@@ -2609,7 +2622,7 @@ export function App() {
   const attachDagToLastAssistant = (nextDag: Dag) => {
     setMessages((items) => upsertDagMessageTimeline(items, nextDag).map((message) => {
       const hasDag = message.timeline?.some(
-        (item) => item.type === 'dag' && (item.dag.task_id || item.dag.dag_id) === (nextDag.task_id || nextDag.dag_id),
+        (item) => item.type === 'dag' && isSameDagRevision(item.dag, nextDag),
       );
       return hasDag ? { ...message, dagSnapshot: nextDag } : message;
     }));
@@ -11045,43 +11058,139 @@ function ValueBindingEditor({
   onLiteralChange: (rawValue: string) => void;
   onChange: (value: unknown) => void;
 }) {
+  const formatBinding = isFormatBinding(value) ? value : null;
+  const formatDisplayTemplate = formatBinding ? formatBindingDisplayTemplate(formatBinding) : null;
   const isBinding = isValueBinding(value);
-  const [mode, setMode] = useState<'literal' | 'binding'>(isBinding ? 'binding' : 'literal');
+  const editableFormat = Boolean(formatBinding && formatDisplayTemplate !== null);
+  const initialMode = formatBinding ? 'template' : isBinding ? 'binding' : 'literal';
+  const [mode, setMode] = useState<'literal' | 'binding' | 'template'>(initialMode);
+  const [showTemplateVariablePicker, setShowTemplateVariablePicker] = useState(false);
+  const templateTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const templateSelectionRef = useRef({
+    start: formatDisplayTemplate?.length ?? 0,
+    end: formatDisplayTemplate?.length ?? 0,
+  });
   const optionGroups = buildVariableOptionGroups(catalog);
   const options = optionGroups.flatMap((group) => group.items);
-  const selectedValue = isBinding ? bindingOptionValue(value) : '';
+  const selectedValue = isBinding && !formatBinding ? bindingOptionValue(value) : '';
   const hasSelectedOption = Boolean(selectedValue && options.some((option) => bindingOptionValue(option.binding) === selectedValue));
+  const supportsTemplate = valueType === 'string' || Boolean(formatBinding);
+  const templatePlaceholders = formatBinding ? formatBindingPlaceholders(formatBinding) : [];
+  const templateValues = formatBinding?.$expr.values ?? {};
 
   useEffect(() => {
-    setMode(isValueBinding(value) ? 'binding' : 'literal');
+    const nextFormat = isFormatBinding(value) ? value : null;
+    if (nextFormat) {
+      setMode('template');
+    } else {
+      setMode(isValueBinding(value) ? 'binding' : 'literal');
+    }
   }, [value]);
 
   const setBindingMode = () => {
+    setShowTemplateVariablePicker(false);
     setMode('binding');
-    if (!isBinding && options[0]) {
+    if ((!isBinding || formatBinding) && options[0]) {
       onChange(options[0].binding);
     }
   };
   const setLiteralMode = () => {
+    setShowTemplateVariablePicker(false);
     setMode('literal');
-    if (isBinding) {
-      onChange('');
+    if (isBinding) onChange('');
+  };
+  const setTemplateMode = () => {
+    if (formatBinding) {
+      if (formatDisplayTemplate === null) return;
+      setMode('template');
+      return;
     }
+    if (valueType !== 'string') return;
+    setMode('template');
+    const source = typeof value === 'string' ? value : '';
+    onChange(makeFormatBinding(source));
   };
   const selectBinding = (optionValue: string) => {
     const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
     if (selected) onChange(selected.binding);
   };
+  const updateLiteral = (rawValue: string) => {
+    onLiteralChange(rawValue);
+  };
+  const commitLiteralTemplate = (rawValue: string) => {
+    const compilation = compileTemplateSyntax(rawValue);
+    if (
+      valueType === 'string'
+      && (compilation.placeholders.length || compilation.hasEscapedLiteral)
+    ) {
+      onChange(makeFormatBinding(rawValue));
+    }
+  };
+  const updateTemplate = (source: string) => {
+    onChange(makeFormatBinding(source, templateValues));
+  };
+  const rememberTemplateSelection = (textarea: HTMLTextAreaElement) => {
+    templateSelectionRef.current = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+  };
+  const insertSelectedTemplateVariable = (item: VariableCatalogItem) => {
+    if (!formatBinding || formatDisplayTemplate === null) return;
+    const insertion = insertTemplateVariable(
+      formatDisplayTemplate,
+      templateSelectionRef.current.start,
+      templateSelectionRef.current.end,
+      item,
+      templateValues,
+    );
+    templateSelectionRef.current = { start: insertion.cursor, end: insertion.cursor };
+    setShowTemplateVariablePicker(false);
+    onChange(insertion.binding);
+    requestAnimationFrame(() => {
+      const textarea = templateTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(insertion.cursor, insertion.cursor);
+    });
+  };
+  const selectTemplateValue = (name: string, optionValue: string) => {
+    if (!formatBinding) return;
+    const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
+    const values = { ...templateValues };
+    if (selected) {
+      values[name] = selected.binding;
+    } else {
+      delete values[name];
+    }
+    onChange({
+      $expr: {
+        ...formatBinding.$expr,
+        values,
+      },
+    });
+  };
 
   return (
-    <div className="value-binding-editor">
+    <div className={`value-binding-editor ${mode === 'template' ? 'template-mode' : ''}`}>
       <div className="value-binding-toggle" role="group" aria-label="参数值类型">
         <button className={mode === 'literal' ? 'active' : ''} onClick={setLiteralMode} type="button">
           固定值
         </button>
         <button className={mode === 'binding' ? 'active' : ''} onClick={setBindingMode} type="button">
-          变量
+          引用变量
         </button>
+        {supportsTemplate ? (
+          <button
+            className={mode === 'template' ? 'active' : ''}
+            onClick={setTemplateMode}
+            disabled={Boolean(formatBinding && !editableFormat)}
+            title={formatBinding && !editableFormat ? '该 format 无法在可视化模板编辑器中无损编辑' : undefined}
+            type="button"
+          >
+            模板
+          </button>
+        ) : null}
       </div>
       {mode === 'binding' ? (
         <select
@@ -11105,10 +11214,100 @@ function ValueBindingEditor({
             </optgroup>
           ))}
         </select>
+      ) : mode === 'template' && formatBinding && formatDisplayTemplate !== null ? (
+        <div className="template-binding-editor">
+          <div className="template-binding-toolbar">
+            <button
+              className="template-insert-variable-button"
+              onClick={() => setShowTemplateVariablePicker((current) => !current)}
+              disabled={!options.length}
+              aria-expanded={showTemplateVariablePicker}
+              type="button"
+            >
+              <Plus size={12} />
+              插入变量
+              <ChevronDown size={12} />
+            </button>
+          </div>
+          {showTemplateVariablePicker ? (
+            <div className="template-variable-picker" role="menu" aria-label="插入变量">
+              {optionGroups.map((group) => (
+                <section key={group.label}>
+                  <span>{group.label}</span>
+                  {group.items.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => insertSelectedTemplateVariable(item)}
+                      role="menuitem"
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </section>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            ref={templateTextareaRef}
+            value={formatDisplayTemplate}
+            onChange={(event) => {
+              rememberTemplateSelection(event.currentTarget);
+              updateTemplate(event.currentTarget.value);
+            }}
+            onBlur={(event) => rememberTemplateSelection(event.currentTarget)}
+            onSelect={(event) => rememberTemplateSelection(event.currentTarget)}
+            placeholder="使用 {{ variable }} 插入变量"
+            aria-label="模板值"
+            title={title}
+            rows={3}
+            spellCheck={false}
+          />
+          {templatePlaceholders.length ? (
+            <div className="template-binding-list">
+              {templatePlaceholders.map((name) => {
+                const boundValue = templateValues[name];
+                const boundOption = isValueBinding(boundValue) ? bindingOptionValue(boundValue) : '';
+                return (
+                  <label className={!boundOption ? 'unbound' : ''} key={name}>
+                    <code>{`{{ ${name} }}`}</code>
+                    <select
+                      value={boundOption}
+                      onChange={(event) => selectTemplateValue(name, event.target.value)}
+                      aria-label={`模板变量 ${name}`}
+                    >
+                      <option value="">选择变量...</option>
+                      {optionGroups.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.items.map((item) => (
+                            <option key={item.id} value={bindingOptionValue(item.binding)}>
+                              {item.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="template-binding-help">
+              点击“插入变量”可直接绑定；手动输入 {`{{ variable }}`} 后需选择变量来源。
+            </span>
+          )}
+        </div>
+      ) : mode === 'template' && formatBinding ? (
+        <div className="template-binding-unsupported" role="note">
+          <strong>高级 format（只读）</strong>
+          <code>{formatBinding.$expr.template}</code>
+          <span>该表达式无法在可视化模板编辑器中无损往返，可通过 Raw 模式编辑。</span>
+        </div>
       ) : (
         <input
           value={isBinding ? '' : formatArgumentValue(value)}
-          onChange={(event) => onLiteralChange(event.target.value)}
+          onChange={(event) => updateLiteral(event.target.value)}
+          onBlur={(event) => commitLiteralTemplate(event.target.value)}
           placeholder="value"
           aria-label="参数值"
           title={title}
@@ -11395,6 +11594,8 @@ function runIssueText(issue: RunDialogSummary['issues'][number]): string {
   if (issue.message === 'Add at least one node before running.') return '请先添加至少一个节点。';
   const missingTarget = issue.message.match(/^Node '([^']+)' is missing a target\.$/);
   if (missingTarget) return '节点缺少目标能力。';
+  const unboundTemplate = issue.message.match(/^Node '([^']+)' has unbound template variables: (.+)\.$/);
+  if (unboundTemplate) return `存在未绑定的模板变量：${unboundTemplate[2]}。`;
   const unknownArtifact = issue.message.match(/^Node '([^']+)' references unknown (input|output) artifact '([^']+)'\.$/);
   if (unknownArtifact) return `引用了未知 ${unknownArtifact[2] === 'input' ? '输入' : '输出'}产物 ${unknownArtifact[3]}。`;
   return issue.message;
@@ -13214,6 +13415,19 @@ function ModelManagementWorkspace({
                     <input disabled={!editable} checked={draft.strip_thinking} onChange={(event) => setDraft((current) => ({ ...current, strip_thinking: event.target.checked }))} type="checkbox" />
                     <span>{'移除 <think> 推理块'}</span>
                   </label>
+                  <label>结构化输出模式
+                    <select
+                      disabled={!editable}
+                      value={draft.structured_output_mode}
+                      onChange={(event) => setDraft((current) => ({
+                        ...current,
+                        structured_output_mode: event.target.value as ModelProviderInput['structured_output_mode'],
+                      }))}
+                    >
+                      <option value="json_schema">JSON Schema（严格）</option>
+                      <option value="json_object">JSON Object</option>
+                    </select>
+                  </label>
                   <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium"}' /></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
@@ -13251,6 +13465,7 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     api_key_env: model.api_key_env ?? '',
     timeout_seconds: model.timeout_seconds,
     strip_thinking: model.strip_thinking,
+    structured_output_mode: model.structured_output_mode,
     reasoning: model.reasoning ?? null,
     extra_request_args: model.extra_request_args ?? {},
     extra_body: model.extra_body ?? {},
