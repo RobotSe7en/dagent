@@ -31,6 +31,12 @@ export interface FlowEdgeLike {
   data?: unknown;
 }
 
+export type ConditionLiteralType = 'string' | 'number' | 'json';
+
+export type ConditionLiteralParseResult =
+  | { valid: true; value: unknown }
+  | { valid: false };
+
 export const compareOperatorOptions: Array<{ value: CompareOperator; label: string }> = [
   { value: 'eq', label: '==' },
   { value: 'ne', label: '!=' },
@@ -108,6 +114,35 @@ export function conditionVariableKey(binding: ValueBinding): string {
     });
   }
   return JSON.stringify(binding);
+}
+
+export function parseConditionLiteralDraft(
+  rawValue: string,
+  type: ConditionLiteralType,
+): ConditionLiteralParseResult {
+  if (type === 'string') return { valid: true, value: rawValue };
+  if (type === 'number') {
+    if (!rawValue.trim()) return { valid: false };
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed)
+      ? { valid: true, value: parsed }
+      : { valid: false };
+  }
+  try {
+    return { valid: true, value: JSON.parse(rawValue) };
+  } catch {
+    return { valid: false };
+  }
+}
+
+export function hasUnconditionalSiblingEdge(edges: DagEdge[], edgeIndex: number): boolean {
+  const selected = edges[edgeIndex];
+  if (!selected?.when) return false;
+  return edges.some((candidate, candidateIndex) => (
+    candidateIndex !== edgeIndex
+    && candidate.target === selected.target
+    && !candidate.when
+  ));
 }
 
 export function dagEdgesFromFlowEdges(

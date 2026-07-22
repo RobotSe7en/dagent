@@ -115,8 +115,10 @@ const {
   conditionLabel,
   conditionVariableKey,
   dagEdgesFromFlowEdges,
+  hasUnconditionalSiblingEdge,
   isConditionVariableBinding,
   makeCompareBinding,
+  parseConditionLiteralDraft,
   removeDagEdgesForNode,
   replaceIncomingEdgeSources,
   rewriteDagEdgeNodeReferences,
@@ -1226,6 +1228,40 @@ test('flow edge changes preserve conditions and dependency source edits keep sur
     currentEdges[0],
     { source: 'review', target: 'publish', reason: 'User dependency.', when: null },
   ]);
+});
+
+test('condition literal drafts distinguish incomplete text from valid values', async () => {
+  assert.deepEqual(parseConditionLiteralDraft('-', 'number'), { valid: false });
+  assert.deepEqual(parseConditionLiteralDraft('', 'number'), { valid: false });
+  assert.deepEqual(parseConditionLiteralDraft('0.', 'number'), { valid: true, value: 0 });
+  assert.deepEqual(parseConditionLiteralDraft('{', 'json'), { valid: false });
+  assert.deepEqual(parseConditionLiteralDraft('{"ready":true}', 'json'), {
+    valid: true,
+    value: { ready: true },
+  });
+  assert.deepEqual(parseConditionLiteralDraft('draft', 'string'), {
+    valid: true,
+    value: 'draft',
+  });
+  const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const inputSource = appSource.match(/function ConditionLiteralInput\([\s\S]*?\nfunction EdgeConditionEditor/)?.[0] ?? '';
+  assert.match(inputSource, /const \[draft, setDraft\] = useState\(formatted\);/);
+  assert.match(inputSource, /value=\{draft\}/);
+  assert.match(inputSource, /if \(parsed\.valid\) onChange\(parsed\.value\);/);
+  assert.match(inputSource, /onBlur=\{\(\) => \{[\s\S]*if \(!invalid\) return;[\s\S]*setDraft\(formatted\);/);
+});
+
+test('condition bypass warning detects unconditional parallel and sibling edges by index', () => {
+  const condition = makeCompareBinding(makeNodeOutputBinding('score'), 'ge', 0.8);
+  const edges = [
+    { source: 'score', target: 'publish', reason: 'conditional', when: condition },
+    { source: 'score', target: 'publish', reason: 'parallel fallback', when: null },
+    { source: 'review', target: 'publish', reason: 'sibling fallback', when: null },
+  ];
+
+  assert.equal(hasUnconditionalSiblingEdge(edges, 0), true);
+  assert.equal(hasUnconditionalSiblingEdge(edges, 1), false);
+  assert.equal(hasUnconditionalSiblingEdge(edges.slice(0, 1), 0), false);
 });
 
 test('condition edge helpers scope variables to target upstream nodes and clean references', () => {

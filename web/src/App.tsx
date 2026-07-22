@@ -237,10 +237,12 @@ import {
   conditionLabel,
   conditionVariableKey,
   dagEdgesFromFlowEdges,
+  hasUnconditionalSiblingEdge,
   isConditionVariableBinding,
   isCompareBinding,
   makeCompareBinding,
   removeDagEdgesForNode,
+  parseConditionLiteralDraft,
   replaceIncomingEdgeSources,
   rewriteDagEdgeNodeReferences,
 } from './dagConditions';
@@ -10678,9 +10680,10 @@ function OrchestrationWorkspace({
 
       {inspectorMode === 'artifacts' ? (
         <RunArtifactsInspector {...artifactPanel} />
-      ) : selectedEdge ? (
+      ) : selectedEdge && selectedEdgeIndex !== null ? (
         <EdgeConditionEditor
           edge={selectedEdge}
+          edgeIndex={selectedEdgeIndex}
           dag={dag}
           inputSchema={spec.input_schema ?? {}}
           artifacts={spec.artifacts ?? {}}
@@ -10846,8 +10849,49 @@ function OrchestrationWorkspace({
   );
 }
 
+function ConditionLiteralInput({
+  value,
+  type,
+  onChange,
+}: {
+  value: unknown;
+  type: Exclude<ArgumentValueType, 'boolean'>;
+  onChange: (value: unknown) => void;
+}) {
+  const formatted = formatArgumentValue(value);
+  const [draft, setDraft] = useState(formatted);
+  const [invalid, setInvalid] = useState(false);
+
+  useEffect(() => {
+    setDraft(formatted);
+    setInvalid(false);
+  }, [formatted, type]);
+
+  const updateDraft = (nextDraft: string) => {
+    setDraft(nextDraft);
+    const parsed = parseConditionLiteralDraft(nextDraft, type);
+    setInvalid(!parsed.valid);
+    if (parsed.valid) onChange(parsed.value);
+  };
+
+  return (
+    <input
+      className={invalid ? 'invalid' : undefined}
+      value={draft}
+      aria-invalid={invalid}
+      onChange={(event) => updateDraft(event.target.value)}
+      onBlur={() => {
+        if (!invalid) return;
+        setDraft(formatted);
+        setInvalid(false);
+      }}
+    />
+  );
+}
+
 function EdgeConditionEditor({
   edge,
+  edgeIndex,
   dag,
   inputSchema,
   artifacts,
@@ -10856,6 +10900,7 @@ function EdgeConditionEditor({
   onDelete,
 }: {
   edge: DagEdge;
+  edgeIndex: number;
   dag: Dag;
   inputSchema: Record<string, unknown>;
   artifacts: Record<string, Artifact>;
@@ -10894,11 +10939,7 @@ function EdgeConditionEditor({
       ? 'truthy'
       : 'advanced';
   const rightType = compare && !rightBinding ? argumentValueType(compare.$expr.right) : 'string';
-  const bypassed = Boolean(edge.when && dag.edges.some((candidate) => (
-    candidate.target === edge.target
-    && (candidate.source !== edge.source || candidate.target !== edge.target)
-    && !candidate.when
-  )));
+  const bypassed = hasUnconditionalSiblingEdge(dag.edges, edgeIndex);
   const bindingForValue = (value: string): ValueBinding | null => (
     variables.find((item) => conditionVariableKey(item.binding) === value)?.binding ?? null
   );
@@ -11063,12 +11104,14 @@ function EdgeConditionEditor({
                       <option value="false">false</option>
                     </select>
                   ) : (
-                    <input
-                      value={formatArgumentValue(compare.$expr.right)}
-                      onChange={(event) => patchWhen(makeCompareBinding(
+                    <ConditionLiteralInput
+                      key={`condition-literal-${edgeIndex}-${rightType}`}
+                      value={compare.$expr.right}
+                      type={rightType}
+                      onChange={(right) => patchWhen(makeCompareBinding(
                         compare.$expr.left,
                         compare.$expr.op,
-                        parseArgumentValue(event.target.value, rightType, compare.$expr.right),
+                        right,
                       ))}
                     />
                   )}
@@ -11110,13 +11153,9 @@ function EdgeConditionEditor({
   );
 }
 
-function ReviewEdgeInspector({ edge, dag }: { edge: DagEdge; dag: Dag }) {
+function ReviewEdgeInspector({ edge, edgeIndex, dag }: { edge: DagEdge; edgeIndex: number; dag: Dag }) {
   const label = conditionLabel(edge.when);
-  const bypassed = Boolean(edge.when && dag.edges.some((candidate) => (
-    candidate.target === edge.target
-    && (candidate.source !== edge.source || candidate.target !== edge.target)
-    && !candidate.when
-  )));
+  const bypassed = hasUnconditionalSiblingEdge(dag.edges, edgeIndex);
   return (
     <div className="node-inspector-body edge-review-inspector" aria-label="边检查器">
       <div className="node-inspector-title">
@@ -14641,8 +14680,8 @@ function DagReviewDialog({
             </ReactFlow>
           </section>
           <aside className="modal-side">
-            {selectedEdge ? (
-              <ReviewEdgeInspector edge={selectedEdge} dag={dag} />
+            {selectedEdge && selectedEdgeIndex !== null ? (
+              <ReviewEdgeInspector edge={selectedEdge} edgeIndex={selectedEdgeIndex} dag={dag} />
             ) : selectedNode ? (
               <>
                 <div className="node-inspector-title">

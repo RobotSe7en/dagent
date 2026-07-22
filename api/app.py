@@ -2213,7 +2213,7 @@ def _compile_user_dag(dag: UserDAG) -> Dag:
             boundary=node.boundary,
         ))
     for edge in dag.edges:
-        builder.add_edge(edge.source, edge.target, reason=edge.reason)
+        builder.add_edge(edge.source, edge.target, reason=edge.reason, when=edge.when)
     return builder
 
 
