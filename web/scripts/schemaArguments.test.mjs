@@ -111,6 +111,20 @@ const {
   '../src/orchestrationRun.ts',
 ]);
 const {
+  buildConditionVariableCatalog,
+  conditionLabel,
+  conditionVariableKey,
+  dagEdgesFromFlowEdges,
+  isConditionVariableBinding,
+  makeCompareBinding,
+  removeDagEdgesForNode,
+  replaceIncomingEdgeSources,
+  rewriteDagEdgeNodeReferences,
+} = await importTypeScriptModule('../src/dagConditions.ts', [
+  '../src/valueBindings.ts',
+  '../src/dagConditions.ts',
+]);
+const {
   appendCapabilityReviewDecisionTimeline,
   appendValidatingTimeline,
   appendValidationTimeline,
@@ -1168,6 +1182,92 @@ test('value binding helpers create labels and rewrite node output references', (
   assert.ok(catalog.nodeOutputs.some((item) => item.label === 'search.output'));
   assert.equal(catalog.nodeOutputs.some((item) => item.label === 'publish.output'), false);
   assert.ok(catalog.artifacts.some((item) => item.label === 'artifact.report.path'));
+});
+
+test('condition bindings remain valid, readable, and rewrite nested node references', () => {
+  const condition = makeCompareBinding(
+    makeNodeOutputBinding('score', 'value', ['score']),
+    'ge',
+    0.8,
+  );
+
+  assert.equal(isValueBinding(condition), true);
+  assert.equal(isConditionVariableBinding(condition), false);
+  assert.equal(isConditionVariableBinding(condition.$expr.left), true);
+  assert.equal(
+    conditionVariableKey({ $expr: { type: 'node_output', node_id: 'score' } }),
+    conditionVariableKey(makeNodeOutputBinding('score')),
+  );
+  assert.equal(conditionLabel(condition), 'IF score.output.score >= 0.8');
+  assert.deepEqual(collectNodeOutputRefs(condition), [
+    { nodeId: 'score', field: 'value', path: ['score'] },
+  ]);
+  assert.deepEqual(rewriteNodeOutputRefs(condition, 'score', 'rank'), makeCompareBinding(
+    makeNodeOutputBinding('rank', 'value', ['score']),
+    'ge',
+    0.8,
+  ));
+});
+
+test('flow edge changes preserve conditions and dependency source edits keep surviving edges intact', () => {
+  const condition = makeCompareBinding(makeNodeOutputBinding('score'), 'ge', 0.8);
+  const currentEdges = [
+    { source: 'score', target: 'publish', reason: 'high score', when: condition },
+    { source: 'draft', target: 'publish', reason: 'draft ready', when: null },
+  ];
+
+  assert.deepEqual(dagEdgesFromFlowEdges([
+    { source: 'score', target: 'publish' },
+  ], currentEdges), [currentEdges[0]]);
+  assert.deepEqual(dagEdgesFromFlowEdges([
+    { source: 'score', target: 'publish', data: { dagEdge: currentEdges[0] } },
+  ], []), [currentEdges[0]]);
+  assert.deepEqual(replaceIncomingEdgeSources(currentEdges, 'publish', ['score', 'review']), [
+    currentEdges[0],
+    { source: 'review', target: 'publish', reason: 'User dependency.', when: null },
+  ]);
+});
+
+test('condition edge helpers scope variables to target upstream nodes and clean references', () => {
+  const dag = {
+    dag_id: 'dag',
+    task_id: 'dag',
+    version: 1,
+    status: 'draft',
+    nodes: [
+      { id: 'input', payload: { type: 'start' } },
+      { id: 'score', payload: { type: 'start' } },
+      { id: 'review', payload: { type: 'start' } },
+      { id: 'unrelated', payload: { type: 'start' } },
+      { id: 'publish', payload: { type: 'start' } },
+    ],
+    edges: [
+      { source: 'input', target: 'score', reason: '', when: null },
+      { source: 'review', target: 'publish', reason: '', when: null },
+      {
+        source: 'score',
+        target: 'publish',
+        reason: '',
+        when: makeCompareBinding(makeNodeOutputBinding('score'), 'eq', true),
+      },
+    ],
+  };
+  const edge = dag.edges[2];
+  const catalog = buildConditionVariableCatalog(dag, edge);
+
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'input.output'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'score.output'));
+  assert.ok(catalog.nodeOutputs.some((item) => item.label === 'review.output'));
+  assert.equal(catalog.nodeOutputs.some((item) => item.label === 'unrelated.output'), false);
+  assert.deepEqual(rewriteDagEdgeNodeReferences([edge], 'score', 'rank'), [{
+    source: 'rank',
+    target: 'publish',
+    reason: '',
+    when: makeCompareBinding(makeNodeOutputBinding('rank'), 'eq', true),
+  }]);
+  assert.deepEqual(removeDagEdgesForNode(dag.edges, 'score'), [
+    { source: 'review', target: 'publish', reason: '', when: null },
+  ]);
 });
 
 test('variable catalog expands tool and mcp output schema properties', () => {
@@ -2687,6 +2787,8 @@ test('chat sidebar separates conversations and projects with persisted standalon
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-history-list button\s*\{[^}]*border:\s*0;[^}]*padding:\s*7px 10px;[^}]*background:\s*transparent;/s);
   assert.match(css, /\.sidebar-conversation-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
+  assert.match(css, /\.sidebar-history-list button span > svg,\s*\.sidebar-context-list button span > svg\s*\{[^}]*flex:\s*0 0 auto;/s);
+  assert.match(css, /\.sidebar-history-list strong\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 auto;[^}]*text-overflow:\s*ellipsis;/s);
   assert.match(css, /\.sidebar-conversation-row:hover,\s*\.sidebar-conversation-row\.active,\s*\.sidebar-project-tree-main:hover,\s*\.sidebar-project-tree-main\.active,\s*\.sidebar-project-conversation-row:hover,\s*\.sidebar-project-conversation-row\.active,\s*\.sidebar-saved-dag-row:hover,\s*\.sidebar-saved-dag-row\.active\s*\{[^}]*border-color:\s*#e7e8ec;[^}]*background:\s*#f0f1f4;/s);
   assert.match(css, /\.sidebar-history-list \.sidebar-conversation-delete,\s*\.sidebar-context-list \.sidebar-conversation-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-history-list \.sidebar-conversation-delete\s*\{[^}]*border-left:/s);
@@ -3292,7 +3394,7 @@ test('project sidebar is an expandable project and conversation tree', async () 
   assert.doesNotMatch(css, /\.sidebar-history-list\s*\{[^}]*border:\s*1px/s);
   assert.match(css, /\.sidebar-project-tree-row\s*\{/);
   assert.match(css, /\.sidebar-project-tree-main,\s*\.sidebar-project-conversation-row,\s*\.sidebar-saved-dag-row\s*\{[^}]*border:\s*1px solid #edf0f4;[^}]*border-radius:\s*9px;[^}]*background:\s*#fff;[^}]*overflow:\s*hidden;/s);
-  assert.match(css, /\.sidebar-project-conversation-row > button:first-child svg\s*\{[^}]*flex:\s*0 0 auto;/s);
+  assert.match(css, /\.sidebar-history-list button span > svg,\s*\.sidebar-context-list button span > svg\s*\{[^}]*flex:\s*0 0 auto;/s);
   assert.match(css, /\.sidebar-project-delete\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*0;/s);
   assert.doesNotMatch(css, /\.sidebar-project-delete\s*\{[^}]*border-left:/s);
   assert.match(css, /\.sidebar-project-delete\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;[^}]*transition:\s*opacity 120ms ease;/s);

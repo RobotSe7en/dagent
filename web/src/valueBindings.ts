@@ -226,6 +226,12 @@ export function bindingLabel(binding: ValueBinding, _context: BindingLabelContex
   if (expr.type === 'format') {
     return `format(${expr.template})`;
   }
+  if (expr.type === 'compare') {
+    return 'comparison';
+  }
+  if (expr.type === 'item') {
+    return pathLabel('item', expr.path);
+  }
   return 'value binding';
 }
 
@@ -260,6 +266,15 @@ export function rewriteNodeOutputRefs<T>(value: T, oldNodeId: string, nextNodeId
         $expr: {
           ...expr,
           values: rewriteNodeOutputRefs(expr.values ?? {}, oldNodeId, nextNodeId),
+        },
+      } as T;
+    }
+    if (expr.type === 'compare') {
+      return {
+        $expr: {
+          ...expr,
+          left: rewriteNodeOutputRefs(expr.left, oldNodeId, nextNodeId),
+          right: rewriteNodeOutputRefs(expr.right, oldNodeId, nextNodeId),
         },
       } as T;
     }
@@ -320,6 +335,18 @@ function removeNodeOutputRefsInner(value: unknown, nodeId: string): unknown {
         $expr: {
           ...expr,
           values: removeNodeOutputRefsInner(expr.values ?? {}, nodeId),
+        },
+      };
+    }
+    if (expr.type === 'compare') {
+      const left = removeNodeOutputRefsInner(expr.left, nodeId);
+      const right = removeNodeOutputRefsInner(expr.right, nodeId);
+      if (left === undefined || right === undefined) return undefined;
+      return {
+        $expr: {
+          ...expr,
+          left,
+          right,
         },
       };
     }
@@ -506,7 +533,7 @@ function escapeLiteralTemplateTokens(value: string): string {
   return value.replace(/(\{\{\s*[\p{L}_][\p{L}\p{N}_]*\s*\}\})/gu, '\\$1');
 }
 
-function upstreamNodeIds(edges: DagEdge[], targetNodeId: string): Set<string> {
+export function upstreamNodeIds(edges: DagEdge[], targetNodeId: string): Set<string> {
   const incoming = new Map<string, string[]>();
   for (const edge of edges) {
     const sources = incoming.get(edge.target) ?? [];
@@ -531,6 +558,9 @@ function visitValues(value: unknown, visitor: (value: unknown) => void): void {
     const expr = value.$expr;
     if (expr.type === 'format') {
       visitValues(expr.values ?? {}, visitor);
+    } else if (expr.type === 'compare') {
+      visitValues(expr.left, visitor);
+      visitValues(expr.right, visitor);
     }
     return;
   }
@@ -561,6 +591,12 @@ function isValueExpr(value: unknown): value is ValueExpr {
     return typeof value.template === 'string'
       && (value.values === undefined || isRecord(value.values));
   }
+  if (value.type === 'compare') {
+    return ['eq', 'ne', 'gt', 'ge', 'lt', 'le'].includes(String(value.op))
+      && Object.prototype.hasOwnProperty.call(value, 'left')
+      && Object.prototype.hasOwnProperty.call(value, 'right');
+  }
+  if (value.type === 'item') return optionalPath(value.path);
   return false;
 }
 

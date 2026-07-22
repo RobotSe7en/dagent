@@ -49,12 +49,15 @@ export interface ApiRunSummary {
 }
 
 export type ValuePathItem = string | number;
+export type CompareOperator = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
 
 export type ValueExpr =
   | { type: 'graph_input'; path?: ValuePathItem[] }
   | { type: 'node_output'; node_id: string; field?: 'value' | 'content' | 'status' | 'steps'; path?: ValuePathItem[] }
   | { type: 'artifact'; artifact_id: string; field?: 'path' | 'paths' | 'absolute_path' | 'absolute_paths' }
-  | { type: 'format'; template: string; values?: Record<string, unknown> };
+  | { type: 'format'; template: string; values?: Record<string, unknown> }
+  | { type: 'compare'; op: CompareOperator; left: unknown; right: unknown }
+  | { type: 'item'; path?: ValuePathItem[] };
 
 export interface ValueBinding {
   $expr: ValueExpr;
@@ -149,6 +152,7 @@ export interface DagEdge {
   source: string;
   target: string;
   reason: string;
+  when?: ValueBinding | null;
 }
 
 export interface DagSpec {

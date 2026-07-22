@@ -22,6 +22,10 @@ The current package version is `0.7.4`.
   The editor persists the existing structured `format` expression, so SDK and
   API request shapes do not change. Existing format expressions that cannot
   round-trip through the visual syntax remain unchanged and read-only.
+- Web DAG canvases distinguish conditional edges and show compact condition
+  labels. The static-DAG edge inspector edits truthiness and comparison
+  conditions with scoped variable pickers; unsupported expressions remain
+  read-only and are preserved unchanged.
 
 ### Changed
 
