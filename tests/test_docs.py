@@ -46,6 +46,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "`reference_content`" in collapsed_english_unreleased
     assert "separate user-message section" in collapsed_english_unreleased
     assert "`{{ variable }}` templates" in collapsed_english_unreleased
+    assert "manually typed placeholders require an explicit picker selection" in collapsed_english_unreleased
     assert 'mcp_stdio_stderr="inherit"' in english_074
     assert "mcp-stderr.log" in english_074
     assert "strict internal JSON Schema" in english_073
@@ -90,6 +91,7 @@ def test_migration_notes_record_release_history() -> None:
     assert "`reference_content`" in collapsed_chinese_unreleased
     assert "独立的 user-message 区块" in collapsed_chinese_unreleased
     assert "`{{ variable }}` 模板" in collapsed_chinese_unreleased
+    assert "手动输入的占位符必须通过选择器显式绑定" in collapsed_chinese_unreleased
     assert 'mcp_stdio_stderr="inherit"' in chinese_074
     assert "mcp-stderr.log" in chinese_074
     assert "internal strict JSON Schema" in chinese_073

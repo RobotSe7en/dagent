@@ -42,6 +42,14 @@ export type FormatValueBinding = ValueBinding & {
 export interface TemplateCompilation {
   template: string;
   placeholders: string[];
+  hasEscapedLiteral: boolean;
+}
+
+export interface TemplateVariableInsertion {
+  source: string;
+  placeholder: string;
+  cursor: number;
+  binding: FormatValueBinding;
 }
 
 const templateVariablePattern = /^[\p{L}_][\p{L}\p{N}_]*$/u;
@@ -82,10 +90,12 @@ export function makeArtifactBinding(artifactId: string, field: ArtifactField = '
 
 export function compileTemplateSyntax(source: string): TemplateCompilation {
   const placeholders: string[] = [];
+  let hasEscapedLiteral = false;
   let template = '';
   let index = 0;
   while (index < source.length) {
     if (source[index] === '\\' && source.slice(index + 1, index + 3) === '{{') {
+      hasEscapedLiteral = true;
       const close = source.indexOf('}}', index + 3);
       const end = close === -1 ? source.length : close + 2;
       template += escapeFormatLiteral(source.slice(index + 1, end));
@@ -116,12 +126,11 @@ export function compileTemplateSyntax(source: string): TemplateCompilation {
     }
     index += 1;
   }
-  return { template, placeholders };
+  return { template, placeholders, hasEscapedLiteral };
 }
 
 export function makeFormatBinding(
   source: string,
-  catalog: VariableCatalog | null,
   previousValues: Record<string, unknown> = {},
 ): FormatValueBinding {
   const compilation = compileTemplateSyntax(source);
@@ -129,10 +138,7 @@ export function makeFormatBinding(
   for (const name of compilation.placeholders) {
     if (Object.prototype.hasOwnProperty.call(previousValues, name)) {
       values[name] = previousValues[name];
-      continue;
     }
-    const matches = templateVariableMatches(name, catalog);
-    if (matches.length === 1) values[name] = matches[0].binding;
   }
   return {
     $expr: {
@@ -140,6 +146,35 @@ export function makeFormatBinding(
       template: compilation.template,
       values,
     },
+  };
+}
+
+export function insertTemplateVariable(
+  source: string,
+  selectionStart: number,
+  selectionEnd: number,
+  item: VariableCatalogItem,
+  previousValues: Record<string, unknown> = {},
+): TemplateVariableInsertion {
+  const compilation = compileTemplateSyntax(source);
+  const existingName = compilation.placeholders.find((name) => (
+    isValueBinding(previousValues[name])
+    && sameValueBinding(previousValues[name], item.binding)
+  ));
+  const usedNames = new Set([...compilation.placeholders, ...Object.keys(previousValues)]);
+  const placeholder = existingName ?? uniqueTemplatePlaceholderName(item, usedNames);
+  const token = `{{ ${placeholder} }}`;
+  const first = Math.max(0, Math.min(source.length, selectionStart));
+  const second = Math.max(0, Math.min(source.length, selectionEnd));
+  const start = Math.min(first, second);
+  const end = Math.max(first, second);
+  const nextSource = `${source.slice(0, start)}${token}${source.slice(end)}`;
+  const nextValues = { ...previousValues, [placeholder]: item.binding };
+  return {
+    source: nextSource,
+    placeholder,
+    cursor: start + token.length,
+    binding: makeFormatBinding(nextSource, nextValues),
   };
 }
 
@@ -375,41 +410,36 @@ function artifactCatalogItems(artifact: Artifact): VariableCatalogItem[] {
   }));
 }
 
-function templateVariableMatches(name: string, catalog: VariableCatalog | null): VariableCatalogItem[] {
-  if (!catalog) return [];
-  const normalizedName = normalizeTemplateAlias(name);
-  const matches = new Map<string, VariableCatalogItem>();
-  for (const item of [...catalog.graphInputs, ...catalog.nodeOutputs, ...catalog.artifacts]) {
-    if (templateVariableAliases(item).includes(normalizedName)) matches.set(item.id, item);
-  }
-  return [...matches.values()];
+function uniqueTemplatePlaceholderName(item: VariableCatalogItem, usedNames: Set<string>): string {
+  const base = templatePlaceholderBase(item);
+  if (!usedNames.has(base)) return base;
+  let suffix = 2;
+  while (usedNames.has(`${base}_${suffix}`)) suffix += 1;
+  return `${base}_${suffix}`;
 }
 
-function templateVariableAliases(item: VariableCatalogItem): string[] {
-  const aliases = new Set<string>([
-    normalizeTemplateAlias(item.id),
-    normalizeTemplateAlias(item.label),
-  ]);
-  const parts = item.id.split('.');
-  if (parts[0] === 'graph_input') {
-    const path = parts.slice(1);
-    aliases.add(normalizeTemplateAlias(`dag_input_${path.join('_') || 'value'}`));
-    if (path.length) {
-      aliases.add(normalizeTemplateAlias(path[path.length - 1]));
-    } else {
-      aliases.add('input');
-    }
-  } else if (parts[0] === 'node' && parts.length >= 3) {
-    const nodeId = parts[1];
-    const field = parts[2] === 'value' ? 'output' : parts[2];
-    const path = parts.slice(3);
-    aliases.add(normalizeTemplateAlias([nodeId, field, ...path].join('_')));
-    if (parts[2] === 'value' && !path.length) aliases.add(normalizeTemplateAlias(nodeId));
-    if (path.length) aliases.add(normalizeTemplateAlias(path[path.length - 1]));
-  } else if (parts[0] === 'artifact' && parts.length >= 3) {
-    aliases.add(normalizeTemplateAlias(`${parts[1]}_${parts[2]}`));
+function templatePlaceholderBase(item: VariableCatalogItem): string {
+  const expr = item.binding.$expr;
+  let parts: ValuePathItem[];
+  if (expr.type === 'graph_input') {
+    parts = expr.path?.length ? expr.path : ['input'];
+  } else if (expr.type === 'node_output') {
+    parts = [
+      expr.node_id,
+      expr.field === undefined || expr.field === 'value' ? 'output' : expr.field,
+      ...(expr.path ?? []),
+    ];
+  } else if (expr.type === 'artifact') {
+    parts = [expr.artifact_id, expr.field ?? 'path'];
+  } else {
+    parts = ['variable'];
   }
-  return [...aliases].filter(Boolean);
+  const normalized = normalizeTemplateAlias(parts.map(String).join('_')) || 'variable';
+  return templateVariablePattern.test(normalized) ? normalized : `value_${normalized}`;
+}
+
+function sameValueBinding(left: ValueBinding, right: ValueBinding): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function normalizeTemplateAlias(value: string): string {
@@ -466,6 +496,9 @@ function parseRuntimeFormat(template: string): { display: string | null; placeho
       ? `{{ ${segment.value} }}`
       : escapeLiteralTemplateTokens(segment.value)
   )).join('');
+  if (compileTemplateSyntax(display).template !== template) {
+    return { display: null, placeholders };
+  }
   return { display, placeholders };
 }
 

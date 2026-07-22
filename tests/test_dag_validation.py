@@ -81,6 +81,29 @@ def test_format_value_expression_allows_literal_braces() -> None:
     assert expression is not None
 
 
+@pytest.mark.parametrize(
+    ("template", "values"),
+    [
+        ("{amount:.2f}", {"amount": 1.5}),
+        ("{user[name]}", {"user": {"name": "Ada"}}),
+        ("{{{value}}}", {"value": "wrapped"}),
+    ],
+)
+def test_format_value_expression_allows_advanced_python_formats(
+    template: str,
+    values: dict[str, object],
+) -> None:
+    expression = parse_value_binding({
+        "$expr": {
+            "type": "format",
+            "template": template,
+            "values": values,
+        }
+    })
+
+    assert expression is not None
+
+
 def test_dag_must_have_at_least_one_node() -> None:
     dag = DAG(dag_id="dag_1", task_id="task_1")
 

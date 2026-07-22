@@ -89,6 +89,7 @@ const {
   collectNodeOutputRefs,
   formatBindingDisplayTemplate,
   formatBindingPlaceholders,
+  insertTemplateVariable,
   isFormatBinding,
   isValueBinding,
   makeArtifactBinding,
@@ -1276,53 +1277,37 @@ test('variable catalog expands tool and mcp output schema properties', () => {
   );
 });
 
-test('double-brace templates compile literals and auto-bind unique variables', () => {
-  const catalog = buildVariableCatalog(
-    {
-      dag_id: 'dag',
-      task_id: 'dag',
-      version: 1,
-      status: 'draft',
-      nodes: [
-        { id: 'answer', payload: { type: 'start' } },
-      ],
-      edges: [],
-    },
-    'answer',
-    { properties: { query: { type: 'string' } } },
-  );
+test('double-brace templates compile literals without guessing variable bindings', () => {
   const source = '问题：{{ query }}\nJSON: {"enabled": true}\nLiteral: \\{{ raw }}';
-  const binding = makeFormatBinding(source, catalog);
+  const binding = makeFormatBinding(source);
 
   assert.equal(isFormatBinding(binding), true);
   assert.deepEqual(compileTemplateSyntax(source), {
     template: '问题：{query}\nJSON: {{"enabled": true}}\nLiteral: {{{{ raw }}}}',
     placeholders: ['query'],
+    hasEscapedLiteral: true,
   });
-  assert.deepEqual(binding.$expr.values, {
-    query: makeGraphInputBinding(['query']),
-  });
+  assert.deepEqual(binding.$expr.values, {});
   assert.equal(formatBindingDisplayTemplate(binding), source);
   assert.deepEqual(formatBindingPlaceholders(binding), ['query']);
-  assert.deepEqual(collectUnboundFormatPlaceholders({ prompt: binding }), []);
+  assert.deepEqual(collectUnboundFormatPlaceholders({ prompt: binding }), ['query']);
 
-  const wholeInputCatalog = buildVariableCatalog(
-    {
-      dag_id: 'dag',
-      task_id: 'dag',
-      version: 1,
-      status: 'draft',
-      nodes: [{ id: 'answer', payload: { type: 'start' } }],
-      edges: [],
-    },
-    'answer',
-  );
-  assert.deepEqual(makeFormatBinding('Input: {{ input }}', wholeInputCatalog).$expr.values, {
-    input: makeGraphInputBinding(),
+  const escapedOnly = makeFormatBinding('\\{{ raw }}');
+  assert.deepEqual(compileTemplateSyntax('\\{{ raw }}'), {
+    template: '{{{{ raw }}}}',
+    placeholders: [],
+    hasEscapedLiteral: true,
+  });
+  assert.deepEqual(escapedOnly.$expr.values, {});
+  assert.equal(formatBindingDisplayTemplate(escapedOnly), '\\{{ raw }}');
+  assert.deepEqual(compileTemplateSyntax('{"enabled": true}'), {
+    template: '{{"enabled": true}}',
+    placeholders: [],
+    hasEscapedLiteral: false,
   });
 });
 
-test('ambiguous template variables remain unbound until a selection is preserved', () => {
+test('insert variable binds the selected source and creates collision-safe placeholders', () => {
   const catalog = buildVariableCatalog(
     {
       dag_id: 'dag',
@@ -1353,22 +1338,45 @@ test('ambiguous template variables remain unbound until a selection is preserved
       },
     }],
   );
-  const unbound = makeFormatBinding('Question: {{ query }}', catalog);
+  const graphQuery = catalog.graphInputs.find((item) => item.id === 'graph_input.query');
+  const searchOutput = catalog.nodeOutputs.find((item) => item.id === 'node.search.value');
+  assert.ok(graphQuery);
+  assert.ok(searchOutput);
 
-  assert.deepEqual(unbound.$expr.values, {});
-  assert.deepEqual(collectUnboundFormatPlaceholders(unbound), ['query']);
+  const queryInsertion = insertTemplateVariable('Question: ', 10, 10, graphQuery);
+  assert.equal(queryInsertion.source, 'Question: {{ query }}');
+  assert.equal(queryInsertion.placeholder, 'query');
+  assert.equal(queryInsertion.cursor, queryInsertion.source.length);
+  assert.deepEqual(queryInsertion.binding.$expr.values, {
+    query: makeGraphInputBinding(['query']),
+  });
+  assert.deepEqual(collectUnboundFormatPlaceholders(queryInsertion.binding), []);
 
-  const automaticNodeOutput = makeFormatBinding('Evidence: {{ search_output }}', catalog);
-  assert.deepEqual(automaticNodeOutput.$expr.values, {
+  const nodeInsertion = insertTemplateVariable('Evidence: ', 10, 10, searchOutput);
+  assert.equal(nodeInsertion.source, 'Evidence: {{ search_output }}');
+  assert.deepEqual(nodeInsertion.binding.$expr.values, {
     search_output: makeNodeOutputBinding('search'),
   });
-  assert.deepEqual(collectNodeOutputRefs(automaticNodeOutput), [
+  assert.deepEqual(collectNodeOutputRefs(nodeInsertion.binding), [
     { nodeId: 'search', field: 'value', path: [] },
   ]);
 
+  const collision = insertTemplateVariable(
+    '{{ search_output }} ',
+    20,
+    20,
+    searchOutput,
+    { search_output: makeGraphInputBinding(['query']) },
+  );
+  assert.equal(collision.placeholder, 'search_output_2');
+  assert.equal(collision.source, '{{ search_output }} {{ search_output_2 }}');
+  assert.deepEqual(collision.binding.$expr.values, {
+    search_output: makeGraphInputBinding(['query']),
+    search_output_2: makeNodeOutputBinding('search'),
+  });
+
   const selected = makeFormatBinding(
     'Question: {{ query }}',
-    catalog,
     { query: makeNodeOutputBinding('search', 'value', ['query']) },
   );
   assert.deepEqual(selected.$expr.values, {
@@ -1377,6 +1385,36 @@ test('ambiguous template variables remain unbound until a selection is preserved
   assert.deepEqual(collectNodeOutputRefs(selected), [
     { nodeId: 'search', field: 'value', path: ['query'] },
   ]);
+});
+
+test('runtime formats only enter visual template mode when they round-trip exactly', () => {
+  const advanced = {
+    $expr: {
+      type: 'format',
+      template: '{amount:.2f}',
+      values: { amount: 1.5 },
+    },
+  };
+  const indexed = {
+    $expr: {
+      type: 'format',
+      template: '{user[name]}',
+      values: { user: { name: 'Ada' } },
+    },
+  };
+  const ambiguousBraces = {
+    $expr: {
+      type: 'format',
+      template: '{{{value}}}',
+      values: { value: makeGraphInputBinding(['value']) },
+    },
+  };
+
+  assert.equal(formatBindingDisplayTemplate(advanced), null);
+  assert.equal(formatBindingDisplayTemplate(indexed), null);
+  assert.equal(formatBindingDisplayTemplate(ambiguousBraces), null);
+  assert.deepEqual(formatBindingPlaceholders(ambiguousBraces), ['value']);
+  assert.equal(ambiguousBraces.$expr.template, '{{{value}}}');
 });
 
 test('updated orchestration and tools workspaces use real backend data with the design shell', async () => {
@@ -1507,11 +1545,18 @@ test('updated orchestration and tools workspaces use real backend data with the 
   assert.match(orchestrationSource, /键值/);
   assert.match(orchestrationSource, /Raw/);
   assert.match(orchestrationSource, /固定值/);
-  assert.match(orchestrationSource, /变量/);
+  assert.match(orchestrationSource, /引用变量/);
   assert.match(orchestrationSource, /模板/);
+  assert.match(orchestrationSource, /插入变量/);
   assert.match(orchestrationSource, /使用 \{\{ variable \}\} 插入变量/);
+  assert.match(orchestrationSource, /insertTemplateVariable\(/);
+  assert.match(orchestrationSource, /compilation\.placeholders\.length \|\| compilation\.hasEscapedLiteral/);
+  assert.match(orchestrationSource, /该 format 无法在可视化模板编辑器中无损编辑/);
   assert.match(orchestrationSource, /className="template-binding-list"/);
+  assert.match(orchestrationSource, /className="template-binding-unsupported"/);
   assert.match(css, /\.template-binding-editor\s*\{/);
+  assert.match(css, /\.template-insert-variable-button\s*\{/);
+  assert.match(css, /\.template-variable-picker\s*\{/);
   assert.match(appSource, /function ValueBindingEditor/);
   assert.match(appSource, /function CanvasViewportControls/);
   assert.match(appSource, /const flowInstance = useReactFlow\(\);/);

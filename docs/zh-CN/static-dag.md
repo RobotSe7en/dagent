@@ -109,19 +109,23 @@ capability 的顶层 `output_schema.properties`。例如结构化工具结果
 `search.output.url`。没有 output schema 的 capability 仍只暴露整体
 `node.output`。
 
-Web UI 的字符串参数也支持双花括号模板。输入完整占位符并离开输入框后，字段会自动切换到
-模板模式：
+Web UI 的字符串参数也支持双花括号模板。切换到模板模式后，使用“插入变量”选择 graph
+input、节点输出或 artifact；编辑器会在光标位置插入占位符，并直接绑定选中的来源：
 
 ```text
 问题：{{ query }}
 参考：{{ search_output }}
 ```
 
-编辑器会把这段文本编译为现有的结构化 `format` expression。当且仅当一个 graph input、
-上游节点输出或 artifact alias 匹配时，占位符会自动绑定；有歧义或未知的占位符会显示变量
-选择器，并在完成绑定前阻止保存和运行。选择上游输出时也会添加显式 dependency edge。
+编辑器会把这段文本编译为现有的结构化 `format` expression。也可以手动输入
+`{{ variable }}`，但编辑器不会根据名称推断来源：手动输入的占位符会显示变量选择器，并在
+完成绑定前阻止保存和运行。选择上游输出时也会添加显式 dependency edge。生成的占位符
+发生重名时会添加数字后缀，例如 `query_2`。
+
 普通单花括号保持字面量，因此可以直接粘贴 JSON；需要原样输出 `{{ token }}` 时，在双花括号
-前加 `\`。
+前加 `\`，即使模板没有变量也会消费该转义。已有 Python format expression 如果包含 format
+spec、索引字段或其他无法通过可视化语法无损往返的形式，Web UI 会原样保留并以只读方式展示；
+这类表达式可在 Raw 模式中编辑。
 
 SDK value references 不会创建 edges。Web 模板编辑器会为了编辑便利自动添加 edge；
 在 Python 中仍需显式添加 dependencies：

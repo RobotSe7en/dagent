@@ -13,9 +13,10 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 静态和动态 DAG 的 agent capability 调用新增可选参数 `reference_content`。非空内容
   会作为 task data 放入独立的 user-message 区块；内容为空时不改变组装后的 prompt。
   schema 驱动的 WebUI 会展示该参数，并支持绑定 graph input、artifacts 或上游节点输出。
-- Web 静态 DAG 的字符串参数现在会识别 `{{ variable }}` 模板。唯一变量会自动绑定；存在
-  歧义时必须通过选择器显式绑定。编辑器仍持久化现有的结构化 `format` expression，因此
-  SDK 和 API request shape 不变。
+- Web 静态 DAG 的字符串参数现在会识别 `{{ variable }}` 模板。模板编辑器可以在光标位置
+  插入并直接绑定选中的变量；手动输入的占位符必须通过选择器显式绑定。编辑器仍持久化现有
+  的结构化 `format` expression，因此 SDK 和 API request shape 不变。无法通过可视化语法
+  无损往返的已有 format expression 会保持原样并以只读方式展示。
 
 ### 迁移
 

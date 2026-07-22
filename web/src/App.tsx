@@ -302,6 +302,7 @@ import {
   collectUnboundFormatPlaceholders,
   formatBindingDisplayTemplate,
   formatBindingPlaceholders,
+  insertTemplateVariable,
   isFormatBinding,
   isValueBinding,
   makeFormatBinding,
@@ -11059,8 +11060,14 @@ function ValueBindingEditor({
   const formatDisplayTemplate = formatBinding ? formatBindingDisplayTemplate(formatBinding) : null;
   const isBinding = isValueBinding(value);
   const editableFormat = Boolean(formatBinding && formatDisplayTemplate !== null);
-  const initialMode = editableFormat ? 'template' : isBinding ? 'binding' : 'literal';
+  const initialMode = formatBinding ? 'template' : isBinding ? 'binding' : 'literal';
   const [mode, setMode] = useState<'literal' | 'binding' | 'template'>(initialMode);
+  const [showTemplateVariablePicker, setShowTemplateVariablePicker] = useState(false);
+  const templateTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const templateSelectionRef = useRef({
+    start: formatDisplayTemplate?.length ?? 0,
+    end: formatDisplayTemplate?.length ?? 0,
+  });
   const optionGroups = buildVariableOptionGroups(catalog);
   const options = optionGroups.flatMap((group) => group.items);
   const selectedValue = isBinding && !formatBinding ? bindingOptionValue(value) : '';
@@ -11071,7 +11078,7 @@ function ValueBindingEditor({
 
   useEffect(() => {
     const nextFormat = isFormatBinding(value) ? value : null;
-    if (nextFormat && formatBindingDisplayTemplate(nextFormat) !== null) {
+    if (nextFormat) {
       setMode('template');
     } else {
       setMode(isValueBinding(value) ? 'binding' : 'literal');
@@ -11079,20 +11086,27 @@ function ValueBindingEditor({
   }, [value]);
 
   const setBindingMode = () => {
+    setShowTemplateVariablePicker(false);
     setMode('binding');
     if ((!isBinding || formatBinding) && options[0]) {
       onChange(options[0].binding);
     }
   };
   const setLiteralMode = () => {
+    setShowTemplateVariablePicker(false);
     setMode('literal');
     if (isBinding) onChange('');
   };
   const setTemplateMode = () => {
+    if (formatBinding) {
+      if (formatDisplayTemplate === null) return;
+      setMode('template');
+      return;
+    }
+    if (valueType !== 'string') return;
     setMode('template');
-    if (formatBinding && formatDisplayTemplate !== null) return;
     const source = typeof value === 'string' ? value : '';
-    onChange(makeFormatBinding(source, catalog));
+    onChange(makeFormatBinding(source));
   };
   const selectBinding = (optionValue: string) => {
     const selected = options.find((option) => bindingOptionValue(option.binding) === optionValue);
@@ -11102,12 +11116,41 @@ function ValueBindingEditor({
     onLiteralChange(rawValue);
   };
   const commitLiteralTemplate = (rawValue: string) => {
-    if (valueType === 'string' && compileTemplateSyntax(rawValue).placeholders.length) {
-      onChange(makeFormatBinding(rawValue, catalog));
+    const compilation = compileTemplateSyntax(rawValue);
+    if (
+      valueType === 'string'
+      && (compilation.placeholders.length || compilation.hasEscapedLiteral)
+    ) {
+      onChange(makeFormatBinding(rawValue));
     }
   };
   const updateTemplate = (source: string) => {
-    onChange(makeFormatBinding(source, catalog, templateValues));
+    onChange(makeFormatBinding(source, templateValues));
+  };
+  const rememberTemplateSelection = (textarea: HTMLTextAreaElement) => {
+    templateSelectionRef.current = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+  };
+  const insertSelectedTemplateVariable = (item: VariableCatalogItem) => {
+    if (!formatBinding || formatDisplayTemplate === null) return;
+    const insertion = insertTemplateVariable(
+      formatDisplayTemplate,
+      templateSelectionRef.current.start,
+      templateSelectionRef.current.end,
+      item,
+      templateValues,
+    );
+    templateSelectionRef.current = { start: insertion.cursor, end: insertion.cursor };
+    setShowTemplateVariablePicker(false);
+    onChange(insertion.binding);
+    requestAnimationFrame(() => {
+      const textarea = templateTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(insertion.cursor, insertion.cursor);
+    });
   };
   const selectTemplateValue = (name: string, optionValue: string) => {
     if (!formatBinding) return;
@@ -11133,10 +11176,16 @@ function ValueBindingEditor({
           固定值
         </button>
         <button className={mode === 'binding' ? 'active' : ''} onClick={setBindingMode} type="button">
-          变量
+          引用变量
         </button>
         {supportsTemplate ? (
-          <button className={mode === 'template' ? 'active' : ''} onClick={setTemplateMode} type="button">
+          <button
+            className={mode === 'template' ? 'active' : ''}
+            onClick={setTemplateMode}
+            disabled={Boolean(formatBinding && !editableFormat)}
+            title={formatBinding && !editableFormat ? '该 format 无法在可视化模板编辑器中无损编辑' : undefined}
+            type="button"
+          >
             模板
           </button>
         ) : null}
@@ -11165,9 +11214,47 @@ function ValueBindingEditor({
         </select>
       ) : mode === 'template' && formatBinding && formatDisplayTemplate !== null ? (
         <div className="template-binding-editor">
+          <div className="template-binding-toolbar">
+            <button
+              className="template-insert-variable-button"
+              onClick={() => setShowTemplateVariablePicker((current) => !current)}
+              disabled={!options.length}
+              aria-expanded={showTemplateVariablePicker}
+              type="button"
+            >
+              <Plus size={12} />
+              插入变量
+              <ChevronDown size={12} />
+            </button>
+          </div>
+          {showTemplateVariablePicker ? (
+            <div className="template-variable-picker" role="menu" aria-label="插入变量">
+              {optionGroups.map((group) => (
+                <section key={group.label}>
+                  <span>{group.label}</span>
+                  {group.items.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => insertSelectedTemplateVariable(item)}
+                      role="menuitem"
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </section>
+              ))}
+            </div>
+          ) : null}
           <textarea
+            ref={templateTextareaRef}
             value={formatDisplayTemplate}
-            onChange={(event) => updateTemplate(event.target.value)}
+            onChange={(event) => {
+              rememberTemplateSelection(event.currentTarget);
+              updateTemplate(event.currentTarget.value);
+            }}
+            onBlur={(event) => rememberTemplateSelection(event.currentTarget)}
+            onSelect={(event) => rememberTemplateSelection(event.currentTarget)}
             placeholder="使用 {{ variable }} 插入变量"
             aria-label="模板值"
             title={title}
@@ -11203,8 +11290,16 @@ function ValueBindingEditor({
               })}
             </div>
           ) : (
-            <span className="template-binding-help">输入完整的 {`{{ variable }}`} 后自动绑定。</span>
+            <span className="template-binding-help">
+              点击“插入变量”可直接绑定；手动输入 {`{{ variable }}`} 后需选择变量来源。
+            </span>
           )}
+        </div>
+      ) : mode === 'template' && formatBinding ? (
+        <div className="template-binding-unsupported" role="note">
+          <strong>高级 format（只读）</strong>
+          <code>{formatBinding.$expr.template}</code>
+          <span>该表达式无法在可视化模板编辑器中无损往返，可通过 Raw 模式编辑。</span>
         </div>
       ) : (
         <input
