@@ -674,8 +674,8 @@ class DAGAgentLoop:
             task_id=task_id,
             capabilities=capabilities,
         )
-        prepared.dag_id = record.dag.dag_id
-        prepared.version = record.dag.version + 1
+        prepared.dag_id = pending_review.proposed_dag.dag_id
+        prepared.version = pending_review.proposed_dag.version
         prepared = self.prepare_for_review(prepared, record.capability_scope.capability_ids)
 
         rerun_nodes = set(pending_review.rerun_nodes)
@@ -923,14 +923,15 @@ class DAGAgentLoop:
                     validation_error=str(exc),
                 )
                 continue
-            if record.pending_review is None and record.dag_spec is not None:
-                active_executor.configure_spec(
-                    record.dag_spec,
-                    graph_input={"request": record.user_request},
-                    artifact_states={} if trace is None else trace.artifacts,
-                )
-                failed_node_id = None
-            _emit_dag(on_dag, record.dag)
+            if record.pending_review is None:
+                if record.dag_spec is not None:
+                    active_executor.configure_spec(
+                        record.dag_spec,
+                        graph_input={"request": record.user_request},
+                        artifact_states={} if trace is None else trace.artifacts,
+                    )
+                    failed_node_id = None
+                _emit_dag(on_dag, record.dag)
             pending_observation = None
 
             # Review gate
@@ -1100,7 +1101,7 @@ class DAGAgentLoop:
     ) -> RunTrace | None:
         if record.pending_review is not None and trace is None and record.trace is None:
             record.dag.status = "review_required"
-            _emit_dag(on_dag, record.dag)
+            _emit_dag(on_dag, record.pending_review.proposed_dag)
             return None
         trace = trace or record.trace or _empty_run_trace(run_id=record.run_id, dag=record.dag)
         node_traces = _node_traces_by_id(trace)
@@ -1121,7 +1122,12 @@ class DAGAgentLoop:
             record.dag.status = "completed" if completed else "failed"
             _sync_dag_node_statuses(record.dag, node_traces)
 
-        _emit_dag(on_dag, record.dag)
+        visible_dag = (
+            record.pending_review.proposed_dag
+            if record.pending_review is not None
+            else record.dag
+        )
+        _emit_dag(on_dag, visible_dag)
         return trace
 
     def prepare_for_review(
@@ -1724,12 +1730,12 @@ def _changed_node_ids(current: DAG, proposed: DAG) -> set[str]:
         if _node_semantic_dump(current_node) != _node_semantic_dump(proposed_node):
             changed.add(node_id)
     current_edges = {
-        json.dumps(edge.model_dump(mode="json"), sort_keys=True)
+        json.dumps(_edge_semantic_dump(edge), sort_keys=True)
         for edge in current.edges
         if edge.source != "start" and edge.target != "start"
     }
     proposed_edges = {
-        json.dumps(edge.model_dump(mode="json"), sort_keys=True)
+        json.dumps(_edge_semantic_dump(edge), sort_keys=True)
         for edge in proposed.edges
         if edge.source != "start" and edge.target != "start"
     }
@@ -1828,6 +1834,7 @@ def _node_artifact_ids(node: DAGNode) -> set[str]:
 
 def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
     dumped = node.model_dump(mode="json")
+    dumped.pop("title", None)
     dumped.pop("status", None)
     _strip_node_host_fields(
         dumped,
@@ -1835,6 +1842,12 @@ def _node_semantic_dump(node: DAGNode) -> dict[str, Any]:
         strip_node_statuses=False,
         strip_metadata=False,
     )
+    return dumped
+
+
+def _edge_semantic_dump(edge: DAGEdge) -> dict[str, Any]:
+    dumped = edge.model_dump(mode="json")
+    dumped.pop("reason", None)
     return dumped
 
 
@@ -1961,14 +1974,12 @@ def _planner_response_schema_context(response_format: StructuredOutputFormat) ->
     return (
         "## Required Planner Response JSON Schema\n"
         "Return one JSON object that conforms exactly to this schema.\n\n"
-        "```json\n"
         + json.dumps(
             response_format.schema,
             ensure_ascii=False,
             sort_keys=True,
-            indent=2,
+            separators=(",", ":"),
         )
-        + "\n```"
     )
 
 

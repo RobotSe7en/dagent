@@ -191,7 +191,6 @@ def test_multi_node_dag_without_edges_is_rejected() -> None:
 
 def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
     spec = _normalize_graph({
-        "name": "parallel",
         "nodes": [
             _planner_capability_node("a", "tool.echo", text="a"),
             _planner_capability_node("b", "tool.echo", text="b"),
@@ -214,7 +213,6 @@ def test_compile_inserts_internal_start_node_for_parallel_roots() -> None:
 
 def test_explicit_dag_start_is_rejected_as_reserved_internal_node() -> None:
     graph = _planner_graph({
-        "name": "explicit start",
         "nodes": [_planner_capability_node("start", "tool.echo", text="a")],
     })
 
@@ -228,7 +226,6 @@ def test_normalizer_rejects_unknown_capability_id() -> None:
         match="Unknown capability 'tool.missing'. Available capabilities: tool.echo.",
     ):
         _normalize_graph({
-            "name": "unknown",
             "nodes": [_planner_capability_node("missing", "tool.missing", text="a")],
         })
 
@@ -236,7 +233,6 @@ def test_normalizer_rejects_unknown_capability_id() -> None:
 def test_normalizer_uses_registered_non_tool_capability() -> None:
     spec = _normalize_graph(
         {
-            "name": "memory read",
             "nodes": [_planner_capability_node("read", "memory.read", key="notes")],
         },
         capabilities=[_capability("memory.read", kind="memory")],
@@ -250,7 +246,6 @@ def test_normalizer_uses_registered_non_tool_capability() -> None:
 def test_normalizer_uses_stable_capability_id_not_function_name() -> None:
     spec = _normalize_graph(
         {
-            "name": "named tool",
             "nodes": [_planner_capability_node("lookup", "tool.lookup", query="dagent")],
         },
         capabilities=[CapabilityDefinition(id="tool.lookup", kind="tool", name="search")],
@@ -263,7 +258,6 @@ def test_normalizer_uses_stable_capability_id_not_function_name() -> None:
 def test_normalizer_infers_boundary_for_command_capability() -> None:
     spec = _normalize_graph(
         {
-            "name": "run command",
             "nodes": [_planner_capability_node(
                 "run",
                 "tool.shell",
@@ -291,7 +285,6 @@ def test_normalizer_infers_boundary_for_command_capability() -> None:
 
 def test_planner_schema_rejects_node_goal_and_instructions() -> None:
     graph = _planner_graph({
-        "name": "requirements",
         "nodes": [{
             **_planner_capability_node(
                 "write_requirements",
@@ -309,7 +302,6 @@ def test_planner_schema_rejects_node_goal_and_instructions() -> None:
 def test_normalizer_preserves_agent_prompt_argument() -> None:
     spec = _normalize_graph(
         {
-            "name": "requirements",
             "nodes": [_planner_capability_node(
                 "write_requirements",
                 "agent.helper",
@@ -553,7 +545,6 @@ def _planner_capability_node(node_id: str, capability_id: str, **arguments):
     return {
         "type": "capability",
         "id": node_id,
-        "title": "",
         "inputs": [],
         "outputs": [],
         "capability_id": capability_id,
@@ -566,8 +557,6 @@ def _planner_capability_node(node_id: str, capability_id: str, **arguments):
 
 def _planner_graph(overrides: dict) -> dict:
     return {
-        "name": "test",
-        "description": "",
         "artifacts": [],
         "nodes": [],
         "edges": [],

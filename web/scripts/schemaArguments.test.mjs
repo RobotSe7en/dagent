@@ -2213,12 +2213,8 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
-  assert.match(typesSource, /export type StructuredOutputMode = 'json_schema' \| 'json_object';/);
-  assert.match(typesSource, /structured_output_mode: StructuredOutputMode;/);
-  assert.match(modelSource, /结构化输出模式/);
-  assert.match(modelSource, /<option value="json_schema">JSON Schema（严格）<\/option>/);
-  assert.match(modelSource, /<option value="json_object">JSON Object<\/option>/);
-  assert.match(modelSource, /structured_output_mode: event\.target\.value/);
+  assert.doesNotMatch(typesSource, /StructuredOutputMode|structured_output_mode/);
+  assert.doesNotMatch(modelSource, /结构化输出模式|structured_output_mode/);
   assert.match(onlyOfficeSource, /文档配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
@@ -2448,6 +2444,37 @@ test('upsertDagMessageTimeline keeps later conversation DAG revisions in their o
   assert.equal(secondDagItems.length, 1);
   assert.equal(secondDagItems[0].dag.version, 2);
   assert.equal(secondDagItems[0].dag.status, 'completed');
+});
+
+test('upsertDagMessageTimeline distinguishes different DAG ids at the same task version', () => {
+  const firstDag = {
+    dag_id: 'dag_first',
+    task_id: 'task_conversation',
+    version: 1,
+    status: 'completed',
+    nodes: [],
+    edges: [],
+  };
+  const secondDag = {
+    ...firstDag,
+    dag_id: 'dag_second',
+    status: 'review_required',
+  };
+  const messages = [
+    {
+      role: 'assistant',
+      content: 'first answer',
+      timeline: [{ type: 'dag', dag: firstDag }],
+    },
+    { role: 'user', content: 'second request' },
+    { role: 'assistant', content: '', timeline: [] },
+  ];
+
+  const next = upsertDagMessageTimeline(messages, secondDag);
+
+  assert.equal(next[0].timeline[0].dag.dag_id, 'dag_first');
+  assert.equal(next[2].timeline.filter((item) => item.type === 'dag').length, 1);
+  assert.equal(next[2].timeline[0].dag.dag_id, 'dag_second');
 });
 
 test('capability review rejection settles the running tool card', () => {

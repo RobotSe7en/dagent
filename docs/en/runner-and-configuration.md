@@ -61,7 +61,6 @@ provider = dagent.Provider(
     api_key_env="DEEPSEEK_API_KEY",
     timeout_seconds=60,
     strip_thinking=False,
-    structured_output_mode="json_object",
     reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
     extra_request_args={},
     extra_body={},
@@ -72,14 +71,11 @@ Use `reasoning` for common reasoning controls. Use `extra_request_args` and
 `extra_body` only for provider-specific parameters supported by the target
 endpoint.
 
-`structured_output_mode` controls how the OpenAI-compatible adapter transports
-a runtime JSON Schema contract. The default, `json_schema`, sends the complete
-schema through `response_format`. Select `json_object` when the target endpoint
-supports JSON mode but not JSON Schema mode. In that mode dagent sends
-`{"type": "json_object"}`; dynamic DAG planning still receives the complete
-schema in its system prompt and validates the returned object locally. This is
-an explicit endpoint capability setting: dagent does not infer it from provider
-or model names and does not silently downgrade after an error.
+For structured planner calls, dagent injects one compact copy of the complete
+runtime JSON Schema into the system prompt and validates the returned object
+locally. The built-in OpenAI-compatible provider requests
+`{"type": "json_object"}`; it does not send `response_format.type="json_schema"`
+or select behavior from provider or model names.
 
 `timeout_seconds` controls the provider request timeout. Tool-agent and dynamic
 DAG planning/replanning calls retry failed or timed-out LLM requests up to five
@@ -108,7 +104,6 @@ provider:
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-pro"
   api_key_env: "DEEPSEEK_API_KEY"
-  structured_output_mode: json_object
   reasoning:
     enabled: true
     effort: "high"
@@ -192,9 +187,7 @@ onlyoffice:
 The WebUI model list includes the project `config.yaml` provider plus user
 `model_providers`. If `active_model` names a user model, the backend rebuilds
 the runner with that provider; otherwise the project `config.yaml` provider
-remains the default. The model editor exposes `structured_output_mode` under
-advanced settings with `JSON Schema` and `JSON Object` choices. The WebUI
-registers both project and user MCP servers.
+remains the default. The WebUI registers both project and user MCP servers.
 Project `mcp_servers` win on name conflicts, and conflicting user MCP entries
 are reported instead of silently overriding project configuration.
 The backend also applies the project-level `planner_frontend` when rebuilding a

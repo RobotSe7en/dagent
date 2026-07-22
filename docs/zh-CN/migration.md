@@ -18,9 +18,25 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
   的结构化 `format` expression，因此 SDK 和 API request shape 不变。无法通过可视化语法
   无损往返的已有 format expression 会保持原样并以只读方式展示。
 
+### 改变
+
+- Internal `typed_spec` planner response 现在只包含可执行意图。Graph name/description、
+  node title 和 edge reason 不再由模型生成；host 负责补齐 canonical graph identity，纯展示
+  字段的变化也不会再让已完成 DAG 结果失效。
+- 默认 `typed_spec` planner contract 现在只接受 capability node；模型侧的 Map、Subgraph、
+  Loop 和 item expression 构图继续由 `sdk_builder` 提供，public static-DAG SDK 也保持完整
+  支持。Canonical `DAGSpec` 执行能力不变。
+- Structured planner call 现在统一使用一条传输路径：完整 compact schema 注入 system
+  prompt，内置 OpenAI-compatible provider 请求 `response_format.type="json_object"`。
+  SDK、YAML、API 和 WebUI 中的 `structured_output_mode` 设置已删除。
+
 ### 迁移
 
 - 现有 agent 节点无需修改，因为 `reference_content` 默认是空字符串。
+- 返回 `typed_spec` planner fixture 的 deterministic provider 需要删除上述展示字段。
+  Map、Subgraph 或 Loop proposal 需要改写为 capability-node graph；如果模型必须生成复杂
+  控制流，请改用 `sdk_builder`。Canonical `DAGSpec` 和公开 static-DAG SDK shape 保持不变。
+- 从 Provider 构造、配置文件和模型管理 payload 中删除 `structured_output_mode`。
 
 ## 0.7.4
 

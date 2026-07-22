@@ -140,16 +140,20 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
     )
 
 
-def test_typed_planner_schema_is_injected_into_system_message() -> None:
+def test_typed_planner_system_message_contains_compact_response_schema() -> None:
     agent = dag_agent_for(dag_loop_for(MockProvider([])))
 
-    schema_json = json.dumps(
+    compact_schema = json.dumps(
         planner_response_format().schema,
         ensure_ascii=False,
         sort_keys=True,
-        indent=2,
+        separators=(",", ":"),
     )
-    assert f"```json\n{schema_json}\n```" in agent.system_message["content"]
+    assert (
+        "## Required Planner Response JSON Schema\n"
+        "Return one JSON object that conforms exactly to this schema.\n\n"
+        + compact_schema
+    ) in agent.system_message["content"]
 
 
 def dag_response_from_dag(
@@ -359,7 +363,7 @@ def test_llm_dag_agent_normalizes_typed_plan_into_dag() -> None:
         edges=[DAGEdge(source="list_files", target="show_result")],
     )
     provider = MockProvider([
-        ChatResponse(content=typed_response_from_dag(planned, name="inspect project"))
+        ChatResponse(content=typed_response_from_dag(planned))
     ])
     dag_loop = dag_loop_for(provider)
 

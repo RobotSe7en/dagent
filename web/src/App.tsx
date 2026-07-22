@@ -366,7 +366,6 @@ const defaultModelDraft: ModelProviderInput = {
   api_key_env: '',
   timeout_seconds: 60,
   strip_thinking: false,
-  structured_output_mode: 'json_schema',
   reasoning: null,
   extra_request_args: {},
   extra_body: {},
@@ -13415,19 +13414,6 @@ function ModelManagementWorkspace({
                     <input disabled={!editable} checked={draft.strip_thinking} onChange={(event) => setDraft((current) => ({ ...current, strip_thinking: event.target.checked }))} type="checkbox" />
                     <span>{'移除 <think> 推理块'}</span>
                   </label>
-                  <label>结构化输出模式
-                    <select
-                      disabled={!editable}
-                      value={draft.structured_output_mode}
-                      onChange={(event) => setDraft((current) => ({
-                        ...current,
-                        structured_output_mode: event.target.value as ModelProviderInput['structured_output_mode'],
-                      }))}
-                    >
-                      <option value="json_schema">JSON Schema（严格）</option>
-                      <option value="json_object">JSON Object</option>
-                    </select>
-                  </label>
                   <label>Reasoning JSON<textarea disabled={!editable} value={reasoningText} onChange={(event) => setReasoningText(event.target.value)} placeholder='{"enabled": true, "effort": "medium"}' /></label>
                   <label>Extra Request Args<textarea disabled={!editable} value={extraRequestArgsText} onChange={(event) => setExtraRequestArgsText(event.target.value)} /></label>
                   <label>Extra Body<textarea disabled={!editable} value={extraBodyText} onChange={(event) => setExtraBodyText(event.target.value)} /></label>
@@ -13465,7 +13451,6 @@ function modelInputFromProvider(model: ModelProvider): ModelProviderInput {
     api_key_env: model.api_key_env ?? '',
     timeout_seconds: model.timeout_seconds,
     strip_thinking: model.strip_thinking,
-    structured_output_mode: model.structured_output_mode,
     reasoning: model.reasoning ?? null,
     extra_request_args: model.extra_request_args ?? {},
     extra_body: model.extra_body ?? {},

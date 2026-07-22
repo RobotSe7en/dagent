@@ -16,20 +16,15 @@ from dagent.harness_runtime.dag_builder import (
 )
 from dagent.harness_runtime.planner_schema import (
     PlannerArtifactValue,
-    PlannerCapabilityNode,
     PlannerCompareValue,
     PlannerFormatValue,
     PlannerGraph,
     PlannerGraphInputValue,
-    PlannerItemValue,
     PlannerListValue,
     PlannerLiteralValue,
-    PlannerMapNode,
     PlannerNamedValue,
     PlannerNodeOutputValue,
     PlannerObjectValue,
-    PlannerSubgraphNode,
-    PlannerLoopNode,
     PlannerValue,
 )
 from dagent.schemas import (
@@ -180,8 +175,6 @@ def planner_value_to_native(value: PlannerValue) -> Any:
             "left": planner_value_to_native(value.left),
             "right": planner_value_to_native(value.right),
         })
-    if isinstance(value, PlannerItemValue):
-        return bind_value_expr({"type": "item", "path": value.path})
     raise TypeError(f"Unsupported planner value: {type(value).__name__}.")
 
 
@@ -200,85 +193,17 @@ def _normalize_graph(
     nodes: list[DAGNode] = []
     for planner_node in graph.nodes:
         current_node = current_nodes.get(planner_node.id)
-        if isinstance(planner_node, PlannerCapabilityNode):
-            definition = _definition(definitions, planner_node.capability_id)
-            arguments = _normalized_arguments(planner_node.arguments, definition)
-            invocation = _invocation(
-                definition,
-                arguments,
-                current_node=current_node,
-                map_node=False,
-            )
-            payload = CapabilityNodePayload(type="capability", invocation=invocation)
-        elif isinstance(planner_node, PlannerMapNode):
-            definition = _definition(definitions, planner_node.capability_id)
-            arguments = _normalized_arguments(planner_node.arguments, definition)
-            invocation = _invocation(
-                definition,
-                arguments,
-                current_node=current_node,
-                map_node=True,
-            )
-            payload = MapNodePayload(
-                type="map",
-                items=planner_value_to_native(planner_node.items),
-                invocation=invocation,
-                max_items=planner_node.max_items,
-                max_concurrency=planner_node.max_concurrency,
-            )
-        elif isinstance(planner_node, PlannerSubgraphNode):
-            current_spec = (
-                current_node.payload.spec
-                if current_node is not None and isinstance(current_node.payload, SubgraphNodePayload)
-                else None
-            )
-            payload = SubgraphNodePayload(
-                type="subgraph",
-                spec=_normalize_graph(
-                    planner_node.graph,
-                    spec_id=f"{spec_id}.{planner_node.id}.subgraph",
-                    version=version,
-                    definitions=definitions,
-                    current=current_spec,
-                    input_schema=_planner_value_schema(
-                        planner_node.input,
-                        nodes=graph.nodes,
-                        definitions=definitions,
-                        input_schema=input_schema,
-                    ),
-                ),
-                input=None if planner_node.input is None else planner_value_to_native(planner_node.input),
-            )
-        elif isinstance(planner_node, PlannerLoopNode):
-            current_spec = (
-                current_node.payload.body
-                if current_node is not None and isinstance(current_node.payload, LoopNodePayload)
-                else None
-            )
-            payload = LoopNodePayload(
-                type="loop",
-                body=_normalize_graph(
-                    planner_node.body,
-                    spec_id=f"{spec_id}.{planner_node.id}.loop",
-                    version=version,
-                    definitions=definitions,
-                    current=current_spec,
-                    input_schema=_planner_value_schema(
-                        planner_node.input,
-                        nodes=graph.nodes,
-                        definitions=definitions,
-                        input_schema=input_schema,
-                    ),
-                ),
-                until=planner_value_to_native(planner_node.until),
-                max_iterations=planner_node.max_iterations,
-                input=None if planner_node.input is None else planner_value_to_native(planner_node.input),
-            )
-        else:
-            raise TypeError(f"Unsupported planner node: {type(planner_node).__name__}.")
+        definition = _definition(definitions, planner_node.capability_id)
+        arguments = _normalized_arguments(planner_node.arguments, definition)
+        invocation = _invocation(
+            definition,
+            arguments,
+            current_node=current_node,
+            map_node=False,
+        )
+        payload = CapabilityNodePayload(type="capability", invocation=invocation)
         nodes.append(DAGNode(
             id=planner_node.id,
-            title=planner_node.title,
             payload=payload,
             status="planned",
             inputs=list(planner_node.inputs),
@@ -299,7 +224,6 @@ def _normalize_graph(
         DAGEdge(
             source=edge.source,
             target=edge.target,
-            reason=edge.reason,
             when=None if edge.when is None else planner_value_to_native(edge.when),
         )
         for edge in graph.edges
@@ -307,9 +231,8 @@ def _normalize_graph(
     _add_internal_start(nodes, edges)
     return DAGSpec(
         id=spec_id,
-        name=graph.name or spec_id,
+        name=spec_id,
         version=version,
-        description=graph.description,
         input_schema=deepcopy(input_schema),
         artifacts=artifacts,
         nodes=nodes,
@@ -805,105 +728,3 @@ def _native_value_schema(
             "required": list(value),
         }
     return _literal_schema(value)
-
-
-def _planner_value_schema(
-    value: PlannerValue | None,
-    *,
-    nodes: list[Any],
-    definitions: dict[str, CapabilityDefinition],
-    input_schema: dict[str, Any],
-) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, PlannerLiteralValue):
-        return _literal_schema(value.value)
-    if isinstance(value, PlannerListValue):
-        return {
-            "type": "array",
-            "items": (
-                _planner_value_schema(
-                    value.items[0],
-                    nodes=nodes,
-                    definitions=definitions,
-                    input_schema=input_schema,
-                )
-                if value.items
-                else {}
-            ),
-        }
-    if isinstance(value, PlannerObjectValue):
-        return {
-            "type": "object",
-            "properties": {
-                entry.name: _planner_value_schema(
-                    entry.value,
-                    nodes=nodes,
-                    definitions=definitions,
-                    input_schema=input_schema,
-                )
-                for entry in value.entries
-            },
-            "required": [entry.name for entry in value.entries],
-        }
-    if isinstance(value, PlannerGraphInputValue):
-        return _schema_at_path(input_schema, value.path) or {}
-    if isinstance(value, PlannerNodeOutputValue):
-        source = next((node for node in nodes if node.id == value.node_id), None)
-        schema = _planner_node_output_schema(source, value.field, definitions)
-        return _schema_at_path(schema, value.path) or {}
-    if isinstance(value, PlannerArtifactValue):
-        return {
-            "type": "array" if value.field in {"paths", "absolute_paths"} else "string",
-            **(
-                {"items": {"type": "string"}}
-                if value.field in {"paths", "absolute_paths"}
-                else {}
-            ),
-        }
-    if isinstance(value, PlannerFormatValue):
-        return {"type": "string"}
-    if isinstance(value, PlannerCompareValue):
-        return {"type": "boolean"}
-    return {}
-
-
-def _planner_node_output_schema(
-    node: Any,
-    field: str,
-    definitions: dict[str, CapabilityDefinition],
-) -> dict[str, Any]:
-    if field == "content":
-        return {"type": "string"}
-    if field == "status":
-        return {"type": "string"}
-    if field == "steps":
-        return {"type": "array", "items": {}}
-    if isinstance(node, PlannerCapabilityNode):
-        definition = definitions.get(node.capability_id)
-        return {} if definition is None else definition.output_schema
-    if isinstance(node, PlannerMapNode):
-        definition = definitions.get(node.capability_id)
-        return {
-            "type": "array",
-            "items": {} if definition is None else definition.output_schema,
-        }
-    if isinstance(node, PlannerSubgraphNode):
-        return _planner_graph_output_schema(node.graph, definitions)
-    if isinstance(node, PlannerLoopNode):
-        return _planner_graph_output_schema(node.body, definitions)
-    return {}
-
-
-def _planner_graph_output_schema(
-    graph: PlannerGraph,
-    definitions: dict[str, CapabilityDefinition],
-) -> dict[str, Any]:
-    if graph.output is None:
-        return {"type": "null"}
-    return _planner_value_schema(
-        graph.output,
-        nodes=graph.nodes,
-        definitions=definitions,
-        input_schema={},
-    )

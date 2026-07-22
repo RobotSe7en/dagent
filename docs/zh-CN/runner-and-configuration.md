@@ -55,7 +55,6 @@ provider = dagent.Provider(
     api_key_env="DEEPSEEK_API_KEY",
     timeout_seconds=60,
     strip_thinking=False,
-    structured_output_mode="json_object",
     reasoning={"enabled": True, "effort": "high", "budget_tokens": 1024},
     extra_request_args={},
     extra_body={},
@@ -65,12 +64,10 @@ provider = dagent.Provider(
 使用 `reasoning` 传递常见 reasoning controls。只有当目标 endpoint 支持对应字段时，
 才使用 `extra_request_args` 和 `extra_body` 传递 provider-specific 参数。
 
-`structured_output_mode` 控制 OpenAI-compatible adapter 如何传递 runtime JSON Schema
-contract。默认值 `json_schema` 会通过 `response_format` 发送完整 schema；当目标 endpoint
-支持 JSON mode、但不支持 JSON Schema mode 时，显式选择 `json_object`。在该模式下，
-dagent 会发送 `{"type": "json_object"}`；动态 DAG planner 仍会在 system prompt 中收到
-完整 schema，并在本地校验返回对象。这个配置描述 endpoint 能力：dagent 不会根据 provider
-或 model 名称推断，也不会在请求报错后静默降级。
+对于 structured planner call，dagent 会在 system prompt 中注入一份完整的 compact runtime
+JSON Schema，并在本地校验返回对象。内置 OpenAI-compatible provider 固定请求
+`{"type": "json_object"}`，不再发送 `response_format.type="json_schema"`，也不会根据
+provider 或 model 名称选择不同路径。
 
 `timeout_seconds` 控制 provider request timeout。Tool-agent 和动态 DAG 的 planning/replanning
 LLM 调用会在请求失败或超时时最多重试 5 次，重试前分别等待 `1`、`2`、`5`、`10`、`30` 秒。
@@ -97,7 +94,6 @@ provider:
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-pro"
   api_key_env: "DEEPSEEK_API_KEY"
-  structured_output_mode: json_object
   reasoning:
     enabled: true
     effort: "high"
@@ -175,9 +171,7 @@ onlyoffice:
 
 WebUI 的模型列表包含项目 `config.yaml` provider 和用户配置中的 `model_providers`。
 如果 `active_model` 指向一个用户模型，backend 会用该 provider 重建 runner；否则项目
-`config.yaml` provider 仍是默认模型。模型编辑器会在高级配置中提供
-`structured_output_mode` 的 `JSON Schema` 与 `JSON Object` 选项。WebUI 会同时注册项目和
-用户 MCP servers。同名冲突时，
+`config.yaml` provider 仍是默认模型。WebUI 会同时注册项目和用户 MCP servers。同名冲突时，
 项目 `mcp_servers` 优先；冲突的用户 MCP 条目会被报告，而不是静默覆盖项目配置。
 Backend 使用用户选择的 model 重建 runner 时，也会应用项目级 `planner_frontend`。这是
 service-wide setting；message request 和 WebUI 不提供 per-request override。

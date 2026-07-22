@@ -1525,7 +1525,6 @@ def _dag_agent_dsl(
         capability_id,
         arguments,
         node_id=node_id,
-        name="mock",
     )
 
 
