@@ -29,13 +29,14 @@ Restricted SDK builder（阶段二）──┘        ├─ review
 核心原则：
 
 - `DAGSpec` 是持久化、fingerprint、review 和执行使用的唯一 canonical IR。
-- 动态 planner 不再受 capability-only PlanSpec 的表达能力限制。
+- 默认 typed planner 有意采用精简的 capability-node contract；模型生成的复杂控制流隔离在
+  optional restricted Builder frontend 中。
 - planner 只声明执行意图；provider、handler、risk、boundary、workspace、运行状态和
   invocation identity 仍由 `Runner` 与 host 拥有。
 - 所有 planner frontend 最终进入同一套 normalization、validation、review 和 execution
   路径，不保留重复执行实现。
-- 条件、Map 和 Loop 必须使用结构化表达式和显式上限；不接受任意可执行条件代码或无界
-  控制流。
+- 条件使用结构化表达式；Builder 生成的 Map 和 Loop 使用显式上限。不接受任意可执行条件
+  代码或无界控制流。
 
 ## 阶段一：类型化 Planner Spec 到 DAGSpec
 
@@ -48,14 +49,13 @@ Restricted SDK builder（阶段二）──┘        ├─ review
   - `propose_plan`
   - `no_change`
   - `final_answer`
-- planner-facing spec 与 `DAGSpec` 尽量一一对应，但排除 host-owned 字段。
-- 第一批节点类型覆盖：
-  - capability/agent invocation
-  - map fan-out
-  - embedded subgraph
-  - bounded loop
+- planner-facing spec 与 `DAGSpec` 尽量一一对应，但排除 graph name/description、node
+  title 和 edge reason 等 host-owned identity/display 字段。
+- typed response contract 只保留 capability/agent invocation node；固定并行任务使用多个
+  capability node 表达。Map fan-out、embedded Subgraph 和 bounded Loop 继续通过
+  `sdk_builder` 与 public static-DAG SDK 提供。
 - edge 支持结构化 `when` condition。
-- 支持 graph input、node output/content/status/steps、item、artifact 和 format value
+- 支持 graph input、node output/content/status/steps、artifact、format 和 comparison value
   expressions。
 - 支持显式 DAG output 和 artifact producer/consumer 声明。
 
@@ -79,8 +79,8 @@ Planner 输出按以下顺序处理：
 2. 使用稳定 capability id 在 scope-filtered catalog 中解析 capability。
 3. 从 catalog 补齐 kind、risk、boundary、default arguments 和其他 host-owned metadata。
 4. 生成 canonical `DAGSpec`。
-5. 调用 `validate_dag_spec(...)`，递归检查依赖、value expressions、artifacts、subgraphs
-   和有界控制流。
+5. 调用 `validate_dag_spec(...)`，按所有 DAG source 共用的 canonical contract 检查依赖、
+   value expressions 和 artifacts。
 6. 对规范化后的 `DAGSpec` 进行 review、fingerprint 和执行。
 
 Validation 失败时，应把结构化字段路径和具体错误返回 planner 修复。未知字段或不支持的
@@ -103,7 +103,8 @@ Validation 失败时，应把结构化字段路径和具体错误返回 planner 
 ### 第一阶段验收标准
 
 - Structured output 能稳定区分 plan、no-change 和 final answer。
-- 动态 planner 能生成并执行条件边、并行分支、Map、Loop 和 Subgraph 的代表性用例。
+- typed planner 能生成并执行条件边和并行 capability node 的代表性用例；Builder frontend
+  覆盖 Map、Loop 和 Subgraph 构图。
 - 所有 capability 引用、output path 和 artifact dependency 都经过 fail-closed validation。
 - Planner 无法声明或扩大 host-owned risk、boundary 和 runtime configuration。
 - Parser 不再静默忽略未知 planner 行或字段。

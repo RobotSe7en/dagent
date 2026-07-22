@@ -33,8 +33,10 @@ action depends on the latest observation.
 
 `DagAgent` asks the model for a strict typed plan, normalizes it to `DAGSpec`,
 executes ready layers, observes results, and replans locally when needed.
-Dynamic plans can use the same conditional, map, subgraph, loop, artifact, and
-value-expression semantics as static specs.
+The default `typed_spec` frontend keeps model output to capability nodes,
+conditional edges, artifacts, and value expressions. The optional
+`sdk_builder` frontend can additionally author maps, subgraphs, and bounded
+loops. Both normalize to the same static-DAG execution contracts.
 
 `AutoAgent` lets the runtime choose direct tool use or dynamic DAG planning for
 each request.

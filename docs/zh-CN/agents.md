@@ -117,15 +117,17 @@ source；两者都会先规范化为 canonical `DAGSpec`，再进入校验、rev
 node 使用 `tool.search` 这类稳定 id；kind、risk、boundary、defaults 和 invocation identity
 由 host 补齐。
 
-类型化动态 plan 支持 capability/agent、map、subgraph 和 bounded loop nodes、显式条件边、
-artifacts、graph output 和 structured value references，并与静态 DAG 共用 validator 和
-executor。
+类型化动态 plan 支持 capability/agent node、显式条件边、artifacts、graph output 和
+structured value references。为了保持模型侧 contract 紧凑，typed planner 不开放 Map、
+Subgraph 和 Loop 构图。Graph identity 由 host 补齐，纯展示用途的 graph description、
+node title 和 edge reason 不要求模型生成。规范化后的 plan 仍与静态 DAG 共用 validator
+和 executor。
 
 `typed_spec` 仍是默认值。需要 code-oriented authoring 时，可用
 `planner_frontend="sdk_builder"` 构造 runner。模型源码只允许 straight-line、allowlisted
-Builder subset，绝不会传给 `exec` 或 `eval`。它可以表达相同的 Map、Subgraph、bounded
-Loop、artifact、reference、output 和条件边；review 和持久化的对象始终是 canonical
-`DAGSpec`，而不是 source。
+Builder subset，绝不会传给 `exec` 或 `eval`。它还可以表达 Map、Subgraph、bounded Loop、
+artifact、reference、output 和条件边；review 和持久化的对象始终是 canonical `DAGSpec`，
+而不是 source。
 
 ```python
 agent = dagent.DagAgent(
@@ -151,9 +153,8 @@ if result.requires_review and result.review is not None:
 进行后续 replan。
 
 用于 `DagAgent` 的 custom provider 必须在 `chat(...)` 和 `stream_chat(...)` 中实现
-`response_format` keyword，并遵守严格 JSON Schema structured output。内置 `Provider`
-会把该 contract 映射为 OpenAI-compatible Chat Completions 的 `json_schema` response
-format。
+`response_format` keyword，并返回符合 system prompt 中 compact JSON Schema 的对象。
+内置 `Provider` 使用 OpenAI-compatible Chat Completions 的 `json_object` response format。
 
 运行离线 dynamic DAG 示例：
 

@@ -82,7 +82,6 @@ from dagent import (
 from dagent.config import (
     DEFAULT_RUNS_DIR,
     DEFAULT_WORKSPACE,
-    StructuredOutputMode,
     UserDagentConfig,
     UserModelProviderConfig,
     UserOnlyOfficeConfig,
@@ -418,7 +417,6 @@ class ModelProviderRequest(BaseModel):
     api_key_env: str | None = None
     timeout_seconds: float = 60
     strip_thinking: bool = False
-    structured_output_mode: StructuredOutputMode = "json_schema"
     reasoning: dict[str, Any] | None = None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -436,7 +434,6 @@ class ModelProviderPayload(BaseModel):
     api_key_saved: bool
     timeout_seconds: float
     strip_thinking: bool
-    structured_output_mode: StructuredOutputMode
     reasoning: dict[str, Any] | None = None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -3640,7 +3637,6 @@ def _provider_kwargs(model: ModelProviderRequest) -> dict[str, Any]:
         "api_key_env": model.api_key_env,
         "timeout_seconds": model.timeout_seconds,
         "strip_thinking": model.strip_thinking,
-        "structured_output_mode": model.structured_output_mode,
         "reasoning": model.reasoning,
         "extra_request_args": dict(model.extra_request_args),
         "extra_body": dict(model.extra_body),
@@ -3662,7 +3658,6 @@ def _model_request_from_user_config(model_id: str, model: UserModelProviderConfi
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
         strip_thinking=model.strip_thinking,
-        structured_output_mode=model.structured_output_mode,
         reasoning=model.reasoning.model_dump(mode="json") if model.reasoning is not None else None,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
@@ -3678,7 +3673,6 @@ def _user_model_provider_config(model: ModelProviderRequest) -> UserModelProvide
         api_key_env=model.api_key_env,
         timeout_seconds=model.timeout_seconds,
         strip_thinking=model.strip_thinking,
-        structured_output_mode=model.structured_output_mode,
         reasoning=model.reasoning,
         extra_request_args=dict(model.extra_request_args),
         extra_body=dict(model.extra_body),
@@ -3735,7 +3729,6 @@ def _config_model_payload(*, active: bool) -> ModelProviderPayload:
         api_key_saved=bool(provider.api_key),
         timeout_seconds=provider.timeout_seconds,
         strip_thinking=provider.strip_thinking,
-        structured_output_mode=provider.structured_output_mode,
         reasoning=provider.reasoning.model_dump(mode="json") if provider.reasoning is not None else None,
         extra_request_args=_redact_json_secrets(provider.extra_request_args),
         extra_body=_redact_json_secrets(provider.extra_body),
@@ -3755,7 +3748,6 @@ def _user_model_payload(model: ModelProviderRequest, *, active: bool) -> ModelPr
         api_key_saved=bool(model.api_key),
         timeout_seconds=model.timeout_seconds,
         strip_thinking=model.strip_thinking,
-        structured_output_mode=model.structured_output_mode,
         reasoning=model.reasoning,
         extra_request_args=_redact_json_secrets(model.extra_request_args),
         extra_body=_redact_json_secrets(model.extra_body),

@@ -30,8 +30,9 @@ provider clients、sessions 或 capability handlers。
 `ToolAgent` 执行有边界的 tool-loop 工作。它适合每一步都依赖最新 observation 的任务。
 
 `DagAgent` 会让模型生成 strict typed plan，将其规范化为 `DAGSpec`，执行 ready layers，
-观察结果，并在需要时进行局部 replan。Dynamic plan 可以使用与 static spec 相同的
-conditional、map、subgraph、loop、artifact 和 value-expression 语义。
+观察结果，并在需要时进行局部 replan。默认 `typed_spec` frontend 把模型输出限制为
+capability node、条件边、artifact 和 value expression；optional `sdk_builder` frontend
+还可以构造 Map、Subgraph 和 bounded Loop。两者最终使用相同的静态 DAG 执行 contract。
 
 `AutoAgent` 让 runtime 针对每个请求在直接 tool use 和 dynamic DAG planning 之间选择。
 

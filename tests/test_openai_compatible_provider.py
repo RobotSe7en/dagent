@@ -220,7 +220,7 @@ async def test_openai_compatible_provider_reads_reasoning_content_from_chat_resp
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_maps_strict_schema_and_refusal() -> None:
+async def test_openai_compatible_provider_uses_json_object_and_surfaces_refusal() -> None:
     client = FakeClient(
         message=SimpleNamespace(
             content="",
@@ -248,54 +248,15 @@ async def test_openai_compatible_provider_maps_strict_schema_and_refusal() -> No
         },
     )
 
+    messages = [{"role": "user", "content": "hello"}]
     response = await provider.chat(
-        [{"role": "user", "content": "hello"}],
+        messages,
         response_format=response_format,
     )
 
-    assert client.completions.kwargs["response_format"] == {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "result",
-            "description": "Structured result.",
-            "schema": response_format.schema,
-            "strict": True,
-        },
-    }
+    assert client.completions.kwargs["response_format"] == {"type": "json_object"}
+    assert client.completions.kwargs["messages"] == messages
     assert response.refusal == "cannot comply"
-
-
-@pytest.mark.asyncio
-async def test_openai_compatible_provider_maps_schema_contract_to_json_object() -> None:
-    client = FakeClient()
-    provider = OpenAICompatibleProvider(
-        ProviderConfig(
-            base_url="http://localhost:8000/v1",
-            model="json-mode-only",
-            api_key="local-key",
-            structured_output_mode="json_object",
-            extra_request_args={"response_format": {"type": "text"}},
-        ),
-        client=client,
-    )
-    response_format = StructuredOutputFormat(
-        name="result",
-        schema={
-            "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-            "additionalProperties": False,
-        },
-    )
-
-    await provider.chat(
-        [{"role": "user", "content": "return JSON"}],
-        response_format=response_format,
-    )
-
-    assert client.completions.kwargs["response_format"] == {
-        "type": "json_object",
-    }
 
 
 @pytest.mark.asyncio

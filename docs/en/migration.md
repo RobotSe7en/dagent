@@ -23,10 +23,32 @@ The current package version is `0.7.4`.
   API request shapes do not change. Existing format expressions that cannot
   round-trip through the visual syntax remain unchanged and read-only.
 
+### Changed
+
+- The internal `typed_spec` planner response now contains executable intent
+  only. Graph names and descriptions, node titles, and edge reasons are no
+  longer model-generated fields. The host supplies canonical graph identity;
+  display-only changes no longer invalidate completed DAG results.
+- The default `typed_spec` planner contract now accepts capability nodes only;
+  map, subgraph, loop, and item-expression authoring remains available through
+  `sdk_builder` and the public static-DAG SDK. Canonical `DAGSpec` execution
+  support is unchanged.
+- Structured planner calls now use one transport path: the complete compact
+  schema is included in the system prompt, and the built-in OpenAI-compatible
+  provider requests `response_format.type="json_object"`. The
+  `structured_output_mode` SDK, YAML, API, and WebUI setting has been removed.
+
 ### Migration
 
 - Existing agent nodes require no changes because `reference_content` defaults
   to an empty string.
+- Deterministic providers that emit `typed_spec` planner fixtures must remove
+  the deleted display-only fields and replace map, subgraph, or loop proposals
+  with capability-node graphs. Use `sdk_builder` when model-authored complex
+  control flow is required. Canonical `DAGSpec` and public static-DAG SDK shapes
+  are unchanged.
+- Remove `structured_output_mode` from Provider construction, configuration
+  files, and model-management payloads.
 
 ## 0.7.4
 

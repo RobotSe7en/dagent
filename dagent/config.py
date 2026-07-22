@@ -17,7 +17,6 @@ from dagent.schemas.sandbox import SandboxConfig
 
 DEFAULT_WORKSPACE = ".dagent"
 DEFAULT_RUNS_DIR = "runs"
-StructuredOutputMode = Literal["json_schema", "json_object"]
 
 
 def resolve_run_workspace_root(workspace_root: str | Path, run_workspace_root: str | Path) -> Path:
@@ -42,7 +41,6 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None
     timeout_seconds: float = 60
     strip_thinking: bool = False
-    structured_output_mode: StructuredOutputMode = "json_schema"
     reasoning: ReasoningConfig | None = None
     extra_request_args: dict[str, Any] = Field(default_factory=dict)
     extra_body: dict[str, Any] = Field(default_factory=dict)

@@ -245,7 +245,7 @@ export function upsertDagTimeline(
 }
 
 export function isSameDagRevision(left: Dag, right: Dag): boolean {
-  return (left.task_id || left.dag_id) === (right.task_id || right.dag_id)
+  return left.dag_id === right.dag_id
     && left.version === right.version;
 }
 

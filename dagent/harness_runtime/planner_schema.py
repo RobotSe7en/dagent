@@ -78,11 +78,6 @@ class PlannerCompareValue(_PlannerModel):
     right: "PlannerValue"
 
 
-class PlannerItemValue(_PlannerModel):
-    type: Literal["item"]
-    path: list[str | int]
-
-
 PlannerValue: TypeAlias = Annotated[
     PlannerLiteralValue
     | PlannerListValue
@@ -91,8 +86,7 @@ PlannerValue: TypeAlias = Annotated[
     | PlannerNodeOutputValue
     | PlannerArtifactValue
     | PlannerFormatValue
-    | PlannerCompareValue
-    | PlannerItemValue,
+    | PlannerCompareValue,
     Field(discriminator="type"),
 ]
 
@@ -104,14 +98,10 @@ class PlannerArtifact(_PlannerModel):
     required: bool
 
 
-class _PlannerNode(_PlannerModel):
+class PlannerCapabilityNode(_PlannerModel):
     id: PlannerId
-    title: str
     inputs: list[str]
     outputs: list[str]
-
-
-class PlannerCapabilityNode(_PlannerNode):
     type: Literal["capability"]
     capability_id: str
     arguments: list[PlannerNamedValue]
@@ -122,52 +112,15 @@ class PlannerCapabilityNode(_PlannerNode):
         return self
 
 
-class PlannerMapNode(_PlannerNode):
-    type: Literal["map"]
-    items: PlannerValue
-    capability_id: str
-    arguments: list[PlannerNamedValue]
-    max_items: int = Field(ge=1)
-    max_concurrency: int = Field(ge=1)
-
-    @model_validator(mode="after")
-    def validate_unique_arguments(self) -> "PlannerMapNode":
-        _ensure_unique([item.name for item in self.arguments], "Map argument names")
-        return self
-
-
-class PlannerSubgraphNode(_PlannerNode):
-    type: Literal["subgraph"]
-    graph: "PlannerGraph"
-    input: PlannerValue | None
-
-
-class PlannerLoopNode(_PlannerNode):
-    type: Literal["loop"]
-    body: "PlannerGraph"
-    until: PlannerValue
-    max_iterations: int = Field(ge=1)
-    input: PlannerValue | None
-
-
-PlannerNode: TypeAlias = Annotated[
-    PlannerCapabilityNode | PlannerMapNode | PlannerSubgraphNode | PlannerLoopNode,
-    Field(discriminator="type"),
-]
-
-
 class PlannerEdge(_PlannerModel):
     source: PlannerId
     target: PlannerId
-    reason: str
     when: PlannerValue | None
 
 
 class PlannerGraph(_PlannerModel):
-    name: str
-    description: str
     artifacts: list[PlannerArtifact]
-    nodes: list[PlannerNode]
+    nodes: list[PlannerCapabilityNode]
     edges: list[PlannerEdge]
     output: PlannerValue | None
 
@@ -311,13 +264,5 @@ PlannerNamedValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerObjectValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerFormatValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerCompareValue.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
-PlannerSubgraphNode.model_rebuild(
-    _types_namespace={"PlannerGraph": PlannerGraph, "PlannerValue": PlannerValue}
-)
-PlannerLoopNode.model_rebuild(
-    _types_namespace={"PlannerGraph": PlannerGraph, "PlannerValue": PlannerValue}
-)
-PlannerGraph.model_rebuild(
-    _types_namespace={"PlannerNode": PlannerNode, "PlannerValue": PlannerValue}
-)
+PlannerGraph.model_rebuild(_types_namespace={"PlannerValue": PlannerValue})
 PlannerResponse.model_rebuild(_types_namespace={"PlannerGraph": PlannerGraph})

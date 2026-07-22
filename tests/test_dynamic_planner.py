@@ -13,10 +13,7 @@ from dagent.harness_runtime.planner_schema import (
 from dagent.schemas import CapabilityDefinition
 from dagent.schemas.node import (
     CapabilityNodePayload,
-    LoopNodePayload,
-    MapNodePayload,
     StartNodePayload,
-    SubgraphNodePayload,
 )
 from dagent.schemas.value import CompareExpr, NodeOutputExpr, parse_value_binding
 
@@ -34,24 +31,33 @@ def test_planner_response_format_preserves_fields_and_normalizes_unions() -> Non
     schema = response_format.schema
 
     Draft202012Validator.check_schema(schema)
-    Draft202012Validator(schema).validate(_response(_control_flow_graph()))
+    Draft202012Validator(schema).validate(_response(_capability_graph()))
 
     node_definitions = [
         definition
         for definition in schema["$defs"].values()
-        if {"id", "title", "inputs", "outputs"}.issubset(
+        if {"id", "inputs", "outputs"}.issubset(
             definition.get("properties", {})
         )
     ]
     assert node_definitions
-    assert all("title" in definition["required"] for definition in node_definitions)
+    assert all("title" not in definition["properties"] for definition in node_definitions)
+    graph_definition = schema["$defs"]["PlannerGraph"]
+    assert "name" not in graph_definition["properties"]
+    assert "description" not in graph_definition["properties"]
+    edge_definition = schema["$defs"]["PlannerEdge"]
+    assert "reason" not in edge_definition["properties"]
+    assert "PlannerMapNode" not in schema["$defs"]
+    assert "PlannerSubgraphNode" not in schema["$defs"]
+    assert "PlannerLoopNode" not in schema["$defs"]
+    assert "PlannerItemValue" not in schema["$defs"]
     assert not _schema_contains_key(schema, "oneOf")
     assert not _schema_contains_key(schema, "discriminator")
     assert _schema_contains_key(schema, "anyOf")
 
 
 def test_planner_response_rejects_unknown_fields_and_inconsistent_actions() -> None:
-    response = _response(_control_flow_graph())
+    response = _response(_capability_graph())
     response["unexpected"] = True
 
     with pytest.raises(ValueError, match="unexpected"):
@@ -60,14 +66,23 @@ def test_planner_response_rejects_unknown_fields_and_inconsistent_actions() -> N
     with pytest.raises(ValueError, match="no_change forbids"):
         parse_planner_response(json.dumps({
             "action": "no_change",
-            "plan": _control_flow_graph(),
+            "plan": _capability_graph(),
             "answer": None,
             "rerun_nodes": [],
         }))
 
 
-def test_typed_planner_normalizes_all_control_flow_to_canonical_dag_spec() -> None:
-    parsed = parse_planner_response(json.dumps(_response(_control_flow_graph())))
+@pytest.mark.parametrize("node_type", ["map", "subgraph", "loop"])
+def test_typed_planner_rejects_complex_node_types(node_type: str) -> None:
+    graph = _single_node_graph()
+    graph["nodes"][0]["type"] = node_type
+
+    with pytest.raises(ValueError, match="capability"):
+        parse_planner_response(json.dumps(_response(graph)))
+
+
+def test_typed_planner_normalizes_capability_graph_to_canonical_dag_spec() -> None:
+    parsed = parse_planner_response(json.dumps(_response(_capability_graph())))
     assert parsed.plan is not None
 
     spec = normalize_planner_graph(
@@ -79,32 +94,30 @@ def test_typed_planner_normalizes_all_control_flow_to_canonical_dag_spec() -> No
     dag = compile_dag_spec(spec, task_id="task_control", capabilities=_capabilities())
 
     assert spec.id == "task_control"
+    assert spec.name == "task_control"
+    assert spec.description == ""
     assert spec.input_schema["required"] == ["request"]
     assert list(spec.artifacts) == ["report"]
     assert [node.id for node in spec.nodes] == [
         "start",
         "seed",
-        "fan_out",
-        "summarize",
-        "repeat",
+        "echo",
     ]
     assert isinstance(spec.nodes[0].payload, StartNodePayload)
     assert isinstance(spec.nodes[1].payload, CapabilityNodePayload)
-    assert isinstance(spec.nodes[2].payload, MapNodePayload)
-    assert isinstance(spec.nodes[3].payload, SubgraphNodePayload)
-    assert isinstance(spec.nodes[4].payload, LoopNodePayload)
+    assert isinstance(spec.nodes[2].payload, CapabilityNodePayload)
+    assert all(node.title == "" for node in spec.nodes)
+    assert all(edge.reason == "" for edge in spec.edges)
     assert {(edge.source, edge.target) for edge in spec.edges} == {
         ("start", "seed"),
-        ("seed", "fan_out"),
-        ("fan_out", "summarize"),
-        ("summarize", "repeat"),
+        ("seed", "echo"),
     }
-    condition = next(edge.when for edge in spec.edges if edge.target == "fan_out")
+    condition = next(edge.when for edge in spec.edges if edge.target == "echo")
     assert isinstance(parse_value_binding(condition), CompareExpr)
-    items = spec.nodes[2].payload.items
-    assert isinstance(parse_value_binding(items), NodeOutputExpr)
     assert dag.nodes[1].payload.invocation.capability_id == "tool.seed"
     assert dag.nodes[2].payload.invocation.risk == "medium"
+    text = dag.nodes[2].payload.invocation.arguments["text"]
+    assert isinstance(parse_value_binding(text), NodeOutputExpr)
 
 
 def test_planner_argument_schema_validation_fails_closed_but_allows_expressions() -> None:
@@ -188,7 +201,7 @@ def test_planner_validates_output_paths_through_local_refs_and_unions() -> None:
 
 
 def test_full_spec_replan_preserves_unchanged_invocation_identity() -> None:
-    graph = PlannerGraph.model_validate(_control_flow_graph())
+    graph = PlannerGraph.model_validate(_capability_graph())
     first = normalize_planner_graph(
         graph,
         spec_id="stable",
@@ -209,87 +222,8 @@ def test_full_spec_replan_preserves_unchanged_invocation_identity() -> None:
     assert second.version == 2
 
 
-def test_nested_graph_input_paths_are_validated_from_subgraph_input() -> None:
-    nested = _single_node_graph(arguments=[{
-        "name": "text",
-        "value": {"type": "graph_input", "path": ["missing"]},
-    }])
-    graph = {
-        "name": "nested input",
-        "description": "",
-        "artifacts": [],
-        "nodes": [{
-            **_node_base("nested"),
-            "type": "subgraph",
-            "graph": nested,
-            "input": {
-                "type": "object",
-                "entries": [{"name": "present", "value": _literal("value")}],
-            },
-        }],
-        "edges": [],
-        "output": None,
-    }
-
-    with pytest.raises(DAGCreationError, match="unknown output path 'missing'"):
-        normalize_planner_graph(
-            PlannerGraph.model_validate(graph),
-            spec_id="nested",
-            version=1,
-            capabilities=_capabilities(),
-        )
-
-
-def test_nested_graph_input_path_requires_an_input_schema() -> None:
-    nested = _single_node_graph(arguments=[{
-        "name": "text",
-        "value": {"type": "graph_input", "path": ["missing"]},
-    }])
-    graph = {
-        "name": "missing nested input",
-        "description": "",
-        "artifacts": [],
-        "nodes": [{
-            **_node_base("nested"),
-            "type": "subgraph",
-            "graph": nested,
-            "input": None,
-        }],
-        "edges": [],
-        "output": None,
-    }
-
-    with pytest.raises(DAGCreationError, match="source has no output schema"):
-        normalize_planner_graph(
-            PlannerGraph.model_validate(graph),
-            spec_id="nested",
-            version=1,
-            capabilities=_capabilities(),
-        )
-
-
-def _control_flow_graph() -> dict:
-    nested = _single_node_graph(
-        node_id="nested_echo",
-        arguments=[{
-            "name": "text",
-            "value": {"type": "graph_input", "path": []},
-        }],
-        name="nested",
-    )
-    nested["output"] = _node_output("nested_echo")
-    body = _single_node_graph(
-        node_id="loop_echo",
-        arguments=[{
-            "name": "text",
-            "value": {"type": "graph_input", "path": []},
-        }],
-        name="loop body",
-    )
-    body["output"] = _node_output("loop_echo")
+def _capability_graph() -> dict:
     return {
-        "name": "control flow",
-        "description": "Exercise typed dynamic nodes.",
         "artifacts": [{
             "id": "report",
             "paths": ["out/report.json"],
@@ -305,40 +239,17 @@ def _control_flow_graph() -> dict:
                 "outputs": ["report"],
             },
             {
-                **_node_base("fan_out"),
-                "type": "map",
-                "items": _node_output("seed", path=["items"]),
+                **_node_base("echo"),
+                "type": "capability",
                 "capability_id": "tool.echo",
-                "arguments": [{"name": "text", "value": {"type": "item", "path": []}}],
-                "max_items": 10,
-                "max_concurrency": 3,
+                "arguments": [{"name": "text", "value": _node_output("seed", path=["items", 0])}],
                 "inputs": ["report"],
-            },
-            {
-                **_node_base("summarize"),
-                "type": "subgraph",
-                "graph": nested,
-                "input": _node_output("fan_out", path=[0]),
-            },
-            {
-                **_node_base("repeat"),
-                "type": "loop",
-                "body": body,
-                "until": {
-                    "type": "compare",
-                    "op": "eq",
-                    "left": {"type": "item", "path": []},
-                    "right": _literal("done"),
-                },
-                "max_iterations": 3,
-                "input": _node_output("summarize"),
             },
         ],
         "edges": [
             {
                 "source": "seed",
-                "target": "fan_out",
-                "reason": "Fan out only when ready.",
+                "target": "echo",
                 "when": {
                     "type": "compare",
                     "op": "eq",
@@ -346,10 +257,8 @@ def _control_flow_graph() -> dict:
                     "right": _literal(True),
                 },
             },
-            {"source": "fan_out", "target": "summarize", "reason": "", "when": None},
-            {"source": "summarize", "target": "repeat", "reason": "", "when": None},
         ],
-        "output": _node_output("repeat"),
+        "output": _node_output("echo"),
     }
 
 
@@ -358,11 +267,8 @@ def _single_node_graph(
     node_id: str = "work",
     capability_id: str = "tool.echo",
     arguments: list[dict] | None = None,
-    name: str = "single",
 ) -> dict:
     return {
-        "name": name,
-        "description": "",
         "artifacts": [],
         "nodes": [{
             **_node_base(node_id),
@@ -376,7 +282,7 @@ def _single_node_graph(
 
 
 def _node_base(node_id: str) -> dict:
-    return {"id": node_id, "title": "", "inputs": [], "outputs": []}
+    return {"id": node_id, "inputs": [], "outputs": []}
 
 
 def _node_output(node_id: str, *, path: list | None = None) -> dict:
@@ -432,19 +338,11 @@ def _capabilities() -> list[CapabilityDefinition]:
 
 
 def _invocation_ids(spec) -> dict[str, str]:
-    output: dict[str, str] = {}
-    stack = [spec]
-    while stack:
-        current = stack.pop()
-        for node in current.nodes:
-            payload = node.payload
-            if isinstance(payload, (CapabilityNodePayload, MapNodePayload)):
-                output[f"{current.id}:{node.id}"] = payload.invocation.invocation_id
-            elif isinstance(payload, SubgraphNodePayload):
-                stack.append(payload.spec)
-            elif isinstance(payload, LoopNodePayload):
-                stack.append(payload.body)
-    return output
+    return {
+        f"{spec.id}:{node.id}": node.payload.invocation.invocation_id
+        for node in spec.nodes
+        if isinstance(node.payload, CapabilityNodePayload)
+    }
 
 
 def _assert_strict_objects(value) -> None:

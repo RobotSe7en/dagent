@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI
 
-from dagent.config import ProviderConfig, StructuredOutputMode
+from dagent.config import ProviderConfig
 from dagent.providers.base import (
     ChatResponse,
     ChatStreamEvent,
@@ -171,18 +171,7 @@ class OpenAICompatibleProvider:
             kwargs["extra_body"] = extra_body
         kwargs.update(self.config.extra_request_args)
         if response_format is not None:
-            if self.config.structured_output_mode == "json_object":
-                kwargs["response_format"] = {"type": "json_object"}
-            else:
-                kwargs["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": response_format.name,
-                        "description": response_format.description,
-                        "schema": response_format.schema,
-                        "strict": response_format.strict,
-                    },
-                }
+            kwargs["response_format"] = {"type": "json_object"}
         return kwargs
 
 
@@ -198,7 +187,6 @@ class Provider(OpenAICompatibleProvider):
         api_key_env: str | None = None,
         timeout_seconds: float = 60,
         strip_thinking: bool = False,
-        structured_output_mode: StructuredOutputMode = "json_schema",
         reasoning: dict[str, Any] | None = None,
         extra_request_args: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
@@ -212,7 +200,6 @@ class Provider(OpenAICompatibleProvider):
                 api_key_env=api_key_env,
                 timeout_seconds=timeout_seconds,
                 strip_thinking=strip_thinking,
-                structured_output_mode=structured_output_mode,
                 reasoning=reasoning,
                 extra_request_args=extra_request_args or {},
                 extra_body=extra_body or {},

@@ -86,7 +86,6 @@ def test_provider_is_public_from_package_root() -> None:
         base_url="https://example.test/v1",
         model="test-model",
         api_key="test-key",
-        structured_output_mode="json_object",
         reasoning={"enabled": True, "effort": "medium"},
         extra_request_args={"temperature": 0},
         extra_body={"chat_template_kwargs": {"enable_thinking": True}},
@@ -95,7 +94,6 @@ def test_provider_is_public_from_package_root() -> None:
     assert provider.config.base_url == "https://example.test/v1"
     assert provider.config.model == "test-model"
     assert provider.config.api_key == "test-key"
-    assert provider.config.structured_output_mode == "json_object"
     assert provider.config.reasoning is not None
     assert provider.config.reasoning.enabled is True
     assert provider.config.reasoning.effort == "medium"
@@ -557,7 +555,7 @@ def test_runner_auto_agent_routes_to_dynamic_dag_result(tmp_path) -> None:
     provider = MockProvider([
         ChatResponse(content="dag"),
         ChatResponse(content=capability_plan_response(
-            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+            "tool.search", {"q": "X"}, node_id="lookup"
         )),
         ChatResponse(content=final_answer_response("Report: found:X")),
     ])
@@ -811,7 +809,7 @@ def test_dag_agent_does_not_accept_profile_and_runner_runs_dag_loop(tmp_path) ->
 
     provider = MockProvider([
         ChatResponse(content=capability_plan_response(
-            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+            "tool.search", {"q": "X"}, node_id="lookup"
         )),
         ChatResponse(content=final_answer_response("Report: found:X")),
     ])
@@ -1041,7 +1039,7 @@ def test_runner_resume_can_restore_pending_dag_review_from_state(tmp_path) -> No
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
         ChatResponse(content=capability_plan_response(
-            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+            "tool.search", {"q": "X"}, node_id="lookup"
         )),
         ChatResponse(content=final_answer_response("Report: found:X")),
     ])
@@ -1121,7 +1119,7 @@ def test_runner_invalid_dag_resume_does_not_consume_review_state(tmp_path) -> No
     _profile_root(tmp_path, "planner")
     provider = MockProvider([
         ChatResponse(content=capability_plan_response(
-            "tool.search", {"q": "X"}, node_id="lookup", name="research"
+            "tool.search", {"q": "X"}, node_id="lookup"
         )),
         ChatResponse(content=final_answer_response("Report: found:X")),
     ])

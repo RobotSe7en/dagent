@@ -2743,7 +2743,7 @@ def test_api_dynamic_dag_stream_updates_standalone_orchestration_session_draft(
     state.runner = Runner(
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
-                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+                "tool.echo", {"text": "ok"}, node_id="answer"
             )),
             ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
@@ -2798,7 +2798,7 @@ def test_api_smart_workbench_dynamic_dag_stream_persists_conversation_messages(
     state.runner = Runner(
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
-                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+                "tool.echo", {"text": "ok"}, node_id="answer"
             )),
             ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
@@ -2847,7 +2847,7 @@ def test_api_orchestration_workspace_dynamic_dag_stream_persists_visible_message
     state.runner = Runner(
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
-                "tool.echo", {"text": "ok"}, node_id="answer", name="mock"
+                "tool.echo", {"text": "ok"}, node_id="answer"
             )),
             ChatResponse(content=final_answer_response("Final answer: echo:ok")),
         ])
@@ -2900,11 +2900,11 @@ def test_api_orchestration_workspace_dynamic_dag_stream_creates_distinct_run_his
     state.runner = Runner(
         provider=MockProvider([
             ChatResponse(content=capability_plan_response(
-                "tool.echo", {"text": "one"}, node_id="answer", name="first"
+                "tool.echo", {"text": "one"}, node_id="answer"
             )),
             ChatResponse(content=final_answer_response("first final")),
             ChatResponse(content=capability_plan_response(
-                "tool.echo", {"text": "two"}, node_id="answer", name="second"
+                "tool.echo", {"text": "two"}, node_id="answer"
             )),
             ChatResponse(content=final_answer_response("second final")),
         ])

@@ -129,16 +129,19 @@ validation, review, and execution. Capability nodes reference stable ids such
 as `tool.search`; the host supplies kind, risk, boundaries, defaults, and
 invocation identity.
 
-Typed dynamic plans can contain capability/agent, map, subgraph, and bounded
-loop nodes, explicit conditional edges, artifacts, graph output, and structured
-value references. They use the same validator and executor as static DAGs.
+Typed dynamic plans contain capability/agent nodes, explicit conditional edges,
+artifacts, graph output, and structured value references. Map, subgraph, and
+loop authoring stays out of this compact model-facing contract. The host
+supplies graph identity and leaves display-only graph descriptions, node titles,
+and edge reasons out of model output. Normalized plans still use the same
+validator and executor as static DAGs.
 
 `typed_spec` remains the default. To opt into code-oriented authoring, construct
 the runner with `planner_frontend="sdk_builder"`. The generated source uses a
 straight-line allowlisted Builder subset and is never passed to `exec` or
-`eval`. It may express the same maps, subgraphs, bounded loops, artifacts,
-references, outputs, and conditional edges; canonical `DAGSpec`, not source,
-is the review and persistence object.
+`eval`. It may additionally express maps, subgraphs, bounded loops, artifacts,
+references, outputs, and conditional edges; canonical `DAGSpec`, not source, is
+the review and persistence object.
 
 ```python
 agent = dagent.DagAgent(
@@ -165,9 +168,9 @@ but keep that DAG fixed during execution. Review behavior is still controlled by
 execution observations or failures.
 
 Custom providers used with `DagAgent` must implement the `response_format`
-keyword on `chat(...)` and `stream_chat(...)` and honor strict JSON Schema
-structured output. The built-in `Provider` maps this contract to OpenAI-compatible
-Chat Completions `json_schema` response formatting.
+keyword on `chat(...)` and `stream_chat(...)` and return an object conforming to
+the compact JSON Schema included in the system prompt. The built-in `Provider`
+requests OpenAI-compatible Chat Completions `json_object` response formatting.
 
 Run the offline dynamic DAG example:
 

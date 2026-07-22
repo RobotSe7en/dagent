@@ -35,14 +35,17 @@ Core principles:
 
 - `DAGSpec` is the only canonical IR used for persistence, fingerprints,
   review, and execution.
-- The dynamic planner is no longer limited by the capability-only PlanSpec.
+- The default typed planner deliberately uses a compact capability-node
+  contract; complex model-authored control flow is isolated in the optional
+  restricted Builder frontend.
 - The planner declares execution intent. `Runner` and the host continue to own
   providers, handlers, risk, boundaries, workspaces, runtime status, and
   invocation identity.
 - Every planner frontend enters the same normalization, validation, review,
   and execution path. There must not be duplicate execution implementations.
-- Conditions, maps, and loops use structured expressions and explicit bounds.
-  Arbitrary executable condition code and unbounded control flow are rejected.
+- Conditions use structured expressions. Builder-authored maps and loops use
+  explicit bounds. Arbitrary executable condition code and unbounded control
+  flow are rejected.
 
 ## Phase One: Typed Planner Spec to DAGSpec
 
@@ -58,15 +61,15 @@ DSL.
   - `no_change`
   - `final_answer`
 - Keep the planner-facing spec as close to `DAGSpec` as practical while
-  excluding host-owned fields.
-- Cover these node types first:
-  - capability or agent invocation
-  - map fan-out
-  - embedded subgraph
-  - bounded loop
+  excluding host-owned identity and display fields such as graph names and
+  descriptions, node titles, and edge reasons.
+- Keep the typed response contract to capability or agent invocation nodes.
+  Fixed parallelism is expressed as multiple capability nodes. Map fan-out,
+  embedded subgraphs, and bounded loops remain available through
+  `sdk_builder` and the public static-DAG SDK.
 - Support structured `when` conditions on edges.
-- Support graph-input, node-output/content/status/steps, item, artifact, and
-  format value expressions.
+- Support graph-input, node-output/content/status/steps, artifact, format, and
+  comparison value expressions.
 - Support explicit DAG output and artifact producer/consumer declarations.
 
 ### Capability Context
@@ -92,8 +95,8 @@ Process planner output in this order:
 3. Fill kind, risk, boundaries, default arguments, and other host-owned
    metadata from the catalog.
 4. Produce canonical `DAGSpec`.
-5. Call `validate_dag_spec(...)` to recursively check dependencies, value
-   expressions, artifacts, subgraphs, and bounded control flow.
+5. Call `validate_dag_spec(...)` to check dependencies, value expressions, and
+   artifacts against the same canonical contract used by all DAG sources.
 6. Review, fingerprint, and execute the normalized `DAGSpec`.
 
 When validation fails, return the structured field path and concrete error to
@@ -124,8 +127,9 @@ repair can be evaluated independently.
 
 - Structured output reliably distinguishes plans, no-change responses, and
   final answers.
-- The dynamic planner generates and executes representative conditional,
-  parallel, map, loop, and subgraph cases.
+- The typed planner generates and executes representative conditional and
+  parallel capability-node cases. The Builder frontend covers Map, Loop, and
+  Subgraph authoring.
 - Capability references, output paths, and artifact dependencies all receive
   fail-closed validation.
 - The planner cannot declare or widen host-owned risk, boundaries, or runtime

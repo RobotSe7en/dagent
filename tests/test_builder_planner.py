@@ -11,6 +11,7 @@ from dagent.harness_runtime.builder_translator import (
 )
 from dagent.harness_runtime.dag_agent import (
     _budget_dag_observation,
+    _edge_semantic_dump,
     _node_semantic_dump,
     _replan_spec_context,
 )
@@ -24,10 +25,12 @@ from dagent.schemas import (
     CapabilityDefinition,
     CapabilityInvocation,
     CapabilityNodePayload,
+    DAGEdge,
     DAGNode,
     DAGSpec,
 )
 from dagent.schemas.node import LoopNodePayload, MapNodePayload, SubgraphNodePayload
+from dagent.schemas.value import bind_value_expr
 
 
 def run(coro):
@@ -311,7 +314,7 @@ def test_replan_context_only_removes_host_fields_at_structural_paths() -> None:
     }
 
 
-def test_node_semantic_dump_ignores_only_structural_invocation_id() -> None:
+def test_node_semantic_dump_ignores_host_owned_identity_and_display_fields() -> None:
     first = DAGNode(
         id="work",
         payload=CapabilityNodePayload(
@@ -326,11 +329,27 @@ def test_node_semantic_dump_ignores_only_structural_invocation_id() -> None:
     )
     second = first.model_copy(deep=True)
     second.payload.invocation.invocation_id = "host-two"
+    second.title = "Updated display title"
 
     assert _node_semantic_dump(first) == _node_semantic_dump(second)
 
     second.payload.invocation.arguments["invocation_id"] = "user-two"
     assert _node_semantic_dump(first) != _node_semantic_dump(second)
+
+
+def test_edge_semantic_dump_ignores_display_reason() -> None:
+    first = DAGEdge(source="prepare", target="publish", reason="Initial reason")
+    second = first.model_copy(update={"reason": "Updated reason"})
+
+    assert _edge_semantic_dump(first) == _edge_semantic_dump(second)
+
+    conditional = DAGEdge(
+        source=second.source,
+        target=second.target,
+        reason=second.reason,
+        when=bind_value_expr({"type": "graph_input", "path": ["enabled"]}),
+    )
+    assert _edge_semantic_dump(first) != _edge_semantic_dump(conditional)
 
 
 def test_replan_observation_keeps_large_authoritative_spec_complete() -> None:
@@ -441,16 +460,21 @@ dag.output = work.output
     assert result.checkpoint.schema_version == 2
     request = provider.requests[0]
     assert request["response_format"].name == "dagent_dynamic_dag_builder_response"
+    assert request["response_format"].schema == builder_planner_response_format().schema
     system_prompt = request["messages"][0]["content"]
     assert "Mandatory Planner Skill" in system_prompt
     assert result.plan.planner_skill.content in system_prompt
-    schema_json = json.dumps(
+    compact_schema = json.dumps(
         builder_planner_response_format().schema,
         ensure_ascii=False,
         sort_keys=True,
-        indent=2,
+        separators=(",", ":"),
     )
-    assert f"```json\n{schema_json}\n```" in system_prompt
+    assert (
+        "## Required Planner Response JSON Schema\n"
+        "Return one JSON object that conforms exactly to this schema.\n\n"
+        + compact_schema
+    ) in system_prompt
 
 
 def test_builder_checkpoint_resume_uses_frozen_frontend_and_skill(tmp_path) -> None:

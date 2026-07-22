@@ -9,10 +9,7 @@ from dagent.schemas import DAG, DAGSpec
 from dagent.schemas import CapabilityInvocation, DAGNode
 from dagent.schemas.node import (
     CapabilityNodePayload,
-    LoopNodePayload,
-    MapNodePayload,
     StartNodePayload,
-    SubgraphNodePayload,
 )
 from dagent.schemas.value import parse_value_binding
 
@@ -47,16 +44,12 @@ def planner_value(value: Any) -> dict[str, Any]:
 def planner_response_from_dag(
     dag: DAG,
     *,
-    name: str = "test plan",
-    description: str = "",
     rerun_nodes: Iterable[str] = (),
 ) -> str:
     return _response(
         _graph(
             nodes=dag.nodes,
             edges=dag.edges,
-            name=name,
-            description=description,
             artifacts=[],
             output=None,
         ),
@@ -69,7 +62,6 @@ def capability_plan_response(
     arguments: dict[str, Any],
     *,
     node_id: str = "node_1",
-    name: str = "test plan",
     rerun_nodes: Iterable[str] = (),
 ) -> str:
     dag = DAG(
@@ -87,7 +79,7 @@ def capability_plan_response(
             },
         )],
     )
-    return planner_response_from_dag(dag, name=name, rerun_nodes=rerun_nodes)
+    return planner_response_from_dag(dag, rerun_nodes=rerun_nodes)
 
 
 def planner_response_from_spec(
@@ -129,8 +121,6 @@ def _graph_from_spec(spec: DAGSpec) -> dict[str, Any]:
     return _graph(
         nodes=spec.nodes,
         edges=spec.edges,
-        name=spec.name,
-        description=spec.description,
         artifacts=[
             {
                 "id": artifact.id,
@@ -148,14 +138,10 @@ def _graph(
     *,
     nodes,
     edges,
-    name: str,
-    description: str,
     artifacts: list[dict[str, Any]],
     output: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
-        "name": name,
-        "description": description,
         "artifacts": artifacts,
         "nodes": [
             _node(node)
@@ -166,7 +152,6 @@ def _graph(
             {
                 "source": edge.source,
                 "target": edge.target,
-                "reason": edge.reason,
                 "when": None if edge.when is None else planner_value(edge.when),
             }
             for edge in edges
@@ -179,7 +164,6 @@ def _graph(
 def _node(node) -> dict[str, Any]:
     base = {
         "id": node.id,
-        "title": node.title,
         "inputs": node.inputs,
         "outputs": node.outputs,
     }
@@ -190,32 +174,6 @@ def _node(node) -> dict[str, Any]:
             **base,
             "capability_id": payload.invocation.capability_id,
             "arguments": _arguments(payload.invocation.arguments),
-        }
-    if isinstance(payload, MapNodePayload):
-        return {
-            "type": "map",
-            **base,
-            "items": planner_value(payload.items),
-            "capability_id": payload.invocation.capability_id,
-            "arguments": _arguments(payload.invocation.arguments),
-            "max_items": payload.max_items,
-            "max_concurrency": payload.max_concurrency,
-        }
-    if isinstance(payload, SubgraphNodePayload):
-        return {
-            "type": "subgraph",
-            **base,
-            "graph": _graph_from_spec(payload.spec),
-            "input": None if payload.input is None else planner_value(payload.input),
-        }
-    if isinstance(payload, LoopNodePayload):
-        return {
-            "type": "loop",
-            **base,
-            "body": _graph_from_spec(payload.body),
-            "until": planner_value(payload.until),
-            "max_iterations": payload.max_iterations,
-            "input": None if payload.input is None else planner_value(payload.input),
         }
     raise TypeError(f"Unsupported planner fixture node: {type(payload).__name__}")
 
