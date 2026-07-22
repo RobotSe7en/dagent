@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from dagent.harness_runtime import (
     DAGAgent,
@@ -15,7 +16,10 @@ from dagent.providers import ChatResponse, MockProvider
 from dagent.harness_runtime.dag_builder import compile_dag_spec
 from dagent.harness_runtime.dag_agent import _PlannerProposal
 from dagent.harness_runtime.dynamic_planner import normalize_planner_graph
-from dagent.harness_runtime.planner_schema import parse_planner_response
+from dagent.harness_runtime.planner_schema import (
+    parse_planner_response,
+    planner_response_format,
+)
 from dagent.profiles import AgentProfile
 from dagent.schemas import (
     Artifact,
@@ -134,6 +138,18 @@ def dag_agent_for(dag_loop: DAGAgentLoop) -> DAGAgent:
             content="You are a DAG creator.",
         ),
     )
+
+
+def test_typed_planner_schema_is_injected_into_system_message() -> None:
+    agent = dag_agent_for(dag_loop_for(MockProvider([])))
+
+    schema_json = json.dumps(
+        planner_response_format().schema,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    assert f"```json\n{schema_json}\n```" in agent.system_message["content"]
 
 
 def dag_response_from_dag(

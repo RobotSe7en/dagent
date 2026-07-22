@@ -5844,7 +5844,8 @@ details[open] > summary .card-chevron {
 }
 
 .model-config-form input,
-.model-config-form textarea {
+.model-config-form textarea,
+.model-config-form select {
   width: 100%;
   border: 1px solid #e2e4ea;
   border-radius: 9px;
@@ -5865,7 +5866,8 @@ details[open] > summary .card-chevron {
 }
 
 .model-config-form input:disabled,
-.model-config-form textarea:disabled {
+.model-config-form textarea:disabled,
+.model-config-form select:disabled {
   background: #f7f8fa;
   color: #7d8490;
 }

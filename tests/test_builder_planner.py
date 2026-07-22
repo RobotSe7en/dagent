@@ -444,6 +444,13 @@ dag.output = work.output
     system_prompt = request["messages"][0]["content"]
     assert "Mandatory Planner Skill" in system_prompt
     assert result.plan.planner_skill.content in system_prompt
+    schema_json = json.dumps(
+        builder_planner_response_format().schema,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    assert f"```json\n{schema_json}\n```" in system_prompt
 
 
 def test_builder_checkpoint_resume_uses_frozen_frontend_and_skill(tmp_path) -> None:

@@ -2213,6 +2213,12 @@ test('system management nests models and OnlyOffice settings', async () => {
   assert.match(modelSource, /API Key Env/);
   assert.match(modelSource, /Timeout/);
   assert.match(modelSource, /移除 <think> 推理块/);
+  assert.match(typesSource, /export type StructuredOutputMode = 'json_schema' \| 'json_object';/);
+  assert.match(typesSource, /structured_output_mode: StructuredOutputMode;/);
+  assert.match(modelSource, /结构化输出模式/);
+  assert.match(modelSource, /<option value="json_schema">JSON Schema（严格）<\/option>/);
+  assert.match(modelSource, /<option value="json_object">JSON Object<\/option>/);
+  assert.match(modelSource, /structured_output_mode: event\.target\.value/);
   assert.match(onlyOfficeSource, /文档配置/);
   assert.match(onlyOfficeSource, /Document Server URL/);
   assert.match(onlyOfficeSource, /Public API Base/);
@@ -2390,7 +2396,58 @@ test('upsertDagMessageTimeline keeps a rejected DAG card from reverting to runni
   const readyForReview = upsertDagMessageTimeline(stillRejected, reviewDag);
 
   assert.equal(stillRejected[0].timeline[0].dag.status, 'rejected');
-  assert.equal(readyForReview[0].timeline[0].dag.status, 'review_required');
+  assert.equal(readyForReview[0].timeline.filter((item) => item.type === 'dag').length, 2);
+  assert.equal(readyForReview[0].timeline[0].dag.status, 'rejected');
+  assert.equal(readyForReview[0].timeline[1].dag.status, 'review_required');
+});
+
+test('upsertDagMessageTimeline keeps later conversation DAG revisions in their own assistant turn', () => {
+  const firstDag = {
+    dag_id: 'dag_conversation',
+    task_id: 'task_conversation',
+    version: 1,
+    status: 'completed',
+    nodes: [],
+    edges: [],
+  };
+  const secondReviewDag = {
+    ...firstDag,
+    version: 2,
+    status: 'review_required',
+  };
+  const messages = [
+    { role: 'user', content: 'first request' },
+    {
+      role: 'assistant',
+      content: 'first answer',
+      timeline: [
+        { type: 'dag', dag: firstDag },
+        { type: 'text', content: 'first answer' },
+      ],
+      dagSnapshot: firstDag,
+    },
+    { role: 'user', content: 'second request' },
+    {
+      role: 'assistant',
+      content: '',
+      timeline: [{ type: 'reasoning', content: 'planning again', closed: true }],
+    },
+  ];
+
+  const reviewed = upsertDagMessageTimeline(messages, secondReviewDag);
+  const completed = upsertDagMessageTimeline(reviewed, {
+    ...secondReviewDag,
+    status: 'completed',
+  });
+
+  assert.deepEqual(
+    completed[1].timeline.filter((item) => item.type === 'dag').map((item) => item.dag.version),
+    [1],
+  );
+  const secondDagItems = completed[3].timeline.filter((item) => item.type === 'dag');
+  assert.equal(secondDagItems.length, 1);
+  assert.equal(secondDagItems[0].dag.version, 2);
+  assert.equal(secondDagItems[0].dag.status, 'completed');
 });
 
 test('capability review rejection settles the running tool card', () => {
@@ -2967,7 +3024,6 @@ test('persisted dynamic DAG hydration merges approved review resume into the ori
   };
   const completedDag = {
     ...reviewDag,
-    version: 2,
     status: 'completed',
   };
   const reviewState = {

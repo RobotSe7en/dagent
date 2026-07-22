@@ -29,6 +29,7 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
     assert config.provider.api_key == "local-key"
     assert config.provider.timeout_seconds == 12
     assert config.provider.strip_thinking is False
+    assert config.provider.structured_output_mode == "json_schema"
     assert config.provider.reasoning is None
     assert config.provider.extra_request_args == {}
     assert config.provider.extra_body == {}
@@ -106,6 +107,7 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
                 '  base_url: "https://api.deepseek.com"',
                 '  model: "deepseek-v4-pro"',
                 '  api_key: "local-key"',
+                "  structured_output_mode: json_object",
                 "  reasoning:",
                 "    enabled: true",
                 '    effort: "high"',
@@ -122,6 +124,7 @@ def test_load_config_parses_reasoning_and_extra_provider_options(tmp_path: Path)
 
     config = load_config(config_path)
 
+    assert config.provider.structured_output_mode == "json_object"
     assert config.provider.reasoning is not None
     assert config.provider.reasoning.enabled is True
     assert config.provider.reasoning.effort == "high"

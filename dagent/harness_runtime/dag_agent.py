@@ -128,25 +128,28 @@ class DAGAgent:
 
     def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
-        context = _planner_capability_context(tools)
+        context_sections = [
+            _planner_response_schema_context(
+                _planner_response_format_for_frontend(self.loop.planner_frontend)
+            )
+        ]
         if self.loop.planner_frontend == "sdk_builder":
             planner_skill = self.loop.planner_skill
             if planner_skill is None:
                 raise RuntimeError("sdk_builder planner frontend requires a frozen planner skill.")
-            context = (
+            context_sections.append(
                 _builder_frontend_context()
                 + "\n\n## Mandatory Planner Skill "
                 f"(version {planner_skill.version}, sha256 {planner_skill.sha256})\n"
                 + planner_skill.content
-                + "\n\n"
-                + context
             )
+        context_sections.append(_planner_capability_context(tools))
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
                 tools=tools,
-                context=context,
+                context="\n\n".join(context_sections),
             )
         )
 
@@ -358,10 +361,8 @@ class DAGAgentLoop:
             on_event=on_event,
             retry_policy=self.llm_retry_policy,
             retry_sleep=self.llm_retry_sleep,
-            response_format=(
-                builder_planner_response_format()
-                if self.planner_frontend == "sdk_builder"
-                else planner_response_format()
+            response_format=_planner_response_format_for_frontend(
+                self.planner_frontend
             ),
         )
         assistant_message: dict[str, Any] = {
@@ -1945,6 +1946,29 @@ def _planner_capability_context(capabilities: list[CapabilityDefinition]) -> str
         ensure_ascii=False,
         sort_keys=True,
         indent=2,
+    )
+
+
+def _planner_response_format_for_frontend(
+    planner_frontend: PlannerFrontend,
+) -> StructuredOutputFormat:
+    if planner_frontend == "sdk_builder":
+        return builder_planner_response_format()
+    return planner_response_format()
+
+
+def _planner_response_schema_context(response_format: StructuredOutputFormat) -> str:
+    return (
+        "## Required Planner Response JSON Schema\n"
+        "Return one JSON object that conforms exactly to this schema.\n\n"
+        "```json\n"
+        + json.dumps(
+            response_format.schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n```"
     )
 
 
