@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 from uuid import uuid4
 
@@ -105,13 +106,19 @@ class ToolAgent:
         self.messages: list[dict[str, Any]] = []
         self.trace: RunTrace | None = None
 
-    def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
+    def _build_system_message(
+        self,
+        capability_scope: CapabilityScope,
+        *,
+        workspace_path: str | Path | None = None,
+    ) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
         return self.prompt_builder.build_system_message(
             PromptRequest(
                 profile=self.profile,
                 task_content="",
                 tools=tools,
+                workspace_path=workspace_path,
             )
         )
 
@@ -119,8 +126,13 @@ class ToolAgent:
         self,
         messages: list[dict[str, Any]],
         capability_scope: CapabilityScope,
+        *,
+        workspace_path: str | Path | None = None,
     ) -> list[dict[str, Any]]:
-        system_message = self._build_system_message(capability_scope)
+        system_message = self._build_system_message(
+            capability_scope,
+            workspace_path=workspace_path,
+        )
         return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
@@ -304,7 +316,18 @@ class ToolAgent:
             self.loop.tool_adapter.function_name(definition)
             for definition in self.loop.available_capabilities(capability_scope.capability_ids)
         )
-        provider_messages = self._provider_messages(messages, capability_scope)
+        provider_messages = self._provider_messages(
+            messages,
+            capability_scope,
+            workspace_path=(
+                capability_context.workspace_path
+                if capability_context is not None
+                and capability_context.workspace_path is not None
+                else current_workspace_root(
+                    self.loop.capability_executor.workspace_root
+                )
+            ),
+        )
         outcome = await self.loop.run(
             "",
             run_id=run_id,

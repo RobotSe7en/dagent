@@ -297,6 +297,9 @@ class AgentCapabilityProvider:
                     context,
                     has_reference_content=bool(reference_content),
                 ),
+                workspace_path=(
+                    None if context is None else context.workspace_path
+                ),
             )
         )
         user = self.prompt_builder.build_user_message(
@@ -409,8 +412,6 @@ def _agent_runtime_context(context: Any, *, has_reference_content: bool = False)
         lines.append(f"- DAGSpec id: {context.spec_id}")
     if context.node is not None:
         lines.append(f"- Node id: {context.node.id}")
-    if context.workspace_path is not None:
-        lines.append(f"- Workspace root: {context.workspace_path}")
     lines.extend(_artifact_manifest("Readable input artifacts", context.input_artifacts))
     lines.extend(_artifact_manifest("Writable output artifacts", context.output_artifacts))
     lines.extend([

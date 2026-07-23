@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from dagent.harness_runtime import ValidatorAgent, FeedbackLearnerAgent
 from dagent.profiles import AgentProfile
@@ -64,7 +65,9 @@ def test_validator_agent_omits_empty_execution_context_section() -> None:
     assert "{%" not in prompt
 
 
-def test_validator_agent_includes_execution_context_section_when_present() -> None:
+def test_validator_agent_includes_execution_and_workspace_context(
+    tmp_path: Path,
+) -> None:
     provider = MockProvider([
         ChatResponse(content='{"passed": true, "issues": [], "summary": "ok"}')
     ])
@@ -74,19 +77,34 @@ def test_validator_agent_includes_execution_context_section_when_present() -> No
         user_request="check",
         final_answer="some answer",
         execution_context="node n1 completed",
+        workspace_path=tmp_path,
     ))
 
+    system_prompt = provider.requests[0]["messages"][0]["content"]
     prompt = provider.requests[0]["messages"][1]["content"]
+    assert "## Runtime Context" in system_prompt
+    assert f"- Workspace root: {tmp_path.resolve()}" in system_prompt
     assert "Execution context:\nnode n1 completed" in prompt
     assert "{%" not in prompt
 
 
-def test_feedback_learner_agent_returns_notes() -> None:
+def test_feedback_learner_agent_returns_notes_with_workspace_context(
+    tmp_path: Path,
+) -> None:
     provider = MockProvider([ChatResponse(content="Prefer narrow allowed_paths.")])
     learner = FeedbackLearnerAgent(provider=provider, profile=profile("feedback_learner"))
     trace = RunTrace(run_id="run_1", root=RunTraceNode.run(run_id="run_1", status="completed"))
 
-    result = run(learner.learn(feedback="Too broad", trace=trace))
+    result = run(
+        learner.learn(
+            feedback="Too broad",
+            trace=trace,
+            workspace_path=tmp_path,
+        )
+    )
 
     assert result.notes == "Prefer narrow allowed_paths."
+    assert f"- Workspace root: {tmp_path.resolve()}" in (
+        provider.requests[0]["messages"][0]["content"]
+    )
     assert "Too broad" in provider.requests[0]["messages"][1]["content"]

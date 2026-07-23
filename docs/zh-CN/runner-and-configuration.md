@@ -44,6 +44,13 @@ tool 的相对路径从当前 run workspace 解析。传入 `workspace=...` 时�
 state。继续一个 `RunState` 时，dagent 会复用 `RunState.workspace_path`。如果继续
 state 的同时传入了不一致的 `workspace_path`，调用会报错。
 
+对于由 profile 驱动的模型调用，SDK 还会在 system prompt 中动态加入
+`Runtime Context` 段，写明解析后的 workspace root，并要求 agent 从该目录解析相对
+文件路径。这适用于 tool agent、动态 DAG planner、注册到 DAG 的子 agent 和结果
+validator。Profile Markdown 本身保持不变；runtime path 不会写入 profile 内容，也不会
+对 profile 做模板替换。`FeedbackLearnerAgent` 等底层 profile-backed helper 在调用时
+收到 `workspace_path` 后，也会使用相同的动态段。
+
 ## Provider 选项
 
 `dagent.Provider` 面向 OpenAI-compatible chat completions endpoints：

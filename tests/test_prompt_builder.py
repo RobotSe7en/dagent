@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dagent.profiles import AgentProfile
 from dagent.state import PromptBuilder, PromptRequest
 from dagent.schemas import CapabilityDefinition
@@ -36,6 +38,29 @@ def test_prompt_builder_assembles_profile_and_dynamic_sections() -> None:
     assert "read (tool, id: tool.read_file): Read a file. Args: path." in messages[0]["content"]
     assert "Project context." in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "Task t1: hello"}
+
+
+def test_prompt_builder_injects_resolved_workspace_runtime_context(
+    tmp_path: Path,
+) -> None:
+    profile = AgentProfile(name="conversation", content="Stay concise.")
+    workspace = tmp_path / "project" / ".." / "workspace"
+
+    message = PromptBuilder().build_system_message(
+        PromptRequest(
+            profile=profile,
+            task_content="",
+            workspace_path=workspace,
+        )
+    )
+
+    assert message["content"] == (
+        "Stay concise.\n\n"
+        "## Runtime Context\n"
+        f"- Workspace root: {workspace.resolve()}\n"
+        "- Resolve relative file paths from this workspace root."
+    )
+    assert profile.content == "Stay concise."
 
 
 def test_prompt_builder_renders_user_message_template() -> None:

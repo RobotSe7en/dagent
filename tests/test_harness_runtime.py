@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+
 import pytest
 from dagent import tool
 from dagent.harness_runtime import (
@@ -1342,6 +1344,11 @@ def test_harness_runtime_skips_invalid_json_validator_agent_response() -> None:
 
     assert result.status == "completed"
     assert result.output_text.startswith("DAG execution completed.")
+    assert result.workspace_path is not None
+    validator_system_prompt = provider.requests[2]["messages"][0]["content"]
+    assert f"- Workspace root: {Path(result.workspace_path).resolve()}" in (
+        validator_system_prompt
+    )
 
 
 def test_harness_runtime_run_dag_spec_records_loop_outcome_metadata(tmp_path) -> None:
@@ -1395,7 +1402,14 @@ class _RejectThenApproveValidator:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def validate(self, *, user_request: str, final_answer: str, execution_context: str = "") -> ValidationResult:
+    async def validate(
+        self,
+        *,
+        user_request: str,
+        final_answer: str,
+        execution_context: str = "",
+        workspace_path: str | Path | None = None,
+    ) -> ValidationResult:
         self.calls += 1
         if self.calls == 1:
             return ValidationResult(passed=False,

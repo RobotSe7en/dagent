@@ -126,7 +126,12 @@ class DAGAgent:
         self.system_message = self._build_system_message(DEFAULT_CAPABILITY_SCOPE)
         self.messages: list[dict[str, Any]] = []
 
-    def _build_system_message(self, capability_scope: CapabilityScope) -> dict[str, str]:
+    def _build_system_message(
+        self,
+        capability_scope: CapabilityScope,
+        *,
+        workspace_path: str | Path | None = None,
+    ) -> dict[str, str]:
         tools = self.loop.available_capabilities(capability_scope.capability_ids)
         context_sections = [
             _planner_response_schema_context(
@@ -150,6 +155,7 @@ class DAGAgent:
                 task_content="",
                 tools=tools,
                 context="\n\n".join(context_sections),
+                workspace_path=workspace_path,
             )
         )
 
@@ -157,8 +163,13 @@ class DAGAgent:
         self,
         messages: list[dict[str, Any]],
         capability_scope: CapabilityScope,
+        *,
+        workspace_path: str | Path | None = None,
     ) -> list[dict[str, Any]]:
-        system_message = self._build_system_message(capability_scope)
+        system_message = self._build_system_message(
+            capability_scope,
+            workspace_path=workspace_path,
+        )
         return [dict(system_message), *[dict(message) for message in messages]]
 
     async def run(
@@ -208,7 +219,11 @@ class DAGAgent:
         request = _last_user_content(messages)
         resolved_task_id = task_id or f"task_{uuid4().hex}"
         self.messages = _messages_before_last_user(messages)
-        provider_messages = self._provider_messages(self.messages, capability_scope)
+        provider_messages = self._provider_messages(
+            self.messages,
+            capability_scope,
+            workspace_path=workspace_path,
+        )
         outcome = await self.loop.run_dynamic(
             request,
             task_id=resolved_task_id,
@@ -246,6 +261,7 @@ class DAGAgent:
         provider_messages = self._provider_messages(
             self.messages,
             capability_scope_from_state(state.capability_scope),
+            workspace_path=state.workspace_path,
         )
         outcome = await self.loop.resume_review(
             state,
@@ -281,6 +297,7 @@ class DAGAgent:
             messages=self._provider_messages(
                 self.messages,
                 capability_scope_from_state(record.capability_scope),
+                workspace_path=record.workspace_path,
             ),
             build_user_message=self.build_request_user_message,
             on_token=on_token,

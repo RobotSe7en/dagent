@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from dagent.profiles import AgentProfile
@@ -26,22 +27,39 @@ class ProfiledAgent:
         self.profile = profile
         self.prompt_builder = prompt_builder or PromptBuilder()
 
-    async def run_text(self, *, task_content: str, **prompt_values: Any) -> str:
+    async def run_text(
+        self,
+        *,
+        task_content: str,
+        workspace_path: str | Path | None = None,
+        **prompt_values: Any,
+    ) -> str:
         reserve_model_turn()
         response = await self.provider.chat(
             self.prompt_builder.build(
                 PromptRequest(
                     profile=self.profile,
                     task_content=task_content,
+                    workspace_path=workspace_path,
                     variables=prompt_values,
                 )
             )
         )
         return response.content
 
-    async def run_json(self, *, task_content: str, **prompt_values: Any) -> dict[str, Any]:
+    async def run_json(
+        self,
+        *,
+        task_content: str,
+        workspace_path: str | Path | None = None,
+        **prompt_values: Any,
+    ) -> dict[str, Any]:
         return extract_json_object(
-            await self.run_text(task_content=task_content, **prompt_values)
+            await self.run_text(
+                task_content=task_content,
+                workspace_path=workspace_path,
+                **prompt_values,
+            )
         )
 
 

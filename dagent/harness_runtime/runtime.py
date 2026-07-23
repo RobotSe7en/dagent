@@ -183,6 +183,7 @@ class HarnessRuntime:
             user_request=user_request,
             final_answer=loop_outcome.output_text,
             execution_context=loop_outcome.execution_context,
+            workspace_path=loop_outcome.state.workspace_path,
         )
         if validation.passed:
             if on_event:

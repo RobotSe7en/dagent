@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from dagent.profiles import AgentProfile
@@ -16,6 +17,7 @@ class PromptRequest:
     tools: list[CapabilityDefinition] = field(default_factory=list)
     context: str = ""
     variables: dict[str, Any] = field(default_factory=dict)
+    workspace_path: str | Path | None = None
 
 
 class PromptBuilder:
@@ -30,6 +32,8 @@ class PromptBuilder:
     def build_system_message(self, request: PromptRequest) -> dict[str, str]:
         system_sections = []
         system_sections.append(request.profile.render())
+        if request.workspace_path is not None:
+            system_sections.append(_runtime_context_section(request.workspace_path))
         if request.tools:
             system_sections.append(_tools_section(request.tools))
         if request.context:
@@ -66,6 +70,17 @@ def _parameter_names(parameters: dict[str, Any] | None) -> list[str]:
 
 def _named_section(title: str, content: str) -> str:
     return f"## {title}\n{content.strip()}"
+
+
+def _runtime_context_section(workspace_path: str | Path) -> str:
+    workspace_root = Path(workspace_path).expanduser().resolve()
+    return _named_section(
+        "Runtime Context",
+        (
+            f"- Workspace root: {workspace_root}\n"
+            "- Resolve relative file paths from this workspace root."
+        ),
+    )
 
 
 def _render_template(template: str, values: dict[str, Any]) -> str:

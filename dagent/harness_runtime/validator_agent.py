@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
@@ -24,6 +25,7 @@ class ValidatorAgent:
         user_request: str,
         final_answer: str,
         execution_context: str = "",
+        workspace_path: str | Path | None = None,
     ) -> ValidationResult:
         response_schema = json.dumps(
             {
@@ -53,6 +55,7 @@ class ValidatorAgent:
         try:
             payload = await self.agent.run_json(
                 task_content="\n\n".join(sections),
+                workspace_path=workspace_path,
             )
         except ValueError as exc:
             logger.warning("Validator agent returned invalid JSON; skipping validation: %s", exc)

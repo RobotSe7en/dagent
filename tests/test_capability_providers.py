@@ -454,6 +454,8 @@ def test_agent_provider_uses_scoped_node_messages(tmp_path) -> None:
     first_system = provider.requests[0]["messages"][0]["content"]
     first_user = provider.requests[0]["messages"][1]["content"]
     assert "You are a helper agent." in first_system
+    assert "## Runtime Context" in first_system
+    assert f"- Workspace root: {tmp_path.resolve()}" in first_system
     assert str(tmp_path) in first_system
     assert "source_doc" in first_system
     assert "requirements_doc" in first_system

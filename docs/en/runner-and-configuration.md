@@ -50,6 +50,15 @@ responsible for storing any run state outside the SDK. When continuing from a
 `RunState`, dagent reuses `RunState.workspace_path`. Passing a conflicting
 `workspace_path` while also continuing a state raises an error.
 
+For profile-backed model calls, the SDK also adds a dynamic `Runtime Context`
+section to the system prompt with the resolved workspace root and tells the
+agent to resolve relative file paths from it. This applies to tool agents,
+dynamic DAG planners, registered DAG subagents, and result validators. The
+profile Markdown remains unchanged; runtime paths are never written into or
+substituted into profile content. Lower-level profile-backed helpers such as
+`FeedbackLearnerAgent` use the same section when their call receives
+`workspace_path`.
+
 ## Provider Options
 
 `dagent.Provider` targets OpenAI-compatible chat completions endpoints:

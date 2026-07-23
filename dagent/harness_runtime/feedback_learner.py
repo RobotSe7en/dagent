@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dagent.harness_runtime.profiled_agent import ProfiledAgent
 from dagent.profiles import AgentProfile
@@ -26,6 +27,7 @@ class FeedbackLearnerAgent:
         *,
         feedback: str,
         trace: RunTrace | None,
+        workspace_path: str | Path | None = None,
     ) -> FeedbackLearning:
         text = await self.agent.run_text(
             task_content=(
@@ -35,5 +37,6 @@ class FeedbackLearnerAgent:
             ),
             feedback=feedback,
             trace_json=trace.model_dump_json() if trace is not None else "{}",
+            workspace_path=workspace_path,
         )
         return FeedbackLearning(notes=text)

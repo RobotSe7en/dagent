@@ -125,6 +125,9 @@ def test_dag_agent_uses_run_workspace_for_relative_tool_paths(
     assert result.workspace_path is not None
     workspace_path = Path(result.workspace_path)
     assert workspace_path.parent == tmp_path / ".dagent" / "runs"
+    system_prompt = provider.requests[0]["messages"][0]["content"]
+    assert "## Runtime Context" in system_prompt
+    assert f"- Workspace root: {workspace_path.resolve()}" in system_prompt
     assert (workspace_path / "shared" / "dag.txt").read_text(encoding="utf-8") == "hi"
     assert not (tmp_path / ".dagent" / "shared" / "dag.txt").exists()
 
@@ -212,6 +215,9 @@ def test_tool_agent_can_use_exact_workspace_path_without_run_subdirectory(
 
     assert result.workspace_path is not None
     assert Path(result.workspace_path) == workspace.resolve()
+    system_prompt = provider.requests[0]["messages"][0]["content"]
+    assert "## Runtime Context" in system_prompt
+    assert f"- Workspace root: {workspace.resolve()}" in system_prompt
     assert (workspace / "shared" / "project.txt").read_text(encoding="utf-8") == "hi"
     assert not (workspace / result.run_id).exists()
 
