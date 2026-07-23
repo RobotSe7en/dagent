@@ -5,9 +5,48 @@ that may require action when upgrading.
 
 ## Current Release Line
 
-The current package version is `0.7.5`.
+The current package version is `0.7.6`.
 
 ## Unreleased
+
+## 0.7.6
+
+### Added
+
+- Profile-backed model calls receive a dynamic `Runtime Context` system-prompt
+  section containing the resolved workspace root and guidance to resolve
+  relative file paths from that root. `Runner` supplies the run workspace to
+  tool agents, dynamic DAG planners, registered DAG subagents, and result
+  validators without changing profile Markdown.
+- Lower-level `ProfiledAgent`, `ValidatorAgent`, and `FeedbackLearnerAgent`
+  calls accept an optional `workspace_path` for the same prompt context.
+
+### Changed
+
+- Registered DAG subagents now use the shared prompt-builder workspace context
+  instead of maintaining a separate workspace line in their DAG context.
+  Profile contents remain immutable and are not treated as templates.
+
+### Migration
+
+- No migration action is required for `Runner`-managed agents. An explicit
+  `Runner.run(..., workspace_path=...)` is injected as supplied; when omitted,
+  the runner injects its resolved managed run workspace.
+- Direct callers of `FeedbackLearnerAgent` may pass `workspace_path` when that
+  lower-level helper should receive workspace context.
+- There are no breaking changes in this patch release.
+
+### Known Limitations
+
+- `FeedbackLearnerAgent` is not owned by `Runner`, so direct calls without
+  `workspace_path` do not receive a workspace section.
+
+### Verification
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv build`
+- `uv run --with twine python -m twine check <distributions>`
+- `git diff --check`
 
 ## 0.7.5
 

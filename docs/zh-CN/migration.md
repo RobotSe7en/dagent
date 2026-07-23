@@ -4,9 +4,46 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## 当前发布线
 
-当前包版本是 `0.7.5`。
+当前包版本是 `0.7.6`。
 
 ## Unreleased
+
+## 0.7.6
+
+### 新增
+
+- Profile-backed 模型调用的 system prompt 现在会收到动态 `Runtime Context` 段，
+  其中包含解析后的 workspace root，并要求相对文件路径从该目录解析。`Runner` 会把
+  run workspace 传给 tool agent、动态 DAG planner、注册到 DAG 的子 agent 和结果
+  validator，同时不修改 Profile Markdown。
+- 底层 `ProfiledAgent`、`ValidatorAgent` 和 `FeedbackLearnerAgent` 调用新增可选
+  `workspace_path`，用于生成相同的 prompt context。
+
+### 改变
+
+- 注册到 DAG 的子 agent 改为使用共享 PromptBuilder 的 workspace context，不再在
+  DAG context 中维护单独的 workspace 行。Profile 内容保持不可变，也不会被当作模板。
+
+### 迁移
+
+- `Runner` 管理的 agent 无需迁移。显式传入的
+  `Runner.run(..., workspace_path=...)` 会按原值注入；省略时，runner 会注入解析后的
+  managed run workspace。
+- 直接调用 `FeedbackLearnerAgent` 时，如果该底层 helper 需要 workspace context，
+  可以传入 `workspace_path`。
+- 此 patch release 没有 breaking change。
+
+### 已知限制
+
+- `FeedbackLearnerAgent` 不归 `Runner` 管理，因此未传 `workspace_path` 的直接调用
+  不会收到 workspace 段。
+
+### 验证
+
+- `uv run --extra dev --extra mcp --frozen pytest`
+- `uv build`
+- `uv run --with twine python -m twine check <distributions>`
+- `git diff --check`
 
 ## 0.7.5
 

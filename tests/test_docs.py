@@ -15,7 +15,8 @@ def test_migration_notes_record_release_history() -> None:
     english = Path("docs/en/migration.md").read_text(encoding="utf-8")
     chinese = Path("docs/zh-CN/migration.md").read_text(encoding="utf-8")
 
-    english_unreleased = _section(english, "## Unreleased", "## 0.7.5")
+    english_unreleased = _section(english, "## Unreleased", "## 0.7.6")
+    english_076 = _section(english, "## 0.7.6", "## 0.7.5")
     english_075 = _section(english, "## 0.7.5", "## 0.7.4")
     english_074 = _section(english, "## 0.7.4", "## 0.7.3")
     english_073 = _section(english, "## 0.7.3", "## 0.7.2")
@@ -29,7 +30,8 @@ def test_migration_notes_record_release_history() -> None:
     english_064 = _section(english, "## 0.6.4", "## 0.6.3")
     english_063 = _section(english, "## 0.6.3", "## 0.6.2")
     english_released = _section(english, "## 0.6.1", "## 0.6.0")
-    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.5")
+    chinese_unreleased = _section(chinese, "## Unreleased", "## 0.7.6")
+    chinese_076 = _section(chinese, "## 0.7.6", "## 0.7.5")
     chinese_075 = _section(chinese, "## 0.7.5", "## 0.7.4")
     chinese_074 = _section(chinese, "## 0.7.4", "## 0.7.3")
     chinese_073 = _section(chinese, "## 0.7.3", "## 0.7.2")
@@ -44,6 +46,10 @@ def test_migration_notes_record_release_history() -> None:
     chinese_063 = _section(chinese, "## 0.6.3", "## 0.6.2")
     chinese_released = _section(chinese, "## 0.6.1", "## 0.6.0")
 
+    collapsed_english_076 = _collapsed(english_076)
+    assert "`Runtime Context` system-prompt section" in collapsed_english_076
+    assert "resolved managed run workspace" in collapsed_english_076
+    assert "Profile contents remain immutable" in collapsed_english_076
     collapsed_english_075 = _collapsed(english_075)
     assert "`reference_content`" in collapsed_english_075
     assert "separate user-message section" in collapsed_english_075
@@ -89,6 +95,10 @@ def test_migration_notes_record_release_history() -> None:
     assert "Capability definitions now separate stable ids from call names" in english_released
     assert "Runner.add_tools is now atomic" in english_released
     assert "Capability definitions now separate stable ids from call names" not in english_unreleased
+    collapsed_chinese_076 = _collapsed(chinese_076)
+    assert "动态 `Runtime Context` 段" in collapsed_chinese_076
+    assert "managed run workspace" in collapsed_chinese_076
+    assert "Profile 内容保持不可变" in collapsed_chinese_076
     collapsed_chinese_075 = _collapsed(chinese_075)
     assert "`reference_content`" in collapsed_chinese_075
     assert "独立的 user-message 区块" in collapsed_chinese_075
