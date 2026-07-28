@@ -9,6 +9,8 @@ The current package version is `0.8.0`.
 
 ## Unreleased
 
+## 0.8.0
+
 ### Fixed
 
 - The bundled API and WebUI now use the 0.8 `input`/`ConversationState`
@@ -28,8 +30,6 @@ The current package version is `0.8.0`.
   retain typed references for normalized values and diagnostic fields.
 - Capability-handler exceptions are recorded as failed tool results and failed
   trace nodes.
-
-## 0.8.0
 
 ### Breaking changes
 

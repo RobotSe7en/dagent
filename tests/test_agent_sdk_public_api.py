@@ -186,6 +186,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
         provider=provider,
         capabilities=[search],
         profile_root=tmp_path / "profiles",
+        skill_roots=[],
     )
 
     result = run(runner.run(agent, input="hi"))
@@ -194,11 +195,7 @@ def test_runner_runs_profile_backed_tool_agent_cycle(tmp_path) -> None:
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "You are a conversation profile." in system_message
     assert "search" not in system_message
-    assert _tool_names(provider.requests[0]) == {
-        "skill_list",
-        "skill_view",
-        "tool_search",
-    }
+    assert _tool_names(provider.requests[0]) == {"tool_search"}
 
 
 def test_runner_loads_builtin_profile_without_cwd_profiles(tmp_path) -> None:
@@ -893,6 +890,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
         provider=provider,
         capabilities=[search, write],
         profile_root=tmp_path / "profiles",
+        skill_roots=[],
     )
 
     run(runner.run(agent, input="hi"))
@@ -900,11 +898,7 @@ def test_runner_limits_agent_visible_capabilities(tmp_path) -> None:
     system_message = provider.requests[0]["messages"][0]["content"]
     assert "search" not in system_message
     assert "write" not in system_message
-    assert _tool_names(provider.requests[0]) == {
-        "skill_list",
-        "skill_view",
-        "tool_search",
-    }
+    assert _tool_names(provider.requests[0]) == {"tool_search"}
 
 
 def test_runner_agent_skills_filter_skill_tools_without_prompt_injection(tmp_path) -> None:

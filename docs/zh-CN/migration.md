@@ -8,6 +8,8 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 
 ## Unreleased
 
+## 0.8.0
+
 ### 修复
 
 - 内置 API 和 WebUI 已使用 0.8 `input`/`ConversationState` contract，完整持久化
@@ -25,8 +27,6 @@ dagent 已经发布公开 SDK contracts。本页记录升级时可能需要用�
 - 静态 DAG map 输出在父 trace 中保持外置，DAG trace 会保留 value 和诊断字段标准化
   后的类型化引用。
 - capability handler 异常会记录为 failed 工具结果和 failed trace node。
-
-## 0.8.0
 
 ### 破坏性变更
 
